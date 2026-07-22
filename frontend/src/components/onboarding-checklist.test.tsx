@@ -1,9 +1,34 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { ProjectLatestScanJob, ProjectSummary } from '@/types'
+import type { AuthUser, ProjectLatestScanJob, ProjectSummary, Role } from '@/types'
+import { AuthContext, type AuthContextValue } from './auth-context'
 import { OnboardingChecklist } from './onboarding-checklist'
 import { countRealSources } from './onboarding-utils'
+
+// The checklist is role-aware (tripl-yfsj.4): it reads the current user's role
+// via useAuth(), so tests must render it inside an AuthContext. `role: null`
+// models an unauthenticated context (treated as a non-owner).
+function authValue(role: Role | null): AuthContextValue {
+  const user: AuthUser | null = role
+    ? {
+        id: 'u1',
+        email: 'user@example.com',
+        name: null,
+        role,
+        created_at: '2026-07-01T00:00:00Z',
+        updated_at: '2026-07-01T00:00:00Z',
+      }
+    : null
+  return {
+    user,
+    status: role ? 'authenticated' : 'anonymous',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
+}
 
 function makeSummary(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
   return {
@@ -48,16 +73,21 @@ function renderChecklist(props: {
   sourceCount?: number
   slug?: string
   isDemo?: boolean
+  // Defaults to 'owner' so the pre-role-awareness cases (all five steps count)
+  // read exactly as before.
+  role?: Role | null
 }) {
   return render(
-    <MemoryRouter>
-      <OnboardingChecklist
-        slug={props.slug ?? 'demo'}
-        summary={props.summary}
-        sourceCount={props.sourceCount ?? 0}
-        isDemo={props.isDemo}
-      />
-    </MemoryRouter>,
+    <AuthContext.Provider value={authValue(props.role === undefined ? 'owner' : props.role)}>
+      <MemoryRouter>
+        <OnboardingChecklist
+          slug={props.slug ?? 'demo'}
+          summary={props.summary}
+          sourceCount={props.sourceCount ?? 0}
+          isDemo={props.isDemo}
+        />
+      </MemoryRouter>
+    </AuthContext.Provider>,
   )
 }
 
@@ -132,6 +162,92 @@ describe('OnboardingChecklist', () => {
     renderChecklist({ summary: makeSummary(), sourceCount: 1 })
 
     expect(screen.getByText('1 of 5')).toBeInTheDocument()
+  })
+
+  // --- Role-awareness (tripl-yfsj.4) --------------------------------------
+  // Connecting a data source is owner-only. A self-registered / invited user is
+  // an editor, so for a non-owner that step must be discoverable-but-non-blocking
+  // rather than a silent dead-end that keeps the checklist from ever finishing.
+
+  it('still counts the data-source step for owners and shows no owner-only flag', () => {
+    renderChecklist({ role: 'owner', summary: makeSummary({ event_type_count: 4 }) })
+
+    // plan done → 1 of 5; the owner can action every step.
+    expect(screen.getByText('1 of 5')).toBeInTheDocument()
+    expect(screen.queryByText('Owner only')).not.toBeInTheDocument()
+  })
+
+  it('shows the owner-only data-source step but excludes it from an editor’s progress', () => {
+    renderChecklist({ role: 'editor', summary: makeSummary({ event_type_count: 4 }) })
+
+    // plan is done → 1 of 4: the source step is not one of the counted four.
+    expect(screen.getByText('1 of 4')).toBeInTheDocument()
+    // Still discoverable: the row is rendered, links to the (read-only) list,
+    // and is flagged owner-only with an ask-an-owner hint.
+    expect(screen.getByRole('link', { name: /Connect a data source/ })).toHaveAttribute(
+      'href',
+      '/settings/data-sources',
+    )
+    expect(screen.getByText('Owner only')).toBeInTheDocument()
+    expect(screen.getByText(/ask an owner/i)).toBeInTheDocument()
+  })
+
+  it('treats an anonymous (no-user) context as a non-owner', () => {
+    renderChecklist({ role: null, summary: makeSummary({ event_type_count: 4 }) })
+
+    expect(screen.getByText('1 of 4')).toBeInTheDocument()
+    expect(screen.getByText('Owner only')).toBeInTheDocument()
+  })
+
+  it('lets an editor complete the checklist without connecting a data source', () => {
+    // All four editor-actionable steps are done; no real source (an owner's job).
+    // The checklist reaches done and hides instead of being stuck forever.
+    const { container } = renderChecklist({
+      role: 'editor',
+      summary: makeSummary({
+        event_type_count: 4,
+        latest_scan_job: executedJob(),
+        implemented_event_count: 3,
+        alert_destination_count: 1,
+      }),
+      sourceCount: 0,
+    })
+
+    expect(screen.queryByText('Get started')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Almost set up/)).not.toBeInTheDocument()
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('names the real remaining step (not the owner-only source) in an editor’s compact bar', () => {
+    renderChecklist({
+      role: 'editor',
+      summary: makeSummary({
+        event_type_count: 4,
+        latest_scan_job: executedJob(),
+        implemented_event_count: 3,
+      }),
+      sourceCount: 0,
+    })
+
+    // plan + scan + reconcile done → 3 of 4 for an editor; alerting is the one
+    // remaining actionable step, and the owner-only source is never named here.
+    expect(screen.getByText('3 of 4')).toBeInTheDocument()
+    expect(screen.getByText(/1 step left: Set up alerting/)).toBeInTheDocument()
+  })
+
+  it('shows an already-connected source as done for an editor, still out of 4', () => {
+    // An owner has connected a source (sourceCount > 0): the step is genuinely
+    // done. It renders as Done but stays outside the editor's 4-step tally.
+    renderChecklist({
+      role: 'editor',
+      summary: makeSummary({ event_type_count: 4 }),
+      sourceCount: 1,
+    })
+
+    expect(screen.getByText('1 of 4')).toBeInTheDocument()
+    expect(screen.queryByText('Owner only')).not.toBeInTheDocument()
+    // Both plan and the connected source render a Done badge.
+    expect(screen.getAllByText('Done')).toHaveLength(2)
   })
 
   it('collapses to a compact bar once all but the last step are done (fix #13)', () => {

@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowRight, Check, ChevronDown, X } from 'lucide-react'
+import { ArrowRight, Check, ChevronDown, Lock, X } from 'lucide-react'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { Panel } from '@/components/settings/kit'
 import { hasExecutedScanJob } from '@/components/onboarding-utils'
+import { useAuth } from '@/components/auth-context'
 import type { ProjectSummary } from '@/types'
 
 /**
@@ -27,6 +28,14 @@ import type { ProjectSummary } from '@/types'
  * is all-but-done (every step bar the last), it collapses to a slim one-line bar
  * naming the single remaining step, which can be expanded on demand, so a
  * nearly-onboarded project isn't dominated by a tall card (fix #13).
+ *
+ * The checklist is role-aware (tripl-yfsj.4). Some steps are actionable only by
+ * an owner — connecting a data source is owner-only — and a self-registered /
+ * invited user is an editor, not an owner. For a non-owner an owner-only step
+ * would otherwise be a silent dead-end (they see the list with no "Add
+ * connection" button and can never tick it off), so it is shown but marked
+ * "Owner only" with an ask-an-owner hint AND excluded from progress: it never
+ * blocks completion, letting an editor's checklist actually reach done.
  */
 
 // Per-slug dismiss key. Hyphen/colon form matches the app's other per-project
@@ -42,7 +51,7 @@ const OPTIONAL_STEP_IDS: ReadonlySet<string> = new Set(['alert'])
 // ratio marks a project as genuinely established rather than mid-onboarding.
 const MATURE_COVERAGE_RATIO = 0.8
 
-type StepState = 'done' | 'active' | 'locked'
+type StepState = 'done' | 'active' | 'locked' | 'owner-only'
 
 interface OnboardingStep {
   id: string
@@ -50,6 +59,14 @@ interface OnboardingStep {
   hint: string
   href: string
   done: boolean
+  /**
+   * Actionable only by an owner (e.g. connecting a data source). For a non-owner
+   * such a step is shown but never counted toward progress, so it can't block
+   * the checklist from completing (tripl-yfsj.4).
+   */
+  ownerOnly?: boolean
+  /** Hint shown to a non-owner in place of `hint` on an owner-only step. */
+  ownerHint?: string
 }
 
 interface OnboardingChecklistProps {
@@ -104,6 +121,11 @@ function buildSteps(slug: string, summary: ProjectSummary, sourceCount: number):
       // `sourceCount` is already the count of REAL (non-synthetic) sources — a
       // demo's synthetic warehouse is excluded by the caller (countRealSources).
       done: sourceCount > 0,
+      // Data-source creation is owner-only (DataSourcesPage: `canManageDataSources
+      // = user?.role === 'owner'`). An editor can't action this step, so for a
+      // non-owner it is shown-but-non-blocking rather than a dead-end.
+      ownerOnly: true,
+      ownerHint: 'Managed by owners — ask an owner to connect one.',
     },
     {
       id: 'scan',
@@ -138,6 +160,7 @@ function coverageRatio(summary: ProjectSummary): number {
 }
 
 export function OnboardingChecklist({ slug, summary, sourceCount, isDemo }: OnboardingChecklistProps) {
+  const { user } = useAuth()
   // A tick to force a re-render (and thus a re-read of localStorage) after
   // dismissal. Reading dismissal on render also means a slug change is picked up
   // automatically, with no stale per-project state.
@@ -156,10 +179,17 @@ export function OnboardingChecklist({ slug, summary, sourceCount, isDemo }: Onbo
 
   if (readDismissed(slug)) return null
 
+  const isOwner = user?.role === 'owner'
   const steps = buildSteps(slug, summary, sourceCount)
-  const remainingSteps = steps.filter((s) => !s.done)
-  const completed = steps.length - remainingSteps.length
-  const total = steps.length
+  // Owner-only steps don't count toward a non-owner's progress: an editor can't
+  // action them, so counting them would leave the checklist permanently short of
+  // "done" with no way forward (tripl-yfsj.4). They stay in `steps` (still shown,
+  // still discoverable) but drop out of the progress/self-hide math below.
+  const counts = (s: OnboardingStep): boolean => isOwner || !s.ownerOnly
+  const countedSteps = steps.filter(counts)
+  const remainingSteps = countedSteps.filter((s) => !s.done)
+  const completed = countedSteps.length - remainingSteps.length
+  const total = countedSteps.length
 
   // Self-hiding, two ways (tripl-7l83.12):
   //   1. Every step is complete — nothing left to guide.
@@ -225,9 +255,11 @@ export function OnboardingChecklist({ slug, summary, sourceCount, isDemo }: Onbo
     )
   }
 
-  // The first not-yet-done step is the "active" one; later incomplete steps are
-  // shown as upcoming/locked (visually de-emphasised, still navigable).
-  const activeIndex = steps.findIndex((s) => !s.done)
+  // The first not-yet-done step the current user can actually action is the
+  // "active" one; later incomplete steps are shown as upcoming/locked (visually
+  // de-emphasised, still navigable). An owner-only step is skipped over for a
+  // non-owner so "Next" never lands on a step they can't complete.
+  const activeIndex = steps.findIndex((s) => !s.done && counts(s))
 
   return (
     <Panel
@@ -253,7 +285,7 @@ export function OnboardingChecklist({ slug, summary, sourceCount, isDemo }: Onbo
           <StepRow
             key={step.id}
             step={step}
-            state={step.done ? 'done' : index === activeIndex ? 'active' : 'locked'}
+            state={stepState(step, index, activeIndex, isOwner)}
           />
         ))}
       </ol>
@@ -261,7 +293,22 @@ export function OnboardingChecklist({ slug, summary, sourceCount, isDemo }: Onbo
   )
 }
 
+/** Visual state for a step, accounting for the current user's role. */
+function stepState(
+  step: OnboardingStep,
+  index: number,
+  activeIndex: number,
+  isOwner: boolean,
+): StepState {
+  if (step.done) return 'done'
+  if (step.ownerOnly && !isOwner) return 'owner-only'
+  return index === activeIndex ? 'active' : 'locked'
+}
+
 function StepRow({ step, state }: { step: OnboardingStep; state: StepState }) {
+  // On an owner-only step a non-owner sees the ask-an-owner hint, not the
+  // do-it-yourself one — the action isn't theirs to take.
+  const hint = state === 'owner-only' ? step.ownerHint ?? step.hint : step.hint
   return (
     <li>
       <Link
@@ -279,7 +326,7 @@ function StepRow({ step, state }: { step: OnboardingStep; state: StepState }) {
             {step.title}
           </div>
           <div className="truncate text-[11px]" style={{ color: 'var(--fg-faint)' }}>
-            {step.hint}
+            {hint}
           </div>
         </div>
         {state === 'done' ? (
@@ -289,6 +336,10 @@ function StepRow({ step, state }: { step: OnboardingStep; state: StepState }) {
         ) : state === 'active' ? (
           <Chip tone="accent" size="xs" icon={<ArrowRight className="h-3 w-3" />}>
             Next
+          </Chip>
+        ) : state === 'owner-only' ? (
+          <Chip tone="neutral" size="xs" icon={<Lock className="h-3 w-3" />}>
+            Owner only
           </Chip>
         ) : (
           <ArrowRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-faint)' }} />
@@ -307,6 +358,17 @@ function StepIndicator({ state }: { state: StepState }) {
         style={{ background: 'var(--success-soft)', color: 'var(--success)' }}
       >
         <Check className="h-3.5 w-3.5" />
+      </span>
+    )
+  }
+  if (state === 'owner-only') {
+    return (
+      <span
+        aria-hidden="true"
+        className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full"
+        style={{ border: '1px solid var(--border)', background: 'var(--surface-hover)', color: 'var(--fg-faint)' }}
+      >
+        <Lock className="h-3 w-3" />
       </span>
     )
   }

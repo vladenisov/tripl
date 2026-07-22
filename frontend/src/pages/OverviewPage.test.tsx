@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ThemeProvider } from '@/components/theme-provider'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import OverviewPage from './OverviewPage'
 
 function jsonResponse(body: unknown) {
@@ -74,17 +75,38 @@ function mockFetch(opts?: MockOpts) {
   })
 }
 
+// OverviewPage renders OnboardingChecklist, which reads the current user via
+// useAuth(); provide an AuthContext so that hook doesn't throw. An owner user
+// keeps the checklist's owner-only steps in their normal (non-gated) state.
+const AUTH_VALUE: AuthContextValue = {
+  user: {
+    id: 'user-1',
+    email: 'owner@example.com',
+    name: 'Owner',
+    role: 'owner',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+  status: 'authenticated',
+  error: null,
+  isLoggingOut: false,
+  logout: async () => {},
+  refresh: () => {},
+}
+
 function renderOverview(path = '/p/demo/overview') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <ThemeProvider>
-        <MemoryRouter initialEntries={[path]}>
-          <Routes>
-            <Route path="/p/:slug/overview" element={<OverviewPage />} />
-          </Routes>
-        </MemoryRouter>
-      </ThemeProvider>
+      <AuthContext.Provider value={AUTH_VALUE}>
+        <ThemeProvider>
+          <MemoryRouter initialEntries={[path]}>
+            <Routes>
+              <Route path="/p/:slug/overview" element={<OverviewPage />} />
+            </Routes>
+          </MemoryRouter>
+        </ThemeProvider>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
