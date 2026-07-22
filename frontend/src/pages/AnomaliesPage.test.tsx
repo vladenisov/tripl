@@ -2,7 +2,12 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { MetricDefinitionListResponse, MonitoringSignal } from '@/types'
+import type {
+  EventListResponse,
+  EventType,
+  MetricDefinitionListResponse,
+  MonitoringSignal,
+} from '@/types'
 import AnomaliesPage from './AnomaliesPage'
 
 vi.mock('@/api/metrics', () => ({
@@ -11,9 +16,17 @@ vi.mock('@/api/metrics', () => ({
 vi.mock('@/api/metricsCatalogApi', () => ({
   metricsCatalogApi: { list: vi.fn() },
 }))
+vi.mock('@/api/events', () => ({
+  eventsApi: { list: vi.fn() },
+}))
+vi.mock('@/api/eventTypes', () => ({
+  eventTypesApi: { list: vi.fn() },
+}))
 
 import { metricsApi } from '@/api/metrics'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { eventsApi } from '@/api/events'
+import { eventTypesApi } from '@/api/eventTypes'
 
 function makeSignal(overrides: Partial<MonitoringSignal>): MonitoringSignal {
   return {
@@ -24,6 +37,8 @@ function makeSignal(overrides: Partial<MonitoringSignal>): MonitoringSignal {
     event_id: null,
     event_type_id: null,
     bucket: '2026-07-01T00:00:00Z',
+    // Default relative effect = |120 − 80| / 80 = 0.5, which clears the default
+    // "Significant" (≥0.5) filter — so a plain makeSignal() is always visible.
     actual_count: 120,
     expected_count: 80,
     stddev: 5,
@@ -40,6 +55,16 @@ function makeCatalogResponse(
   items: Array<{ id: string; display_name: string }>,
 ): MetricDefinitionListResponse {
   return { items, total: items.length } as unknown as MetricDefinitionListResponse
+}
+
+// Only `id` + `display_name` feed the event-type id → name map.
+function makeEventTypes(items: Array<{ id: string; display_name: string }>): EventType[] {
+  return items as unknown as EventType[]
+}
+
+// Only `id` + `name` feed the event id → name map.
+function makeEventList(items: Array<{ id: string; name: string }>): EventListResponse {
+  return { items, total: items.length } as unknown as EventListResponse
 }
 
 /** Probe target for the metric drilldown route the row should navigate to. */
@@ -66,6 +91,10 @@ beforeEach(() => {
   vi.mocked(metricsApi.getActiveSignals).mockReset()
   vi.mocked(metricsCatalogApi.list).mockReset()
   vi.mocked(metricsCatalogApi.list).mockResolvedValue(makeCatalogResponse([]))
+  vi.mocked(eventTypesApi.list).mockReset()
+  vi.mocked(eventTypesApi.list).mockResolvedValue(makeEventTypes([]))
+  vi.mocked(eventsApi.list).mockReset()
+  vi.mocked(eventsApi.list).mockResolvedValue(makeEventList([]))
 })
 
 afterEach(() => {
@@ -113,16 +142,34 @@ describe('AnomaliesPage — metric-scope signals (tripl-nxk2.4)', () => {
     ).toBeInTheDocument()
   })
 
-  it('keeps non-metric scope labels unchanged', async () => {
+  it('resolves event-type and event scope names from their catalogs', async () => {
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
-      makeSignal({ scope_type: 'project_total', scope_ref: 'pt-1' }),
-      makeSignal({ scope_type: 'event_type', scope_ref: 'et-12345678' }),
+      makeSignal({ scope_type: 'event_type', scope_ref: 'et-1' }),
+      makeSignal({ scope_type: 'event', scope_ref: 'ev-1' }),
     ])
+    vi.mocked(eventTypesApi.list).mockResolvedValue(
+      makeEventTypes([{ id: 'et-1', display_name: 'Signup' }]),
+    )
+    vi.mocked(eventsApi.list).mockResolvedValue(
+      makeEventList([{ id: 'ev-1', name: 'Checkout tapped' }]),
+    )
 
     renderAnomalies()
 
-    expect(await screen.findByText('Spike on Project total')).toBeInTheDocument()
-    expect(screen.getByText('Spike on Event type et-12345')).toBeInTheDocument()
+    // Names resolve to "Event type · <display name>" / "Event · <name>", not IDs.
+    expect(await screen.findByText('Spike on Event type · Signup')).toBeInTheDocument()
+    expect(await screen.findByText('Spike on Event · Checkout tapped')).toBeInTheDocument()
+  })
+
+  it('falls back to the short scope ref for event / event_type when the id is unknown', async () => {
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({ scope_type: 'event_type', scope_ref: 'et-12345678' }),
+    ])
+    // No matching event type in the (empty) catalog → short-ref fallback.
+
+    renderAnomalies()
+
+    expect(await screen.findByText('Spike on Event type et-12345')).toBeInTheDocument()
   })
 
   it('tags incident children folded under a project_total spike, but not the parent', async () => {
@@ -142,5 +189,52 @@ describe('AnomaliesPage — metric-scope signals (tripl-nxk2.4)', () => {
       .closest('[role="row"]') as HTMLElement
     expect(childRow).toHaveTextContent('part of total')
     expect(parentRow).not.toHaveTextContent('part of total')
+  })
+})
+
+describe('AnomaliesPage — magnitude filter', () => {
+  it('hides low-magnitude signals at the default level and reveals them under "All"', async () => {
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+      // relEffect = 220/80 = 2.75 → clears "Significant".
+      makeSignal({ scope_type: 'event_type', scope_ref: 'et-major', actual_count: 300, expected_count: 80 }),
+      // relEffect = 4/80 = 0.05 → below "Significant".
+      makeSignal({ scope_type: 'event_type', scope_ref: 'et-minor', actual_count: 84, expected_count: 80 }),
+    ])
+    vi.mocked(eventTypesApi.list).mockResolvedValue(
+      makeEventTypes([
+        { id: 'et-major', display_name: 'Big move' },
+        { id: 'et-minor', display_name: 'Tiny wiggle' },
+      ]),
+    )
+
+    renderAnomalies()
+
+    // Default "Significant" keeps the big one and drops the tiny one.
+    expect(await screen.findByText('Spike on Event type · Big move')).toBeInTheDocument()
+    expect(screen.queryByText('Spike on Event type · Tiny wiggle')).not.toBeInTheDocument()
+
+    // Switch the segmented control to "All" — the small one now appears.
+    fireEvent.click(screen.getByRole('radio', { name: 'All' }))
+    expect(await screen.findByText('Spike on Event type · Tiny wiggle')).toBeInTheDocument()
+    // The big one is still there.
+    expect(screen.getByText('Spike on Event type · Big move')).toBeInTheDocument()
+  })
+
+  it('shows a lower-the-filter hint (not the empty state) when the level hides everything', async () => {
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+      // relEffect = 2/80 = 0.025 → below the default "Significant".
+      makeSignal({ scope_type: 'event_type', scope_ref: 'et-minor', actual_count: 82, expected_count: 80 }),
+    ])
+
+    renderAnomalies()
+
+    // The single tiny signal is hidden by default → hint instead of rows.
+    expect(await screen.findByText('Nothing at the significant level')).toBeInTheDocument()
+    // The "No anomalies right now" hard-empty state must NOT be shown (signals exist).
+    expect(screen.queryByText('No anomalies right now')).not.toBeInTheDocument()
+
+    // The hint's "Show all" action drops the filter and reveals the row.
+    fireEvent.click(screen.getByRole('button', { name: /Show all/ }))
+    expect(await screen.findByText(/Spike on Event type/)).toBeInTheDocument()
   })
 })
