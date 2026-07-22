@@ -169,6 +169,35 @@ def test_time_bucketed_counts_sum_to_windowed_rows() -> None:
         assert bucket == _day(bucket) and count > 0
 
 
+def test_anchor_advances_to_current_hour_so_live_window_is_covered() -> None:
+    """A live scan's current window must never read 0 events (bd tripl-yfsj.3).
+
+    The adapter floors its anchor to the current HOUR, so the newest event bucket
+    is the last COMPLETE hour — exactly the newest bucket a live scan evaluates
+    (its window ends at the half-open ``floor(now, interval)``). Flooring the
+    anchor to the start of the *day* instead left every hour of "today" empty, so
+    a scan after midnight read 0 for every series and the detector stamped a
+    z=-20 drop-to-zero flood. A mid-day, mid-hour anchor makes the two flooring
+    strategies diverge, so this pins the fix: the last complete hour carries rows.
+    """
+    anchor = datetime(2026, 6, 1, 14, 37, 11, tzinfo=UTC)
+    adapter = SyntheticAdapter(seed=SEED, anchor=anchor, history_days=HISTORY_DAYS)
+    interval = timedelta(hours=1)
+    # What _resolve_collection_window computes for a live (non-manual) scan:
+    # time_to = floor(now, interval); the window is half-open [time_from, time_to).
+    time_to = anchor.replace(minute=0, second=0, microsecond=0)
+    last_complete = time_to - interval
+    time_from = time_to - timedelta(hours=6)
+    _cols, _json, rows = adapter.get_time_bucketed_counts(
+        "SELECT * FROM events", "event_time", "1h", [], [], None, time_from, time_to
+    )
+    counts_by_bucket = {bucket: count for bucket, count in rows}
+    # Under the old day-flooring the newest event bucket was yesterday 23:00, so
+    # every hour of "today" (including last_complete) was absent -> 0 events.
+    assert last_complete in counts_by_bucket, "last complete hour missing: data did not reach 'now'"
+    assert counts_by_bucket[last_complete] > 0
+
+
 def test_bucketed_breakdown_counts_topn_folds_other() -> None:
     adapter = _adapter()
     tf, tt = ANCHOR - timedelta(days=5), ANCHOR

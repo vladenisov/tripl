@@ -251,11 +251,21 @@ class SyntheticAdapter(BaseAdapter):
         self._timeout_seconds = (
             timeout_seconds if timeout_seconds and timeout_seconds > 0 else _DEFAULT_TIMEOUT_SECONDS
         )
-        # Anchor to the start of the current UTC day by default: keeps the data
-        # recent (so now-relative windows overlap it) while staying deterministic
-        # within a day. Tests pass an explicit anchor for exactness.
+        # Anchor to the start of the current UTC HOUR by default. Events are
+        # generated for the ``history_days`` window strictly BEFORE the anchor, so
+        # the newest event bucket is ``anchor - 1h`` — which, with an hourly
+        # anchor, is exactly the last COMPLETE hour a live scan evaluates (its
+        # window ends at the half-open ``floor(now, interval)``). Flooring to the
+        # start of the *day* instead — as this used to — left every hour of
+        # "today" with no synthetic rows, so once a demo sat idle past midnight a
+        # scan of the current window read 0 for every series and the detector
+        # stamped a clamped z=-20 "drop to zero" on all of them (bd tripl-yfsj.3).
+        # Because the adapter is rebuilt per scan with ``anchor=None`` (see
+        # registry._build_synthetic), the dataset now always advances to the
+        # current hour. Deterministic within the hour; tests pass an explicit
+        # anchor for exactness (a midnight anchor floors identically either way).
         base = to_utc(anchor) if anchor is not None else datetime.now(UTC)
-        self._anchor = base.replace(hour=0, minute=0, second=0, microsecond=0)
+        self._anchor = base.replace(minute=0, second=0, microsecond=0)
         self._events = _generate_events(seed, self._anchor, history_days, max_rows)
         self._orders = _generate_orders(seed, self._anchor, history_days, max_rows)
         self._allowed_columns: set[str] = set()
