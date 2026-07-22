@@ -41,7 +41,7 @@ import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
 import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/metricFormat'
 import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, defaultGranularityForRange, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
-import { resolveDetailScope } from '@/lib/monitoring'
+import { formatSignalSeverity, resolveDetailScope } from '@/lib/monitoring'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type {
   AppVersionSeriesResponse,
@@ -1995,6 +1995,13 @@ function EventDetailHero({
       <EventDetailBreadcrumb name={event.name} onBack={onBack} />
       <EventDetailHeader event={event} eventType={eventType} signal={signal} onEdit={onEdit} onMetrics={onMetrics} />
       {signal && <EventSignalBanner signal={signal} tone={signalTone} />}
+      {signal && (
+        <EventSignalMiniChart
+          data={metrics?.data ?? []}
+          interval={metrics?.interval ?? null}
+          tone={signalTone}
+        />
+      )}
       <EventStatStrip event={event} stats={stats} />
     </div>
   )
@@ -2187,12 +2194,52 @@ function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: '
       <span className="text-[12.5px]" style={{ color: 'var(--fg-muted)' }}>
         {signal.direction === 'drop' ? 'Volume drop' : 'Volume spike'} detected
         {delta != null && ` — ${delta > 0 ? '+' : ''}${delta.toFixed(0)}% vs. baseline`}
-        {` (z = ${signal.z_score.toFixed(1)}).`}
+        {` (${formatSignalSeverity(signal)}).`}
       </span>
       <div className="flex-1" />
       <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
         {formatTimestamp(signal.bucket)}
       </span>
+    </div>
+  )
+}
+
+/**
+ * Compact volume-vs-baseline chart rendered beside {@link EventSignalBanner} so
+ * the anomaly the banner describes is visible in context, without the extra
+ * click into the Metrics tab. Reuses the already-fetched series and the same
+ * {@link MetricsChart}: its expected band comes from each point's
+ * expected_count/stddev, and the flagged bucket shows as an anomaly dot. Native
+ * granularity keeps the flagged point un-aggregated, so its dot never merges
+ * into a neighbouring bucket.
+ */
+function EventSignalMiniChart({
+  data,
+  interval,
+  tone,
+}: {
+  data: EventMetricPoint[]
+  interval: string | null
+  tone: 'danger' | 'warning'
+}) {
+  if (data.length === 0) return null
+  const granularity = GRANULARITY_FOR_INTERVAL[interval ?? ''] ?? 'hour'
+  return (
+    <div
+      data-testid="signal-volume-chart"
+      className="rounded-[10px] border px-[14px] pb-[6px] pt-[10px]"
+      style={SURFACE_STYLE}
+    >
+      <div className="mb-[6px] text-[11px] font-medium" style={{ color: 'var(--fg-subtle)' }}>
+        Volume vs. baseline
+      </div>
+      <MetricsChart
+        data={data}
+        height={104}
+        color={`var(--${tone})`}
+        granularity={granularity}
+        seriesLabel="events"
+      />
     </div>
   )
 }
