@@ -680,8 +680,10 @@ function ProjectSwitcher({
   loading: boolean
   onPick: (project: Project) => void
 }) {
-  const subtitle = activeProject?.slug
-    ?? (loading ? 'loading…' : projects[0]?.slug ?? 'no project')
+  // On a workspace route no project is active. Fall back to a neutral hint —
+  // NOT projects[0], which showed a real project's slug under the "Select
+  // project" label as if it were selected.
+  const subtitle = activeProject?.slug ?? (loading ? 'loading…' : 'No project selected')
   const displayName = activeProject?.name ?? (loading ? 'Loading…' : 'Select project')
   const monogram = (activeProject?.name ?? '?').trim().charAt(0).toUpperCase() || '?'
 
