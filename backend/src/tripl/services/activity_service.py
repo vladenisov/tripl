@@ -323,6 +323,49 @@ def _scan_job_severity(status: str) -> str:
     return "low"
 
 
+# Metric-point (time-series ROW) scopes a completed run writes. Summed rather
+# than surfaced individually, and kept in sync with the frontend
+# ``summarizeScanChanges`` (scanUtils.ts) so the activity rail and the Scans page
+# agree on what a run produced.
+_METRIC_POINT_KEYS = (
+    "event_metrics",
+    "type_metrics",
+    "breakdown_event_metrics",
+    "breakdown_type_metrics",
+)
+# Fields the backend may populate for rows read, in preference order.
+_ROWS_SCANNED_KEYS = ("query_rows_scanned", "scan_rows_processed")
+
+
+def _as_positive_count(value: object) -> int:
+    """Coerce a JSON result-summary value to a positive int, else 0.
+
+    ``bool`` is rejected explicitly: it is an ``int`` subclass in Python, and a
+    stray boolean flag must never be counted as a quantity.
+    """
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int) and value > 0:
+        return value
+    return 0
+
+
+def _count_label(count: int, singular: str, plural: str) -> str:
+    return f"{count} {singular if count == 1 else plural}"
+
+
+def _metric_points_written(summary: dict[str, object]) -> int:
+    return sum(_as_positive_count(summary.get(key)) for key in _METRIC_POINT_KEYS)
+
+
+def _rows_scanned(summary: dict[str, object]) -> int:
+    for key in _ROWS_SCANNED_KEYS:
+        rows = _as_positive_count(summary.get(key))
+        if rows:
+            return rows
+    return 0
+
+
 def _scan_job_detail(
     status: str,
     result_summary: dict[str, object] | None,
@@ -332,13 +375,34 @@ def _scan_job_detail(
         return error_message
 
     summary = result_summary or {}
+    # Lead with what the run actually produced. A completed scan on an
+    # established catalog routinely discovers 0 new events yet still writes
+    # metric points and scans rows; surfacing a bare "0 events created" made a
+    # healthy run read as a no-op / failure (tripl-yfsj.5). Only non-zero deltas
+    # are shown, mirroring the frontend Scans-page summary.
     parts: list[str] = []
-    if summary.get("events_created") is not None:
-        parts.append(f"{summary['events_created']} events created")
-    if summary.get("signals_added"):
-        parts.append(f"{summary['signals_added']} signals")
-    if summary.get("alerts_queued"):
-        parts.append(f"{summary['alerts_queued']} alerts queued")
+    events_created = _as_positive_count(summary.get("events_created"))
+    if events_created:
+        parts.append(_count_label(events_created, "new event", "new events"))
+    metric_points = _metric_points_written(summary)
+    if metric_points:
+        parts.append(_count_label(metric_points, "metric point", "metric points"))
+    signals_added = _as_positive_count(summary.get("signals_added"))
+    if signals_added:
+        parts.append(_count_label(signals_added, "signal", "signals"))
+    alerts_queued = _as_positive_count(summary.get("alerts_queued"))
+    if alerts_queued:
+        parts.append(_count_label(alerts_queued, "alert queued", "alerts queued"))
+
+    # A completed run that created nothing new is normal, not a failure: say so
+    # explicitly rather than falling back to a vague status line.
+    if not parts and status == "completed" and "events_created" in summary:
+        parts.append("no new events discovered")
+
+    rows_scanned = _rows_scanned(summary)
+    if rows_scanned:
+        parts.append(_count_label(rows_scanned, "row scanned", "rows scanned"))
+
     if parts:
         return " · ".join(parts)
     return "Metrics collection job updated" if status == "completed" else "Scan job status changed"
