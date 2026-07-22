@@ -10942,6 +10942,11 @@
             "title": "Expected Count",
             "type": "number"
           },
+          "incident_child": {
+            "default": false,
+            "title": "Incident Child",
+            "type": "boolean"
+          },
           "scan_config_id": {
             "anyOf": [
               {
@@ -19833,7 +19838,7 @@
     },
     "/api/v1/projects/{slug}/anomalies/signals": {
       "get": {
-        "description": "Cacheable no-args variant. For filtering by a large event-id list\n(>>a few), prefer ``POST /anomalies/signals/query`` \u2014 GET's query-string\noverflow is real once you cross ~50 ids (proxy/browser limits).",
+        "description": "Cacheable no-args variant. For filtering by a large event-id list\n(>>a few), prefer ``POST /anomalies/signals/query`` \u2014 GET's query-string\noverflow is real once you cross ~50 ids (proxy/browser limits).\n\n``expanded=true`` (the AnomaliesPage view) also surfaces per-event scopes\nand keeps each incident's child rows, tagged ``incident_child`` rather than\ncollapsed into the parent project_total signal.",
         "operationId": "get_active_signals_api_v1_projects__slug__anomalies_signals_get",
         "parameters": [
           {
@@ -19863,6 +19868,16 @@
                 }
               ],
               "title": "Event Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expanded",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Expanded",
+              "type": "boolean"
             }
           }
         ],

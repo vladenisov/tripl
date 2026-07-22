@@ -236,6 +236,14 @@ def key_signals_all(slug: str) -> str:
     return f"tripl:signals:{slug}:all"
 
 
+def key_signals_all_expanded(slug: str) -> str:
+    """Expanded AnomaliesPage variant: includes per-event scope and keeps
+    incident children (tagged) instead of collapsing them. Cached separately
+    from :func:`key_signals_all` so the top-bar/overview/events callers keep the
+    smaller collapsed payload."""
+    return f"tripl:signals:{slug}:all:expanded"
+
+
 def key_data_sources_list() -> str:
     return "tripl:data_sources:list"
 

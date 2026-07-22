@@ -51,8 +51,10 @@ export default function AnomaliesPage() {
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   const signalsQuery = useQuery({
-    queryKey: ['anomalies', 'signals', slug],
-    queryFn: () => metricsApi.getActiveSignals(slug!),
+    // expanded: surface every flagged scope — project_total, each event_type and
+    // each event — instead of collapsing an incident's fan-out into one total row.
+    queryKey: ['anomalies', 'signals', slug, 'expanded'],
+    queryFn: () => metricsApi.getActiveSignals(slug!, undefined, { expanded: true }),
     enabled: !!slug,
     staleTime: 30_000,
     refetchInterval,
@@ -242,6 +244,15 @@ function AnomalyRow({
         <span className="truncate text-[12.5px] font-medium" style={{ color: 'var(--fg)' }}>
           {isDrop ? 'Drop' : 'Spike'} on {signalScopeLabel(signal, metricNames)}
         </span>
+        {signal.incident_child && (
+          <span
+            className="shrink-0 whitespace-nowrap text-[10.5px]"
+            style={{ color: 'var(--fg-faint)' }}
+            title="This scope fired as part of a project-total spike or drop on the same bucket"
+          >
+            · part of total
+          </span>
+        )}
       </span>
       <span role="cell" className="mono truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
         {signal.actual_count.toLocaleString()} vs {Math.round(signal.expected_count).toLocaleString()}

@@ -646,6 +646,10 @@ export interface paths {
          * @description Cacheable no-args variant. For filtering by a large event-id list
          *     (>>a few), prefer ``POST /anomalies/signals/query`` — GET's query-string
          *     overflow is real once you cross ~50 ids (proxy/browser limits).
+         *
+         *     ``expanded=true`` (the AnomaliesPage view) also surfaces per-event scopes
+         *     and keeps each incident's child rows, tagged ``incident_child`` rather than
+         *     collapsed into the parent project_total signal.
          */
         get: operations["get_active_signals_api_v1_projects__slug__anomalies_signals_get"];
         put?: never;
@@ -6714,6 +6718,11 @@ export interface components {
             event_type_id?: string | null;
             /** Expected Count */
             expected_count: number;
+            /**
+             * Incident Child
+             * @default false
+             */
+            incident_child: boolean;
             /** Scan Config Id */
             scan_config_id?: string | null;
             /** Scope Ref */
@@ -10613,6 +10622,7 @@ export interface operations {
         parameters: {
             query?: {
                 event_id?: string[] | null;
+                expanded?: boolean;
             };
             header?: never;
             path: {

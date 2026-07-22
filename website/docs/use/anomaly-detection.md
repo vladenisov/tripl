@@ -207,9 +207,18 @@ additional candidate types.
 A latest-scan signal remains open only while it is fresh in wall-clock time:
 `max(24 hours, 3 × scan interval)`. This prevents a stopped scan from pinning its
 last anomaly red forever. When the same scan/bucket/direction fires at project,
-event-type, and event scopes, the active-signals view keeps the project-total row
-as one incident and suppresses the child fan-out; the underlying rows remain for
-drilldown.
+event-type, and event scopes, that is one **incident**. The **Anomalies page**
+uses the *expanded* active-signals view: it lists every co-firing scope — project
+total, each event type, and each event — and tags the child rows `part of total`
+so you can see the full breakdown of a spike or drop. The *collapsed* view behind
+the sidebar and top-bar badge instead keeps the single project-total row and
+counts the incident once. Either way the underlying per-scope rows stay in the
+store for drilldown.
+
+The expanded view is requested with `expanded=true` on
+`GET /projects/{slug}/anomalies/signals`; each returned signal carries an
+`incident_child` flag that is `true` for the child scopes folded under a
+project-total incident (always `false` in the collapsed view, which omits them).
 
 ### Alert rules are an additional gate
 

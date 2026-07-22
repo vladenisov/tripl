@@ -145,6 +145,51 @@ async def test_project_total_and_child_anomaly_surface_as_one_signal(client: Asy
 
 
 @pytest.mark.asyncio
+async def test_expanded_view_keeps_children_tagged(client: AsyncClient):
+    """Expanded AnomaliesPage view lists every flagged scope — project_total,
+    event_type AND event — and tags the children folded under the total, rather
+    than collapsing the incident into a single project_total row (tripl-w0ay)."""
+    slug = "incident-expanded"
+    event_type_id, event_id, scan_config_id = await _make_project_with_scan(client, slug)
+
+    bucket = datetime.now(UTC).replace(microsecond=0) - timedelta(hours=1)
+    async with TestSessionLocal() as session:
+        for row in _metric_rows(scan_config_id, event_type_id, event_id, bucket):
+            session.add(row)
+        # One incident tripping all three scopes on the same scan/bucket/direction.
+        session.add(_anomaly(scan_config_id, "project_total", scan_config_id, bucket))
+        session.add(
+            _anomaly(
+                scan_config_id, "event_type", event_type_id, bucket, event_type_id=event_type_id
+            )
+        )
+        session.add(
+            _anomaly(
+                scan_config_id,
+                "event",
+                event_id,
+                bucket,
+                event_id=event_id,
+                event_type_id=event_type_id,
+            )
+        )
+        await session.commit()
+
+    # expanded=true adds per-event scope even without an event-id filter and keeps
+    # the children (tagged) instead of collapsing them.
+    resp = await client.get(f"/api/v1/projects/{slug}/anomalies/signals?expanded=true")
+    assert resp.status_code == 200, resp.text
+    signals = resp.json()
+
+    by_scope = {signal["scope_type"]: signal for signal in signals}
+    assert sorted(by_scope) == ["event", "event_type", "project_total"], signals
+    # Parent stays untagged; the co-firing children are kept but flagged.
+    assert by_scope["project_total"]["incident_child"] is False
+    assert by_scope["event_type"]["incident_child"] is True
+    assert by_scope["event"]["incident_child"] is True
+
+
+@pytest.mark.asyncio
 async def test_children_surface_when_no_parent_project_total(client: AsyncClient):
     """Guard against over-suppression: with no project_total parent flagging the
     same bucket, the event_type and event children each remain a live signal."""

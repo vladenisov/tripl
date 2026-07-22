@@ -345,8 +345,11 @@ cross-event list of every open monitoring signal, sorted most-severe-first by
 `|z|`. A rollup shows open-signal, spike, and drop counts; each row shows the
 spike/drop direction, scope (project total / event type / event / metric), actual
 vs expected counts, the z-score, and when it fired — linking to the monitoring
-detail for that scope. The sidebar badge mirrors the open-signal count.
-Sensitivity is tuned in **Monitoring settings** (see
+detail for that scope. When one incident trips several scopes on the same bucket,
+the child rows (event type / event) are still shown and tagged `part of total`
+rather than folded into the project-total row. The sidebar and top-bar badge count
+**incidents** (the collapsed rollup), so the badge can read lower than the number
+of rows listed here. Sensitivity is tuned in **Monitoring settings** (see
 [How anomaly detection works](./anomaly-detection.md)).
 
 ### Chart annotations

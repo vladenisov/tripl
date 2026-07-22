@@ -87,11 +87,14 @@ export const metricsApi = {
     data: { event_ids: string[]; time_from: string; time_to: string },
   ) => api.post<EventWindowMetrics[]>(`/projects/${slug}/events/window-metrics`, data),
 
-  getActiveSignals: (slug: string, eventIds?: string[]) => {
+  getActiveSignals: (slug: string, eventIds?: string[], opts?: { expanded?: boolean }) => {
     // Empty / no ids → cacheable GET. Any filter → POST body, because with
     // 500+ events we'd otherwise blow past proxy/browser query-string limits.
     if (!eventIds || eventIds.length === 0) {
-      return api.get<MonitoringSignal[]>(`/projects/${slug}/anomalies/signals`)
+      // expanded=true (AnomaliesPage) adds per-event scopes and keeps tagged
+      // incident children; the other callers omit it for the collapsed rollup.
+      const query = opts?.expanded ? '?expanded=true' : ''
+      return api.get<MonitoringSignal[]>(`/projects/${slug}/anomalies/signals${query}`)
     }
     return api.post<MonitoringSignal[]>(
       `/projects/${slug}/anomalies/signals/query`,
