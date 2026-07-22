@@ -1004,16 +1004,17 @@ async def test_project_summary_plan_counts_unchanged_by_plan_branch(client: Asyn
 
 
 @pytest.mark.asyncio
-async def test_monitoring_signal_count_excludes_event_scope_anomalies(
+async def test_monitoring_signal_count_includes_significant_event_scope_anomalies(
     client: AsyncClient,
 ) -> None:
-    """Per-event anomalies must not inflate the badge (tripl-posm).
+    """Per-event anomalies now count toward the badge when significant (tripl-yfsj.1).
 
-    The AnomaliesPage fetches active signals WITHOUT event_ids, so it lists only
-    project-total and event-type scoped signals; per-event anomalies are
-    drill-down detail the page never shows. A project with thousands of events
-    (one latest anomaly each) showed "777" on the sidebar badge while the page
-    listed 3, so ``monitoring_signal_count`` must count page-visible scopes only.
+    The AnomaliesPage now lists every open scope as a flat, magnitude-filtered list
+    (tripl-w0ay), so the badge counts the same population — project_total +
+    event_type + per-event — and the "Significant" magnitude gate (not scope
+    exclusion) is what keeps trivial per-event wobble out (supersedes tripl-posm).
+    Here both the event_type and the per-event anomaly clear the gate (42 vs 21 ->
+    relative effect 1.0), so both count.
     """
     slug = "event-scope-signal-proj"
     project_resp = await client.post(
@@ -1100,7 +1101,8 @@ async def test_monitoring_signal_count_excludes_event_scope_anomalies(
                 event_type_id=event_type_id,
             )
         )
-        # Event scope: the AnomaliesPage never lists it, so it must NOT count.
+        # Event scope: the expanded AnomaliesPage now lists it and it clears the
+        # magnitude gate (42 vs 21 -> relative effect 1.0), so it counts (tripl-yfsj.1).
         session.add(
             MetricAnomaly(
                 id=uuid.uuid4(),
@@ -1122,10 +1124,99 @@ async def test_monitoring_signal_count_excludes_event_scope_anomalies(
     resp = await client.get(f"/api/v1/projects/{slug}")
     assert resp.status_code == 200
     summary = resp.json()["summary"]
-    # Only the event-type scoped signal counts; pre-fix this was 2.
-    assert summary["monitoring_signal_count"] == 1
-    assert summary["latest_signal"]["scope_type"] == "event_type"
-    assert summary["latest_signal"]["scope_ref"] == uuid.UUID(event_type_id).hex
+    # Both the event_type and the significant per-event anomaly count now — there is
+    # no project_total parent, so no incident dedup applies. Pre-fix (scope
+    # exclusion) this was 1.
+    assert summary["monitoring_signal_count"] == 2
+    # The two share a bucket, so latest_signal is deterministically one of them.
+    assert summary["latest_signal"]["scope_type"] in {"event_type", "event"}
+
+
+@pytest.mark.asyncio
+async def test_monitoring_signal_count_excludes_below_significant_signals(
+    client: AsyncClient,
+) -> None:
+    """The magnitude gate — not scope exclusion — bounds the badge (tripl-yfsj.1).
+
+    A fresh open anomaly whose relative effect is below the "Significant" threshold
+    (|actual - expected| / max(expected, 1) < 0.5) is hidden by the AnomaliesPage's
+    default filter, so it must not count toward the badge either. Here 44 vs 42 is a
+    ~4.8% wobble, well under the gate, so the badge reads 0 despite an open signal.
+    """
+    slug = "below-significant-proj"
+    project_resp = await client.post(
+        "/api/v1/projects", json={"name": "Below Significant", "slug": slug}
+    )
+    assert project_resp.status_code == 201
+
+    event_type_resp = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "page_view", "display_name": "Page View"},
+    )
+    assert event_type_resp.status_code == 201
+    event_type_id = event_type_resp.json()["id"]
+
+    data_source_resp = await client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "analytics",
+            "username": "default",
+            "password": "",
+        },
+    )
+    assert data_source_resp.status_code == 201
+    data_source_id = data_source_resp.json()["id"]
+
+    scan_resp = await client.post(
+        f"/api/v1/projects/{slug}/scans",
+        json={
+            "data_source_id": data_source_id,
+            "name": "Production scan",
+            "base_query": "SELECT 1",
+        },
+    )
+    assert scan_resp.status_code == 201
+    scan_config_id = scan_resp.json()["id"]
+
+    async with TestSessionLocal() as session:
+        session.add(
+            EventMetric(
+                id=uuid.uuid4(),
+                scan_config_id=uuid.UUID(scan_config_id),
+                event_id=None,
+                event_type_id=uuid.UUID(event_type_id),
+                bucket=_METRIC_BUCKET,
+                count=42,
+            )
+        )
+        # Fresh and open, but a ~4.8% wobble (44 vs 42) — below the magnitude gate.
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=uuid.UUID(scan_config_id),
+                scope_type="event_type",
+                scope_ref=uuid.UUID(event_type_id).hex,
+                event_id=None,
+                event_type_id=uuid.UUID(event_type_id),
+                bucket=_METRIC_BUCKET,
+                actual_count=44,
+                expected_count=42,
+                stddev=3,
+                z_score=2,
+                direction="spike",
+            )
+        )
+        await session.commit()
+
+    resp = await client.get(f"/api/v1/projects/{slug}")
+    assert resp.status_code == 200
+    summary = resp.json()["summary"]
+    assert summary["monitoring_signal_count"] == 0
+    assert summary["latest_signal"] is None
 
 
 @pytest.mark.asyncio

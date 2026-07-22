@@ -38,7 +38,8 @@ is a **Project settings** link; the footer adds **Concepts** (the in-app domain
 primer), a **Workspace settings** gear, and **Sign out**. Badge counts come from
 the cheap project summary: Events (active events), Event types, Variables,
 Monitors (only when one or more is firing, rendered in red), Anomalies (the count
-of open monitoring signals, in red when any are open), and Alerting (only when
+of significant open monitoring signals — the same number the Anomalies page shows —
+in red when any are open), and Alerting (only when
 one or more destinations exist). Schema & fields, Relations, Metrics, Plan
 branches, Coverage, Scans, and Audit log carry no count.
 
@@ -347,10 +348,13 @@ spike/drop direction, scope (project total / event type / event / metric), actua
 vs expected counts, the z-score, and when it fired — linking to the monitoring
 detail for that scope. When one incident trips several scopes on the same bucket,
 the child rows (event type / event) are still shown and tagged `part of total`
-rather than folded into the project-total row. The sidebar and top-bar badge count
-**incidents** (the collapsed rollup), so the badge can read lower than the number
-of rows listed here. Sensitivity is tuned in **Monitoring settings** (see
-[How anomaly detection works](./anomaly-detection.md)).
+rather than folded into the project-total row. A **magnitude filter**
+(All / Significant / Major, defaulting to **Significant**) trims the list by
+relative effect (`|actual − expected| / max(expected, 1)`). The sidebar and top-bar
+badge, the Overview **Open signals** stat, and this page all report the **same**
+number — open signals across every scope that clear the Significant threshold — so
+the badge agrees with the list rather than reading lower. Sensitivity is tuned in
+**Monitoring settings** (see [How anomaly detection works](./anomaly-detection.md)).
 
 ### Chart annotations
 

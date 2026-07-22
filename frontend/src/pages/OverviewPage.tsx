@@ -41,6 +41,15 @@ import type {
 
 const SIGNAL_LIMIT = 6
 const ACTIVITY_LIMIT = 8
+// Mirrors AnomaliesPage.relativeEffect / MAGNITUDE_PRESETS and the backend
+// metrics_insights_service.SIGNIFICANT_MIN_REL_EFFECT: |actual − expected| /
+// max(expected, 1). Gating the "Open signals" headline on this same threshold keeps
+// it equal to the sidebar badge (project summary monitoring_signal_count) and the
+// Anomalies page's default "Significant" view (issue tripl-yfsj.1).
+const SIGNIFICANT_MIN_REL_EFFECT = 0.5
+function relativeEffect(signal: MonitoringSignal): number {
+  return Math.abs(signal.actual_count - signal.expected_count) / Math.max(signal.expected_count, 1)
+}
 // A successful source connection test older than this is shown as "stale" rather
 // than a confident "healthy" — an old green check is misleading (issue M1).
 const SOURCE_HEALTH_STALE_MS = 24 * 60 * 60 * 1000
@@ -79,8 +88,11 @@ export default function OverviewPage() {
     staleTime: 60_000,
   })
   const signalsQuery = useQuery({
-    queryKey: ['overview', 'signals', slug],
-    queryFn: () => metricsApi.getActiveSignals(slug!),
+    // Expanded (all scopes, incident children tagged) so the headline count matches
+    // the sidebar badge and the Anomalies page rather than only project-total /
+    // event-type incidents (issue tripl-yfsj.1).
+    queryKey: ['overview', 'signals', slug, 'expanded'],
+    queryFn: () => metricsApi.getActiveSignals(slug!, undefined, { expanded: true }),
     enabled: !!slug && projectQuery.isSuccess,
     staleTime: 30_000,
     refetchInterval,
@@ -113,7 +125,14 @@ export default function OverviewPage() {
   const volumeCounts = volumePoints.map((p) => p.count)
   const topEvents = topEventsQuery.data ?? []
   const maxTopVolume = topEvents.reduce((m, e) => Math.max(m, e.total_count), 0)
-  const signals = signalsQuery.data ?? []
+  // Match the AnomaliesPage default "Significant" view so the "Open signals"
+  // headline, the sidebar badge (monitoring_signal_count) and the Anomalies page
+  // all report the same count (issue tripl-yfsj.1). Sorted biggest-effect-first so
+  // the capped panel previews the top anomalies. `filter` returns a fresh array, so
+  // the subsequent `sort` never mutates the React Query cache.
+  const signals = (signalsQuery.data ?? [])
+    .filter((s) => relativeEffect(s) >= SIGNIFICANT_MIN_REL_EFFECT)
+    .sort((a, b) => relativeEffect(b) - relativeEffect(a))
   const activity = activityQuery.data ?? []
   // Resolve metric-scope signals to their catalog display name (issue .17).
   const metricNames: ReadonlyMap<string, string> = new Map(
@@ -128,8 +147,9 @@ export default function OverviewPage() {
     ? allSources.filter((s) => s.project_id == null || s.project_id === projectId)
     : allSources
 
-  // "Open signals" must come from the SAME array the panel below renders, so the
-  // headline can never disagree with the list (issue H1).
+  // "Open signals" comes from the SAME array the panel below renders (issue H1) —
+  // now the significant, all-scope signals — so the headline equals the sidebar
+  // badge (monitoring_signal_count) and the Anomalies page (issue tripl-yfsj.1).
   const signalCount = signals.length
   const reviewCount = summary?.review_pending_event_count ?? 0
   // Coverage is plan coverage (implemented vs active events) rendered through the

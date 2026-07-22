@@ -1,12 +1,15 @@
-"""Parity between the sidebar badge count and the AnomaliesPage signal list.
+"""Parity between the sidebar/Overview badge count and the AnomaliesPage signal list.
 
-Regression guard for tripl-gf2l. When one incident trips BOTH the ``project_total``
-scope and its child ``event_type`` scope on the SAME scan / bucket / direction, the
-AnomaliesPage (``get_active_signals`` -> ``_deduplicate_into_incidents``) collapses
-them into a single active signal. The sidebar badge count
-(``project_service._populate_monitoring_signals`` -> ``monitoring_signal_count``)
-must apply the same collapse, so the badge and the page agree (pre-fix the badge
-double-counted: 2 vs 1).
+Regression guard for tripl-yfsj.1 (supersedes the earlier tripl-gf2l/tripl-posm
+contract). The AnomaliesPage now lists EVERY open signal as a flat, magnitude-
+filtered list (``get_active_signals(expanded=True)`` -> ``_flag_incident_children``):
+project_total + event_type + per-event, incident children TAGGED but kept, then the
+page hides everything below the "Significant" magnitude threshold. The badge count
+(``project_service._populate_monitoring_signals`` -> ``monitoring_signal_count``) must
+count the same population — open signals across all scopes with relative effect >= 0.5,
+children included, NO incident dedup — so the badge equals the page's headline open
+count. (Pre-fix the badge counted only deduped project_total+event_type incidents and
+so undercounted a busy project: 3 on the badge vs 270 on the page.)
 
 SQLite harness note: the two code paths stringify a UUID ``scope_ref`` differently.
 The sidebar path uses ``cast(uuid, String)`` -> bare 32-char hex on SQLite, while the
@@ -27,7 +30,7 @@ from httpx import AsyncClient
 
 from tripl.models.event_metric import EventMetric
 from tripl.models.metric_anomaly import MetricAnomaly
-from tripl.services.metrics_insights_service import get_active_signals
+from tripl.services.metrics_insights_service import get_active_signals, is_significant_signal
 from tripl.tests.conftest import TestSessionLocal
 
 # Recent, hour-aligned bucket so classify_signal_state keeps each scope's latest
@@ -115,15 +118,16 @@ async def _create_scan(client: AsyncClient, slug: str, data_source_id: str, name
 
 
 async def _seed_project(client: AsyncClient, slug: str, *, hyphenated: bool) -> None:
-    """Seed a project with two active incidents:
+    """Seed a project with three open signals across two scans:
 
     * Scan A: a project_total parent AND an event_type child on the same
-      (scan_config_id, bucket, direction) -> ONE incident, must collapse to 1.
-    * Scan B: an event_type with NO project_total parent -> stays 1.
+      (scan_config_id, bucket, direction) -> ONE incident, TWO rows (the child is
+      tagged incident_child but kept, not collapsed).
+    * Scan B: an event_type with NO project_total parent -> one more row.
 
-    So both the page list and the sidebar count must report 2 (not 3): dedup is
-    scoped to the incident's scan/bucket/direction, never a blanket "drop every
-    event_type when any project_total exists".
+    All three clear the "Significant" magnitude gate (actual 99 vs expected 40 ->
+    relative effect ~1.5), so both the expanded page list and the badge count must
+    report 3 — every open significant signal, children included.
     """
     project_resp = await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
     assert project_resp.status_code == 201
@@ -167,21 +171,28 @@ async def _seed_project(client: AsyncClient, slug: str, *, hyphenated: bool) -> 
 
 
 @pytest.mark.asyncio
-async def test_sidebar_count_matches_page_signal_dedup(client: AsyncClient) -> None:
+async def test_sidebar_count_matches_page_signal_list(client: AsyncClient) -> None:
     # Page path: get_active_signals stringifies scope_ref as str(uuid) (hyphenated).
     page_slug = "signal-parity-page"
     await _seed_project(client, page_slug, hyphenated=True)
     async with TestSessionLocal() as session:
-        page_signals = await get_active_signals(session, page_slug)
+        page_signals = await get_active_signals(session, page_slug, expanded=True)
 
-    # Scan A's event_type child is folded under its project_total parent; scan B's
-    # unparented event_type survives -> exactly one project_total + one event_type.
+    # Expanded list keeps every scope: scan A's project_total + its tagged
+    # event_type child, plus scan B's unparented event_type -> three rows.
     assert sorted(signal.scope_type for signal in page_signals) == [
+        "event_type",
         "event_type",
         "project_total",
     ]
-    page_count = len(page_signals)
-    assert page_count == 2
+    # The badge mirrors the page's DEFAULT "Significant" view, so compare against the
+    # magnitude-filtered count (here all three clear the gate).
+    page_significant_count = sum(
+        1
+        for signal in page_signals
+        if is_significant_signal(signal.actual_count, signal.expected_count)
+    )
+    assert page_significant_count == 3
 
     # Sidebar path: monitoring_signal_count uses cast(uuid, String) (bare hex here).
     sidebar_slug = "signal-parity-sidebar"
@@ -190,7 +201,8 @@ async def test_sidebar_count_matches_page_signal_dedup(client: AsyncClient) -> N
     assert resp.status_code == 200
     sidebar_count = resp.json()["summary"]["monitoring_signal_count"]
 
-    # Parity: the badge counts the same incident structure the page lists. Pre-fix
-    # the badge double-counted scan A's fan-out and read 3.
-    assert sidebar_count == page_count
-    assert sidebar_count == 2
+    # Parity: the badge counts the same significant open signals the expanded page
+    # lists — children included, no dedup. Pre-fix the badge counted only deduped
+    # project_total+event_type incidents and read 2.
+    assert sidebar_count == page_significant_count
+    assert sidebar_count == 3

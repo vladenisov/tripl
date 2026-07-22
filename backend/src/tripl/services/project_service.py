@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
 from tripl.core.analyzers.anomaly_detector import (
+    SCOPE_EVENT,
     SCOPE_EVENT_TYPE,
     SCOPE_PROJECT_TOTAL,
 )
@@ -36,8 +37,7 @@ from tripl.schemas.project import (
 from tripl.services import plan_branch_service
 from tripl.services.metrics_insights_service import (
     _count_active_metric_signals_by_project,
-    incident_parent_keys,
-    is_incident_child,
+    is_significant_signal,
 )
 from tripl.services.monitoring_utils import (
     classify_signal_state,
@@ -380,13 +380,14 @@ async def _populate_monitoring_signals(
         .join(ScanConfig, ScanConfig.id == MetricAnomaly.scan_config_id)
         .where(
             ScanConfig.project_id.in_(project_ids),
-            # The AnomaliesPage fetches get_active_signals WITHOUT event_ids, so
-            # it lists only project-total and event-type scoped signals; per-event
-            # anomalies are drill-down detail it never shows. Count the same
-            # scopes here so ``monitoring_signal_count`` (sidebar / project-card
-            # badge) equals what the page lists — with thousands of events the
-            # per-event scope alone floods the badge (tripl-posm).
-            MetricAnomaly.scope_type.in_([SCOPE_PROJECT_TOTAL, SCOPE_EVENT_TYPE]),
+            # The AnomaliesPage now lists EVERY open scope as a flat, magnitude-
+            # filtered list (tripl-w0ay), so the badge must count the same
+            # population — project_total + event_type + per-event — and gate on
+            # magnitude below rather than excluding the per-event scope. The
+            # "Significant" threshold (not scope exclusion) is what now keeps
+            # trivial per-event wobble out of the badge (tripl-yfsj.1, supersedes
+            # tripl-posm).
+            MetricAnomaly.scope_type.in_([SCOPE_PROJECT_TOTAL, SCOPE_EVENT_TYPE, SCOPE_EVENT]),
         )
         .group_by(
             ScanConfig.project_id,
@@ -450,12 +451,29 @@ async def _populate_monitoring_signals(
         )
         .group_by(ScanConfig.project_id, EventMetric.scan_config_id, EventMetric.event_type_id)
     )
-    # No per-event branch in this union: event-scope anomalies are filtered out
-    # of ``latest_anomaly_keys`` above, so an event-scope bucket could never be
-    # looked up when classifying — it would be dead weight in every summary query.
+    # Per-event branch: event-scope anomalies now flow through ``latest_anomaly_keys``
+    # (tripl-yfsj.1), so classify_signal_state needs each event's latest metric
+    # bucket to judge freshness — keyed by event_id, mirroring get_active_signals'
+    # ``_get_latest_metric_buckets_multi``.
+    event_metrics = (
+        select(
+            ScanConfig.project_id.label("project_id"),
+            EventMetric.scan_config_id.label("scan_config_id"),
+            literal(SCOPE_EVENT).label("scope_type"),
+            cast(EventMetric.event_id, String).label("scope_ref"),
+            func.max(EventMetric.bucket).label("latest_metric_bucket"),
+        )
+        .join(ScanConfig, ScanConfig.id == EventMetric.scan_config_id)
+        .where(
+            ScanConfig.project_id.in_(project_ids),
+            EventMetric.event_id.is_not(None),
+        )
+        .group_by(ScanConfig.project_id, EventMetric.scan_config_id, EventMetric.event_id)
+    )
     latest_metric_union = union_all(
         project_total_metrics,
         event_type_metrics,
+        event_metrics,
     ).subquery()
     latest_metric_rows = await session.execute(
         select(
@@ -478,7 +496,6 @@ async def _populate_monitoring_signals(
     }
 
     now = datetime.now(UTC)
-    active_signals: list[tuple[uuid.UUID, ProjectLatestSignal]] = []
     for project_id, scan_name, scan_interval, anomaly in anomaly_rows:
         latest_metric_bucket = latest_metric_buckets.get(
             (project_id, anomaly.scan_config_id, anomaly.scope_type, anomaly.scope_ref)
@@ -491,6 +508,16 @@ async def _populate_monitoring_signals(
         )
         if state is None:
             continue
+        # Magnitude gate: the badge counts the AnomaliesPage's default "Significant"
+        # view — every open signal across all scopes with relative effect >= 0.5,
+        # incident children INCLUDED (the expanded page tags them, it does not drop
+        # them). No incident dedup here, so the badge equals the page's headline
+        # open count (tripl-yfsj.1).
+        if not is_significant_signal(anomaly.actual_count, anomaly.expected_count):
+            continue
+
+        summary = summaries[project_id]
+        summary.monitoring_signal_count += 1
 
         signal = ProjectLatestSignal(
             scan_config_id=anomaly.scan_config_id,
@@ -509,19 +536,6 @@ async def _populate_monitoring_signals(
             z_score=anomaly.z_score,
             direction=anomaly.direction,
         )
-        active_signals.append((project_id, signal))
-
-    # Collapse each incident's project_total + event_type fan-out into one signal,
-    # applying the exact rule the AnomaliesPage uses
-    # (metrics_insights_service._deduplicate_into_incidents) so the badge count and
-    # ``latest_signal`` match the page list. scan_config_id is project-unique, so
-    # a single batch-wide parent-key set never collapses across projects.
-    parent_keys = incident_parent_keys(signal for _project_id, signal in active_signals)
-    for project_id, signal in active_signals:
-        if is_incident_child(signal, parent_keys):
-            continue
-        summary = summaries[project_id]
-        summary.monitoring_signal_count += 1
         if summary.latest_signal is None or signal.bucket > summary.latest_signal.bucket:
             summary.latest_signal = signal
 
