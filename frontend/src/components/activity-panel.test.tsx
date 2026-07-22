@@ -1,8 +1,23 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ActivityPanel } from './activity-panel'
+
+function implementedEvent(name: string, occurredAt: string) {
+  return {
+    id: `event:${name}`,
+    project_id: 'project-1',
+    project_slug: 'demo',
+    project_name: 'Demo',
+    type: 'event',
+    severity: 'low',
+    title: `Event implemented: ${name}`,
+    detail: 'Signup',
+    occurred_at: occurredAt,
+    target_path: `/p/demo/monitoring/event/${name}`,
+  }
+}
 
 function mockJsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -102,6 +117,78 @@ describe('ActivityPanel', () => {
     expect(screen.queryByText(/streaming/i)).not.toBeInTheDocument()
     // Item age is surfaced prominently on each row.
     expect(await screen.findByText('just now')).toBeInTheDocument()
+  })
+
+  it('collapses a scan burst of implemented events into one expandable summary', async () => {
+    // One scan implements every discovered event at the same instant.
+    const stamp = new Date().toISOString()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/activity/projects/demo?limit=20')) {
+        return mockJsonResponse([
+          implementedEvent('checkout_started', stamp),
+          implementedEvent('page_view', stamp),
+          implementedEvent('cart_viewed', stamp),
+          implementedEvent('signup', stamp),
+          implementedEvent('purchase', stamp),
+        ])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderActivityPanel('demo')
+
+    // The burst is one summary row, not five near-identical "Event implemented" rows.
+    const summary = await screen.findByRole('button', { name: /5 events implemented/ })
+    expect(screen.queryByText('Event implemented: checkout_started')).not.toBeInTheDocument()
+
+    // Expanding reveals the individual items it stands in for.
+    fireEvent.click(summary)
+    expect(await screen.findByText('Event implemented: checkout_started')).toBeInTheDocument()
+    expect(screen.getByText('Event implemented: purchase')).toBeInTheDocument()
+
+    // Collapsing hides them again.
+    fireEvent.click(summary)
+    expect(screen.queryByText('Event implemented: checkout_started')).not.toBeInTheDocument()
+  })
+
+  it('keeps a sub-threshold run of events as standalone rows', async () => {
+    const stamp = new Date().toISOString()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/activity/projects/demo?limit=20')) {
+        return mockJsonResponse([
+          implementedEvent('checkout_started', stamp),
+          implementedEvent('page_view', stamp),
+        ])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderActivityPanel('demo')
+
+    expect(await screen.findByText('Event implemented: checkout_started')).toBeInTheDocument()
+    expect(screen.getByText('Event implemented: page_view')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /events implemented/ })).not.toBeInTheDocument()
+  })
+
+  it('narrows the rail and drops its footer when there is no activity', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/activity?limit=20')) {
+        return mockJsonResponse([])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderActivityPanel()
+
+    expect(await screen.findByText('No recent activity')).toBeInTheDocument()
+    const rail = screen.getByRole('complementary', { name: 'Activity feed' })
+    expect(rail.className).toContain('w-[220px]')
+    expect(rail.className).not.toContain('w-[304px]')
+    // Empty chrome is trimmed: no "last 7 days · 0 items" footer line.
+    expect(screen.queryByText(/last 7 days/)).not.toBeInTheDocument()
   })
 })
 

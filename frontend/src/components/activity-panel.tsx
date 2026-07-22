@@ -2,12 +2,15 @@ import {
   AlertTriangle,
   Bell,
   Check,
+  ChevronDown,
+  ChevronRight,
   Loader2,
   RefreshCw,
   TrendingUp,
   Zap,
   type LucideIcon,
 } from 'lucide-react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { activityApi } from '@/api/activity'
@@ -18,11 +21,40 @@ import type { ActivityItem, ActivityItemSeverity, ActivityItemType } from '@/typ
 
 const ACTIVITY_LIMIT = 20
 
+// The rail earns its full width only when it has something to show. An empty
+// feed narrows to a slim strip so it stops reading as permanent empty chrome on
+// brand-new / quiet projects (tripl-yfsj.8).
+const RAIL_WIDTH = 'w-[304px]'
+const RAIL_WIDTH_QUIET = 'w-[220px]'
+
+// One scan implements every discovered event in a single pass, so each of those
+// items shares the scan's completion timestamp and lands as a burst of
+// near-identical rows. Collapse a run of same-type items that arrived within
+// this window into one expandable summary instead of flooding the feed.
+const BURST_WINDOW_MS = 2 * 60_000
+// Runs smaller than this read fine expanded; only collapse a genuine flood.
+const MIN_BURST = 3
+// How many item names to preview on a collapsed summary row before "+N more".
+const PREVIEW_NAMES = 3
+
 const KIND_ICON: Record<ActivityItemType, LucideIcon> = {
   anomaly: AlertTriangle,
   scan: TrendingUp,
   alert: Bell,
   event: Check,
+}
+
+const TYPE_PLURAL: Record<ActivityItemType, string> = {
+  anomaly: 'anomalies',
+  scan: 'scans',
+  alert: 'alerts',
+  event: 'events',
+}
+
+const SEVERITY_RANK: Record<ActivityItemSeverity, number> = {
+  high: 2,
+  medium: 1,
+  low: 0,
 }
 
 function severityColor(sev: ActivityItemSeverity): string {
@@ -34,6 +66,87 @@ function severityColor(sev: ActivityItemSeverity): string {
     default:
       return 'var(--fg-muted)'
   }
+}
+
+// Backend copy is "<Noun> <action>: <name>" (e.g. "Event implemented: Signup").
+// The stem before ": " identifies what happened; the suffix is the item name.
+function titleStem(title: string): string {
+  const sep = title.indexOf(': ')
+  return sep === -1 ? title : title.slice(0, sep)
+}
+
+function itemName(item: ActivityItem): string {
+  const sep = item.title.indexOf(': ')
+  return sep === -1 ? item.title : item.title.slice(sep + 2)
+}
+
+function burstKey(item: ActivityItem): string {
+  return `${item.type}::${titleStem(item.title)}`
+}
+
+function withinWindow(a: string, b: string): boolean {
+  const ta = Date.parse(a)
+  const tb = Date.parse(b)
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return false
+  return Math.abs(ta - tb) <= BURST_WINDOW_MS
+}
+
+type FeedEntry =
+  | { kind: 'single'; item: ActivityItem }
+  | { kind: 'group'; id: string; items: ActivityItem[] }
+
+// Collapse consecutive same-type items that arrived in one burst (same scan /
+// tight time window) into a single expandable group; everything else stays a
+// standalone row. The feed is already newest-first, so a burst is contiguous.
+function buildFeed(items: readonly ActivityItem[]): FeedEntry[] {
+  const entries: FeedEntry[] = []
+  let start = 0
+  while (start < items.length) {
+    let end = start + 1
+    while (
+      end < items.length &&
+      burstKey(items[end]) === burstKey(items[start]) &&
+      withinWindow(items[end - 1].occurred_at, items[end].occurred_at)
+    ) {
+      end += 1
+    }
+    const run = items.slice(start, end)
+    if (run.length >= MIN_BURST) {
+      entries.push({ kind: 'group', id: `group:${run[0].id}`, items: run })
+    } else {
+      for (const item of run) entries.push({ kind: 'single', item })
+    }
+    start = end
+  }
+  return entries
+}
+
+// "Event implemented" -> "implemented": drop the leading noun so the summary
+// reads "12 events implemented" instead of repeating the noun.
+function burstAction(stem: string): string {
+  const sep = stem.indexOf(' ')
+  return sep === -1 ? '' : stem.slice(sep + 1).toLowerCase()
+}
+
+function groupSummary(items: readonly ActivityItem[]): string {
+  const action = burstAction(titleStem(items[0].title))
+  const noun = TYPE_PLURAL[items[0].type]
+  return action ? `${items.length} ${noun} ${action}` : `${items.length} ${noun}`
+}
+
+function groupPreview(items: readonly ActivityItem[]): string {
+  const names = items.map(itemName)
+  const shown = names.slice(0, PREVIEW_NAMES)
+  const extra = names.length - shown.length
+  return extra > 0 ? `${shown.join(', ')} +${extra} more` : shown.join(', ')
+}
+
+function groupSeverity(items: readonly ActivityItem[]): ActivityItemSeverity {
+  return items.reduce<ActivityItemSeverity>(
+    (worst, item) =>
+      SEVERITY_RANK[item.severity] > SEVERITY_RANK[worst] ? item.severity : worst,
+    'low',
+  )
 }
 
 export function ActivityPanel({ open, slug }: { open: boolean; slug?: string }) {
@@ -52,11 +165,15 @@ export function ActivityPanel({ open, slug }: { open: boolean; slug?: string }) 
 
   const items = activityQuery.data ?? []
   const isInitialLoading = activityQuery.isLoading && items.length === 0
+  // Quiet = loaded, healthy, and genuinely empty. Only then do we shrink the
+  // rail and drop its footer so it stops dominating an empty project.
+  const isQuiet = !isInitialLoading && !activityQuery.isError && items.length === 0
+  const feed = buildFeed(items)
 
   return (
     <aside
       aria-label="Activity feed"
-      className="flex w-[304px] flex-shrink-0 flex-col border-l"
+      className={`flex ${isQuiet ? RAIL_WIDTH_QUIET : RAIL_WIDTH} flex-shrink-0 flex-col border-l`}
       style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border)' }}
     >
       <div
@@ -65,9 +182,11 @@ export function ActivityPanel({ open, slug }: { open: boolean; slug?: string }) 
       >
         <Dot tone={activityQuery.isError ? 'warning' : 'accent'} pulse={activityQuery.isFetching} size={7} />
         <span className="text-[12.5px] font-semibold">Recent activity</span>
-        <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-          {activityQuery.isError ? 'offline' : 'auto-refresh'}
-        </span>
+        {!isQuiet && (
+          <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+            {activityQuery.isError ? 'offline' : 'auto-refresh'}
+          </span>
+        )}
         <div className="flex-1" />
         {activityQuery.isFetching && (
           <Loader2 className="h-[13px] w-[13px] animate-spin" style={{ color: 'var(--fg-subtle)' }} />
@@ -116,27 +235,38 @@ export function ActivityPanel({ open, slug }: { open: boolean; slug?: string }) 
             </div>
           </div>
         )}
-        {!isInitialLoading && !activityQuery.isError && items.length === 0 && (
-          <div className="px-3.5 py-8 text-center text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+        {isQuiet && (
+          <div className="px-3.5 py-6 text-center text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
             No recent activity
           </div>
         )}
-        {!isInitialLoading && !activityQuery.isError && items.map((item) => (
-          <ActivityRow key={item.id} item={item} showProject={!slug} />
-        ))}
+        {!isInitialLoading &&
+          !activityQuery.isError &&
+          feed.map((entry) =>
+            entry.kind === 'group' ? (
+              <ActivityGroupRow key={entry.id} items={entry.items} showProject={!slug} />
+            ) : (
+              <ActivityRow key={entry.item.id} item={entry.item} showProject={!slug} />
+            ),
+          )}
       </div>
-      <div
-        className="flex items-center gap-2 border-t px-3 py-2.5 text-[11px]"
-        style={{ borderColor: 'var(--border)', color: 'var(--fg-subtle)' }}
-      >
-        <Zap className="h-3 w-3" />
-        <span className="mono">
-          last 7 days · {items.length} {items.length === 1 ? 'item' : 'items'}
-        </span>
-      </div>
+      {!isQuiet && (
+        <div
+          className="flex items-center gap-2 border-t px-3 py-2.5 text-[11px]"
+          style={{ borderColor: 'var(--border)', color: 'var(--fg-subtle)' }}
+        >
+          <Zap className="h-3 w-3" />
+          <span className="mono">
+            last 7 days · {items.length} {items.length === 1 ? 'item' : 'items'}
+          </span>
+        </div>
+      )}
     </aside>
   )
 }
+
+const ROW_CLASS =
+  'flex gap-2.5 px-3.5 py-[9px] no-underline transition-colors hover:bg-[var(--surface-hover)]'
 
 function ActivityRow({
   item,
@@ -180,7 +310,6 @@ function ActivityRow({
       </div>
     </>
   )
-  const className = "flex gap-2.5 px-3.5 py-[9px] no-underline transition-colors hover:bg-[var(--surface-hover)]"
   const style = {
     borderLeft: `2px solid ${
       item.severity === 'high' || item.severity === 'medium' ? sevColor : 'transparent'
@@ -190,15 +319,91 @@ function ActivityRow({
 
   if (item.target_path) {
     return (
-      <Link to={item.target_path} className={className} style={style}>
+      <Link to={item.target_path} className={ROW_CLASS} style={style}>
         {content}
       </Link>
     )
   }
 
   return (
-    <div className={className} style={style}>
+    <div className={ROW_CLASS} style={style}>
       {content}
+    </div>
+  )
+}
+
+// A collapsed burst: one summary row that expands to reveal the individual
+// items it stands in for.
+function ActivityGroupRow({
+  items,
+  showProject,
+}: {
+  items: ActivityItem[]
+  showProject: boolean
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const first = items[0]
+  const severity = groupSeverity(items)
+  const sevColor = severityColor(severity)
+  const KindIcon = KIND_ICON[first.type]
+  const Chevron = expanded ? ChevronDown : ChevronRight
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
+        className="flex w-full gap-2.5 px-3.5 py-[9px] text-left transition-colors hover:bg-[var(--surface-hover)]"
+        style={{
+          borderLeft: `2px solid ${severity === 'low' ? 'transparent' : sevColor}`,
+          color: 'inherit',
+        }}
+      >
+        <div
+          className="mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded"
+          style={{
+            background: 'var(--surface)',
+            color: severity === 'low' ? 'var(--fg-muted)' : sevColor,
+          }}
+        >
+          <KindIcon className="h-3 w-3" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1 text-[12px] font-medium leading-[1.35]">
+            <Chevron
+              className="h-3 w-3 shrink-0"
+              style={{ color: 'var(--fg-muted)' }}
+              aria-hidden="true"
+            />
+            <span>{groupSummary(items)}</span>
+          </div>
+          <div
+            className="mt-0.5 truncate text-[11px] leading-[1.3]"
+            style={{ color: 'var(--fg-subtle)' }}
+          >
+            {groupPreview(items)}
+          </div>
+          <div
+            className="mono mt-[3px] text-[11px] font-medium"
+            style={{ color: 'var(--fg-muted)' }}
+          >
+            {formatRelativeTime(first.occurred_at)}
+            {showProject ? (
+              <span style={{ color: 'var(--fg-faint)' }}>{` · ${first.project_slug}`}</span>
+            ) : (
+              ''
+            )}
+          </div>
+        </div>
+      </button>
+      {expanded && (
+        <div style={{ background: 'var(--surface)' }}>
+          {items.map((item) => (
+            <ActivityRow key={item.id} item={item} showProject={showProject} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }
