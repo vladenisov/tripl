@@ -8,6 +8,7 @@ import { ErrorState } from './components/error-state'
 import Layout from './components/Layout'
 import { ThemeProvider } from './components/theme-provider'
 import { Toaster } from './components/ui/sonner'
+import { resolveTitleFromPath, useDocumentTitle } from './hooks/useDocumentTitle'
 
 const AuthPage = lazy(() => import('./pages/AuthPage'))
 const MainPage = lazy(() => import('./pages/ProjectsPage'))
@@ -234,10 +235,25 @@ function HomeRoute() {
   return withSuspense(<MainPage />)
 }
 
+/**
+ * Single, always-mounted driver for the browser-tab title. Mounted at the app
+ * root (inside AuthProvider, beside <Routes>), it reacts to EVERY navigation —
+ * including the full-takeover Settings pages and /auth that render OUTSIDE the
+ * app shell (Layout) — so every route gets a descriptive title and none is ever
+ * left stale from the previous page.
+ */
+function DocumentTitle() {
+  const { pathname } = useLocation()
+  const { label, slug } = resolveTitleFromPath(pathname)
+  useDocumentTitle(label, slug)
+  return null
+}
+
 export default function App() {
   return (
     <ThemeProvider defaultTheme="dark" storageKey="tripl-ui-theme">
       <AuthProvider>
+        <DocumentTitle />
         <Routes>
           <Route
             path="/auth"
