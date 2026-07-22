@@ -1,8 +1,11 @@
+import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Activity, ArrowDown, ArrowUp, Settings2 } from 'lucide-react'
 import { metricsApi } from '@/api/metrics'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { eventsApi } from '@/api/events'
+import { eventTypesApi } from '@/api/eventTypes'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { PageHead, Panel } from '@/components/settings/kit'
@@ -10,13 +13,41 @@ import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { formatRelativeTime } from '@/lib/datetime'
 import { getMonitoringPath } from '@/lib/monitoring'
+import { useActiveBranchId } from '@/hooks/useBranch'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { MonitoringSignal } from '@/types'
 
 const ANOMALY_GRID = 'grid grid-cols-[1.7fr_1fr_72px_96px] items-center gap-3 px-4'
 
-/** Metric definition id → catalog display name, for labelling metric signals. */
-type MetricNameMap = ReadonlyMap<string, string>
+/** Entity id → display name, for labelling metric / event-type / event signals. */
+type NameMap = ReadonlyMap<string, string>
+
+// ───────── Magnitude filter ─────────
+//
+// Signals are ranked by |z|, but z is inflated on low-volume series, so a tiny
+// absolute change on a quiet scope can outrank a large one on a busy scope. The
+// user-facing filter therefore keys off a *relative effect size* — how far the
+// actual count strayed from the expectation, as a fraction of the expectation —
+// which stays meaningful across volumes.
+const MAGNITUDE_PRESETS = [
+  { id: 'all', label: 'All', minRelEffect: 0 },
+  { id: 'significant', label: 'Significant', minRelEffect: 0.5 },
+  { id: 'major', label: 'Major', minRelEffect: 1 },
+] as const
+
+type MagnitudeLevel = (typeof MAGNITUDE_PRESETS)[number]['id']
+
+// Default to "Significant" (±50%) so the flooded list is usable immediately;
+// the control lets users drop to "All" to see everything.
+const DEFAULT_MAGNITUDE_LEVEL: MagnitudeLevel = 'significant'
+
+/** Relative effect: |actual − expected| / max(expected, 1). Preferred over z
+ * for the filter because it does not blow up on low-volume series. */
+function relativeEffect(signal: MonitoringSignal): number {
+  return (
+    Math.abs(signal.actual_count - signal.expected_count) / Math.max(signal.expected_count, 1)
+  )
+}
 
 // The four scopes that have a monitoring detail route (metric scope_ref is the
 // metric definition id, routed via getMetricMonitoringPath); getMonitoringPath
@@ -30,25 +61,78 @@ function isLinkableScope(signal: MonitoringSignal): boolean {
   )
 }
 
-function signalScopeLabel(signal: MonitoringSignal, metricNames: MetricNameMap): string {
+function signalScopeLabel(
+  signal: MonitoringSignal,
+  metricNames: NameMap,
+  eventTypeNames: NameMap,
+  eventNames: NameMap,
+): string {
   if (signal.scope_type === 'project_total') return 'Project total'
+  // Every named scope carries only its id; the corresponding list resolves it to
+  // a display name. Fall back to the short ref while the list loads or when the
+  // entity is gone (e.g. deleted event / event type / metric).
   const ref = signal.scope_ref.slice(0, 8)
-  if (signal.scope_type === 'event_type') return `Event type ${ref}`
-  if (signal.scope_type === 'event') return `Event ${ref}`
+  if (signal.scope_type === 'event_type') {
+    const name = eventTypeNames.get(signal.scope_ref)
+    return name ? `Event type · ${name}` : `Event type ${ref}`
+  }
+  if (signal.scope_type === 'event') {
+    const name = eventNames.get(signal.scope_ref)
+    return name ? `Event · ${name}` : `Event ${ref}`
+  }
   if (signal.scope_type === 'metric') {
-    // Resolved from the metrics catalog; fall back to the short ref while the
-    // catalog loads or when the definition is gone (e.g. deleted metric).
     const name = metricNames.get(signal.scope_ref)
     return name ? `Metric · ${name}` : `Metric ${ref}`
   }
   return `${signal.scope_type} ${ref}`
 }
 
+/** Single-select segmented control for the magnitude filter. */
+function MagnitudeFilter({
+  level,
+  onChange,
+}: {
+  level: MagnitudeLevel
+  onChange: (level: MagnitudeLevel) => void
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Filter by anomaly magnitude"
+      className="inline-flex items-center gap-0.5 rounded-md border p-0.5"
+      style={{ borderColor: 'var(--border)', background: 'var(--bg-sunken)' }}
+    >
+      {MAGNITUDE_PRESETS.map((preset) => {
+        const active = preset.id === level
+        return (
+          <button
+            key={preset.id}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            onClick={() => onChange(preset.id)}
+            className="rounded-[5px] px-2.5 py-1 text-[11px] font-medium transition-colors"
+            style={
+              active
+                ? { background: 'var(--accent-soft)', color: 'var(--accent)' }
+                : { color: 'var(--fg-muted)' }
+            }
+          >
+            {preset.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function AnomaliesPage() {
   const { slug } = useParams<{ slug: string }>()
+  const branchId = useActiveBranchId()
   // Stream-aware fallback: signals.updated invalidates this key; poll only when
   // the stream is down.
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
+  const [level, setLevel] = useState<MagnitudeLevel>(DEFAULT_MAGNITUDE_LEVEL)
 
   const signalsQuery = useQuery({
     // expanded: surface every flagged scope — project_total, each event_type and
@@ -70,17 +154,51 @@ export default function AnomaliesPage() {
     enabled: !!slug,
     staleTime: 60_000,
   })
-  const metricNames: MetricNameMap = new Map(
+  const metricNames: NameMap = new Map(
     (metricsCatalogQuery.data?.items ?? []).map((m) => [m.id, m.display_name]),
   )
 
+  // Same pattern as metrics, for the event-type and event scopes. The
+  // 'eventTypes' key is the app-wide shared cache; the events lookup pulls the
+  // whole catalog (unpaginated is 200, well under the ~thousands of events) so
+  // names resolve for every scope, not just the first page.
+  const eventTypesQuery = useQuery({
+    queryKey: ['eventTypes', slug, branchId],
+    queryFn: () => eventTypesApi.list(slug!, branchId),
+    enabled: !!slug,
+    staleTime: 60_000,
+  })
+  const eventTypeNames: NameMap = new Map(
+    (eventTypesQuery.data ?? []).map((et) => [et.id, et.display_name]),
+  )
+
+  const eventsQuery = useQuery({
+    queryKey: ['events', slug, branchId, 'names'],
+    queryFn: () => eventsApi.list(slug!, { limit: 10_000 }, branchId),
+    enabled: !!slug,
+    staleTime: 60_000,
+  })
+  const eventNames: NameMap = new Map(
+    (eventsQuery.data?.items ?? []).map((e) => [e.id, e.name]),
+  )
+
   const signals = signalsQuery.data ?? []
-  // Most severe first: the largest |z| is the most extreme deviation.
-  const sorted = [...signals].sort((a, b) => Math.abs(b.z_score) - Math.abs(a.z_score))
-  const spikes = signals.filter((s) => s.direction === 'spike').length
-  const drops = signals.filter((s) => s.direction === 'drop').length
-  // Loaded with nothing open — distinct from loading and from the error state.
-  const isEmpty = !signalsQuery.isError && !!signalsQuery.data && signals.length === 0
+  const total = signals.length
+  const activePreset = MAGNITUDE_PRESETS.find((p) => p.id === level) ?? MAGNITUDE_PRESETS[0]
+  const threshold = activePreset.minRelEffect
+  // Filter to the chosen magnitude, then rank most-severe first (largest |z|).
+  const filtered = signals.filter((s) => relativeEffect(s) >= threshold)
+  const sorted = [...filtered].sort((a, b) => Math.abs(b.z_score) - Math.abs(a.z_score))
+  const visibleCount = filtered.length
+  const hiddenCount = total - visibleCount
+  // Rollup counts reflect what's actually shown (the filtered set).
+  const spikes = filtered.filter((s) => s.direction === 'spike').length
+  const drops = filtered.filter((s) => s.direction === 'drop').length
+  // Loaded with nothing open at all — distinct from loading, from the error
+  // state, and from "hidden by the filter" (which keeps the panel + control).
+  const isEmpty = !signalsQuery.isError && !!signalsQuery.data && total === 0
+  // Signals exist, but the current magnitude filter hides every one.
+  const allFiltered = !isEmpty && total > 0 && visibleCount === 0
 
   return (
     <div
@@ -127,10 +245,12 @@ export default function AnomaliesPage() {
         >
           <MiniStat
             label="Open signals"
-            value={signalsQuery.data ? signals.length.toLocaleString() : '—'}
-            tone={signals.length > 0 ? 'danger' : 'success'}
-            pulse={signals.length > 0}
-            delta={signals.length > 0 ? 'active' : undefined}
+            value={signalsQuery.data ? visibleCount.toLocaleString() : '—'}
+            tone={visibleCount > 0 ? 'danger' : 'success'}
+            pulse={visibleCount > 0}
+            delta={
+              signalsQuery.data && hiddenCount > 0 ? `of ${total.toLocaleString()}` : undefined
+            }
           />
           <MiniStatDivider />
           <MiniStat
@@ -160,11 +280,36 @@ export default function AnomaliesPage() {
         ) : (
           <Panel
             title="Active signals"
-            subtitle={signalsQuery.data ? `${signals.length} open` : undefined}
+            subtitle={
+              signalsQuery.data
+                ? hiddenCount > 0
+                  ? `${visibleCount} of ${total} open · ${hiddenCount} below ${activePreset.label.toLowerCase()}`
+                  : `${visibleCount} open`
+                : undefined
+            }
+            right={<MagnitudeFilter level={level} onChange={setLevel} />}
           >
             {signalsQuery.isLoading ? (
               <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
                 Loading…
+              </div>
+            ) : allFiltered ? (
+              <div className="px-4 py-10">
+                <EmptyState
+                  icon={Activity}
+                  title={`Nothing at the ${activePreset.label.toLowerCase()} level`}
+                  description="Every open signal is smaller than this threshold. Lower the filter to see the smaller anomalies."
+                  action={
+                    <button
+                      type="button"
+                      onClick={() => setLevel('all')}
+                      className="rounded-md border px-3 py-1.5 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+                      style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
+                    >
+                      Show all {total.toLocaleString()}
+                    </button>
+                  }
+                />
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -188,6 +333,8 @@ export default function AnomaliesPage() {
                         slug={slug}
                         signal={signal}
                         metricNames={metricNames}
+                        eventTypeNames={eventTypeNames}
+                        eventNames={eventNames}
                       />
                     ))}
                   </div>
@@ -204,10 +351,14 @@ function AnomalyRow({
   slug,
   signal,
   metricNames,
+  eventTypeNames,
+  eventNames,
 }: {
   slug?: string
   signal: MonitoringSignal
-  metricNames: MetricNameMap
+  metricNames: NameMap
+  eventTypeNames: NameMap
+  eventNames: NameMap
 }) {
   const navigate = useNavigate()
   const isDrop = signal.direction === 'drop'
@@ -242,7 +393,8 @@ function AnomalyRow({
         <Dot tone={isDrop ? 'warning' : 'danger'} pulse size={7} />
         <DirIcon className="h-3.5 w-3.5 shrink-0" style={{ color: severityColor }} />
         <span className="truncate text-[12.5px] font-medium" style={{ color: 'var(--fg)' }}>
-          {isDrop ? 'Drop' : 'Spike'} on {signalScopeLabel(signal, metricNames)}
+          {isDrop ? 'Drop' : 'Spike'} on{' '}
+          {signalScopeLabel(signal, metricNames, eventTypeNames, eventNames)}
         </span>
         {signal.incident_child && (
           <span
