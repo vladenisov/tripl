@@ -351,7 +351,9 @@ cross-event list of every open monitoring signal, sorted most-severe-first by
 `|z|`. A rollup shows open-signal, spike, and drop counts; each row shows the
 spike/drop direction, scope (project total / event type / event / metric), actual
 vs expected counts, the z-score, and when it fired — linking to the monitoring
-detail for that scope. When one incident trips several scopes on the same bucket,
+detail for that scope. When a series drops all the way to zero, the severity
+column reads **dropped to zero** instead of the clamped z-score, since every such
+signal would otherwise show an identical, low-information value. When one incident trips several scopes on the same bucket,
 the child rows (event type / event) are still shown and tagged `part of total`
 rather than folded into the project-total row. A **magnitude filter**
 (All / Significant / Major, defaulting to **Significant**) trims the list by
@@ -393,7 +395,9 @@ on failures.
 
 **Where:** Govern › Reconciliation. **Data match** shows the share of planned
 events actually seen in your data over a fixed 14-day window (the date control is
-non-interactive). The **shadow events inbox** (tabs: `new` / `accepted` /
+non-interactive). The headline percentage carries an inline tooltip spelling out
+that it measures data match — not the Coverage page's plan coverage — so the two
+governance numbers are not read as contradictory. The **shadow events inbox** (tabs: `new` / `accepted` /
 `dismissed`) lists events seen in data but missing from the plan — **Accept**
 creates the event on the active branch (you pick an event type when none is
 inferred), or **Dismiss** it. **Dead events** (in plan, not seen recently over a
@@ -406,7 +410,9 @@ inferred), or **Dismiss** it. **Dead events** (in plan, not seen recently over a
 plan-coverage overview, complementary to Reconciliation's data-match view. The
 rollup leads with **plan coverage** — the canonical share of active events that
 are implemented — alongside active, implemented, in-review, and archived counts,
-plus an implemented-vs-pending bar. **Instrumentation gaps** lists active events
+plus an implemented-vs-pending bar. An inline tooltip on the plan-coverage figure
+clarifies that it counts implemented events, not events seen in warehouse data
+(Reconciliation's data match), so the two views are not confused. **Instrumentation gaps** lists active events
 with no data in the last 30 days (the same dead-events signal Reconciliation acts
 on); each row shows the event, its type, and when it was last seen, with a link
 to Reconciliation to triage.
@@ -470,6 +476,12 @@ every 60 seconds, with a manual refresh. A completed `scan` item summarizes what
 the run produced — new events, metric points, signals, and rows scanned — and
 reads "no new events discovered" when a run on an established catalog finds
 nothing new (which is normal, not a failure) rather than a bare "0 events".
+A burst of same-type items from one scan — for example the events a single scan
+implements, which all share the scan's timestamp — collapses into one summary
+row ("N events implemented") that expands on click to reveal the individual
+items, so a scan no longer floods the feed with near-duplicate rows. When there
+is no recent activity the rail narrows and drops its footer instead of holding a
+full-width empty column.
 
 ### AI-assisted features
 
