@@ -27,6 +27,10 @@ The "expected" value here is the **median** of those same-phase historical count
 
 A phase period only becomes usable once there are at least **3 complete cycles** of same-phase history before the bucket being judged. Until then, that bucket uses the rolling fallback instead.
 
+The phase baseline is **level-adaptive**. Each same-phase historical count is divided by the average level of its own cycle, so the seasonal *shape* is measured independently of the overall *level*, and the expectation is then re-scaled to the **current** level. This is what keeps a sustained level change from flagging every bucket: an event whose volume steps up several-fold and then holds steady is reported **once** by the trend-shift detector (below) instead of tripping every hour for a week or two while a plain same-phase median slowly catches up. A genuine one-bucket spike still stands out, because the current level (measured over a trailing full cycle) barely moves for a single outlier.
+
+On low-volume series the phase baseline also applies a **Poisson (√N) spread floor**: a scope expecting ~11 events per bucket has a natural ±√11 wobble, so a +3 count move is noise, not a spike. Without this floor a quiet event could flag almost every bucket. The trade-off is that small absolute changes on low-volume scopes (say 12 → 3) no longer flag; high-volume scopes are unaffected because √N sits far below their real spread.
+
 ### The rolling baseline — fallback for new or sparse series
 
 When a series is too young to have three full seasonal cycles (a brand-new scan, or a very sparse event), the detector falls back to a **seasonality-blind rolling baseline**: the plain **mean** and **standard deviation** of the most recent window of buckets (the window length is the `baseline_window_buckets` setting). This baseline knows nothing about hour-of-week, so it is less precise on cyclic data — but it lets monitoring produce *something* on day one instead of staying silent. The rolling baseline also refuses to fire until it has seen at least `min_history_buckets` real buckets in its window.
