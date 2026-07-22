@@ -306,5 +306,12 @@ describe('AppSidebar', () => {
     }
     // The project-scoped footer affordances are suppressed too.
     expect(screen.queryByText('Concepts')).not.toBeInTheDocument()
+
+    // The project switcher shows the neutral "Select project" placeholder and
+    // must NOT show a real project (projects[0]) under it as if it were picked.
+    // findByText waits for the projects query to resolve (loading -> Select).
+    expect(await screen.findByText('Select project')).toBeInTheDocument()
+    expect(screen.getByText('No project selected')).toBeInTheDocument()
+    expect(screen.queryByText('demo')).not.toBeInTheDocument()
   })
 })
