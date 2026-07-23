@@ -104,18 +104,6 @@ async def _resolve_scan_config(
     return config
 
 
-async def _get_project_interval(session: AsyncSession, project_id: uuid.UUID) -> str | None:
-    result = await session.execute(
-        select(ScanConfig.interval)
-        .where(
-            ScanConfig.project_id == project_id,
-            ScanConfig.interval.isnot(None),
-        )
-        .limit(1)
-    )
-    return result.scalar_one_or_none()
-
-
 async def _get_scan_config_interval(
     session: AsyncSession,
     scan_config_id: uuid.UUID | None,
@@ -1255,12 +1243,22 @@ async def get_events_metrics(
     time_to: datetime | None = None,
 ) -> EventMetricsResponse:
     project = await _resolve_project(session, slug)
+    # Scope the "All Events Dynamics" series to a single scan — the same default
+    # scan the project-total volume sparkline resolves — rather than summing
+    # EventMetric rows across every scan_config. An unscoped cross-scan sum
+    # double-counts events that a legacy/backfill scan (e.g. an "Old events" scan)
+    # also collected, which inflated one bucket into the outlier that dominated the
+    # chart's y-axis. Mirrors get_project_total_metrics / _get_metric_rows scoping.
+    scan_config_id = await _get_default_scan_config_id(session, project.id)
+    if scan_config_id is None:
+        return EventMetricsResponse(scope="events_total", data=[])
 
     query = (
         select(EventMetric.bucket, func.sum(EventMetric.count))
         .join(Event, EventMetric.event_id == Event.id)
         .where(
             Event.project_id == project.id,
+            EventMetric.scan_config_id == scan_config_id,
             EventMetric.event_id.is_not(None),
         )
     )
@@ -1282,7 +1280,7 @@ async def get_events_metrics(
     result = await session.execute(query.group_by(EventMetric.bucket).order_by(EventMetric.bucket))
     rows = [(bucket, int(count)) for bucket, count in result.all()]
 
-    interval = await _get_project_interval(session, project.id) if rows else None
+    interval = await _get_scan_config_interval(session, scan_config_id) if rows else None
 
     return EventMetricsResponse(
         scope="events_total",
