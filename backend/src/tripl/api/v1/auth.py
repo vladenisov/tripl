@@ -1,4 +1,8 @@
-from fastapi import APIRouter, Depends, Request, Response, status
+import logging
+import smtplib
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response, status
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from tripl.api.deps import CurrentUserDep, SessionDep
 from tripl.config import settings
@@ -9,12 +13,16 @@ from tripl.middleware.rate_limit import (
     status_rate_limiter,
 )
 from tripl.schemas.auth import (
+    PASSWORD_MAX_LENGTH,
     AuthStatusResponse,
     AuthUserResponse,
     LoginRequest,
     RegisterRequest,
+    validate_password_strength,
 )
-from tripl.services import auth_service
+from tripl.services import app_settings_service, auth_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -39,6 +47,91 @@ def _clear_session_cookie(response: Response) -> None:
         secure=settings.session_cookie_secure,
         path="/",
     )
+
+
+class PasswordResetRequestBody(BaseModel):
+    # EmailStr normalizes the address; a syntactically invalid email is rejected
+    # at the boundary (422) before any lookup, same as register.
+    email: EmailStr
+
+
+class PasswordResetConfirmBody(BaseModel):
+    token: str = Field(min_length=1, max_length=512)
+    new_password: str = Field(max_length=PASSWORD_MAX_LENGTH)
+
+    @field_validator("new_password")
+    @classmethod
+    def _enforce_password_policy(cls, value: str) -> str:
+        # Same shared policy as register — enforced here at the schema boundary
+        # so a weak new password never reaches the service.
+        return validate_password_strength(value)
+
+
+class PasswordResetRequestResponse(BaseModel):
+    # Neutral, account-agnostic. ``email_configured`` is an instance-wide fact
+    # (identical for every caller regardless of the submitted address), so it
+    # lets the UI pick the right copy without enabling per-address enumeration.
+    message: str
+    email_configured: bool
+
+
+class PasswordResetConfirmResponse(BaseModel):
+    message: str
+
+
+def _build_reset_link(app_base_url: str, raw_token: str) -> str:
+    # The SPA reads ``?reset_token=`` off the /auth route and switches to reset
+    # mode (see AuthPage). ``app_base_url`` should be set whenever email is
+    # configured; if blank, the link degrades to a relative path.
+    return f"{app_base_url.rstrip('/')}/auth?reset_token={raw_token}"
+
+
+def _send_password_reset_email(
+    *,
+    recipient: str,
+    reset_link: str,
+    email_config: app_settings_service.EmailConfig,
+) -> None:
+    """Send the reset email via the shared alert email sender.
+
+    Runs as a FastAPI ``BackgroundTask`` (after the response is sent), so a slow
+    or failing SMTP round-trip neither blocks the request nor becomes a timing
+    oracle for whether the account exists. Reuses the alert channel's
+    ``_send_email_message`` instead of opening a second SMTP client. Best-effort:
+    any failure is logged and swallowed since the caller already returned the
+    same neutral response.
+    """
+    from_address = email_config.smtp_from_address
+    if not from_address:
+        logger.warning("Password reset email not sent: SMTP_FROM_ADDRESS is unset")
+        return
+
+    # Lazy import keeps the worker email module off the API's import path.
+    from tripl.worker.tasks.alerts_channels import _send_email_message
+
+    body = (
+        "We received a request to reset the password for your tripl account.\n\n"
+        f"Use this link to choose a new password (valid for "
+        f"{auth_service.PASSWORD_RESET_TTL_HOURS} hour):\n"
+        f"{reset_link}\n\n"
+        "If you did not request this, you can safely ignore this email — your "
+        "password will not change.\n"
+    )
+    try:
+        _send_email_message(
+            smtp_cls=smtplib.SMTP,
+            smtp_host=email_config.smtp_host,
+            smtp_port=email_config.smtp_port,
+            smtp_username=email_config.smtp_username,
+            smtp_password=email_config.smtp_password,
+            smtp_use_tls=email_config.smtp_use_tls,
+            from_address=from_address,
+            recipients=[recipient],
+            subject="Reset your tripl password",
+            body=body,
+        )
+    except Exception:  # noqa: BLE001 — best-effort; never surface to the caller.
+        logger.exception("Failed to send password reset email")
 
 
 @router.get(
@@ -78,6 +171,62 @@ async def login(response: Response, session: SessionDep, data: LoginRequest) -> 
     user, session_token = await auth_service.authenticate_user(session, data)
     _set_session_cookie(response, session_token)
     return AuthUserResponse.model_validate(user)
+
+
+@router.post(
+    "/password-reset/request",
+    response_model=PasswordResetRequestResponse,
+    dependencies=[Depends(enforce(login_rate_limiter))],
+)
+async def request_password_reset(
+    session: SessionDep,
+    data: PasswordResetRequestBody,
+    background_tasks: BackgroundTasks,
+) -> PasswordResetRequestResponse:
+    # Always 200 with a neutral message so the response never reveals whether the
+    # address is registered. A token is minted and emailed ONLY when the instance
+    # has SMTP configured AND a matching account exists; otherwise nothing is
+    # stored or sent. ``email_configured`` is instance-wide, so returning it
+    # (for the UI's fallback copy) does not enable enumeration.
+    overrides = await app_settings_service.get_service_overrides(session)
+    email_config = app_settings_service.build_email_config(overrides)
+    email_configured = bool(email_config.smtp_host)
+
+    if email_configured:
+        issued = await auth_service.request_password_reset(session, data.email)
+        if issued is not None:
+            user, raw_token = issued
+            reset_link = _build_reset_link(
+                app_settings_service.build_runtime_config(overrides).app_base_url,
+                raw_token,
+            )
+            background_tasks.add_task(
+                _send_password_reset_email,
+                recipient=user.email,
+                reset_link=reset_link,
+                email_config=email_config,
+            )
+
+    return PasswordResetRequestResponse(
+        message=auth_service.PASSWORD_RESET_NEUTRAL_MESSAGE,
+        email_configured=email_configured,
+    )
+
+
+@router.post(
+    "/password-reset/confirm",
+    response_model=PasswordResetConfirmResponse,
+    dependencies=[Depends(enforce(login_rate_limiter))],
+)
+async def confirm_password_reset(
+    session: SessionDep, data: PasswordResetConfirmBody
+) -> PasswordResetConfirmResponse:
+    # Password strength is enforced on PasswordResetConfirmBody (422); the service
+    # validates the token (invalid/expired/used → 400) and applies the change.
+    await auth_service.confirm_password_reset(session, data.token, data.new_password)
+    return PasswordResetConfirmResponse(
+        message="Your password has been reset. You can now sign in with your new password."
+    )
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

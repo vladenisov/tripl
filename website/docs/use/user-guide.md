@@ -39,6 +39,16 @@ Plan → Observe → Govern**, but explore them in any order. Press `⌘K` (or
 1. Open the app and create the first account on the sign-in screen. **The first
    person to register becomes an owner**; everyone who registers after that
    starts as an editor.
+
+   :::note Forgot your password?
+   The sign-in screen has a **Forgot your password?** link. When the instance has
+   email configured (see **[Email delivery](../run/security.md)** / the SMTP
+   settings), it emails a single-use reset link that expires in one hour; open it
+   to choose a new password. If email is **not** configured, the same screen tells
+   you to contact your instance owner, who can reset it for you. To avoid leaking
+   who has an account, the request always shows the same confirmation regardless of
+   whether the address is registered.
+   :::
 2. After signing in you land on your projects. If you already have exactly one
    project, tripl takes you straight into it; otherwise you see the workspace
    dashboard.

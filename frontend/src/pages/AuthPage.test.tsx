@@ -31,11 +31,32 @@ function mockStatus(hasUsers: boolean) {
   })
 }
 
-function renderAuth() {
+// Broader router that also answers the password-reset endpoints. Re-implements
+// the (already-installed) fetch spy so tests can opt into the reset flows.
+function mockAuthFetch(options: { emailConfigured?: boolean } = {}) {
+  const emailConfigured = options.emailConfigured ?? true
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+    const url = urlOf(input)
+    if (url.endsWith('/api/v1/auth/status')) {
+      return Promise.resolve(jsonResponse({ has_users: true }))
+    }
+    if (url.endsWith('/api/v1/auth/password-reset/request')) {
+      return Promise.resolve(
+        jsonResponse({ message: 'neutral', email_configured: emailConfigured }),
+      )
+    }
+    if (url.endsWith('/api/v1/auth/password-reset/confirm')) {
+      return Promise.resolve(jsonResponse({ message: 'done' }))
+    }
+    return Promise.reject(new Error(`Unexpected request: ${url}`))
+  })
+}
+
+function renderAuth(initialEntry = '/auth') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/auth']}>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <AuthPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -118,11 +139,68 @@ describe('AuthPage', () => {
     ).toBeInTheDocument()
   })
 
-  it('shows the forgot-password hint in the login footer (UX .13)', () => {
+  it('exposes a forgot-password entry point in the login footer (UX .13)', () => {
     renderAuth()
 
     expect(
-      screen.getByText('Forgot your password? Contact your instance owner to reset it.'),
+      screen.getByRole('button', { name: 'Forgot your password?' }),
+    ).toBeInTheDocument()
+    // The old static "contact your owner" copy is gone from the default footer —
+    // it now only appears as a fallback after a request on an email-less instance.
+    expect(
+      screen.queryByText(/Contact your instance owner to reset/),
+    ).not.toBeInTheDocument()
+  })
+
+  it('sends a reset request and shows a neutral confirmation when email is configured', async () => {
+    mockAuthFetch({ emailConfigured: true })
+    renderAuth()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Forgot your password?' }))
+    fireEvent.change(screen.getByLabelText('Email'), {
+      target: { value: 'user@example.com' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send reset link' }))
+
+    expect(
+      await screen.findByText(/a password reset link is on its way/),
+    ).toBeInTheDocument()
+    // Neutral: it never states whether the account exists.
+    expect(screen.queryByText(/no account/i)).not.toBeInTheDocument()
+  })
+
+  it('falls back to the contact-owner copy when the instance has no email configured', async () => {
+    mockAuthFetch({ emailConfigured: false })
+    renderAuth()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Forgot your password?' }))
+    fireEvent.change(screen.getByLabelText('Email'), {
+      target: { value: 'user@example.com' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send reset link' }))
+
+    expect(
+      await screen.findByText(/Contact your instance owner to reset your password/),
+    ).toBeInTheDocument()
+  })
+
+  it('enters reset mode from an emailed ?reset_token link and confirms a new password', async () => {
+    mockAuthFetch()
+    renderAuth('/auth?reset_token=tok-123')
+
+    // The token in the URL switches the card straight into reset mode.
+    expect(
+      screen.getByRole('heading', { name: 'Choose a new password' }),
+    ).toBeInTheDocument()
+
+    const newPassword = screen.getByLabelText('New password') as HTMLInputElement
+    expect(newPassword.minLength).toBe(12)
+
+    fireEvent.change(newPassword, { target: { value: 'BrandNewPass9!' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Set new password' }))
+
+    expect(
+      await screen.findByText(/Your password has been reset/),
     ).toBeInTheDocument()
   })
 

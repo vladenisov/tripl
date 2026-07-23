@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -18,9 +19,27 @@ from tripl.auth_utils import (
     verify_password,
 )
 from tripl.config import settings
+from tripl.models.password_reset_token import PasswordResetToken
 from tripl.models.user import User
 from tripl.models.user_session import UserSession
 from tripl.schemas.auth import LoginRequest, RegisterRequest
+
+# Password-reset link lifetime. Short on purpose: a reset link is a bearer
+# credential, so it should be usable just long enough for a human to open their
+# inbox and click through.
+PASSWORD_RESET_TTL_HOURS = 1
+# 32 bytes ≈ 256 bits of entropy via ``secrets.token_urlsafe`` — the same
+# generator and width as session tokens, so a reset token is never guessable.
+PASSWORD_RESET_TOKEN_BYTES = 32
+
+# Single neutral message for both the "we emailed you" and "no such account"
+# cases so the request endpoint never reveals whether an address is registered.
+PASSWORD_RESET_NEUTRAL_MESSAGE = (
+    "If an account exists for that email, a password reset link is on its way."
+)
+# Deliberately identical for invalid / expired / already-used tokens so confirm
+# never leaks which of those a rejected token hit.
+_PASSWORD_RESET_INVALID_MESSAGE = "This password reset link is invalid or has expired."
 
 # Advisory-lock key serialising the first-user-becomes-owner decision. Constant
 # (not per-row) on purpose: the thing being serialised is the global "is the
@@ -175,5 +194,105 @@ async def logout_session(session: AsyncSession, session_token: str | None) -> No
         delete(UserSession).where(
             UserSession.session_token_hash == hash_session_token(session_token)
         )
+    )
+    await session.commit()
+
+
+def _hash_reset_token(raw_token: str) -> str:
+    """Digest a raw reset token for storage/lookup.
+
+    Reuses the shared keyed-HMAC token hasher (``auth_utils.hash_session_token``)
+    rather than rolling a new one: only the digest is ever persisted, so a leaked
+    ``password_reset_tokens`` column is useless without ``SECRET_KEY``.
+    """
+    return hash_session_token(raw_token)
+
+
+def _reset_expires_at() -> datetime:
+    return datetime.now(UTC) + timedelta(hours=PASSWORD_RESET_TTL_HOURS)
+
+
+async def _delete_reset_tokens_for_user(
+    session: AsyncSession, user_id: uuid.UUID, *, exclude_id: uuid.UUID | None = None
+) -> None:
+    """Drop a user's outstanding reset tokens (optionally keeping ``exclude_id``).
+
+    Keeps at most one reset link live per user: called when issuing a new token
+    (supersede any earlier link) and on a successful confirm (invalidate every
+    sibling of the just-consumed token).
+    """
+    statement = delete(PasswordResetToken).where(PasswordResetToken.user_id == user_id)
+    if exclude_id is not None:
+        statement = statement.where(PasswordResetToken.id != exclude_id)
+    await session.execute(statement.execution_options(synchronize_session=False))
+
+
+async def request_password_reset(session: AsyncSession, email: str) -> tuple[User, str] | None:
+    """Issue a single-use reset token for ``email`` when a user exists.
+
+    Returns ``(user, raw_token)`` when an account matches — the caller emails the
+    raw token — or ``None`` when no account matches. The caller responds
+    identically either way, so this never reveals whether an address is
+    registered. Any earlier outstanding token for the user is invalidated so only
+    the newest link works.
+    """
+    user = await _get_user_by_email(session, normalize_email(email))
+    if user is None:
+        return None
+
+    await _delete_reset_tokens_for_user(session, user.id)
+    raw_token = secrets.token_urlsafe(PASSWORD_RESET_TOKEN_BYTES)
+    session.add(
+        PasswordResetToken(
+            user_id=user.id,
+            token_hash=_hash_reset_token(raw_token),
+            expires_at=_reset_expires_at(),
+        )
+    )
+    await session.commit()
+    return user, raw_token
+
+
+async def confirm_password_reset(session: AsyncSession, raw_token: str, new_password: str) -> None:
+    """Consume a reset token and set the user's new password.
+
+    The token must exist, be unexpired and unused. On success the password is
+    re-hashed with the shared policy-enforced hasher, the token is marked used
+    (single-use), every other outstanding token for the user is dropped, and all
+    active sessions are cleared so a reset always ends other logins. Password
+    strength is enforced upstream at the schema boundary (same policy as
+    register), so an invalid password never reaches here.
+    """
+    row = cast(
+        PasswordResetToken | None,
+        await session.scalar(
+            select(PasswordResetToken).where(
+                PasswordResetToken.token_hash == _hash_reset_token(raw_token)
+            )
+        ),
+    )
+    now = datetime.now(UTC)
+    if row is None or row.used_at is not None or row.expires_at <= now:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_PASSWORD_RESET_INVALID_MESSAGE,
+        )
+
+    user = await session.get(User, row.user_id)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_PASSWORD_RESET_INVALID_MESSAGE,
+        )
+
+    user.password_hash = hash_password(new_password)
+    row.used_at = now
+    await _delete_reset_tokens_for_user(session, user.id, exclude_id=row.id)
+    # A password reset invalidates existing sessions: whoever reset the password
+    # gets a fresh login, and any other live session is forced to re-authenticate.
+    await session.execute(
+        delete(UserSession)
+        .where(UserSession.user_id == user.id)
+        .execution_options(synchronize_session=False)
     )
     await session.commit()

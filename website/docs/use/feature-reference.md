@@ -455,6 +455,21 @@ action, user, and time range.
 
 ## Cross-cutting tools
 
+### Sign-in and password reset
+
+The sign-in screen toggles between **Existing Account** and **Create account**,
+and exposes a **Forgot your password?** flow. Entering your account email
+requests a reset; the screen then always shows the same neutral confirmation
+regardless of whether that address is registered, so it can't be used to probe
+for accounts. When the instance has email configured it sends a **single-use
+reset link that expires in one hour** — opening it returns you to the sign-in
+screen in "choose a new password" mode, where the new password must meet the
+same policy as registration (at least 12 characters with a number and a symbol).
+When email is **not** configured, the confirmation instead tells you to contact
+your instance owner. Completing a reset also signs out the account's other
+sessions. See **[Security](../run/security.md)** for the token and delivery
+details.
+
 ### Command palette (⌘K)
 
 Open with ⌘K / Ctrl+K (suppressed while you are typing in an input, textarea, or
