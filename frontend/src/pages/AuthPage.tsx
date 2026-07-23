@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowRight, LockKeyhole, Radar, UserPlus } from 'lucide-react'
@@ -47,6 +47,14 @@ export default function AuthPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
+
+  // A reset link can arrive while the page is ALREADY mounted on /auth (same
+  // route, new ?reset_token= — React Router re-renders without remounting, so the
+  // useState initializer above never re-runs). React to the token appearing so the
+  // reset form always shows, not just when the page first loads with a token.
+  useEffect(() => {
+    if (resetToken) setMode('reset')
+  }, [resetToken])
 
   const destination = (
     location.state as { from?: { pathname?: string } } | null

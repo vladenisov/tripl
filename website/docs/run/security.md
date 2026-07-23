@@ -150,8 +150,12 @@ The middleware reads `CONTENT_SECURITY_POLICY`, `SERVE_FRONTEND`, `HSTS_ENABLED`
 | `POST /api/v1/auth/password-reset/confirm` | `RATE_LIMIT_LOGIN_PER_MINUTE` | 5 / minute |
 
 The two password-reset routes reuse the **login** limiter (same bucket and
-setting), so they share its per-IP quota. Buckets are otherwise keyed per
-`(route, client-IP)`, so the login and register routes do not share quota. Exceeding a limit returns `429 Too Many Requests` with a `Retry-After` header. To turn rate limiting off entirely, set `RATE_LIMIT_ENABLED=false`.
+setting), so they share its per-IP quota. Buckets are keyed per
+`(limiter name, client-IP)`, so routes on **different** limiters (login vs
+register) do not share quota, while routes that reuse a limiter (the password-reset
+routes on the login limiter) do. Exceeding a limit returns `429 Too Many Requests`
+with a `Retry-After` header. To turn rate limiting off entirely, set
+`RATE_LIMIT_ENABLED=false`.
 
 Set an individual route's limit to `0` to disable that route limiter while
 leaving the other one active. Use `RATE_LIMIT_ENABLED=false` to disable both.
