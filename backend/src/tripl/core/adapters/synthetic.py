@@ -13,6 +13,12 @@ Design
   scenario. Rows are generated deterministically from a fixed seed via SHA-256
   (never the salted builtin ``hash()``), so two builds with the same seed and
   anchor are byte-for-byte identical, and the total row count is capped.
+* The most-recent ``SYNTHETIC_ONGOING_HOURS`` hours are generated at each event's
+  seeded *base* volume (a believable daily/weekly shape with mild noise), so a
+  live scan's current window continues the demo's seeded baseline instead of
+  reading a near-empty warehouse and stamping a spurious drop (bd tripl-yfsj.14).
+  Older hours stay at a small "sample" scale so the 30-day dataset (preview,
+  active-sessions history) stays comfortably within the row budget.
 * Every abstract method aggregates the in-memory rows in Python according to the
   STRUCTURED params it receives (time window, regular/breakdown columns,
   aggregation + measure, ``AggregateSpec`` list, top-N ``values_limit``). It does
@@ -30,6 +36,7 @@ Design
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from datetime import UTC, datetime, timedelta
 
@@ -108,15 +115,21 @@ _ORDERS_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 _EVENTS_NULLABLE = frozenset({"button_id", "product_id", "amount", "currency"})
 
-# (event_type, event_name, screen_name, button_id, product_id) — semantic keys.
-_EVENT_DEFS: tuple[tuple[str, str, str, str | None, str | None], ...] = (
-    ("screen_view", "Home Screen View", "home", None, None),
-    ("screen_view", "Paywall View", "paywall", None, None),
-    ("screen_view", "Profile Screen View", "profile", None, None),
-    ("click", "Buy Button Click", "paywall", "buy_now", None),
-    ("click", "Skip Onboarding Click", "onboarding_step1", "skip_onboarding", None),
-    ("purchase", "Purchase Completed", "paywall", None, "prod_pro_monthly"),
-    ("purchase", "Trial Started", "paywall", None, "prod_trial"),
+# (event_type, event_name, screen_name, button_id, product_id, ongoing_base).
+# ``ongoing_base`` is the seeded hourly volume for the *most-recent* hours (the
+# ongoing window a live scan reads back). It MIRRORS the matching event's ``base``
+# in ``services.demo.builders.plan.event_specs`` — the demo's single source of
+# truth for event volumes — so a rescan continues the seeded baseline rather than
+# dropping (bd tripl-yfsj.14). core/ cannot import services/, so the values are
+# duplicated here; ``test_demo_metric_collection`` pins them to ``event_specs``.
+_EVENT_DEFS: tuple[tuple[str, str, str, str | None, str | None, int], ...] = (
+    ("screen_view", "Home Screen View", "home", None, None, 1800),
+    ("screen_view", "Paywall View", "paywall", None, None, 600),
+    ("screen_view", "Profile Screen View", "profile", None, None, 400),
+    ("click", "Buy Button Click", "paywall", "buy_now", None, 300),
+    ("click", "Skip Onboarding Click", "onboarding_step1", "skip_onboarding", None, 180),
+    ("purchase", "Purchase Completed", "paywall", None, "prod_pro_monthly", 120),
+    ("purchase", "Trial Started", "paywall", None, "prod_trial", 250),
 )
 
 # Distinct ``event_name`` values the synthetic adapter can emit — the single
@@ -127,7 +140,7 @@ _EVENT_DEFS: tuple[tuple[str, str, str, str | None, str | None], ...] = (
 # so a new synthetic name can never silently reintroduce raw pipe-named drafts.
 # ``dict.fromkeys`` de-dupes while preserving first-seen order.
 SYNTHETIC_EVENT_NAMES: tuple[str, ...] = tuple(
-    dict.fromkeys(event_name for _, event_name, _, _, _ in _EVENT_DEFS)
+    dict.fromkeys(event_name for _, event_name, _, _, _, _ in _EVENT_DEFS)
 )
 
 _PLATFORMS = ("ios", "android", "web")
@@ -145,6 +158,28 @@ _ORDER_STATUSES = (
     "failed",
 )
 
+# --- ongoing (live-scan) volume ----------------------------------------------
+# Number of most-recent hours generated at the seeded ``ongoing_base`` scale. A
+# live scan only reads its current window (the newest hours), so only those need
+# to continue the demo's baseline; older hours stay at the small "sample" scale
+# below. Sized so ``SYNTHETIC_ONGOING_HOURS`` hours at the summed base volume plus
+# the small older tail stay under ``SYNTHETIC_MAX_ROWS`` for any anchor.
+SYNTHETIC_ONGOING_HOURS = 6
+# Seasonal-shape constants MIRROR ``services.demo.noise.hourly_volume`` (which
+# builds the seeded EventMetric baseline) so the ongoing counts land inside the
+# anomaly detector's per-bucket tolerance band. daily peaks ~08:00 UTC; weekly is
+# a gentle hump; the constant drift matches the seeded baseline's ~+4% level at its
+# most-recent bucket (``hourly_volume`` ramps its drift 0 -> 0.04 across history,
+# and the ongoing window is always the most-recent hours).
+_ONGOING_DAILY_AMPLITUDE = 0.35
+_ONGOING_WEEKLY_AMPLITUDE = 0.08
+_ONGOING_RECENT_DRIFT = 0.04
+# Mild deterministic texture (+/- this percent) so the series is not a bare
+# sinusoid; kept well under the seeded +/-7% texture so |ongoing - seeded| stays
+# inside the detector's drop band (worst-case |z| ~= 2.65 vs the 3-sigma gate)
+# even at the low-volume trough of a mid-volume event.
+_ONGOING_TEXTURE_PCT = 1
+
 
 def _digest_int(*parts: object) -> int:
     """Stable non-negative int from ``parts`` via SHA-256 (never builtin hash)."""
@@ -161,48 +196,117 @@ def _bval(value: object) -> str:
     return "" if value is None else str(value)
 
 
+def _ongoing_hourly_count(seed: int, base: int, event_name: str, bucket: datetime) -> int:
+    """Seeded-scale hourly volume with daily/weekly shape and mild noise.
+
+    Mirrors the shape family of ``services.demo.noise.hourly_volume`` (which builds
+    the seeded EventMetric baseline) closely enough that a live scan's per-event
+    count for the ongoing window lands inside the anomaly detector's per-bucket
+    tolerance band, so scanning an idle demo does not surface a spurious drop
+    (bd tripl-yfsj.14). Digest-seeded (never ``Date.now``/random), per the adapter's
+    determinism contract, and never below 1.
+    """
+    hour = bucket.hour
+    weekday = bucket.weekday()
+    daily = math.sin((hour - 2) * math.pi / 12)
+    weekly = _ONGOING_WEEKLY_AMPLITUDE * math.sin(weekday * math.pi / 3.5)
+    span = 2 * _ONGOING_TEXTURE_PCT + 1
+    texture = (
+        _digest_int(seed, "vol_texture", event_name, weekday, hour) % span - _ONGOING_TEXTURE_PCT
+    ) / 100.0
+    raw = base * (1 + _ONGOING_DAILY_AMPLITUDE * daily + weekly + _ONGOING_RECENT_DRIFT + texture)
+    return max(1, round(raw))
+
+
+def _event_row(
+    seed: int,
+    bucket: datetime,
+    event_def: tuple[str, str, str, str | None, str | None, int],
+    session_span: int,
+    day_index: int,
+    *occ: object,
+) -> dict[str, object]:
+    """Build one deterministic event row for ``event_def``.
+
+    ``occ`` is the per-occurrence digest key (``(hour, j)`` for a sampled row,
+    ``(hour, event_name, k)`` for an ongoing per-event row) so the two generation
+    regimes stay independent yet reproducible.
+    """
+    event_type, event_name, screen_name, button_id, product_id, _base = event_def
+    minute = _digest_int(seed, "ev_minute", *occ) % 60
+    second = _digest_int(seed, "ev_second", *occ) % 60
+    is_purchase = event_type == "purchase"
+    session_slot = _digest_int(seed, "ev_sess", *occ) % session_span
+    return {
+        "event_time": bucket + timedelta(minutes=minute, seconds=second),
+        "event_type": event_type,
+        "event_name": event_name,
+        "screen_name": screen_name,
+        "platform": _PLATFORMS[_digest_int(seed, "ev_plat", *occ) % len(_PLATFORMS)],
+        "button_id": button_id,
+        "product_id": product_id,
+        "amount": 9.99 if is_purchase else None,
+        "currency": "USD" if is_purchase else None,
+        "app_version": _APP_VERSIONS[_digest_int(seed, "ev_ver", *occ) % len(_APP_VERSIONS)],
+        "user_id": f"u{_digest_int(seed, 'ev_user', *occ) % 500}",
+        "session_id": f"s{day_index}_{session_slot}",
+    }
+
+
+def _ongoing_hour_rows(
+    seed: int, bucket: datetime, hour: int, session_span: int, day_index: int
+) -> list[dict[str, object]]:
+    """One ongoing-window hour: each event at its seeded ``ongoing_base`` volume."""
+    out: list[dict[str, object]] = []
+    for event_def in _EVENT_DEFS:
+        event_name = event_def[1]
+        count = _ongoing_hourly_count(seed, event_def[5], event_name, bucket)
+        for k in range(count):
+            occ = (hour, event_name, k)
+            out.append(_event_row(seed, bucket, event_def, session_span, day_index, *occ))
+    return out
+
+
+def _sampled_hour_rows(
+    seed: int, bucket: datetime, hour: int, session_span: int, day_index: int
+) -> list[dict[str, object]]:
+    """One older-history hour: a small sampled scatter across the event roster."""
+    out: list[dict[str, object]] = []
+    n_events = 3 + _digest_int(seed, "ev_count", hour) % 6
+    for j in range(n_events):
+        event_def = _EVENT_DEFS[_digest_int(seed, "ev_def", hour, j) % len(_EVENT_DEFS)]
+        out.append(_event_row(seed, bucket, event_def, session_span, day_index, hour, j))
+    return out
+
+
 def _generate_events(
     seed: int, anchor: datetime, history_days: int, max_rows: int
 ) -> list[dict[str, object]]:
-    """Deterministic hourly events over the last ``history_days`` before ``anchor``."""
+    """Deterministic hourly events over the last ``history_days`` before ``anchor``.
+
+    The most-recent ``SYNTHETIC_ONGOING_HOURS`` hours carry each event's seeded
+    ``ongoing_base`` volume (so a live scan's current window continues the demo's
+    baseline, bd tripl-yfsj.14); older hours keep the small sampled scale so the
+    full-history dataset stays within ``max_rows``.
+    """
     rows: list[dict[str, object]] = []
     start = anchor - timedelta(days=history_days)
     total_hours = history_days * 24
+    ongoing_start_hour = max(0, total_hours - SYNTHETIC_ONGOING_HOURS)
     for hour in range(total_hours):
+        remaining = max_rows - len(rows)
+        if remaining <= 0:
+            break
         bucket = start + timedelta(hours=hour)
         day_index = hour // 24
         # Distinct sessions per day vary in a bounded band so the sql metric's
         # per-day distinct-session series is a live-looking (but stable) line.
         session_span = 25 + _digest_int(seed, "day_sessions", day_index) % 20
-        n_events = 3 + _digest_int(seed, "ev_count", hour) % 6
-        for j in range(n_events):
-            if len(rows) >= max_rows:
-                return rows
-            event_type, event_name, screen_name, button_id, product_id = _EVENT_DEFS[
-                _digest_int(seed, "ev_def", hour, j) % len(_EVENT_DEFS)
-            ]
-            minute = _digest_int(seed, "ev_minute", hour, j) % 60
-            second = _digest_int(seed, "ev_second", hour, j) % 60
-            is_purchase = event_type == "purchase"
-            session_slot = _digest_int(seed, "ev_sess", hour, j) % session_span
-            rows.append(
-                {
-                    "event_time": bucket + timedelta(minutes=minute, seconds=second),
-                    "event_type": event_type,
-                    "event_name": event_name,
-                    "screen_name": screen_name,
-                    "platform": _PLATFORMS[_digest_int(seed, "ev_plat", hour, j) % len(_PLATFORMS)],
-                    "button_id": button_id,
-                    "product_id": product_id,
-                    "amount": 9.99 if is_purchase else None,
-                    "currency": "USD" if is_purchase else None,
-                    "app_version": _APP_VERSIONS[
-                        _digest_int(seed, "ev_ver", hour, j) % len(_APP_VERSIONS)
-                    ],
-                    "user_id": f"u{_digest_int(seed, 'ev_user', hour, j) % 500}",
-                    "session_id": f"s{day_index}_{session_slot}",
-                }
-            )
+        if hour >= ongoing_start_hour:
+            hour_rows = _ongoing_hour_rows(seed, bucket, hour, session_span, day_index)
+        else:
+            hour_rows = _sampled_hour_rows(seed, bucket, hour, session_span, day_index)
+        rows.extend(hour_rows[:remaining])
     return rows
 
 

@@ -488,3 +488,47 @@ def test_unknown_column_is_rejected() -> None:
         adapter.get_time_bucketed_counts(
             "SELECT * FROM events", "event_time", "1d", ["nope"], [], None, tf, tt
         )
+
+
+# --------------------------------------------------------------------------- #
+# ongoing (live-scan) volume — bd tripl-yfsj.14
+# --------------------------------------------------------------------------- #
+
+
+def test_ongoing_window_carries_seeded_scale_per_event_volume() -> None:
+    """The most-recent hours carry each event at roughly its ``ongoing_base``.
+
+    A live scan reads back its current window from this dataset; if the ongoing
+    per-event volume sat at the old ~3-8 rows/hour TOTAL it read as a huge drop
+    against the demo's seeded 200-1800/hour baseline (bd tripl-yfsj.14). Each
+    seeded event must now appear in the newest hour near its base scale.
+    """
+    from tripl.core.adapters.synthetic import _EVENT_DEFS
+
+    adapter = _adapter()
+    newest = ANCHOR - timedelta(hours=1)
+    _cols, _json, rows = adapter.get_time_bucketed_counts(
+        "SELECT * FROM events", "event_time", "1h", ["event_name"], [], None, newest, ANCHOR
+    )
+    counts = {name: count for _bucket, name, count in rows}
+    bases = {event_name: base for _t, event_name, _s, _b, _p, base in _EVENT_DEFS}
+
+    for name, base in bases.items():
+        assert name in counts, f"{name} absent from the ongoing window"
+        # Within the daily/weekly envelope of its base — never the tiny old scale.
+        assert 0.4 * base <= counts[name] <= 1.6 * base, (name, counts[name], base)
+    assert sum(counts.values()) > 1000, "ongoing window must be at seeded scale, not ~3-8/hour"
+
+
+def test_ongoing_window_is_shaped_not_flat() -> None:
+    """The ongoing series has a daily shape (mild noise), not a flat line."""
+    from tripl.core.adapters.synthetic import SYNTHETIC_ONGOING_HOURS
+
+    adapter = _adapter()
+    window_start = ANCHOR - timedelta(hours=SYNTHETIC_ONGOING_HOURS)
+    _cols, _json, rows = adapter.get_time_bucketed_counts(
+        "SELECT * FROM events", "event_time", "1h", ["event_name"], [], None, window_start, ANCHOR
+    )
+    home_by_bucket = {bucket: count for bucket, name, count in rows if name == "Home Screen View"}
+    assert len(home_by_bucket) >= 2
+    assert len(set(home_by_bucket.values())) > 1, "ongoing volume must vary hour to hour, not flat"
