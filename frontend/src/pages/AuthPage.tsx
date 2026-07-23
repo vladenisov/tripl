@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowRight, LockKeyhole, Radar, UserPlus } from 'lucide-react'
@@ -42,19 +42,16 @@ export default function AuthPage() {
   // A reset link lands on /auth?reset_token=... (the SPA has no dedicated reset
   // route), so an incoming token puts the page straight into reset mode.
   const resetToken = searchParams.get('reset_token') ?? ''
-  const [mode, setMode] = useState<AuthMode>(resetToken ? 'reset' : 'login')
+  // A live reset token always forces reset mode: a reset link must show the reset
+  // form even when /auth was ALREADY mounted (same route, new ?reset_token=, no
+  // remount). Deriving `mode` from the token — rather than syncing it in an effect —
+  // means the token can never be missed and avoids set-state-in-effect.
+  const [chosenMode, setChosenMode] = useState<AuthMode>('login')
+  const mode: AuthMode = resetToken ? 'reset' : chosenMode
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
-
-  // A reset link can arrive while the page is ALREADY mounted on /auth (same
-  // route, new ?reset_token= — React Router re-renders without remounting, so the
-  // useState initializer above never re-runs). React to the token appearing so the
-  // reset form always shows, not just when the page first loads with a token.
-  useEffect(() => {
-    if (resetToken) setMode('reset')
-  }, [resetToken])
 
   const destination = (
     location.state as { from?: { pathname?: string } } | null
@@ -94,7 +91,7 @@ export default function AuthPage() {
   })
 
   function switchMode(next: AuthMode) {
-    setMode(next)
+    setChosenMode(next)
     authMutation.reset()
     forgotMutation.reset()
     resetMutation.reset()
