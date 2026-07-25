@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  formatSignalSeverity,
   getMetricMonitoringPath,
   resolveDetailScope,
   routeScopeToApiScope,
@@ -22,6 +23,44 @@ describe('routeScopeToApiScope', () => {
 describe('getMetricMonitoringPath', () => {
   it('builds the catalog-metric drilldown URL', () => {
     expect(getMetricMonitoringPath('demo', 'm-1')).toBe('/p/demo/monitoring/metric/m-1')
+  })
+})
+
+describe('formatSignalSeverity', () => {
+  it('reads "dropped to zero" for a drop whose actual count bottomed out at zero', () => {
+    // The detector clamps the z-score for these, so "z=-20.0" is repeated and
+    // low-information; the useful fact is that the series went to zero.
+    expect(
+      formatSignalSeverity({
+        actual_count: 0,
+        expected_count: 80,
+        z_score: -20,
+        direction: 'drop',
+      }),
+    ).toBe('dropped to zero')
+  })
+
+  it('keeps the numeric z-score (prefix included) for a non-zero drop', () => {
+    expect(
+      formatSignalSeverity({
+        actual_count: 40,
+        expected_count: 100,
+        z_score: -6,
+        direction: 'drop',
+      }),
+    ).toBe('z=-6.0')
+  })
+
+  it('keeps the numeric z-score for a spike, even when it reads zero actuals', () => {
+    // Only a `drop` to zero gets the special label; a spike never does.
+    expect(
+      formatSignalSeverity({
+        actual_count: 0,
+        expected_count: 10,
+        z_score: 4.25,
+        direction: 'spike',
+      }),
+    ).toBe('z=4.3')
   })
 })
 

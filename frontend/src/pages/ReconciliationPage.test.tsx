@@ -137,6 +137,9 @@ describe('ReconciliationPage', () => {
     // dashboard's plan-coverage KPI — it now reads as "seen in data".
     expect(screen.getByText('Data match')).toBeInTheDocument()
     expect(screen.getByText('seen in data')).toBeInTheDocument()
+    // The headline carries an inline clarifier so it can't be misread as the
+    // Coverage page's plan-coverage KPI — they measure different things.
+    expect(screen.getByTitle(/seen in warehouse data/i)).toBeInTheDocument()
     expect(screen.queryByText('data-match coverage')).not.toBeInTheDocument()
     expect(screen.getByText('124 of 132 planned events seen in data · 14d')).toBeInTheDocument()
   })

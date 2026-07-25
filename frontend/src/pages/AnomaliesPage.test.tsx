@@ -192,6 +192,50 @@ describe('AnomaliesPage — metric-scope signals (tripl-nxk2.4)', () => {
   })
 })
 
+describe('AnomaliesPage — severity label (tripl-yfsj.9)', () => {
+  it('shows "dropped to zero" instead of the clamped z-score for a drop-to-zero signal', async () => {
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({
+        scope_type: 'event_type',
+        scope_ref: 'et-1',
+        direction: 'drop',
+        actual_count: 0,
+        expected_count: 80,
+        z_score: -20,
+      }),
+    ])
+    vi.mocked(eventTypesApi.list).mockResolvedValue(
+      makeEventTypes([{ id: 'et-1', display_name: 'Signup' }]),
+    )
+
+    renderAnomalies()
+
+    const row = (await screen.findByText('Drop on Event type · Signup')).closest(
+      '[role="row"]',
+    ) as HTMLElement
+    expect(row).toHaveTextContent('dropped to zero')
+    // The low-information clamped z-score must not be surfaced.
+    expect(row).not.toHaveTextContent('z=-20')
+  })
+
+  it('keeps the numeric z-score for a non-zero signal', async () => {
+    // makeSignal() defaults to a spike with z_score 8 and actual_count 120.
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({ scope_type: 'event_type', scope_ref: 'et-1' }),
+    ])
+    vi.mocked(eventTypesApi.list).mockResolvedValue(
+      makeEventTypes([{ id: 'et-1', display_name: 'Signup' }]),
+    )
+
+    renderAnomalies()
+
+    const row = (await screen.findByText('Spike on Event type · Signup')).closest(
+      '[role="row"]',
+    ) as HTMLElement
+    expect(row).toHaveTextContent('z=8.0')
+  })
+})
+
 describe('AnomaliesPage — magnitude filter', () => {
   it('hides low-magnitude signals at the default level and reveals them under "All"', async () => {
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([

@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Calendar, Inbox } from 'lucide-react'
+import { Calendar, Inbox, Info } from 'lucide-react'
 import {
   reconciliationApi,
   type CoverageBucket,
@@ -29,6 +29,11 @@ const COVERAGE_DAYS = 14 as const
 // instead of silently mixing look-backs (the header's "Last 14 days").
 const DEAD_DAYS = 14 as const
 const SHADOW_TABS: readonly ShadowEventStatus[] = ['new', 'accepted', 'dismissed']
+
+// One-line clarifier for the headline number. It reads as "coverage" but is a
+// different measure than the Coverage page's plan-coverage KPI, so spell out the
+// distinction to stop the two governance views looking contradictory.
+const DATA_MATCH_HELP = `Share of planned events actually seen in warehouse data over the last ${COVERAGE_DAYS} days. Different from Coverage, which measures how many active events are marked implemented.`
 
 // Coverage heatmap colour. Resolved through the shared status lexicon so good
 // coverage reads green (success) — matching the overview KPI — instead of the
@@ -231,8 +236,17 @@ export default function ReconciliationPage() {
               >
                 {coverage.summary.coverage_pct.toFixed(0)}%
               </span>
-              <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+              <span
+                className="inline-flex items-center gap-1 text-[11px]"
+                style={{ color: 'var(--fg-subtle)' }}
+                title={DATA_MATCH_HELP}
+              >
                 seen in data
+                <Info
+                  className="h-3 w-3 shrink-0"
+                  style={{ color: 'var(--fg-faint)' }}
+                  aria-hidden
+                />
               </span>
             </div>
             <CoverageStrip items={coverage.items} days={coverage.days} />

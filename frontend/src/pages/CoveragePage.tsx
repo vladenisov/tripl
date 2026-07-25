@@ -1,6 +1,6 @@
 import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowRight, ShieldCheck, ShieldX } from 'lucide-react'
+import { ArrowRight, Info, ShieldCheck, ShieldX } from 'lucide-react'
 import { projectsApi } from '@/api/projects'
 import { reconciliationApi } from '@/api/reconciliation'
 import { Button } from '@/components/ui/button'
@@ -17,6 +17,12 @@ import type { DeadEvent } from '@/api/reconciliation'
 // dead-events default so the two governance views agree on what counts as dead.
 const DEAD_DAYS = 30
 const GAP_LIMIT = 50
+
+// One-line clarifier for the headline number. "Plan coverage" sits one nav item
+// from Reconciliation's data-match number and also reads as "coverage", so spell
+// out that this counts implemented events, not events seen in warehouse data.
+const PLAN_COVERAGE_HELP =
+  'Share of active planned events marked implemented. Different from the Reconciliation data match, which measures how many planned events are actually seen in warehouse data.'
 
 function coverageTone(ratio: number): 'success' | 'warning' | 'danger' {
   if (ratio >= 0.9) return 'success'
@@ -89,11 +95,18 @@ export default function CoveragePage() {
             className="flex flex-wrap items-center gap-x-6 gap-y-4 rounded-lg border px-4 py-3"
             style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
           >
-            <MiniStat
-              label="Plan coverage"
-              value={summary ? formatPlanCoverage(implemented, active) : '—'}
-              tone={summary && active > 0 ? coverageTone(coverageRatio) : 'neutral'}
-            />
+            <div className="inline-flex items-center gap-1" title={PLAN_COVERAGE_HELP}>
+              <MiniStat
+                label="Plan coverage"
+                value={summary ? formatPlanCoverage(implemented, active) : '—'}
+                tone={summary && active > 0 ? coverageTone(coverageRatio) : 'neutral'}
+              />
+              <Info
+                className="h-3 w-3 shrink-0 self-end"
+                style={{ color: 'var(--fg-faint)' }}
+                aria-hidden
+              />
+            </div>
             <MiniStatDivider />
             <MiniStat
               label="Active events"

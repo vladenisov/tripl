@@ -680,7 +680,18 @@ export function MetricsMultiSeriesChart({
   )
 }
 
-function renderCountSeries({
+// The main volume series keeps `isAnimationActive={false}`, matching the band /
+// forecast series above. MetricsChart mounts its ResponsiveContainer only once
+// `useChartContainerReady` reports a real size (and TabMetricsCard nests it in a
+// Collapsible), so recharts sees a late/resizing mount — exactly the case where
+// an *animated* Area/Line can settle into its empty enter-frame and never paint.
+// When the series is count-only (the events-metrics `events_total` response has
+// no expected/band series to fall back on) that left the whole plot blank while
+// the axes still rendered from the count domain (tripl-yfsj.2).
+// Exported for unit tests only — recharts never paints in jsdom, so the
+// animation flag is asserted on the returned element rather than on pixels.
+// eslint-disable-next-line react-refresh/only-export-components
+export function renderCountSeries({
   chartStyle,
   chartColor,
   gradientId,
@@ -713,6 +724,7 @@ function renderCountSeries({
         dataKey="count"
         fill={chartColor}
         radius={[2, 2, 0, 0]}
+        isAnimationActive={false}
         shape={(props: AnomalyBarProps) => <AnomalyBar {...props} chartColor={chartColor} />}
       />
     )
@@ -725,6 +737,7 @@ function renderCountSeries({
         dataKey="count"
         stroke={chartColor}
         strokeWidth={2}
+        isAnimationActive={false}
         dot={anomalyDot}
         activeDot={mini ? false : { r: 4, strokeWidth: 0 }}
       />
@@ -738,6 +751,7 @@ function renderCountSeries({
       stroke={chartColor}
       fill={`url(#${gradientId})`}
       strokeWidth={2}
+      isAnimationActive={false}
       dot={anomalyDot}
       activeDot={mini ? false : { r: 4, strokeWidth: 0 }}
     />

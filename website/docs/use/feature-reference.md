@@ -38,7 +38,8 @@ is a **Project settings** link; the footer adds **Concepts** (the in-app domain
 primer), a **Workspace settings** gear, and **Sign out**. Badge counts come from
 the cheap project summary: Events (active events), Event types, Variables,
 Monitors (only when one or more is firing, rendered in red), Anomalies (the count
-of open monitoring signals, in red when any are open), and Alerting (only when
+of significant open monitoring signals — the same number the Anomalies page shows —
+in red when any are open), and Alerting (only when
 one or more destinations exist). Schema & fields, Relations, Metrics, Plan
 branches, Coverage, Scans, and Audit log carry no count.
 
@@ -231,7 +232,12 @@ Distinct from per-event history and the workspace audit log.
 **Where:** Observe › Live activity (the project overview, route
 `/p/<slug>/overview`). Panels: a 14-day active-events KPI series and plan-coverage
 stat, project-total volume, top events over the last 48h, active anomaly signals,
-recent activity, and source health.
+recent activity, and source health. A new project also shows a **Get started**
+checklist (Plan → Observe → Govern) that ticks steps off automatically from real
+project state and hides itself once you are set up. It is role-aware: connecting a
+data source is owner-only, so for an editor that step is shown as **Owner only**
+with an ask-an-owner hint and is excluded from progress — a non-owner's checklist
+can still reach done without it.
 
 ### Monitors
 
@@ -345,12 +351,17 @@ cross-event list of every open monitoring signal, sorted most-severe-first by
 `|z|`. A rollup shows open-signal, spike, and drop counts; each row shows the
 spike/drop direction, scope (project total / event type / event / metric), actual
 vs expected counts, the z-score, and when it fired — linking to the monitoring
-detail for that scope. When one incident trips several scopes on the same bucket,
+detail for that scope. When a series drops all the way to zero, the severity
+column reads **dropped to zero** instead of the clamped z-score, since every such
+signal would otherwise show an identical, low-information value. When one incident trips several scopes on the same bucket,
 the child rows (event type / event) are still shown and tagged `part of total`
-rather than folded into the project-total row. The sidebar and top-bar badge count
-**incidents** (the collapsed rollup), so the badge can read lower than the number
-of rows listed here. Sensitivity is tuned in **Monitoring settings** (see
-[How anomaly detection works](./anomaly-detection.md)).
+rather than folded into the project-total row. A **magnitude filter**
+(All / Significant / Major, defaulting to **Significant**) trims the list by
+relative effect (`|actual − expected| / max(expected, 1)`). The sidebar and top-bar
+badge, the Overview **Open signals** stat, and this page all report the **same**
+number — open signals across every scope that clear the Significant threshold — so
+the badge agrees with the list rather than reading lower. Sensitivity is tuned in
+**Monitoring settings** (see [How anomaly detection works](./anomaly-detection.md)).
 
 ### Chart annotations
 
@@ -384,7 +395,9 @@ on failures.
 
 **Where:** Govern › Reconciliation. **Data match** shows the share of planned
 events actually seen in your data over a fixed 14-day window (the date control is
-non-interactive). The **shadow events inbox** (tabs: `new` / `accepted` /
+non-interactive). The headline percentage carries an inline tooltip spelling out
+that it measures data match — not the Coverage page's plan coverage — so the two
+governance numbers are not read as contradictory. The **shadow events inbox** (tabs: `new` / `accepted` /
 `dismissed`) lists events seen in data but missing from the plan — **Accept**
 creates the event on the active branch (you pick an event type when none is
 inferred), or **Dismiss** it. **Dead events** (in plan, not seen recently over a
@@ -397,7 +410,9 @@ inferred), or **Dismiss** it. **Dead events** (in plan, not seen recently over a
 plan-coverage overview, complementary to Reconciliation's data-match view. The
 rollup leads with **plan coverage** — the canonical share of active events that
 are implemented — alongside active, implemented, in-review, and archived counts,
-plus an implemented-vs-pending bar. **Instrumentation gaps** lists active events
+plus an implemented-vs-pending bar. An inline tooltip on the plan-coverage figure
+clarifies that it counts implemented events, not events seen in warehouse data
+(Reconciliation's data match), so the two views are not confused. **Instrumentation gaps** lists active events
 with no data in the last 30 days (the same dead-events signal Reconciliation acts
 on); each row shows the event, its type, and when it was last seen, with a link
 to Reconciliation to triage.
@@ -440,6 +455,21 @@ action, user, and time range.
 
 ## Cross-cutting tools
 
+### Sign-in and password reset
+
+The sign-in screen toggles between **Existing Account** and **Create account**,
+and exposes a **Forgot your password?** flow. Entering your account email
+requests a reset; the screen then always shows the same neutral confirmation
+regardless of whether that address is registered, so it can't be used to probe
+for accounts. When the instance has email configured it sends a **single-use
+reset link that expires in one hour** — opening it returns you to the sign-in
+screen in "choose a new password" mode, where the new password must meet the
+same policy as registration (at least 12 characters with a number and a symbol).
+When email is **not** configured, the confirmation instead tells you to contact
+your instance owner. Completing a reset also signs out the account's other
+sessions. See **[Security](../run/security.md)** for the token and delivery
+details.
+
 ### Command palette (⌘K)
 
 Open with ⌘K / Ctrl+K (suppressed while you are typing in an input, textarea, or
@@ -457,7 +487,16 @@ out**.
 A toggleable live panel (header label "Now") of recent activity for the project,
 or workspace-wide when no project is in scope. It shows up to 20 items of type
 `anomaly`, `scan`, `alert`, or `event`, severity-colored, auto-refreshing roughly
-every 60 seconds, with a manual refresh.
+every 60 seconds, with a manual refresh. A completed `scan` item summarizes what
+the run produced — new events, metric points, signals, and rows scanned — and
+reads "no new events discovered" when a run on an established catalog finds
+nothing new (which is normal, not a failure) rather than a bare "0 events".
+A burst of same-type items from one scan — for example the events a single scan
+implements, which all share the scan's timestamp — collapses into one summary
+row ("N events implemented") that expands on click to reveal the individual
+items, so a scan no longer floods the feed with near-duplicate rows. When there
+is no recent activity the rail narrows and drops its footer instead of holding a
+full-width empty column.
 
 ### AI-assisted features
 

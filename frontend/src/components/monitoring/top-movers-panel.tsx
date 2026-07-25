@@ -5,6 +5,7 @@ import { Area, ComposedChart, ResponsiveContainer, XAxis, YAxis } from 'recharts
 
 import { metricsApi } from '@/api/metrics'
 import { Card, CardContent } from '@/components/ui/card'
+import { formatSignalSeverity } from '@/lib/monitoring'
 import { cn } from '@/lib/utils'
 import type { TopMoverItem } from '@/types'
 
@@ -159,7 +160,7 @@ function TopMoverRow({
         </span>
         {pct && <span className="text-muted-foreground">{pct}</span>}
         <span className="font-mono text-muted-foreground">
-          z={item.z_score.toFixed(1)}
+          {formatSignalSeverity(item)}
         </span>
       </div>
     </button>
