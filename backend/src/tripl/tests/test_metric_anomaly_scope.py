@@ -108,6 +108,10 @@ def _seed_project(session: Session, *, detect_metrics: bool = True) -> ScanConfi
         project_id=project.id,
         anomaly_detection_enabled=True,
         detect_metrics=detect_metrics,
+        # Pinned so the small crafted series (baseline ~10) stay eligible; these
+        # tests exercise scope/cooldown mechanics, not the product defaults.
+        sigma_threshold=3.0,
+        min_expected_count=10,
     )
     session.add_all([project, data_source, config, settings])
     session.commit()

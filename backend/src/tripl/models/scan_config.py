@@ -19,6 +19,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
 from tripl.models.domain_enums import ScanInterval
 from tripl.models.enum_types import db_enum
+from tripl.models.project_anomaly_settings import (
+    DEFAULT_MIN_EXPECTED_COUNT,
+    DEFAULT_SIGMA_THRESHOLD,
+)
 
 if TYPE_CHECKING:
     from tripl.models.data_source import DataSource
@@ -110,8 +114,8 @@ class ScanConfig(UUIDMixin, TimestampMixin, Base):
     detect_events: Mapped[bool] = mapped_column(Boolean, default=True)
     baseline_window_buckets: Mapped[int] = mapped_column(Integer, default=14)
     min_history_buckets: Mapped[int] = mapped_column(Integer, default=7)
-    sigma_threshold: Mapped[float] = mapped_column(Float, default=3.0)
-    min_expected_count: Mapped[int] = mapped_column(Integer, default=10)
+    sigma_threshold: Mapped[float] = mapped_column(Float, default=DEFAULT_SIGMA_THRESHOLD)
+    min_expected_count: Mapped[int] = mapped_column(Integer, default=DEFAULT_MIN_EXPECTED_COUNT)
 
     data_source: Mapped[DataSource] = relationship(back_populates="scan_configs")
     event_type: Mapped[EventType | None] = relationship()

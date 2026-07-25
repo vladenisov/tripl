@@ -134,6 +134,10 @@ def _seed_pipeline_base(session: Session) -> tuple[Project, DataSource, ScanConf
         detect_event_types=False,
         detect_events=False,
         detect_metrics=True,
+        # Pinned so the small crafted series (baseline ~10) stay eligible; these
+        # tests exercise pipeline mechanics, not the product defaults.
+        sigma_threshold=3.0,
+        min_expected_count=10,
     )
     session.add_all([project, data_source, config, settings])
     session.commit()

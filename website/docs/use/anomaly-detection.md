@@ -93,13 +93,13 @@ Suppose an hourly event type's Monday-9am buckets over the last several weeks we
 
 The median of those is exactly **1000**, so **expected = 1000**. The robust spread works out to roughly **45** (the typical distance from the centre, scaled by 1.4826). The 5% phase floor is `0.05 × 1000 = 50`, which is larger than 45, so the **effective spread is 50**.
 
-This Monday at 9am the count comes in at **1180**:
+This Monday at 9am the count comes in at **1240**:
 
 ```
-z = (1180 − 1000) / 50 = +3.6
+z = (1240 − 1000) / 50 = +4.8
 ```
 
-With the default `sigma_threshold = 3.0`, `|3.6| ≥ 3.0` passes, and `expected = 1000 ≥ min_expected_count` passes, so the bucket is flagged as a **spike** (positive z) with expected 1000, spread 50, and z = 3.6. Had the same series instead dropped to 870, that would be `z = (870 − 1000) / 50 = −2.6`, which is **below** the threshold and would **not** fire. Raising sensitivity (a lower sigma) would catch that 870; lowering it (a higher sigma) would let through only larger swings.
+With the default `sigma_threshold = 4.0`, `|4.8| ≥ 4.0` passes, and `expected = 1000 ≥ min_expected_count` passes, so the bucket is flagged as a **spike** (positive z) with expected 1000, spread 50, and z = 4.8. Had the same series instead risen only to 1180, that would be `z = (1180 − 1000) / 50 = +3.6`, which is **below** the threshold and would **not** fire. Raising sensitivity (a lower sigma) would catch that 1180; lowering it (a higher sigma) would let through only larger swings.
 
 ## Tunables and defaults
 
@@ -114,12 +114,12 @@ These live in the project's **monitoring settings** and apply to every scan in t
 | `detect_metrics` | `true` | Watch each active metric (the metrics catalog). |
 | `baseline_window_buckets` | `14` | How many recent buckets the rolling fallback baseline averages over. |
 | `min_history_buckets` | `7` | Minimum buckets the rolling fallback needs before it will fire. |
-| `sigma_threshold` | `3.0` | How many normal wobbles of deviation are required to flag a bucket. |
-| `min_expected_count` | `10` | Minimum expected volume before a bucket is eligible to be flagged. |
+| `sigma_threshold` | `4.0` | How many normal wobbles of deviation are required to flag a bucket. |
+| `min_expected_count` | `50` | Minimum expected volume before a bucket is eligible to be flagged. |
 
 The two dials you will actually reach for:
 
-- **`sigma_threshold`** — **raise it** (e.g. to 4 or 5) to flag only larger, more confident deviations and cut noise; **lower it** (toward 2) to catch subtler swings at the cost of more false positives.
+- **`sigma_threshold`** — **raise it** (e.g. to 5) to flag only larger, more confident deviations and cut noise; **lower it** (toward 3) to catch subtler swings at the cost of more false positives.
 - **`min_expected_count`** — **raise it** to ignore lower-traffic series and focus on your busiest ones; **lower it** to extend monitoring down to smaller events (expect more noise from them).
 
 ## Distribution drift
