@@ -3840,7 +3840,7 @@ export interface components {
             series: components["schemas"]["AppVersionMetricSeries"][];
             /**
              * Sigma Threshold
-             * @default 3
+             * @default 4
              */
             sigma_threshold: number;
             /** Totals */
@@ -3915,7 +3915,7 @@ export interface components {
             series: components["schemas"]["AppVersionMetricSeries"][];
             /**
              * Sigma Threshold
-             * @default 3
+             * @default 4
              */
             sigma_threshold: number;
             /** Versions */
@@ -5077,7 +5077,7 @@ export interface components {
             scope: string;
             /**
              * Sigma Threshold
-             * @default 3
+             * @default 4
              */
             sigma_threshold: number;
         };

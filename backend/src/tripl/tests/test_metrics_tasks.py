@@ -121,6 +121,10 @@ def _seed_anomaly_scan_state(
         ProjectAnomalySettings(
             project_id=config.project_id,
             anomaly_detection_enabled=True,
+            # Pinned so the small crafted series stay eligible; these tests
+            # exercise recompute/dispatch mechanics, not the product defaults.
+            sigma_threshold=3.0,
+            min_expected_count=10,
         )
     )
     event_type = session.get(EventType, config.event_type_id)

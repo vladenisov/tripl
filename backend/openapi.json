@@ -2922,7 +2922,7 @@
             "type": "array"
           },
           "sigma_threshold": {
-            "default": 3.0,
+            "default": 4.0,
             "title": "Sigma Threshold",
             "type": "number"
           },
@@ -3099,7 +3099,7 @@
             "type": "array"
           },
           "sigma_threshold": {
-            "default": 3.0,
+            "default": 4.0,
             "title": "Sigma Threshold",
             "type": "number"
           },
@@ -6200,7 +6200,7 @@
             "type": "string"
           },
           "sigma_threshold": {
-            "default": 3.0,
+            "default": 4.0,
             "title": "Sigma Threshold",
             "type": "number"
           }

@@ -10,6 +10,7 @@ from tripl.models.domain_enums import (
     ReleaseRegressionKind,
     ScanInterval,
 )
+from tripl.models.project_anomaly_settings import DEFAULT_SIGMA_THRESHOLD
 
 
 class EventMetricPoint(BaseModel):
@@ -124,8 +125,8 @@ class EventMetricsResponse(BaseModel):
     latest_signal: MetricSignalResponse | None = None
     # The scan's anomaly sigma threshold — the ``k`` the UI multiplies the
     # per-point (effective) stddev by to draw the confidence band, so "outside
-    # the band" equals "flagged". Defaults to 3.0 (the scan-config default).
-    sigma_threshold: float = 3.0
+    # the band" equals "flagged". Defaults to the scan-config default.
+    sigma_threshold: float = DEFAULT_SIGMA_THRESHOLD
     data: list[EventMetricPoint]
     forecast: list[ForecastPoint] = []
 
@@ -175,7 +176,7 @@ class AppVersionSeriesResponse(BaseModel):
     interval: ScanInterval | None = None
     latest_version: str | None = None
     # See EventMetricsResponse.sigma_threshold — the confidence-band multiplier.
-    sigma_threshold: float = 3.0
+    sigma_threshold: float = DEFAULT_SIGMA_THRESHOLD
     versions: list[AppVersionInfo]
     series: list[AppVersionMetricSeries]
 

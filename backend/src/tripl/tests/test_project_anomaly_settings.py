@@ -18,8 +18,8 @@ async def test_get_project_anomaly_settings_creates_defaults(client: AsyncClient
     assert body["detect_project_total"] is True
     assert body["baseline_window_buckets"] == 14
     assert body["min_history_buckets"] == 7
-    assert body["sigma_threshold"] == 3.0
-    assert body["min_expected_count"] == 10
+    assert body["sigma_threshold"] == 4.0
+    assert body["min_expected_count"] == 50
 
 
 @pytest.mark.asyncio
