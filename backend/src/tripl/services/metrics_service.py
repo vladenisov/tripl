@@ -28,6 +28,7 @@ from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.project import Project
+from tripl.models.project_anomaly_settings import DEFAULT_SIGMA_THRESHOLD
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.data_source import DataSourceStatsResponse, DataSourceThroughputPoint
@@ -121,13 +122,13 @@ async def _get_scan_config_sigma_threshold(
     scan_config_id: uuid.UUID | None,
 ) -> float:
     """The scan's anomaly sigma threshold (the confidence-band multiplier the UI
-    serves), defaulting to 3.0 when the scan is unknown or unset."""
+    serves), falling back to the system default when the scan is unknown or unset."""
     if scan_config_id is None:
-        return 3.0
+        return DEFAULT_SIGMA_THRESHOLD
     result = await session.execute(
         select(ScanConfig.sigma_threshold).where(ScanConfig.id == scan_config_id)
     )
-    return result.scalar_one_or_none() or 3.0
+    return result.scalar_one_or_none() or DEFAULT_SIGMA_THRESHOLD
 
 
 async def _get_default_scan_config_id(
@@ -439,7 +440,7 @@ def _build_metrics_response(
     anomalies: list[MetricAnomaly],
     event_id: uuid.UUID | None = None,
     event_type_id: uuid.UUID | None = None,
-    sigma_threshold: float = 3.0,
+    sigma_threshold: float = DEFAULT_SIGMA_THRESHOLD,
 ) -> EventMetricsResponse:
     data = _build_metric_points(
         interval=interval,

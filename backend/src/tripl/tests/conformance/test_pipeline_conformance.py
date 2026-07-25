@@ -221,8 +221,11 @@ def _seed_catalog(session: Session, warehouse: PipelineWarehouse) -> _Seeded:
         project_id=project.id,
         anomaly_detection_enabled=True,
         # Event + metric scopes only, so the assertions are about the two scopes this
-        # gate is for. Every threshold is left at its PRODUCT DEFAULT — in particular
-        # min_expected_count=10, which is why the fixture's baseline is 12 and not 2.
+        # gate is for. Thresholds are pinned (not product defaults) so the small
+        # fixture stays eligible: min_expected_count=10 is why the baseline is 12
+        # and not 2, and sigma_threshold=3.0 keeps the crafted deviations firing.
+        sigma_threshold=3.0,
+        min_expected_count=10,
         detect_project_total=False,
         detect_event_types=False,
         detect_events=True,

@@ -8,6 +8,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, UUIDMixin
 
+# Default detector sensitivity, shared by project monitoring settings and the
+# per-scan copies on ScanConfig. 4.0 / 50 (raised from 3.0 / 10) keep the
+# marginal band — |z| in 3..4 on series expecting under ~50 events per bucket —
+# from flooding a mature project's Anomalies page with hundreds of open
+# signals; per-project overrides remain available in Detection settings.
+DEFAULT_SIGMA_THRESHOLD = 4.0
+DEFAULT_MIN_EXPECTED_COUNT = 50
+
 
 class ProjectAnomalySettings(UUIDMixin, Base):
     __tablename__ = "project_anomaly_settings"
@@ -26,8 +34,8 @@ class ProjectAnomalySettings(UUIDMixin, Base):
     detect_metrics: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     baseline_window_buckets: Mapped[int] = mapped_column(Integer, default=14)
     min_history_buckets: Mapped[int] = mapped_column(Integer, default=7)
-    sigma_threshold: Mapped[float] = mapped_column(Float, default=3.0)
-    min_expected_count: Mapped[int] = mapped_column(Integer, default=10)
+    sigma_threshold: Mapped[float] = mapped_column(Float, default=DEFAULT_SIGMA_THRESHOLD)
+    min_expected_count: Mapped[int] = mapped_column(Integer, default=DEFAULT_MIN_EXPECTED_COUNT)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(),
