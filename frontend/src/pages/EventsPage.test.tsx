@@ -613,4 +613,85 @@ describe('EventsPage', () => {
       )
     })
   })
+
+  it('collapses the toolbar and hides the metrics chart until the project has events', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+
+      if (url.endsWith('/api/v1/projects/demo/event-types')) {
+        return mockJsonResponse([
+          {
+            id: 'type-1',
+            project_id: 'project-1',
+            name: 'page',
+            display_name: 'Page',
+            description: '',
+            color: '#0ea5e9',
+            order: 0,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+            field_definitions: [],
+          },
+        ])
+      }
+      if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events') && url.includes('status=in_review') && url.includes('limit=1')) {
+        return mockJsonResponse({ items: [], total: 0 })
+      }
+      if (url.includes('/api/v1/projects/demo/events-metrics')) {
+        return mockJsonResponse({
+          scope: 'events_total',
+          scan_config_id: null,
+          event_id: null,
+          event_type_id: null,
+          interval: '1h',
+          latest_signal: null,
+          data: [],
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/events/window-metrics') && init?.method === 'POST') {
+        return mockJsonResponse([])
+      }
+      if (url.includes('/api/v1/projects/demo/anomalies/signals')) return mockJsonResponse([])
+      // The project has zero events.
+      if (url.includes('/api/v1/projects/demo/events')) {
+        return mockJsonResponse({ items: [], total: 0 })
+      }
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderEventsPage()
+
+    // The empty state renders and the primary "New Event" action stays reachable.
+    expect(await screen.findByText('No events yet')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New Event' })).toBeInTheDocument()
+
+    // The toolbar collapses only once the events query has SETTLED — not during the
+    // initial load, so a populated project never flashes the minimal bar
+    // (tripl-yfsj.12). Wait for the search field to disappear before the synchronous
+    // checks below.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('textbox', {
+          name: 'Filter events by name, tag, or field',
+          hidden: true,
+        }),
+      ).not.toBeInTheDocument(),
+    )
+
+    // The rest of the filter toolbar (Status/Activity/Sort/Views/Columns/More) is
+    // gone too — nothing to act on. (`expectAbsent` searches the whole DOM.)
+    expectAbsent('combobox', 'Status filter')
+    expectAbsent('combobox', 'Activity filter')
+    expectAbsent('combobox', 'Sort order')
+    expectAbsent('button', 'More actions')
+
+    // The empty "All Events Dynamics" chart card is gone until events exist.
+    expect(screen.queryByText('All Events Dynamics')).not.toBeInTheDocument()
+    expect(screen.queryByText('No recent volume to chart')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Show chart|Hide chart/ })).not.toBeInTheDocument()
+  })
 })

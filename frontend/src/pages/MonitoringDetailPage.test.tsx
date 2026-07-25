@@ -641,9 +641,11 @@ function installEventDetailFetch(
     metricsData?: EventMetricPoint[]
     event?: Record<string, unknown>
     breakdowns?: Record<string, unknown>
+    latestSignal?: Record<string, unknown> | null
   } = {},
 ) {
   const metricsData = opts.metricsData ?? [metricPoint('2026-01-02T00:00:00Z', 200)]
+  const latestSignal = opts.latestSignal ?? null
   const event = opts.event ?? eventFixture()
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
     const url = String(input)
@@ -670,7 +672,7 @@ function installEventDetailFetch(
         event_id: 'event-1',
         event_type_id: 'type-1',
         interval: '1h',
-        latest_signal: null,
+        latest_signal: latestSignal,
         data: metricsData,
         forecast: [],
       })
@@ -684,6 +686,26 @@ function installEventDetailFetch(
 
     throw new Error(`Unhandled fetch: ${url}`)
   })
+}
+
+// A drop that bottomed out at zero: the detector clamps such z-scores to a
+// constant magnitude (here -20), so the banner must read the outcome
+// ("dropped to zero") rather than the uninformative number.
+function dropToZeroSignal(): Record<string, unknown> {
+  return {
+    scan_config_id: 'scan-1',
+    scope_type: 'event',
+    scope_ref: 'event-1',
+    state: 'recent',
+    event_id: 'event-1',
+    event_type_id: null,
+    bucket: '2026-01-02T00:00:00Z',
+    actual_count: 0,
+    expected_count: 120,
+    stddev: 6,
+    z_score: -20,
+    direction: 'drop',
+  }
 }
 
 function renderLegacyEventDetail() {
@@ -726,6 +748,69 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
 
     // They live behind an overflow ("…") menu instead.
     expect(screen.getByRole('button', { name: 'More actions' })).toBeInTheDocument()
+  })
+
+  it('surfaces an inline volume-vs-baseline mini-chart beside the signal banner (tripl-yfsj.11)', async () => {
+    installEventDetailFetch({
+      latestSignal: dropToZeroSignal(),
+      metricsData: [
+        metricPoint('2026-01-01T00:00:00Z', 120),
+        {
+          ...metricPoint('2026-01-02T00:00:00Z', 0),
+          is_anomaly: true,
+          anomaly_direction: 'drop',
+          expected_count: 120,
+          stddev: 6,
+          z_score: -20,
+        },
+      ],
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    // The claim in the banner ("vs. baseline") is now visible in context: a
+    // compact chart sits in the hero, not only behind the Metrics tab, and it
+    // reuses the already-fetched series (both points reach it).
+    const miniChart = within(await screen.findByTestId('signal-volume-chart'))
+      .getByTestId('metrics-chart')
+    expect(miniChart).toHaveAttribute('data-points', '2')
+  })
+
+  it('omits the signal mini-chart when the event has no active anomaly', async () => {
+    installEventDetailFetch() // latest_signal defaults to null → no banner, no chart
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    expect(screen.queryByTestId('signal-volume-chart')).not.toBeInTheDocument()
+  })
+
+  it('reads "dropped to zero" instead of a clamped z-score when a drop bottoms out (tripl-yfsj.9)', async () => {
+    installEventDetailFetch({ latestSignal: dropToZeroSignal() })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const banner = screen.getByText(/Volume drop detected/)
+    expect(banner.textContent).toContain('dropped to zero')
+    // The uninformative clamped magnitude (z=-20.0) is suppressed in the banner.
+    expect(banner.textContent).not.toMatch(/z\s*=/)
+  })
+
+  it('keeps the numeric z-score in the banner for a partial (non-zero) drop', async () => {
+    installEventDetailFetch({
+      latestSignal: {
+        ...dropToZeroSignal(),
+        actual_count: 81,
+        expected_count: 100,
+        stddev: 6,
+        z_score: -3.3,
+      },
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const banner = screen.getByText(/Volume drop detected/)
+    expect(banner.textContent).toContain('z=-3.3')
+    expect(banner.textContent).not.toContain('dropped to zero')
   })
 
   it('shows platform share anomalies separately from breakdown volume series', async () => {

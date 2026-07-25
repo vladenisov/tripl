@@ -1,9 +1,11 @@
 import { useCallback, useMemo, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { Plus } from 'lucide-react'
 import { usersApi } from '@/api/users'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useActiveBranchId } from '@/hooks/useBranch'
+import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/error-state'
 import type { EventStatus } from '@/lib/eventStatus'
 
@@ -267,6 +269,20 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
 
   const blockingError = eventsQuery.error ?? dataError
 
+  // A project with no events yet has nothing to filter, sort, column, or chart,
+  // so we collapse the toolbar to just the "New Event" action and hide the empty
+  // "<Tab> Dynamics" card until events exist. Guard on the *unfiltered* result:
+  // an active filter or search that merely matches nothing on a populated
+  // project must keep the full toolbar so the user can still clear it.
+  //
+  // Also gate on the events query having SETTLED: `total` is 0 while it loads, so
+  // without this a populated project would flash the minimal toolbar on every
+  // cold load before snapping to the full one (tripl-yfsj.12). `total` is the
+  // branch-aware server count (not the main-branch project summary), so this stays
+  // correct on working branches; the one accepted edge is an archived-only "all"
+  // tab reading 0, recoverable via the tab bar.
+  const hasNoEvents = eventsQuery.isSuccess && total === 0 && !hasActiveFilters && !search
+
   // Editing is a full page, not an inline Sheet. The "New event" action toggles
   // showForm and "Edit"/row-edit navigates to /events/:tab/:eventId; both are
   // redirected here to the dedicated new/edit routes.
@@ -306,34 +322,46 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
 
       {!blockingError && (
         <>
-          <EventsToolbar
-            search={search}
-            onSearchChange={setSearch}
-            isFilterPending={isFilterPending}
-            filterStatuses={filterStatuses}
-            onFilterStatusesChange={setFilterStatuses}
-            filterSilentDays={filterSilentDays}
-            onFilterSilentDaysChange={setFilterSilentDays}
-            sortOrder={sort}
-            onSortOrderChange={setSort}
-            hasActiveFilters={hasActiveFilters}
-            onClearFilters={clearAllFilters}
-            savedViews={savedViews}
-            activeSavedViewName={activeSavedViewName}
-            savedViewName={savedViewName}
-            onSavedViewNameChange={setSavedViewName}
-            onSaveCurrentView={saveCurrentView}
-            onApplySavedView={applySavedView}
-            onDeleteSavedView={deleteSavedView}
-            columnsMenuOpen={colMenuOpen}
-            onColumnsMenuOpenChange={setColMenuOpen}
-            hiddenColumns={hiddenColumns}
-            hideLastSeen={hideLastSeen}
-            fieldColumns={fieldColumns}
-            metaFields={metaFields}
-            onToggleColumn={toggleColumn}
-            onNewEvent={openNewEvent}
-          />
+          {hasNoEvents ? (
+            // Empty project: keep creating an event reachable, drop the rest.
+            // Mirrors the toolbar's own primary action (EventsToolbar.tsx) — the
+            // lane for this fix cannot add a "minimal" mode to that component.
+            <div className="mb-3 flex justify-end">
+              <Button onClick={openNewEvent} size="sm" className="h-8 text-xs">
+                <Plus className="h-3.5 w-3.5" />
+                New Event
+              </Button>
+            </div>
+          ) : (
+            <EventsToolbar
+              search={search}
+              onSearchChange={setSearch}
+              isFilterPending={isFilterPending}
+              filterStatuses={filterStatuses}
+              onFilterStatusesChange={setFilterStatuses}
+              filterSilentDays={filterSilentDays}
+              onFilterSilentDaysChange={setFilterSilentDays}
+              sortOrder={sort}
+              onSortOrderChange={setSort}
+              hasActiveFilters={hasActiveFilters}
+              onClearFilters={clearAllFilters}
+              savedViews={savedViews}
+              activeSavedViewName={activeSavedViewName}
+              savedViewName={savedViewName}
+              onSavedViewNameChange={setSavedViewName}
+              onSaveCurrentView={saveCurrentView}
+              onApplySavedView={applySavedView}
+              onDeleteSavedView={deleteSavedView}
+              columnsMenuOpen={colMenuOpen}
+              onColumnsMenuOpenChange={setColMenuOpen}
+              hiddenColumns={hiddenColumns}
+              hideLastSeen={hideLastSeen}
+              fieldColumns={fieldColumns}
+              metaFields={metaFields}
+              onToggleColumn={toggleColumn}
+              onNewEvent={openNewEvent}
+            />
+          )}
 
           <BulkActionBar
             selectedCount={selectedCount}
@@ -350,7 +378,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
             onClear={clearSelection}
           />
 
-          {slug && !embedded && (
+          {slug && !embedded && !hasNoEvents && (
             <TabMetricsCard
               slug={slug}
               activeEt={activeEt}

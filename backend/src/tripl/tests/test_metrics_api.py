@@ -72,7 +72,17 @@ async def _setup_metrics_project(
     }
 
 
-async def _seed_group_metrics(project_id: str, event_rows: list[EventMetricSeedRow]) -> None:
+async def _seed_group_metrics(
+    project_id: str,
+    event_rows: list[EventMetricSeedRow],
+    *,
+    name: str = "Metrics Config",
+    updated_at: datetime | None = None,
+) -> uuid.UUID:
+    """Seed one scan config plus its per-event hourly metrics; returns the scan
+    config id. Pass ``updated_at`` to make default-scan resolution
+    (``_get_default_scan_config_id`` orders by ``updated_at`` desc) deterministic
+    when a project has more than one scan."""
     buckets = [
         datetime(2026, 1, 1, 10, tzinfo=UTC),
         datetime(2026, 1, 1, 11, tzinfo=UTC),
@@ -94,13 +104,15 @@ async def _seed_group_metrics(project_id: str, event_rows: list[EventMetricSeedR
             data_source_id=data_source.id,
             project_id=uuid.UUID(project_id),
             event_type_id=None,
-            name="Metrics Config",
+            name=name,
             base_query="SELECT time, event_name FROM events",
             event_type_column="event_name",
             time_column="time",
             cardinality_threshold=100,
             interval="1h",
         )
+        if updated_at is not None:
+            scan_config.updated_at = updated_at
         session.add_all([data_source, scan_config])
         # Flush parents first: SQLite enforces FK per-statement and the unit of
         # work has no ORM relationship linking scan_config to its metric/anomaly
@@ -121,6 +133,8 @@ async def _seed_group_metrics(project_id: str, event_rows: list[EventMetricSeedR
                 )
 
         await session.commit()
+
+    return scan_config.id
 
 
 # The "latest_scan" monitoring fixture below seeds an anomaly on the newest
@@ -504,6 +518,55 @@ async def test_get_events_metrics_applies_event_filters(client: AsyncClient) -> 
     assert type_resp.json()["data"] == [
         _plain_point("2026-01-01T10:00:00", 15),
         _plain_point("2026-01-01T11:00:00", 22),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_events_metrics_scopes_to_default_scan_config(client: AsyncClient) -> None:
+    """The "All Events Dynamics" series must reflect a single scan's hourly volume
+    (the most-recently-updated configured scan, matching the project-total sparkline)
+    rather than a cross-scan sum. Regression: a legacy "Old events" backfill scan
+    that also collected the same events used to be summed in, inflating one bucket
+    into an outlier that dominated the chart's y-axis."""
+    setup = await _setup_metrics_project(client, "metrics-scoping")
+
+    event = await client.post(
+        "/api/v1/projects/metrics-scoping/events",
+        json={
+            "event_type_id": setup["page_type_id"],
+            "name": "Alpha Viewed",
+            "status": "implemented",
+            "tags": ["mobile"],
+            "field_values": [{"field_definition_id": setup["page_field_id"], "value": "home"}],
+        },
+    )
+    event_id = event.json()["id"]
+
+    # Legacy backfill scan (older updated_at) with hugely inflated counts — the
+    # source of the outlier bucket before scoping was fixed.
+    await _seed_group_metrics(
+        setup["project_id"],
+        [{"event_id": event_id, "counts": [500_000, 600_000]}],
+        name="Old events",
+        updated_at=datetime(2025, 1, 1, tzinfo=UTC),
+    )
+    # Current scan (newer updated_at) — the default the resolver must select.
+    await _seed_group_metrics(
+        setup["project_id"],
+        [{"event_id": event_id, "counts": [10, 15]}],
+        name="Metrics Config",
+        updated_at=datetime(2026, 6, 1, tzinfo=UTC),
+    )
+
+    resp = await client.get("/api/v1/projects/metrics-scoping/events-metrics")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["interval"] == "1h"
+    # Only the default scan's counts — NOT the cross-scan sum (500_010 / 600_015).
+    assert body["data"] == [
+        _plain_point("2026-01-01T10:00:00", 10),
+        _plain_point("2026-01-01T11:00:00", 15),
     ]
 
 

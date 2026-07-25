@@ -250,6 +250,28 @@ async def _get_active_metric_signals(
     return signals
 
 
+# Magnitude gate shared with the AnomaliesPage default "Significant" filter
+# (frontend AnomaliesPage.MAGNITUDE_PRESETS -> minRelEffect 0.5). The sidebar /
+# Overview badge (``monitoring_signal_count``) counts a signal only when its
+# relative effect clears this bar, so the badge equals the page's default
+# (significant) open-signal count across every scope (tripl-yfsj.1).
+SIGNIFICANT_MIN_REL_EFFECT = 0.5
+
+
+def relative_effect(actual: float, expected: float) -> float:
+    """|actual - expected| / max(expected, 1) — mirrors AnomaliesPage.relativeEffect.
+
+    Preferred over the z-score for the magnitude gate because it does not blow up
+    on low-volume series.
+    """
+    return abs(actual - expected) / max(expected, 1.0)
+
+
+def is_significant_signal(actual: float, expected: float) -> bool:
+    """Whether a signal clears the shared "Significant" magnitude threshold."""
+    return relative_effect(actual, expected) >= SIGNIFICANT_MIN_REL_EFFECT
+
+
 async def _count_active_metric_signals_by_project(
     session: AsyncSession,
     project_ids: list[uuid.UUID],
@@ -317,7 +339,9 @@ async def _count_active_metric_signals_by_project(
             latest_metric_bucket=latest_value_buckets.get(scope_ref),
             now=now,
         )
-        if state is not None:
+        if state is not None and is_significant_signal(
+            anomaly.actual_count, anomaly.expected_count
+        ):
             project_id = project_by_scope_ref.get(scope_ref)
             if project_id is not None:
                 counts[project_id] += 1

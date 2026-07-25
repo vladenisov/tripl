@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Calendar, ChevronDown, ChevronRight, Layers } from 'lucide-react'
+import { ChevronDown, ChevronRight, Layers, ListPlus } from 'lucide-react'
 import {
   DndContext,
   closestCenter,
@@ -470,7 +470,7 @@ export function EventsTable({
                   <TableRow>
                     <TableCell colSpan={99}>
                       <EmptyState
-                        icon={Calendar}
+                        icon={ListPlus}
                         title="No events yet"
                         description="Create your first event to get started."
                       />

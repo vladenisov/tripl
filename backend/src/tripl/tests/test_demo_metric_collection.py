@@ -653,3 +653,60 @@ def test_metric_anomaly_detect_path_over_collected_series(
         fill_gaps=True,
     )
     assert any(anomaly.bucket == spike_bucket for anomaly in detected), "spike not flagged"
+
+
+# ── ongoing volume reconciles with the seeded baseline (bd tripl-yfsj.14) ─────
+
+
+def test_synthetic_ongoing_bases_mirror_seeded_event_specs() -> None:
+    """The adapter's ongoing per-event base MUST mirror ``event_specs`` (the demo's
+    single source of truth for event volumes), so a live rescan continues the
+    seeded baseline instead of writing a far-smaller volume and reading as a drop.
+    core/ cannot import services/, so the values are duplicated in ``_EVENT_DEFS``;
+    this test pins the two together.
+    """
+    from tripl.core.adapters.synthetic import _EVENT_DEFS
+    from tripl.services.demo.builders.plan import event_specs
+
+    spec_base = {spec.name: spec.base for spec in event_specs(datetime(2026, 1, 1, tzinfo=UTC))}
+    for _type, name, _screen, _button, _product, base in _EVENT_DEFS:
+        assert name in spec_base, f"synthetic event {name!r} has no matching event_spec"
+        assert base == spec_base[name], (name, base, spec_base[name])
+
+
+def test_synthetic_ongoing_counts_stay_within_detector_drop_band() -> None:
+    """Every ongoing per-event count lands inside the anomaly detector's per-bucket
+    band of the seeded ``noise.hourly_volume`` baseline, across all hour/weekday
+    phases, so scanning an idle demo does not surface a drop (bd tripl-yfsj.14).
+
+    The band is the flag condition |actual - expected| < sigma * effective_stddev
+    with sigma=3 and the phase baseline's Poisson-aware stddev floor
+    (scale ~= 0 for the phase-consistent seeded series).
+    """
+    from math import sqrt
+
+    from tripl.core.adapters import synthetic as synth
+    from tripl.services.demo import noise
+    from tripl.services.demo.scenario import DEMO_SEED
+
+    total_buckets = noise.DEMO_HISTORY_DAYS * 24
+    bases = {name: base for _t, name, _s, _b, _p, base in synth._EVENT_DEFS}
+    # A synthetic seed distinct from DEMO_SEED (as registry derives per source),
+    # so the test also proves the shape is robust to a mismatched adapter seed.
+    adapter_seed = 424242
+    # 2026-03-01..07 is a full Sunday..Saturday week, so every weekday/hour phase
+    # of the ongoing window is exercised (the trough phases are the tightest).
+    anchors = [
+        datetime(2026, 3, day, hour, tzinfo=UTC) for day in range(1, 8) for hour in range(24)
+    ]
+    for anchor in anchors:
+        for hours_back in range(1, synth.SYNTHETIC_ONGOING_HOURS + 1):
+            bucket = anchor - timedelta(hours=hours_back)
+            idx = total_buckets - hours_back
+            for name, base in bases.items():
+                noise_seed = noise.derive_seed(DEMO_SEED, name) % 997
+                expected = noise.hourly_volume(base, bucket, idx, noise_seed, total_buckets)
+                actual = synth._ongoing_hourly_count(adapter_seed, base, name, bucket)
+                effective_stddev = max(0.05 * expected, sqrt(expected), 1.0)
+                z_score = abs(actual - expected) / effective_stddev
+                assert z_score < 3.0, (name, bucket.hour, actual, expected, z_score)

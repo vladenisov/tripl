@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -12,7 +12,13 @@ vi.mock('recharts', async () => {
 
 import { metricAxisFormatter } from '@/lib/metricFormat'
 import type { EventMetricPoint } from '@/types'
-import { buildChartData, CustomTooltip, MetricsChart, MultiSeriesTooltip } from './chart'
+import {
+  buildChartData,
+  CustomTooltip,
+  MetricsChart,
+  MultiSeriesTooltip,
+  renderCountSeries,
+} from './chart'
 
 describe('MetricsChart', () => {
   it('renders anomaly dots for anomalous points', () => {
@@ -195,6 +201,74 @@ describe('MetricsChart', () => {
     expect(plural.textContent).toContain('2 anomalies detected')
     expect(plural.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}T/)
   })
+
+  // Regression for tripl-yfsj.2: the events-metrics `events_total` response is
+  // count-only (no expected_count/stddev/band/forecast). MetricsChart must treat
+  // it as a real, non-empty series (not the "No metrics data available" state) so
+  // the volume series is charted — even when one bucket is a huge outlier that
+  // drives the whole y-domain.
+  it('charts a count-only (events_total) series instead of the empty state', () => {
+    const countOnly: EventMetricPoint[] = [
+      {
+        bucket: '2026-01-01T10:00:00Z',
+        count: 5000,
+        expected_count: null,
+        stddev: null,
+        is_anomaly: false,
+        anomaly_direction: null,
+        z_score: null,
+      },
+      {
+        // A large outlier bucket (e.g. a backfill) that drives the y-domain.
+        bucket: '2026-01-01T11:00:00Z',
+        count: 600000,
+        expected_count: null,
+        stddev: null,
+        is_anomaly: true,
+        anomaly_direction: 'spike',
+        z_score: null,
+      },
+      {
+        bucket: '2026-01-01T12:00:00Z',
+        count: 4800,
+        expected_count: null,
+        stddev: null,
+        is_anomaly: false,
+        anomaly_direction: null,
+        z_score: null,
+      },
+    ]
+
+    render(<MetricsChart granularity="hour" data={countOnly} />)
+
+    // Non-empty count-only data is charted, not dropped to the empty state…
+    expect(screen.queryByText('No metrics data available')).not.toBeInTheDocument()
+    // …and every bucket reaches the chart (sr-only summary), including the
+    // flagged outlier.
+    const summary = screen.getByTestId('anomaly-dot')
+    expect(summary.textContent).toContain('1 anomaly detected')
+  })
+})
+
+describe('renderCountSeries', () => {
+  // jsdom never paints recharts, so the blank-on-late-mount fix is asserted on
+  // the series element: the volume series must keep animation OFF so it renders
+  // its final geometry immediately instead of settling into an empty enter-frame
+  // when MetricsChart mounts late inside a Collapsible (tripl-yfsj.2).
+  it.each(['line', 'line-only', 'bar'] as const)(
+    'renders a non-animated count series for the %s chart style',
+    (chartStyle) => {
+      const series = renderCountSeries({
+        chartStyle,
+        chartColor: 'var(--chart-3)',
+        gradientId: 'grad',
+        mini: false,
+      }) as ReactElement<{ dataKey: string; isAnimationActive: boolean }>
+
+      expect(series.props.dataKey).toBe('count')
+      expect(series.props.isAnimationActive).toBe(false)
+    },
+  )
 })
 
 // The tooltip never paints under jsdom (recharts needs real dimensions), so

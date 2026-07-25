@@ -12,7 +12,7 @@ import { PageHead, Panel } from '@/components/settings/kit'
 import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { formatRelativeTime } from '@/lib/datetime'
-import { getMonitoringPath } from '@/lib/monitoring'
+import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { MonitoringSignal } from '@/types'
@@ -410,7 +410,7 @@ function AnomalyRow({
         {signal.actual_count.toLocaleString()} vs {Math.round(signal.expected_count).toLocaleString()}
       </span>
       <span role="cell" className="mono text-right text-[11px]" style={{ color: severityColor }}>
-        z={signal.z_score.toFixed(1)}
+        {formatSignalSeverity(signal)}
       </span>
       <span role="cell" className="mono text-right text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
         {formatRelativeTime(signal.bucket)}

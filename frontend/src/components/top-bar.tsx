@@ -16,7 +16,7 @@ import {
 import { alertingApi } from '@/api/alerting'
 import { metricsApi } from '@/api/metrics'
 import { getErrorMessage } from '@/lib/utils'
-import { getMonitoringPath } from '@/lib/monitoring'
+import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
 import { commandPaletteShortcutLabel } from '@/lib/platform'
 import { useCommandPalette } from '@/components/command-palette-context'
 import { Kbd } from '@/components/primitives/kbd'
@@ -300,7 +300,7 @@ function SignalNotification({
         </div>
         <div className="mono mt-0.5 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
           {signal.actual_count.toLocaleString()} actual vs{' '}
-          {Math.round(signal.expected_count).toLocaleString()} expected · z={signal.z_score.toFixed(1)}
+          {Math.round(signal.expected_count).toLocaleString()} expected · {formatSignalSeverity(signal)}
         </div>
       </div>
     </Link>

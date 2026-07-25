@@ -72,3 +72,28 @@ export function resolveDetailScope(
   if (scope === undefined && eventId) return 'event'
   return routeScopeToApiScope(scope)
 }
+
+/** Minimal shape a signal needs for its severity label; both
+ * {@link MonitoringSignal} and {@link TopMoverItem} satisfy it structurally. */
+export interface SignalSeverityInput {
+  actual_count: number
+  expected_count: number
+  z_score: number
+  direction: string
+}
+
+/**
+ * Human-readable severity label for a monitoring-signal cell.
+ *
+ * A drop that bottomed out at zero has its z-score clamped by the detector, so
+ * every such signal reads an identical, low-information `z=-20.0`. The useful
+ * fact is that the series went to zero, so surface "dropped to zero" instead.
+ * Every other case keeps the numeric `z=X.X` (prefix included, so call sites can
+ * render the return value directly without adding their own "z=").
+ */
+export function formatSignalSeverity(signal: SignalSeverityInput): string {
+  if (signal.direction === 'drop' && signal.actual_count === 0) {
+    return 'dropped to zero'
+  }
+  return `z=${signal.z_score.toFixed(1)}`
+}

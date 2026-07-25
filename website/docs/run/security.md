@@ -146,8 +146,16 @@ The middleware reads `CONTENT_SECURITY_POLICY`, `SERVE_FRONTEND`, `HSTS_ENABLED`
 |---|---|---|
 | `POST /api/v1/auth/login` | `RATE_LIMIT_LOGIN_PER_MINUTE` | 5 / minute |
 | `POST /api/v1/auth/register` | `RATE_LIMIT_REGISTER_PER_HOUR` | 3 / hour |
+| `POST /api/v1/auth/password-reset/request` | `RATE_LIMIT_LOGIN_PER_MINUTE` | 5 / minute |
+| `POST /api/v1/auth/password-reset/confirm` | `RATE_LIMIT_LOGIN_PER_MINUTE` | 5 / minute |
 
-Buckets are keyed per `(route, client-IP)`, so the two routes do not share quota. Exceeding a limit returns `429 Too Many Requests` with a `Retry-After` header. To turn rate limiting off entirely, set `RATE_LIMIT_ENABLED=false`.
+The two password-reset routes reuse the **login** limiter (same bucket and
+setting), so they share its per-IP quota. Buckets are keyed per
+`(limiter name, client-IP)`, so routes on **different** limiters (login vs
+register) do not share quota, while routes that reuse a limiter (the password-reset
+routes on the login limiter) do. Exceeding a limit returns `429 Too Many Requests`
+with a `Retry-After` header. To turn rate limiting off entirely, set
+`RATE_LIMIT_ENABLED=false`.
 
 Set an individual route's limit to `0` to disable that route limiter while
 leaving the other one active. Use `RATE_LIMIT_ENABLED=false` to disable both.
@@ -163,6 +171,19 @@ The limiter is **per worker, in memory**. With multiple Uvicorn/Gunicorn workers
 ### Passwords
 
 Passwords are hashed with **scrypt** (`backend/src/tripl/auth_utils.py`): `N=2^16`, `r=8`, `p=1`, 16-byte random salt, verified with a constant-time comparison (`hmac.compare_digest`). The cost was chosen to harden against offline cracking while still running on a constrained ARM SBC. On a successful login, a hash produced with an older (lower) `N` is opportunistically re-hashed to the current parameters.
+
+### Self-service password reset
+
+Two endpoints back the "Forgot your password?" flow (`backend/src/tripl/api/v1/auth.py`, `services/auth_service.py`):
+
+- `POST /api/v1/auth/password-reset/request` `{ email }` — **always** returns `200` with the same neutral message whether or not the address is registered, so it cannot be used to enumerate accounts. A token is minted and emailed **only** when the instance has SMTP configured (`SMTP_HOST` set) *and* an account matches; otherwise nothing is stored or sent. The response also carries an instance-wide `email_configured` flag (identical for every caller) so the UI can fall back to "contact your owner" copy — this reveals nothing about any specific account.
+- `POST /api/v1/auth/password-reset/confirm` `{ token, new_password }` — redeems the token and sets the new password. `new_password` must satisfy the **same policy as registration** (enforced at the schema boundary; `≥ 12` chars with a digit and a symbol). Invalid, expired, and already-used tokens are all rejected with an identical `400` so a rejected token never reveals which case it hit.
+
+Token handling mirrors session tokens and never trusts the raw value:
+
+- The token is `secrets.token_urlsafe(32)` (~256 bits). The **raw token is never stored** — only its HMAC-SHA256 digest keyed by `SECRET_KEY` (`auth_utils.hash_session_token`) lands in `password_reset_tokens`, so a leaked column is useless without the secret.
+- **Single-use and short-lived**: each token carries `expires_at` (1 hour, `auth_service.PASSWORD_RESET_TTL_HOURS`) and `used_at`. Confirming marks it used, drops any other outstanding token for that user, and clears all of the user's active sessions (a reset ends other logins).
+- Both routes are **rate-limited** via the shared login limiter (see the rate-limiting table above), and email is sent through the existing alert email channel (`worker/tasks/alerts_channels.py`) as a background task — so a slow SMTP round-trip neither blocks the request nor becomes a timing oracle for whether the account exists.
 
 ### Session cookies
 
