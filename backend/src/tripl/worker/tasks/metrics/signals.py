@@ -94,25 +94,34 @@ def _bucket_is_recent(bucket: datetime, cutoff: datetime) -> bool:
     return bucket >= cutoff
 
 
-def _scan_config_recent_signal_window(
+def _scan_config_freshness_inputs(
     session: Session,
     scan_config_id: uuid.UUID,
-) -> timedelta | None:
-    """The project's configured open-signal freshness window, or ``None``.
+) -> tuple[timedelta | None, timedelta | None]:
+    """The scan's interval and the project's configured open-signal window.
 
-    ``None`` (no settings row yet) leaves ``_classify_signal_state`` on the
-    default ``RECENT_SIGNAL_WINDOW``. One query per scan, never per signal.
-    Only the display path resolves this — alert candidates stay on the fixed
-    window (see ``_get_latest_active_anomalies``).
+    Both are needed together: the latest-scan horizon is
+    ``max(window, 3 × interval)``, so resolving the window without the interval
+    would drop the floor that keeps a long-interval (daily/weekly) scan's signal
+    open. ``None`` for either leaves ``_classify_signal_state`` on its default.
+    One query per scan, never per signal. Only the display path resolves this —
+    alert candidates stay on the fixed window (see ``_get_latest_active_anomalies``).
     """
-    hours = session.execute(
-        select(ProjectAnomalySettings.recent_signal_window_hours)
-        .join(ScanConfig, ScanConfig.project_id == ProjectAnomalySettings.project_id)
+    row = session.execute(
+        select(ScanConfig.interval, ProjectAnomalySettings.recent_signal_window_hours)
+        .outerjoin(
+            ProjectAnomalySettings,
+            ProjectAnomalySettings.project_id == ScanConfig.project_id,
+        )
         .where(ScanConfig.id == scan_config_id)
-    ).scalar_one_or_none()
-    if hours is None:
-        return None
-    return timedelta(hours=int(hours))
+    ).first()
+    if row is None:
+        return None, None
+    interval, hours = row
+    return (
+        _scan_interval_delta(interval),
+        None if hours is None else timedelta(hours=int(hours)),
+    )
 
 
 def _classify_signal_state(
@@ -206,13 +215,14 @@ def _get_visible_signal_scope_keys(
         key = (anomaly.scope_type, anomaly.scope_ref)
         latest_anomalies.setdefault(key, anomaly)
 
-    recent_window = _scan_config_recent_signal_window(session, scan_config_id)
+    interval, recent_window = _scan_config_freshness_inputs(session, scan_config_id)
     return {
         key
         for key, anomaly in latest_anomalies.items()
         if _classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_metrics.get(key),
+            interval=interval,
             recent_window=recent_window,
         )
         is not None
