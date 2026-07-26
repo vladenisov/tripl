@@ -28,7 +28,10 @@ from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.project import Project
-from tripl.models.project_anomaly_settings import DEFAULT_SIGMA_THRESHOLD
+from tripl.models.project_anomaly_settings import (
+    DEFAULT_SIGMA_THRESHOLD,
+    ProjectAnomalySettings,
+)
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.data_source import DataSourceStatsResponse, DataSourceThroughputPoint
@@ -57,7 +60,7 @@ from tripl.semver import (
     APP_VERSION_OTHER_LABEL,
     order_versions,
 )
-from tripl.services.monitoring_utils import classify_signal_state
+from tripl.services.monitoring_utils import classify_signal_state, recent_signal_window_from_hours
 from tripl.services.project_lookup import get_project_by_slug
 from tripl.services.version_activation import (
     DEFAULT_ACTIVE_SHARE_MIN,
@@ -129,6 +132,54 @@ async def _get_scan_config_sigma_threshold(
         select(ScanConfig.sigma_threshold).where(ScanConfig.id == scan_config_id)
     )
     return result.scalar_one_or_none() or DEFAULT_SIGMA_THRESHOLD
+
+
+async def _get_project_recent_signal_window(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+) -> timedelta | None:
+    """The project's configured open-signal freshness window, or ``None``.
+
+    ``None`` (no monitoring-settings row yet) leaves ``classify_signal_state`` on
+    its default 24h window. Signal classification runs over every anomaly in a
+    project, so callers must load this ONCE per request and pass it down — never
+    per signal.
+    """
+    hours = (
+        await session.execute(
+            select(ProjectAnomalySettings.recent_signal_window_hours).where(
+                ProjectAnomalySettings.project_id == project_id
+            )
+        )
+    ).scalar_one_or_none()
+    return recent_signal_window_from_hours(hours)
+
+
+async def _get_project_recent_signal_windows(
+    session: AsyncSession,
+    project_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, timedelta]:
+    """Batched sibling of :func:`_get_project_recent_signal_window` for N projects.
+
+    Projects without a settings row are simply absent from the mapping, so a
+    ``.get(project_id)`` lookup yields ``None`` and the default window.
+    """
+    if not project_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(
+                ProjectAnomalySettings.project_id,
+                ProjectAnomalySettings.recent_signal_window_hours,
+            ).where(ProjectAnomalySettings.project_id.in_(project_ids))
+        )
+    ).all()
+    windows: dict[uuid.UUID, timedelta] = {}
+    for project_id, hours in rows:
+        window = recent_signal_window_from_hours(hours)
+        if window is not None:
+            windows[project_id] = window
+    return windows
 
 
 async def _get_default_scan_config_id(
@@ -441,6 +492,7 @@ def _build_metrics_response(
     event_id: uuid.UUID | None = None,
     event_type_id: uuid.UUID | None = None,
     sigma_threshold: float = DEFAULT_SIGMA_THRESHOLD,
+    recent_window: timedelta | None = None,
 ) -> EventMetricsResponse:
     data = _build_metric_points(
         interval=interval,
@@ -454,6 +506,7 @@ def _build_metrics_response(
         state = classify_signal_state(
             anomaly_bucket=latest_anomaly.bucket,
             latest_metric_bucket=latest_metric_bucket,
+            recent_window=recent_window,
         )
         if state is not None:
             latest_signal = _signal_from_anomaly(latest_anomaly, state=state)
@@ -520,6 +573,7 @@ async def get_event_metrics(
         anomalies=anomalies,
         event_id=event.id,
         sigma_threshold=sigma_threshold,
+        recent_window=await _get_project_recent_signal_window(session, project.id),
     )
 
 
@@ -1514,6 +1568,8 @@ async def get_events_window_metrics(
             anomaly_rows_by_event.setdefault(anomaly.event_id, []).append(anomaly)
 
     valid_event_ids_set = set(valid_event_ids)
+    # Loaded once for the whole batch — the loop below runs per requested event.
+    recent_window = await _get_project_recent_signal_window(session, project.id)
     responses: list[EventWindowMetricsResponse] = []
     for event_id in event_ids:
         if event_id not in valid_event_ids_set:
@@ -1530,6 +1586,7 @@ async def get_events_window_metrics(
             metric_rows=metric_rows,
             anomalies=anomaly_rows_by_event.get(event_id, []),
             event_id=event_id,
+            recent_window=recent_window,
         )
         responses.append(
             EventWindowMetricsResponse(
@@ -1593,6 +1650,7 @@ async def get_event_type_metrics(
         anomalies=anomalies,
         event_type_id=event_type.id,
         sigma_threshold=sigma_threshold,
+        recent_window=await _get_project_recent_signal_window(session, project.id),
     )
 
 
@@ -1638,4 +1696,5 @@ async def get_project_total_metrics(
         metric_rows=metric_rows,
         anomalies=anomalies,
         sigma_threshold=config.sigma_threshold,
+        recent_window=await _get_project_recent_signal_window(session, project.id),
     )

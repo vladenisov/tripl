@@ -171,6 +171,9 @@ export interface ProjectAnomalySettings {
   min_history_buckets: number
   sigma_threshold: number
   min_expected_count: number
+  // How long a detected anomaly keeps counting as an "open" signal for the
+  // Anomalies page and the sidebar badge.
+  recent_signal_window_hours: number
   created_at: string
   updated_at: string
 }

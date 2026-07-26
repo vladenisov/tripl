@@ -49,6 +49,34 @@ const PROJECT_SURFACE_LABELS: Record<string, string> = {
   settings: 'Project settings',
 }
 
+// Human labels for sub-surfaces that are their own destination but happen to be
+// routed under a parent surface (`/p/:slug/<surface>/<sub-surface>`). Keyed by
+// the segment directly after the surface, so deeper paths (detail ids, editors)
+// inherit the sub-surface label the same way `/settings/instance/<x>` does.
+//
+// Only genuinely distinct surfaces belong here. The sibling segments that are
+// merely filtered views of the parent — the Events tabs (`review`, `archived`,
+// one per event type) and the metric editors (`new`, `<id>/edit`) — must stay
+// absent, or every tab switch would rewrite the browser-tab title.
+//
+// Most `settings` sub-surfaces are their own sidebar destinations (see
+// `lib/navigation.ts`) rather than tabs of a settings page, so they are named
+// here with the labels the sidebar uses. The two that really are project
+// configuration (`general`, `monitoring`) stay on the parent label.
+const PROJECT_SUBSURFACE_LABELS: Record<string, Record<string, string>> = {
+  metrics: { 'fact-tables': 'Fact tables' },
+  settings: {
+    'event-types': 'Event types',
+    'meta-fields': 'Schema & fields',
+    variables: 'Variables',
+    relations: 'Relations',
+    branches: 'Plan branches',
+    alerting: 'Alerting',
+    scans: 'Scans',
+    audit: 'Audit log',
+  },
+}
+
 // Human labels for the full-takeover Settings sections (`/settings/<section>`),
 // which mount OUTSIDE the app shell — the top-level resolver still names them.
 const SETTINGS_SECTION_LABELS: Record<string, string> = {
@@ -79,7 +107,10 @@ export function resolveTitleFromPath(pathname: string): { label: string; slug?: 
   }
   if (parts[0] === 'p' && parts[1]) {
     const surface = parts[2] ?? 'events'
-    return { label: PROJECT_SURFACE_LABELS[surface] ?? 'Events', slug: parts[1] }
+    // A known sub-surface wins over its parent surface; anything else (tabs,
+    // detail ids, editors) falls through to the parent label.
+    const subSurface = parts[3] ? PROJECT_SUBSURFACE_LABELS[surface]?.[parts[3]] : undefined
+    return { label: subSurface ?? PROJECT_SURFACE_LABELS[surface] ?? 'Events', slug: parts[1] }
   }
   return { label: '' } // unknown authed path → just "tripl"
 }

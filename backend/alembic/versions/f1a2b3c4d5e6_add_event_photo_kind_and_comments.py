@@ -32,8 +32,12 @@ def upgrade() -> None:
         sa.Column("external_url", sa.String(length=2000), nullable=True),
     )
     # Figma-kind rows don't upload bytes, so storage_* columns become optional.
-    op.alter_column("event_photos", "storage_backend", existing_type=sa.String(length=20), nullable=True)
-    op.alter_column("event_photos", "storage_key", existing_type=sa.String(length=500), nullable=True)
+    op.alter_column(
+        "event_photos", "storage_backend", existing_type=sa.String(length=20), nullable=True
+    )
+    op.alter_column(
+        "event_photos", "storage_key", existing_type=sa.String(length=500), nullable=True
+    )
 
     op.create_table(
         "event_photo_comments",
@@ -81,7 +85,11 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_event_photo_comment_photo_created", table_name="event_photo_comments")
     op.drop_table("event_photo_comments")
-    op.alter_column("event_photos", "storage_key", existing_type=sa.String(length=500), nullable=False)
-    op.alter_column("event_photos", "storage_backend", existing_type=sa.String(length=20), nullable=False)
+    op.alter_column(
+        "event_photos", "storage_key", existing_type=sa.String(length=500), nullable=False
+    )
+    op.alter_column(
+        "event_photos", "storage_backend", existing_type=sa.String(length=20), nullable=False
+    )
     op.drop_column("event_photos", "external_url")
     op.drop_column("event_photos", "kind")

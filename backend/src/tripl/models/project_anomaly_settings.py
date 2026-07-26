@@ -16,6 +16,12 @@ from tripl.models.base import Base, UUIDMixin
 DEFAULT_SIGMA_THRESHOLD = 4.0
 DEFAULT_MIN_EXPECTED_COUNT = 50
 
+# How long (wall clock) an anomaly keeps counting as an OPEN signal on the
+# Anomalies page and in the sidebar badge. 24h is the historical hard-coded
+# value in services/monitoring_utils.RECENT_SIGNAL_WINDOW, kept as the default
+# so behaviour is unchanged until a project opts into a different window.
+DEFAULT_RECENT_SIGNAL_WINDOW_HOURS = 24
+
 
 class ProjectAnomalySettings(UUIDMixin, Base):
     __tablename__ = "project_anomaly_settings"
@@ -36,6 +42,13 @@ class ProjectAnomalySettings(UUIDMixin, Base):
     min_history_buckets: Mapped[int] = mapped_column(Integer, default=7)
     sigma_threshold: Mapped[float] = mapped_column(Float, default=DEFAULT_SIGMA_THRESHOLD)
     min_expected_count: Mapped[int] = mapped_column(Integer, default=DEFAULT_MIN_EXPECTED_COUNT)
+    # Server default keeps pre-existing rows reading 24 rather than NULL, so the
+    # signal-freshness window is unchanged for every project that never opts in.
+    recent_signal_window_hours: Mapped[int] = mapped_column(
+        Integer,
+        default=DEFAULT_RECENT_SIGNAL_WINDOW_HOURS,
+        server_default="24",
+    )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(),

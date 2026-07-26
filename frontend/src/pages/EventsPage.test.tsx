@@ -261,6 +261,21 @@ describe('EventsPage', () => {
     // "Hide chart" and the signal link in its header is visible without a click.
     expect(screen.getByRole('button', { name: /Hide chart/ })).toBeInTheDocument()
     expect(await screen.findByText('View signal')).toBeInTheDocument()
+
+    // Header stat scope. This is a component-level assertion over a synthetic
+    // payload: the stat counts only the aggregate series this page charts, so
+    // the fixture's project_total + event_type rows give 2 and its event row is
+    // ignored. The label must not read as a project-wide anomaly count, which is
+    // what the sidebar "Anomalies" badge reports on a different basis.
+    const chartSignalsStat = screen.getByText('Chart signals').closest('dl')
+    expect(chartSignalsStat).not.toBeNull()
+    expect(chartSignalsStat).toHaveTextContent('2')
+    expect(chartSignalsStat).toHaveTextContent('live')
+    expect(screen.queryByText('Active signals')).not.toBeInTheDocument()
+    // The scope note is a focusable button, not hover-only chrome.
+    expect(
+      screen.getByRole('button', { name: /Open signals on the series charted here/ }),
+    ).toBeInTheDocument()
   }, 10_000)
 
   it('renders active event-type anomaly link for sidebar-selected view', async () => {

@@ -36,9 +36,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        op.f("ix_app_settings_key"), "app_settings", ["key"], unique=True
-    )
+    op.create_index(op.f("ix_app_settings_key"), "app_settings", ["key"], unique=True)
 
 
 def downgrade() -> None:

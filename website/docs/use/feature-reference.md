@@ -341,8 +341,9 @@ baseline. Signals appear on the overview, as catalog row badges, in the activity
 feed, and on the monitoring detail. Tuning lives at the project **Monitoring
 settings** (route `/p/<slug>/settings/monitoring`): toggle anomaly detection,
 choose the scopes to watch (project total / event types / events / metrics), and set the
-baseline window (buckets), minimum history (buckets), sigma threshold, and
-minimum expected count. Scans honor these settings.
+baseline window (buckets), minimum history (buckets), sigma threshold, minimum
+expected count, and the open signal window (hours, 1–720, default 24). Scans
+honor these settings.
 
 ### Anomalies
 

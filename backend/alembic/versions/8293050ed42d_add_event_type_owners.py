@@ -30,9 +30,7 @@ def upgrade() -> None:
         sa.Column("event_type_id", sa.Uuid(), nullable=False),
         sa.Column("user_id", sa.Uuid(), nullable=False),
         sa.Column("granted_by", sa.Uuid(), nullable=True),
-        sa.ForeignKeyConstraint(
-            ["event_type_id"], ["event_types.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["event_type_id"], ["event_types.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["granted_by"], ["users.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),

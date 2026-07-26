@@ -30,9 +30,7 @@ _GENERATION_STATUS = ("pending", "seeding", "ready", "failed")
 
 
 def _generation_status_enum() -> postgresql.ENUM:
-    return postgresql.ENUM(
-        *_GENERATION_STATUS, name="project_generation_status", create_type=False
-    )
+    return postgresql.ENUM(*_GENERATION_STATUS, name="project_generation_status", create_type=False)
 
 
 def upgrade() -> None:
@@ -49,9 +47,7 @@ def upgrade() -> None:
         "projects",
         sa.Column("is_demo", sa.Boolean(), server_default=sa.text("false"), nullable=False),
     )
-    op.add_column(
-        "projects", sa.Column("demo_recipe_version", sa.String(length=32), nullable=True)
-    )
+    op.add_column("projects", sa.Column("demo_recipe_version", sa.String(length=32), nullable=True))
     op.add_column(
         "projects",
         sa.Column(

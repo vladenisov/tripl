@@ -39,6 +39,7 @@ from tripl.services.metrics_insights_service import (
     _count_active_metric_signals_by_project,
     is_significant_signal,
 )
+from tripl.services.metrics_service import _get_project_recent_signal_windows
 from tripl.services.monitoring_utils import (
     classify_signal_state,
     scan_interval_to_timedelta,
@@ -496,6 +497,10 @@ async def _populate_monitoring_signals(
     }
 
     now = datetime.now(UTC)
+    # Same per-project open-signal window the metric-scope half above and the
+    # AnomaliesPage already honour; without it the two halves of this badge
+    # would classify against different horizons.
+    recent_windows = await _get_project_recent_signal_windows(session, project_ids)
     for project_id, scan_name, scan_interval, anomaly in anomaly_rows:
         latest_metric_bucket = latest_metric_buckets.get(
             (project_id, anomaly.scan_config_id, anomaly.scope_type, anomaly.scope_ref)
@@ -505,6 +510,7 @@ async def _populate_monitoring_signals(
             latest_metric_bucket=latest_metric_bucket,
             now=now,
             interval=scan_interval_to_timedelta(scan_interval),
+            recent_window=recent_windows.get(project_id),
         )
         if state is None:
             continue
