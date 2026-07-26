@@ -1,6 +1,9 @@
 from datetime import UTC, datetime, timedelta
 from math import isclose, pi, sin, sqrt
 
+import pytest
+
+from tripl.core.analyzers import anomaly_detector
 from tripl.core.analyzers.anomaly_detector import (
     AnomalyDetectionSettings,
     SeriesPoint,
@@ -201,6 +204,94 @@ def test_detect_anomalies_respects_min_expected_count_gate() -> None:
     )
 
     assert anomalies == []
+
+
+def test_sub_threshold_series_early_exits_without_stl_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tripl-h353: a count series whose every bucket sits below
+    ``min_expected_count`` can never emit (all paths are gated on it), so the
+    detector must return [] BEFORE paying for the robust STL/MSTL fit — on real
+    projects with hundreds of low-volume events that fit was ~1s per scope per
+    scan. The series is long enough to have a phase period, so without the
+    early exit ``_fit_components`` WOULD be called."""
+
+    def _explode(*args: object, **kwargs: object) -> None:
+        raise AssertionError("_fit_components must not run for a provably-silent series")
+
+    monkeypatch.setattr(anomaly_detector, "_fit_components", _explode)
+
+    high_settings = AnomalyDetectionSettings(
+        baseline_window_buckets=14,
+        min_history_buckets=7,
+        sigma_threshold=3.0,
+        min_expected_count=50,
+    )
+    # 400 hourly buckets of 1-8 events with a relative "spike" inside the
+    # evaluation window — max(counts)=8, well under the 2x-headroom skip bound
+    # (2*8=16 < 50).
+    points = [SeriesPoint(bucket=_bucket(hour), count=1 + hour % 5) for hour in range(399)]
+    points.append(SeriesPoint(bucket=_bucket(399), count=8))
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(399),
+        evaluation_end=_bucket(400),
+        settings=high_settings,
+    )
+
+    assert anomalies == []
+
+
+def test_max_count_at_threshold_is_not_early_exited() -> None:
+    """A series whose max equals the threshold is far inside the 2x-headroom
+    skip bound (2*10=20 >= 10), so full detection runs and the boundary
+    drop-to-zero still flags."""
+    points = [SeriesPoint(bucket=_bucket(hour), count=10) for hour in range(10)]
+    points.append(SeriesPoint(bucket=_bucket(10), count=0))
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(10),
+        evaluation_end=_bucket(11),
+        settings=SETTINGS,  # min_expected_count=10 == max(counts)
+    )
+
+    assert [anomaly.direction for anomaly in anomalies] == ["drop"]
+
+
+def test_headroom_preserves_trend_shift_above_max_counts() -> None:
+    """Adversarial-review counterexample (tripl-h353): the deseasonalized STL
+    trend is NOT bounded by max(counts). 10 days of day/night seasonality (45
+    by day, 1 by night) followed by 2 days pinned flat at 45 — the troughs
+    vanish, a genuine sustained level shift. The deseasonalized trend rises to
+    ~54 while no observed count exceeds 45, so with min_expected_count=50 a
+    naive max(counts)-based skip would silence a real trend signal. The 2x
+    headroom keeps this series on the full path (2*45=90 >= 50)."""
+    points = []
+    for hour in range(12 * 24):
+        is_flat_tail = hour >= 10 * 24
+        is_daytime = hour % 24 < 12
+        count = 45 if (is_flat_tail or is_daytime) else 1
+        points.append(SeriesPoint(bucket=_bucket(hour), count=count))
+
+    high_settings = AnomalyDetectionSettings(
+        baseline_window_buckets=14,
+        min_history_buckets=7,
+        sigma_threshold=3.0,
+        min_expected_count=50,
+    )
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(10 * 24),
+        evaluation_end=_bucket(12 * 24),
+        settings=high_settings,
+    )
+
+    assert any(anomaly.kind == "trend" for anomaly in anomalies)
 
 
 def test_detect_anomalies_zero_fills_gaps_after_first_seen_bucket() -> None:
