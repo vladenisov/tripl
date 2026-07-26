@@ -112,6 +112,8 @@ Only `app` publishes a port: `8000:8000`. The `app`, `celery-worker`, and `celer
 
 The frontend is **not** a separate service — `SERVE_FRONTEND=true` and `FRONTEND_DIST_DIR=/app/frontend_dist` are baked into the image, and FastAPI serves the built SPA itself as a low-priority fallback behind the API routes.
 
+The SPA shell is returned for unknown paths only on **navigation requests** — ones whose `Accept` header admits `text/html`. Every other unknown path gets a real `404`, so a broken asset URL or a mistyped `fetch()` fails loudly instead of receiving HTML under a `200`. Worth knowing when probing by hand: `curl https://host/some/deep/route` sends `Accept: */*` and returns `404`, while the same URL in a browser loads the app. Add `-H 'Accept: text/html'` to reproduce what the browser sees. Point uptime checks at `/health`, never at a client-side route.
+
 ### Bring it up
 
 ```bash

@@ -142,7 +142,10 @@ app.include_router(v1_router)
 # 0.138+) registers low-priority routes: the path operations above are matched
 # first, so /api/v1/*, /health, /metrics, and /docs keep precedence; only
 # unmatched paths fall through to the SPA, with fallback="index.html" serving
-# client-side routes. The SPA responses pass through SecurityHeadersMiddleware
+# client-side routes. Since FastAPI 0.139.1 that fallback applies only to
+# navigation requests (Accept admits text/html), so browser deep links still
+# resolve while a fetch/XHR or mistyped asset URL gets a real 404 instead of the
+# SPA shell under a 200. The SPA responses pass through SecurityHeadersMiddleware
 # and BrotliMiddleware like any other. Off in dev (Vite serves the SPA with HMR).
 if settings.serve_frontend and settings.frontend_dist_dir:
     app.frontend("/", directory=settings.frontend_dist_dir, fallback="index.html")
