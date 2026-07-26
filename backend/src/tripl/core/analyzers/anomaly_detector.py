@@ -508,6 +508,36 @@ def _merge_anomalies(*anomaly_lists: list[DetectedAnomaly]) -> list[DetectedAnom
     return [anomalies_by_bucket[bucket] for bucket in sorted(anomalies_by_bucket)]
 
 
+# Headroom for the silent-series early exit. The trend-shift gate compares the
+# STL trend of the DESEASONALIZED series against ``min_expected_count``, and a
+# deseasonalized value is ``y - seasonal`` with ``|seasonal|`` bounded by the
+# series amplitude, so the trend can exceed max(counts) — up to ~2x in the
+# adversarial case (day/night series whose troughs vanish: raw max 45 produced
+# a trend of ~54.6 in review). The 2x headroom makes the trend path safe by
+# construction: skipping requires 2*max <= threshold, and trend <= ~2*max.
+_SILENT_SERIES_HEADROOM = 2.0
+
+
+def is_provably_silent(max_count: float, min_expected_count: float) -> bool:
+    """Whether a count series can be skipped without consulting the detector.
+
+    True when even ``_SILENT_SERIES_HEADROOM * max_count`` stays below the
+    ``min_expected_count`` gate that every emission path checks: the rolling
+    expectation is a window mean (<= max), the trend gate needs the
+    deseasonalized STL trend (<= ~2x max, hence the headroom) to reach the
+    threshold, and a spike additionally needs actual > expected. The one known
+    loss is the re-leveled phase expectation, ``median(factors) *
+    current_level``, which is a *projection* and can exceed any observed count
+    by up to the period length on a spike-shaped history — suppressing that
+    also suppresses the drop-vs-projection flags it generates, which on a
+    series this quiet are noise, not signal (review verdict on tripl-h353).
+
+    A ``min_expected_count`` of 0 disables the skip entirely (counts are
+    non-negative, so the strict inequality can never hold).
+    """
+    return max_count * _SILENT_SERIES_HEADROOM < min_expected_count
+
+
 def required_history_buckets(interval: timedelta, settings: AnomalyDetectionSettings) -> int:
     """Number of buckets to load before the evaluation window.
 
@@ -588,6 +618,16 @@ def detect_anomalies(
 
     is_count_shaped = fill_gaps
     counts = [point.count for point in expanded]
+
+    # Silent-series early exit (tripl-h353): when no gate can realistically be
+    # cleared, skip the per-bucket loop and the ~1s robust MSTL fit below — on
+    # real projects tracking hundreds of low-volume events that fit was the
+    # dominant scan cost (~1s per scope per run). See is_provably_silent for
+    # the exact bound and the one acknowledged loss class. Count path only:
+    # fractional series carry their own magnitude-derived floors.
+    if is_count_shaped and is_provably_silent(max(counts), settings.min_expected_count):
+        return []
+
     stddev_absolute_floor = 1.0 if is_count_shaped else _fractional_stddev_floor(counts)
     # Poisson-aware floor (~sqrt(N)) applies to BOTH count-shaped per-bucket
     # paths (tripl-dmch.17, tripl-w0ay). A flat/degenerate baseline's stddev

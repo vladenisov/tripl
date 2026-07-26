@@ -4503,6 +4503,107 @@ def test_recalculate_metric_anomalies_trailing_reeval_clears_backfilled_bucket(
         assert remaining == []  # backfilled bucket re-evaluated → stale flag gone
 
 
+def test_recalculate_skips_sub_threshold_scopes_but_ages_out_stale_rows(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """tripl-h353: a scope whose MAX(count) sits below ``min_expected_count`` is
+    prefiltered — no history load, no detector call — yet a stale anomaly row
+    inside the evaluation window is still cleared via the empty-replace path."""
+    from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT
+    from tripl.worker.tasks.metrics import detect as metrics_detect
+
+    base = _ANOMALY_BASE  # recent so the age-out horizon never fires
+    stale_bucket = base + timedelta(hours=9)
+    with sync_session_factory() as session:
+        config, event_type, event = _seed_anomaly_scan_state(session, base=base)
+        # Raise the floor far above the seeded count=10 series: every event and
+        # event-type scope becomes provably silent (2*10=20 < 50).
+        settings_row = session.execute(
+            select(ProjectAnomalySettings).where(
+                ProjectAnomalySettings.project_id == config.project_id
+            )
+        ).scalar_one()
+        settings_row.min_expected_count = 50
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                scope_type=SCOPE_EVENT,
+                scope_ref=str(event.id),
+                event_id=event.id,
+                event_type_id=None,
+                bucket=stale_bucket,
+                actual_count=0,
+                expected_count=10.0,
+                stddev=1.0,
+                z_score=-10.0,
+                direction="drop",
+            )
+        )
+        # A second event with a stale anomaly row and NO EventMetric rows at
+        # all: reachable only through the anomaly-side union of
+        # _collect_scope_ids, so it exercises the .get(id, 0.0) default in the
+        # prefilter (max-count map has no entry for it).
+        quiet_event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=event_type.id,
+            name="event_name=WentQuiet",
+            description="",
+            status="implemented",
+        )
+        session.add(quiet_event)
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                scope_type=SCOPE_EVENT,
+                scope_ref=str(quiet_event.id),
+                event_id=quiet_event.id,
+                event_type_id=None,
+                bucket=stale_bucket,
+                actual_count=0,
+                expected_count=10.0,
+                stddev=1.0,
+                z_score=-10.0,
+                direction="drop",
+            )
+        )
+        session.commit()
+
+        detector_calls: list[int] = []
+        real_detect = metrics_detect.detect_anomalies
+
+        def counting_detect(*args: object, **kwargs: object) -> object:
+            detector_calls.append(1)
+            return real_detect(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(metrics_detect, "detect_anomalies", counting_detect)
+
+        detected = metrics_detect._recalculate_metric_anomalies(
+            session,
+            config,
+            evaluation_start=base,
+            evaluation_end=base + timedelta(hours=10),
+            covered_buckets={base + timedelta(hours=h) for h in range(10)},
+        )
+        session.commit()
+
+        assert detected == 0
+        # Only the project-total rollup reached the detector (it has no
+        # prefilter); the event-type and event loops skipped it entirely.
+        assert len(detector_calls) == 1
+        remaining = (
+            session.execute(select(MetricAnomaly).where(MetricAnomaly.scan_config_id == config.id))
+            .scalars()
+            .all()
+        )
+        # Both stale flags aged out by the skip path: the sub-threshold scope
+        # with live metric rows AND the anomaly-only scope with none.
+        assert remaining == []
+
+
 def test_covered_buckets_from_scan_jobs_unions_completed_windows(
     sync_session_factory: sessionmaker[Session],
 ) -> None:

@@ -19,6 +19,7 @@ from tripl.core.analyzers.anomaly_detector import (
     DetectedAnomaly,
     SeriesPoint,
     detect_anomalies,
+    is_provably_silent,
     required_history_buckets,
 )
 from tripl.core.intervals import get_interval
@@ -436,6 +437,43 @@ def _replace_scope_breakdown_anomalies(
     return len(anomalies)
 
 
+def _scope_max_counts(
+    session: Session,
+    *,
+    scan_config_id: uuid.UUID,
+    scope_type: str,
+    history_from: datetime,
+    time_to: datetime,
+) -> dict[uuid.UUID, float]:
+    """MAX(count) per scope over the detection history window, in one query.
+
+    The prefilter for the silent-series early exit (tripl-h353): a scope whose
+    max count satisfies ``is_provably_silent`` against ``min_expected_count``
+    cannot emit, so the caller skips loading its ~500-row history and the
+    detector entirely. The filters mirror ``_load_scope_points`` exactly:
+    event-type rows are the ``event_id IS NULL`` rollups, event rows are keyed
+    by ``event_id``. Zero-fill only ever adds zeros, so this stored-row MAX is
+    an upper bound on the max the detector itself would see.
+    """
+    metric_column = (
+        EventMetric.event_type_id if scope_type == SCOPE_EVENT_TYPE else EventMetric.event_id
+    )
+    filters = [
+        EventMetric.scan_config_id == scan_config_id,
+        metric_column.is_not(None),
+        EventMetric.bucket >= history_from,
+        EventMetric.bucket < time_to,
+    ]
+    if scope_type == SCOPE_EVENT_TYPE:
+        filters.append(EventMetric.event_id.is_(None))
+    rows = session.execute(
+        select(metric_column, sa_func.max(EventMetric.count))
+        .where(*filters)
+        .group_by(metric_column)
+    ).all()
+    return {scope_id: float(max_count) for scope_id, max_count in rows}
+
+
 def _collect_scope_ids(
     session: Session,
     *,
@@ -844,6 +882,13 @@ def _recalculate_metric_anomalies(
         )
 
     if project_settings.detect_event_types:
+        type_max_counts = _scope_max_counts(
+            session,
+            scan_config_id=config.id,
+            scope_type=SCOPE_EVENT_TYPE,
+            history_from=history_from,
+            time_to=evaluation_end,
+        )
         for event_type_id in _collect_scope_ids(
             session,
             scan_config_id=config.id,
@@ -853,6 +898,24 @@ def _recalculate_metric_anomalies(
             scope_type=SCOPE_EVENT_TYPE,
         ):
             scope_ref = str(event_type_id)
+            # Provably silent (tripl-h353): the detector would early-exit on
+            # this series anyway, so skip loading its history — but still run
+            # the replace with no anomalies so stale window rows age out.
+            if is_provably_silent(
+                type_max_counts.get(event_type_id, 0.0), settings.min_expected_count
+            ):
+                anomalies_detected += _replace_scope_anomalies(
+                    session,
+                    scan_config_id=config.id,
+                    scope_type=SCOPE_EVENT_TYPE,
+                    scope_ref=scope_ref,
+                    evaluation_start=evaluation_start,
+                    evaluation_end=evaluation_end,
+                    event_id=None,
+                    event_type_id=event_type_id,
+                    anomalies=[],
+                )
+                continue
             points = _load_scope_points(
                 session,
                 scan_config_id=config.id,
@@ -890,6 +953,13 @@ def _recalculate_metric_anomalies(
         )
 
     if project_settings.detect_events:
+        event_max_counts = _scope_max_counts(
+            session,
+            scan_config_id=config.id,
+            scope_type=SCOPE_EVENT,
+            history_from=history_from,
+            time_to=evaluation_end,
+        )
         for event_id in _collect_scope_ids(
             session,
             scan_config_id=config.id,
@@ -899,6 +969,20 @@ def _recalculate_metric_anomalies(
             scope_type=SCOPE_EVENT,
         ):
             scope_ref = str(event_id)
+            # Provably silent (tripl-h353): see the event-type loop above.
+            if is_provably_silent(event_max_counts.get(event_id, 0.0), settings.min_expected_count):
+                anomalies_detected += _replace_scope_anomalies(
+                    session,
+                    scan_config_id=config.id,
+                    scope_type=SCOPE_EVENT,
+                    scope_ref=scope_ref,
+                    evaluation_start=evaluation_start,
+                    evaluation_end=evaluation_end,
+                    event_id=event_id,
+                    event_type_id=None,
+                    anomalies=[],
+                )
+                continue
             points = _load_scope_points(
                 session,
                 scan_config_id=config.id,
