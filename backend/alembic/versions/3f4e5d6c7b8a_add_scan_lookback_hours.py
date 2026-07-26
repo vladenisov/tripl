@@ -19,7 +19,9 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.add_column("scan_configs", sa.Column("scan_lookback_hours", sa.Integer(), nullable=True))
-    op.add_column("scan_preview_jobs", sa.Column("time_column", sa.String(length=255), nullable=True))
+    op.add_column(
+        "scan_preview_jobs", sa.Column("time_column", sa.String(length=255), nullable=True)
+    )
     op.add_column(
         "scan_preview_jobs", sa.Column("scan_lookback_hours", sa.Integer(), nullable=True)
     )

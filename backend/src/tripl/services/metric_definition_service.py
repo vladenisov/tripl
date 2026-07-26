@@ -3,7 +3,7 @@ import uuid
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from uuid import UUID
 
@@ -46,7 +46,10 @@ from tripl.schemas.metric_definition import (
     SqlMetricCreate,
     SqlMetricDefinition,
 )
-from tripl.services.metrics_service import _signal_from_anomaly
+from tripl.services.metrics_service import (
+    _get_project_recent_signal_window,
+    _signal_from_anomaly,
+)
 from tripl.services.monitoring_utils import classify_signal_state
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_lookup import get_project_id_by_slug
@@ -575,6 +578,8 @@ async def _load_latest_metric_anomalies(
 async def _build_list_enrichment(
     session: AsyncSession,
     metric_ids: list[uuid.UUID],
+    *,
+    recent_window: timedelta | None = None,
 ) -> dict[uuid.UUID, _MetricListEnrichment]:
     latest_values = await _load_latest_values(session, metric_ids)
     latest_anomalies = await _load_latest_metric_anomalies(session, metric_ids)
@@ -590,6 +595,7 @@ async def _build_list_enrichment(
             state = classify_signal_state(
                 anomaly_bucket=anomaly.bucket,
                 latest_metric_bucket=latest_bucket,
+                recent_window=recent_window,
             )
             if state is not None:
                 signal = _signal_from_anomaly(anomaly, state=state)
@@ -626,7 +632,17 @@ async def list_metric_definitions_enriched(
         offset=offset,
         limit=limit,
     )
-    enrichment = await _build_list_enrichment(session, [metric.id for metric in metrics])
+    # The project's open-signal window is read once per request off any listed row
+    # (all listed metrics belong to ``slug``'s project); an empty page classifies
+    # nothing, so the lookup is skipped entirely.
+    recent_window = (
+        await _get_project_recent_signal_window(session, metrics[0].project_id) if metrics else None
+    )
+    enrichment = await _build_list_enrichment(
+        session,
+        [metric.id for metric in metrics],
+        recent_window=recent_window,
+    )
     items: list[MetricDefinitionListItem] = []
     for metric in metrics:
         item = MetricDefinitionListItem.model_validate(metric)

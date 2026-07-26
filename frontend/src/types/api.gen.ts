@@ -7414,6 +7414,8 @@ export interface components {
              * Format: uuid
              */
             project_id: string;
+            /** Recent Signal Window Hours */
+            recent_signal_window_hours: number;
             /** Sigma Threshold */
             sigma_threshold: number;
             /**
@@ -7440,6 +7442,8 @@ export interface components {
             min_expected_count?: number | null;
             /** Min History Buckets */
             min_history_buckets?: number | null;
+            /** Recent Signal Window Hours */
+            recent_signal_window_hours?: number | null;
             /** Sigma Threshold */
             sigma_threshold?: number | null;
         };

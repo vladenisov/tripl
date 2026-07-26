@@ -48,9 +48,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        "ix_password_reset_tokens_user_id", "password_reset_tokens", ["user_id"]
-    )
+    op.create_index("ix_password_reset_tokens_user_id", "password_reset_tokens", ["user_id"])
     # Unique index (not a bare constraint) mirrors the model's
     # ``token_hash = mapped_column(..., unique=True, index=True)``.
     op.create_index(
@@ -59,19 +57,11 @@ def upgrade() -> None:
         ["token_hash"],
         unique=True,
     )
-    op.create_index(
-        "ix_password_reset_tokens_expires_at", "password_reset_tokens", ["expires_at"]
-    )
+    op.create_index("ix_password_reset_tokens_expires_at", "password_reset_tokens", ["expires_at"])
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_password_reset_tokens_expires_at", table_name="password_reset_tokens"
-    )
-    op.drop_index(
-        "ix_password_reset_tokens_token_hash", table_name="password_reset_tokens"
-    )
-    op.drop_index(
-        "ix_password_reset_tokens_user_id", table_name="password_reset_tokens"
-    )
+    op.drop_index("ix_password_reset_tokens_expires_at", table_name="password_reset_tokens")
+    op.drop_index("ix_password_reset_tokens_token_hash", table_name="password_reset_tokens")
+    op.drop_index("ix_password_reset_tokens_user_id", table_name="password_reset_tokens")
     op.drop_table("password_reset_tokens")

@@ -12558,6 +12558,10 @@
             "title": "Project Id",
             "type": "string"
           },
+          "recent_signal_window_hours": {
+            "title": "Recent Signal Window Hours",
+            "type": "integer"
+          },
           "sigma_threshold": {
             "title": "Sigma Threshold",
             "type": "number"
@@ -12580,6 +12584,7 @@
           "min_history_buckets",
           "sigma_threshold",
           "min_expected_count",
+          "recent_signal_window_hours",
           "created_at",
           "updated_at"
         ],
@@ -12678,6 +12683,19 @@
               }
             ],
             "title": "Min History Buckets"
+          },
+          "recent_signal_window_hours": {
+            "anyOf": [
+              {
+                "maximum": 720.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recent Signal Window Hours"
           },
           "sigma_threshold": {
             "anyOf": [

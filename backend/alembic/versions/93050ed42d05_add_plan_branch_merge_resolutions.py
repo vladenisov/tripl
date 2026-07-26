@@ -32,9 +32,7 @@ def upgrade() -> None:
         sa.Column("choice", sa.String(length=20), nullable=False),
         sa.Column("custom_value", sa.Text(), nullable=True),
         sa.Column("resolved_by", sa.Uuid(), nullable=True),
-        sa.ForeignKeyConstraint(
-            ["branch_id"], ["plan_branches.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["branch_id"], ["plan_branches.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["resolved_by"], ["users.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(

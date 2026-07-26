@@ -11,6 +11,8 @@ import {
 import { activityApi } from '@/api/activity'
 import { ApiError } from '@/api/client'
 import { dataSourcesApi } from '@/api/dataSources'
+import { eventsApi } from '@/api/events'
+import { eventTypesApi } from '@/api/eventTypes'
 import { metricsApi } from '@/api/metrics'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { projectsApi } from '@/api/projects'
@@ -30,6 +32,7 @@ import { coverageTone, dataSourceHealthLexeme, type StatusLexeme } from '@/lib/s
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
 import { friendlyScanError } from '@/lib/scanError'
+import { useActiveBranchId } from '@/hooks/useBranch'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type {
   ActivityItem,
@@ -56,6 +59,7 @@ const SOURCE_HEALTH_STALE_MS = 24 * 60 * 60 * 1000
 
 export default function OverviewPage() {
   const { slug } = useParams<{ slug: string }>()
+  const branchId = useActiveBranchId()
   const { chartStyle } = useTheme()
   // Adaptive fallback cadence: the live stream refreshes signals/activity via the
   // invalidation map, so poll only while the stream is unavailable.
@@ -67,7 +71,7 @@ export default function OverviewPage() {
     enabled: !!slug,
   })
   // The project query is the single authority on whether the slug exists. Gate
-  // the five project-scoped widget queries on its success so they never fan out
+  // every project-scoped widget query on its success so they never fan out
   // 404s against a nonexistent project (issue .9).
   const volumeQuery = useQuery({
     queryKey: ['overview', 'volume', slug],
@@ -114,6 +118,33 @@ export default function OverviewPage() {
     enabled: !!slug && projectQuery.isSuccess,
     staleTime: 60_000,
   })
+  // Same pattern for the event-type and event scopes, which dominate the
+  // expanded signal set (issue tripl-yfsj.16). Key, branch argument and
+  // staleTime match AnomaliesPage's exactly so the two pages share one cache
+  // entry instead of each fetching the catalog. Deliberately no
+  // `refetchInterval`: names are near-static and must not inherit the signals
+  // poll. The events lookup asks for the whole catalog because the default page
+  // is only 200 rows — a signal on any later page would otherwise keep the raw
+  // short-ref label.
+  const eventTypesQuery = useQuery({
+    queryKey: ['eventTypes', slug, branchId],
+    queryFn: () => eventTypesApi.list(slug!, branchId),
+    enabled: !!slug && projectQuery.isSuccess,
+    staleTime: 60_000,
+  })
+  // Gated on an event-scope signal actually existing: this is the landing route
+  // for single-project users, and the full catalog is a heavy payload (rows carry
+  // tags, field values and meta values). A project whose open signals are all
+  // project-total / event-type / metric scoped must not pay for it on first paint.
+  const eventsQuery = useQuery({
+    queryKey: ['events', slug, branchId, 'names'],
+    queryFn: () => eventsApi.list(slug!, { limit: 10_000 }, branchId),
+    enabled:
+      !!slug &&
+      projectQuery.isSuccess &&
+      (signalsQuery.data ?? []).some((s) => s.scope_type === 'event'),
+    staleTime: 60_000,
+  })
   const sourcesQuery = useQuery({
     queryKey: ['dataSources'],
     queryFn: dataSourcesApi.list,
@@ -134,9 +165,18 @@ export default function OverviewPage() {
     .filter((s) => relativeEffect(s) >= SIGNIFICANT_MIN_REL_EFFECT)
     .sort((a, b) => relativeEffect(b) - relativeEffect(a))
   const activity = activityQuery.data ?? []
-  // Resolve metric-scope signals to their catalog display name (issue .17).
-  const metricNames: ReadonlyMap<string, string> = new Map(
+  // Resolve metric-scope signals to their catalog display name (issue .17), and
+  // event-type / event scopes to theirs (issue tripl-yfsj.16). Every map is
+  // additive: an empty one only costs the short-ref fallback label, so the panel
+  // still renders the moment signals arrive.
+  const metricNames: NameMap = new Map(
     (metricsCatalogQuery.data?.items ?? []).map((m) => [m.id, m.display_name]),
+  )
+  const eventTypeNames: NameMap = new Map(
+    (eventTypesQuery.data ?? []).map((et) => [et.id, et.display_name]),
+  )
+  const eventNames: NameMap = new Map(
+    (eventsQuery.data?.items ?? []).map((e) => [e.id, e.name]),
   )
   // Scope the Source-health rail to this project: workspace-global sources
   // (project_id == null) plus sources owned by the current project. Without this
@@ -406,6 +446,8 @@ export default function OverviewPage() {
                 slug={slug}
                 signal={signal}
                 metricNames={metricNames}
+                eventTypeNames={eventTypeNames}
+                eventNames={eventNames}
               />
             ))}
           </div>
@@ -496,19 +538,31 @@ function activeTrendLabel(counts: number[]): string {
   return `Active events over the last 14 days. Latest ${latest.toLocaleString()}, range ${min.toLocaleString()} to ${max.toLocaleString()}.`
 }
 
-/** Metric definition id → catalog display name, for labelling metric signals. */
-type MetricNameMap = ReadonlyMap<string, string>
+/** Entity id → display name, for labelling metric / event-type / event signals. */
+type NameMap = ReadonlyMap<string, string>
 
-// Mirrors AnomaliesPage's copy (issue .17): a metric anomaly must read
-// "Metric · <display name>" instead of falling through to a raw "Event <uuid8>".
-function signalScopeLabel(signal: MonitoringSignal, metricNames: MetricNameMap): string {
+// Mirrors AnomaliesPage's copy (issues .17, tripl-yfsj.16): every named scope
+// carries only its id, so an anomaly must read "<Scope> · <name>" instead of a
+// raw "Event <uuid8>". Each lookup falls back to the short ref while its list
+// loads or when the entity is gone (e.g. deleted event / event type / metric),
+// which is what keeps the panel renderable before the name maps arrive.
+function signalScopeLabel(
+  signal: MonitoringSignal,
+  metricNames: NameMap,
+  eventTypeNames: NameMap,
+  eventNames: NameMap,
+): string {
   if (signal.scope_type === 'project_total') return 'Project total'
   const ref = signal.scope_ref.slice(0, 8)
-  if (signal.scope_type === 'event_type') return `Event type ${ref}`
-  if (signal.scope_type === 'event') return `Event ${ref}`
+  if (signal.scope_type === 'event_type') {
+    const name = eventTypeNames.get(signal.scope_ref)
+    return name ? `Event type · ${name}` : `Event type ${ref}`
+  }
+  if (signal.scope_type === 'event') {
+    const name = eventNames.get(signal.scope_ref)
+    return name ? `Event · ${name}` : `Event ${ref}`
+  }
   if (signal.scope_type === 'metric') {
-    // Resolved from the metrics catalog; fall back to the short ref while the
-    // catalog loads or when the definition is gone (e.g. deleted metric).
     const name = metricNames.get(signal.scope_ref)
     return name ? `Metric · ${name}` : `Metric ${ref}`
   }
@@ -519,15 +573,19 @@ function SignalRow({
   slug,
   signal,
   metricNames,
+  eventTypeNames,
+  eventNames,
 }: {
   slug: string
   signal: MonitoringSignal
-  metricNames: MetricNameMap
+  metricNames: NameMap
+  eventTypeNames: NameMap
+  eventNames: NameMap
 }) {
   // Full text drives both the visible label and its hover tooltip so a long
   // scope name (e.g. page_value_question_page_value_…) stays readable when the
   // row ellipsizes.
-  const signalSummary = `${signal.direction === 'drop' ? 'Drop' : 'Spike'} on ${signalScopeLabel(signal, metricNames)}`
+  const signalSummary = `${signal.direction === 'drop' ? 'Drop' : 'Spike'} on ${signalScopeLabel(signal, metricNames, eventTypeNames, eventNames)}`
   return (
     <Link
       to={getMonitoringPath(slug, signal)}

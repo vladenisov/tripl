@@ -1,5 +1,22 @@
+import { Info } from 'lucide-react'
+
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import type { EventType, MonitoringSignal } from '@/types'
+
+// One-line clarifier for the header stat, which reads confusingly next to the
+// sidebar "Anomalies" badge on the same screen. The two counts are NOT nested:
+// this one comes from the collapsed signals endpoint (incident rollup, no
+// magnitude gate) over the series charted here, while the badge counts every
+// open signal in the project above the Significant threshold. Either number can
+// be the larger one, so the copy must not claim one contains the other.
+const CHART_SIGNALS_HELP =
+  'Open signals on the series charted here — the project total and event types, after incident rollup. The sidebar Anomalies count is a different measure: every open signal in the project above the Significant threshold. The two can differ in either direction.'
 
 export function EventsHeader({
   total,
@@ -30,13 +47,36 @@ export function EventsHeader({
       <div className="flex items-center gap-4">
         <MiniStat label="Total" value={String(total)} />
         <MiniStatDivider />
-        <MiniStat
-          label="Active signals"
-          value={String(liveSignalCount)}
-          delta={hasLiveSignal ? 'live' : 'quiet'}
-          tone={hasLiveSignal ? 'danger' : 'success'}
-          pulse={hasLiveSignal}
-        />
+        <div className="inline-flex items-center gap-1">
+          <MiniStat
+            label="Chart signals"
+            value={String(liveSignalCount)}
+            delta={hasLiveSignal ? 'live' : 'quiet'}
+            tone={hasLiveSignal ? 'danger' : 'success'}
+            pulse={hasLiveSignal}
+          />
+          {/* Radix tooltip rather than a bare `title`, so the note opens on
+              keyboard focus as well as hover. The icon stays aria-hidden — the
+              trigger's label already carries the sentence. The provider is local
+              because the header renders outside EventsTable's, and Radix throws
+              without one in scope. */}
+          <TooltipProvider delayDuration={0}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="inline-flex shrink-0 self-end rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                  aria-label={CHART_SIGNALS_HELP}
+                >
+                  <Info className="h-3 w-3" style={{ color: 'var(--fg-faint)' }} aria-hidden />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" align="end" className="max-w-xs whitespace-normal">
+                {CHART_SIGNALS_HELP}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
         <MiniStatDivider />
         <MiniStat
           label="Review"

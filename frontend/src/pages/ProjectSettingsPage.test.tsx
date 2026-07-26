@@ -119,6 +119,7 @@ describe('ProjectSettingsPage', () => {
       min_history_buckets: 9,
       sigma_threshold: 4.5,
       min_expected_count: 25,
+      recent_signal_window_hours: 36,
       created_at: '2026-01-01T00:00:00Z',
       updated_at: '2026-01-01T00:00:00Z',
     }
@@ -163,13 +164,18 @@ describe('ProjectSettingsPage', () => {
     expect(screen.getByDisplayValue('9')).toBeInTheDocument()
     expect(screen.getByDisplayValue('4.5')).toBeInTheDocument()
     expect(screen.getByDisplayValue('25')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('36')).toBeInTheDocument()
 
     fireEvent.click(screen.getByLabelText('Toggle anomaly detection'))
     fireEvent.change(screen.getByDisplayValue('4.5'), { target: { value: '5.5' } })
+    fireEvent.change(screen.getByDisplayValue('36'), { target: { value: '48' } })
 
     await waitFor(() => {
       expect(patchBodies).toContainEqual({ anomaly_detection_enabled: false })
       expect(patchBodies).toContainEqual({ sigma_threshold: 5.5 })
+      // Pins the wire field name: a typo here would 422 in production while a
+      // display-only assertion stayed green.
+      expect(patchBodies).toContainEqual({ recent_signal_window_hours: 48 })
     })
   })
 

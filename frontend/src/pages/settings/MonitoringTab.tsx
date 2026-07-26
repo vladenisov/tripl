@@ -27,6 +27,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
   const minHistoryId = useId()
   const sigmaThresholdId = useId()
   const minExpectedCountId = useId()
+  const recentSignalWindowId = useId()
 
   if (!settings) {
     return <div className="text-sm text-muted-foreground">Loading monitoring settings…</div>
@@ -128,6 +129,24 @@ export function MonitoringTab({ slug }: { slug: string }) {
                 value={settings.min_expected_count}
                 onChange={e => updateMut.mutate({ min_expected_count: Number(e.target.value) })}
               />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor={recentSignalWindowId}>Open signal window (hours)</Label>
+              <Input
+                id={recentSignalWindowId}
+                type="number"
+                min={1}
+                max={720}
+                value={settings.recent_signal_window_hours}
+                onChange={e =>
+                  updateMut.mutate({ recent_signal_window_hours: Number(e.target.value) })
+                }
+              />
+              <p className="text-xs text-muted-foreground">
+                How long an anomaly keeps counting as an open signal on the Anomalies page
+                and in the sidebar badge. Between 1 and 720 hours (30 days). Alert delivery
+                is unaffected.
+              </p>
             </div>
           </div>
 

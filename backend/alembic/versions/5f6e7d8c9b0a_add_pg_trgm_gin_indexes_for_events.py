@@ -26,8 +26,7 @@ def upgrade() -> None:
         return
     op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
     op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_events_name_trgm "
-        "ON events USING gin (name gin_trgm_ops)"
+        "CREATE INDEX IF NOT EXISTS ix_events_name_trgm ON events USING gin (name gin_trgm_ops)"
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS ix_events_description_trgm "

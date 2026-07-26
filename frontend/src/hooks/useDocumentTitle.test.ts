@@ -65,6 +65,64 @@ describe('resolveTitleFromPath', () => {
     expect(resolveTitleFromPath('/p/acme/unknown')).toEqual({ label: 'Events', slug: 'acme' })
   })
 
+  it('labels a sub-surface that is its own destination rather than its parent surface', () => {
+    // Sidebar destinations that happen to be routed under /settings/.
+    expect(resolveTitleFromPath('/p/acme/settings/event-types')).toEqual({
+      label: 'Event types',
+      slug: 'acme',
+    })
+    expect(resolveTitleFromPath('/p/acme/settings/meta-fields')).toEqual({
+      label: 'Schema & fields',
+      slug: 'acme',
+    })
+    expect(resolveTitleFromPath('/p/acme/metrics/fact-tables')).toEqual({
+      label: 'Fact tables',
+      slug: 'acme',
+    })
+    // Deeper segments (detail ids, editors) inherit the sub-surface label.
+    expect(resolveTitleFromPath('/p/acme/settings/event-types/abc123')).toEqual({
+      label: 'Event types',
+      slug: 'acme',
+    })
+    expect(resolveTitleFromPath('/p/acme/metrics/fact-tables/new')).toEqual({
+      label: 'Fact tables',
+      slug: 'acme',
+    })
+  })
+
+  it('keeps project configuration tabs on the parent settings label', () => {
+    expect(resolveTitleFromPath('/p/acme/settings/general')).toEqual({
+      label: 'Project settings',
+      slug: 'acme',
+    })
+    expect(resolveTitleFromPath('/p/acme/settings/monitoring')).toEqual({
+      label: 'Project settings',
+      slug: 'acme',
+    })
+    // `/events/event-types` is not a real route: it matches the Events tab
+    // pattern and renders a filtered catalog, so it must stay on "Events".
+    expect(resolveTitleFromPath('/p/acme/events/event-types')).toEqual({
+      label: 'Events',
+      slug: 'acme',
+    })
+  })
+
+  it('keeps every other sub-path of a surface on the parent surface label', () => {
+    // Events tabs are filtered views of the same catalog, not their own surface.
+    expect(resolveTitleFromPath('/p/acme/events')).toEqual({ label: 'Events', slug: 'acme' })
+    expect(resolveTitleFromPath('/p/acme/events/review')).toEqual({ label: 'Events', slug: 'acme' })
+    expect(resolveTitleFromPath('/p/acme/events/archived')).toEqual({ label: 'Events', slug: 'acme' })
+    // A per-event-type tab, and an event opened from one, are still Events.
+    expect(resolveTitleFromPath('/p/acme/events/checkout_completed')).toEqual({
+      label: 'Events',
+      slug: 'acme',
+    })
+    expect(resolveTitleFromPath('/p/acme/events/all/42')).toEqual({ label: 'Events', slug: 'acme' })
+    // The metric editors stay on Metrics.
+    expect(resolveTitleFromPath('/p/acme/metrics')).toEqual({ label: 'Metrics', slug: 'acme' })
+    expect(resolveTitleFromPath('/p/acme/metrics/new')).toEqual({ label: 'Metrics', slug: 'acme' })
+  })
+
   it('labels the full-takeover Settings routes that mount outside the shell (no slug)', () => {
     expect(resolveTitleFromPath('/settings/members')).toEqual({ label: 'Members' })
     expect(resolveTitleFromPath('/settings/data-sources')).toEqual({ label: 'Data sources' })

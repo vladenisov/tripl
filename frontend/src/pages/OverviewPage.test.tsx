@@ -41,6 +41,8 @@ interface MockOpts {
   activity?: unknown[]
   signals?: unknown[]
   catalog?: Array<{ id: string; display_name: string }>
+  eventTypes?: Array<{ id: string; display_name: string }>
+  events?: Array<{ id: string; name: string }>
   sources?: unknown[]
 }
 
@@ -65,6 +67,15 @@ function mockFetch(opts?: MockOpts) {
     // Metrics catalog list (issue .17): resolves metric-scope signal names.
     if (url.endsWith('/metrics') || url.includes('/metrics?')) {
       const items = opts?.catalog ?? []
+      return jsonResponse({ items, total: items.length })
+    }
+    // Event-type / event name lookups (issue tripl-yfsj.16): resolve the
+    // event-scope signal labels that dominate the expanded signal set. The
+    // leading slash in the '/events' matcher is load-bearing — without it this
+    // would also swallow '/overview/top-events?…' and '/event-types'.
+    if (url.includes('/event-types')) return jsonResponse(opts?.eventTypes ?? [])
+    if (url.includes('/events?') || url.endsWith('/events')) {
+      const items = opts?.events ?? []
       return jsonResponse({ items, total: items.length })
     }
     if (url.includes('/anomalies/signals')) return jsonResponse(opts?.signals ?? [])
@@ -237,6 +248,79 @@ describe('OverviewPage', () => {
     // "Event <uuid8>" fallback the old copy produced.
     expect(await screen.findByText('Drop on Metric · Checkout conversion')).toBeInTheDocument()
     expect(screen.queryByText(/Event metric-a/)).not.toBeInTheDocument()
+  })
+
+  it('labels event- and event-type-scope signals with their names, not a raw UUID (tripl-yfsj.16)', async () => {
+    mockFetch({
+      events: [{ id: 'd78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd', name: 'map:open:spot' }],
+      eventTypes: [{ id: '5f2b91aa-0d13-4c7e-9a26-1d8e3b7f42c1', display_name: 'Map' }],
+      signals: [
+        {
+          scan_config_id: 'scan-1',
+          scope_type: 'event',
+          scope_ref: 'd78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd',
+          state: 'latest_scan',
+          event_id: 'd78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd',
+          event_type_id: null,
+          bucket: '2026-07-01T00:00:00Z',
+          actual_count: 300,
+          expected_count: 100,
+          stddev: 12,
+          z_score: 8,
+          direction: 'spike',
+        },
+        {
+          scan_config_id: 'scan-1',
+          scope_type: 'event_type',
+          scope_ref: '5f2b91aa-0d13-4c7e-9a26-1d8e3b7f42c1',
+          state: 'latest_scan',
+          event_id: null,
+          event_type_id: '5f2b91aa-0d13-4c7e-9a26-1d8e3b7f42c1',
+          bucket: '2026-07-01T00:00:00Z',
+          actual_count: 20,
+          expected_count: 100,
+          stddev: 9,
+          z_score: -7,
+          direction: 'drop',
+        },
+      ],
+    })
+    renderOverview()
+
+    // The bug: Overview rendered "Spike on Event d78ddc27" while the Anomalies
+    // page showed the real name for the very same signal.
+    expect(await screen.findByText('Spike on Event · map:open:spot')).toBeInTheDocument()
+    expect(screen.queryByText(/Event d78ddc27/)).not.toBeInTheDocument()
+    expect(await screen.findByText('Drop on Event type · Map')).toBeInTheDocument()
+    expect(screen.queryByText(/Event type 5f2b91aa/)).not.toBeInTheDocument()
+  })
+
+  it('still renders the signals panel when a name lookup resolves nothing (tripl-yfsj.16)', async () => {
+    // Name maps are additive: an empty/unresolvable lookup — the same state the
+    // panel is in before the lists land — must degrade to the short-ref label
+    // rather than blanking or blocking the row.
+    mockFetch({
+      events: [],
+      signals: [
+        {
+          scan_config_id: 'scan-1',
+          scope_type: 'event',
+          scope_ref: 'd78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd',
+          state: 'latest_scan',
+          event_id: 'd78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd',
+          event_type_id: null,
+          bucket: '2026-07-01T00:00:00Z',
+          actual_count: 300,
+          expected_count: 100,
+          stddev: 12,
+          z_score: 8,
+          direction: 'spike',
+        },
+      ],
+    })
+    renderOverview()
+
+    expect(await screen.findByText('Spike on Event d78ddc27')).toBeInTheDocument()
   })
 
   it('labels a drop-to-zero signal as "dropped to zero", not the clamped z-score (tripl-yfsj.9)', async () => {
