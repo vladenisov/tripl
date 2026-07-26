@@ -14,6 +14,10 @@ class ProjectAnomalySettingsUpdate(BaseModel):
     min_history_buckets: int | None = Field(None, ge=1)
     sigma_threshold: float | None = Field(None, ge=0.1)
     min_expected_count: int | None = Field(None, ge=0)
+    # Capped at 30 days: beyond that the "open signal" count stops describing
+    # anything current, and the latest-scan horizon (max(window, 3 x interval))
+    # already covers long scan intervals.
+    recent_signal_window_hours: int | None = Field(None, ge=1, le=720)
 
 
 class ProjectAnomalySettingsResponse(BaseModel):
@@ -28,6 +32,7 @@ class ProjectAnomalySettingsResponse(BaseModel):
     min_history_buckets: int
     sigma_threshold: float
     min_expected_count: int
+    recent_signal_window_hours: int
     created_at: datetime
     updated_at: datetime
 

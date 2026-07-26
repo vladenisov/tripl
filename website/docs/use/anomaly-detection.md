@@ -116,11 +116,14 @@ These live in the project's **monitoring settings** and apply to every scan in t
 | `min_history_buckets` | `7` | Minimum buckets the rolling fallback needs before it will fire. |
 | `sigma_threshold` | `4.0` | How many normal wobbles of deviation are required to flag a bucket. |
 | `min_expected_count` | `50` | Minimum expected volume before a bucket is eligible to be flagged. |
+| `recent_signal_window_hours` | `24` | How long a flagged bucket keeps counting as an **open signal**. |
 
 The two dials you will actually reach for:
 
 - **`sigma_threshold`** — **raise it** (e.g. to 5) to flag only larger, more confident deviations and cut noise; **lower it** (toward 3) to catch subtler swings at the cost of more false positives.
 - **`min_expected_count`** — **raise it** to ignore lower-traffic series and focus on your busiest ones; **lower it** to extend monitoring down to smaller events (expect more noise from them).
+
+`recent_signal_window_hours` is a presentation dial rather than a detection one: it does not change what gets flagged, only how long a flagged bucket keeps counting as an open signal on the **Anomalies page** and in the sidebar badge. **Lower it** (say to 6) when a busy project's open count is dominated by burned-out spikes that have long since recovered — they age out of the count sooner; **raise it** when you want a full day or more of history to stay visible. The latest-scan freshness rule below still floors the horizon at `3 × scan interval`, so shortening this window never closes a long-interval scan's signal early. **Alert delivery is deliberately unaffected**: alert candidates and monitor status stay on the fixed 24-hour window, so narrowing this dial can never close an alert state or make an already-notified rule fire again.
 
 ## Distribution drift
 
@@ -209,7 +212,8 @@ variable-value drift plus release regression feed the same machinery as
 additional candidate types.
 
 A latest-scan signal remains open only while it is fresh in wall-clock time:
-`max(24 hours, 3 × scan interval)`. This prevents a stopped scan from pinning its
+`max(recent_signal_window_hours, 3 × scan interval)` — 24 hours and the scan
+interval by default. This prevents a stopped scan from pinning its
 last anomaly red forever. When the same scan/bucket/direction fires at project,
 event-type, and event scopes, that is one **incident**. The **Anomalies page**
 uses the *expanded* active-signals view: it lists every co-firing scope — project

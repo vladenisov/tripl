@@ -37,6 +37,7 @@ from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
+from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
@@ -93,31 +94,52 @@ def _bucket_is_recent(bucket: datetime, cutoff: datetime) -> bool:
     return bucket >= cutoff
 
 
+def _scan_config_recent_signal_window(
+    session: Session,
+    scan_config_id: uuid.UUID,
+) -> timedelta | None:
+    """The project's configured open-signal freshness window, or ``None``.
+
+    ``None`` (no settings row yet) leaves ``_classify_signal_state`` on the
+    default ``RECENT_SIGNAL_WINDOW``. One query per scan, never per signal.
+    Only the display path resolves this — alert candidates stay on the fixed
+    window (see ``_get_latest_active_anomalies``).
+    """
+    hours = session.execute(
+        select(ProjectAnomalySettings.recent_signal_window_hours)
+        .join(ScanConfig, ScanConfig.project_id == ProjectAnomalySettings.project_id)
+        .where(ScanConfig.id == scan_config_id)
+    ).scalar_one_or_none()
+    if hours is None:
+        return None
+    return timedelta(hours=int(hours))
+
+
 def _classify_signal_state(
     *,
     anomaly_bucket: datetime,
     latest_metric_bucket: datetime | None,
     now: datetime | None = None,
     interval: timedelta | None = None,
+    recent_window: timedelta | None = None,
 ) -> str | None:
     # No stored metric values -> no live scan to anchor recency on; treat as closed.
     if latest_metric_bucket is None:
         return None
 
     reference = now if now is not None else datetime.now(UTC)
+    window = recent_window if recent_window is not None else RECENT_SIGNAL_WINDOW
 
     if anomaly_bucket >= latest_metric_bucket:
         horizon = (
-            RECENT_SIGNAL_WINDOW
-            if interval is None
-            else max(RECENT_SIGNAL_WINDOW, LATEST_SCAN_STALE_INTERVALS * interval)
+            window if interval is None else max(window, LATEST_SCAN_STALE_INTERVALS * interval)
         )
         # A stopped scan's final anomaly stays at max(bucket) forever; only keep it
         # "latest_scan" while it is still fresh in wall-clock terms.
         if _bucket_is_recent(anomaly_bucket, reference - horizon):
             return "latest_scan"
 
-    if _bucket_is_recent(anomaly_bucket, reference - RECENT_SIGNAL_WINDOW):
+    if _bucket_is_recent(anomaly_bucket, reference - window):
         return "recent"
 
     return None
@@ -184,12 +206,14 @@ def _get_visible_signal_scope_keys(
         key = (anomaly.scope_type, anomaly.scope_ref)
         latest_anomalies.setdefault(key, anomaly)
 
+    recent_window = _scan_config_recent_signal_window(session, scan_config_id)
     return {
         key
         for key, anomaly in latest_anomalies.items()
         if _classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_metrics.get(key),
+            recent_window=recent_window,
         )
         is not None
     }
@@ -214,6 +238,10 @@ def _get_latest_active_anomalies(
         latest_anomalies.setdefault(key, anomaly)
 
     interval = _scan_interval_delta(config.interval)
+    # Deliberately NOT narrowed by the project's open-signal window: this feeds
+    # alert dispatch, which closes AlertRuleState rows for scopes that drop out.
+    # Honouring a shortened window here would let a presentation setting close
+    # alert state and re-trigger the same alert past its cooldown.
     return {
         key: anomaly
         for key, anomaly in latest_anomalies.items()
@@ -272,6 +300,8 @@ def _get_active_metric_anomaly_candidates(
         latest_anomalies.setdefault(anomaly.scope_ref, anomaly)
 
     interval = _scan_interval_delta(config.interval)
+    # See _get_latest_active_anomalies: alert candidates stay on the fixed
+    # window so the presentation setting cannot close alert state.
     return {
         (SCOPE_METRIC, scope_ref): anomaly
         for scope_ref, anomaly in latest_anomalies.items()

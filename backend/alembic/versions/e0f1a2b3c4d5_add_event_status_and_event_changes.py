@@ -55,9 +55,7 @@ def upgrade() -> None:
 
     # 4. Add sunset_at column
     with op.batch_alter_table("events") as batch_op:
-        batch_op.add_column(
-            sa.Column("sunset_at", sa.DateTime(timezone=True), nullable=True)
-        )
+        batch_op.add_column(sa.Column("sunset_at", sa.DateTime(timezone=True), nullable=True))
 
     # 5. Drop the old boolean columns
     with op.batch_alter_table("events") as batch_op:
@@ -83,12 +81,8 @@ def upgrade() -> None:
         sa.Column("field", sa.String(100), nullable=False),
         sa.Column("old_value", sa.Text(), nullable=True),
         sa.Column("new_value", sa.Text(), nullable=True),
-        sa.ForeignKeyConstraint(
-            ["event_id"], ["events.id"], ondelete="CASCADE"
-        ),
-        sa.ForeignKeyConstraint(
-            ["user_id"], ["users.id"], ondelete="SET NULL"
-        ),
+        sa.ForeignKeyConstraint(["event_id"], ["events.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_event_changes_event_id", "event_changes", ["event_id"])
@@ -104,15 +98,9 @@ def downgrade() -> None:
 
     # Restore boolean columns
     with op.batch_alter_table("events") as batch_op:
-        batch_op.add_column(
-            sa.Column("implemented", sa.Boolean(), nullable=True)
-        )
-        batch_op.add_column(
-            sa.Column("reviewed", sa.Boolean(), nullable=True)
-        )
-        batch_op.add_column(
-            sa.Column("archived", sa.Boolean(), nullable=True)
-        )
+        batch_op.add_column(sa.Column("implemented", sa.Boolean(), nullable=True))
+        batch_op.add_column(sa.Column("reviewed", sa.Boolean(), nullable=True))
+        batch_op.add_column(sa.Column("archived", sa.Boolean(), nullable=True))
 
     # Backfill booleans from status
     op.execute(

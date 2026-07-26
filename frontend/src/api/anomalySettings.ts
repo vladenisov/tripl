@@ -16,6 +16,7 @@ export const anomalySettingsApi = {
       min_history_buckets: number
       sigma_threshold: number
       min_expected_count: number
+      recent_signal_window_hours: number
     }>,
   ) => api.patch<ProjectAnomalySettings>(`/projects/${slug}/anomaly-settings`, data),
 }

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import cast
 
 from fastapi import HTTPException
@@ -59,6 +59,7 @@ from tripl.semver import (
     order_versions,
 )
 from tripl.services.metrics_service import (
+    _get_project_recent_signal_window,
     _resolve_project,
     _retained_versions,
     _signal_from_anomaly,
@@ -253,6 +254,7 @@ def _latest_signal(
     *,
     data: list[MetricSeriesPoint],
     anomalies: list[MetricAnomaly],
+    recent_window: timedelta | None = None,
 ) -> MetricSignalResponse | None:
     if not anomalies:
         return None
@@ -261,6 +263,7 @@ def _latest_signal(
     state = classify_signal_state(
         anomaly_bucket=latest_anomaly.bucket,
         latest_metric_bucket=latest_metric_bucket,
+        recent_window=recent_window,
     )
     if state is None:
         return None
@@ -293,7 +296,11 @@ async def get_metric_series(
         metric_id=metric.id,
         scan_config_id=scan_config_id,
         interval=interval,
-        latest_signal=_latest_signal(data=data, anomalies=anomalies),
+        latest_signal=_latest_signal(
+            data=data,
+            anomalies=anomalies,
+            recent_window=await _get_project_recent_signal_window(session, project.id),
+        ),
         data=data,
         forecast=_forecast_from_series(data=data, interval=interval),
     )

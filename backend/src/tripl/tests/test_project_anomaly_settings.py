@@ -20,6 +20,9 @@ async def test_get_project_anomaly_settings_creates_defaults(client: AsyncClient
     assert body["min_history_buckets"] == 7
     assert body["sigma_threshold"] == 4.0
     assert body["min_expected_count"] == 50
+    # The open-signal freshness window must default to the historical 24h so
+    # nothing changes for a project that never touches the setting.
+    assert body["recent_signal_window_hours"] == 24
 
 
 @pytest.mark.asyncio
@@ -39,6 +42,7 @@ async def test_update_project_anomaly_settings(client: AsyncClient) -> None:
             "min_history_buckets": 9,
             "sigma_threshold": 4.5,
             "min_expected_count": 25,
+            "recent_signal_window_hours": 6,
         },
     )
 
@@ -50,3 +54,27 @@ async def test_update_project_anomaly_settings(client: AsyncClient) -> None:
     assert body["min_history_buckets"] == 9
     assert body["sigma_threshold"] == 4.5
     assert body["min_expected_count"] == 25
+    assert body["recent_signal_window_hours"] == 6
+
+    read_back = await client.get("/api/v1/projects/monitoring-update/anomaly-settings")
+    assert read_back.status_code == 200
+    assert read_back.json()["recent_signal_window_hours"] == 6
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hours", [0, 721])
+async def test_recent_signal_window_hours_out_of_range_is_rejected(
+    client: AsyncClient, hours: int
+) -> None:
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": f"Window {hours}", "slug": f"window-{hours}", "description": ""},
+    )
+    assert project_resp.status_code == 201
+
+    resp = await client.patch(
+        f"/api/v1/projects/window-{hours}/anomaly-settings",
+        json={"recent_signal_window_hours": hours},
+    )
+
+    assert resp.status_code == 422

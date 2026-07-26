@@ -61,11 +61,23 @@ def upgrade() -> None:
         sa.Column("text_vector", postgresql.TSVECTOR(), nullable=True),
         sa.Column("embedding", sa.Text(), nullable=True),
         sa.Column("content_hash", sa.String(length=64), nullable=False),
-        sa.Column("embedding_status", sa.String(length=16), server_default="disabled", nullable=False),
+        sa.Column(
+            "embedding_status", sa.String(length=16), server_default="disabled", nullable=False
+        ),
         sa.Column("embedding_model", sa.String(length=128), nullable=True),
         sa.Column("id", sa.Uuid(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["branch_id"], ["plan_branches.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["parent_event_id"], ["events.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="CASCADE"),
@@ -90,8 +102,7 @@ def upgrade() -> None:
         ["parent_event_id"],
     )
     op.execute(
-        "CREATE INDEX ix_search_documents_text_vector "
-        "ON search_documents USING gin (text_vector)"
+        "CREATE INDEX ix_search_documents_text_vector ON search_documents USING gin (text_vector)"
     )
     op.execute(
         "CREATE INDEX ix_search_documents_title_trgm "

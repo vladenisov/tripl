@@ -7,7 +7,9 @@ import pytest
 from httpx import AsyncClient
 
 from tripl.services.monitoring_utils import (
+    RECENT_SIGNAL_WINDOW,
     classify_signal_state,
+    recent_signal_window_from_hours,
     scan_interval_to_timedelta,
     summarize_monitor_states,
 )
@@ -166,6 +168,128 @@ class TestClassifySignalState:
         assert scan_interval_to_timedelta(None) is None
         assert scan_interval_to_timedelta("nope") is None
         assert scan_interval_to_timedelta("6h") == timedelta(hours=6)
+
+
+class TestConfiguredRecentWindow:
+    """The per-project ``recent_signal_window_hours`` override.
+
+    The compatibility contract: omitting ``recent_window`` must reproduce the
+    24h default exactly, and passing it must move BOTH freshness branches (the
+    latest-scan horizon and the recent-window fallback).
+    """
+
+    def test_default_window_is_24_hours(self) -> None:
+        assert timedelta(hours=24) == RECENT_SIGNAL_WINDOW
+
+    def test_recent_signal_window_from_hours(self) -> None:
+        assert recent_signal_window_from_hours(None) is None
+        assert recent_signal_window_from_hours(6) == timedelta(hours=6)
+        assert recent_signal_window_from_hours(24) == RECENT_SIGNAL_WINDOW
+
+    def test_explicit_24h_matches_the_default_path(self) -> None:
+        # Passing the default value must not change any outcome.
+        now = datetime.now(UTC)
+        for offset in (timedelta(hours=1), timedelta(hours=23), timedelta(hours=48)):
+            bucket = now - offset
+            assert classify_signal_state(
+                anomaly_bucket=bucket,
+                latest_metric_bucket=bucket,
+                now=now,
+                recent_window=timedelta(hours=24),
+            ) == classify_signal_state(
+                anomaly_bucket=bucket,
+                latest_metric_bucket=bucket,
+                now=now,
+            )
+
+    def test_shorter_window_closes_a_bucket_open_under_24h(self) -> None:
+        # A 6h-old anomaly on the latest scan: open by default, closed once the
+        # project narrows the window to 4h.
+        now = datetime.now(UTC)
+        bucket = now - timedelta(hours=6)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=bucket,
+                latest_metric_bucket=bucket,
+                now=now,
+            )
+            == "latest_scan"
+        )
+        assert (
+            classify_signal_state(
+                anomaly_bucket=bucket,
+                latest_metric_bucket=bucket,
+                now=now,
+                recent_window=timedelta(hours=4),
+            )
+            is None
+        )
+
+    def test_shorter_window_closes_the_recent_branch(self) -> None:
+        # Anomaly below the latest bucket: "recent" by default, closed under a
+        # window shorter than its age.
+        now = datetime.now(UTC)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=now - timedelta(hours=6),
+                latest_metric_bucket=now - timedelta(hours=1),
+                now=now,
+            )
+            == "recent"
+        )
+        assert (
+            classify_signal_state(
+                anomaly_bucket=now - timedelta(hours=6),
+                latest_metric_bucket=now - timedelta(hours=1),
+                now=now,
+                recent_window=timedelta(hours=4),
+            )
+            is None
+        )
+
+    def test_longer_window_keeps_a_bucket_open_past_24h(self) -> None:
+        now = datetime.now(UTC)
+        bucket = now - timedelta(hours=48)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=bucket,
+                latest_metric_bucket=bucket,
+                now=now,
+            )
+            is None
+        )
+        assert (
+            classify_signal_state(
+                anomaly_bucket=bucket,
+                latest_metric_bucket=bucket,
+                now=now,
+                recent_window=timedelta(hours=72),
+            )
+            == "latest_scan"
+        )
+
+    def test_scan_interval_floor_still_wins_over_a_short_window(self) -> None:
+        # The latest-scan horizon is max(window, 3 x interval): a stopped daily
+        # scan must not be closed early just because the window was narrowed.
+        now = datetime.now(UTC)
+        bucket = now - timedelta(hours=48)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=bucket,
+                latest_metric_bucket=bucket,
+                now=now,
+                interval=scan_interval_to_timedelta("1d"),
+                recent_window=timedelta(hours=4),
+            )
+            == "latest_scan"
+        )
+
+    def test_summarize_monitor_states_stays_on_the_fixed_window(self) -> None:
+        # Monitors summarize ALERT state, which dispatch classifies against the
+        # fixed window, so the per-project open-signal setting must not move it.
+        now = datetime.now(UTC)
+        states = [_state(is_active=True, last_anomaly_bucket=now - timedelta(hours=6))]
+        assert summarize_monitor_states(states, now=now).status == "firing"
 
 
 async def _make_project(client: AsyncClient, slug: str) -> None:

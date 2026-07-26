@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from collections import defaultdict
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from fastapi import HTTPException
@@ -40,6 +40,8 @@ from tripl.schemas.event_metric import (
 from tripl.services.metrics_service import (
     _get_anomaly_rows,
     _get_metric_rows,
+    _get_project_recent_signal_window,
+    _get_project_recent_signal_windows,
     _resolve_event,
     _resolve_event_type,
     _resolve_project,
@@ -192,6 +194,7 @@ async def _get_active_metric_signals(
     session: AsyncSession,
     *,
     project_id: uuid.UUID,
+    recent_window: timedelta | None = None,
 ) -> list[MetricSignalResponse]:
     """Open ``metric``-scope signals for a project's catalog metrics.
 
@@ -200,6 +203,10 @@ async def _get_active_metric_signals(
     (the event-scope multi-query joins ScanConfig on scan_config_id and would
     drop them). Each metric's newest anomaly is classified against its latest
     stored value bucket; only ``latest_scan`` (open) signals surface.
+
+    ``recent_window`` is the project's configured freshness window; callers that
+    already hold it pass it in so this does not re-query, and omitting it keeps
+    the default 24h window.
     """
     metric_ids = list(
         (
@@ -239,11 +246,15 @@ async def _get_active_metric_signals(
     ).scalars():
         latest_anomalies.setdefault(anomaly.scope_ref, anomaly)
 
+    if recent_window is None:
+        recent_window = await _get_project_recent_signal_window(session, project_id)
+
     signals: list[MetricSignalResponse] = []
     for scope_ref, anomaly in latest_anomalies.items():
         state = classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_value_buckets.get(scope_ref),
+            recent_window=recent_window,
         )
         if state is not None:
             signals.append(_signal_from_anomaly(anomaly, state=state))
@@ -287,7 +298,8 @@ async def _count_active_metric_signals_by_project(
     hyphenated ``str(uuid)`` keys the anomalies store — a SQL-level cast would
     diverge SQLite vs Postgres (see ``_get_latest_metric_buckets_multi``).
     Classification reuses ``classify_signal_state`` exactly as
-    :func:`_get_active_metric_signals` does (no scan interval on the metric path).
+    :func:`_get_active_metric_signals` does (no scan interval on the metric path),
+    with each project's own configured freshness window applied.
     """
     if not project_ids:
         return {}
@@ -331,20 +343,26 @@ async def _count_active_metric_signals_by_project(
     ).scalars():
         latest_anomalies.setdefault(anomaly.scope_ref, anomaly)
 
+    # One query for every project's configured freshness window, so the loop below
+    # stays free of per-signal (and per-project) lookups.
+    recent_windows = await _get_project_recent_signal_windows(session, project_ids)
+
     now = datetime.now(UTC)
     counts: dict[uuid.UUID, int] = defaultdict(int)
     for scope_ref, anomaly in latest_anomalies.items():
+        project_id = project_by_scope_ref.get(scope_ref)
         state = classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_value_buckets.get(scope_ref),
             now=now,
+            recent_window=recent_windows.get(project_id) if project_id is not None else None,
         )
-        if state is not None and is_significant_signal(
-            anomaly.actual_count, anomaly.expected_count
+        if (
+            state is not None
+            and project_id is not None
+            and is_significant_signal(anomaly.actual_count, anomaly.expected_count)
         ):
-            project_id = project_by_scope_ref.get(scope_ref)
-            if project_id is not None:
-                counts[project_id] += 1
+            counts[project_id] += 1
     return dict(counts)
 
 
@@ -494,6 +512,11 @@ async def get_active_signals(
             ).all()
         }
 
+    # One lookup for the project's configured open-signal window, reused by every
+    # anomaly below and by the catalog-metric pass — these loops run over hundreds
+    # of rows, so it must never be resolved per signal.
+    recent_window = await _get_project_recent_signal_window(session, project.id)
+
     now = datetime.now(UTC)
     signals: list[MetricSignalResponse] = []
     for anomaly in latest_anomalies:
@@ -508,13 +531,20 @@ async def get_active_signals(
             latest_metric_bucket=latest_metric_bucket,
             now=now,
             interval=scan_interval_to_timedelta(interval_map.get(anomaly.scan_config_id)),
+            recent_window=recent_window,
         )
         if state is not None:
             signals.append(_signal_from_anomaly(anomaly, state=state))
 
     # Catalog metric signals are project-global (NULL scan_config_id) and so are
     # loaded separately from the event-scope multi-query above.
-    signals.extend(await _get_active_metric_signals(session, project_id=project.id))
+    signals.extend(
+        await _get_active_metric_signals(
+            session,
+            project_id=project.id,
+            recent_window=recent_window,
+        )
+    )
 
     # One incident is one active signal. The collapsed list drops the child
     # event_type/event rows a project-total spike/drop trips on the same bucket;
