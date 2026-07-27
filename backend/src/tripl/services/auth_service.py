@@ -38,7 +38,8 @@ PASSWORD_RESET_TOKEN_BYTES = 32
 # submitted address already has an account.
 REGISTRATION_CLOSED_MESSAGE = (
     "Registration is closed on this instance. Ask an owner to enable it under "
-    "Settings -> Security (or set REGISTRATION_MODE=open) to create an account."
+    "Settings -> Instance -> Security & access (or set REGISTRATION_MODE=open) "
+    "to create an account."
 )
 
 # Single neutral message for both the "we emailed you" and "no such account"

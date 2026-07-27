@@ -7,6 +7,7 @@ import { projectsApi } from '@/api/projects'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import type { ApiKey } from '@/types'
 import ApiKeysSection from './ApiKeysSection'
+import { isKeyInactive } from './apiKeyStatus'
 
 function ownerAuthValue(): AuthContextValue {
   return {
@@ -97,5 +98,27 @@ describe('ApiKeysSection', () => {
     expect(await screen.findByText('2 active · 3 revoked or expired')).toBeInTheDocument()
     expect(screen.queryByText('Active keys')).not.toBeInTheDocument()
     expect(screen.queryByText('5 keys')).not.toBeInTheDocument()
+  })
+})
+
+describe('isKeyInactive', () => {
+  const at = (iso: string) => new Date(iso)
+
+  it('counts a key as inactive at the exact expiry instant, matching the backend', () => {
+    // The backend rejects a token once expires_at <= now
+    // (backend/src/tripl/services/api_key_service.py:125). A strict `<` here
+    // labelled the key active for that instant.
+    const expiring = { revoked_at: null, expires_at: '2026-06-01T12:00:00Z' }
+    expect(isKeyInactive(expiring, at('2026-06-01T12:00:00Z'))).toBe(true)
+    expect(isKeyInactive(expiring, at('2026-06-01T11:59:59Z'))).toBe(false)
+    expect(isKeyInactive(expiring, at('2026-06-01T12:00:01Z'))).toBe(true)
+  })
+
+  it('treats a revoked key as inactive regardless of expiry', () => {
+    expect(isKeyInactive({ revoked_at: '2026-05-01T00:00:00Z', expires_at: null })).toBe(true)
+  })
+
+  it('treats a key with no expiry as active', () => {
+    expect(isKeyInactive({ revoked_at: null, expires_at: null })).toBe(false)
   })
 })

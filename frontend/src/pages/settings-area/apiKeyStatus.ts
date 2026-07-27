@@ -6,10 +6,17 @@ import type { ApiKey } from '@/types'
  * rule is unit-testable on its own.
  */
 
-/** A key that can no longer authenticate — revoked, or past its expiry. */
+/**
+ * A key that can no longer authenticate — revoked, or past its expiry.
+ *
+ * The expiry comparison is inclusive to match the backend, which rejects a
+ * token once `expires_at <= now` (services/api_key_service.py:125). A strict
+ * `<` here would report a key as active for the instant the backend already
+ * refuses it.
+ */
 export function isKeyInactive(key: Pick<ApiKey, 'revoked_at' | 'expires_at'>, now = new Date()): boolean {
   if (key.revoked_at != null) return true
-  return key.expires_at != null && new Date(key.expires_at) < now
+  return key.expires_at != null && new Date(key.expires_at) <= now
 }
 
 /**
