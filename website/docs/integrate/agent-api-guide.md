@@ -131,7 +131,7 @@ GET /api/v1/projects/{slug}/events?search=purchase&limit=50&branch=<branch_id>
 GET /api/v1/projects/{slug}/event-types
 GET /api/v1/projects/{slug}/event-types/{event_type_id}
 GET /api/v1/projects/{slug}/event-types/{event_type_id}/fields
-GET /api/v1/projects/{slug}/variables
+GET /api/v1/projects/{slug}/variables?limit=200&offset=0&branch=<branch_id>
 GET /api/v1/projects/{slug}/variables/{variable_id}/values?branch=<branch_id>
 GET /api/v1/projects/{slug}/variables/{variable_id}/event-overrides?branch=<branch_id>
 GET /api/v1/projects/{slug}/variables/drifts?branch=<branch_id>
@@ -147,11 +147,23 @@ Event responses include:
 - metric breakdown columns;
 - variable value contexts on field values that contain real `${variable}` placeholders.
 
-Variable responses include `allowed_values`, warehouse/JSON-path `bindings`,
-`excluded_from_scans`, usage summaries, samples, and `open_drift_count`.
-`/variables/{variable_id}/values` returns per-event observed contexts:
-low-cardinality contexts list all observed values, while high-cardinality
-contexts list bounded samples and an observed count. Event overrides replace the
+`/variables` is paginated and returns `{"items": [...], "total": <int>}`.
+`offset` defaults to `0` (minimum `0`) and `limit` defaults to `200` (`1` to
+`5000`); out-of-range or non-numeric values are rejected with `422`. Read `total`
+to decide whether another page is needed rather than assuming one response holds
+the whole catalog.
+
+Each item in `items` includes `allowed_values`, warehouse/JSON-path `bindings`,
+`excluded_from_scans`, usage summaries, `open_drift_count`, and two inline
+previews that spare a per-variable follow-up call: `sample_values` (observed
+values unioned across every context, de-duplicated, capped at 20) and
+`event_names` (distinct names of the events the variable was observed in,
+alphabetical, capped at 20 — `event_count` carries the untruncated total).
+
+`/variables/{variable_id}/values` returns the full per-event observed contexts
+for one variable: low-cardinality contexts list all observed values, while
+high-cardinality contexts list bounded samples and an observed count. Reach for
+it only when the inline previews are not enough. Event overrides replace the
 global documented list for their event.
 
 ## Updating Events

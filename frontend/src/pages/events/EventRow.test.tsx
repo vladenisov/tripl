@@ -162,7 +162,7 @@ const TEMPLATE_VARIABLE: Variable = {
   bindings: ['payload.variant'],
 }
 
-describe('EventRow Δ · 24h and Monitor cells', () => {
+describe('EventRow Δ · 24h and Signal cells', () => {
   it('renders a populated 24h delta (not a dash) from the window series', () => {
     // prior 24h = 24 * 10 = 240, recent 24h = 24 * 20 = 480 → +100%.
     renderRow(makeEvent(), windowSeries(10, 20))
@@ -174,10 +174,12 @@ describe('EventRow Δ · 24h and Monitor cells', () => {
     expect(screen.getByText('Monitored')).toBeInTheDocument()
   })
 
-  it('shows an em-dash Monitor cell when the event is not covered', () => {
+  it('shows an em-dash Signal cell when the event is not covered', () => {
     renderRow(makeEvent({ monitored: false }), windowSeries(10, 20))
     expect(screen.queryByText('Monitored')).not.toBeInTheDocument()
-    expect(screen.getByTitle('Not covered by any alert rule')).toBeInTheDocument()
+    expect(
+      screen.getByTitle('No open signal, and no monitor (alert rule) covers this event'),
+    ).toBeInTheDocument()
   })
 })
 
@@ -203,14 +205,19 @@ describe('EventRow template token rendering', () => {
 
 describe('EventRow single saturated signal indicator', () => {
   // A live signal used to fan out into four saturated marks on one row (a
-  // pulsing name dot, the Firing chip, the SignalLink arrow, and a red
-  // sparkline dot). The row now surfaces ONE act-on-me affordance — the Firing
+  // pulsing name dot, the signal chip, the SignalLink arrow, and a red
+  // sparkline dot). The row now surfaces ONE act-on-me affordance — the signal
   // chip — so a single incident does not read as many. (tripl-dmch.12)
-  it('renders the Firing chip as the single indicator and drops the SignalLink arrow', () => {
+  //
+  // The chip reads "Live", never "Firing": Firing belongs to monitors (alert
+  // rules), and 30 rows saying "Firing" contradicted a Monitors page that
+  // correctly said "No monitors yet" (tripl-jfm3.4).
+  it('renders the Live signal chip as the single indicator and drops the SignalLink arrow', () => {
     renderRow(makeEvent({ monitored: true }), windowSeries(10, 20), makeSignal())
 
-    // The one kept, saturated affordance: the labelled Monitor-cell chip.
-    expect(screen.getByText('Firing')).toBeInTheDocument()
+    // The one kept, saturated affordance: the labelled Signal-cell chip.
+    expect(screen.getByText('Live')).toBeInTheDocument()
+    expect(screen.queryByText('Firing')).not.toBeInTheDocument()
     // The redundant SignalLink arrow (previously aria-labelled from the signal
     // tone title) is removed, so it no longer double-signals the same incident.
     expect(screen.queryByLabelText('Open latest scan anomaly')).not.toBeInTheDocument()
@@ -218,7 +225,7 @@ describe('EventRow single saturated signal indicator', () => {
   })
 
   it('still marks a past-window anomaly on rows with no live signal', () => {
-    // No rowSignal ⇒ no Firing chip; the sparkline keeps its historical anomaly
+    // No rowSignal ⇒ no signal chip; the sparkline keeps its historical anomaly
     // marker as the row's only cue (nothing to deduplicate against).
     const series = windowSeries(10, 20)
     const withAnomaly = series.map((p, i) =>
@@ -226,8 +233,8 @@ describe('EventRow single saturated signal indicator', () => {
     )
     renderRow(makeEvent({ monitored: true }), withAnomaly)
 
-    expect(screen.queryByText('Firing')).not.toBeInTheDocument()
-    // Covered-but-not-firing still reads as "Monitored", not a signal.
+    expect(screen.queryByText('Live')).not.toBeInTheDocument()
+    // Covered but quiet still reads as "Monitored" (a monitor exists), not a signal.
     expect(screen.getByText('Monitored')).toBeInTheDocument()
   })
 })

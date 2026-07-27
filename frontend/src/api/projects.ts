@@ -13,6 +13,12 @@ export interface AnomalyResetCounts {
   metric_breakdown_anomalies: number
 }
 
+/** Outcome of asking an in-flight demo provision to abandon itself. */
+export interface DemoCancelResult {
+  cancelled: boolean
+  slug: string | null
+}
+
 /** Per-table rows removed by a project-wide drift reset. */
 export interface DriftResetCounts {
   schema_drifts: number
@@ -31,6 +37,10 @@ export const projectsApi = {
   // Seeding a demo is the one long, blocking POST in the app — the caller passes
   // a signal so it can be timed out or cancelled instead of hanging forever.
   createDemo: (signal?: AbortSignal) => api.post<Project>('/projects/demo', {}, signal),
+  // Aborting the create only stops the BROWSER reading the response — the server
+  // finishes seeding regardless. This asks it to abandon the provision instead;
+  // `cancelled` is false when it was already too late (tripl-jfm3.12).
+  cancelDemo: () => api.post<DemoCancelResult>('/projects/demo/cancel', {}),
   resetDemo: (slug: string) => api.post<Project>(`/projects/demo/${slug}/reset`, {}),
   deleteDemo: (slug: string) => api.del(`/projects/demo/${slug}`),
   update: (slug: string, data: {

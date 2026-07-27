@@ -389,7 +389,11 @@ def _scan_job_detail(
         parts.append(_count_label(metric_points, "metric point", "metric points"))
     signals_added = _as_positive_count(summary.get("signals_added"))
     if signals_added:
-        parts.append(_count_label(signals_added, "signal", "signals"))
+        # "new signal(s)", not "signal(s)": this is the run's signals_added
+        # DELTA, and a bare "1 signal" read as the project's open-signal total —
+        # irreconcilable with the Anomalies headline (tripl-jfm3.27). Matches the
+        # events_created branch above, which already qualifies its delta.
+        parts.append(_count_label(signals_added, "new signal", "new signals"))
     alerts_queued = _as_positive_count(summary.get("alerts_queued"))
     if alerts_queued:
         parts.append(_count_label(alerts_queued, "alert queued", "alerts queued"))

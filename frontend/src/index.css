@@ -21,10 +21,15 @@
   --surface-hover: oklch(0.97 0.004 250);
   --surface-active: oklch(0.945 0.006 250);
 
+  /* Text scale. Every step is verified against the surface tokens below by
+     `src/theme-contrast.test.ts`: --fg-subtle and --fg-faint carry real body
+     copy (captions, timestamps, placeholders, empty-cell markers) at 10–12.5px,
+     so they must clear WCAG AA 4.5:1 on --bg / --bg-sunken / --bg-elevated /
+     --surface / --surface-hover — not just look decorative. */
   --fg: oklch(0.18 0.015 250);
   --fg-muted: oklch(0.40 0.012 250);
-  --fg-subtle: oklch(0.56 0.01 250);
-  --fg-faint: oklch(0.72 0.008 250);
+  --fg-subtle: oklch(0.50 0.01 250);
+  --fg-faint: oklch(0.545 0.008 250);
 
   --border: oklch(0.91 0.005 250);
   --border-strong: oklch(0.82 0.008 250);
@@ -43,6 +48,11 @@
   --danger-soft: oklch(0.58 0.22 22 / 0.12);
   --info: oklch(0.55 0.16 240);
   --info-soft: oklch(0.55 0.16 240 / 0.12);
+
+  /* Identity chip (user initials). Always carries white text in both themes,
+     so its lightness is fixed by the AA floor for white-on-blue rather than
+     following the surface scale. */
+  --avatar-bg: oklch(0.52 0.14 240);
 
   --row-h: 36px;
   --header-h: 44px;
@@ -94,10 +104,14 @@
   --surface-hover: oklch(0.22 0.014 250);
   --surface-active: oklch(0.255 0.016 250);
 
+  /* See the light-theme note above: --fg-subtle / --fg-faint are body-copy
+     tokens, so their lightness is pinned by the AA floor against the dark
+     surface scale rather than by taste. They used to sit at 0.52 / 0.38, which
+     measured 3.38:1 and 1.87:1 on --surface. */
   --fg: oklch(0.96 0.003 250);
   --fg-muted: oklch(0.72 0.008 250);
-  --fg-subtle: oklch(0.52 0.008 250);
-  --fg-faint: oklch(0.38 0.008 250);
+  --fg-subtle: oklch(0.68 0.008 250);
+  --fg-faint: oklch(0.635 0.008 250);
 
   --border: oklch(0.26 0.014 250);
   --border-strong: oklch(0.34 0.015 250);
@@ -144,6 +158,29 @@
 .density-comfy { --row-h: 44px; }
 
 /* ── Tripl-styled data table ───────────────────────────────────────────── */
+
+/* Horizontal-overflow affordance. The events catalog is ~1700-2000px of columns
+   in an 830px content pane, and the scroller's horizontal scrollbar sits at the
+   bottom of a very tall list — so while the reader is looking at the header row
+   there was no sign the table continued (tripl-jfm3.36 / .70). The classic
+   two-layer trick: `local` cover gradients ride with the content and hide the
+   shadows at the extremes, `scroll` shadow gradients stay pinned to the box.
+   Both paint on the scroller, i.e. behind the table, so the sticky header keeps
+   its own solid background and only the (transparent) body cells show the fade.
+   Apply it with `.tripl-scroll-x` to any `overflow-x: auto` container. */
+.tripl-scroll-x {
+  background-image:
+    linear-gradient(to right, var(--bg) 40%, transparent),
+    linear-gradient(to left, var(--bg) 40%, transparent),
+    linear-gradient(to right, color-mix(in srgb, var(--fg) 30%, transparent), transparent),
+    linear-gradient(to left, color-mix(in srgb, var(--fg) 30%, transparent), transparent);
+  background-position: left center, right center, left center, right center;
+  background-repeat: no-repeat;
+  background-size: 32px 100%, 32px 100%, 18px 100%, 18px 100%;
+  background-attachment: local, local, scroll, scroll;
+  background-color: var(--bg);
+  overflow-x: auto;
+}
 
 .tripl-table-wrap {
   position: relative;
@@ -353,6 +390,24 @@
 
 /* ── Utilities ─────────────────────────────────────────────────────────── */
 
+/* WCAG 2.2 SC 2.5.8 (Target Size Minimum). Icon-sized controls — table row
+   checkboxes at 16px, icon links at 20px — keep their visual box but grow a
+   transparent 24×24 pointer target around it, so a thumb hits the control
+   instead of the row (tripl-jfm3.66). */
+.hit-target-24 {
+  position: relative;
+}
+
+.hit-target-24::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: max(100%, 24px);
+  height: max(100%, 24px);
+  transform: translate(-50%, -50%);
+}
+
 .mono { font-family: var(--font-mono); font-feature-settings: "tnum"; }
 .tnum { font-variant-numeric: tabular-nums; }
 
@@ -423,6 +478,38 @@
   outline: 2px solid var(--accent);
   outline-offset: 1px;
   border-radius: 4px;
+}
+
+/* ── Skip link ─────────────────────────────────────────────────────────── */
+
+/* Bypass block (WCAG 2.4.1). Parked off-screen until it takes focus, so the
+   first Tab on any page offers an escape from the 27-stop sidebar instead of
+   walking through it (tripl-jfm3.45). Kept in CSS rather than focus: utilities
+   so the two shells (app + settings) share one definition. */
+.skip-link {
+  position: absolute;
+  top: -60px;
+  left: 8px;
+  z-index: 100;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  text-decoration: none;
+  transition: top 120ms ease-out;
+}
+
+.skip-link:focus {
+  top: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skip-link {
+    transition: none;
+  }
 }
 
 /* ── View transitions ──────────────────────────────────────────────────── */

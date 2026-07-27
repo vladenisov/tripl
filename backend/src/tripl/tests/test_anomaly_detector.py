@@ -6,13 +6,18 @@ import pytest
 from tripl.core.analyzers import anomaly_detector
 from tripl.core.analyzers.anomaly_detector import (
     AnomalyDetectionSettings,
+    DetectedAnomaly,
     SeriesPoint,
     _detect_trend_shift,
     _fit_components,
+    _phase_anomaly_at,
+    _phase_level_window,
+    _select_phase_period,
     detect_anomalies,
     expand_series,
     forecast_next_buckets,
     required_history_buckets,
+    settling_buckets_for,
 )
 
 
@@ -269,7 +274,13 @@ def test_headroom_preserves_trend_shift_above_max_counts() -> None:
     vanish, a genuine sustained level shift. The deseasonalized trend rises to
     ~54 while no observed count exceeds 45, so with min_expected_count=50 a
     naive max(counts)-based skip would silence a real trend signal. The 2x
-    headroom keeps this series on the full path (2*45=90 >= 50)."""
+    headroom keeps this series on the full path (2*45=90 >= 50).
+
+    The observable is the trend detector RECOGNIZING the shift, not a persisted
+    row: every per-bucket expectation on this series is under 45, and since
+    tripl-jfm3.48 the trend path applies the project's volume gate to the value
+    it reports — exactly as the phase and rolling paths always have. What
+    tripl-h353 must never do is skip the series before the detector sees it."""
     points = []
     for hour in range(12 * 24):
         is_flat_tail = hour >= 10 * 24
@@ -283,15 +294,20 @@ def test_headroom_preserves_trend_shift_above_max_counts() -> None:
         sigma_threshold=3.0,
         min_expected_count=50,
     )
-    anomalies = detect_anomalies(
-        points,
-        interval=timedelta(hours=1),
+    assert not anomaly_detector.is_provably_silent(45, high_settings.min_expected_count)
+
+    expanded = expand_series(points, interval=timedelta(hours=1), end_exclusive=_bucket(12 * 24))
+    components = _fit_components([point.count for point in expanded], interval=timedelta(hours=1))
+    assert components is not None
+    result = _detect_trend_shift(
+        expanded,
+        components,
         evaluation_start=_bucket(10 * 24),
-        evaluation_end=_bucket(12 * 24),
         settings=high_settings,
+        interval=timedelta(hours=1),
     )
 
-    assert any(anomaly.kind == "trend" for anomaly in anomalies)
+    assert result.shifted_buckets  # the deseasonalized trend shift is still seen
 
 
 def test_detect_anomalies_zero_fills_gaps_after_first_seen_bucket() -> None:
@@ -767,7 +783,7 @@ def test_trend_shift_collapses_sustained_shift_to_single_anomaly() -> None:
         evaluation_start=_bucket(shift_start),  # window spans the whole shift run
         settings=SETTINGS,
         interval=timedelta(hours=1),
-    )
+    ).anomalies
 
     assert len(trend_anomalies) == 1
     assert trend_anomalies[0].direction == "spike"
@@ -822,7 +838,7 @@ def test_trend_shift_direction_matches_actual_vs_expected() -> None:
         evaluation_start=_bucket(shift_start),
         settings=SETTINGS,
         interval=timedelta(hours=1),
-    )
+    ).anomalies
 
     assert len(trend_anomalies) >= 1
     for anomaly in trend_anomalies:
@@ -831,3 +847,272 @@ def test_trend_shift_direction_matches_actual_vs_expected() -> None:
         expected_direction = "spike" if anomaly.actual_count >= anomaly.expected_count else "drop"
         assert anomaly.direction == expected_direction
     assert trend_anomalies[0].direction == "drop"
+
+
+# --------------------------------------------------------------------------
+# Ingestion settling (tripl-jfm3.7 / tripl-jfm3.6)
+# --------------------------------------------------------------------------
+
+
+def test_settling_buckets_for_converts_wall_clock_allowance_per_grid() -> None:
+    """The allowance is wall-clock; each grid rounds it UP to whole buckets, so
+    any positive allowance withholds at least one bucket."""
+    allowance = timedelta(hours=2)
+
+    assert settling_buckets_for(timedelta(minutes=15), allowance) == 8
+    assert settling_buckets_for(timedelta(hours=1), allowance) == 2
+    assert settling_buckets_for(timedelta(hours=6), allowance) == 1
+    assert settling_buckets_for(timedelta(days=1), allowance) == 1
+    assert settling_buckets_for(timedelta(hours=1), timedelta(0)) == 0
+
+
+def _still_filling_peak_series() -> tuple[list[SeriesPoint], int]:
+    """28 days of the daily pattern whose LAST bucket is a peak hour that the
+    warehouse has only partly delivered (20 of the usual 60)."""
+    hours = 24 * 28 - 12  # last index lands on hour-of-day 11, a pattern peak
+    counts = [float(_daily_pattern_count(hour)) for hour in range(hours)]
+    counts[-1] = 20.0
+    return [SeriesPoint(bucket=_bucket(hour), count=counts[hour]) for hour in range(hours)], hours
+
+
+def test_settling_allowance_suppresses_drop_on_still_filling_newest_bucket() -> None:
+    """tripl-jfm3.7: the newest bucket is scored while the warehouse is still
+    delivering it, so a partly-filled 20-of-60 peak reads as a 5-sigma drop that
+    evaporates once the rows land. One settling bucket holds the scoring back."""
+    points, hours = _still_filling_peak_series()
+
+    unsettled = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(hours - 1),
+        evaluation_end=_bucket(hours),
+        settings=SETTINGS,
+        settling_buckets=0,
+    )
+    settled = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(hours - 1),
+        evaluation_end=_bucket(hours),
+        settings=SETTINGS,
+        settling_buckets=1,
+    )
+
+    assert [anomaly.direction for anomaly in unsettled] == ["drop"]  # today's behavior
+    assert settled == []  # the still-filling bucket is scored by a later scan
+
+
+def test_settling_allowance_keeps_the_series_complete() -> None:
+    """Only EMISSION is held back: a withheld newest bucket still feeds the
+    baseline, so an older bucket inside the same window is scored exactly as it
+    would be without the allowance."""
+    points, hours = _still_filling_peak_series()
+    # Break an older bucket too — it must surface either way.
+    broken = hours - 5
+    points[broken] = SeriesPoint(bucket=_bucket(broken), count=0.0)
+
+    without = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(broken),
+        evaluation_end=_bucket(hours),
+        settings=SETTINGS,
+        settling_buckets=0,
+    )
+    with_allowance = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(broken),
+        evaluation_end=_bucket(hours),
+        settings=SETTINGS,
+        settling_buckets=1,
+    )
+
+    older = next(anomaly for anomaly in without if anomaly.bucket == _bucket(broken))
+    still_older = next(anomaly for anomaly in with_allowance if anomaly.bucket == _bucket(broken))
+    assert isclose(still_older.z_score, older.z_score, rel_tol=1e-9)
+    assert all(anomaly.bucket != _bucket(hours - 1) for anomaly in with_allowance)
+
+
+def _day(index: int) -> datetime:
+    return datetime(2026, 1, 1, tzinfo=UTC) + timedelta(days=index)
+
+
+def test_settling_allowance_holds_back_newest_present_fractional_bucket() -> None:
+    """tripl-jfm3.6: a 1d ratio metric whose newest stored bucket reads 0 because
+    the inputs that define it are not in yet. The bucket is two grid slots behind
+    ``evaluation_end``, so the allowance must be measured from the end of the
+    PRESENT series, not from the grid."""
+    ratios = [0.11 + 0.004 * ((index * 7) % 5 - 2) for index in range(30)]
+    ratios[-1] = 0.0  # inputs for the newest bucket have not landed
+    points = [SeriesPoint(bucket=_day(index), count=ratios[index]) for index in range(30)]
+    fractional_settings = AnomalyDetectionSettings(
+        baseline_window_buckets=14,
+        min_history_buckets=7,
+        sigma_threshold=3.0,
+        min_expected_count=1e-6,
+    )
+
+    kwargs = {
+        "interval": timedelta(days=1),
+        "evaluation_start": _day(28),
+        "evaluation_end": _day(31),  # grid runs two slots past the newest point
+        "settings": fractional_settings,
+        "fill_gaps": False,
+    }
+    unsettled = detect_anomalies(points, settling_buckets=0, **kwargs)
+    settled = detect_anomalies(points, settling_buckets=1, **kwargs)
+
+    assert [anomaly.direction for anomaly in unsettled] == ["drop"]
+    assert settled == []
+
+
+# --------------------------------------------------------------------------
+# One incident, one signal (tripl-jfm3.46 / tripl-jfm3.47 / tripl-jfm3.48)
+# --------------------------------------------------------------------------
+
+
+def _stepped_daily_counts(*, total_hours: int, step_hour: int, factor: float) -> list[float]:
+    """A high-volume daily pattern that steps to ``factor`` once and stays there."""
+    return [
+        _daily_pattern_count(hour) * 10 * (factor if hour >= step_hour else 1.0)
+        for hour in range(total_hours)
+    ]
+
+
+def _simulate_hourly_scans(
+    counts: list[float],
+    *,
+    first_end_hour: int,
+    last_end_hour: int,
+    reeval_buckets: int = 30,
+) -> tuple[dict[datetime, DetectedAnomaly], list[int]]:
+    """Replay successive hourly scans with the production window arithmetic.
+
+    Each scan evaluates ``[end - reeval_buckets, end)`` and persists with the
+    production delete semantics (``_replace_scope_anomalies`` clears only that
+    window before re-inserting). Returns the final stored rows and the row count
+    observed after every scan.
+    """
+    persisted: dict[datetime, DetectedAnomaly] = {}
+    sizes: list[int] = []
+    for end_hour in range(first_end_hour, last_end_hour):
+        evaluation_start = _bucket(end_hour - reeval_buckets)
+        evaluation_end = _bucket(end_hour)
+        found = detect_anomalies(
+            [SeriesPoint(bucket=_bucket(hour), count=counts[hour]) for hour in range(end_hour)],
+            interval=timedelta(hours=1),
+            evaluation_start=evaluation_start,
+            evaluation_end=evaluation_end,
+            settings=SETTINGS,
+        )
+        persisted = {
+            bucket: anomaly
+            for bucket, anomaly in persisted.items()
+            if not evaluation_start <= bucket < evaluation_end
+        }
+        persisted.update({anomaly.bucket: anomaly for anomaly in found})
+        sizes.append(len(persisted))
+    return persisted, sizes
+
+
+def test_sustained_level_change_is_one_row_not_one_per_scan() -> None:
+    """tripl-jfm3.47: the run-collapse invariant only ever held inside a single
+    invocation. The evaluation window slides one bucket per hourly scan and the
+    delete window slides with it, so a window-anchored trend row was written one
+    bucket further along every run and never revisited — one incident accumulated
+    one row per scan (90 scans over this series left 17 rows, 14 of them trend).
+    Anchored at the run's true start the same incident stays a single row."""
+    step_hour = 24 * 9
+    total_hours = 24 * 13
+    counts = _stepped_daily_counts(total_hours=total_hours, step_hour=step_hour, factor=0.5)
+
+    persisted, sizes = _simulate_hourly_scans(
+        counts, first_end_hour=step_hour + 6, last_end_hour=total_hours
+    )
+
+    assert len(persisted) == 1
+    row = next(iter(persisted.values()))
+    assert row.kind == "trend"
+    assert row.direction == "drop"
+    # Dated when the level moved, not when the last scan ran.
+    assert _bucket(step_hour) <= row.bucket <= _bucket(step_hour + 24)
+    # No scan ever accumulated a wall of rows, and the tail is perfectly flat:
+    # an ongoing condition stops re-entering the list as new.
+    assert max(sizes) <= 6
+    assert sizes[-20:] == [sizes[-1]] * 20
+
+
+def test_phase_expectation_relevels_within_one_short_cycle() -> None:
+    """tripl-jfm3.46: with the level averaged over the FULL phase period, an
+    hour-of-week baseline anchors ``median(factors) * current_level`` to a 7-day
+    trailing mean, so a step change keeps clearing the sigma bar for days
+    (measured: still flagging 71h later, and 106-152h on production series).
+    Averaging over the shortest seasonal cycle re-levels within that cycle."""
+    shift_hour = 24 * 25
+    counts = [
+        float(_weekly_pattern_count(hour)) * (0.5 if hour >= shift_hour else 1.0)
+        for hour in range(24 * 28)
+    ]
+    interval = timedelta(hours=1)
+
+    def phase_at(offset: int, *, level_window: int | None = None) -> DetectedAnomaly | None:
+        idx = shift_hour + offset
+        period = _select_phase_period(interval, idx)
+        assert period == 24 * 7  # the hour-of-week baseline is what regressed
+        return _phase_anomaly_at(
+            counts,
+            idx,
+            SeriesPoint(bucket=_bucket(idx), count=counts[idx]),
+            period,
+            SETTINGS,
+            level_window=level_window
+            if level_window is not None
+            else _phase_level_window(interval, period),
+            poisson=True,
+        )
+
+    # The incident itself is still reported.
+    assert phase_at(1) is not None
+    # A day later the baseline has followed the new level — no re-fire.
+    for offset in (24, 30, 48, 71):
+        assert phase_at(offset) is None
+        # ... whereas the full-period level window kept flagging the same
+        # unchanged level for days. This is the regression being fixed.
+        assert phase_at(offset, level_window=24 * 7) is not None
+
+
+def test_trend_rows_never_report_expectation_below_the_volume_gate() -> None:
+    """tripl-jfm3.48: the trend path gated on the deseasonalized trend but
+    persisted a different quantity as ``expected_count`` — a per-bucket
+    reconstruction that could fall below (even to 0.00 on) a project whose
+    configured floor is 50. Every surfaced row must clear the floor the user set,
+    as the phase and rolling paths already do."""
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    settings = AnomalyDetectionSettings(
+        baseline_window_buckets=14,
+        min_history_buckets=7,
+        sigma_threshold=4.0,
+        min_expected_count=50,
+    )
+    for low, high, shift_day in ((10, 800, 20), (5, 900, 21), (20, 600, 22), (40, 400, 25)):
+        points = [
+            SeriesPoint(
+                bucket=start + timedelta(hours=index),
+                count=(low if index < 24 * shift_day else high)
+                * (1.0 + 0.15 * ((index % 24) / 24.0))
+                + (index * 7919 % 11) / 10.0,
+            )
+            for index in range(24 * 30)
+        ]
+
+        anomalies = detect_anomalies(
+            points,
+            interval=timedelta(hours=1),
+            evaluation_start=start + timedelta(hours=24 * (shift_day - 1)),
+            evaluation_end=start + timedelta(hours=24 * 30),
+            settings=settings,
+        )
+
+        assert any(anomaly.kind == "trend" for anomaly in anomalies)
+        assert all(anomaly.expected_count >= settings.min_expected_count for anomaly in anomalies)

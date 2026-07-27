@@ -42,9 +42,10 @@ Available query parameters:
 
 `status` is the lifecycle filter, and you can pass it more than once to match any of
 several states. The valid values are `draft`, `in_review`, `ready_for_dev`,
-`implemented`, `live`, `deprecated`, and `archived`. There is no separate
-`implemented` or `archived` boolean — "implemented" and "archived" are simply
-`status` values (e.g. `status=implemented`, `status=archived`).
+`implemented`, `live`, `deprecated`, and `archived`; anything else is rejected
+with `422` naming the accepted values. There is no separate `implemented` or
+`archived` boolean — "implemented" and "archived" are simply `status` values
+(e.g. `status=implemented`, `status=archived`).
 
 ### Example: every event carrying a ticket key
 

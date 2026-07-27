@@ -80,11 +80,22 @@ Each row shows the member's name (or email), email, join date, and role
 this screen — use another owner account if you need to step down, and remember
 the last-owner guard above.
 
-:::note No invitations yet
-There is no email-invitation flow in the current release. New members join by
-**registering** at the sign-in page; the instance then defaults them to editor,
-and an owner adjusts their role afterward. Registration is rate-limited (see
-[Security & access](#security--access)).
+:::note No invitations yet — open the door, then close it
+There is no email-invitation flow in the current release, and **self-service
+registration is disabled by default**: an instance on the public internet does
+not hand out accounts. To add a member:
+
+1. **Settings → Instance → Security & access → Registration** → set **Open**.
+   (Owner only. This applies immediately — no restart.)
+2. Have them **register** at the sign-in page. They join as **editor**; adjust
+   their role from **Settings → Members** if needed.
+3. Set Registration back to **Disabled**.
+
+While registration is disabled, `POST /auth/register` is refused with a `403`
+that tells the visitor to ask an owner. The one exception is a brand-new
+instance with **no users at all** — that first registration always works and
+becomes the owner, so a fresh deploy can be claimed. Registration is also
+rate-limited (see [Security & access](#security--access)).
 :::
 
 ## Profile & account security
@@ -167,9 +178,11 @@ persisted, so a database dump cannot replay tokens.
 
 ### Governing keys
 
-- **Inventory.** The **Active keys** card lists every key with its name, prefix,
+- **Inventory.** The **All keys** card lists every key with its name, prefix,
   scope chip (`read`/`write`), bound project (or "All projects"), and
   last-used / status (`never used`, `used <date>`, `expired`, or `revoked`).
+  Its heading counts usable keys separately from dead ones — "7 active · 3
+  revoked or expired" — so the summary never files a revoked token as live.
   `last_used_at` is updated on use but throttled to at most once per ~60s to
   avoid write amplification on the auth hot path.
 - **Revocation is immediate and soft.** Revoking sets `revoked_at`; the key
@@ -217,7 +230,8 @@ Sections apply at one of two times:
 edits apply immediately. The worker falls back to env-only config if it can't
 read the settings table, so background jobs never fail on a settings read.
 
-**Restart-time (next deploy).** The **Security & access**, **Storage**, and
+**Restart-time (next deploy).** The **Security & access** (except
+**Registration**, which applies immediately), **Storage**, and
 **Observability** sections are consumed by parts of the server that are wired
 once at process start — the middleware stack (CORS, security headers, the
 session cookie), the auth rate limiters, the photo storage backend, logging, and
@@ -290,6 +304,10 @@ If no key is set on either AI secret field, the server falls back to the
 
 Authentication and network policy for everyone on the instance.
 
+- **Registration** (`registration_mode`, default **Disabled**) — whether
+  strangers can create their own account. **Disabled** refuses
+  `POST /auth/register` with a `403`; **Open** allows self-service signup (new
+  accounts join as editor). See [Members](#members) for the onboarding flow.
 - **Sessions:** Session cookie name (`session_cookie_name`, default
   `tripl_session`), Session TTL hours (`session_ttl_hours`, default 168), Secure
   cookie (`session_cookie_secure`).
@@ -301,6 +319,14 @@ Authentication and network policy for everyone on the instance.
   (`rate_limit_login_per_minute`, default 5/min), Register limit
   (`rate_limit_register_per_hour`, default 3/hour), and **Trust
   X-Forwarded-For** (`rate_limit_trust_forwarded_for`).
+
+:::tip Registration is the one field here that applies immediately
+Everything else in this section is read once at process start (see
+[When changes take effect](#when-changes-take-effect)), but **Registration** is
+resolved on every signup attempt — closing the door must never wait for a
+redeploy. The `REGISTRATION_MODE` env var remains the default the override
+replaces.
+:::
 
 :::danger Trust X-Forwarded-For only behind a trusted proxy
 `rate_limit_trust_forwarded_for` defaults to **false**. Enable it only when a

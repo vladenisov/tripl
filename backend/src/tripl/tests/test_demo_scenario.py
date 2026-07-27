@@ -111,7 +111,7 @@ async def test_new_examples_are_api_visible(client: AsyncClient) -> None:
     # --- authored per-event override -----------------------------------------
     variables_resp = await client.get(f"/api/v1/projects/{slug}/variables")
     assert variables_resp.status_code == 200
-    variables_by_name = {v["name"]: v for v in variables_resp.json()}
+    variables_by_name = {v["name"]: v for v in variables_resp.json()["items"]}
     product_id = variables_by_name["product_id"]["id"]
     overrides_resp = await client.get(
         f"/api/v1/projects/{slug}/variables/{product_id}/event-overrides"

@@ -77,12 +77,14 @@ async def _seed_group_metrics(
     event_rows: list[EventMetricSeedRow],
     *,
     name: str = "Metrics Config",
+    created_at: datetime | None = None,
     updated_at: datetime | None = None,
 ) -> uuid.UUID:
     """Seed one scan config plus its per-event hourly metrics; returns the scan
-    config id. Pass ``updated_at`` to make default-scan resolution
-    (``_get_default_scan_config_id`` orders by ``updated_at`` desc) deterministic
-    when a project has more than one scan."""
+    config id. Pass ``created_at`` to make default-scan resolution
+    (``_get_default_scan_config`` orders by ``created_at`` desc, ``id`` desc)
+    deterministic when a project has more than one scan. ``updated_at`` is
+    accepted so a test can prove it does NOT influence the pick."""
     buckets = [
         datetime(2026, 1, 1, 10, tzinfo=UTC),
         datetime(2026, 1, 1, 11, tzinfo=UTC),
@@ -111,6 +113,8 @@ async def _seed_group_metrics(
             cardinality_threshold=100,
             interval="1h",
         )
+        if created_at is not None:
+            scan_config.created_at = created_at
         if updated_at is not None:
             scan_config.updated_at = updated_at
         session.add_all([data_source, scan_config])
@@ -523,11 +527,13 @@ async def test_get_events_metrics_applies_event_filters(client: AsyncClient) -> 
 
 @pytest.mark.asyncio
 async def test_get_events_metrics_scopes_to_default_scan_config(client: AsyncClient) -> None:
-    """The "All Events Dynamics" series must reflect a single scan's hourly volume
-    (the most-recently-updated configured scan, matching the project-total sparkline)
+    """The "<Tab> Dynamics" series must reflect a single scan's hourly volume
+    (the most-recently-created configured scan, matching the project-total sparkline)
     rather than a cross-scan sum. Regression: a legacy "Old events" backfill scan
     that also collected the same events used to be summed in, inflating one bucket
-    into an outlier that dominated the chart's y-axis."""
+    into an outlier that dominated the chart's y-axis. The series also names the
+    scan it is scoped to, so the chart can stop implying project-wide coverage
+    (tripl-jfm3.20)."""
     setup = await _setup_metrics_project(client, "metrics-scoping")
 
     event = await client.post(
@@ -542,20 +548,20 @@ async def test_get_events_metrics_scopes_to_default_scan_config(client: AsyncCli
     )
     event_id = event.json()["id"]
 
-    # Legacy backfill scan (older updated_at) with hugely inflated counts — the
+    # Legacy backfill scan (older created_at) with hugely inflated counts — the
     # source of the outlier bucket before scoping was fixed.
     await _seed_group_metrics(
         setup["project_id"],
         [{"event_id": event_id, "counts": [500_000, 600_000]}],
         name="Old events",
-        updated_at=datetime(2025, 1, 1, tzinfo=UTC),
+        created_at=datetime(2025, 1, 1, tzinfo=UTC),
     )
-    # Current scan (newer updated_at) — the default the resolver must select.
+    # Current scan (newer created_at) — the default the resolver must select.
     await _seed_group_metrics(
         setup["project_id"],
         [{"event_id": event_id, "counts": [10, 15]}],
         name="Metrics Config",
-        updated_at=datetime(2026, 6, 1, tzinfo=UTC),
+        created_at=datetime(2026, 6, 1, tzinfo=UTC),
     )
 
     resp = await client.get("/api/v1/projects/metrics-scoping/events-metrics")
@@ -568,6 +574,75 @@ async def test_get_events_metrics_scopes_to_default_scan_config(client: AsyncCli
         _plain_point("2026-01-01T10:00:00", 10),
         _plain_point("2026-01-01T11:00:00", 15),
     ]
+    # …and the response names the scan so the chart title can stop claiming to
+    # cover the whole project (tripl-jfm3.20).
+    assert body["scan_config_name"] == "Metrics Config"
+    assert body["scan_config_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_default_scan_config_ignores_updated_at_and_breaks_ties_stably(
+    client: AsyncClient,
+) -> None:
+    """Default-scan resolution must not move when an unrelated scan config is
+    edited, and must be deterministic when two configs share a timestamp
+    (tripl-jfm3.21). Before the fix the resolver ordered by ``updated_at`` desc
+    with no tiebreak: two windy-ios configs carried byte-identical ``updated_at``
+    values, so a 32x swing in the headline volume hung on Postgres row order,
+    and touching any config re-pointed the chart."""
+    setup = await _setup_metrics_project(client, "metrics-tiebreak")
+
+    event = await client.post(
+        "/api/v1/projects/metrics-tiebreak/events",
+        json={
+            "event_type_id": setup["page_type_id"],
+            "name": "Alpha Viewed",
+            "status": "implemented",
+            "field_values": [{"field_definition_id": setup["page_field_id"], "value": "home"}],
+        },
+    )
+    event_id = event.json()["id"]
+
+    # Newest by created_at but oldest by updated_at: the pick must follow
+    # created_at, so this is the scan the volume series charts.
+    await _seed_group_metrics(
+        setup["project_id"],
+        [{"event_id": event_id, "counts": [10, 15]}],
+        name="Current scan",
+        created_at=datetime(2026, 6, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 6, 1, tzinfo=UTC),
+    )
+    # A stale scan that someone renamed five minutes ago: `onupdate=func.now()`
+    # bumped updated_at, which used to hijack the headline chart.
+    await _seed_group_metrics(
+        setup["project_id"],
+        [{"event_id": event_id, "counts": [500_000, 600_000]}],
+        name="Old events",
+        created_at=datetime(2025, 1, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 7, 20, tzinfo=UTC),
+    )
+
+    first = await client.get("/api/v1/projects/metrics-tiebreak/metrics/total")
+    assert first.status_code == 200
+    assert first.json()["scan_config_name"] == "Current scan"
+
+    # Stable across calls — no dependence on row order.
+    second = await client.get("/api/v1/projects/metrics-tiebreak/metrics/total")
+    assert second.json()["scan_config_id"] == first.json()["scan_config_id"]
+
+
+@pytest.mark.asyncio
+async def test_project_total_metrics_names_its_scan_config(client: AsyncClient) -> None:
+    """The Overview volume card charts ONE scan config, so the response must
+    name it — the card used to be labelled "project total" while plotting 2.4 %
+    of windy-ios's volume (tripl-jfm3.20)."""
+    setup = await _setup_metrics_project(client, "metrics-total-name")
+    await _seed_group_metrics(setup["project_id"], [], name="Snowplow Pageviews (iOS)")
+
+    resp = await client.get("/api/v1/projects/metrics-total-name/metrics/total")
+
+    assert resp.status_code == 200
+    assert resp.json()["scan_config_name"] == "Snowplow Pageviews (iOS)"
 
 
 @pytest.mark.asyncio
@@ -2043,9 +2118,42 @@ async def test_overview_kpi_series(client: AsyncClient):
     assert resp.status_code == 200
     body = resp.json()
     assert body["days"] == 14
-    assert len(body["active_events"]) == 14
-    assert sum(body["active_events"]) == 2
-    assert body["active_events"][-1] == 2  # both created today
+    # The series has always been "events created per day"; it is now named that
+    # way instead of `active_events` (tripl-jfm3.22).
+    assert "active_events" not in body
+    assert len(body["new_events"]) == 14
+    assert sum(body["new_events"]) == 2
+    assert body["new_events"][-1] == 2  # both created today
+
+
+@pytest.mark.asyncio
+async def test_overview_kpi_series_counts_main_branch_only(client: AsyncClient):
+    """The KPI sparkline sits beside "Active events", which counts the main
+    branch only. Counting every branch made the series sum past that stat — a
+    demo reset one minute old reported 26 across 14 days next to "ACTIVE EVENTS
+    17" (tripl-jfm3.77)."""
+    ctx = await _setup_metrics_project(client, slug="kpi-branch")
+    resp = await client.post(
+        "/api/v1/projects/kpi-branch/events",
+        json={
+            "event_type_id": ctx["page_type_id"],
+            "name": "Alpha Viewed",
+            "field_values": [{"field_definition_id": ctx["page_field_id"], "value": "x"}],
+        },
+    )
+    assert resp.status_code == 201
+
+    # A working branch deep-copies every event under a new branch_id.
+    branch = await client.post(
+        "/api/v1/projects/kpi-branch/branches",
+        json={"name": "wip"},
+    )
+    assert branch.status_code == 201, branch.text
+
+    resp = await client.get("/api/v1/projects/kpi-branch/overview/kpi-series?days=14")
+    assert resp.status_code == 200
+    # One event on main, one copy on the working branch — the series counts one.
+    assert sum(resp.json()["new_events"]) == 1
 
 
 async def _seed_platform_scan(

@@ -44,6 +44,10 @@ interface MockOpts {
   eventTypes?: Array<{ id: string; display_name: string }>
   events?: Array<{ id: string; name: string }>
   sources?: unknown[]
+  scanConfigName?: string | null
+  kpiSeries?: number[]
+  eventNameRequests?: string[]
+  topEvents?: Array<{ event_id: string; name: string; total_count: number }>
 }
 
 function mockFetch(opts?: MockOpts) {
@@ -52,7 +56,9 @@ function mockFetch(opts?: MockOpts) {
     if (url.includes('/metrics/total')) {
       return jsonResponse({
         scope: 'project_total',
-        scan_config_id: null,
+        scan_config_id: 'scan-1',
+        // The card charts ONE scan config and names it (tripl-jfm3.20).
+        scan_config_name: opts?.scanConfigName ?? 'Snowplow Pageviews (iOS)',
         event_id: null,
         event_type_id: null,
         interval: 'hour',
@@ -64,6 +70,11 @@ function mockFetch(opts?: MockOpts) {
         forecast: [],
       })
     }
+    if (url.includes('/overview/kpi-series')) {
+      const series = opts?.kpiSeries ?? [1, 2, 3]
+      return jsonResponse({ days: series.length, new_events: series })
+    }
+    if (url.includes('/overview/top-events')) return jsonResponse(opts?.topEvents ?? [])
     // Metrics catalog list (issue .17): resolves metric-scope signal names.
     if (url.endsWith('/metrics') || url.includes('/metrics?')) {
       const items = opts?.catalog ?? []
@@ -74,6 +85,21 @@ function mockFetch(opts?: MockOpts) {
     // leading slash in the '/events' matcher is load-bearing — without it this
     // would also swallow '/overview/top-events?…' and '/event-types'.
     if (url.includes('/event-types')) return jsonResponse(opts?.eventTypes ?? [])
+    // Per-signal event lookup: the panel resolves only the ids it renders
+    // rather than downloading the whole catalog (tripl-jfm3.25).
+    const singleEvent = /\/events\/([^/?]+)/.exec(url)
+    if (singleEvent) {
+      const id = singleEvent[1]!
+      opts?.eventNameRequests?.push(id)
+      const match = (opts?.events ?? []).find((e) => e.id === id)
+      if (!match) {
+        return new Response(JSON.stringify({ detail: 'Event not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return jsonResponse(match)
+    }
     if (url.includes('/events?') || url.endsWith('/events')) {
       const items = opts?.events ?? []
       return jsonResponse({ items, total: items.length })
@@ -141,13 +167,86 @@ describe('OverviewPage', () => {
     expect(screen.getByText('Coverage')).toBeInTheDocument()
   })
 
-  it('shows the project-total volume trend once metrics load', async () => {
+  it('names the scan config the volume card charts, not "project total" (tripl-jfm3.20)', async () => {
+    // The card plots ONE scan config. Labelled "Volume · project total" it read
+    // as the project's whole volume while showing 2.4 % of it — with a "Top
+    // events · 48h" row 12x larger directly beneath.
     mockFetch()
     renderOverview()
 
-    expect(await screen.findByText('Volume · project total')).toBeInTheDocument()
+    expect(
+      await screen.findByText('Volume · Snowplow Pageviews (iOS)'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Volume · project total')).not.toBeInTheDocument()
+    expect(
+      screen.getByText('One scan config — not the project’s combined volume across all scans.'),
+    ).toBeInTheDocument()
     // latest bucket count = 25
     expect(await screen.findByText('25')).toBeInTheDocument()
+  })
+
+  it('falls back to a bare "Volume" title when no scan config is resolved', async () => {
+    mockFetch({ scanConfigName: null })
+    renderOverview()
+
+    expect(await screen.findByText('Volume')).toBeInTheDocument()
+    expect(screen.queryByText('Volume · project total')).not.toBeInTheDocument()
+  })
+
+  it('says the top-events panel spans every scan config (tripl-jfm3.20)', async () => {
+    // Top events sums ALL scans while the volume card above charts one, so an
+    // event's 48h count can exceed the card's total. Saying so is what keeps
+    // the two panels from reading as a contradiction.
+    mockFetch()
+    renderOverview()
+
+    expect(
+      await screen.findByText('Across every scan config in this project.'),
+    ).toBeInTheDocument()
+  })
+
+  it('gives top-event labels room to stay distinct (tripl-jfm3.31)', async () => {
+    // The three biggest events on windy-ios share a 21-character prefix, so a
+    // fixed 10rem label column truncated all three to the identical string
+    // "feature_flag:flag_use…" and the ranking became unreadable.
+    const topEvents = [
+      { event_id: 'e1', name: 'feature_flag:flag_use:app', total_count: 26514863 },
+      { event_id: 'e2', name: 'feature_flag:flag_use:growthbook', total_count: 24077526 },
+      { event_id: 'e3', name: 'feature_flag:flag_use:server', total_count: 2788812 },
+    ]
+    mockFetch({ topEvents })
+    renderOverview()
+
+    const label = await screen.findByText('feature_flag:flag_use:growthbook')
+    // The column tracks the panel width instead of being pinned at w-40, so a
+    // wide panel shows the whole name.
+    expect(label.className).not.toMatch(/\bw-40\b/)
+    expect(label.className).toContain('w-[min(45%,22rem)]')
+
+    // Every name still renders in full in the DOM (and in the row's a11y name),
+    // so nothing depends on hovering to tell the bars apart.
+    for (const e of topEvents) {
+      expect(
+        screen.getByRole('listitem', { name: `${e.name}: ${e.total_count.toLocaleString()} events` }),
+      ).toBeInTheDocument()
+    }
+  })
+
+  it('captions the KPI sparkline as new events, not active events (tripl-jfm3.22)', async () => {
+    // The series is COUNT(Event) grouped by created_at. Captioned "Active trend"
+    // beside "ACTIVE EVENTS 2,413" it announced days of 4,618 — more active
+    // events in one day than the project has in total — and the sr-only text
+    // stated that falsehood outright.
+    mockFetch({ kpiSeries: [1, 2, 3, 4] })
+    renderOverview()
+
+    expect(await screen.findByText('New events · 14d')).toBeInTheDocument()
+    expect(screen.queryByText('Active trend · 14d')).not.toBeInTheDocument()
+    expect(screen.getByText(/New events added by day: 1, 2, 3, 4\./)).toBeInTheDocument()
+    expect(screen.queryByText(/Active events by day/)).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('img', { name: /^New events added per day over the last 14 days\./ }),
+    ).toBeInTheDocument()
   })
 
   it('keeps the open-signals headline in agreement with the signals panel (issue H1)', async () => {
@@ -295,6 +394,28 @@ describe('OverviewPage', () => {
     expect(screen.queryByText(/Event type 5f2b91aa/)).not.toBeInTheDocument()
   })
 
+  it('resolves signal event names one by one, never by listing the catalog (tripl-jfm3.25)', async () => {
+    // The panel used to fire GET /events?limit=10000 — 2,413 rows / 2.7 MB / ~3 s
+    // of tags, field values and meta values — purely to label six rows, leaving
+    // raw uuid stubs on the default landing route until it landed.
+    const eventNameRequests: string[] = []
+    const fetchSpy = mockFetch({
+      eventNameRequests,
+      events: [{ id: 'd78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd', name: 'map:open:spot' }],
+      signals: [
+        makeEventSignal('d78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd'),
+      ],
+    })
+    renderOverview()
+
+    expect(await screen.findByText('Spike on Event · map:open:spot')).toBeInTheDocument()
+    expect(eventNameRequests).toEqual(['d78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd'])
+    const listCalls = fetchSpy.mock.calls
+      .map(([input]) => String(input))
+      .filter((url) => url.includes('limit=10000'))
+    expect(listCalls).toEqual([])
+  })
+
   it('still renders the signals panel when a name lookup resolves nothing (tripl-yfsj.16)', async () => {
     // Name maps are additive: an empty/unresolvable lookup — the same state the
     // panel is in before the lists land — must degrade to the short-ref label
@@ -368,6 +489,23 @@ describe('OverviewPage', () => {
     expect(screen.queryByText('Other project source')).not.toBeInTheDocument()
   })
 })
+
+function makeEventSignal(scopeRef: string) {
+  return {
+    scan_config_id: 'scan-1',
+    scope_type: 'event',
+    scope_ref: scopeRef,
+    state: 'latest_scan',
+    event_id: scopeRef,
+    event_type_id: null,
+    bucket: '2026-07-01T00:00:00Z',
+    actual_count: 300,
+    expected_count: 100,
+    stddev: 12,
+    z_score: 8,
+    direction: 'spike',
+  }
+}
 
 function makeSource(overrides: {
   id: string

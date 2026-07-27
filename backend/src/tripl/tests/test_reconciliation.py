@@ -303,6 +303,45 @@ async def test_dead_events_reports_stale_implemented_events_only(client: AsyncCl
     assert names[0] == "Never Seen Old"
 
 
+@pytest.mark.asyncio
+async def test_dead_events_flags_a_stale_event_with_a_young_plan_row(client: AsyncClient):
+    """A seen-then-quiet event is dead even if its plan row was written today.
+
+    The grace period exists for events that have never been seen — a freshly
+    authored event legitimately has no data yet. Applying it to events that DO
+    have a last_seen_at hid genuinely stale instrumentation behind a young row
+    and made every backdated demo event permanently unflaggable (tripl-jfm3.58).
+    """
+    et_id, _ = await _setup_project(client, "rec-dead-young-row")
+    project_id = await _project_id("rec-dead-young-row")
+    now = datetime.now(UTC)
+
+    async with TestSessionLocal() as session:
+        branch_id = (
+            await session.execute(
+                select(Event.branch_id).where(Event.project_id == project_id).limit(1)
+            )
+        ).scalar_one()
+        stale_but_new_row = Event(
+            project_id=project_id,
+            branch_id=branch_id,
+            event_type_id=uuid.UUID(et_id),
+            name="Subscription Cancelled",
+            status="implemented",
+            last_seen_at=now - timedelta(days=45),
+        )
+        # The plan row is two days old; the instrumentation has been quiet 45.
+        stale_but_new_row.created_at = now - timedelta(days=2)
+        session.add(stale_but_new_row)
+        await session.commit()
+
+    resp = await client.get(
+        "/api/v1/projects/rec-dead-young-row/reconciliation/dead-events?days=30"
+    )
+    assert resp.status_code == 200
+    assert "Subscription Cancelled" in [item["name"] for item in resp.json()["items"]]
+
+
 # --- dead events: bulk archive ---
 
 

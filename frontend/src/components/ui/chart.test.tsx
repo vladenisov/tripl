@@ -2,11 +2,21 @@ import type { ReactElement, ReactNode } from 'react'
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
+// Props every ComposedChart was rendered with, so tests can assert on values
+// that never reach the DOM under jsdom (recharts skips its <svg> without a
+// measured container size).
+const composedChartProps = vi.hoisted(() => [] as Record<string, unknown>[])
+
 vi.mock('recharts', async () => {
   const actual = await vi.importActual<typeof import('recharts')>('recharts')
+  const ActualComposedChart = actual.ComposedChart
   return {
     ...actual,
     ResponsiveContainer: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+    ComposedChart: (props: Record<string, unknown>) => {
+      composedChartProps.push(props)
+      return <ActualComposedChart {...props} />
+    },
   }
 })
 
@@ -427,5 +437,40 @@ describe('buildChartData confidence band', () => {
   it('falls back to the default multiplier for a missing/invalid threshold', () => {
     const [built] = buildChartData([flagged], [], Number.NaN)
     expect(built.band).toEqual([10 - 3 * 2, 10 + 3 * 2])
+  })
+})
+
+describe('chart surface accessibility', () => {
+  const point: EventMetricPoint = {
+    bucket: '2026-01-01T10:00:00Z',
+    count: 10,
+    expected_count: null,
+    stddev: null,
+    is_anomaly: false,
+    anomaly_direction: null,
+    z_score: null,
+  }
+
+  it('keeps the recharts surface out of the tab order and names the wrapper', () => {
+    // The chart only mounts its ResponsiveContainer once the wrapper measures
+    // a positive size, and jsdom reports 0×0 for everything.
+    const rect = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ width: 400, height: 200, x: 0, y: 0, top: 0, left: 0, right: 400, bottom: 200, toJSON: () => ({}) })
+
+    composedChartProps.length = 0
+    const { container } = render(<MetricsChart granularity="day" data={[point]} />)
+    rect.mockRestore()
+
+    // Recharts focuses its <svg class="recharts-surface"> by default, which
+    // added an unnamed tab stop on every charted page (tripl-jfm3.67).
+    expect(composedChartProps).not.toHaveLength(0)
+    for (const props of composedChartProps) {
+      expect(props.tabIndex).toBe(-1)
+    }
+
+    // The accessible content lives on the wrapper, which stays named.
+    const wrapper = container.querySelector('[role="img"]')
+    expect(wrapper).toHaveAttribute('aria-label')
   })
 })

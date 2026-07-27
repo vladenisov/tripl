@@ -6,6 +6,7 @@ from httpx import AsyncClient
 from tripl.models.event import Event
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
+from tripl.services import variable_service
 from tripl.tests.conftest import TestSessionLocal
 
 
@@ -65,7 +66,40 @@ async def test_list_variables(client: AsyncClient):
     )
     resp = await client.get("/api/v1/projects/var-list/variables")
     assert resp.status_code == 200
-    assert len(resp.json()) == 2
+    assert resp.json()["total"] == 2
+    assert len(resp.json()["items"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_list_variables_honours_limit_and_offset(client: AsyncClient):
+    await _setup_project(client, "var-page")
+    for name in ("var_a", "var_b", "var_c"):
+        await client.post(
+            "/api/v1/projects/var-page/variables",
+            json={"name": name, "variable_type": "string"},
+        )
+
+    first = await client.get("/api/v1/projects/var-page/variables?limit=1")
+    assert first.status_code == 200
+    assert first.json()["total"] == 3
+    assert [item["name"] for item in first.json()["items"]] == ["var_a"]
+
+    page_two = await client.get("/api/v1/projects/var-page/variables?limit=2&offset=1")
+    assert page_two.status_code == 200
+    assert page_two.json()["total"] == 3
+    assert [item["name"] for item in page_two.json()["items"]] == ["var_b", "var_c"]
+
+    past_end = await client.get("/api/v1/projects/var-page/variables?offset=99")
+    assert past_end.status_code == 200
+    assert past_end.json() == {"items": [], "total": 3}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["limit=abc", "limit=-5", "limit=0", "offset=-1", "limit=999999"])
+async def test_list_variables_rejects_invalid_paging(client: AsyncClient, query: str):
+    await _setup_project(client, "var-page-bad")
+    resp = await client.get(f"/api/v1/projects/var-page-bad/variables?{query}")
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -117,12 +151,15 @@ async def test_variable_responses_include_observed_value_summary(client: AsyncCl
 
     list_resp = await client.get("/api/v1/projects/var-values/variables")
     assert list_resp.status_code == 200
-    variable = list_resp.json()[0]
+    variable = list_resp.json()["items"][0]
     assert variable["event_count"] == 1
     assert variable["context_count"] == 1
     assert variable["low_context_count"] == 1
     assert variable["high_context_count"] == 0
     assert variable["sample_values"] == ["u1", "u2"]
+    # Event names ride along with the list so a client does not need one
+    # /variables/{id}/values request per row to label the variable.
+    assert variable["event_names"] == ["Profile View"]
 
     values_resp = await client.get(f"/api/v1/projects/var-values/variables/{variable_id}/values")
     assert values_resp.status_code == 200
@@ -163,7 +200,39 @@ async def test_delete_variable(client: AsyncClient):
 
     # verify it's gone
     list_resp = await client.get("/api/v1/projects/var-del/variables")
-    assert len(list_resp.json()) == 0
+    assert list_resp.json() == {"items": [], "total": 0}
+
+
+@pytest.mark.asyncio
+async def test_delete_variable_does_not_scan_the_whole_variable_list(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """A single delete must cost one indexed lookup, not a full list load.
+
+    The audit record still needs the deleted name; the service now hands it
+    back, so the handler no longer reaches for list_variables() — which made
+    every delete pay for the whole project (tripl-jfm3.53).
+    """
+    await _setup_project(client, "var-del-cost")
+    ids = []
+    for name in ("del_a", "del_b", "del_c"):
+        created = await client.post("/api/v1/projects/var-del-cost/variables", json={"name": name})
+        ids.append(created.json()["id"])
+
+    def _forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("delete must not load the whole variable list")
+
+    monkeypatch.setattr(variable_service, "list_variables", _forbidden)
+
+    resp = await client.delete(f"/api/v1/projects/var-del-cost/variables/{ids[1]}")
+    assert resp.status_code == 204
+
+    missing = await client.delete(f"/api/v1/projects/var-del-cost/variables/{uuid.uuid4()}")
+    assert missing.status_code == 404
+
+    audit = await client.get("/api/v1/audit?project_slug=var-del-cost")
+    deletes = [e for e in audit.json()["items"] if e["action"] == "variable.delete"]
+    assert [e["target_name"] for e in deletes] == ["del_b"]
 
 
 @pytest.mark.asyncio
@@ -205,7 +274,7 @@ async def test_create_variable_with_values_and_bindings(client: AsyncClient):
     assert data["bindings"] == ["page_data.extra.variant"]
 
     list_resp = await client.get("/api/v1/projects/var-vals/variables")
-    assert list_resp.json()[0]["allowed_values"] == ["a", "b", "c"]
+    assert list_resp.json()["items"][0]["allowed_values"] == ["a", "b", "c"]
 
 
 @pytest.mark.asyncio
@@ -381,7 +450,8 @@ async def test_bulk_update_variables(client: AsyncClient):
     assert resp.status_code == 204
 
     listed = {
-        v["name"]: v for v in (await client.get("/api/v1/projects/var-bulk/variables")).json()
+        v["name"]: v
+        for v in (await client.get("/api/v1/projects/var-bulk/variables")).json()["items"]
     }
     for n in ["bulk_a", "bulk_b"]:
         assert listed[n]["variable_type"] == "number"
@@ -426,7 +496,8 @@ async def test_bulk_delete_variables(client: AsyncClient):
     )
     assert resp.status_code == 204
     remaining = (await client.get("/api/v1/projects/var-bulk-del/variables")).json()
-    assert [v["name"] for v in remaining] == ["del_keep"]
+    assert [v["name"] for v in remaining["items"]] == ["del_keep"]
+    assert remaining["total"] == 1
 
 
 @pytest.mark.asyncio
@@ -489,10 +560,11 @@ async def test_exclude_from_scans_purges_observed_data_keeps_documentation(
     assert resp.json()["allowed_values"] == ["a"]
 
     listed = await client.get("/api/v1/projects/var-excl/variables")
-    row = listed.json()[0]
+    row = listed.json()["items"][0]
     assert row["excluded_from_scans"] is True
     assert row["context_count"] == 0
     assert row["sample_values"] == []
+    assert row["event_names"] == []
     assert row["open_drift_count"] == 0
 
     # Restore clears the tombstone.

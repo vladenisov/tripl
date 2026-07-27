@@ -196,7 +196,7 @@ export function AppSidebar() {
   }
 
   return (
-    <aside
+    <nav
       aria-label="Main navigation"
       className="flex h-screen w-[240px] flex-col border-r flex-shrink-0"
       style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border)' }}
@@ -338,7 +338,7 @@ export function AppSidebar() {
         <div className="flex items-center gap-1.5">
           <div
             className="flex h-[26px] w-[26px] items-center justify-center rounded-full text-[11px] font-semibold text-white"
-            style={{ background: 'oklch(0.62 0.14 240)' }}
+            style={{ background: 'var(--avatar-bg)' }}
           >
             {userInitials}
           </div>
@@ -379,7 +379,7 @@ export function AppSidebar() {
           </button>
         </div>
       </div>
-    </aside>
+    </nav>
   )
 }
 
@@ -499,7 +499,7 @@ function EventTypesNavCategory({
           to={item.href}
           title="Event type settings"
           aria-label="Event type settings"
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[4px] no-underline transition-colors hover:bg-[var(--surface)]"
+          className="hit-target-24 flex h-5 w-5 shrink-0 items-center justify-center rounded-[4px] no-underline transition-colors hover:bg-[var(--surface)]"
           style={{ color: settingsActive ? 'var(--accent)' : 'var(--fg-subtle)' }}
         >
           <Settings className="h-3.5 w-3.5" aria-hidden="true" />
@@ -585,7 +585,7 @@ function CollapsedSidebar({
   onOpenPalette: () => void
 }) {
   return (
-    <aside
+    <nav
       aria-label="Main navigation"
       className="flex h-screen w-[52px] flex-shrink-0 flex-col items-center border-r py-2.5"
       style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border)' }}
@@ -661,11 +661,11 @@ function CollapsedSidebar({
       </button>
       <div
         className="flex h-[26px] w-[26px] items-center justify-center rounded-full text-[10px] font-semibold text-white"
-        style={{ background: 'oklch(0.62 0.14 240)' }}
+        style={{ background: 'var(--avatar-bg)' }}
       >
         {userInitials}
       </div>
-    </aside>
+    </nav>
   )
 }
 

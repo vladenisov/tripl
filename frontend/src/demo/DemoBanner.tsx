@@ -16,12 +16,49 @@ import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
 import { Chip } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { useBranchContext } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
 import { formatRelativeTime } from '@/lib/datetime'
 import { getErrorMessage } from '@/lib/utils'
 import type { Project } from '@/types'
+import { ProvisioningPhaseList } from './ProvisioningPhaseList'
 import { DemoDataBadge } from './capabilityBadges'
+import { DEMO_PROVISION_ESTIMATE } from './provisioningPhases'
+import { useEstimatedPhase } from './useEstimatedPhase'
+
+/**
+ * Reset is a single blocking ~10 s POST that re-seeds the whole recipe in one
+ * transaction (deliberately, for atomicity). A button that just says "Resetting…"
+ * for ten seconds reads as a hang, so the wait gets the same estimated-phase
+ * narration the create dialog uses (tripl-jfm3.75). It is not dismissable: unlike
+ * a create there is nothing to abandon — the demo is already mid-replacement.
+ */
+function DemoResetProgressDialog() {
+  // Mounted only while the reset is in flight, so every run narrates from the
+  // first phase.
+  const phaseIndex = useEstimatedPhase()
+  return (
+    <Dialog open>
+      <DialogContent className="max-w-md" showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle>Re-seeding demo workspace</DialogTitle>
+          <DialogDescription>
+            Replacing this demo&apos;s content with a fresh synthetic dataset. This takes{' '}
+            {DEMO_PROVISION_ESTIMATE}.
+          </DialogDescription>
+        </DialogHeader>
+        <ProvisioningPhaseList phaseIndex={phaseIndex} />
+      </DialogContent>
+    </Dialog>
+  )
+}
 
 const DEMO_LIMITS: readonly string[] = [
   'Alert destinations record deliveries locally and are badged “Local · simulated” — nothing is sent to Slack, Jira or email.',
@@ -75,7 +112,8 @@ export function DemoBanner({ project }: { project: Project }) {
     const ok = await confirm({
       title: 'Reset demo workspace',
       message:
-        'Re-seed this demo from scratch. All current events, metrics, monitors and alerts in the demo are replaced with a fresh synthetic dataset. This cannot be undone.',
+        'Re-seed this demo from scratch. All current events, metrics, monitors and alerts in the demo are replaced with a fresh synthetic dataset. ' +
+        `This runs in one go and takes ${DEMO_PROVISION_ESTIMATE}. It cannot be undone.`,
       confirmLabel: 'Reset demo',
       variant: 'primary',
     })
@@ -109,6 +147,7 @@ export function DemoBanner({ project }: { project: Project }) {
       style={{ background: 'var(--warning-soft)', borderColor: 'var(--warning)' }}
     >
       {dialog}
+      {resetMut.isPending && <DemoResetProgressDialog />}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3.5 py-2.5">
         <DemoDataBadge />
         <span className="text-[12px] font-medium">Demo workspace</span>

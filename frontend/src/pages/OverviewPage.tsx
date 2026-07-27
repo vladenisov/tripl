@@ -1,5 +1,5 @@
 import { Link, useParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQueries, useQuery } from '@tanstack/react-query'
 import {
   AlertTriangle,
   Bell,
@@ -118,31 +118,16 @@ export default function OverviewPage() {
     enabled: !!slug && projectQuery.isSuccess,
     staleTime: 60_000,
   })
-  // Same pattern for the event-type and event scopes, which dominate the
-  // expanded signal set (issue tripl-yfsj.16). Key, branch argument and
-  // staleTime match AnomaliesPage's exactly so the two pages share one cache
-  // entry instead of each fetching the catalog. Deliberately no
-  // `refetchInterval`: names are near-static and must not inherit the signals
-  // poll. The events lookup asks for the whole catalog because the default page
-  // is only 200 rows — a signal on any later page would otherwise keep the raw
-  // short-ref label.
+  // Same pattern for the event-type scope, which dominates the expanded signal
+  // set (issue tripl-yfsj.16). Key, branch argument and staleTime match
+  // AnomaliesPage's exactly so the two pages share one cache entry instead of
+  // each fetching the catalog. Deliberately no `refetchInterval`: names are
+  // near-static and must not inherit the signals poll. Event-scope names are
+  // resolved per signal further down rather than by listing the catalog.
   const eventTypesQuery = useQuery({
     queryKey: ['eventTypes', slug, branchId],
     queryFn: () => eventTypesApi.list(slug!, branchId),
     enabled: !!slug && projectQuery.isSuccess,
-    staleTime: 60_000,
-  })
-  // Gated on an event-scope signal actually existing: this is the landing route
-  // for single-project users, and the full catalog is a heavy payload (rows carry
-  // tags, field values and meta values). A project whose open signals are all
-  // project-total / event-type / metric scoped must not pay for it on first paint.
-  const eventsQuery = useQuery({
-    queryKey: ['events', slug, branchId, 'names'],
-    queryFn: () => eventsApi.list(slug!, { limit: 10_000 }, branchId),
-    enabled:
-      !!slug &&
-      projectQuery.isSuccess &&
-      (signalsQuery.data ?? []).some((s) => s.scope_type === 'event'),
     staleTime: 60_000,
   })
   const sourcesQuery = useQuery({
@@ -165,6 +150,32 @@ export default function OverviewPage() {
     .filter((s) => relativeEffect(s) >= SIGNIFICANT_MIN_REL_EFFECT)
     .sort((a, b) => relativeEffect(b) - relativeEffect(a))
   const activity = activityQuery.data ?? []
+  // Only the first SIGNAL_LIMIT rows are rendered, so only their event ids need
+  // a name. Fetching them one by one replaces a `GET /events?limit=10000` that
+  // shipped the whole 2,413-row catalog (2.7 MB / ~3 s) purely to label six rows,
+  // leaving raw uuid stubs on the landing route until it landed (tripl-jfm3.25).
+  // The key matches EventsPage's single-event key so the two share one cache
+  // entry.
+  const eventSignalRefs = [
+    ...new Set(
+      signals
+        .slice(0, SIGNAL_LIMIT)
+        .filter((s) => s.scope_type === 'event')
+        .map((s) => s.scope_ref),
+    ),
+  ]
+  const eventNameEntries = useQueries({
+    queries: eventSignalRefs.map((eventId) => ({
+      queryKey: ['event', slug, branchId, eventId],
+      queryFn: () => eventsApi.get(slug!, eventId, branchId),
+      enabled: !!slug && projectQuery.isSuccess,
+      staleTime: 60_000,
+    })),
+    combine: (results) =>
+      results.flatMap((result) =>
+        result.data ? ([[result.data.id, result.data.name]] as [string, string][]) : [],
+      ),
+  })
   // Resolve metric-scope signals to their catalog display name (issue .17), and
   // event-type / event scopes to theirs (issue tripl-yfsj.16). Every map is
   // additive: an empty one only costs the short-ref fallback label, so the panel
@@ -175,9 +186,7 @@ export default function OverviewPage() {
   const eventTypeNames: NameMap = new Map(
     (eventTypesQuery.data ?? []).map((et) => [et.id, et.display_name]),
   )
-  const eventNames: NameMap = new Map(
-    (eventsQuery.data?.items ?? []).map((e) => [e.id, e.name]),
-  )
+  const eventNames: NameMap = new Map(eventNameEntries)
   // Scope the Source-health rail to this project: workspace-global sources
   // (project_id == null) plus sources owned by the current project. Without this
   // a demo project's project-scoped synthetic source leaks into unrelated
@@ -197,7 +206,16 @@ export default function OverviewPage() {
   const coveragePct = summary
     ? planCoverageRatio(summary.implemented_event_count, summary.active_event_count) * 100
     : undefined
-  const activeEventsSeries = kpiSeriesQuery.data?.active_events ?? []
+  // Events CREATED per day (main branch) — NOT a history of the "Active events"
+  // stat beside it. The series was captioned "Active trend" / "Active events by
+  // day" while a single day could exceed the whole active catalog (4,618 on a
+  // project with 2,413 active events); the caption now says what the numbers are
+  // (tripl-jfm3.22, tripl-jfm3.77).
+  const newEventsSeries = kpiSeriesQuery.data?.new_events ?? []
+  // The volume card charts ONE scan config (summing every scan double-counts the
+  // events a legacy/backfill scan also collected), so it names that scan instead
+  // of claiming to be the project total (tripl-jfm3.20).
+  const volumeScanName = volumeQuery.data?.scan_config_name ?? null
 
   // A nonexistent slug is a 404 on the project query itself: replace the whole
   // widget grid with the app's full-page not-found (issue .9). Non-404 project
@@ -280,7 +298,7 @@ export default function OverviewPage() {
             }
             tone={coverageTone(coveragePct)}
           />
-          {activeEventsSeries.length > 1 && (
+          {newEventsSeries.length > 1 && (
             <>
               <MiniStatDivider />
               {/* Stacked like the MiniStat columns (caption above, figure below):
@@ -293,23 +311,23 @@ export default function OverviewPage() {
                   role="img" alt spell out what the line is (issue #12). */}
               <div
                 className="m-0 flex shrink-0 flex-col gap-px pr-1"
-                title="Active events over the last 14 days"
+                title="New events added per day over the last 14 days"
               >
                 <span
                   className="text-[10px] font-semibold uppercase tracking-[0.06em]"
                   style={{ color: 'var(--fg-faint)' }}
                 >
-                  Active trend · 14d
+                  New events · 14d
                 </span>
-                <div role="img" aria-label={activeTrendLabel(activeEventsSeries)}>
+                <div role="img" aria-label={newEventsTrendLabel(newEventsSeries)}>
                   <Sparkline
-                    data={activeEventsSeries}
+                    data={newEventsSeries}
                     variant={chartStyle}
                     width={120}
                     height={24}
                   />
                   <span className="sr-only">
-                    Active events by day: {activeEventsSeries.map((c) => c.toLocaleString()).join(', ')}.
+                    New events added by day: {newEventsSeries.map((c) => c.toLocaleString()).join(', ')}.
                   </span>
                 </div>
               </div>
@@ -318,8 +336,17 @@ export default function OverviewPage() {
         </div>
       )}
 
-      {/* Volume */}
-      <Panel title="Volume · project total">
+      {/* Volume — one scan config, named. Labelled "project total" until
+          tripl-jfm3.20, where it plotted 2.4 % of windy-ios's volume directly
+          above a "Top events" row 12× larger. */}
+      <Panel
+        title={volumeScanName ? `Volume · ${volumeScanName}` : 'Volume'}
+        subtitle={
+          volumeScanName
+            ? 'One scan config — not the project’s combined volume across all scans.'
+            : undefined
+        }
+      >
         <div className="p-4">
         {volumeQuery.isError && (
           <ErrorState
@@ -351,7 +378,7 @@ export default function OverviewPage() {
                 latest bucket · {volumePoints.length} buckets
               </span>
             </div>
-            <div role="img" aria-label={volumeChartLabel(volumeCounts)}>
+            <div role="img" aria-label={volumeChartLabel(volumeCounts, volumeScanName)}>
               <Sparkline data={volumeCounts} variant={chartStyle} width={320} height={48} />
               <span className="sr-only">
                 Volume by bucket: {volumeCounts.map((c) => c.toLocaleString()).join(', ')}.
@@ -362,8 +389,10 @@ export default function OverviewPage() {
         </div>
       </Panel>
 
-      {/* Top events by volume */}
-      <Panel title="Top events · 48h">
+      {/* Top events by volume — summed across EVERY scan config, unlike the
+          volume card above it, which charts one. Saying so is what stops the
+          two panels reading as a contradiction (tripl-jfm3.20). */}
+      <Panel title="Top events · 48h" subtitle="Across every scan config in this project.">
         <div className="p-4">
         {topEventsQuery.isError && (
           <ErrorState
@@ -390,7 +419,16 @@ export default function OverviewPage() {
                 aria-label={`${e.name}: ${e.total_count.toLocaleString()} events`}
                 className="flex items-center gap-3"
               >
-                <span className="mono w-40 shrink-0 truncate text-[12px]" title={e.name}>
+                {/* The label column grows with the panel instead of sitting at
+                    a fixed 10rem. Event names share long prefixes
+                    (`feature_flag:flag_use:app` vs `…:growthbook`), so a fixed
+                    column truncated the top rows to one identical string and
+                    the ranking became unreadable (tripl-jfm3.31). Capped so the
+                    bar track still carries the comparison. */}
+                <span
+                  className="mono w-[min(45%,22rem)] shrink-0 truncate text-[12px]"
+                  title={e.name}
+                >
                   {e.name}
                 </span>
                 <div
@@ -518,24 +556,29 @@ export default function OverviewPage() {
 
 
 // Text alternative for the volume sparkline (issue M8): the SVG itself is
-// aria-hidden, so the surrounding role="img" needs an accessible summary.
-function volumeChartLabel(counts: number[]): string {
-  if (counts.length === 0) return 'Project total volume sparkline'
+// aria-hidden, so the surrounding role="img" needs an accessible summary. Names
+// the scan config the series is scoped to rather than calling it the project
+// total, which it never was (tripl-jfm3.20).
+function volumeChartLabel(counts: number[], scanName: string | null): string {
+  const scope = scanName ? `Volume sparkline for scan config ${scanName}` : 'Volume sparkline'
+  if (counts.length === 0) return scope
   const latest = counts[counts.length - 1]!
   const min = Math.min(...counts)
   const max = Math.max(...counts)
-  return `Project total volume sparkline. ${counts.length} buckets. Latest ${latest.toLocaleString()}, range ${min.toLocaleString()} to ${max.toLocaleString()}.`
+  return `${scope}. ${counts.length} buckets. Latest ${latest.toLocaleString()}, range ${min.toLocaleString()} to ${max.toLocaleString()}.`
 }
 
-// Text alternative for the active-events trend sparkline (issue #12). Mirrors
+// Text alternative for the new-events trend sparkline (issue #12). Mirrors
 // volumeChartLabel: the SVG is decorative, so the wrapping role="img" needs an
-// accessible summary of what the 14-day line actually shows.
-function activeTrendLabel(counts: number[]): string {
-  if (counts.length === 0) return 'Active events over the last 14 days'
+// accessible summary of what the 14-day line actually shows. It says "new
+// events" because that is what the series counts — announcing it as "active
+// events" made the screen-reader text state a falsehood (tripl-jfm3.22).
+function newEventsTrendLabel(counts: number[]): string {
+  if (counts.length === 0) return 'New events added per day over the last 14 days'
   const latest = counts[counts.length - 1]!
   const min = Math.min(...counts)
   const max = Math.max(...counts)
-  return `Active events over the last 14 days. Latest ${latest.toLocaleString()}, range ${min.toLocaleString()} to ${max.toLocaleString()}.`
+  return `New events added per day over the last 14 days. Latest ${latest.toLocaleString()}, range ${min.toLocaleString()} to ${max.toLocaleString()}.`
 }
 
 /** Entity id → display name, for labelling metric / event-type / event signals. */

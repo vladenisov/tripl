@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -34,7 +35,9 @@ import { eventTypesApi } from '@/api/eventTypes'
 import { projectsApi } from '@/api/projects'
 import { searchApi } from '@/api/search'
 import { useAuth } from '@/components/auth-context'
+import { MAIN_CONTENT_ID } from '@/components/landmarks'
 import {
+  COMMAND_PALETTE_TRIGGER_ATTR,
   CommandPaletteContext,
   useCommandPalette,
 } from '@/components/command-palette-context'
@@ -49,8 +52,38 @@ import type { AiAskResponse } from '@/api/ai'
 import type { SearchEntityType, SearchResult } from '@/types'
 
 export function CommandPaletteProvider({ children }: { children: ReactNode }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpenState] = useState(false)
   const { notifyStepCompleted } = useDemoScenarioActions()
+
+  // Whoever asked for the palette, so Esc can hand focus straight back. Ctrl+K
+  // is a window-level shortcut, so on a freshly loaded page nothing is focused
+  // and Radix's own restore target is <body> — the next Tab then restarts the
+  // sidebar from stop 1 (tripl-jfm3.68).
+  const openerRef = useRef<HTMLElement | null>(null)
+
+  const setOpen = useCallback((next: boolean) => {
+    if (next) {
+      const active = document.activeElement
+      openerRef.current =
+        active instanceof HTMLElement && active !== document.body ? active : null
+    }
+    setOpenState(next)
+  }, [])
+
+  /** Move focus out of the dismissed dialog: opener → top-bar trigger → main content. */
+  const restoreFocus = useCallback(() => {
+    const candidates = [
+      openerRef.current,
+      document.querySelector<HTMLElement>(`[${COMMAND_PALETTE_TRIGGER_ATTR}]`),
+      document.querySelector<HTMLElement>(`#${MAIN_CONTENT_ID}`),
+    ]
+    for (const candidate of candidates) {
+      if (candidate?.isConnected) {
+        candidate.focus()
+        return
+      }
+    }
+  }, [])
 
   // Opening the palette IS using search — the explore chapter's last step.
   // Inert outside a ready demo (the actions context defaults to noops), and
@@ -73,18 +106,18 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
         return
       }
       event.preventDefault()
-      setOpen(prev => !prev)
+      setOpen(!open)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open])
+  }, [open, setOpen])
 
-  const value = useMemo(() => ({ open, setOpen }), [open])
+  const value = useMemo(() => ({ open, setOpen }), [open, setOpen])
 
   return (
     <CommandPaletteContext.Provider value={value}>
       {children}
-      <CommandPalette />
+      <CommandPalette onRestoreFocus={restoreFocus} />
     </CommandPaletteContext.Provider>
   )
 }
@@ -117,7 +150,7 @@ function groupSearchResults(results: SearchResult[]) {
   return Array.from(groups.entries())
 }
 
-function CommandPalette() {
+function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
   const { open, setOpen } = useCommandPalette()
   const navigate = useNavigate()
   const auth = useAuth()
@@ -212,6 +245,12 @@ function CommandPalette() {
       <DialogContent
         showCloseButton={false}
         className="overflow-hidden p-0 sm:max-w-[640px] gap-0"
+        // Take over Radix's focus restore: it aims at whatever was focused when
+        // the dialog mounted, which for a global Ctrl+K is usually <body>.
+        onCloseAutoFocus={(event) => {
+          event.preventDefault()
+          onRestoreFocus()
+        }}
       >
         <DialogTitle className="sr-only">Command palette</DialogTitle>
         <Command

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
@@ -19,10 +19,15 @@ const LAST_SLUG_STORAGE_KEY = 'tripl-last-project-slug'
 
 /**
  * Resolve the project the Project-scoped settings target. Prefer the slug in the
- * URL (when a section route carries one), otherwise the last project visited,
- * otherwise the first project. The sidebar's usePersistLastSlug writes the
- * last-visited slug to this same localStorage key on every project route; we
- * only read it here.
+ * URL (when a section route carries one), otherwise the last project visited.
+ * The sidebar's usePersistLastSlug writes the last-visited slug to this same
+ * localStorage key on every project route; we only read it here.
+ *
+ * There is deliberately NO "first project" fallback: falling back to
+ * `projects[0]` bound Settings to whichever project happened to sort first and
+ * then offered to rename/delete it, one click after the workspace page said "no
+ * project selected" (tripl-jfm3.32). With nothing chosen we return undefined
+ * and the project sections ask the user to pick one.
  */
 function useSettingsSlug(): string | undefined {
   const { slug: urlSlug } = useParams<{ slug?: string }>()
@@ -36,7 +41,7 @@ function useSettingsSlug(): string | undefined {
     /* ignore */
   }
   if (last && projects.some((p) => p.slug === last)) return last
-  return projects[0]?.slug
+  return undefined
 }
 
 function SectionFallback() {
@@ -80,8 +85,6 @@ export default function SettingsArea({ section }: { section: string }) {
 }
 
 function renderSection(section: string, slug: string | undefined, isOwner: boolean) {
-  if (section === 'project/general') return <ProjectGeneralSection slug={slug} />
-  if (section === 'project/plan-rules') return <PlanRulesSection />
   if (section === 'members') return <MembersSection />
   if (section === 'data-sources') return <DataSourcesSection />
   if (section === 'api-keys') return <ApiKeysSection />
@@ -91,7 +94,29 @@ function renderSection(section: string, slug: string | undefined, isOwner: boole
     if (!isOwner) return <OwnerOnly />
     return <InstanceSection section={section.slice('instance/'.length)} />
   }
+  // Everything below is project-scoped. Never guess which project that is.
+  if (!slug) return <NoProjectSelected />
+  if (section === 'project/plan-rules') return <PlanRulesSection />
   return <ProjectGeneralSection slug={slug} />
+}
+
+function NoProjectSelected() {
+  return (
+    <div
+      className="rounded-xl p-6 text-sm"
+      style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--fg-subtle)' }}
+    >
+      <p className="m-0">No project selected.</p>
+      <p className="m-0 mt-2">
+        Project settings change one specific project's tracking plan, so pick a project
+        first —{' '}
+        <Link to="/workspace" className="underline">
+          open a project
+        </Link>{' '}
+        and reopen Settings.
+      </p>
+    </div>
+  )
 }
 
 function OwnerOnly() {

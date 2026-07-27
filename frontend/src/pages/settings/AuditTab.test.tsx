@@ -19,17 +19,18 @@ function renderTab() {
   )
 }
 
-describe('AuditTab — date-format hints (tripl-7l83.19)', () => {
-  it('surfaces an unambiguous YYYY-MM-DD hint on both From and To filters', () => {
+describe('AuditTab — date filters (tripl-jfm3.37)', () => {
+  it('labels the date filters without a format hint the control contradicts', () => {
     renderTab()
 
-    // The native <input type="date"> ignores placeholders and renders in the
-    // browser locale, so the expected format is surfaced as visible label text.
-    const hints = screen.getAllByText('(YYYY-MM-DD)')
-    expect(hints).toHaveLength(2)
+    // The native <input type="date"> renders and parses in the BROWSER's locale
+    // (mm/dd/yyyy on a US profile), so a hard-coded "(YYYY-MM-DD)" told the user
+    // one format while the widget showed another.
+    expect(screen.queryByText('(YYYY-MM-DD)')).toBeNull()
 
-    // Hints stay attached to the correct fields.
-    expect(screen.getByLabelText(/From/)).toHaveAttribute('type', 'date')
-    expect(screen.getByLabelText(/To/)).toHaveAttribute('type', 'date')
+    // The fields themselves are unchanged — still native date pickers, still
+    // labelled From/To.
+    expect(screen.getByLabelText('From')).toHaveAttribute('type', 'date')
+    expect(screen.getByLabelText('To')).toHaveAttribute('type', 'date')
   })
 })

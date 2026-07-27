@@ -154,7 +154,18 @@ export interface Variable {
   context_count?: number
   low_context_count?: number
   high_context_count?: number
+  /** Observed values unioned across every context, de-duplicated and capped
+   * server-side — enough for the list row's chips without a per-row request. */
   sample_values?: string[]
+  /** Distinct event names this variable was observed in, alphabetical and
+   * capped server-side; `event_count` carries the untruncated total. */
+  event_names?: string[]
+}
+
+/** Envelope returned by `GET /projects/{slug}/variables` (offset/limit paged). */
+export interface VariableListPage {
+  items: Variable[]
+  total: number
 }
 
 export interface VariableValueContext extends EventFieldVariableValue {

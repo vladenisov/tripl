@@ -369,3 +369,44 @@ describe('ScenarioCoachMark — hiding the hints', () => {
     expect(screen.getByTestId('active').textContent).toBe('true')
   })
 })
+
+describe('ScenarioCoachMark — a row control has no free side (tripl-jfm3.62)', () => {
+  it('docks the card clear of the grid instead of opening over the rows it explains', () => {
+    // Anchored to a row action, every side Radix can pick lands on the table
+    // body: it only flips to avoid the VIEWPORT edge, not the content beneath.
+    renderMark(
+      <table>
+        <tbody>
+          <tr>
+            <td>Trial Started</td>
+            <td>
+              <ScenarioCoachMark step="live-loop/run-scan">
+                <button type="button">Run scan</button>
+              </ScenarioCoachMark>
+            </td>
+          </tr>
+        </tbody>
+      </table>,
+    )
+
+    expect(screen.getByText(RUN_SCAN_INSTRUCTION)).toBeInTheDocument()
+    // No popover over the rows…
+    expect(callout()).toBeNull()
+    // …the card is docked, and the ring still points at the control.
+    const docked = document.querySelector('[data-coach-docked="true"]')
+    expect(docked).not.toBeNull()
+    expect(docked?.className).toContain('fixed')
+    expect(runButton()).toHaveAttribute('data-coach-target', 'live-loop/run-scan')
+  })
+
+  it('still opens as a normal popover when the anchor is not inside a table', () => {
+    renderMark(
+      <ScenarioCoachMark step="live-loop/run-scan">
+        <button type="button">Run scan</button>
+      </ScenarioCoachMark>,
+    )
+
+    expect(callout()).not.toBeNull()
+    expect(document.querySelector('[data-coach-docked="true"]')).toBeNull()
+  })
+})

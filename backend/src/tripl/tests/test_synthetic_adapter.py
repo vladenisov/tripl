@@ -511,7 +511,7 @@ def test_ongoing_window_carries_seeded_scale_per_event_volume() -> None:
         "SELECT * FROM events", "event_time", "1h", ["event_name"], [], None, newest, ANCHOR
     )
     counts = {name: count for _bucket, name, count in rows}
-    bases = {event_name: base for _t, event_name, _s, _b, _p, base in _EVENT_DEFS}
+    bases = {ev.event_name: ev.ongoing_base for ev in _EVENT_DEFS}
 
     for name, base in bases.items():
         assert name in counts, f"{name} absent from the ongoing window"

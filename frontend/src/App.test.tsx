@@ -192,8 +192,11 @@ describe('App', () => {
           updated_at: '2026-04-18T10:00:00Z',
         }))
       }
+      // The shell resolves `:slug` against this list before it mounts anything
+      // project-scoped (tripl-jfm3.2), so the project the URL names has to
+      // exist for the routed redirect below it to run at all.
       if (url.endsWith('/api/v1/projects')) {
-        return Promise.resolve(jsonResponse([]))
+        return Promise.resolve(jsonResponse([makeProject('demo', 'Demo')]))
       }
       // Detail-page data is irrelevant to the redirect assertion; a 404 makes
       // the page render its ErrorState gracefully rather than crash.
@@ -276,5 +279,60 @@ describe('App', () => {
 
     expect(await screen.findByText('Page not found')).toBeInTheDocument()
     expect(screen.getByText('Back to all projects')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(document.title).toBe('Page not found · tripl')
+    })
+  })
+
+  it('keeps the project shell on an unmatched path under a real project (tripl-jfm3.3)', async () => {
+    // `/p/demo/<no-such-page>` used to fall through to the GLOBAL catch-all,
+    // which declares no `:slug` — so the shell collapsed to "No project
+    // selected" and the tab kept the previous page's title.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = urlOf(input)
+      if (url.endsWith('/api/v1/auth/me')) return Promise.resolve(jsonResponse(OWNER))
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([makeProject('demo', 'Demo')]))
+      }
+      return Promise.resolve(jsonResponse({ detail: 'Not found' }, 404))
+    })
+
+    renderApp('/p/demo/this-route-does-not-exist')
+
+    expect(await screen.findByText('Page not found')).toBeInTheDocument()
+    // The project is still in scope: its name heads the breadcrumb trail.
+    expect(screen.getAllByText('Demo').length).toBeGreaterThan(0)
+    await waitFor(() => {
+      expect(document.title).toBe('Page not found · demo · tripl')
+    })
+  })
+
+  it('shows a not-found state for an unknown project slug without fanning out (tripl-jfm3.2)', async () => {
+    // An invented slug used to render a complete, working-looking project shell
+    // backed by a dozen 404ing project-scoped requests, with the bogus slug
+    // echoed into the document title.
+    const requested: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = urlOf(input)
+      requested.push(url)
+      if (url.endsWith('/api/v1/auth/me')) return Promise.resolve(jsonResponse(OWNER))
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([makeProject('demo', 'Demo')]))
+      }
+      return Promise.resolve(jsonResponse({ detail: 'Not found' }, 404))
+    })
+
+    renderApp('/p/no-such-project-xyz/overview')
+
+    expect(await screen.findByText('Project not found')).toBeInTheDocument()
+    // Exactly ONE request names the bogus slug — the confirmation that decides
+    // the project does not exist. No event-types / signals / branches / stream /
+    // activity fan-out behind a shell that was never going to work.
+    const scoped = [...new Set(requested.filter((u) => u.includes('no-such-project-xyz')))]
+    expect(scoped).toEqual(['/api/v1/projects/no-such-project-xyz'])
+    // …and the invented slug is not echoed back as if it named a workspace.
+    await waitFor(() => {
+      expect(document.title).toBe('Page not found · tripl')
+    })
   })
 })

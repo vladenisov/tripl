@@ -134,14 +134,18 @@ describe('ReconciliationPage', () => {
     ).toBeInTheDocument()
     expect(await screen.findByText('94%')).toBeInTheDocument()
     // The metric drops the word "coverage" so it no longer collides with the
-    // dashboard's plan-coverage KPI — it now reads as "seen in data".
+    // dashboard's plan-coverage KPI — it counts matched occurrences.
     expect(screen.getByText('Data match')).toBeInTheDocument()
-    expect(screen.getByText('seen in data')).toBeInTheDocument()
+    expect(screen.getByText('occurrences matched')).toBeInTheDocument()
     // The headline carries an inline clarifier so it can't be misread as the
     // Coverage page's plan-coverage KPI — they measure different things.
-    expect(screen.getByTitle(/seen in warehouse data/i)).toBeInTheDocument()
+    expect(screen.getByTitle(/tracked event occurrences in warehouse data/i)).toBeInTheDocument()
     expect(screen.queryByText('data-match coverage')).not.toBeInTheDocument()
-    expect(screen.getByText('124 of 132 planned events seen in data · 14d')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        '124 of 132 tracked event occurrences matched a planned event · 14d',
+      ),
+    ).toBeInTheDocument()
   })
 
   it('formats large data-match counts with thousand separators', async () => {
@@ -161,12 +165,77 @@ describe('ReconciliationPage', () => {
     renderPage()
 
     expect(
-      await screen.findByText('89,327,935 of 89,327,935 planned events seen in data · 14d'),
+      await screen.findByText(
+        '89,327,935 of 89,327,935 tracked event occurrences matched a planned event · 14d',
+      ),
     ).toBeInTheDocument()
     // The raw, separator-free rendering must not appear.
     expect(
-      screen.queryByText('89327935 of 89327935 planned events seen in data · 14d'),
+      screen.queryByText(
+        '89327935 of 89327935 tracked event occurrences matched a planned event · 14d',
+      ),
     ).not.toBeInTheDocument()
+  })
+
+  // tripl-jfm3.26: `coverage_pct` arrives rounded to 2 dp, so 672,190,768 of
+  // 672,190,769 comes back as exactly 100.0 and the card printed "100%" over a
+  // subtitle that showed an unmatched occurrence.
+  it('never prints 100% while an occurrence is unmatched', async () => {
+    const nearPerfect: CoverageResponse = {
+      days: 14,
+      summary: { total_count: 672190769, matched_count: 672190768, coverage_pct: 100 },
+      items: [{ bucket: '2026-06-01', total_count: 672190769, matched_count: 672190768 }],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(nearPerfect)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(emptyShadow)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    expect(await screen.findByText('99.9%')).toBeInTheDocument()
+    expect(screen.queryByText('100%')).not.toBeInTheDocument()
+  })
+
+  it('rounds an imperfect match DOWN rather than up to the 99.9 ceiling', async () => {
+    // 99.6 % would round up to a perfect "100%", so it is held below it — but
+    // clamping to the ceiling would report 0.3 pp MORE matched than there is.
+    // The headline may only ever understate an imperfect match.
+    const almost: CoverageResponse = {
+      days: 14,
+      summary: { total_count: 1000, matched_count: 996, coverage_pct: 99.6 },
+      items: [{ bucket: '2026-06-01', total_count: 1000, matched_count: 996 }],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(almost)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(emptyShadow)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    expect(await screen.findByText('99.6%')).toBeInTheDocument()
+    expect(screen.queryByText('99.9%')).toBeNull()
+    expect(screen.queryByText('100%')).toBeNull()
+  })
+
+  it('still prints 100% for a genuinely complete match', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(steadyCoverage)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(emptyShadow)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    expect(await screen.findAllByText('100%')).not.toHaveLength(0)
   })
 
   it('renders shadow inbox rows with accept/dismiss actions', async () => {
@@ -189,6 +258,12 @@ describe('ReconciliationPage', () => {
     // A one-line explanation reassures that dead events are often expected.
     expect(
       screen.getByText('Planned events not seen in your data recently — often expected.'),
+    ).toBeInTheDocument()
+    // The panel names its window and population, so arriving here from
+    // Coverage's own gap panel does not read as two contradictory answers to
+    // the same question (tripl-jfm3.23).
+    expect(
+      screen.getByText('Implemented events with no data in the last 14 days'),
     ).toBeInTheDocument()
     // "never" reads as a calm amber, never as an alarming danger-red wall.
     const neverRows = screen.getAllByText('never')

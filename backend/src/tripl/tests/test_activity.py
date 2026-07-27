@@ -377,7 +377,19 @@ class TestScanJobDetail:
             {"events_created": 4, "signals_added": 1, "alerts_queued": 2},
             None,
         )
-        assert detail == "4 new events · 1 signal · 2 alerts queued"
+        assert detail == "4 new events · 1 new signal · 2 alerts queued"
+
+    def test_signals_added_is_labelled_as_a_delta_not_a_total(self):
+        """signals_added is a per-run delta. A bare "1 signal" beside a run that
+        detected 560 anomalies read as the project's open-signal total and could
+        not be reconciled with the Anomalies headline (tripl-jfm3.27)."""
+        detail = _scan_job_detail(
+            "completed",
+            {"events_created": 0, "anomalies_detected": 560, "signals_added": 1},
+            None,
+        )
+        assert "1 new signal" in detail
+        assert "· 1 signal" not in detail
 
     def test_singular_units(self):
         detail = _scan_job_detail(

@@ -258,6 +258,10 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     slug,
     events,
     eventSignals,
+    // Sparkline metrics are fetched only for the rows on screen: filling the
+    // column for every accumulated row was the events page's dominant cost
+    // (tripl-jfm3.51).
+    virtualItems,
   })
 
   const retryLoad = useCallback(() => {
@@ -444,6 +448,10 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
               toggleEventSelected={toggleEventSelected}
               onToggleExpandedCell={onToggleExpandedCell}
               onRowAction={onRowAction}
+              // Lets a zero-row table explain which query came back empty
+              // instead of always offering "create your first event"
+              // (tripl-jfm3.30).
+              emptyContext={{ activeTab, hasActiveFilters, search }}
             />
           </div>
         </>

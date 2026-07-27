@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
-from tripl.config import Settings
+from tripl.config import REGISTRATION_DISABLED, REGISTRATION_OPEN, Settings
 
 
 def test_cors_origins_explicit_list_wins() -> None:
@@ -159,3 +160,18 @@ def test_assert_production_ready_requires_secure_cookies() -> None:
     with pytest.raises(RuntimeError) as exc:
         s.assert_production_ready()
     assert "SESSION_COOKIE_SECURE" in str(exc.value)
+
+
+def test_registration_is_closed_by_default() -> None:
+    # Fail closed: an instance reachable from the internet must not hand out
+    # accounts until an operator explicitly opens the door (tripl-jfm3.9).
+    assert Settings().registration_mode == REGISTRATION_DISABLED
+
+
+def test_registration_mode_is_case_and_whitespace_insensitive() -> None:
+    assert Settings(registration_mode=" Open ").registration_mode == REGISTRATION_OPEN
+
+
+def test_registration_mode_rejects_unknown_values() -> None:
+    with pytest.raises(ValidationError, match="registration_mode must be one of"):
+        Settings(registration_mode="invite-only")

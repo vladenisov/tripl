@@ -141,10 +141,17 @@ def _send_password_reset_email(
 )
 async def get_status(session: SessionDep) -> AuthStatusResponse:
     # Unauthenticated on purpose: the login/register screen queries this before
-    # anyone is signed in to decide whether to show the first-account note.
+    # anyone is signed in to decide whether to show the first-account note and
+    # whether a sign-up form is worth rendering at all.
     # Rate limited on its own bucket (never shares login/register quota) so an
     # unauthenticated caller can't hammer the COUNT(*) behind it.
-    return AuthStatusResponse(has_users=await auth_service.has_any_users(session))
+    has_users = await auth_service.has_any_users(session)
+    return AuthStatusResponse(
+        has_users=has_users,
+        registration_enabled=await auth_service.is_registration_allowed(
+            session, is_first_user=not has_users
+        ),
+    )
 
 
 @router.post(

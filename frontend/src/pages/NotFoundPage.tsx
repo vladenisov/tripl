@@ -1,21 +1,33 @@
 import { Link } from 'react-router-dom'
 
+const DEFAULT_DESCRIPTION = 'The page you’re looking for doesn’t exist or may have moved.'
+
+interface NotFoundStateProps {
+  /** Headline. Defaults to the generic route-level message. */
+  title?: string
+  /** One-sentence explanation under the headline. */
+  description?: string
+}
+
 /**
- * Catch-all not-found state. Rendered inside the app Layout for any unmatched
- * authed path, so the user keeps the sidebar/shell and gets a clear way back to
- * the all-projects portfolio instead of a blank screen.
+ * The shared "there is nothing here" panel. Used by the catch-all route below
+ * and — with project-specific wording — by the app shell when the `:slug` in the
+ * URL matches no project the viewer can see.
  */
-export default function NotFoundPage() {
+export function NotFoundState({
+  title = 'Page not found',
+  description = DEFAULT_DESCRIPTION,
+}: NotFoundStateProps) {
   return (
     <div className="flex min-h-[60vh] flex-col items-center justify-center px-6 text-center">
       <p className="text-sm font-semibold tracking-wide" style={{ color: 'var(--fg-subtle)' }}>
         404
       </p>
       <h1 className="mt-2 text-2xl font-semibold" style={{ color: 'var(--fg)' }}>
-        Page not found
+        {title}
       </h1>
       <p className="mt-2 max-w-sm text-sm" style={{ color: 'var(--fg-muted)' }}>
-        The page you’re looking for doesn’t exist or may have moved.
+        {description}
       </p>
       <Link
         to="/workspace"
@@ -26,4 +38,15 @@ export default function NotFoundPage() {
       </Link>
     </div>
   )
+}
+
+/**
+ * Catch-all not-found state. Rendered inside the app Layout for any unmatched
+ * authed path, so the user keeps the sidebar/shell and gets a clear way back to
+ * the all-projects portfolio instead of a blank screen. `/p/:slug/*` has its own
+ * catch-all route (App.tsx) so an unmatched path under a real project keeps that
+ * project's shell rather than collapsing to the workspace one.
+ */
+export default function NotFoundPage() {
+  return <NotFoundState />
 }

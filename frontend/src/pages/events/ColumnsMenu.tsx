@@ -73,8 +73,10 @@ export function ColumnsMenu({
           checked={!reviewedHidden}
           onChange={() => onToggle('reviewed')}
         />
+        {/* Label follows the table heading ("Signal"); the persisted column key
+            stays `monitor` so saved preferences survive the rename. */}
         <ColumnToggle
-          label="Monitor"
+          label="Signal"
           pinned={false}
           checked={!monitorHidden}
           onChange={() => onToggle('monitor')}

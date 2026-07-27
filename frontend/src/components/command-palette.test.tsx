@@ -4,7 +4,10 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from './auth-context'
 import { CommandPaletteProvider } from './command-palette'
-import { useCommandPalette } from './command-palette-context'
+import {
+  COMMAND_PALETTE_TRIGGER_ATTR,
+  useCommandPalette,
+} from './command-palette-context'
 
 function mockJsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -38,6 +41,21 @@ function PaletteOpener() {
   )
 }
 
+/** Stands in for the top-bar search button that the palette falls back to. */
+function TopBarTrigger() {
+  const palette = useCommandPalette()
+  return (
+    <button
+      type="button"
+      {...{ [COMMAND_PALETTE_TRIGGER_ATTR]: '' }}
+      onClick={() => palette.setOpen(true)}
+      data-testid="topbar-trigger"
+    >
+      search
+    </button>
+  )
+}
+
 function LocationBeacon() {
   const location = useLocation()
   return <div data-testid="location">{location.pathname}</div>
@@ -58,6 +76,7 @@ function renderHarness(initialEntry = '/p/demo/events') {
                 <CommandPaletteProvider>
                   <LocationBeacon />
                   <PaletteOpener />
+                  <TopBarTrigger />
                 </CommandPaletteProvider>
               }
             />
@@ -387,5 +406,52 @@ describe('CommandPalette', () => {
     expect(screen.getByText('Checkout Completed')).toBeInTheDocument()
     // Exactly the semantic_used row carries the chip — the lexical one does not.
     expect(screen.getAllByText('semantic')).toHaveLength(1)
+  })
+})
+
+describe('CommandPalette focus restore', () => {
+  function mockEmptyProject() {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+  }
+
+  it('hands focus back to the button that opened it', async () => {
+    mockEmptyProject()
+    renderHarness('/p/demo/events')
+
+    const opener = screen.getByTestId('open-palette')
+    opener.focus()
+    fireEvent.click(opener)
+    await screen.findByPlaceholderText(/Search projects/i)
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(opener)
+    })
+  })
+
+  it('falls back to the top-bar trigger when Ctrl+K opened it from nowhere', async () => {
+    mockEmptyProject()
+    renderHarness('/p/demo/events')
+
+    // Nothing focused: exactly the state a global Ctrl+K on a fresh page leaves,
+    // where Radix would restore focus to <body> (tripl-jfm3.68).
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    expect(document.activeElement).toBe(document.body)
+
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
+    await screen.findByPlaceholderText(/Search projects/i)
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByTestId('topbar-trigger'))
+    })
+    expect(document.activeElement).not.toBe(document.body)
   })
 })

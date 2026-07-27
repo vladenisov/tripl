@@ -2,6 +2,7 @@ import type { DataSource, ScanConfig } from '@/types'
 import { Chip } from '@/components/primitives/chip'
 import { Ban, CheckCircle2, Clock, Loader2, MinusCircle, Play, XCircle, type LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { Skeleton } from '@/components/ui/skeleton'
 import { friendlyScanError } from '@/lib/scanError'
 import { SCAN_RUN_STATUS } from '@/lib/statusLexicon'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
@@ -95,12 +96,18 @@ export function ScanListRow({
 }) {
   const firstQueryLine = sc.base_query.split('\n')[0]
   const cadenceLabel = sc.interval ? (intervalLabel[sc.interval] ?? sc.interval) : 'Manual'
+  // `unknown` means this scan's job query is still in flight. There is no
+  // verdict to pill yet, so the cell shows a skeleton rather than the
+  // finished-looking "Never run" chip (tripl-jfm3.28).
+  const isRunInfoPending = runInfo.status === 'unknown'
   const pillStatus: RunPillStatus =
     runInfo.status === 'ok'
       ? 'succeeded'
       : runInfo.status === 'idle'
         ? 'never'
-        : runInfo.status
+        : runInfo.status === 'unknown'
+          ? 'pending'
+          : runInfo.status
   const failedMessage = runInfo.status === 'failed'
     ? friendlyScanError(runInfo.lastJob?.error_message).message
     : null
@@ -156,6 +163,9 @@ export function ScanListRow({
         </div>
       </td>
       <td className="px-3.5 py-2.5 align-middle">
+        {isRunInfoPending ? (
+          <Skeleton className="h-[18px] w-[132px]" aria-label={`Loading last run for ${sc.name}`} />
+        ) : (
         <div className="flex flex-col gap-1">
           <span className="inline-flex items-center gap-1.5">
             <RunStatusPill status={pillStatus} title={failedMessage ?? undefined} />
@@ -171,6 +181,7 @@ export function ScanListRow({
             </span>
           )}
         </div>
+        )}
       </td>
       <td className="px-3.5 py-2.5 align-middle text-right">
         <div className="flex items-center justify-end gap-2">

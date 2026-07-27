@@ -35,18 +35,40 @@ export function buildDocumentTitle(pageLabel: string, slug?: string | null): str
   return segments.join(TITLE_SEPARATOR)
 }
 
+/**
+ * Label for any path that has no page behind it. The catch-all route renders
+ * {@link NotFoundPage} for these, so the tab has to say so too — otherwise a
+ * 404 keeps whatever title the previous surface left behind.
+ */
+export const NOT_FOUND_TITLE_LABEL = 'Page not found'
+
 // Human labels per top-level project surface (the `/p/:slug/<surface>` segment).
+// Every segment that resolves to a real route belongs here, INCLUDING the ones
+// that only redirect (`alerting`, `fact-tables`) — they render for a frame
+// before the redirect commits and must not flash "Page not found". Anything
+// absent from this map has no route and is titled as not-found.
 const PROJECT_SURFACE_LABELS: Record<string, string> = {
   events: 'Events',
   overview: 'Live activity',
   monitors: 'Monitors',
   monitoring: 'Monitoring',
   anomalies: 'Anomalies',
+  alerting: 'Alerting',
   reconciliation: 'Reconciliation',
   coverage: 'Coverage',
   metrics: 'Metrics',
+  'fact-tables': 'Fact tables',
   concepts: 'Concepts',
   settings: 'Project settings',
+}
+
+// Top-level paths that exist only to redirect somewhere else. Same reasoning as
+// the redirect-only project surfaces above: they are real routes, so they must
+// not resolve to "Page not found" for the frame before the redirect commits.
+const LEGACY_TOP_LEVEL_LABELS: Record<string, string> = {
+  'data-sources': 'Data sources',
+  users: 'Members',
+  account: 'Profile',
 }
 
 // Human labels for sub-surfaces that are their own destination but happen to be
@@ -110,9 +132,14 @@ export function resolveTitleFromPath(pathname: string): { label: string; slug?: 
     // A known sub-surface wins over its parent surface; anything else (tabs,
     // detail ids, editors) falls through to the parent label.
     const subSurface = parts[3] ? PROJECT_SUBSURFACE_LABELS[surface]?.[parts[3]] : undefined
-    return { label: subSurface ?? PROJECT_SURFACE_LABELS[surface] ?? 'Events', slug: parts[1] }
+    const label = subSurface ?? PROJECT_SURFACE_LABELS[surface]
+    // The slug is still valid on an unmatched project sub-path, so the tab keeps
+    // naming the project — only the page half becomes "Page not found".
+    return { label: label ?? NOT_FOUND_TITLE_LABEL, slug: parts[1] }
   }
-  return { label: '' } // unknown authed path → just "tripl"
+  const legacyTopLevel = LEGACY_TOP_LEVEL_LABELS[parts[0]]
+  if (legacyTopLevel) return { label: legacyTopLevel }
+  return { label: NOT_FOUND_TITLE_LABEL } // unmatched authed path → the 404 page
 }
 
 /**

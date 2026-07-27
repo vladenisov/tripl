@@ -8,11 +8,18 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from tripl.config import settings
+from tripl.config import REGISTRATION_OPEN, settings
 
 # Disable rate limiting in tests so the shared in-memory buckets across the
 # session don't cause spurious 429s on repeated /auth/register calls.
 settings.rate_limit_enabled = False
+
+# Keep self-service registration open for the suite. Production defaults to
+# "disabled" (fail closed, see Settings.registration_mode), but most suites
+# register a second/third user to exercise editor and viewer roles. Tests that
+# assert the closed behaviour set the mode themselves via monkeypatch or a
+# persisted override.
+settings.registration_mode = REGISTRATION_OPEN
 
 from tripl.database import get_session  # noqa: E402
 from tripl.main import app  # noqa: E402

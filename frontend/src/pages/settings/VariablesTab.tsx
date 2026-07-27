@@ -1,6 +1,6 @@
-import { useEffect, useId, useRef, useState } from "react"
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Ban, Pencil, Plus, RotateCcw, Trash2, Variable as VariableIcon, X } from "lucide-react"
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { Pencil, Plus, RotateCcw, Trash2, Variable as VariableIcon, X } from "lucide-react"
 import { eventsApi } from "@/api/events"
 import { variablesApi } from "@/api/variables"
 import { variableDriftsApi } from "@/api/variableDrifts"
@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { EmptyState } from "@/components/empty-state"
 import { Panel } from "@/components/settings/kit"
@@ -19,11 +20,40 @@ import { ScenarioCoachMark } from "@/demo/ScenarioCoachMark"
 import { useDemoScenarioActions } from "@/demo/demoScenarioContext"
 import { SCENARIO_SEEDED } from "@/demo/scenarioModel"
 import { VariablesBulkBar } from "./VariablesBulkBar"
+import { VariablesTableRow } from "./VariablesTableRow"
 import { getErrorMessage } from '@/lib/utils'
 
 // Warehouse column or dotted JSON path, e.g. "variant" or "page_data.extra.variant".
 const BINDING_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$/
 const isValidBinding = (value: string) => BINDING_PATTERN.test(value)
+
+// Rows rendered at once. The whole set arrives in one request, but a governance
+// project can hold >1k variables and painting them all froze the tab for
+// seconds (tripl-jfm3.49) — one page keeps the DOM and every re-render bounded.
+const PAGE_SIZE = 50
+const LOADING_SKELETON_ROWS = 6
+
+const VARIABLE_TYPES: VariableType[] = ['string', 'number', 'boolean', 'date', 'datetime', 'json', 'string_array', 'number_array']
+const TYPE_LABELS: Record<VariableType, string> = {
+  string: 'String', number: 'Number', boolean: 'Boolean', date: 'Date',
+  datetime: 'Datetime', json: 'JSON', string_array: 'String[]', number_array: 'Number[]',
+}
+
+const matchesQuery = (variable: Variable, needle: string) =>
+  variable.name.toLowerCase().includes(needle) ||
+  variable.description.toLowerCase().includes(needle)
+
+/** Keeps a handler's identity stable across renders so the memoized rows do not
+ * re-render every time an unrelated closure above them is recreated. The ref is
+ * refreshed after commit; rows only call these from user events, never during
+ * render, so they always see the latest closure. */
+function useStableCallback<Args extends unknown[]>(fn: (...args: Args) => void) {
+  const ref = useRef(fn)
+  useEffect(() => {
+    ref.current = fn
+  })
+  return useCallback((...args: Args) => ref.current(...args), [])
+}
 
 function ChipListInput({ values, onChange, placeholder, ariaLabel, validate }: {
   values: string[]
@@ -89,6 +119,10 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const [overrideEventId, setOverrideEventId] = useState('')
   const [overrideValues, setOverrideValues] = useState<string[]>([])
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [filterText, setFilterText] = useState('')
+  // Page the reviewer picked, tagged with the focus target it was picked under
+  // (undefined = never picked, so a ?focus= link still gets to choose).
+  const [pickedPage, setPickedPage] = useState<{ focusId?: string; page: number }>({ page: 0 })
   const { confirm, dialog } = useConfirm()
   const { notifyStepCompleted } = useDemoScenarioActions()
 
@@ -102,24 +136,22 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const editTypeId = useId()
   const editDescriptionId = useId()
 
-  const variableTypes: VariableType[] = ['string', 'number', 'boolean', 'date', 'datetime', 'json', 'string_array', 'number_array']
-  const typeLabels: Record<VariableType, string> = {
-    string: 'String', number: 'Number', boolean: 'Boolean', date: 'Date',
-    datetime: 'Datetime', json: 'JSON', string_array: 'String[]', number_array: 'Number[]',
-  }
+  const variableTypes = VARIABLE_TYPES
+  const typeLabels = TYPE_LABELS
 
-  const { data: variables = [] } = useQuery({
+  // ONE request for the whole tab. The list row's event names and observed
+  // values ship with this response (see attach_variable_summaries), so there is
+  // no per-row fan-out — the same anti-pattern documented in
+  // pages/events/useEventRowMetrics.ts. `keepPreviousData` holds the previous
+  // rows while the branch id resolves and changes the key, instead of dropping
+  // back to an empty list (tripl-jfm3.52).
+  const { data: variablePage, isPending: variablesPending } = useQuery({
     queryKey: ['variables', slug, branchId],
-    queryFn: () => variablesApi.list(slug, branchId),
+    queryFn: () => variablesApi.listPage(slug, branchId),
+    placeholderData: keepPreviousData,
   })
-
-  const valueContextQueries = useQueries({
-    queries: variables.map((variable) => ({
-      queryKey: ['variable-values', slug, branchId, variable.id],
-      queryFn: () => variablesApi.values(slug, variable.id, branchId),
-      enabled: variables.length > 0,
-    })),
-  })
+  const variables = useMemo(() => variablePage?.items ?? [], [variablePage])
+  const truncatedCount = Math.max(0, (variablePage?.total ?? 0) - variables.length)
 
   const createMut = useMutation({
     mutationFn: () => variablesApi.create(slug, { name, variable_type: varType, description, allowed_values: allowedValues, bindings }, branchId),
@@ -219,21 +251,21 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     if (ok) bulkDeleteMut.mutate()
   }
 
-  const toggleSelected = (id: string) => {
+  const toggleSelected = useCallback((id: string) => {
     setSelectedIds(prev => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
-  }
+  }, [])
 
   const deleteMut = useMutation({
     mutationFn: (id: string) => variablesApi.del(slug, id, branchId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['variables', slug, branchId] }),
   })
 
-  const handleDelete = async (v: Variable) => {
+  const handleDelete = useStableCallback(async (v: Variable) => {
     const rescanNote = v.source_name || (v.bindings ?? []).length > 0
       ? ' The next scan will likely re-create it — use Exclude to keep it out.'
       : ''
@@ -244,7 +276,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
       variant: 'danger',
     })
     if (ok) deleteMut.mutate(v.id)
-  }
+  })
 
   const excludeMut = useMutation({
     mutationFn: ({ id, excluded }: { id: string; excluded: boolean }) =>
@@ -252,7 +284,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     onSuccess: () => qc.invalidateQueries({ queryKey: ['variables', slug, branchId] }),
   })
 
-  const handleExclude = async (v: Variable) => {
+  const handleExclude = useStableCallback(async (v: Variable) => {
     const ok = await confirm({
       title: 'Exclude from scans',
       message: `Exclude "${v.name}" from scans? Observed values and drift are removed, and future scans will NOT re-create it. Documented values stay for restore.`,
@@ -260,9 +292,9 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
       variant: 'danger',
     })
     if (ok) excludeMut.mutate({ id: v.id, excluded: true })
-  }
+  })
 
-  const startEdit = (v: Variable) => {
+  const startEdit = useStableCallback((v: Variable) => {
     // Opening the seeded variable IS inspecting its values — the edit dialog
     // shows documented vs observed side by side.
     if (v.name === SCENARIO_SEEDED.driftVariableName) {
@@ -276,43 +308,62 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     setEditBindings(v.bindings ?? [])
     setOverrideEventId('')
     setOverrideValues([])
-  }
-
-  const contextsByVariableId = new Map(
-    variables.map((variable, index) => [
-      variable.id,
-      valueContextQueries[index]?.data ?? [],
-    ]),
-  )
-
-  const activeVariables = variables.filter(v => !v.excluded_from_scans)
-  const excludedVariables = variables.filter(v => !!v.excluded_from_scans)
-
-  // One row PER VARIABLE. The variable's events are collected into a sub-list so
-  // a variable referenced by N events reads as a single entry, not N duplicate
-  // rows. Possible values are unioned across every (variable, event) context.
-  const rows = activeVariables.map((variable) => {
-    const contexts = contextsByVariableId.get(variable.id) ?? []
-    const events = contexts.map((context) => ({
-      id: context.id,
-      name: context.event_name,
-    }))
-    const values = Array.from(new Set(contexts.flatMap((context) => context.values)))
-    return { id: variable.id, variable, events, values }
   })
 
-  // Scroll the linked variable into view once its row exists (the list arrives
-  // asynchronously, so the ref is null on the first render). Keyed on focusId
-  // as well, so following a second link — to a variable already on screen —
-  // scrolls to it instead of leaving the reviewer where the first one landed.
-  const focusedRowExists = focusId !== undefined && rows.some((row) => row.id === focusId)
+  const activeVariables = useMemo(
+    () => variables.filter(v => !v.excluded_from_scans),
+    [variables],
+  )
+  const excludedVariables = useMemo(
+    () => variables.filter(v => !!v.excluded_from_scans),
+    [variables],
+  )
+
+  // One row PER VARIABLE: the variable's events (names) and its observed values
+  // both arrive on the list row, so a variable referenced by N events still
+  // reads as a single entry, not N duplicate rows.
+  const matchingVariables = useMemo(() => {
+    const needle = filterText.trim().toLowerCase()
+    if (!needle) return activeVariables
+    return activeVariables.filter(variable => matchesQuery(variable, needle))
+  }, [activeVariables, filterText])
+
+  // A branch-diff link points at one variable, which may sit on any page. The
+  // page is DERIVED rather than synced in an effect: until the reviewer picks a
+  // page themselves, the focused variable's page wins — its row only becomes
+  // locatable once the list has arrived, well after the first render.
+  const focusIndex = focusId === undefined
+    ? -1
+    : matchingVariables.findIndex(variable => variable.id === focusId)
+  const focusPage = focusIndex < 0 ? 0 : Math.floor(focusIndex / PAGE_SIZE)
+  const pageCount = Math.max(1, Math.ceil(matchingVariables.length / PAGE_SIZE))
+  const chosenPage = pickedPage.focusId === focusId ? pickedPage.page : null
+  const currentPage = Math.min(chosenPage ?? focusPage, pageCount - 1)
+  const pageStart = currentPage * PAGE_SIZE
+  const pageVariables = useMemo(
+    () => matchingVariables.slice(pageStart, pageStart + PAGE_SIZE),
+    [matchingVariables, pageStart],
+  )
+  const goToPage = (next: number) =>
+    setPickedPage({ focusId, page: Math.min(Math.max(0, next), pageCount - 1) })
+
+  // Scroll the linked row into view once it is on screen. Keyed on focusId too,
+  // so following a second link — to a variable already visible — scrolls to it
+  // instead of leaving the reviewer where the first one landed.
+  const focusedRowVisible = focusIndex >= 0 && focusPage === currentPage
   useEffect(() => {
-    if (focusedRowExists) {
+    if (focusedRowVisible) {
       focusRef.current?.scrollIntoView({ block: 'center' })
     }
-  }, [focusId, focusedRowExists])
+  }, [focusId, focusedRowVisible])
 
-  const editingVarContexts = editingVar ? (contextsByVariableId.get(editingVar.id) ?? []) : []
+  // Per-event contexts are fetched for the ONE variable being edited, never for
+  // the list — the dialog is the only place that needs the full breakdown.
+  const { data: editingVarContexts = [] } = useQuery({
+    queryKey: ['variable-values', slug, branchId, editingVar?.id],
+    queryFn: () => variablesApi.values(slug, editingVar!.id, branchId),
+    enabled: !!editingVar,
+  })
   const editingSummaryRows = editingVarContexts.length > 0
     ? editingVarContexts.map((context) => ({
       id: context.id,
@@ -565,145 +616,109 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
 
       <Panel
         title="Variables"
-        subtitle={`${activeVariables.length} variable${activeVariables.length === 1 ? '' : 's'}`}
+        subtitle={variablesPending
+          ? 'Loading…'
+          : `${activeVariables.length} variable${activeVariables.length === 1 ? '' : 's'}`}
         right={
           <Button size="sm" onClick={() => setShowForm(true)}>
             <Plus className="mr-2 h-4 w-4" />Add variable
           </Button>
         }
       >
-        {activeVariables.length > 0 ? (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-8">
-                  <input
-                    type="checkbox"
-                    aria-label="Select all variables"
-                    checked={activeVariables.length > 0 && selectedIds.size === activeVariables.length}
-                    onChange={e => setSelectedIds(e.target.checked ? new Set(activeVariables.map(v => v.id)) : new Set())}
-                  />
-                </TableHead>
-                <TableHead>Variable</TableHead>
-                <TableHead>Events</TableHead>
-                <TableHead>Description</TableHead>
-                <TableHead>Documented values</TableHead>
-                <TableHead>Observed values</TableHead>
-                <TableHead className="w-24"></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((row) => {
-                const v = row.variable
-                const focused = row.id === focusId
-                return (
-                <TableRow
-                  key={row.id}
-                  ref={focused ? focusRef : undefined}
-                  data-focused={focused || undefined}
-                  className={focused ? 'bg-primary/5 outline outline-1 outline-primary/40' : undefined}
-                >
-                  <TableCell className="align-top">
+        {variablesPending ? (
+          // A pending list is NOT an empty list — rendering the empty state here
+          // made the page claim "No variables" while 1.2k were loading
+          // (tripl-jfm3.52).
+          <div className="space-y-2 px-4 py-4" aria-busy="true" aria-label="Loading variables">
+            {Array.from({ length: LOADING_SKELETON_ROWS }, (_, index) => (
+              <Skeleton key={index} className="h-10 w-full" />
+            ))}
+          </div>
+        ) : activeVariables.length > 0 ? (
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2">
+              <Input
+                aria-label="Filter variables"
+                className="h-8 max-w-64"
+                placeholder="Filter by name or description…"
+                value={filterText}
+                onChange={e => { setFilterText(e.target.value); goToPage(0) }}
+              />
+              <span className="text-xs text-muted-foreground">
+                {matchingVariables.length === 0
+                  ? 'No matches'
+                  : `Showing ${pageStart + 1}–${pageStart + pageVariables.length} of ${matchingVariables.length}`}
+                {truncatedCount > 0 && ` (${truncatedCount} more not loaded)`}
+              </span>
+            </div>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-8">
+                    {/* Selection spans every variable matching the filter, not
+                        just the page on screen — bulk edits are why a project
+                        with a thousand variables opens this table at all. */}
                     <input
                       type="checkbox"
-                      aria-label={`Select variable ${v.name}`}
-                      checked={selectedIds.has(v.id)}
-                      onChange={() => toggleSelected(v.id)}
+                      aria-label="Select all variables"
+                      checked={matchingVariables.length > 0 && matchingVariables.every(v => selectedIds.has(v.id))}
+                      onChange={e => setSelectedIds(e.target.checked ? new Set(matchingVariables.map(v => v.id)) : new Set())}
                     />
-                  </TableCell>
-                  <TableCell className="font-mono text-xs align-top">
-                    <div className="flex items-center gap-2">
-                      <code className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
-                        {`\${${v.name}}`}
-                      </code>
-                      <span className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                        {typeLabels[v.variable_type]}
-                      </span>
-                      {(v.open_drift_count ?? 0) > 0 && (
-                        <span className="rounded border border-amber-500/50 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600" title="Observed values outside the documented list">
-                          {v.open_drift_count} drift{(v.open_drift_count ?? 0) === 1 ? '' : 's'}
-                        </span>
-                      )}
-                    </div>
-                    {(v.bindings ?? []).length > 0 && (
-                      <div className="mt-1 space-y-0.5">
-                        {(v.bindings ?? []).map(binding => (
-                          <div key={binding} className="max-w-52 truncate text-[10px] text-muted-foreground" title={binding}>
-                            ↳ {binding}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-xs align-top">
-                    {row.events.length === 0 ? (
-                      <span className="text-muted-foreground">—</span>
-                    ) : row.events.length <= 3 ? (
-                      <ul className="space-y-0.5">
-                        {row.events.map((event) => (
-                          <li key={event.id}>{event.name}</li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <details>
-                        <summary className="cursor-pointer text-muted-foreground">
-                          {row.events.length} events
-                        </summary>
-                        <ul className="mt-1 space-y-0.5">
-                          {row.events.map((event) => (
-                            <li key={event.id}>{event.name}</li>
-                          ))}
-                        </ul>
-                      </details>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground align-top">{v.description}</TableCell>
-                  <TableCell className="align-top">
-                    {(v.allowed_values ?? []).length > 0 ? (
-                      <div className="flex max-w-sm flex-wrap gap-1">
-                        {(v.allowed_values ?? []).slice(0, 6).map(value => (
-                          <span key={value} className="max-w-28 truncate rounded border border-primary/30 bg-primary/5 px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
-                        ))}
-                        {(v.allowed_values ?? []).length > 6 && (
-                          <span className="text-[10px] text-muted-foreground">+{(v.allowed_values ?? []).length - 6}</span>
-                        )}
-                      </div>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {row.values.length > 0 ? (
-                      <div className="flex max-w-sm flex-wrap gap-1">
-                        {row.values.slice(0, 6).map(value => (
-                          <span key={value} className="max-w-28 truncate rounded border px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
-                        ))}
-                        {row.values.length > 6 && (
-                          <span className="text-[10px] text-muted-foreground">+{row.values.length - 6}</span>
-                        )}
-                      </div>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex gap-1 justify-end">
-                      {/* Exactly one row carries the inspect mark: the seeded
-                          drifting variable, so the coaching reads as an example. */}
-                      <ScenarioCoachMark
-                        step="variables/inspect-values"
-                        when={v.name === SCENARIO_SEEDED.driftVariableName}
-                      >
-                        <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Edit variable ${v.name}`} onClick={() => startEdit(v)}><Pencil className="h-3 w-3" aria-hidden="true" /></Button>
-                      </ScenarioCoachMark>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-amber-600" aria-label={`Exclude variable ${v.name} from scans`} onClick={() => handleExclude(v)}><Ban className="h-3 w-3" aria-hidden="true" /></Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete variable ${v.name}`} onClick={() => handleDelete(v)}><Trash2 className="h-3 w-3" aria-hidden="true" /></Button>
-                    </div>
-                  </TableCell>
+                  </TableHead>
+                  <TableHead>Variable</TableHead>
+                  <TableHead>Events</TableHead>
+                  <TableHead>Description</TableHead>
+                  <TableHead>Documented values</TableHead>
+                  <TableHead>Observed values</TableHead>
+                  <TableHead className="w-24"></TableHead>
                 </TableRow>
-              )})}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {pageVariables.map((variable) => (
+                  <VariablesTableRow
+                    key={variable.id}
+                    variable={variable}
+                    typeLabel={typeLabels[variable.variable_type]}
+                    selected={selectedIds.has(variable.id)}
+                    focused={variable.id === focusId}
+                    rowRef={variable.id === focusId ? focusRef : undefined}
+                    onToggleSelect={toggleSelected}
+                    onEdit={startEdit}
+                    onExclude={handleExclude}
+                    onDelete={handleDelete}
+                  />
+                ))}
+                {pageVariables.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="py-6 text-center text-xs text-muted-foreground">
+                      No variables match “{filterText}”.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+            {pageCount > 1 && (
+              <div className="flex items-center justify-end gap-2 px-4 py-2">
+                <Button
+                  type="button" variant="outline" size="sm" className="h-7 px-2 text-xs"
+                  aria-label="Previous page"
+                  disabled={currentPage === 0}
+                  onClick={() => goToPage(currentPage - 1)}
+                >
+                  Previous
+                </Button>
+                <span className="text-xs text-muted-foreground">Page {currentPage + 1} of {pageCount}</span>
+                <Button
+                  type="button" variant="outline" size="sm" className="h-7 px-2 text-xs"
+                  aria-label="Next page"
+                  disabled={currentPage >= pageCount - 1}
+                  onClick={() => goToPage(currentPage + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            )}
+          </>
         ) : (
           <div className="px-4 py-8">
             <EmptyState icon={VariableIcon} title="No variables" description="Define template placeholders to reuse across event field values." />

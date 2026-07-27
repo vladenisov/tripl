@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Query
 
 from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep, get_editor_user
-from tripl.models.event import Event
+from tripl.models.event import Event, EventStatus
 from tripl.schemas.event import (
     EventBulkDelete,
     EventBulkUpdate,
@@ -30,7 +30,10 @@ async def list_events(
     branch_id: BranchIdDep,
     event_type_id: uuid.UUID | None = None,
     search: str | None = None,
-    status: Annotated[list[str] | None, Query()] = None,
+    # EventStatus (not list[str]): the column is a native Postgres enum, so an
+    # out-of-enum value used to reach the driver and surface as a 500. FastAPI
+    # now 422s it up front, like the order_by Literal below already did.
+    status: Annotated[list[EventStatus] | None, Query()] = None,
     tag: str | None = None,
     silent_since_days: int | None = Query(None, ge=0, le=3650),
     field_value: str | None = None,
@@ -50,7 +53,7 @@ async def list_events(
         slug,
         event_type_id,
         search,
-        status,
+        [member.value for member in status] if status else None,
         tag,
         offset,
         limit,

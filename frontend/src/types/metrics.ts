@@ -31,7 +31,10 @@ export interface TopEvent {
 
 export interface OverviewKpiSeries {
   days: number
-  active_events: number[]
+  // Events CREATED per day on the main branch. Named `active_events` until
+  // tripl-jfm3.22, which is what led the Overview sparkline to announce itself
+  // as "Active events by day" while plotting creations across every branch.
+  new_events: number[]
 }
 
 export interface MonitoringSignal {
@@ -148,6 +151,12 @@ export interface BreakdownTimeline {
 export interface EventMetricsResponse {
   scope: 'project_total' | 'event_type' | 'event' | 'events_total'
   scan_config_id: string | null
+  // Display name of the single scan config the `project_total` / `events_total`
+  // series is scoped to, so the chart can name its scope instead of implying
+  // it covers every scan in the project (tripl-jfm3.20). Optional like
+  // `sigma_threshold`: the server always sends it (null for scopes that have no
+  // single scan), but locally-synthesised responses need not fabricate one.
+  scan_config_name?: string | null
   event_id: string | null
   event_type_id: string | null
   interval: string | null

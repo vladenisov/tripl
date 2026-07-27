@@ -14,6 +14,7 @@ import {
 import { cn } from '@/lib/utils'
 import {
   axisWidthForValues,
+  CHART_SURFACE_TAB_INDEX,
   formatAnomalyCount,
   formatCount,
   formatTick,
@@ -432,7 +433,11 @@ export function MetricsChart({
       </div>
       {containerReady ? (
         <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+        <ComposedChart
+          data={chartData}
+          margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
+          tabIndex={CHART_SURFACE_TAB_INDEX}
+        >
           <defs>
             <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor={chartColor} stopOpacity={0.3} />
@@ -619,7 +624,11 @@ export function MetricsMultiSeriesChart({
       </div>
       {containerReady ? (
         <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+        <ComposedChart
+          data={chartData}
+          margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
+          tabIndex={CHART_SURFACE_TAB_INDEX}
+        >
           <CartesianGrid strokeDasharray="3 3" className="stroke-border" vertical={false} />
           <XAxis
             dataKey="bucket"
@@ -817,7 +826,11 @@ export function MiniMetricsChart({
         {chartLabel}: {data.length} data points{anomalyCount > 0 ? `, ${formatAnomalyCount(anomalyCount)}` : ''}.
       </span>
       <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={data} margin={{ top: 4, right: 2, bottom: 2, left: 2 }}>
+        <ComposedChart
+          data={data}
+          margin={{ top: 4, right: 2, bottom: 2, left: 2 }}
+          tabIndex={CHART_SURFACE_TAB_INDEX}
+        >
           <defs>
             <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor={chartColor} stopOpacity={0.25} />

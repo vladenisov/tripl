@@ -24,6 +24,14 @@ const GAP_LIMIT = 50
 const PLAN_COVERAGE_HELP =
   'Share of active planned events marked implemented. Different from the Reconciliation data match, which measures how many planned events are actually seen in warehouse data.'
 
+// The gap list is computed over a deliberately NARROWER population than the
+// "Active events" stat above it: only implemented/live events that are old
+// enough to have had a chance to emit can be "missing data". Naming that
+// population inline stops the panel reading as a subset of the 2.4k "active
+// events" tile, and explains why the Events page's Silent filter — which spans
+// every non-archived status — reports a bigger number (tripl-jfm3.23).
+const GAP_BASIS_HELP = `Implemented and live events only, excluding any created in the last ${DEAD_DAYS} days. The Events page's "Silent > ${DEAD_DAYS}d" filter spans every non-archived status, so its total is larger.`
+
 function coverageTone(ratio: number): 'success' | 'warning' | 'danger' {
   if (ratio >= 0.9) return 'success'
   if (ratio >= 0.7) return 'warning'
@@ -53,7 +61,12 @@ export default function CoveragePage() {
   // the share of active (non-archived) events that are implemented.
   const active = summary?.active_event_count ?? 0
   const implemented = summary?.implemented_event_count ?? 0
-  const pending = Math.max(0, active - implemented)
+  // Arithmetic remainder of the coverage bar. It is NOT the "In review" tile:
+  // events that are neither implemented nor awaiting review (draft, ready for
+  // dev …) land here too, so the bar is labelled "not implemented" rather than
+  // "pending" to stop the two adjacent numbers reading as the same bucket
+  // (tripl-jfm3.29).
+  const notImplemented = Math.max(0, active - implemented)
   const coverageRatio = planCoverageRatio(implemented, active)
 
   const isNewProject = !!summary && summary.event_count === 0
@@ -119,7 +132,7 @@ export default function CoveragePage() {
             />
             <MiniStatDivider />
             <MiniStat
-              label="In review"
+              label="Awaiting review"
               value={summary ? summary.review_pending_event_count.toLocaleString() : '—'}
               tone={summary && summary.review_pending_event_count > 0 ? 'warning' : 'neutral'}
             />
@@ -132,7 +145,11 @@ export default function CoveragePage() {
 
           {/* Coverage bar: implemented vs pending across the active plan */}
           {summary && active > 0 && (
-            <CoverageBar implemented={implemented} pending={pending} ratio={coverageRatio} />
+            <CoverageBar
+              implemented={implemented}
+              notImplemented={notImplemented}
+              ratio={coverageRatio}
+            />
           )}
         </>
       )}
@@ -143,7 +160,7 @@ export default function CoveragePage() {
           <EmptyState
             icon={ShieldCheck}
             title="No events to cover yet"
-            description="Once your tracking plan has events, this page shows how much of it is implemented and which active events have no data."
+            description="Once your tracking plan has events, this page shows how much of it is implemented and which implemented events have no data."
             action={
               slug ? (
                 <Button asChild size="sm">
@@ -162,7 +179,7 @@ export default function CoveragePage() {
           title="Instrumentation gaps"
           subtitle={
             deadQuery.data
-              ? `${deadTotal.toLocaleString()} active event${deadTotal === 1 ? '' : 's'} with no data in the last ${DEAD_DAYS} days`
+              ? `${deadTotal.toLocaleString()} implemented event${deadTotal === 1 ? '' : 's'} with no data in the last ${DEAD_DAYS} days`
               : undefined
           }
           right={
@@ -200,10 +217,13 @@ export default function CoveragePage() {
               style={{ color: 'var(--fg-muted)' }}
             >
               <ShieldCheck className="h-4 w-4" style={{ color: 'var(--success)' }} />
-              Every active event has recent data — no coverage gaps.
+              Every implemented event has recent data — no coverage gaps.
             </div>
           ) : (
             <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+              <p className="px-4 py-2 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                {GAP_BASIS_HELP}
+              </p>
               {deadItems.slice(0, GAP_LIMIT).map((item) => (
                 <GapRow key={item.event_id} item={item} />
               ))}
@@ -222,15 +242,15 @@ export default function CoveragePage() {
 
 function CoverageBar({
   implemented,
-  pending,
+  notImplemented,
   ratio,
 }: {
   implemented: number
-  pending: number
+  notImplemented: number
   ratio: number
 }) {
   const pct = Math.round(ratio * 100)
-  const total = implemented + pending
+  const total = implemented + notImplemented
   const implementedPct = total > 0 ? (implemented / total) * 100 : 0
   return (
     <div className="rounded-lg border px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
@@ -242,17 +262,20 @@ function CoverageBar({
           implemented
         </span>
         <span>
-          <span className="font-semibold" style={{ color: pending > 0 ? 'var(--warning)' : 'var(--fg)' }}>
-            {pending.toLocaleString()}
+          <span
+            className="font-semibold"
+            style={{ color: notImplemented > 0 ? 'var(--warning)' : 'var(--fg)' }}
+          >
+            {notImplemented.toLocaleString()}
           </span>{' '}
-          pending
+          not implemented
         </span>
       </div>
       <div
         className="flex h-2 overflow-hidden rounded-full"
         style={{ background: 'var(--bg-sunken)' }}
         role="img"
-        aria-label={`${pct}% of active events are implemented; ${pending.toLocaleString()} still pending.`}
+        aria-label={`${pct}% of active events are implemented; ${notImplemented.toLocaleString()} are not implemented yet.`}
       >
         <div style={{ width: `${implementedPct}%`, background: 'var(--success)' }} />
         <div style={{ width: `${100 - implementedPct}%`, background: 'var(--warning)' }} />

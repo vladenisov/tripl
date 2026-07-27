@@ -103,7 +103,7 @@ describe('EventsPage', () => {
         ])
       }
       if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
-      if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/variables')) return mockJsonResponse({ items: [], total: 0 })
       if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
       // unreviewedCount query: exactly status=in_review with limit=1
       if (url.includes('/api/v1/projects/demo/events') && url.includes('status=in_review') && url.includes('limit=1')) {
@@ -216,6 +216,11 @@ describe('EventsPage', () => {
     const headers = screen.getAllByRole('columnheader').map((h) => h.textContent?.trim())
     expect(headers).toContain('Event')
     expect(headers.indexOf('Type')).toBeLessThan(headers.indexOf('48h'))
+    // tripl-jfm3.4: the signal-state column is headed "Signal", not "Monitor" —
+    // its cells report detection output, which exists without any monitor, and
+    // heading it "Monitor" contradicted the Monitors page's "No monitors yet".
+    expect(headers).toContain('Signal')
+    expect(headers).not.toContain('Monitor')
     // The trailing sticky "Actions" column and its hover cluster were removed;
     // reordering is now drag-handle only.
     expect(headers).not.toContain('Actions')
@@ -299,7 +304,7 @@ describe('EventsPage', () => {
         ])
       }
       if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
-      if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/variables')) return mockJsonResponse({ items: [], total: 0 })
       if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
       if (url.includes('/api/v1/projects/demo/events') && url.includes('status=in_review') && url.includes('limit=1')) {
         return mockJsonResponse({ items: [], total: 0 })
@@ -397,7 +402,7 @@ describe('EventsPage', () => {
         ])
       }
       if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
-      if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/variables')) return mockJsonResponse({ items: [], total: 0 })
       if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
       if (url.includes('/api/v1/projects/demo/events') && url.includes('status=in_review') && url.includes('limit=1')) return mockJsonResponse({ items: [], total: 0 })
       if (url.includes('/api/v1/projects/demo/events-metrics')) {
@@ -472,7 +477,7 @@ describe('EventsPage', () => {
         ])
       }
       if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
-      if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/variables')) return mockJsonResponse({ items: [], total: 0 })
       if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
       if (url.includes('/api/v1/projects/demo/events') && url.includes('status=in_review') && url.includes('limit=1')) return mockJsonResponse({ items: [], total: 0 })
       if (url.includes('/api/v1/projects/demo/events-metrics')) {
@@ -565,7 +570,7 @@ describe('EventsPage', () => {
         ])
       }
       if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
-      if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/variables')) return mockJsonResponse({ items: [], total: 0 })
       if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
       if (url.includes('/api/v1/projects/demo/events') && url.includes('status=in_review') && url.includes('limit=1')) return mockJsonResponse({ items: [], total: 0 })
       if (url.includes('/api/v1/projects/demo/events-metrics')) {
@@ -650,7 +655,7 @@ describe('EventsPage', () => {
         ])
       }
       if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
-      if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/variables')) return mockJsonResponse({ items: [], total: 0 })
       if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
       if (url.includes('/api/v1/projects/demo/events') && url.includes('status=in_review') && url.includes('limit=1')) {
         return mockJsonResponse({ items: [], total: 0 })
