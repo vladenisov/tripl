@@ -1074,7 +1074,9 @@ async def test_demo_surfaces_its_planted_dead_event(client: AsyncClient) -> None
 
 
 @pytest.mark.asyncio
-async def test_demo_seeds_a_retryable_failed_delivery(client: AsyncClient) -> None:
+async def test_demo_seeds_a_retryable_failed_delivery(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The Audit table only offers Retry on a failed row (tripl-jfm3.59)."""
     slug = (await client.post("/api/v1/projects/demo")).json()["slug"]
 
@@ -1085,9 +1087,25 @@ async def test_demo_seeds_a_retryable_failed_delivery(client: AsyncClient) -> No
     assert len(failed) == 1
     assert failed[0]["error_message"]
 
+    # Retry enqueues the real dispatch task. Stub ``.delay`` so the suite keeps
+    # its no-broker contract (CONTRIBUTING: pytest needs no RabbitMQ) — the same
+    # pattern test_alerting.py uses — while still asserting the endpoint resolves
+    # and hands this delivery to the worker.
+    #
+    # The celery app is imported FIRST for the same reason the service does it
+    # (services/_alerting_deliveries.py): the task graph is cyclic, so entering
+    # at ``tasks.alerts`` in a process that has not loaded the app yet lands
+    # mid-cycle and raises ImportError.
+    import tripl.worker.celery_app  # noqa: F401
+    from tripl.worker.tasks.alerts import send_alert_delivery
+
+    enqueued: list[str] = []
+    monkeypatch.setattr(send_alert_delivery, "delay", lambda did: enqueued.append(did))
+
     # …and the Retry the docs promise actually resolves for it.
     retry = await client.post(f"/api/v1/projects/{slug}/alert-deliveries/{failed[0]['id']}/retry")
     assert retry.status_code == 200
+    assert enqueued == [failed[0]["id"]]
 
 
 @pytest.mark.asyncio
