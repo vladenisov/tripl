@@ -181,14 +181,27 @@ account, and it is governed by a single instance setting, `REGISTRATION_MODE`
 
 :::danger Read this before you expose an instance publicly
 **The default is `open`, and `open` means anyone who can reach the URL can
-create an account.** A new account joins as **editor**, and an editor can
-immediately read:
+create an account.** A new account joins as **editor** — not as a read-only
+viewer — so a stranger who registers can immediately **read**:
 
 - the workspace's **entire tracking plan** — every project, event, variable,
   metric and annotation;
 - the **member roster** (`GET /api/v1/users`: names, emails, roles);
-- **every data source's connection metadata** — name, database type, host, port,
-  username, and whether a password is set (the secret itself is never returned).
+- each data source's **name, database type and health status**, and — via
+  `GET /api/v1/data-sources/{id}/schema` and `/stats` — the **table and column
+  names of your warehouse**. Connection details (host, port, username, whether a
+  password is set, TLS settings) are owner-only and redacted from everyone else;
+  the secret itself is never returned to anybody.
+
+…and **write**:
+
+- create, rename and edit **any shared project** — the tracking plan an owner
+  created, and any project predating creator tracking — including its events,
+  event types, variables and scan configuration.
+
+Another member's **demo workspace** and a project created by a **different
+editor** stay closed, and deleting a project or creating/editing a data source
+remains owner-only. See [Roles and access control](#roles-and-access-control-rbac).
 
 If your instance is reachable from the internet, decide the policy **before**
 the first deploy, not after. Setting `REGISTRATION_MODE=disabled` (or flipping
