@@ -33,6 +33,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { WorkspaceWelcome } from '@/components/workspace-welcome'
 import { DemoProvisioningDialog } from '@/demo/DemoProvisioningDialog'
+import { demoGenerationWarning, ownedDemoCount } from '@/demo/demoGenerationGuard'
 import { useDemoProvisioning } from '@/demo/useDemoProvisioning'
 import { useConfirm } from '@/hooks/useConfirm'
 import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
@@ -166,7 +167,24 @@ export default function MainPage() {
   // Demo provisioning: a blocking create with staged progress, a duplicate-click
   // guard, and success routing to the new demo's Overview welcome (not Events).
   const provisioning = useDemoProvisioning()
-  const isProvisioningDemo = provisioning.status === 'provisioning'
+  const isProvisioningDemo =
+    provisioning.status === 'provisioning' || provisioning.status === 'cancelling'
+
+  // Every demo is an extra synthetic workspace inside the real roll-ups, so the
+  // second one asks first and points at Reset instead (tripl-jfm3.14).
+  const handleGenerateDemo = async () => {
+    const warning = demoGenerationWarning(ownedDemoCount(projects, user?.id))
+    if (warning) {
+      const ok = await confirm({
+        title: warning.title,
+        message: warning.message,
+        confirmLabel: warning.confirmLabel,
+        variant: 'primary',
+      })
+      if (!ok || !warning.canProceed) return
+    }
+    provisioning.start()
+  }
 
   const handleDelete = async (project: Project) => {
     const ok = await confirm({
@@ -201,6 +219,7 @@ export default function MainPage() {
         phaseIndex={provisioning.phaseIndex}
         error={provisioning.error}
         timedOut={provisioning.timedOut}
+        cancelOutcome={provisioning.cancelOutcome}
         onRetry={provisioning.retry}
         onCancel={provisioning.cancel}
         onClose={provisioning.reset}
@@ -223,7 +242,7 @@ export default function MainPage() {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => provisioning.start()}
+              onClick={() => void handleGenerateDemo()}
               disabled={isProvisioningDemo}
             >
               <Sparkles className="h-3.5 w-3.5" />
@@ -318,7 +337,7 @@ export default function MainPage() {
         <WorkspaceWelcome
           canCreateProject={canCreateProject}
           isProvisioningDemo={isProvisioningDemo}
-          onGenerateDemo={() => provisioning.start()}
+          onGenerateDemo={() => void handleGenerateDemo()}
           onCreateProject={() => setShowForm(true)}
         />
       )}

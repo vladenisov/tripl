@@ -168,6 +168,39 @@ The limiter is **per worker, in memory**. With multiple Uvicorn/Gunicorn workers
 
 ## Authentication, sessions, and cookies
 
+### Self-service registration
+
+`POST /api/v1/auth/register` is the only unauthenticated way to obtain an
+account, and it is governed by a single instance setting, `REGISTRATION_MODE`
+(`Settings → Instance → Security & access → Registration`):
+
+| Mode | Behaviour |
+|---|---|
+| `disabled` (**default**) | New signups are refused with `403`. |
+| `open` | Anyone who can reach the instance can create an account (rate-limited). |
+
+**The default is `disabled` — tripl fails closed.** A tripl instance holds the
+workspace's whole tracking plan plus warehouse connection metadata, so an
+instance exposed to the internet must not hand out accounts by accident.
+
+- **First-owner bootstrap is always exempt.** On an instance with **no users**,
+  the first registration is accepted regardless of the mode and becomes `owner`.
+  A fresh deploy is therefore claimable out of the box; every *later* signup is
+  subject to the policy.
+- **Onboarding a teammate** (there is no invitation flow yet): an owner switches
+  Registration to **Open**, the teammate registers, the owner switches it back to
+  **Disabled**. The override applies **immediately** — unlike the rest of the
+  Security section it is resolved per request, not pinned at process start, so
+  closing the door never waits for a redeploy.
+- **No account enumeration.** The policy check runs *before* the duplicate-email
+  lookup, so a closed instance returns the same `403` for a registered address
+  and an unknown one.
+- `GET /api/v1/auth/status` reports `registration_enabled` (instance-wide, no
+  per-account information) so the sign-in screen can hide the sign-up form.
+
+Rate limiting (`RATE_LIMIT_REGISTER_PER_HOUR`) still applies on top and is *not*
+a substitute: it slows signups, it never closes them.
+
 ### Passwords
 
 Passwords are hashed with **scrypt** (`backend/src/tripl/auth_utils.py`): `N=2^16`, `r=8`, `p=1`, 16-byte random salt, verified with a constant-time comparison (`hmac.compare_digest`). The cost was chosen to harden against offline cracking while still running on a constrained ARM SBC. On a successful login, a hash produced with an older (lower) `N` is opportunistically re-hashed to the current parameters.
@@ -203,7 +236,7 @@ For non-browser clients, tripl issues personal API keys (`api_key_service.py`). 
 
 ## Roles and access control (RBAC)
 
-tripl has three instance roles (`UserRole`: `owner`, `editor`, `viewer`) plus a two-level API-key scope (`ApiKeyScope`: `read`, `write`). The **first** registered user becomes `owner` so the instance always has an operator who can manage roles; every subsequent self-registration defaults to `editor`.
+tripl has three instance roles (`UserRole`: `owner`, `editor`, `viewer`) plus a two-level API-key scope (`ApiKeyScope`: `read`, `write`). The **first** registered user becomes `owner` so the instance always has an operator who can manage roles; every subsequent self-registration defaults to `editor` — and is refused entirely unless registration is `open` (see [Self-service registration](#self-service-registration)).
 
 Enforcement lives in `backend/src/tripl/api/deps.py`. The route-facing FastAPI dependencies are `get_current_user`, `get_write_user`, `get_editor_user`, and `get_owner_user`, which compose the checks below:
 
@@ -214,6 +247,18 @@ Enforcement lives in `backend/src/tripl/api/deps.py`. The route-facing FastAPI d
 | `require_editor` | `viewer` is rejected; `editor`/`owner` pass |
 | `require_owner` | Only `owner` passes |
 | `get_owner_user` | Owner-only **and** rejects API keys entirely (any scope) — owner actions require an interactive session |
+
+Because the `editor` role is **instance-wide**, two surfaces that would otherwise
+be reachable by every editor carry a stricter gate:
+
+| Surface | Gate | Why |
+|---|---|---|
+| Scan configs — create / update / delete, `preview`, `preview-jobs`, `run`, `metrics/replay`, `event-groups/apply` | `get_owner_user` (owner, interactive session) | A scan's `base_query` is free-text SQL executed verbatim against an owner-configured warehouse credential, so it can read anything that credential can. Data sources are owner-only; the SQL run against them now matches. Editors keep every read-only view (list/get a scan, its jobs, platform presence) and can still cancel a running job. |
+| `PATCH /api/v1/projects/{slug}` (name, slug, retention) | Project **creator** or owner | Otherwise any editor could rename or re-slug every project on the instance, including ones they have never touched. The creator is recorded at project-creation time; projects with no recorded creator are owner-managed. |
+
+`base_query` is additionally validated by the shared read-only-SELECT gate
+(`validate_select_sql_safety`, the same one `metric_sql` uses): single statement,
+no stacked `;`, no comment markers, no DDL/DML/`UNION`.
 
 Additional guards:
 
@@ -265,6 +310,7 @@ Operations:
 - [ ] Rate limiting left enabled (`RATE_LIMIT_ENABLED=true`); add a proxy-tier limit if you run multiple workers/replicas.
 - [ ] `/metrics` (if enabled) and any admin surfaces restricted to an internal network.
 - [ ] First-run owner account created promptly so self-registration cannot grab `owner`.
+- [ ] `REGISTRATION_MODE` left at `disabled` (the default), and no `registration_mode` override set to `open` in **Settings → Instance**. Open it only while onboarding a teammate, then close it again.
 - [ ] Database and broker on a private network; `ENCRYPTION_KEY` and `SECRET_KEY` not committed to the repo or image.
 
 For symptom-level help (login loops, blocked CORS, 429s), see [Troubleshooting & FAQ](../use/troubleshooting.md).

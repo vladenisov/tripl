@@ -199,6 +199,45 @@ describe('ScansTab', () => {
     expect(screen.getByText(/SELECT \* FROM analytics\.events_v2/)).toBeInTheDocument()
   })
 
+  // The per-scan job queries used to be coerced to `[]` while in flight, so
+  // every row rendered a finished-looking "Never run" chip and the 24h tile read
+  // 0 — contradicting the completed runs listed in the activity rail on the same
+  // screen (tripl-jfm3.28).
+  it('shows a loading placeholder, not "Never run", while the job queries are in flight', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({ tables: [] })
+      }
+      if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      // Never settles: holds the row in its loading state for the assertions.
+      if (url.includes('/scans/scan-1/jobs')) return new Promise<Response>(() => {})
+      if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderTab()
+
+    expect(await screen.findByText('Main events scan')).toBeInTheDocument()
+    expect(
+      screen.getByLabelText('Loading last run for Main events scan'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Never run')).not.toBeInTheDocument()
+    // The 24h rows KPI stays "—" rather than asserting a definitive 0.
+    expect(screen.getByText('—')).toBeInTheDocument()
+    expect(screen.queryByText('0')).not.toBeInTheDocument()
+  })
+
+  it('says "Never run" once the job list has loaded and is genuinely empty', async () => {
+    setupFetch()
+    renderTab()
+
+    expect(await screen.findByText('Never run')).toBeInTheDocument()
+    expect(
+      screen.queryByLabelText('Loading last run for Main events scan'),
+    ).not.toBeInTheDocument()
+  })
+
   it('labels failed runs as text with a sanitised message and no raw internals', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)

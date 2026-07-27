@@ -18,7 +18,10 @@ import { metricsApi } from '@/api/metrics'
 import { getErrorMessage } from '@/lib/utils'
 import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
 import { commandPaletteShortcutLabel } from '@/lib/platform'
-import { useCommandPalette } from '@/components/command-palette-context'
+import {
+  COMMAND_PALETTE_TRIGGER_ATTR,
+  useCommandPalette,
+} from '@/components/command-palette-context'
 import { Kbd } from '@/components/primitives/kbd'
 import { Dot } from '@/components/primitives/dot'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -79,6 +82,7 @@ export function TopBar({
         <button
           type="button"
           aria-label="Command palette"
+          {...{ [COMMAND_PALETTE_TRIGGER_ATTR]: '' }}
           onClick={() => palette.setOpen(true)}
           className="flex h-7 items-center gap-1.5 rounded-md px-2 transition-colors hover:bg-[var(--surface-hover)]"
           style={{ color: 'var(--fg-muted)' }}

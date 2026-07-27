@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@/api/client'
@@ -45,6 +45,7 @@ function Harness({ timeoutMs }: { timeoutMs?: number }) {
       <span data-testid="status">{provisioning.status}</span>
       <span data-testid="path">{location.pathname}</span>
       <span data-testid="timed-out">{String(provisioning.timedOut)}</span>
+      <span data-testid="cancel-outcome">{provisioning.cancelOutcome ?? 'none'}</span>
       {provisioning.error ? (
         <span data-testid="error">{(provisioning.error as Error).message}</span>
       ) : null}
@@ -94,8 +95,11 @@ function stallUntilAborted() {
 }
 
 describe('useDemoProvisioning — a stalled create is escapable (tripl-2su6.15)', () => {
-  it('cancel aborts the request and drops back to idle, not to an error', async () => {
+  it('cancel aborts the request AND asks the server to abandon it (tripl-jfm3.12)', async () => {
     const captured = stallUntilAborted()
+    const cancelSpy = vi
+      .spyOn(projectsApi, 'cancelDemo')
+      .mockResolvedValue({ cancelled: true, slug: 'demo-abc123' })
 
     renderHarness()
     fireEvent.click(screen.getByText('start'))
@@ -106,9 +110,38 @@ describe('useDemoProvisioning — a stalled create is escapable (tripl-2su6.15)'
 
     // The request is actually aborted (not just ignored)…
     await waitFor(() => expect(captured.signal?.aborted).toBe(true))
-    // …and a user-initiated cancel is not a failure: the dialog closes (idle)
-    // rather than showing the error the aborted request produces.
-    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('idle'))
+    // …but aborting the fetch alone left the server seeding happily on, so the
+    // cancel is also sent to the backend, which deletes the shell.
+    expect(cancelSpy).toHaveBeenCalledTimes(1)
+    // A user-initiated cancel is never an error state.
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('cancelled'))
+    expect(screen.getByTestId('cancel-outcome')).toHaveTextContent('stopped')
+    expect(screen.queryByTestId('error')).not.toBeInTheDocument()
+  })
+
+  it('reports honestly when the create was already past the point of no return', async () => {
+    stallUntilAborted()
+    vi.spyOn(projectsApi, 'cancelDemo').mockResolvedValue({ cancelled: false, slug: null })
+
+    renderHarness()
+    fireEvent.click(screen.getByText('start'))
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('provisioning'))
+    fireEvent.click(screen.getByText('cancel'))
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('cancelled'))
+    expect(screen.getByTestId('cancel-outcome')).toHaveTextContent('already-finished')
+  })
+
+  it('never claims a stop when the cancel call itself fails', async () => {
+    stallUntilAborted()
+    vi.spyOn(projectsApi, 'cancelDemo').mockRejectedValue(new ApiError('offline', 503))
+
+    renderHarness()
+    fireEvent.click(screen.getByText('start'))
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('provisioning'))
+    fireEvent.click(screen.getByText('cancel'))
+
+    await waitFor(() => expect(screen.getByTestId('cancel-outcome')).toHaveTextContent('already-finished'))
   })
 
   it('aborts a create that hangs past the timeout', async () => {
@@ -186,6 +219,57 @@ describe('useDemoProvisioning', () => {
     expect(screen.getByTestId('error')).toHaveTextContent('rolled back')
     // Stayed on the workspace — a failed demo never routes into a half-built project.
     expect(screen.getByTestId('path')).toHaveTextContent('/workspace')
+  })
+
+  it('never rejects the mutation, so the app-wide error toast stays silent (tripl-jfm3.13)', async () => {
+    // main.tsx registers `new MutationCache({ onError: surfaceError })`, which
+    // toasted every rejected mutation — turning a deliberate cancel into a red
+    // "the backend timed out" toast and double-reporting a genuine 500.
+    const onError = vi.fn()
+    const queryClient = new QueryClient({
+      mutationCache: new MutationCache({ onError }),
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    vi.spyOn(projectsApi, 'cancelDemo').mockResolvedValue({ cancelled: true, slug: 'demo-x' })
+    const captured = stallUntilAborted()
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspace']}>
+          <Harness />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    fireEvent.click(screen.getByText('start'))
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('provisioning'))
+    fireEvent.click(screen.getByText('cancel'))
+    await waitFor(() => expect(captured.signal?.aborted).toBe(true))
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('cancelled'))
+
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('reports a 500 in the hook without rejecting the mutation (tripl-jfm3.13)', async () => {
+    const onError = vi.fn()
+    const queryClient = new QueryClient({
+      mutationCache: new MutationCache({ onError }),
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    vi.spyOn(projectsApi, 'createDemo').mockRejectedValue(new ApiError('boom', 500))
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspace']}>
+          <Harness />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    fireEvent.click(screen.getByText('start'))
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('error'))
+    // The dialog renders it once; the global toast never sees it.
+    expect(screen.getByTestId('error')).toHaveTextContent('boom')
+    expect(onError).not.toHaveBeenCalled()
   })
 
   it('retry runs a fresh create after a failure', async () => {

@@ -2,6 +2,7 @@ import { Chip } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { WELCOME_PILLARS } from '@/components/workspace-welcome-pillars'
+import { DEMO_PROVISION_ESTIMATE } from '@/demo/provisioningPhases'
 import { Plus, Sparkles } from 'lucide-react'
 
 interface WorkspaceWelcomeProps {
@@ -50,8 +51,8 @@ export function WorkspaceWelcome({
               {isProvisioningDemo ? 'Generating…' : 'Generate demo project'}
             </Button>
             <p className="m-0 max-w-[280px] text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-              Builds a complete example in ~10 seconds — local synthetic data, real scans and
-              monitors. Reset or delete it any time.
+              Builds a complete example in {DEMO_PROVISION_ESTIMATE} — local synthetic data, real
+              scans and monitors. Reset or delete it any time.
             </p>
           </div>
           <div className="flex flex-col gap-1.5 sm:items-center sm:text-center">

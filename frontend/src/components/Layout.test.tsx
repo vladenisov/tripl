@@ -17,7 +17,9 @@ vi.mock('@/api/metrics', () => ({
 }))
 
 vi.mock('@/api/projects', () => ({
-  projectsApi: { list: vi.fn() },
+  // `get` is the confirmation call the shell makes for a slug the list does not
+  // know; it must reject the way a real 404 does, not blow up as undefined.
+  projectsApi: { list: vi.fn(), get: vi.fn() },
 }))
 
 vi.mock('@/components/activity-panel', () => ({
@@ -37,7 +39,11 @@ vi.mock('@/components/tweaks-panel', () => ({
   TweaksPanelProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }))
 
-function renderLayout(path: string) {
+function renderLayout(
+  path: string,
+  routePath = '/p/:slug/monitoring/:scope/:id',
+  pageLabel = 'Monitoring detail',
+) {
   vi.mocked(projectsApi.list).mockResolvedValue([
     {
       id: 'project-1',
@@ -65,6 +71,7 @@ function renderLayout(path: string) {
       },
     },
   ])
+  vi.mocked(projectsApi.get).mockRejectedValue(new Error('Not found'))
   vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([])
   vi.mocked(alertingApi.listDeliveries).mockResolvedValue({ items: [], total: 0 })
 
@@ -75,8 +82,11 @@ function renderLayout(path: string) {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
-          <Route path="/p/:slug/monitoring/:scope/:id" element={<Layout />}>
-            <Route index element={<div>Monitoring detail</div>} />
+          <Route path={routePath} element={<Layout />}>
+            <Route index element={<div>{pageLabel}</div>} />
+            {/* A splat `routePath` consumes the trailing segments, so the index
+                child never matches — give those cases a child that does. */}
+            <Route path="*" element={<div>{pageLabel}</div>} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -129,6 +139,82 @@ afterEach(() => {
   delete (window as { matchMedia?: unknown }).matchMedia
 })
 
+describe('Layout bypass block', () => {
+  it('offers a skip link as the first focusable element, targeting main content', async () => {
+    const { container } = renderLayout('/p/demo/monitoring/event/event-1')
+    await screen.findByText('Monitoring detail')
+
+    const skipLink = screen.getByRole('link', { name: 'Skip to main content' })
+    expect(skipLink).toHaveAttribute('href', '#main-content')
+
+    // It must come before the sidebar so the very first Tab reaches it.
+    const focusable = container.querySelectorAll('a[href], button, input, [tabindex]')
+    expect(focusable[0]).toBe(skipLink)
+
+    // …and the target has to be focusable, or the jump goes nowhere.
+    const target = container.querySelector('#main-content')
+    expect(target).not.toBeNull()
+    expect(target).toHaveAttribute('tabindex', '-1')
+  })
+})
+
+describe('Layout breadcrumbs', () => {
+  it('renders no root crumb on the workspace surface (tripl-jfm3.34)', async () => {
+    renderLayout('/workspace', '/workspace', 'Workspace dashboard')
+    await screen.findByText('Workspace dashboard')
+
+    // The placeholder the crumb resolver used to emit when no project was in
+    // scope. It read as an untranslated template leaking into production.
+    expect(screen.queryByText('project')).toBeNull()
+    expect(screen.getByText('Overview')).toBeInTheDocument()
+  })
+
+  it('names the Concepts surface instead of claiming to be Overview (tripl-jfm3.35)', async () => {
+    renderLayout('/p/demo/concepts', '/p/:slug/concepts', 'Concepts body')
+    await screen.findByText('Concepts body')
+
+    // Concepts sits outside the grouped nav, so it used to fall through to the
+    // catch-all and render "Demo › Overview" — a trail pointing at a page the
+    // user is not on.
+    expect(screen.getByText('Demo')).toBeInTheDocument()
+    expect(screen.getByText('Help & reference')).toBeInTheDocument()
+    expect(screen.getByText('Concepts')).toBeInTheDocument()
+    expect(screen.queryByText('Overview')).toBeNull()
+  })
+
+  it('keeps the project crumb but stops claiming "Overview" on an unmatched path', async () => {
+    renderLayout('/p/demo/this-route-does-not-exist', '/p/:slug/*', 'Page not found')
+    await screen.findByText('Page not found')
+
+    // The slug is valid, so the trail still names the project (tripl-jfm3.3) …
+    expect(screen.getByText('Demo')).toBeInTheDocument()
+    // … but the page half must not name a real surface the user is not on.
+    expect(screen.queryByText('Overview')).toBeNull()
+    expect(screen.getByText('Not found')).toBeInTheDocument()
+  })
+})
+
+describe('Layout unknown project (tripl-jfm3.2)', () => {
+  it('renders a not-found state instead of the project shell for an unknown slug', async () => {
+    renderLayout('/p/no-such-project-xyz/overview', '/p/:slug/overview', 'Live activity body')
+
+    expect(await screen.findByText('Project not found')).toBeInTheDocument()
+    // No shell, so nothing below it can fan out project-scoped requests.
+    expect(screen.queryByText('Live activity body')).toBeNull()
+    expect(screen.queryByRole('navigation', { name: 'sidebar' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Toggle activity panel' })).toBeNull()
+    // The invented slug is not echoed back as if it named a workspace.
+    expect(screen.getByText(/no project with the address/i)).toBeInTheDocument()
+  })
+
+  it('renders the full shell once the slug is confirmed to exist', async () => {
+    renderLayout('/p/demo/overview', '/p/:slug/overview', 'Live activity body')
+
+    expect(await screen.findByText('Live activity body')).toBeInTheDocument()
+    expect(screen.queryByText('Project not found')).toBeNull()
+  })
+})
+
 describe('Layout activity panel', () => {
   it('opens Now activity from monitoring detail routes', async () => {
     renderLayout('/p/demo/monitoring/event/event-1')
@@ -165,4 +251,21 @@ describe('Layout activity panel', () => {
     // Inline mode has no drawer backdrop.
     expect(screen.queryByRole('button', { name: 'Close activity feed' })).toBeNull()
   })
+})
+
+describe("Layout after a demo is deleted (tripl-jfm3.74)", () => {
+  it.each(['/p/demo-gone/events', '/p/demo-gone/anomalies', '/p/demo-gone/overview'])(
+    'answers %s with the not-found page and a way out, on every route',
+    async (path) => {
+      // A deleted demo's URL used to render project chrome, stale event-type
+      // navigation and a strip of zeroed stats over "Project not found", plus a
+      // pile of raw "Reference: <uuid>" toasts from every failing child query.
+      renderLayout(path, '/p/:slug/*', 'Live activity body')
+
+      expect(await screen.findByText('Project not found')).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: /back to all projects/i })).toBeInTheDocument()
+      expect(screen.queryByText('Live activity body')).toBeNull()
+      expect(screen.queryByRole('navigation', { name: 'sidebar' })).toBeNull()
+    },
+  )
 })

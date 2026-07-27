@@ -93,6 +93,7 @@ def build_default_scenario() -> DemoScenario:
     from tripl.services.demo.builders import (
         activity,
         alerts,
+        audit,
         branches,
         catalog,
         governance,
@@ -135,7 +136,11 @@ def build_default_scenario() -> DemoScenario:
             #    deep copy of the main plan onto the branch with exactly one
             #    branch-side edit (a real pending change for diff/merge preview).
             branches.build_branches,
-            # 10. Search reindex (last).
+            # 10. Audit trail for everything the recipe authored, attributed to
+            #     the demo's creator. Runs after every builder that creates an
+            #     object it records (tripl-jfm3.60).
+            audit.build_audit,
+            # 11. Search reindex (last).
             search.build_search,
         ),
     )

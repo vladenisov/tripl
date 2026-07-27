@@ -11,6 +11,19 @@ export interface ScanRunInfo {
 }
 
 /**
+ * Run info for a scan whose job list has not arrived yet. "Never run" is a
+ * verdict, not a placeholder: coercing the in-flight query to `[]` made every
+ * row claim it had never run while the activity rail on the same screen listed
+ * completed runs (tripl-jfm3.28). Callers pass `undefined` for a loading query
+ * and get the neutral `unknown` state instead.
+ */
+export const LOADING_SCAN_RUN_INFO: ScanRunInfo = {
+  status: 'unknown',
+  lastRunLabel: '',
+  lastJob: null,
+}
+
+/**
  * Whether any job is still in a non-terminal state (pending/running). Drives the
  * adaptive polling fallback: fast polling stops once every job settles, and the
  * live stream (`scan_job.updated`) refreshes the list in the meantime.
@@ -19,7 +32,10 @@ export function scanJobsHaveActiveWork(jobs: ScanJob[] | undefined): boolean {
   return (jobs ?? []).some((job) => job.status === 'running' || job.status === 'pending')
 }
 
-export function deriveScanRunInfo(jobs: ScanJob[]): ScanRunInfo {
+export function deriveScanRunInfo(jobs: ScanJob[] | undefined): ScanRunInfo {
+  // `undefined` means "the job query has not resolved yet" — distinct from an
+  // empty array, which really does mean this scan has never run.
+  if (!jobs) return LOADING_SCAN_RUN_INFO
   const lastJob = jobs[0] ?? null
   if (!lastJob) return { status: 'idle', lastRunLabel: 'never', lastJob: null }
   if (lastJob.status === 'running' || lastJob.status === 'pending') {

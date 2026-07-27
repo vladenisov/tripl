@@ -147,3 +147,41 @@ def test_apply_startup_service_overrides_is_noop_on_db_error(
     # Must swallow the error and apply nothing, so importing the app never fails
     # just because overrides can't be read.
     assert app_settings_service.apply_startup_service_overrides(session=object()) == []  # type: ignore[arg-type]
+
+
+def test_registration_mode_is_resolved_live_not_at_startup() -> None:
+    """Closing registration must not wait for a redeploy (tripl-jfm3.9).
+
+    Every other security override is pinned onto ``settings`` at process start;
+    ``registration_mode`` is deliberately excluded and read per request instead.
+    """
+    assert "registration_mode" in app_settings_service.SECURITY_FIELDS
+    assert "registration_mode" not in app_settings_service.STARTUP_APPLIED_FIELDS
+    # The rest of the security section is still startup-applied.
+    assert "hsts_enabled" in app_settings_service.STARTUP_APPLIED_FIELDS
+
+
+@pytest.mark.asyncio
+async def test_registration_mode_override_wins_over_env(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "registration_mode", "open")
+
+    async with TestSessionLocal() as session:
+        assert await app_settings_service.get_registration_mode(session) == "open"
+
+    resp = await client.patch(
+        "/api/v1/settings", json={"security": {"registration_mode": "disabled"}}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["sources"]["security.registration_mode"] == "override"
+
+    async with TestSessionLocal() as session:
+        assert await app_settings_service.get_registration_mode(session) == "disabled"
+
+    # Clearing the override falls back to the env value.
+    cleared = await client.patch("/api/v1/settings", json={"security": {"registration_mode": None}})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["sources"]["security.registration_mode"] == "env"
+    async with TestSessionLocal() as session:
+        assert await app_settings_service.get_registration_mode(session) == "open"

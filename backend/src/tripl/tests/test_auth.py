@@ -4,8 +4,9 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
-from tripl.config import settings
+from tripl.config import REGISTRATION_DISABLED, REGISTRATION_OPEN, settings
 from tripl.models.password_reset_token import PasswordResetToken
+from tripl.models.user import User
 from tripl.services import auth_service
 from tripl.tests.conftest import TestSessionLocal
 
@@ -86,7 +87,7 @@ async def test_register_rejects_weak_password(anon_client: AsyncClient):
 async def test_status_reports_empty_instance_then_populated(anon_client: AsyncClient):
     fresh = await anon_client.get("/api/v1/auth/status")
     assert fresh.status_code == 200
-    assert fresh.json() == {"has_users": False}
+    assert fresh.json()["has_users"] is False
 
     register = await anon_client.post(
         "/api/v1/auth/register",
@@ -99,7 +100,7 @@ async def test_status_reports_empty_instance_then_populated(anon_client: AsyncCl
 
     populated = await anon_client.get("/api/v1/auth/status")
     assert populated.status_code == 200
-    assert populated.json() == {"has_users": True}
+    assert populated.json()["has_users"] is True
 
 
 @pytest.mark.asyncio
@@ -304,3 +305,161 @@ async def test_password_reset_confirm_enforces_password_policy(
 
     body = confirm.json()
     assert any("new_password" in error.get("loc", []) for error in body["detail"])
+
+
+# --- registration policy (tripl-jfm3.9) -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_closed_instance_still_allows_the_first_owner(
+    anon_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    # A fresh deploy ships closed, but must still be claimable: the bootstrap
+    # registration on an empty instance is exempt from the policy.
+    monkeypatch.setattr(settings, "registration_mode", REGISTRATION_DISABLED)
+
+    first = await anon_client.post(
+        "/api/v1/auth/register",
+        json={"email": "bootstrap@example.com", "password": "Password123!"},
+    )
+
+    assert first.status_code == 201
+    assert first.json()["role"] == "owner"
+
+
+@pytest.mark.asyncio
+async def test_closed_instance_rejects_every_registration_after_the_first(
+    anon_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(settings, "registration_mode", REGISTRATION_DISABLED)
+    await _register(anon_client, "closed-owner@example.com", "Password123!")
+    await anon_client.post("/api/v1/auth/logout")
+
+    stranger = await anon_client.post(
+        "/api/v1/auth/register",
+        json={"email": "stranger@example.com", "password": "Password123!"},
+    )
+
+    assert stranger.status_code == 403
+    assert "registration is closed" in stranger.json()["detail"].lower()
+    # No account and no session were handed out.
+    assert "set-cookie" not in stranger.headers
+    async with TestSessionLocal() as session:
+        emails = set((await session.scalars(select(User.email))).all())
+    assert emails == {"closed-owner@example.com"}
+
+
+@pytest.mark.asyncio
+async def test_closed_registration_does_not_leak_which_emails_exist(
+    anon_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    # The policy check runs before the duplicate-email lookup, so a closed
+    # instance answers identically for a known and an unknown address.
+    monkeypatch.setattr(settings, "registration_mode", REGISTRATION_DISABLED)
+    await _register(anon_client, "known-user@example.com", "Password123!")
+    await anon_client.post("/api/v1/auth/logout")
+
+    known = await anon_client.post(
+        "/api/v1/auth/register",
+        json={"email": "known-user@example.com", "password": "Password123!"},
+    )
+    unknown = await anon_client.post(
+        "/api/v1/auth/register",
+        json={"email": "nobody@example.com", "password": "Password123!"},
+    )
+
+    assert known.status_code == unknown.status_code == 403
+    assert known.json() == unknown.json()
+
+
+@pytest.mark.asyncio
+async def test_open_mode_allows_registration_after_the_first_user(
+    anon_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(settings, "registration_mode", REGISTRATION_OPEN)
+    await _register(anon_client, "open-owner@example.com", "Password123!")
+    await anon_client.post("/api/v1/auth/logout")
+
+    second = await anon_client.post(
+        "/api/v1/auth/register",
+        json={"email": "teammate@example.com", "password": "Password123!"},
+    )
+
+    assert second.status_code == 201
+    assert second.json()["role"] == "editor"
+
+
+@pytest.mark.asyncio
+async def test_owner_can_close_registration_without_a_restart(
+    anon_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    # The env default is open, but the persisted instance-setting override wins
+    # and takes effect on the very next request — no redeploy.
+    monkeypatch.setattr(settings, "registration_mode", REGISTRATION_OPEN)
+    await _register(anon_client, "toggle-owner@example.com", "Password123!")
+
+    patched = await anon_client.patch(
+        "/api/v1/settings",
+        json={"security": {"registration_mode": "disabled"}},
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["security"]["registration_mode"] == "disabled"
+    assert "registration_mode" in patched.json()["overridden_fields"]
+
+    await anon_client.post("/api/v1/auth/logout")
+    blocked = await anon_client.post(
+        "/api/v1/auth/register",
+        json={"email": "too-late@example.com", "password": "Password123!"},
+    )
+    assert blocked.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_owner_can_open_registration_on_a_closed_instance(
+    anon_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(settings, "registration_mode", REGISTRATION_DISABLED)
+    await _register(anon_client, "invite-owner@example.com", "Password123!")
+
+    patched = await anon_client.patch(
+        "/api/v1/settings",
+        json={"security": {"registration_mode": "open"}},
+    )
+    assert patched.status_code == 200, patched.text
+
+    await anon_client.post("/api/v1/auth/logout")
+    invited = await anon_client.post(
+        "/api/v1/auth/register",
+        json={"email": "invited@example.com", "password": "Password123!"},
+    )
+    assert invited.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_settings_reject_an_unknown_registration_mode(
+    anon_client: AsyncClient,
+):
+    await _register(anon_client, "strict-owner@example.com", "Password123!")
+
+    resp = await anon_client.patch(
+        "/api/v1/settings",
+        json={"security": {"registration_mode": "invite-only"}},
+    )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_auth_status_reports_whether_registration_is_accepted(
+    anon_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(settings, "registration_mode", REGISTRATION_DISABLED)
+
+    # Empty instance: the bootstrap signup is always on offer.
+    empty = await anon_client.get("/api/v1/auth/status")
+    assert empty.json() == {"has_users": False, "registration_enabled": True}
+
+    await _register(anon_client, "status-owner@example.com", "Password123!")
+
+    provisioned = await anon_client.get("/api/v1/auth/status")
+    assert provisioned.json() == {"has_users": True, "registration_enabled": False}

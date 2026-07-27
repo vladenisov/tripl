@@ -105,20 +105,26 @@ const AREAS: readonly Area[] = [
       {
         term: 'Scopes',
         definition:
-          'The level at which activity and anomalies are measured: the whole project, a single event type, or one event. Monitors and signals are always scoped.',
-      },
-      {
-        term: 'Monitors',
-        definition:
-          'Rules that watch event volume for spikes or drops and fire when behaviour deviates from what is expected for a scope.',
-        path: '/monitors',
+          'The level at which activity and anomalies are measured: the whole project, a single event type, or one event. Signals and monitors are always scoped.',
       },
       {
         term: 'Signals',
         definition:
-          'An open anomaly raised by a monitor at a given scope — the evidence that something changed and may need attention.',
-        path: '/overview',
-        surface: 'Live activity',
+          'An open anomaly at a given scope — a spike or drop tripl found in the volume. Signals are raised automatically by detection on every scan; no monitor has to exist for one to appear.',
+        path: '/anomalies',
+        surface: 'Anomalies',
+      },
+      {
+        term: 'Anomalies',
+        definition:
+          'The page that lists every open signal in the project, newest first. It is the signal inbox — the sidebar badge beside it counts the same open signals.',
+        path: '/anomalies',
+      },
+      {
+        term: 'Monitors',
+        definition:
+          'Alert rules layered on top of detection: a monitor decides which signals matter for a scope and where they are routed. A project with no monitors still raises signals — it just does not notify anyone about them.',
+        path: '/monitors',
       },
       {
         term: 'Alerting',

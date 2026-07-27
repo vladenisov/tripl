@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep
 from tripl.models.variable import Variable
@@ -12,6 +12,7 @@ from tripl.schemas.variable import (
     VariableCreate,
     VariableEventOverrideResponse,
     VariableEventOverrideUpsert,
+    VariableListResponse,
     VariableResponse,
     VariableUpdate,
     VariableValueContextResponse,
@@ -29,6 +30,9 @@ from tripl.services import (
 )
 
 router = APIRouter(prefix="/projects/{slug}/variables", tags=["variables"])
+
+DEFAULT_PAGE_SIZE = 200
+MAX_PAGE_SIZE = 5000
 
 
 @router.post("/bulk-update", status_code=204)
@@ -109,9 +113,24 @@ async def apply_value_drift_action(
     return result
 
 
-@router.get("", response_model=list[VariableResponse])
-async def list_variables(session: SessionDep, slug: str, branch_id: BranchIdDep) -> list[Variable]:
-    return await variable_service.list_variables(session, slug, branch_id)
+@router.get("", response_model=VariableListResponse)
+async def list_variables(
+    session: SessionDep,
+    slug: str,
+    branch_id: BranchIdDep,
+    offset: int = Query(0, ge=0),
+    # Ceiling sized above the largest known project's variable count so a
+    # single-page fetch stays possible; the default keeps unaware clients off
+    # the multi-hundred-KB payload.
+    limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+) -> VariableListResponse:
+    items, total = await variable_service.list_variables(
+        session, slug, branch_id, offset=offset, limit=limit
+    )
+    return VariableListResponse(
+        items=[VariableResponse.model_validate(item) for item in items],
+        total=total,
+    )
 
 
 @router.post("", response_model=VariableResponse, status_code=201)
@@ -237,17 +256,9 @@ async def delete_variable(
     current_user: EditorUserDep,
     branch_id: BranchIdDep,
 ) -> None:
-    # Look up via variable_service to enforce branch scope and yield a 404 if missing.
-    existing = next(
-        (
-            v
-            for v in await variable_service.list_variables(session, slug, branch_id)
-            if v.id == variable_id
-        ),
-        None,
-    )
-    name = existing.name if existing else ""
-    await variable_service.delete_variable(session, slug, variable_id, branch_id)
+    # The service does the branch-scoped indexed lookup, raises the 404 when the
+    # variable is missing, and hands back the name for the audit record.
+    name = await variable_service.delete_variable(session, slug, variable_id, branch_id)
     await audit_service.record(
         session,
         user=current_user,

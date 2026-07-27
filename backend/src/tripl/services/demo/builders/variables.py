@@ -25,11 +25,31 @@ from tripl.models.variable_value import VariableValue, VariableValueKind
 from tripl.models.variable_value_drift import VariableValueDrift
 from tripl.services.demo.scenario import DemoContext
 
-# (name, source_name, variable_type, description)
-_VARIABLE_SPECS: tuple[tuple[str, str, str, str], ...] = (
-    ("user_id", "user_id", "string", "Unique identifier for the authenticated user."),
-    ("session_id", "session_id", "string", "Session identifier scoped to one app launch."),
-    ("product_id", "product_id", "string", "Store product / SKU identifier."),
+# (name, source_name, variable_type, description, allowed_values)
+#
+# ``allowed_values`` is the DOCUMENTED value list the Variables table renders in
+# its "Documented values" column and the coached "Variables & value drift"
+# chapter tells the user to compare observed values against. It used to be unset
+# on every demo variable, so the column read "—" and the chapter's instruction
+# had nothing to point at (bd tripl-jfm3.56). Only the closed-vocabulary variable
+# gets one: ``user_id``/``session_id`` are unbounded identifiers, and documenting
+# a list for them would be a lie the drift detector would then act on.
+_VARIABLE_SPECS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
+    ("user_id", "user_id", "string", "Unique identifier for the authenticated user.", ()),
+    (
+        "session_id",
+        "session_id",
+        "string",
+        "Session identifier scoped to one app launch.",
+        (),
+    ),
+    (
+        "product_id",
+        "product_id",
+        "string",
+        "Store product / SKU identifier.",
+        ("prod_monthly", "prod_annual", "prod_lifetime"),
+    ),
 )
 
 
@@ -49,7 +69,7 @@ async def build_variables(session: AsyncSession, ctx: DemoContext) -> None:
 
 
 async def _build_variables(session: AsyncSession, ctx: DemoContext) -> None:
-    for name, source_name, variable_type, description in _VARIABLE_SPECS:
+    for name, source_name, variable_type, description, allowed_values in _VARIABLE_SPECS:
         var = Variable(
             project_id=ctx.project_id,
             branch_id=ctx.branch_id,
@@ -57,6 +77,7 @@ async def _build_variables(session: AsyncSession, ctx: DemoContext) -> None:
             source_name=source_name,
             variable_type=variable_type,
             description=description,
+            allowed_values=list(allowed_values),
         )
         session.add(var)
         await session.flush()

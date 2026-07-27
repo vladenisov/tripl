@@ -27,6 +27,7 @@ from tripl.models.event_tag import EventTag
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
+from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import (
     DEFAULT_SIGMA_THRESHOLD,
@@ -182,21 +183,41 @@ async def _get_project_recent_signal_windows(
     return windows
 
 
-async def _get_default_scan_config_id(
+async def _get_default_scan_config(
     session: AsyncSession,
     project_id: uuid.UUID,
-) -> uuid.UUID | None:
+) -> ScanConfig | None:
+    """The one scan config the project-scoped volume series is charted from.
+
+    Ordering is ``created_at DESC, id DESC`` — deliberately NOT ``updated_at``
+    (tripl-jfm3.21). ``updated_at`` carries ``onupdate=func.now()``, so merely
+    renaming an unrelated scan config silently re-pointed the Overview volume
+    card and the Events dynamics chart at a different scan — a 32x swing on
+    windy-ios with no change in the underlying data. ``created_at`` never moves,
+    and the ``id`` tiebreak makes the pick deterministic even when two configs
+    were created in the same microsecond (two windy-ios configs shared a
+    byte-identical timestamp, so the winner was whatever order Postgres
+    happened to return).
+    """
     result = await session.execute(
-        select(ScanConfig.id)
+        select(ScanConfig)
         .where(
             ScanConfig.project_id == project_id,
             ScanConfig.interval.isnot(None),
             ScanConfig.time_column.isnot(None),
         )
-        .order_by(ScanConfig.updated_at.desc())
+        .order_by(ScanConfig.created_at.desc(), ScanConfig.id.desc())
         .limit(1)
     )
     return result.scalar_one_or_none()
+
+
+async def _get_default_scan_config_id(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+) -> uuid.UUID | None:
+    config = await _get_default_scan_config(session, project_id)
+    return config.id if config is not None else None
 
 
 async def _resolve_scope_scan_config_id(
@@ -491,6 +512,7 @@ def _build_metrics_response(
     anomalies: list[MetricAnomaly],
     event_id: uuid.UUID | None = None,
     event_type_id: uuid.UUID | None = None,
+    scan_config_name: str | None = None,
     sigma_threshold: float = DEFAULT_SIGMA_THRESHOLD,
     recent_window: timedelta | None = None,
 ) -> EventMetricsResponse:
@@ -514,6 +536,7 @@ def _build_metrics_response(
     return EventMetricsResponse(
         scope=scope,
         scan_config_id=scan_config_id,
+        scan_config_name=scan_config_name,
         event_id=event_id,
         event_type_id=event_type_id,
         interval=interval,
@@ -1298,15 +1321,18 @@ async def get_events_metrics(
     time_to: datetime | None = None,
 ) -> EventMetricsResponse:
     project = await _resolve_project(session, slug)
-    # Scope the "All Events Dynamics" series to a single scan — the same default
+    # Scope the "<Tab> Dynamics" series to a single scan — the same default
     # scan the project-total volume sparkline resolves — rather than summing
     # EventMetric rows across every scan_config. An unscoped cross-scan sum
     # double-counts events that a legacy/backfill scan (e.g. an "Old events" scan)
     # also collected, which inflated one bucket into the outlier that dominated the
     # chart's y-axis. Mirrors get_project_total_metrics / _get_metric_rows scoping.
-    scan_config_id = await _get_default_scan_config_id(session, project.id)
-    if scan_config_id is None:
+    # The scan's identity travels with the series so the chart can NAME the scope
+    # instead of implying it covers the whole project (tripl-jfm3.20).
+    config = await _get_default_scan_config(session, project.id)
+    if config is None:
         return EventMetricsResponse(scope="events_total", data=[])
+    scan_config_id = config.id
 
     query = (
         select(EventMetric.bucket, func.sum(EventMetric.count))
@@ -1339,6 +1365,8 @@ async def get_events_metrics(
 
     return EventMetricsResponse(
         scope="events_total",
+        scan_config_id=scan_config_id,
+        scan_config_name=config.name,
         interval=interval,
         data=[EventMetricPoint(bucket=bucket, count=count) for bucket, count in rows],
     )
@@ -1350,16 +1378,29 @@ async def get_overview_kpi_series(
     *,
     days: int = 14,
 ) -> OverviewKpiSeriesResponse:
-    """Daily new-event counts (from Event.created_at) for the Overview
-    'active events' KPI sparkline — the one KPI with genuine history."""
+    """Daily NEW-event counts (from Event.created_at) for the Overview
+    'new events' KPI sparkline — the one KPI with genuine history.
+
+    Restricted to the project's main branch: Event is branch-scoped and a
+    working branch deep-copies every plan entity, so counting by project_id
+    alone multiplied the series by (1 + open branches) and made it sum past the
+    'Active events' stat beside it, which counts the main branch only
+    (tripl-jfm3.77). Mirrors project_service._get_project_summaries' scoping so
+    the sparkline and the stat describe the same plan.
+    """
     project = await _resolve_project(session, slug)
     start_day = (datetime.now(UTC) - timedelta(days=days - 1)).date()
     time_from = datetime(start_day.year, start_day.month, start_day.day, tzinfo=UTC)
+    main_branch_ids = select(PlanBranch.id).where(
+        PlanBranch.project_id == project.id,
+        PlanBranch.kind == BranchKind.main.value,
+    )
     created_ats = (
         (
             await session.execute(
                 select(Event.created_at).where(
                     Event.project_id == project.id,
+                    Event.branch_id.in_(main_branch_ids),
                     Event.created_at >= time_from,
                 )
             )
@@ -1372,7 +1413,7 @@ async def get_overview_kpi_series(
         day = created.date()
         counts[day] = counts.get(day, 0) + 1
     series = [counts.get(start_day + timedelta(days=i), 0) for i in range(days)]
-    return OverviewKpiSeriesResponse(days=days, active_events=series)
+    return OverviewKpiSeriesResponse(days=days, new_events=series)
 
 
 async def get_top_events_by_volume(
@@ -1691,6 +1732,7 @@ async def get_project_total_metrics(
     return _build_metrics_response(
         scope=SCOPE_PROJECT_TOTAL,
         scan_config_id=resolved_scan_config_id,
+        scan_config_name=config.name,
         scope_ref=str(resolved_scan_config_id),
         interval=config.interval,
         metric_rows=metric_rows,

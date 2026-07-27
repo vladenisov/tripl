@@ -157,8 +157,12 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    expect(await screen.findByText('Monitoring')).toBeInTheDocument()
-    expect(await screen.findByText('Anomaly Detection')).toBeInTheDocument()
+    // tripl-jfm3.39: one name for this surface. It used to head itself
+    // "Monitoring" while its only card called itself "Anomaly Detection" and the
+    // buttons leading here said "Detection settings" — three names, one thing.
+    expect(await screen.findByRole('heading', { name: 'Detection settings' })).toBeInTheDocument()
+    expect(await screen.findByText('Detection')).toBeInTheDocument()
+    expect(screen.queryByText('Anomaly Detection')).toBeNull()
     expect(screen.getByText('Enabled')).toBeInTheDocument()
     expect(screen.getByDisplayValue('21')).toBeInTheDocument()
     expect(screen.getByDisplayValue('9')).toBeInTheDocument()
@@ -166,7 +170,7 @@ describe('ProjectSettingsPage', () => {
     expect(screen.getByDisplayValue('25')).toBeInTheDocument()
     expect(screen.getByDisplayValue('36')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByLabelText('Toggle anomaly detection'))
+    fireEvent.click(screen.getByLabelText('Toggle signal detection'))
     fireEvent.change(screen.getByDisplayValue('4.5'), { target: { value: '5.5' } })
     fireEvent.change(screen.getByDisplayValue('36'), { target: { value: '48' } })
 

@@ -119,6 +119,12 @@ class ForecastPoint(BaseModel):
 class EventMetricsResponse(BaseModel):
     scope: str
     scan_config_id: uuid.UUID | None = None
+    # Display name of the scan config the series is scoped to. The
+    # project-total and events-total series chart ONE scan config (summing
+    # every config double-counts events a legacy/backfill scan also collected),
+    # so the UI must be able to name the scan instead of calling a 2.4 %-of-
+    # project series "project total" (tripl-jfm3.20).
+    scan_config_name: str | None = None
     event_id: uuid.UUID | None = None
     event_type_id: uuid.UUID | None = None
     interval: ScanInterval | None = None
@@ -302,11 +308,13 @@ class TopEventResponse(BaseModel):
 class OverviewKpiSeriesResponse(BaseModel):
     """Real daily series behind Overview KPI sparklines.
 
-    Only ``active_events`` (new events created per day, from Event.created_at)
-    has genuine history; other KPIs (open signals, review-pending) have no
-    time series until snapshotting is added, so they are intentionally omitted
-    rather than fabricated.
+    Only ``new_events`` (events created per day on the main branch, from
+    Event.created_at) has genuine history; other KPIs (active events, open
+    signals, review-pending) have no time series until snapshotting is added,
+    so they are intentionally omitted rather than fabricated. The field was
+    named ``active_events`` until tripl-jfm3.22 — it never held active-event
+    counts, and the Overview sparkline repeated that false claim in its label.
     """
 
     days: int
-    active_events: list[int]
+    new_events: list[int]

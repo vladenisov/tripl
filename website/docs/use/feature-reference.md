@@ -230,9 +230,14 @@ Distinct from per-event history and the workspace audit log.
 ### Live activity
 
 **Where:** Observe › Live activity (the project overview, route
-`/p/<slug>/overview`). Panels: a 14-day active-events KPI series and plan-coverage
-stat, project-total volume, top events over the last 48h, active anomaly signals,
-recent activity, and source health. A new project also shows a **Get started**
+`/p/<slug>/overview`). Panels: a 14-day **new events** KPI series (events added to
+the plan per day on the main branch — not a history of the active-events stat
+beside it) and a plan-coverage stat, a **volume** card charted from a single scan
+config and titled with that config's name, top events over the last 48h summed
+across every scan config, active anomaly signals, recent activity, and source
+health. The volume card and the Events page's "&lt;Tab&gt; Dynamics" chart both
+resolve the same default scan config — the most recently *created* one, so
+editing an unrelated scan never re-points them. A new project also shows a **Get started**
 checklist (Plan → Observe → Govern) that ticks steps off automatically from real
 project state and hides itself once you are set up. It is role-aware: connecting a
 data source is owner-only, so for an editor that step is shown as **Owner only**
@@ -343,7 +348,11 @@ settings** (route `/p/<slug>/settings/monitoring`): toggle anomaly detection,
 choose the scopes to watch (project total / event types / events / metrics), and set the
 baseline window (buckets), minimum history (buckets), sigma threshold, minimum
 expected count, and the open signal window (hours, 1–720, default 24). Scans
-honor these settings.
+honor these settings. Monitoring settings only decide what gets **flagged** —
+they never notify anyone by themselves. Notification delivery is a separate,
+fully available layer: route the resulting signals to Slack, Telegram, a webhook,
+email, Jira, or Linear under **Observe › Alerting** (see
+[Alerting rules](./alerting.md)).
 
 ### Anomalies
 
@@ -410,13 +419,19 @@ inferred), or **Dismiss** it. **Dead events** (in plan, not seen recently over a
 **Where:** Govern › Coverage (route `/p/<slug>/coverage`). A read-only
 plan-coverage overview, complementary to Reconciliation's data-match view. The
 rollup leads with **plan coverage** — the canonical share of active events that
-are implemented — alongside active, implemented, in-review, and archived counts,
-plus an implemented-vs-pending bar. An inline tooltip on the plan-coverage figure
-clarifies that it counts implemented events, not events seen in warehouse data
-(Reconciliation's data match), so the two views are not confused. **Instrumentation gaps** lists active events
-with no data in the last 30 days (the same dead-events signal Reconciliation acts
-on); each row shows the event, its type, and when it was last seen, with a link
-to Reconciliation to triage.
+are implemented — alongside active, implemented, awaiting-review, and archived
+counts, plus an implemented-vs-not-implemented bar. The bar's remainder is
+labelled "not implemented" rather than "pending" because it is the arithmetic
+remainder (active − implemented) and therefore includes draft and ready-for-dev
+events, not just the ones awaiting review. An inline tooltip on the
+plan-coverage figure clarifies that it counts implemented events, not events
+seen in warehouse data (Reconciliation's data match), so the two views are not
+confused. **Instrumentation gaps** lists **implemented and live** events with no
+data in the last 30 days (the same dead-events signal Reconciliation acts on),
+excluding events created inside that window; each row shows the event, its type,
+and when it was last seen, with a link to Reconciliation to triage. The panel
+names that basis inline, because the Events page's "Silent &gt; 30d" filter spans
+every non-archived status and therefore reports a larger total.
 
 ### Scans
 
@@ -489,7 +504,8 @@ A toggleable live panel (header label "Now") of recent activity for the project,
 or workspace-wide when no project is in scope. It shows up to 20 items of type
 `anomaly`, `scan`, `alert`, or `event`, severity-colored, auto-refreshing roughly
 every 60 seconds, with a manual refresh. A completed `scan` item summarizes what
-the run produced — new events, metric points, signals, and rows scanned — and
+the run produced — new events, metric points, **new** signals, and rows scanned;
+every figure on the card is that run's delta, not a project total — and
 reads "no new events discovered" when a run on an established catalog finds
 nothing new (which is normal, not a failure) rather than a bare "0 events".
 A burst of same-type items from one scan — for example the events a single scan

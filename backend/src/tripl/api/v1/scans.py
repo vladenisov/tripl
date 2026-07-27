@@ -2,7 +2,13 @@ import uuid
 
 from fastapi import APIRouter, Depends
 
-from tripl.api.deps import EditorUserDep, SessionDep, get_editor_user
+from tripl.api.deps import (
+    EditorUserDep,
+    OwnerUserDep,
+    SessionDep,
+    get_editor_user,
+    get_owner_user,
+)
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob
 from tripl.models.scan_preview_job import ScanPreviewJob
@@ -26,6 +32,14 @@ router = APIRouter(
     prefix="/projects/{slug}/scans",
     tags=["scans"],
 )
+# A scan config is free-text SQL pointed at a stored warehouse credential, and
+# ``base_query`` is interpolated verbatim into ``SELECT * FROM (...) AS _src``.
+# Anyone who can author or execute one can read whatever that credential can
+# read, so these routes carry the same role as the credentials themselves:
+# data sources are owner-only (api/v1/data_sources.py), and so is the SQL run
+# against them. Editors keep every read-only view of scans and their jobs, plus
+# the right to run a config an owner already authored (see ``run_scan``).
+_owner_required = [Depends(get_owner_user)]
 _editor_required = [Depends(get_editor_user)]
 
 
@@ -39,7 +53,7 @@ async def create_scan_config(
     session: SessionDep,
     slug: str,
     data: ScanConfigCreate,
-    current_user: EditorUserDep,
+    current_user: OwnerUserDep,
 ) -> ScanConfig:
     cfg = await scan_service.create_scan_config(session, slug, data)
     await audit_service.record(
@@ -59,7 +73,7 @@ async def create_scan_config(
     "/preview",
     response_model=ScanPreviewJobResponse,
     status_code=202,
-    dependencies=_editor_required,
+    dependencies=_owner_required,
 )
 async def preview_scan_config(
     session: SessionDep,
@@ -73,7 +87,7 @@ async def preview_scan_config(
 @router.get(
     "/preview-jobs/{job_id}",
     response_model=ScanPreviewJobResponse,
-    dependencies=_editor_required,
+    dependencies=_owner_required,
 )
 async def get_scan_preview_job(
     session: SessionDep,
@@ -105,7 +119,7 @@ async def update_scan_config(
     slug: str,
     scan_id: uuid.UUID,
     data: ScanConfigUpdate,
-    current_user: EditorUserDep,
+    current_user: OwnerUserDep,
 ) -> ScanConfig:
     cfg = await scan_service.update_scan_config(session, slug, scan_id, data)
     await audit_service.record(
@@ -126,7 +140,7 @@ async def delete_scan_config(
     session: SessionDep,
     slug: str,
     scan_id: uuid.UUID,
-    current_user: EditorUserDep,
+    current_user: OwnerUserDep,
 ) -> None:
     existing = await scan_service.get_scan_config(session, slug, scan_id)
     name = getattr(existing, "name", "")
@@ -146,6 +160,11 @@ async def delete_scan_config(
     "/{scan_id}/run",
     response_model=ScanJobResponse,
     status_code=201,
+    # Running a STORED config executes only SQL an owner already authored and
+    # approved, so it stays editor-level: it grants no new read of the warehouse,
+    # and the agent API / MCP server drive it with editor-scoped API keys
+    # (mcp-server/src/tripl_mcp/tools/scans.py:27). Authoring and previewing —
+    # where the free-text SQL actually comes from — remain owner-only above.
     dependencies=_editor_required,
 )
 async def run_scan(session: SessionDep, slug: str, scan_id: uuid.UUID) -> ScanJob:
@@ -161,7 +180,7 @@ async def apply_scan_event_groups(
     session: SessionDep,
     slug: str,
     scan_id: uuid.UUID,
-    current_user: EditorUserDep,
+    current_user: OwnerUserDep,
 ) -> ScanJob:
     job = await scan_service.trigger_event_groups_apply(session, slug, scan_id)
     cfg = await scan_service.get_scan_config(session, slug, scan_id)
@@ -182,7 +201,7 @@ async def apply_scan_event_groups(
     "/{scan_id}/metrics/replay",
     response_model=ScanJobResponse,
     status_code=201,
-    dependencies=_editor_required,
+    dependencies=_owner_required,
 )
 async def replay_scan_metrics(
     session: SessionDep,

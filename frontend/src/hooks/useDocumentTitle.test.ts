@@ -61,8 +61,30 @@ describe('resolveTitleFromPath', () => {
     expect(resolveTitleFromPath('/p/acme/overview')).toEqual({ label: 'Live activity', slug: 'acme' })
     // A bare project path lands on Events (the default surface).
     expect(resolveTitleFromPath('/p/acme')).toEqual({ label: 'Events', slug: 'acme' })
-    // An unknown surface falls back to Events but keeps the slug.
-    expect(resolveTitleFromPath('/p/acme/unknown')).toEqual({ label: 'Events', slug: 'acme' })
+  })
+
+  it('names an unmatched project sub-path as not-found while keeping the slug', () => {
+    // tripl-jfm3.3: `/p/acme/<no-such-surface>` renders the 404 page, so the tab
+    // must say so instead of inheriting the Events label. The slug is still
+    // valid, so the project keeps naming the tab.
+    expect(resolveTitleFromPath('/p/acme/this-route-does-not-exist')).toEqual({
+      label: 'Page not found',
+      slug: 'acme',
+    })
+    expect(resolveTitleFromPath('/p/acme/scans')).toEqual({
+      label: 'Page not found',
+      slug: 'acme',
+    })
+  })
+
+  it('keeps redirect-only surfaces on a real label so they never flash not-found', () => {
+    expect(resolveTitleFromPath('/p/acme/alerting')).toEqual({ label: 'Alerting', slug: 'acme' })
+    expect(resolveTitleFromPath('/p/acme/fact-tables')).toEqual({
+      label: 'Fact tables',
+      slug: 'acme',
+    })
+    expect(resolveTitleFromPath('/data-sources')).toEqual({ label: 'Data sources' })
+    expect(resolveTitleFromPath('/account')).toEqual({ label: 'Profile' })
   })
 
   it('labels a sub-surface that is its own destination rather than its parent surface', () => {
@@ -130,10 +152,13 @@ describe('resolveTitleFromPath', () => {
     expect(resolveTitleFromPath('/settings')).toEqual({ label: 'Settings' })
   })
 
-  it('labels auth, workspace and the root, and yields a blank label for unknown paths', () => {
+  it('labels auth, workspace and the root, and names unmatched paths not-found', () => {
     expect(resolveTitleFromPath('/auth')).toEqual({ label: 'Sign in' })
     expect(resolveTitleFromPath('/')).toEqual({ label: 'Workspace' })
     expect(resolveTitleFromPath('/workspace')).toEqual({ label: 'Workspace' })
-    expect(resolveTitleFromPath('/nope')).toEqual({ label: '' })
+    expect(resolveTitleFromPath('/nope')).toEqual({ label: 'Page not found' })
+    expect(buildDocumentTitle(resolveTitleFromPath('/nope').label)).toBe(
+      `Page not found${SEP}tripl`,
+    )
   })
 })

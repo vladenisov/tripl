@@ -8,6 +8,14 @@ from pydantic_settings import BaseSettings
 # secrets — refuse to start. See the `*_url` defaults below.
 _DEV_CREDENTIAL_MARKERS = ("tripl:tripl", "guest:guest")
 
+# Self-service registration modes for ``Settings.registration_mode``.
+# "open"     — anyone who can reach the instance may create an account.
+# "disabled" — POST /auth/register is refused (403), except for the
+#              first-owner bootstrap on an instance with no users yet.
+REGISTRATION_OPEN = "open"
+REGISTRATION_DISABLED = "disabled"
+REGISTRATION_MODES = (REGISTRATION_OPEN, REGISTRATION_DISABLED)
+
 
 class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://tripl:tripl@localhost:5432/tripl"
@@ -68,6 +76,16 @@ class Settings(BaseSettings):
     # attacker-controlled, so trusting it on a directly-exposed API lets an
     # unauthenticated caller rotate it per request to bypass the limit entirely.
     rate_limit_trust_forwarded_for: bool = False
+
+    # Self-service registration. One of REGISTRATION_MODES. Defaults to
+    # "disabled" (fail closed): a tripl instance holds warehouse credentials and
+    # the whole workspace's tracking plan, so an instance reachable from the
+    # internet must never hand out accounts by accident. The first-owner
+    # bootstrap on an EMPTY instance is exempt, so a fresh install still works
+    # out of the box; an owner then flips this to "open" (env REGISTRATION_MODE
+    # or Settings -> Security, which takes effect immediately) while teammates
+    # sign up, and back to "disabled" afterwards.
+    registration_mode: str = REGISTRATION_DISABLED
 
     # Event photo uploads. Backend can be "local" (filesystem) or "gcs"
     # (Google Cloud Storage). Local files are served through an authenticated
@@ -173,6 +191,17 @@ class Settings(BaseSettings):
     @classmethod
     def _normalize_log_level(cls, value: str) -> str:
         return value.upper().strip()
+
+    @field_validator("registration_mode")
+    @classmethod
+    def _normalize_registration_mode(cls, value: str) -> str:
+        # Fail fast on a typo'd REGISTRATION_MODE rather than silently treating
+        # an unknown value as one mode or the other.
+        normalized = value.strip().lower()
+        if normalized not in REGISTRATION_MODES:
+            msg = f"registration_mode must be one of {', '.join(REGISTRATION_MODES)}"
+            raise ValueError(msg)
+        return normalized
 
     def cors_origins(self) -> list[str]:
         """Resolve effective CORS origin allow-list.

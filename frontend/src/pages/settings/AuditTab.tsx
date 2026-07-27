@@ -196,8 +196,12 @@ export function AuditTab({ slug }: { slug: string }) {
               </div>
             </div>
             <div className="col-span-6 sm:col-span-2 grid gap-1">
+              {/* No format hint: these are native <input type="date"> controls,
+                  which render and parse in the browser's own locale (mm/dd/yyyy
+                  on a US profile). A hard-coded "(YYYY-MM-DD)" contradicted what
+                  the control actually showed (tripl-jfm3.37). */}
               <Label htmlFor="audit-since" className="text-[11px] text-muted-foreground">
-                From <span className="opacity-70">(YYYY-MM-DD)</span>
+                From
               </Label>
               <Input
                 id="audit-since"
@@ -209,7 +213,7 @@ export function AuditTab({ slug }: { slug: string }) {
             </div>
             <div className="col-span-6 sm:col-span-2 grid gap-1">
               <Label htmlFor="audit-until" className="text-[11px] text-muted-foreground">
-                To <span className="opacity-70">(YYYY-MM-DD)</span>
+                To
               </Label>
               <Input
                 id="audit-until"

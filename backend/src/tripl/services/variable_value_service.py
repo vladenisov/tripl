@@ -18,6 +18,10 @@ from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.variable_value_drift_service import get_open_drift_counts
 
 SUMMARY_VALUE_LIMIT = 20
+# Event names shipped inline on the list row. The row only renders a preview
+# list (``event_count`` carries the true total), so a cap keeps a variable used
+# by hundreds of events from dominating the paged payload.
+SUMMARY_EVENT_LIMIT = 20
 
 
 def _extend_unique(target: list[str], values: Iterable[str], *, limit: int) -> None:
@@ -39,18 +43,24 @@ async def attach_variable_summaries(
     if not variable_ids:
         return
 
+    # Joined to Event so the row's event-name preview ships with the list
+    # instead of costing the client one /values request per variable.
     rows = await session.execute(
-        select(VariableValue).where(VariableValue.variable_id.in_(variable_ids))
+        select(VariableValue, Event.name)
+        .join(Event, VariableValue.event_id == Event.id)
+        .where(VariableValue.variable_id.in_(variable_ids))
     )
-    contexts = list(rows.scalars().all())
+    contexts = rows.all()
     event_ids_by_variable: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
+    event_names_by_variable: dict[uuid.UUID, set[str]] = defaultdict(set)
     context_counts: dict[uuid.UUID, int] = defaultdict(int)
     low_counts: dict[uuid.UUID, int] = defaultdict(int)
     high_counts: dict[uuid.UUID, int] = defaultdict(int)
     sample_values: dict[uuid.UUID, list[str]] = defaultdict(list)
 
-    for context in contexts:
+    for context, event_name in contexts:
         event_ids_by_variable[context.variable_id].add(context.event_id)
+        event_names_by_variable[context.variable_id].add(event_name)
         context_counts[context.variable_id] += 1
         if context.value_kind == VariableValueKind.low.value:
             low_counts[context.variable_id] += 1
@@ -71,6 +81,8 @@ async def attach_variable_summaries(
         variable.high_context_count = high_counts.get(variable.id, 0)  # type: ignore[attr-defined]
         variable.sample_values = sample_values.get(variable.id, [])  # type: ignore[attr-defined]
         variable.open_drift_count = drift_counts.get(variable.id, 0)  # type: ignore[attr-defined]
+        event_names = sorted(event_names_by_variable.get(variable.id, set()))
+        variable.event_names = event_names[:SUMMARY_EVENT_LIMIT]  # type: ignore[attr-defined]
 
 
 async def list_variable_values(

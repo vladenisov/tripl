@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from tripl.core.adapters.measure_validator import validate_select_sql_safety
 from tripl.core.intervals import get_interval
 from tripl.json_paths import normalize_json_value_paths
 from tripl.models.domain_enums import ScanInterval
@@ -139,6 +140,11 @@ class ScanConfigCreate(BaseModel):
     app_version_active_share_min: float | None = Field(default=None, gt=0.0, lt=1.0)
     platform_column: str | None = Field(default=None, min_length=1, max_length=255)
 
+    @field_validator("base_query")
+    @classmethod
+    def validate_base_query(cls, value: str) -> str:
+        return validate_select_sql_safety(value)
+
     @field_validator("json_value_paths")
     @classmethod
     def validate_json_value_paths(cls, value: list[str]) -> list[str]:
@@ -228,6 +234,11 @@ class ScanConfigUpdate(BaseModel):
     app_version_active_share_min: float | None = Field(default=None, gt=0.0, lt=1.0)
     platform_column: str | None = Field(default=None, max_length=255)
 
+    @field_validator("base_query")
+    @classmethod
+    def validate_base_query(cls, value: str | None) -> str | None:
+        return value if value is None else validate_select_sql_safety(value)
+
     @field_validator("json_value_paths")
     @classmethod
     def validate_json_value_paths(cls, value: list[str] | None) -> list[str] | None:
@@ -315,6 +326,11 @@ class ScanConfigPreviewRequest(BaseModel):
     scan_lookback_hours: int | None = Field(default=None, ge=1)
     # When true, run the slow JSON path discovery instead of the fast preview.
     include_json_paths: bool = False
+
+    @field_validator("base_query")
+    @classmethod
+    def validate_base_query(cls, value: str) -> str:
+        return validate_select_sql_safety(value)
 
     @field_validator("json_value_paths")
     @classmethod

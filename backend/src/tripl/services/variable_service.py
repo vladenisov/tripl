@@ -2,7 +2,7 @@ import re
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.event import Event
@@ -26,6 +26,10 @@ from tripl.services.variable_value_service import attach_variable_summaries
 # Strict name for NEW names (create + actual renames). Legacy scan-created
 # dotted names stay valid as long as they are not being changed.
 _STRICT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+
+# Page size used when a caller does not pass one; mirrors the router default so
+# service-level callers get the same bounded read as HTTP clients.
+DEFAULT_LIST_LIMIT = 200
 
 
 async def _check_binding_conflicts(
@@ -63,18 +67,28 @@ async def _check_binding_conflicts(
 
 
 async def list_variables(
-    session: AsyncSession, slug: str, branch_id: uuid.UUID | None = None
-) -> list[Variable]:
+    session: AsyncSession,
+    slug: str,
+    branch_id: uuid.UUID | None = None,
+    *,
+    offset: int = 0,
+    limit: int = DEFAULT_LIST_LIMIT,
+) -> tuple[list[Variable], int]:
+    """One page of the project's variables plus the untruncated total.
+
+    Paging bounds ``attach_variable_summaries`` too: it only ever fans out over
+    the ids on the page, never the whole project.
+    """
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
+    scope = (Variable.project_id == project_id, Variable.branch_id == branch_id)
+    total = await session.scalar(select(func.count(Variable.id)).where(*scope)) or 0
     result = await session.execute(
-        select(Variable)
-        .where(Variable.project_id == project_id, Variable.branch_id == branch_id)
-        .order_by(Variable.name)
+        select(Variable).where(*scope).order_by(Variable.name).offset(offset).limit(limit)
     )
     variables = list(result.scalars().all())
     await attach_variable_summaries(session, variables)
-    return variables
+    return variables, total
 
 
 async def create_variable(
@@ -189,22 +203,21 @@ async def delete_variable(
     slug: str,
     variable_id: uuid.UUID,
     branch_id: uuid.UUID | None = None,
-) -> None:
+) -> str:
+    """Delete one branch-scoped variable and return the name it had.
+
+    Returning the name lets the caller write its audit record without a second
+    lookup — the indexed (id, project_id, branch_id) read below is the only one
+    the delete path needs.
+    """
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
-    result = await session.execute(
-        select(Variable).where(
-            Variable.id == variable_id,
-            Variable.project_id == project_id,
-            Variable.branch_id == branch_id,
-        )
-    )
-    var = result.scalar_one_or_none()
-    if not var:
-        raise HTTPException(status_code=404, detail="Variable not found")
+    var = await _get_variable_in_branch(session, project_id, branch_id, variable_id)
+    name = var.name
     await session.delete(var)
     await session.commit()
     await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
+    return name
 
 
 async def _load_variables_by_ids(

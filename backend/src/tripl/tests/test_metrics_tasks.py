@@ -1764,8 +1764,11 @@ def test_collect_metrics_recalculates_and_clears_metric_anomalies(
 
     monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
     monkeypatch.setattr(metrics, "_build_adapter", lambda ds: FakeAdapter())
+    # The window head is held back by ANOMALY_INGESTION_SETTLING (tripl-jfm3.7),
+    # so end it two buckets PAST the hour-10 drop for that drop to be settled and
+    # scored on this run rather than deferred to the next one.
     monkeypatch.setattr(
-        metrics, "_floor_to_interval", lambda dt, delta: _ANOMALY_BASE + timedelta(hours=11)
+        metrics, "_floor_to_interval", lambda dt, delta: _ANOMALY_BASE + timedelta(hours=13)
     )
     monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
 
@@ -1888,8 +1891,10 @@ def test_collect_metrics_queues_alert_deliveries(
 
     monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
     monkeypatch.setattr(metrics, "_build_adapter", lambda ds: FakeAdapter())
+    # Two buckets of head-room for the ingestion-settling allowance; see
+    # test_collect_metrics_recalculates_and_clears_metric_anomalies.
     monkeypatch.setattr(
-        metrics, "_floor_to_interval", lambda dt, delta: _ANOMALY_BASE + timedelta(hours=11)
+        metrics, "_floor_to_interval", lambda dt, delta: _ANOMALY_BASE + timedelta(hours=13)
     )
     monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
     monkeypatch.setattr(
@@ -4649,3 +4654,198 @@ def test_covered_buckets_from_scan_jobs_unions_completed_windows(
     assert base + delta * 2 in covered
     assert base + delta * 5 not in covered  # failed job window is not coverage
     assert base + delta * 10 in covered  # the current run's window is always covered
+
+
+def test_recalculate_metric_anomalies_withholds_still_filling_head_of_window(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """tripl-jfm3.7: the collection window ends at the last COMPLETE clock hour,
+    but the warehouse is still delivering that hour. With no allowance the
+    zero-filled newest bucket is scored and reads as a drop; a 2h ingestion
+    allowance holds the newest two buckets back for a later scan to score."""
+    from tripl.worker.tasks.metrics.detect import _recalculate_metric_anomalies
+
+    base = _ANOMALY_BASE
+    eval_start = base
+    eval_end = base + timedelta(hours=11)  # hour 10 has no rows yet
+    covered = {base + timedelta(hours=hour) for hour in range(11)}
+    with sync_session_factory() as session:
+        config, _event_type, _event = _seed_anomaly_scan_state(session, base=base)
+
+        scored_immediately = _recalculate_metric_anomalies(
+            session,
+            config,
+            evaluation_start=eval_start,
+            evaluation_end=eval_end,
+            covered_buckets=covered,
+        )
+        session.commit()
+
+        withheld = _recalculate_metric_anomalies(
+            session,
+            config,
+            evaluation_start=eval_start,
+            evaluation_end=eval_end,
+            covered_buckets=covered,
+            settling_delay=timedelta(hours=2),
+        )
+        session.commit()
+
+        remaining = (
+            session.execute(select(MetricAnomaly).where(MetricAnomaly.scan_config_id == config.id))
+            .scalars()
+            .all()
+        )
+
+    assert scored_immediately > 0  # today's behavior: the still-filling bucket flags
+    assert withheld == 0
+    assert remaining == []  # and the row the unsettled pass wrote is cleared
+
+
+def test_collect_metrics_applies_the_ingestion_settling_allowance(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The scan orchestrator owns the settling policy: both anomaly recalculation
+    entrypoints must receive it, or the newest bucket is scored while the
+    warehouse is still filling it (tripl-jfm3.7)."""
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.event_type_id is not None
+        event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Login",
+            description="",
+            status="implemented",
+        )
+        session.add(event)
+        session.commit()
+        config_id = str(config.id)
+        event_id = event.id
+
+    class FakeAdapter:
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            return (["event_name"], [], [(datetime(2026, 1, 1, 10), "Login", 12)])
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: FakeAdapter())
+    monkeypatch.setattr(
+        metrics,
+        "_resolve_collection_window",
+        lambda *args, **kwargs: (datetime(2026, 1, 1, 10), datetime(2026, 1, 1, 11), False),
+    )
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+
+    def fake_generate_events(*args: object, **kwargs: object) -> GenerationResult:
+        with sync_session_factory() as session:
+            persisted_event = session.get(Event, event_id)
+            assert persisted_event is not None
+            return GenerationResult(
+                columns_analyzed=1,
+                col_meta={"event_name": {"is_json": False, "is_low": True}},
+                events_by_name={"event_name=Login": persisted_event},
+            )
+
+    monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
+
+    seen: dict[str, object] = {}
+
+    def capture(name: str) -> object:
+        def _recalculate(*args: object, **kwargs: object) -> int:
+            seen[name] = kwargs.get("settling_delay")
+            return 0
+
+        return _recalculate
+
+    monkeypatch.setattr(metrics, "_recalculate_metric_anomalies", capture("anomalies"))
+    monkeypatch.setattr(metrics, "_recalculate_metric_breakdown_anomalies", capture("breakdown"))
+
+    metrics.collect_metrics.run(config_id)
+
+    assert metrics.ANOMALY_INGESTION_SETTLING.total_seconds() > 0
+    assert seen == {
+        "anomalies": metrics.ANOMALY_INGESTION_SETTLING,
+        "breakdown": metrics.ANOMALY_INGESTION_SETTLING,
+    }
+
+
+def test_grouped_event_type_lookup_is_scoped_to_the_main_plan(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Grouped collection must attribute volume to the MAIN plan's event types.
+
+    A working branch deep-copies event types under the same names. Before
+    tripl-jfm3.72 the lookup was keyed by name with no branch filter, so the
+    branch copy won the dict: the main-branch series stopped at the last write
+    (the detector then read it as "dropped to zero") and buckets carrying rows
+    from both branches double-counted.
+    """
+    from tripl.models.plan_branch import BranchKind, PlanBranch
+    from tripl.worker.tasks.metrics.tasks import main_plan_event_types_by_name
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        main = PlanBranch(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            name="main",
+            kind=BranchKind.main.value,
+        )
+        feature = PlanBranch(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            name="feature/checkout-funnel",
+            kind=BranchKind.working.value,
+        )
+        session.add_all([main, feature])
+        session.flush()
+
+        main_type = EventType(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            branch_id=main.id,
+            name="Purchase",
+            display_name="Purchase",
+            description="",
+        )
+        # Same name, different branch — the deep copy a working branch makes.
+        branch_type = EventType(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            branch_id=feature.id,
+            name="Purchase",
+            display_name="Purchase",
+            description="",
+        )
+        session.add_all([main_type, branch_type])
+        session.commit()
+
+        by_name = main_plan_event_types_by_name(session, config.project_id)
+
+        assert by_name["Purchase"].id == main_type.id
+        assert branch_type.id not in {et.id for et in by_name.values()}

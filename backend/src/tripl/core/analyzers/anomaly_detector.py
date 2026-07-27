@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from math import sqrt
+from math import ceil, sqrt
 from statistics import fmean, median
 
 import numpy as np
@@ -77,6 +77,21 @@ _FRACTIONAL_STDDEV_FLOOR_EPSILON = 1e-9
 # detector (tripl-dmch.17), so a smooth ratio ramp surfaces as one trend row
 # instead of a flag on every rung.
 _MONOTONIC_TREND_MIN_RUN = 4
+
+
+def settling_buckets_for(interval: timedelta, delay: timedelta) -> int:
+    """Trailing buckets to withhold from anomaly emission for an ingestion ``delay``.
+
+    A warehouse keeps delivering rows for a bucket well after that bucket's clock
+    interval closes, so the newest bucket(s) of a freshly collected series read
+    low purely because the scan ran early (tripl-jfm3.7). ``delay`` is the
+    wall-clock allowance the operator gives ingestion; this converts it to whole
+    buckets of the series' own grid (rounding up, so any positive allowance
+    withholds at least one bucket).
+    """
+    if delay <= timedelta(0) or interval <= timedelta(0):
+        return 0
+    return ceil(delay / interval)
 
 
 def _fractional_stddev_floor(counts: Sequence[float]) -> float:
@@ -323,25 +338,46 @@ def _rolling_anomaly_at(
     )
 
 
-def _seasonal_factors(counts: list[float], idx: int, period: int) -> tuple[list[float], float]:
+def _phase_level_window(interval: timedelta, period: int) -> int:
+    """Trailing window (in buckets) whose mean defines "the current level".
+
+    The re-leveled phase expectation is ``median(factors) * current_level``. When
+    ``current_level`` averages the FULL phase period, an hour-of-week baseline
+    (period 168) anchors the expectation to a 7-DAY trailing mean, so a step
+    change takes ~a week to be absorbed and the same incident is re-announced
+    every hour for days (tripl-jfm3.46). Averaging over the SHORTEST seasonal
+    cycle instead (a day, for hourly data) keeps the level phase-independent — it
+    still spans one whole cycle, so every phase sees the same level — while
+    converging on a sustained shift within that single cycle.
+    """
+    candidates = _PHASE_PERIODS_BY_INTERVAL_SECONDS.get(int(interval.total_seconds()), ())
+    return min(period, min(candidates)) if candidates else period
+
+
+def _seasonal_factors(
+    counts: list[float], idx: int, period: int, level_window: int
+) -> tuple[list[float], float]:
     """Level-normalized seasonal factors for ``idx``'s phase, and the current level.
 
     Each prior same-phase count is divided by the mean level of its own trailing
-    cycle, yielding a factor that captures the seasonal SHAPE at this phase
-    independent of the overall level. ``current_level`` is the mean of the
-    trailing full cycle immediately before ``idx``. Multiplying the median factor
-    by ``current_level`` gives a seasonal expectation that tracks a sustained
-    level shift instead of lagging it for ~1.5 cycles (tripl-w0ay). Cycles whose
-    level is 0 (all-zero history) contribute no factor.
+    ``level_window`` buckets, yielding a factor that captures the seasonal SHAPE
+    at this phase independent of the overall level. ``current_level`` is the mean
+    of the trailing ``level_window`` buckets immediately before ``idx`` — the
+    same window, so numerator and denominator stay consistent. Multiplying the
+    median factor by ``current_level`` gives a seasonal expectation that tracks a
+    sustained level shift instead of lagging it (tripl-w0ay); see
+    ``_phase_level_window`` for why the window is one SHORT cycle rather than the
+    full phase period. Cycles whose level is 0 (all-zero history) contribute no
+    factor.
     """
     same_phase = [j for j in range(idx) if j % period == idx % period]
     factors: list[float] = []
     for j in same_phase:
-        cycle = counts[max(0, j - period + 1) : j + 1]
+        cycle = counts[max(0, j - level_window + 1) : j + 1]
         level = fmean(cycle) if cycle else 0.0
         if level > 0:
             factors.append(counts[j] / level)
-    current_cycle = counts[max(0, idx - period) : idx]
+    current_cycle = counts[max(0, idx - level_window) : idx]
     current_level = fmean(current_cycle) if current_cycle else 0.0
     return factors, current_level
 
@@ -353,6 +389,7 @@ def _phase_anomaly_at(
     period: int,
     settings: AnomalyDetectionSettings,
     *,
+    level_window: int,
     stddev_absolute_floor: float = 1.0,
     poisson: bool = False,
     kind: str = "phase",
@@ -368,13 +405,13 @@ def _phase_anomaly_at(
     every bucket for ~1.5 cycles. Normalizing each same-phase count by its own
     cycle level and re-applying the median factor to the current level tracks the
     shift, while a genuine one-bucket spike still stands out (the current level,
-    a trailing full cycle, barely moves). Degenerate all-zero history falls back
-    to the raw same-phase median, so brand-new series behave as before."""
+    a trailing full short cycle, barely moves). Degenerate all-zero history falls
+    back to the raw same-phase median, so brand-new series behave as before."""
     same_phase = [counts[j] for j in range(idx) if j % period == idx % period]
     if not same_phase:
         return None
 
-    factors, current_level = _seasonal_factors(counts, idx, period)
+    factors, current_level = _seasonal_factors(counts, idx, period, level_window)
     if factors and current_level > 0:
         expected_count = median(factors) * current_level
         scale = _robust_scale(factors) * current_level
@@ -408,6 +445,20 @@ def _phase_anomaly_at(
     )
 
 
+@dataclass(frozen=True)
+class TrendShiftResult:
+    """Trend-shift rows to persist, plus every bucket the shift spans.
+
+    ``shifted_buckets`` covers the whole contiguous run — including the buckets
+    no row is emitted for. ``detect_anomalies`` uses it to suppress the
+    per-bucket rows that would otherwise re-announce one level change bucket
+    after bucket (tripl-jfm3.46).
+    """
+
+    anomalies: list[DetectedAnomaly]
+    shifted_buckets: frozenset[datetime]
+
+
 def _detect_trend_shift(
     expanded: list[SeriesPoint],
     components: tuple[list[float], list[float], list[float]],
@@ -416,7 +467,8 @@ def _detect_trend_shift(
     settings: AnomalyDetectionSettings,
     interval: timedelta,
     stddev_absolute_floor: float = 1.0,
-) -> list[DetectedAnomaly]:
+    emission_end: datetime | None = None,
+) -> TrendShiftResult:
     """Catch slow/sustained level drifts the per-bucket phase baseline absorbs.
 
     Operates purely on the *deseasonalized* trend component, so it can never be
@@ -426,22 +478,28 @@ def _detect_trend_shift(
     trend, seasonal, residuals = components
     period = _select_phase_period(interval, len(expanded) - 1)
     if period is None:
-        return []
+        return TrendShiftResult(anomalies=[], shifted_buckets=frozenset())
 
     anomalies: list[DetectedAnomaly] = []
+    shifted_buckets: set[datetime] = set()
     # A sustained shift spans many buckets; we collapse each contiguous shifted
-    # run into a SINGLE row instead of emitting one per bucket. The flag resets
-    # whenever a bucket is not shifted (run break) and is set only on an actual
-    # emission, so a run that began before ``evaluation_start`` still surfaces
-    # exactly once — at its first bucket inside the evaluation window.
-    emitted_current_run = False
+    # run into a SINGLE row anchored at the run's FIRST shifted bucket, and a run
+    # that started before ``evaluation_start`` is not re-emitted at all. Anchoring
+    # at the true start is what makes the collapse survive ACROSS scans: the
+    # evaluation window slides forward one bucket per run and ``_replace_scope_
+    # anomalies`` only deletes inside it, so a window-anchored row landed one
+    # bucket further along every run and the incident accumulated one row per
+    # scan (tripl-jfm3.47). Anchored at the true start, every run rewrites the
+    # same row until the start leaves the window, then leaves it frozen there —
+    # one incident, one row, dated when it began.
+    run_start_idx: int | None = None
     for idx, point in enumerate(expanded):
         if idx < period:
             continue
 
         pre_shift_level = trend[idx - period]
         if trend[idx] < settings.min_expected_count:
-            emitted_current_run = False
+            run_start_idx = None
             continue
 
         window_start = max(0, idx - period)
@@ -464,18 +522,29 @@ def _detect_trend_shift(
             and relative_change >= _TREND_MIN_RELATIVE_SHIFT
         )
         if not is_shifted:
-            emitted_current_run = False
+            run_start_idx = None
             continue
 
-        # Shifted bucket. Skip if outside the evaluation window or if this run has
-        # already been surfaced, so a multi-bucket drift yields a single anomaly.
-        if point.bucket < evaluation_start or emitted_current_run:
+        shifted_buckets.add(point.bucket)
+        if run_start_idx is None:
+            run_start_idx = idx
+        # Only the run's first bucket is a candidate row, and only when that
+        # start falls inside the settled part of the evaluation window.
+        if idx != run_start_idx or point.bucket < evaluation_start:
             continue
-        emitted_current_run = True
+        if emission_end is not None and point.bucket >= emission_end:
+            continue
 
         # Reconstruct what this bucket would have been without the level shift so
         # the surfaced expected_count stays interpretable per bucket.
         expected_count = max(pre_shift_level + seasonal[idx], 0.0)
+        # The volume gate above tests the deseasonalized trend, but the quantity
+        # we PERSIST as expected_count is this per-bucket reconstruction — a
+        # different number that can sit below the floor the project configured,
+        # so a signal could surface claiming an expectation under the user's
+        # min_expected_count (tripl-jfm3.48). Gate the reported value too.
+        if expected_count < settings.min_expected_count:
+            continue
         # Direction is derived from the ACTUAL point vs the reconstructed
         # expected level, not from the sign of the trend z-score (tripl-dmch.11).
         # The z-score is computed on the deseasonalized trend delta, which can
@@ -495,7 +564,7 @@ def _detect_trend_shift(
             )
         )
 
-    return anomalies
+    return TrendShiftResult(anomalies=anomalies, shifted_buckets=frozenset(shifted_buckets))
 
 
 def _merge_anomalies(*anomaly_lists: list[DetectedAnomaly]) -> list[DetectedAnomaly]:
@@ -571,6 +640,28 @@ def _present_series(
     ]
 
 
+def _emission_end(
+    expanded: list[SeriesPoint],
+    *,
+    evaluation_end: datetime,
+    settling_buckets: int,
+) -> datetime:
+    """First bucket that is still settling; rows at or after it are held back.
+
+    Indexed off the END OF THE ANALYZED SERIES rather than off the grid slot
+    ``evaluation_end - settling * interval``. The two agree for a zero-filled
+    count series, but a sparse fractional series (e.g. a 1d ratio whose newest
+    bucket is still missing the inputs that define it, tripl-jfm3.6) has its
+    newest PRESENT bucket held back even when that bucket already sits several
+    slots behind the grid's last one.
+    """
+    if settling_buckets <= 0:
+        return evaluation_end
+    if len(expanded) <= settling_buckets:
+        return expanded[0].bucket
+    return expanded[-settling_buckets].bucket
+
+
 def detect_anomalies(
     points: list[SeriesPoint],
     *,
@@ -580,6 +671,7 @@ def detect_anomalies(
     settings: AnomalyDetectionSettings,
     fill_gaps: bool = True,
     covered_buckets: set[datetime] | None = None,
+    settling_buckets: int = 0,
 ) -> list[DetectedAnomaly]:
     """Hybrid detector.
 
@@ -603,6 +695,14 @@ def detect_anomalies(
     of zero-filled, so a collection gap does not manufacture a "drop" (only
     meaningful for the ``fill_gaps`` count path). When ``None`` the behavior is
     unchanged.
+
+    ``settling_buckets`` (tripl-jfm3.7) withholds the newest N buckets of the
+    series from EMISSION. They stay in the series — baselines, charts and the
+    stored metric values are unaffected — only their scoring is deferred to the
+    next scan, by which time the warehouse has finished delivering them. Without
+    it a bucket that is merely half-delivered reads as a drop that disappears 40
+    minutes later. Use ``settling_buckets_for`` to convert an operator's
+    wall-clock ingestion allowance into a bucket count.
     """
     if fill_gaps:
         expanded = expand_series(
@@ -616,6 +716,9 @@ def detect_anomalies(
     if not expanded:
         return []
 
+    emission_end = _emission_end(
+        expanded, evaluation_end=evaluation_end, settling_buckets=settling_buckets
+    )
     is_count_shaped = fill_gaps
     counts = [point.count for point in expanded]
 
@@ -646,7 +749,7 @@ def detect_anomalies(
     has_phase_period = False
 
     for idx, point in enumerate(expanded):
-        if point.bucket < evaluation_start:
+        if point.bucket < evaluation_start or point.bucket >= emission_end:
             continue
 
         # Fractional series: a bucket riding a smooth sustained ramp is a trend,
@@ -665,6 +768,7 @@ def detect_anomalies(
                 point,
                 period,
                 settings,
+                level_window=_phase_level_window(interval, period),
                 stddev_absolute_floor=stddev_absolute_floor,
                 poisson=is_count_shaped,
                 kind=per_bucket_kind,
@@ -690,15 +794,24 @@ def detect_anomalies(
     if components is None:
         return _merge_anomalies(primary)
 
-    trend_anomalies = _detect_trend_shift(
+    trend = _detect_trend_shift(
         expanded,
         components,
         evaluation_start=evaluation_start,
         settings=settings,
         interval=interval,
         stddev_absolute_floor=stddev_absolute_floor,
+        emission_end=emission_end,
     )
-    return _merge_anomalies(primary, trend_anomalies)
+    # Every bucket inside a shifted run describes the SAME incident as the single
+    # trend row anchored at that run's start, so its per-bucket row is dropped
+    # rather than merged (tripl-jfm3.46). Without this a sustained level change
+    # keeps clearing the per-bucket sigma bar for as long as the baseline takes
+    # to re-level, and the incident re-enters the signal list every scan.
+    settled_primary = [
+        anomaly for anomaly in primary if anomaly.bucket not in trend.shifted_buckets
+    ]
+    return _merge_anomalies(settled_primary, trend.anomalies)
 
 
 def forecast_next_buckets(

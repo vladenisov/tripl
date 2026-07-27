@@ -215,6 +215,15 @@ async def retry_delivery(
 
     # Deferred import to avoid pulling the worker task graph into the API
     # process at module load (matches scan_service's dispatch sites).
+    #
+    # The celery app is imported FIRST because that graph is cyclic: the app
+    # module imports every task module, and ``tasks.metrics`` re-exports this
+    # very task from ``tasks.alerts``. Entering at ``tasks.alerts`` in a process
+    # that has not loaded the app yet therefore lands mid-cycle and raises
+    # ImportError, 500ing the retry. Entering at the app loads the task modules
+    # in their registration order instead. Reachable since the demo started
+    # seeding a failed delivery for Retry to act on (tripl-jfm3.59).
+    import tripl.worker.celery_app  # noqa: F401
     from tripl.worker.tasks.alerts import send_alert_delivery
 
     send_alert_delivery.delay(str(delivery_id))

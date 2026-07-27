@@ -26,8 +26,8 @@ export function SHeader({
   actions?: ReactNode
 }) {
   return (
-    <div className="mb-7 flex items-start gap-4">
-      <div className="min-w-0 flex-1">
+    <div className="mb-7 flex flex-wrap items-start gap-4">
+      <div className="min-w-0 flex-1 basis-60">
         <h1 className="m-0 text-[21px] font-semibold tracking-[-0.015em]">{title}</h1>
         {description && (
           <p
@@ -38,7 +38,7 @@ export function SHeader({
           </p>
         )}
       </div>
-      {actions && <div className="flex shrink-0 gap-2">{actions}</div>}
+      {actions && <div className="flex max-w-full flex-wrap gap-2">{actions}</div>}
     </div>
   )
 }
@@ -84,12 +84,15 @@ export function SCard({
             </div>
           )}
           <div className="min-w-0 flex-1">
-            <h3
+            {/* h2, not h3: settings cards are the first level under each
+                settings page's h1, so h3 made the outline read 1 → 3
+                (tripl-jfm3.69). */}
+            <h2
               className="m-0 text-[14px] font-semibold"
               style={{ color: tone === 'danger' ? 'var(--danger)' : 'var(--fg)' }}
             >
               {title}
-            </h3>
+            </h2>
             {description && (
               <p
                 className="mt-1 text-[12.5px] leading-[1.5]"
@@ -140,16 +143,19 @@ export function Field({
   const effectiveFor = htmlFor ?? generatedId
   return (
     <div
-      className={stacked ? 'block px-[18px] py-[15px]' : 'flex items-start gap-6 px-[18px] py-[15px]'}
+      // Side-by-side label + control only from `sm` up. The 232px label gutter
+      // plus its 24px gap left a phone's control column ~100px wide, so the
+      // Name/Slug inputs measured 22px and ran off-screen (tripl-jfm3.40).
+      className={
+        stacked
+          ? 'block px-[18px] py-[15px]'
+          : 'flex flex-col gap-2 px-[18px] py-[15px] sm:flex-row sm:items-start sm:gap-6'
+      }
       style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
     >
       <div
-        className="shrink-0"
-        style={{
-          width: stacked ? 'auto' : 232,
-          marginBottom: stacked ? 9 : 0,
-          paddingTop: stacked ? 0 : 6,
-        }}
+        className={stacked ? undefined : 'w-full sm:w-[232px] sm:shrink-0 sm:pt-1.5'}
+        style={stacked ? { marginBottom: 9 } : undefined}
       >
         <div className="flex items-center gap-2">
           <label htmlFor={effectiveFor} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
@@ -562,8 +568,8 @@ export function PageHead({
   right?: ReactNode
 }) {
   return (
-    <div className="flex items-end justify-between gap-4">
-      <div className="min-w-0">
+    <div className="flex flex-wrap items-end justify-between gap-4">
+      <div className="min-w-0 flex-1 basis-60">
         {eyebrow && (
           <div
             className="text-[11px] font-semibold uppercase tracking-[0.08em]"
@@ -581,7 +587,7 @@ export function PageHead({
           </p>
         )}
       </div>
-      {right && <div className="shrink-0">{right}</div>}
+      {right && <div className="flex max-w-full flex-wrap items-center gap-2">{right}</div>}
     </div>
   )
 }
@@ -620,11 +626,16 @@ export function Panel({
       className="overflow-hidden rounded-[10px] border"
       style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
     >
+      {/* The header wraps below `sm`-ish widths instead of pinning the right
+          slot: callers hand it fixed-width search boxes and selects, and with a
+          `shrink-0` slot the title collapsed to 0px while the last filter was
+          sliced off by the section's `overflow-hidden` (tripl-jfm3.43). The
+          title keeps a 10rem basis so it never collapses again. */}
       <header
-        className="flex items-center gap-2.5 border-b px-4 py-3"
+        className="flex flex-wrap items-center gap-2.5 border-b px-4 py-3"
         style={{ borderColor: 'var(--border-subtle)', background: headerBg }}
       >
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-40">
           <div className="text-[12.5px] font-semibold" style={{ color: titleColor }}>
             {title}
           </div>
@@ -634,7 +645,11 @@ export function Panel({
             </div>
           )}
         </div>
-        {right && <div className="shrink-0">{right}</div>}
+        {right && (
+          <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+            {right}
+          </div>
+        )}
       </header>
       {children}
     </section>

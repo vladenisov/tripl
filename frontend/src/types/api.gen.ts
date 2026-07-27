@@ -332,6 +332,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/demo/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Demo Provisioning
+         * @description Abandon this user's in-flight demo provision, if one is still seeding.
+         *
+         *     Deliberately ungated by the kill switch: it only ever removes work. Declared
+         *     before ``/demo/{slug}/reset`` so the literal path is never shadowed.
+         */
+        post: operations["cancel_demo_provisioning_api_v1_projects_demo_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/demo/{slug}": {
         parameters: {
             query?: never;
@@ -3965,6 +3988,11 @@ export interface components {
         AuthStatusResponse: {
             /** Has Users */
             has_users: boolean;
+            /**
+             * Registration Enabled
+             * @default true
+             */
+            registration_enabled: boolean;
         };
         /** AuthUserResponse */
         AuthUserResponse: {
@@ -4517,6 +4545,21 @@ export interface components {
             items: components["schemas"]["DeadEventItem"][];
             /** Total */
             total: number;
+        };
+        /**
+         * DemoCancelResponse
+         * @description Outcome of asking an in-flight demo provision to abandon itself.
+         *
+         *     ``cancelled`` is only true when a still-seeding shell was found and flagged;
+         *     the provision then deletes itself instead of promoting. When it is false the
+         *     create had already finished (or never started), so the caller must be told
+         *     plainly that the demo will appear rather than pretending it was stopped.
+         */
+        DemoCancelResponse: {
+            /** Cancelled */
+            cancelled: boolean;
+            /** Slug */
+            slug?: string | null;
         };
         /**
          * DetectionResetPeriod
@@ -5073,6 +5116,8 @@ export interface components {
             latest_signal?: components["schemas"]["MetricSignalResponse"] | null;
             /** Scan Config Id */
             scan_config_id?: string | null;
+            /** Scan Config Name */
+            scan_config_name?: string | null;
             /** Scope */
             scope: string;
             /**
@@ -7006,16 +7051,18 @@ export interface components {
          * OverviewKpiSeriesResponse
          * @description Real daily series behind Overview KPI sparklines.
          *
-         *     Only ``active_events`` (new events created per day, from Event.created_at)
-         *     has genuine history; other KPIs (open signals, review-pending) have no
-         *     time series until snapshotting is added, so they are intentionally omitted
-         *     rather than fabricated.
+         *     Only ``new_events`` (events created per day on the main branch, from
+         *     Event.created_at) has genuine history; other KPIs (active events, open
+         *     signals, review-pending) have no time series until snapshotting is added,
+         *     so they are intentionally omitted rather than fabricated. The field was
+         *     named ``active_events`` until tripl-jfm3.22 — it never held active-event
+         *     counts, and the Overview sparkline repeated that false claim in its label.
          */
         OverviewKpiSeriesResponse: {
-            /** Active Events */
-            active_events: number[];
             /** Days */
             days: number;
+            /** New Events */
+            new_events: number[];
         };
         /** PasswordResetConfirmBody */
         PasswordResetConfirmBody: {
@@ -8479,6 +8526,11 @@ export interface components {
             rate_limit_register_per_hour: number;
             /** Rate Limit Trust Forwarded For */
             rate_limit_trust_forwarded_for: boolean;
+            /**
+             * Registration Mode
+             * @enum {string}
+             */
+            registration_mode: "open" | "disabled";
             /** Security Headers Enabled */
             security_headers_enabled: boolean;
             /** Session Cookie Name */
@@ -8506,6 +8558,8 @@ export interface components {
             rate_limit_register_per_hour?: number | null;
             /** Rate Limit Trust Forwarded For */
             rate_limit_trust_forwarded_for?: boolean | null;
+            /** Registration Mode */
+            registration_mode?: ("open" | "disabled") | null;
             /** Security Headers Enabled */
             security_headers_enabled?: boolean | null;
             /** Session Cookie Name */
@@ -8979,6 +9033,13 @@ export interface components {
             /** Values */
             values: string[];
         };
+        /** VariableListResponse */
+        VariableListResponse: {
+            /** Items */
+            items: components["schemas"]["VariableResponse"][];
+            /** Total */
+            total: number;
+        };
         /** VariableResponse */
         VariableResponse: {
             /**
@@ -9003,6 +9064,12 @@ export interface components {
              * @default 0
              */
             event_count: number;
+            /**
+             * Event Names
+             * @description Distinct names of the events this variable was observed in, alphabetical and capped at 20. 'event_count' carries the untruncated total; fetch /variables/{id}/values for the full per-event breakdown.
+             * @default []
+             */
+            event_names: string[];
             /**
              * Excluded From Scans
              * @default false
@@ -9037,6 +9104,7 @@ export interface components {
             project_id: string;
             /**
              * Sample Values
+             * @description Observed values unioned across every (variable, event, field) context, de-duplicated and capped at 20. Lets a list client render the row's value chips without one /values call per variable.
              * @default []
              */
             sample_values: string[];
@@ -9873,6 +9941,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProjectResponse"];
+                };
+            };
+        };
+    };
+    cancel_demo_provisioning_api_v1_projects_demo_cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DemoCancelResponse"];
                 };
             };
         };
@@ -12165,7 +12253,7 @@ export interface operations {
             query?: {
                 event_type_id?: string | null;
                 search?: string | null;
-                status?: string[] | null;
+                status?: components["schemas"]["EventStatus"][] | null;
                 tag?: string | null;
                 silent_since_days?: number | null;
                 field_value?: string | null;
@@ -15353,7 +15441,10 @@ export interface operations {
     };
     list_variables_api_v1_projects__slug__variables_get: {
         parameters: {
-            query?: never;
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -15368,7 +15459,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["VariableResponse"][];
+                    "application/json": components["schemas"]["VariableListResponse"];
                 };
             };
             /** @description Validation Error */

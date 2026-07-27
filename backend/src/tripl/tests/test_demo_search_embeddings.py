@@ -65,10 +65,15 @@ def _write_synthetic_fixture(
     dimensions: int | None = None,
     doc_items: dict[str, list[float]] | None = None,
     query_items: dict[str, list[float]] | None = None,
+    identity_items: dict[str, str] | None = None,
 ) -> None:
     dims = dimensions if dimensions is not None else _DIMS
     doc_items = doc_items or {}
     query_items = query_items or {}
+    if identity_items is not None:
+        search_embeddings.identity_sidecar_path(path).write_text(
+            json.dumps(identity_items), encoding="utf-8"
+        )
     manifest = {
         "recipe_version": recipe_version,
         "model": "text-embedding-3-small",
@@ -248,9 +253,11 @@ def _doc_row(
     keywords: str = "",
     body: str = "",
     embedding_status: str = "pending",
+    entity_type: str = "event",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid.uuid4(),
+        entity_type=entity_type,
         title=title,
         subtitle=subtitle,
         keywords=keywords,
@@ -459,6 +466,81 @@ async def test_generator_script_end_to_end_with_fake_embedder(
         assert len(embedding) == _DIMS
 
 
+async def test_apply_fixture_falls_back_to_identity_when_a_scan_rewrote_the_text(
+    fixture_path: Path,
+) -> None:
+    """A scan-mutated document keeps its vector via the identity fallback.
+
+    The demo runs the REAL scan/collection pipeline, which rewrites the very text
+    the fixture key is derived from (observed field values replace ``${var}``
+    templates, catalog sync appends auto-created field descriptors). Keyed on
+    embed text alone, one scan orphaned EVERY document and left the whole index
+    ``embedding_status='disabled'`` with no provider to re-embed it, so the
+    demo's own advertised "money back" query stopped returning any event
+    (bd tripl-jfm3.8).
+    """
+    pristine = _doc_row(
+        title="Refund Processed",
+        subtitle="Purchase",
+        keywords="refund purchase",
+        body="A refund was issued to the user. product_id ${product_id}",
+    )
+    pristine_key = embed_text_key(
+        embed_text_for(
+            title=pristine.title,
+            subtitle=pristine.subtitle,
+            keywords=pristine.keywords,
+            body=pristine.body,
+        )
+    )
+    # Same entity, post-scan body: literal observed values plus an auto-created
+    # field descriptor. Its embed-text key is NOT in the fixture.
+    rescanned = _doc_row(
+        title="Refund Processed",
+        subtitle="Purchase",
+        keywords="refund purchase s29_5",
+        body="A refund was issued to the user. product_id prod_lifetime "
+        "session_id Auto-created (String)",
+    )
+    identity = search_embeddings.identity_key(
+        rescanned.entity_type, rescanned.title, rescanned.subtitle
+    )
+
+    _write_synthetic_fixture(
+        fixture_path,
+        doc_items={pristine_key: [0.5] * _DIMS},
+        identity_items={identity: pristine_key},
+    )
+    fixture = load_demo_embedding_fixture()
+    assert fixture is not None
+    assert fixture.identity_vectors == {identity: [0.5] * _DIMS}
+
+    session = _StubSession([rescanned])
+    applied = await apply_demo_embedding_fixture(
+        cast(AsyncSession, session),
+        project_id=uuid.uuid4(),
+        branch_id=uuid.uuid4(),
+    )
+
+    assert applied == 1, "a scan-rewritten demo document must keep its precomputed vector"
+    assert session.update_params[0]["document_id"] == rescanned.id
+
+
+def test_loader_survives_a_missing_or_broken_identity_sidecar(fixture_path: Path) -> None:
+    """The fallback is an enhancement: without it the fixture still loads."""
+    doc_key = "d" * 64
+    _write_synthetic_fixture(fixture_path, doc_items={doc_key: [0.5] * _DIMS})
+    fixture = load_demo_embedding_fixture()
+    assert fixture is not None
+    assert fixture.identity_vectors == {}
+
+    search_embeddings.identity_sidecar_path(fixture_path).write_text("{ not json", encoding="utf-8")
+    search_embeddings._parse_fixture.cache_clear()
+    fixture = load_demo_embedding_fixture()
+    assert fixture is not None
+    assert fixture.identity_vectors == {}
+
+
 def test_advertised_demo_queries_are_in_generator_query_list() -> None:
     """The tour/scenario copy hardcodes queries; the generator list must keep
     covering them or the advertised flow silently loses its semantic leg."""
@@ -514,6 +596,7 @@ async def test_shipped_fixture_covers_current_demo_documents() -> None:
         )
         assert len(branch_ids) >= 2  # main + the deep-copied feature branch
         missing: list[str] = []
+        missing_identities: list[str] = []
         for branch_id in branch_ids:
             documents = await build_documents(session, project.id, branch_id, project.slug)
             for doc in documents:
@@ -527,7 +610,19 @@ async def test_shipped_fixture_covers_current_demo_documents() -> None:
                 )
                 if key not in fixture.doc_vectors:
                     missing.append(f"{doc.entity_type}:{doc.title}")
+                if (
+                    search_embeddings.identity_key(doc.entity_type, doc.title, doc.subtitle)
+                    not in fixture.identity_vectors
+                ):
+                    missing_identities.append(f"{doc.entity_type}:{doc.title}")
     assert not missing, (
         "demo documents missing from the embedding fixture (regenerate via "
         f"scripts/generate_demo_search_embeddings.py): {missing}"
+    )
+    # Identity-key coverage is what keeps semantic search alive AFTER a scan
+    # rewrites a document's text (bd tripl-jfm3.8) — a shipped fixture with no
+    # sidecar would silently regress to the pre-fix behaviour.
+    assert not missing_identities, (
+        "demo documents missing from the fixture's identity sidecar (regenerate via "
+        f"scripts/generate_demo_search_embeddings.py): {missing_identities}"
     )

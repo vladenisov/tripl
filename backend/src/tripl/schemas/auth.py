@@ -61,6 +61,13 @@ class AuthStatusResponse(BaseModel):
     # Unauthenticated bootstrap signal: lets the auth screen tell a brand-new
     # instance (no users yet) apart from a provisioned one.
     has_users: bool
+    # Whether POST /auth/register would be accepted right now, so the auth screen
+    # can hide the sign-up form instead of walking the visitor into a 403. This
+    # is an instance-wide fact (identical for every caller), so exposing it
+    # unauthenticated leaks nothing about individual accounts. True on an empty
+    # instance regardless of policy — the first owner must always be able to
+    # claim it.
+    registration_enabled: bool = True
 
 
 class AuthUserResponse(BaseModel):

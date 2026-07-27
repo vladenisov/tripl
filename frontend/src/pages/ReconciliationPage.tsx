@@ -5,6 +5,7 @@ import { Calendar, Inbox, Info } from 'lucide-react'
 import {
   reconciliationApi,
   type CoverageBucket,
+  type CoverageSummary,
   type DeadEvent,
   type ShadowEvent,
   type ShadowEventStatus,
@@ -32,8 +33,38 @@ const SHADOW_TABS: readonly ShadowEventStatus[] = ['new', 'accepted', 'dismissed
 
 // One-line clarifier for the headline number. It reads as "coverage" but is a
 // different measure than the Coverage page's plan-coverage KPI, so spell out the
-// distinction to stop the two governance views looking contradictory.
-const DATA_MATCH_HELP = `Share of planned events actually seen in warehouse data over the last ${COVERAGE_DAYS} days. Different from Coverage, which measures how many active events are marked implemented.`
+// distinction to stop the two governance views looking contradictory. The unit
+// is warehouse OCCURRENCES (rows), not catalog entries — every other surface
+// uses "events" for the latter, so this one has to say which it means.
+const DATA_MATCH_HELP = `Share of tracked event occurrences in warehouse data that matched a planned event, over the last ${COVERAGE_DAYS} days. Counts occurrences (warehouse rows), not catalog entries. Different from Coverage, which measures how many active events are marked implemented.`
+
+// Ceiling for an imperfect match. `coverage_pct` arrives rounded to 2 dp, so a
+// single unmatched occurrence in 672 million comes back as exactly 100.0 and any
+// rounding of it prints "100%" — a perfect score over an imperfect match
+// (tripl-jfm3.26). 100% is reserved for matched === total; everything else is
+// held just below it.
+const MAX_IMPERFECT_MATCH_PCT = 99.9
+
+/**
+ * Headline percentage for the Data match card. "100%" is reserved for a
+ * genuinely complete match; anything that would otherwise round UP to it is
+ * rounded DOWN instead, so the headline never claims a perfect score over an
+ * imperfect match.
+ */
+function formatMatchPct(summary: CoverageSummary): string {
+  if (summary.total_count > 0 && summary.matched_count >= summary.total_count) {
+    return '100%'
+  }
+  const rounded = Math.round(summary.coverage_pct)
+  if (rounded < 100) return `${rounded}%`
+  // Rounding up here would print a perfect score over an unmatched occurrence,
+  // so round down to a tenth and hold the result below 100. A 672-million-row
+  // window with one miss arrives as exactly 100.0 (the backend already rounded
+  // to 2 dp) and lands on the 99.9 ceiling; a genuine 99.6 keeps its own value
+  // instead of being inflated to it.
+  const flooredToTenth = Math.floor(summary.coverage_pct * 10) / 10
+  return `${Math.min(flooredToTenth, MAX_IMPERFECT_MATCH_PCT)}%`
+}
 
 // Coverage heatmap colour. Resolved through the shared status lexicon so good
 // coverage reads green (success) — matching the overview KPI — instead of the
@@ -205,7 +236,7 @@ export default function ReconciliationPage() {
         title="Data match"
         subtitle={
           coverage
-            ? `${coverage.summary.matched_count.toLocaleString()} of ${coverage.summary.total_count.toLocaleString()} planned events seen in data · ${coverage.days}d`
+            ? `${coverage.summary.matched_count.toLocaleString()} of ${coverage.summary.total_count.toLocaleString()} tracked event occurrences matched a planned event · ${coverage.days}d`
             : undefined
         }
       >
@@ -234,14 +265,14 @@ export default function ReconciliationPage() {
                 className="mono tnum text-[38px] font-semibold leading-none tracking-[-0.02em]"
                 style={{ color: 'var(--accent)' }}
               >
-                {coverage.summary.coverage_pct.toFixed(0)}%
+                {formatMatchPct(coverage.summary)}
               </span>
               <span
                 className="inline-flex items-center gap-1 text-[11px]"
                 style={{ color: 'var(--fg-subtle)' }}
                 title={DATA_MATCH_HELP}
               >
-                seen in data
+                occurrences matched
                 <Info
                   className="h-3 w-3 shrink-0"
                   style={{ color: 'var(--fg-faint)' }}
@@ -359,7 +390,11 @@ export default function ReconciliationPage() {
         {/* Dead events */}
         <Panel
           title="Dead events"
-          subtitle="In plan, not seen recently"
+          // Name the window and the population. Coverage links here from a panel
+          // computed over its own (30-day) window, so leaving this as "not seen
+          // recently" made two adjacent surfaces look like they disagreed about
+          // the same question (tripl-jfm3.23).
+          subtitle={`Implemented events with no data in the last ${DEAD_DAYS} days`}
           right={
             deadItems.length > 0 ? (
               <Button

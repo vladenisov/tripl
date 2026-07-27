@@ -143,6 +143,14 @@ treat them as safe to auto-approve.
 project the key is fenced to.
 :::
 
+:::note
+`list_variables` passes the API response straight through, so it returns the
+paged envelope `{"items": [...], "total": <int>}` — the first 200 variables of
+the project. Compare `total` against `len(items)` before concluding a variable
+does not exist; on a large catalog, fall back to `search_plan` with
+`types=variable` to find a specific one.
+:::
+
 ### Write tools
 
 Every write tool states in its description that it needs a `tk_w_` key; with a

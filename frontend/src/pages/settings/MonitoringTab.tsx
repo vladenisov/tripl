@@ -30,16 +30,22 @@ export function MonitoringTab({ slug }: { slug: string }) {
   const recentSignalWindowId = useId()
 
   if (!settings) {
-    return <div className="text-sm text-muted-foreground">Loading monitoring settings…</div>
+    return <div className="text-sm text-muted-foreground">Loading detection settings…</div>
   }
 
   return (
     <div className="space-y-4">
+      {/* "Detection settings" — the same words as the buttons on the Anomalies
+          and Monitors pages that lead here. The surface used to call itself
+          "Monitoring" while its only card called itself "Anomaly Detection",
+          giving one thing three names (tripl-jfm3.39). Detection raises
+          SIGNALS; monitors are the alert rules layered on top. */}
       <div>
-        <h2 className="text-lg font-semibold">Monitoring</h2>
+        <h2 className="text-lg font-semibold">Detection settings</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Shared anomaly detection settings for all scans in this project.
-          Scans use them automatically when they have both a time column and a collection interval.
+          How tripl detects signals — spikes and drops in volume — across every scan in this
+          project. Scans use these settings automatically when they have both a time column and a
+          collection interval.
         </p>
       </div>
 
@@ -47,9 +53,10 @@ export function MonitoringTab({ slug }: { slug: string }) {
         <CardContent className="p-6 space-y-5">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <Label className="text-sm font-medium">Anomaly Detection</Label>
+              <Label className="text-sm font-medium">Detection</Label>
               <p className="text-xs text-muted-foreground mt-1">
-                Scans inherit these settings. Notification delivery comes in the next phase.
+                Scans inherit these settings. Turning detection off stops new signals being
+                raised; monitors and alert routing are configured under Alerting.
               </p>
             </div>
             <div className="flex items-center gap-3">
@@ -59,7 +66,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
               <Switch
                 checked={settings.anomaly_detection_enabled}
                 onCheckedChange={checked => updateMut.mutate({ anomaly_detection_enabled: checked })}
-                aria-label="Toggle anomaly detection"
+                aria-label="Toggle signal detection"
               />
             </div>
           </div>

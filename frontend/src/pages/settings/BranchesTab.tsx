@@ -21,6 +21,7 @@ import { usersApi } from '@/api/users'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
+import { DIFF_STALE_MS, rowDiffBranches } from './branchDiffFanout'
 import { TrackerConfigDialog } from './TrackerConfigDialog'
 import { useBranchLinkProps } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
@@ -134,6 +135,7 @@ function aheadCount(diff: PlanBranchDiffSummary | undefined): number {
   return diff.summary.added + diff.summary.removed + diff.summary.changed
 }
 
+
 function diffEntryDetail(entry: PlanDiffEntry): string {
   if (entry.changes.length > 0) return entry.changes.join(', ')
   return entry.parent ? `${entry.entity_type} · ${entry.parent}` : entry.entity_type
@@ -205,7 +207,9 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
     },
   })
 
-  const items = data?.items ?? []
+  // Memoized so the derived lists below keep a stable identity between renders
+  // (they seed useQueries, which must not be rebuilt on every render).
+  const items = useMemo(() => data?.items ?? [], [data])
   const mainBranch = items.find((b) => b.kind === 'main')
   const defaultCount = items.filter((b) => b.kind === 'main').length
   // An unknown id in the URL (deleted or merged-away branch) falls back to main
@@ -220,22 +224,33 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
     queryKey: ['planBranchDiff', slug, selected?.id],
     queryFn: () => planBranchesApi.diff(slug, selected!.id),
     enabled: !!selected && selected.kind !== 'main',
+    staleTime: DIFF_STALE_MS,
   })
 
-  // Fetch every feature branch's diff so the list can show ahead/behind on each
-  // row (the list endpoint carries no counts). react-query dedups the selected
-  // branch's diff with the query above by key.
-  const featureBranches = items.filter((b) => b.kind !== 'main')
+  // Row ahead/behind badges still need one diff per feature branch (the list
+  // endpoint carries no counts), and each diff is computed server-side in
+  // ~2-3.5 s. Two guards keep that fan-out from growing with the branch count
+  // (tripl-jfm3.50): the queries are cached for DIFF_STALE_MS so re-entering the
+  // tab does not refire them, and only the newest ROW_DIFF_LIMIT feature
+  // branches (plus whichever one is selected, which the query above already
+  // fetches) are counted. Older rows show no badge rather than N more requests.
+  const featureBranches = useMemo(() => items.filter((b) => b.kind !== 'main'), [items])
+  const countedBranches = useMemo(
+    () => rowDiffBranches(featureBranches, selected?.id ?? null),
+    [featureBranches, selected?.id],
+  )
   const diffQueries = useQueries({
-    queries: featureBranches.map((b) => ({
+    queries: countedBranches.map((b) => ({
       queryKey: ['planBranchDiff', slug, b.id],
       queryFn: () => planBranchesApi.diff(slug, b.id),
+      staleTime: DIFF_STALE_MS,
     })),
   })
   const countsByBranch = new Map<string, { ahead: number; behind: number }>()
-  featureBranches.forEach((b, i) => {
+  countedBranches.forEach((b, i) => {
     const diff = diffQueries[i]?.data
-    countsByBranch.set(b.id, { ahead: aheadCount(diff), behind: diff?.behind_base ? 1 : 0 })
+    if (!diff) return
+    countsByBranch.set(b.id, { ahead: aheadCount(diff), behind: diff.behind_base ? 1 : 0 })
   })
 
   return (
@@ -334,6 +349,7 @@ function BranchList({
           const isActive = branch.id === selectedId
           const isMain = branch.kind === 'main'
           const Icon = isMain ? GitBranch : GitCompare
+          const counts = countsByBranch.get(branch.id)
           return (
             <ScenarioCoachMark
               key={branch.id}
@@ -362,9 +378,12 @@ function BranchList({
                   {branchSubtitle(branch, usersById)}
                 </div>
               </div>
-              {!isMain && (
+              {/* Only render the badge once this branch's diff has resolved —
+                  "↑0 ↓0" while the fan-out is still in flight (or for a row
+                  outside ROW_DIFF_LIMIT) is a verdict we have not earned. */}
+              {!isMain && counts && (
                 <span className="mono shrink-0 text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
-                  ↑{countsByBranch.get(branch.id)?.ahead ?? 0} ↓{countsByBranch.get(branch.id)?.behind ?? 0}
+                  ↑{counts.ahead} ↓{counts.behind}
                 </span>
               )}
             </button>

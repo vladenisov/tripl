@@ -106,8 +106,11 @@ export function EventsToolbar({
 
       <ToolbarDivider />
 
-      {/* Secondary — refine: status / activity filters */}
-      <div className="flex shrink-0 items-center gap-2">
+      {/* Secondary — refine: status / activity filters.
+          The group wraps internally: as a `shrink-0` row it needed ~460px inside
+          a 366px phone column, pushing the primary CTA off-screen
+          (tripl-jfm3.42). */}
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
         <Select
           value={singleStatus ?? '__all__'}
           onValueChange={value => onFilterStatusesChange(value === '__all__' ? [] : [value as EventStatus])}
@@ -164,9 +167,9 @@ export function EventsToolbar({
         )}
       </div>
 
-      <div className="ml-auto flex shrink-0 items-center gap-2">
+      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
         {/* Secondary — shape the table: saved views + columns */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <SavedViewsMenu
             views={savedViews}
             activeViewName={activeSavedViewName}
@@ -237,7 +240,7 @@ function ToolbarDivider() {
   return (
     <div
       aria-hidden="true"
-      className="h-5 w-px shrink-0"
+      className="hidden h-5 w-px shrink-0 sm:block"
       style={{ background: 'var(--border)' }}
     />
   )

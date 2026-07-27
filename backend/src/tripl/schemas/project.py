@@ -52,6 +52,19 @@ class DetectionResetPeriod(BaseModel):
     after: datetime | None = None
 
 
+class DemoCancelResponse(BaseModel):
+    """Outcome of asking an in-flight demo provision to abandon itself.
+
+    ``cancelled`` is only true when a still-seeding shell was found and flagged;
+    the provision then deletes itself instead of promoting. When it is false the
+    create had already finished (or never started), so the caller must be told
+    plainly that the demo will appear rather than pretending it was stopped.
+    """
+
+    cancelled: bool
+    slug: str | None = None
+
+
 class AnomalyResetCounts(BaseModel):
     metric_anomalies: int
     metric_breakdown_anomalies: int

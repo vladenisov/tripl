@@ -1,8 +1,11 @@
-import { type ReactNode } from 'react'
+import { useCallback, useState, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ChevronLeft, LogOut } from 'lucide-react'
+import { ChevronLeft, LogOut, Menu } from 'lucide-react'
 import { useAuth } from '@/components/auth-context'
 import { visibleGroupsAll } from './nav'
+
+const RAIL_TITLE_ID = 'settings-rail-title'
+const SETTINGS_CONTENT_ID = 'settings-content'
 
 /**
  * Full-viewport takeover shell for the Settings area (Linear/Vercel pattern).
@@ -10,6 +13,10 @@ import { visibleGroupsAll } from './nav'
  * lists every settings group (project + workspace) together — no project/
  * workspace context toggle. The content column is centered at 768px.
  * Recreated from design/tripl/project/settings-kit.jsx (SettingsLayout).
+ *
+ * Below `md` the rail slides off-canvas behind a hamburger, mirroring the app
+ * shell in `Layout.tsx`. Pinned in flow it would eat 264px of a 390px phone and
+ * leave the settings forms a ~45px column (tripl-jfm3.40).
  */
 export function SettingsLayout({
   activePath,
@@ -47,10 +54,30 @@ export function SettingsLayout({
 
   const initials = initialsFrom(auth.user?.name ?? auth.user?.email ?? '')
 
+  // Off-canvas rail state, used only below `md` — above it the `md:*` utilities
+  // pin the rail to static flow regardless of this flag.
+  const [railOpen, setRailOpen] = useState(false)
+  const closeRail = useCallback(() => setRailOpen(false), [])
+  const navigateAndCloseRail = useCallback(
+    (path: string) => {
+      setRailOpen(false)
+      onNavigate(path)
+    },
+    [onNavigate],
+  )
+
   return (
-    <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg)' }}>
+    <div className="relative flex h-screen overflow-hidden" style={{ background: 'var(--bg)' }}>
+      {/* Same bypass block as the app shell — the settings rail is a ~20-stop
+          repeated block on every settings page. */}
+      <a href={`#${SETTINGS_CONTENT_ID}`} className="skip-link">
+        Skip to main content
+      </a>
       <aside
-        className="flex w-[264px] shrink-0 flex-col"
+        className={
+          'fixed inset-y-0 left-0 z-40 flex w-[264px] shrink-0 flex-col transition-transform duration-200 ease-out md:static md:translate-x-0 ' +
+          (railOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0')
+        }
         style={{ background: 'var(--bg-sunken)', borderRight: '1px solid var(--border)' }}
       >
         {/* Header: back to app */}
@@ -65,14 +92,20 @@ export function SettingsLayout({
             <ChevronLeft className="h-[15px] w-[15px]" />
             <span>Back to project</span>
           </Link>
-          <h2 className="mx-1 mt-2.5 text-[17px] font-semibold tracking-[-0.01em]">Settings</h2>
+          {/* Deliberately not a heading: the rail is chrome, and an <h2> here
+              sat above every page's <h1> in DOM order, so the heading outline
+              opened with a level-2 skip (tripl-jfm3.69). It names the nav
+              landmark instead. */}
+          <div id={RAIL_TITLE_ID} className="mx-1 mt-2.5 text-[17px] font-semibold tracking-[-0.01em]">
+            Settings
+          </div>
           <p className="mx-1 mt-1 text-[11.5px] leading-snug" style={{ color: 'var(--fg-subtle)' }}>
             Workspace &amp; account configuration
           </p>
         </div>
 
         {/* Grouped nav — every settings group in one rail, no context toggle */}
-        <nav className="flex-1 overflow-y-auto px-3 pb-4 pt-1">
+        <nav aria-labelledby={RAIL_TITLE_ID} className="flex-1 overflow-y-auto px-3 pb-4 pt-1">
           {visibleGroupsAll(isOwner).map((group) => (
             <div key={group.label} className="mb-4">
               <div className="px-[9px] pb-1.5">
@@ -101,7 +134,7 @@ export function SettingsLayout({
                       type="button"
                       aria-current={active ? 'page' : undefined}
                       aria-label={item.label}
-                      onClick={() => onNavigate(item.path)}
+                      onClick={() => navigateAndCloseRail(item.path)}
                       className="flex items-center gap-2 rounded-md px-[9px] py-[7px] text-left text-[12.5px] font-medium transition-colors"
                       style={{
                         // Match the app shell: the main sidebar marks the active
@@ -138,7 +171,7 @@ export function SettingsLayout({
         >
           <div
             className="flex h-[26px] w-[26px] items-center justify-center rounded-full text-[11px] font-semibold text-white"
-            style={{ background: 'oklch(0.62 0.14 240)' }}
+            style={{ background: 'var(--avatar-bg)' }}
           >
             {initials}
           </div>
@@ -161,7 +194,7 @@ export function SettingsLayout({
             onClick={() => {
               void auth.logout().then(() => navigate('/auth'))
             }}
-            className="p-1 transition-colors disabled:opacity-50"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors disabled:opacity-50"
             style={{ color: 'var(--fg-subtle)' }}
             onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--fg)')}
             onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--fg-subtle)')}
@@ -171,9 +204,43 @@ export function SettingsLayout({
         </div>
       </aside>
 
+      {/* Backdrop for the off-canvas rail (below md only). */}
+      {railOpen && (
+        <button
+          type="button"
+          aria-label="Close settings navigation"
+          onClick={closeRail}
+          className="fixed inset-0 z-30 bg-black/40 backdrop-blur-[2px] md:hidden"
+        />
+      )}
+
       {/* Content */}
-      <main className="min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-[768px] px-10 pb-24 pt-10">{children}</div>
+      <main
+        id={SETTINGS_CONTENT_ID}
+        tabIndex={-1}
+        className="min-w-0 flex-1 overflow-y-auto focus:outline-none"
+      >
+        {/* Phone-only header: the only way back to the rail once it is
+            off-canvas. Hidden from md up, where the rail is always visible. */}
+        <div
+          className="sticky top-0 z-20 flex items-center gap-2 px-4 py-2.5 md:hidden"
+          style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}
+        >
+          <button
+            type="button"
+            aria-label="Open settings navigation"
+            aria-expanded={railOpen}
+            onClick={() => setRailOpen(true)}
+            className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
+            style={{ color: 'var(--fg-muted)' }}
+          >
+            <Menu className="h-4 w-4" />
+          </button>
+          <span className="text-[13px] font-semibold">Settings</span>
+        </div>
+        <div className="mx-auto max-w-[768px] px-4 pb-24 pt-6 sm:px-6 md:px-10 md:pt-10">
+          {children}
+        </div>
       </main>
     </div>
   )

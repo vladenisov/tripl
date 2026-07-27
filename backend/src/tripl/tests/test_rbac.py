@@ -247,3 +247,121 @@ async def test_cannot_demote_last_owner(fresh_anon_client: AsyncClient) -> None:
     resp = await fresh_anon_client.patch(f"/api/v1/users/{me['id']}", json={"role": "editor"})
     assert resp.status_code == 400
     assert "last remaining owner" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_editor_cannot_run_sql_against_a_warehouse(fresh_anon_client: AsyncClient) -> None:
+    """Scan SQL carries the same role as the credential it runs on (tripl-jfm3.18).
+
+    Data sources are owner-configured and workspace-global, and ``base_query``
+    is executed verbatim, so an editor must not be able to author, preview, or
+    run one — otherwise any account is a read-anything handle on the warehouse.
+    """
+    await _register(fresh_anon_client, "sql-owner@example.com")
+    ds = await fresh_anon_client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "analytics",
+        },
+    )
+    assert ds.status_code == 201, ds.text
+    ds_id = ds.json()["id"]
+    await fresh_anon_client.post("/api/v1/projects", json={"name": "SQL", "slug": "sql-proj"})
+
+    await fresh_anon_client.post("/api/v1/auth/logout")
+    await _register(fresh_anon_client, "sql-editor@example.com")
+
+    # Editors keep the read-only views of the scan surface.
+    assert (await fresh_anon_client.get("/api/v1/projects/sql-proj/scans")).status_code == 200
+
+    preview = await fresh_anon_client.post(
+        "/api/v1/projects/sql-proj/scans/preview",
+        json={"data_source_id": ds_id, "base_query": "SELECT currentUser() AS name", "limit": 1},
+    )
+    assert preview.status_code == 403
+    assert "owner" in preview.json()["detail"].lower()
+
+    create = await fresh_anon_client.post(
+        "/api/v1/projects/sql-proj/scans",
+        json={
+            "data_source_id": ds_id,
+            "name": "exfil",
+            "base_query": "SELECT * FROM secrets",
+        },
+    )
+    assert create.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_scan_base_query_must_be_a_read_only_select(fresh_anon_client: AsyncClient) -> None:
+    """``base_query`` now carries the same SQL-safety gate as ``metric_sql``."""
+    await _register(fresh_anon_client, "sql-safety@example.com")
+    ds = await fresh_anon_client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "analytics",
+        },
+    )
+    ds_id = ds.json()["id"]
+    await fresh_anon_client.post("/api/v1/projects", json={"name": "Safe", "slug": "safe-proj"})
+
+    stacked = await fresh_anon_client.post(
+        "/api/v1/projects/safe-proj/scans/preview",
+        json={"data_source_id": ds_id, "base_query": "SELECT 1; DROP TABLE events"},
+    )
+    assert stacked.status_code == 422
+
+    ddl = await fresh_anon_client.post(
+        "/api/v1/projects/safe-proj/scans",
+        json={"data_source_id": ds_id, "name": "bad", "base_query": "DROP TABLE events"},
+    )
+    assert ddl.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_editor_cannot_edit_another_users_project(fresh_anon_client: AsyncClient) -> None:
+    """Editing project identity needs the creator or an owner (tripl-jfm3.19)."""
+    await _register(fresh_anon_client, "proj-owner@example.com")
+    owned = await fresh_anon_client.post(
+        "/api/v1/projects", json={"name": "Owned", "slug": "owner-proj"}
+    )
+    assert owned.status_code == 201, owned.text
+
+    await fresh_anon_client.post("/api/v1/auth/logout")
+    await _register(fresh_anon_client, "proj-editor@example.com")
+
+    hijack = await fresh_anon_client.patch(
+        "/api/v1/projects/owner-proj", json={"name": "Vandalised"}
+    )
+    assert hijack.status_code == 403
+    assert "creator" in hijack.json()["detail"].lower()
+
+    # The editor still fully controls a project they created themselves.
+    mine = await fresh_anon_client.post(
+        "/api/v1/projects", json={"name": "Mine", "slug": "editor-proj"}
+    )
+    assert mine.status_code == 201, mine.text
+    renamed = await fresh_anon_client.patch(
+        "/api/v1/projects/editor-proj", json={"name": "Mine, renamed"}
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["name"] == "Mine, renamed"
+
+    # And the owner can still edit anything on the instance.
+    await fresh_anon_client.post("/api/v1/auth/logout")
+    await fresh_anon_client.post(
+        "/api/v1/auth/login",
+        json={"email": "proj-owner@example.com", "password": "Password123!"},
+    )
+    by_owner = await fresh_anon_client.patch(
+        "/api/v1/projects/editor-proj", json={"name": "Owner touched"}
+    )
+    assert by_owner.status_code == 200, by_owner.text

@@ -19,7 +19,7 @@ import { runPillStatus } from "./scans/scanRunStatus"
 import { ScanCreatePage } from "./scans/ScanConfigForm"
 import { StatCard, SurfPanel } from "./scans/scanLayout"
 import { INTERVAL_LABEL, formatCount } from "./scans/scanLayoutConstants"
-import { deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, summarizeScanChanges, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
+import { LOADING_SCAN_RUN_INFO, deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, summarizeScanChanges, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
 import { useAdaptiveRefetchIntervalFn } from "@/realtime/streamContext"
 import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
@@ -106,11 +106,13 @@ export function ScansTab({ slug }: { slug: string }) {
     [dataSources],
   )
 
+  // A job query that has not resolved yet passes `undefined` through, so the row
+  // renders a loading placeholder instead of the definitive "Never run" verdict
+  // it used to show while the fan-out was still in flight (tripl-jfm3.28).
   const runInfoById = useMemo(() => {
     const map = new Map<string, ScanRunInfo>()
     scanConfigs.forEach((sc: ScanConfig, index: number) => {
-      const jobs = (jobQueries[index]?.data ?? []) as ScanJob[]
-      map.set(sc.id, deriveScanRunInfo(jobs))
+      map.set(sc.id, deriveScanRunInfo(jobQueries[index]?.data as ScanJob[] | undefined))
     })
     return map
   }, [scanConfigs, jobQueries])
@@ -147,16 +149,20 @@ export function ScansTab({ slug }: { slug: string }) {
       .slice(0, 6)
   }, [scanConfigs, jobQueries])
 
-  const rowsScanned24h = useMemo(() => {
+  // Null until every scan's jobs have arrived: a partial sum reads as a real
+  // figure, and "0" while loading contradicted the completed runs already
+  // listed in the activity rail (tripl-jfm3.28). `formatCount(null)` renders "—".
+  const rowsScanned24h = useMemo<number | null>(() => {
     const cutoff = mountedAtMs - 24 * 60 * 60 * 1000
     let total = 0
-    scanConfigs.forEach((_sc: ScanConfig, index: number) => {
-      const jobs = (jobQueries[index]?.data ?? []) as ScanJob[]
+    for (let index = 0; index < scanConfigs.length; index += 1) {
+      const jobs = jobQueries[index]?.data as ScanJob[] | undefined
+      if (!jobs) return null
       jobs.forEach(job => {
         const stamp = job.completed_at ?? job.started_at
         if (stamp && Date.parse(stamp) >= cutoff) total += jobRowsScanned(job) ?? 0
       })
-    })
+    }
     return total
   }, [scanConfigs, jobQueries, mountedAtMs])
 
@@ -264,7 +270,7 @@ export function ScansTab({ slug }: { slug: string }) {
                   key={sc.id}
                   sc={sc}
                   dataSource={dsMap.get(sc.data_source_id) ?? null}
-                  runInfo={runInfoById.get(sc.id) ?? deriveScanRunInfo([])}
+                  runInfo={runInfoById.get(sc.id) ?? LOADING_SCAN_RUN_INFO}
                   intervalLabel={INTERVAL_LABEL}
                   onNavigate={() => navigate(`/p/${slug}/settings/scans/${sc.id}`)}
                   onRun={() => runScan.mutate(sc.id)}

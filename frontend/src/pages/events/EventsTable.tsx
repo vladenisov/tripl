@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, Layers, ListPlus } from 'lucide-react'
+import { ChevronDown, ChevronRight, Inbox, Layers, ListPlus } from 'lucide-react'
 import {
   DndContext,
   closestCenter,
@@ -39,6 +39,7 @@ import type {
 } from '@/types'
 
 import { ColumnFilter, FilterableHead, type ColumnFilterType } from './ColumnFilter'
+import { eventsEmptyCopy, type EventsEmptyContext } from './emptyState'
 import { EventRow, type RowAction } from './EventRow'
 import { groupEventNames, type EventNameGroup } from './eventNameGroups'
 import { EMPTY_WINDOW_POINTS, ROW_METRICS_LABEL } from './utils'
@@ -95,6 +96,12 @@ export type EventsTableProps = {
   toggleEventSelected: (id: string, checked: boolean) => void
   onToggleExpandedCell: (cellKey: string | null) => void
   onRowAction: (action: RowAction, ev: EventListItem) => void
+  /**
+   * What produced the current (possibly empty) result, so a zero-row table can
+   * say why it is empty instead of always claiming the project has no events
+   * (tripl-jfm3.30).
+   */
+  emptyContext?: EventsEmptyContext
 }
 
 export function EventsTable({
@@ -142,8 +149,12 @@ export function EventsTable({
   toggleEventSelected,
   onToggleExpandedCell,
   onRowAction,
+  emptyContext,
 }: EventsTableProps) {
   const branchId = useActiveBranchId()
+  const emptyCopy = eventsEmptyCopy(
+    emptyContext ?? { activeTab: 'all', hasActiveFilters: false, search: '' },
+  )
   // Same cache key as the Variables settings page/EventEditPage — one fetch
   // powers unknown-token tinting across every row.
   const { data: projectVariables } = useQuery({
@@ -333,7 +344,19 @@ export function EventsTable({
                   {!hideReviewed && (
                     <TableHead className="w-20 text-center text-[11px]">Reviewed</TableHead>
                   )}
-                  {!hideMonitor && <TableHead className="w-24">Monitor</TableHead>}
+                  {/* "Signal", not "Monitor": these cells report the anomaly
+                      tripl detected on the row, which needs no monitor to
+                      exist. Heading them "Monitor" put "Firing" beside 30
+                      events on a project whose Monitors page correctly said
+                      "No monitors yet" (tripl-jfm3.4). */}
+                  {!hideMonitor && (
+                    <TableHead
+                      className="w-24"
+                      title="Open signal on this event — a spike or drop tripl detected in its volume"
+                    >
+                      Signal
+                    </TableHead>
+                  )}
                   {!hideDelta && (
                     <TableHead
                       className="w-20 text-right text-[11px]"
@@ -470,9 +493,9 @@ export function EventsTable({
                   <TableRow>
                     <TableCell colSpan={99}>
                       <EmptyState
-                        icon={ListPlus}
-                        title="No events yet"
-                        description="Create your first event to get started."
+                        icon={emptyCopy.isFirstRun ? ListPlus : Inbox}
+                        title={emptyCopy.title}
+                        description={emptyCopy.description}
                       />
                     </TableCell>
                   </TableRow>

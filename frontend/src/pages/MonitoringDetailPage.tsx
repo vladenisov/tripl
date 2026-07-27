@@ -2112,9 +2112,16 @@ function EventDetailHeader({
           ? <Dot tone={signal.direction === 'drop' ? 'warning' : 'danger'} pulse size={8} />
           : <Dot tone={statusTone} size={8} />}
       </span>
-      <div className="min-w-0 flex-1">
+      {/* `basis-60` makes the title column ask for 240px, so on a phone the
+          action group below wraps onto its own line instead of the heading
+          being crushed to ~107px and painted under the buttons
+          (tripl-jfm3.41). `break-all` then wraps a long mono event name rather
+          than letting it overflow the column. */}
+      <div className="min-w-0 flex-1 basis-60">
         <div className="flex flex-wrap items-center gap-[10px]">
-          <h1 className="mono m-0 text-[19px] font-semibold tracking-[-0.01em]">{event.name}</h1>
+          <h1 className="mono m-0 min-w-0 break-all text-[19px] font-semibold tracking-[-0.01em]">
+            {event.name}
+          </h1>
           <Chip tone={statusTone} size="sm">{EVENT_STATUS_LABELS[status] ?? event.status}</Chip>
           {event.tags.map(tag => <Chip key={tag.id} size="xs">{tag.name}</Chip>)}
         </div>
