@@ -658,20 +658,96 @@ def test_metric_anomaly_detect_path_over_collected_series(
 # ── ongoing volume reconciles with the seeded baseline (bd tripl-yfsj.14) ─────
 
 
-def test_synthetic_ongoing_bases_mirror_seeded_event_specs() -> None:
-    """The adapter's ongoing per-event base MUST mirror ``event_specs`` (the demo's
-    single source of truth for event volumes), so a live rescan continues the
-    seeded baseline instead of writing a far-smaller volume and reading as a drop.
-    core/ cannot import services/, so the values are duplicated in ``_EVENT_DEFS``;
-    this test pins the two together.
+def test_synthetic_event_defs_cover_every_seeded_event_spec() -> None:
+    """The adapter's roster MUST mirror ``event_specs`` EXHAUSTIVELY, in both
+    directions.
+
+    ``event_specs`` is the demo's single source of truth for the authored catalog
+    and its volumes. Metrics collection deletes the whole collection window before
+    re-inserting whatever the warehouse returned, so any seeded event the
+    synthetic table does NOT emit loses its recent buckets and the detector reads
+    it as "dropped to zero" — which is exactly what an untouched demo did within
+    an hour of creation while ``_EVENT_DEFS`` listed only 7 of the 18 seeded
+    events (bd tripl-jfm3.55 / .71). core/ cannot import services/, so the values
+    are duplicated in ``_EVENT_DEFS``; this test pins the two together.
     """
     from tripl.core.adapters.synthetic import _EVENT_DEFS
     from tripl.services.demo.builders.plan import event_specs
 
-    spec_base = {spec.name: spec.base for spec in event_specs(datetime(2026, 1, 1, tzinfo=UTC))}
-    for _type, name, _screen, _button, _product, base in _EVENT_DEFS:
-        assert name in spec_base, f"synthetic event {name!r} has no matching event_spec"
-        assert base == spec_base[name], (name, base, spec_base[name])
+    specs = event_specs(datetime(2026, 1, 1, tzinfo=UTC))
+    spec_by_name = {spec.name: spec for spec in specs}
+    synthetic_by_name = {event_def.event_name: event_def for event_def in _EVENT_DEFS}
+
+    assert synthetic_by_name.keys() == spec_by_name.keys(), (
+        "every seeded event must be emitted by the synthetic warehouse and vice versa; "
+        f"missing from the warehouse: {sorted(spec_by_name.keys() - synthetic_by_name.keys())}, "
+        f"unknown to the plan: {sorted(synthetic_by_name.keys() - spec_by_name.keys())}"
+    )
+    for name, event_def in synthetic_by_name.items():
+        spec = spec_by_name[name]
+        assert event_def.ongoing_base == spec.base, (name, event_def.ongoing_base, spec.base)
+        assert event_def.event_type == spec.event_type, (
+            name,
+            event_def.event_type,
+            spec.event_type,
+        )
+
+
+def test_synthetic_event_defs_match_the_plans_documented_field_values() -> None:
+    """Synthetic column values agree with the field values the plan documents.
+
+    A rescan records what the warehouse holds, so a synthetic ``screen_name`` /
+    ``button_id`` that disagrees with the authored field value would rewrite the
+    curated catalog (bd tripl-jfm3.57). ``${var}`` template values are skipped:
+    they are the templating showcase and have no single literal.
+    """
+    from tripl.core.adapters.synthetic import _EVENT_DEFS
+    from tripl.services.demo.builders.plan import event_specs
+
+    spec_by_name = {spec.name: spec for spec in event_specs(datetime(2026, 1, 1, tzinfo=UTC))}
+    for event_def in _EVENT_DEFS:
+        documented = {
+            key.split(".", 1)[1]: value
+            for key, value in spec_by_name[event_def.event_name].field_values
+            if not value.startswith("${")
+        }
+        for column in ("screen_name", "button_id"):
+            if column in documented:
+                assert getattr(event_def, column) == documented[column], (
+                    event_def.event_name,
+                    column,
+                )
+        if "amount" in documented:
+            assert event_def.amount == float(documented["amount"]), event_def.event_name
+        if "currency" in documented:
+            assert event_def.currency == documented["currency"], event_def.event_name
+
+
+def test_synthetic_dataset_stays_within_row_budget() -> None:
+    """The full-history dataset fits the cap, so the NEWEST hours are never clipped.
+
+    ``_generate_events`` fills oldest-first; a cap that bit would truncate exactly
+    the ongoing window a live scan reads. The ongoing window is generated first
+    and never truncated, and this pins the total (with the older tail) under the
+    budget across every hour-of-week phase.
+    """
+    from tripl.core.adapters import synthetic as synth
+
+    # A full Sunday..Saturday week of anchors exercises every seasonal phase, so
+    # the peak-volume anchor is covered.
+    for day in range(1, 8):
+        for hour in (2, 8, 14, 20):
+            anchor = datetime(2026, 3, day, hour, tzinfo=UTC)
+            rows = synth._generate_events(
+                synth.DEFAULT_SEED,
+                anchor,
+                synth.SYNTHETIC_HISTORY_DAYS,
+                synth.SYNTHETIC_MAX_ROWS,
+            )
+            assert len(rows) < synth.SYNTHETIC_MAX_ROWS, (anchor, len(rows))
+            newest = anchor - timedelta(hours=1)
+            emitted = {row["event_name"] for row in rows if row["event_time"] >= newest}
+            assert emitted == set(synth.SYNTHETIC_EVENT_NAMES), (anchor, sorted(emitted))
 
 
 def test_synthetic_ongoing_counts_stay_within_detector_drop_band() -> None:
@@ -690,7 +766,7 @@ def test_synthetic_ongoing_counts_stay_within_detector_drop_band() -> None:
     from tripl.services.demo.scenario import DEMO_SEED
 
     total_buckets = noise.DEMO_HISTORY_DAYS * 24
-    bases = {name: base for _t, name, _s, _b, _p, base in synth._EVENT_DEFS}
+    bases = {ev.event_name: ev.ongoing_base for ev in synth._EVENT_DEFS}
     # A synthetic seed distinct from DEMO_SEED (as registry derives per source),
     # so the test also proves the shape is robust to a mismatched adapter seed.
     adapter_seed = 424242

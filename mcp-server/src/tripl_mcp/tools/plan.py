@@ -35,9 +35,20 @@ async def list_variables(
     slug: str,
     ctx: Context,  # type: ignore[type-arg]
     branch_id: str | None = None,
+    offset: int = 0,
+    limit: int = 200,
 ) -> Any:
+    """List a project's variables.
+
+    The endpoint is paged and answers ``{"items": [...], "total": n}``; pass
+    ``offset``/``limit`` to walk a catalog larger than one page (a real project
+    can carry well over a thousand variables).
+    """
     client = client_for(ctx)
-    return await client.get(f"/projects/{slug}/variables", params={"branch": branch_id})
+    return await client.get(
+        f"/projects/{slug}/variables",
+        params={"branch": branch_id, "offset": offset, "limit": limit},
+    )
 
 
 async def get_variable_values(
@@ -90,8 +101,9 @@ def register(mcp: FastMCP) -> None:
         annotations=READ_ONLY,
         description=(
             "List the project's variables (documented ${variable} placeholders) with "
-            "allowed_values, bindings, usage summaries and open drift counts. "
-            "Requires a tk_r_ or tk_w_ key."
+            "allowed_values, bindings, usage summaries and open drift counts. Paged: "
+            "answers {items, total}; pass offset/limit to reach beyond the first "
+            "page. Requires a tk_r_ or tk_w_ key."
         ),
     )(list_variables)
     mcp.tool(

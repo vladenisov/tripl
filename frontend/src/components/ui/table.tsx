@@ -2,8 +2,13 @@ import * as React from "react"
 import { cn } from "@/lib/utils"
 
 function Table({ className, ...props }: React.ComponentProps<"table">) {
+  // `tripl-scroll-x` adds the edge fade/shadow that tells the reader the columns
+  // continue past the right edge. This container — not the outer
+  // `.tripl-table-wrap` — is the element that actually scrolls, and its
+  // horizontal scrollbar sits far below the header row on a long table
+  // (tripl-jfm3.36 / .70).
   return (
-    <div data-slot="table-container" className="relative w-full overflow-x-auto">
+    <div data-slot="table-container" className="tripl-scroll-x relative w-full overflow-x-auto">
       <table data-slot="table" className={cn("w-full caption-bottom text-sm", className)} {...props} />
     </div>
   )

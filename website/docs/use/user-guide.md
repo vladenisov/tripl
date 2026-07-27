@@ -449,6 +449,13 @@ Create at least one place alerts can go. tripl supports:
 
 Mark the destination **enabled** when you save it.
 
+:::note Not in the demo project
+A demo project cannot send anywhere: it only accepts its own local demo sink, and
+adding any of the destinations above is refused. Rules, replay, deliveries, and
+the Inbox are still fully explorable there — the sends are simulated and recorded
+locally. See [The demo workspace](./demo-workspace.md).
+:::
+
 ### 2. Create a rule
 
 A rule decides *which* signals are worth interrupting someone for and routes them

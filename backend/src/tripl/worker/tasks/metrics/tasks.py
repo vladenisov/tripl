@@ -41,6 +41,7 @@ from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.services import app_settings_service
 from tripl.worker.celery_app import celery_app
+from tripl.worker.plan_scope import main_branch_id
 from tripl.worker.search_reindex import reindex_main_branch_from_worker
 from tripl.worker.tasks._errors import user_facing_error
 from tripl.worker.tasks.alerts import send_alert_delivery
@@ -85,6 +86,23 @@ COLLECT_METRICS_TIME_LIMIT_SECONDS = 25 * 60 * 60
 # the next run instead of being frozen at whatever the first pass decided
 # (tripl-dmch.14). Replays over a wider explicit window keep that wider window.
 ANOMALY_TRAILING_REEVAL_BUCKETS = 30
+
+# Ingestion-settling allowance (tripl-jfm3.7). ``_resolve_collection_window``
+# ends the collection window at the last COMPLETE clock interval, but a
+# warehouse keeps delivering rows for an interval well after that interval
+# closes: on windy-ios the newest hourly bucket grew ~9% and the second-newest
+# ~6% between two consecutive scans, and every revision was upward. Scoring
+# those buckets manufactures "drops" that evaporate on the next scan.
+#
+# The allowance does NOT shorten the collection window — the values are still
+# collected and charted, so the series stays complete. It only holds anomaly
+# EMISSION back for the buckets it covers; the next scan's trailing re-eval
+# (``ANOMALY_TRAILING_REEVAL_BUCKETS``) scores them once they have settled, at
+# the cost of that much detection latency. Two hours covers the observed lag
+# with headroom while keeping an hourly grid within one re-eval window.
+# ``detect.settling_buckets_for`` converts it to whole buckets per grid, so a
+# daily metric withholds one day and a 15-minute grid withholds eight buckets.
+ANOMALY_INGESTION_SETTLING = timedelta(hours=2)
 
 
 def _covered_buckets_from_scan_jobs(
@@ -168,6 +186,30 @@ def reserved_catalog_columns(config: ScanConfig) -> set[str]:
         config.platform_column,
     )
     return {column for column in reserved if column}
+
+
+def main_plan_event_types_by_name(session: Session, project_id: uuid.UUID) -> dict[str, EventType]:
+    """Event types of the MAIN plan, keyed by name, for grouped collection.
+
+    Volume belongs to the main plan. A working branch deep-copies event types
+    under the same names, so an unscoped lookup lets the branch copy win the
+    dict: the main-branch series then stops at the last write and the detector
+    reads it as "dropped to zero", while any bucket holding rows from both
+    branches double-counts. Same hazard and same remedy as catalog_sync.py,
+    which branch-scopes its own event-type lookup for exactly this reason.
+    """
+    plan_branch = main_branch_id(session, project_id)
+    rows = (
+        session.execute(
+            select(EventType).where(
+                EventType.project_id == project_id,
+                EventType.branch_id == plan_branch,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {et.name: et for et in rows}
 
 
 def _build_replay_progress_summary(
@@ -541,12 +583,7 @@ def collect_metrics(
         # Event type lookup (for grouped mode)
         et_by_name: dict[str, EventType] = {}
         if config.event_type_column:
-            all_ets = (
-                session.execute(select(EventType).where(EventType.project_id == config.project_id))
-                .scalars()
-                .all()
-            )
-            et_by_name = {et.name: et for et in all_ets}
+            et_by_name = main_plan_event_types_by_name(session, config.project_id)
 
         # Collect totals from Phase 1 for result_summary
         total_created = 0
@@ -716,6 +753,9 @@ def collect_metrics(
         # backfilled/re-collected bucket has its flag refreshed, and hand the
         # detector the set of buckets a successful collection actually covered so
         # gaps are excluded rather than flagged as fake drops (tripl-dmch.14/.16).
+        # The head of that window is additionally held back from EMISSION for the
+        # ingestion-settling allowance, so a bucket the warehouse is still filling
+        # is scored by a later run instead of read as a drop (tripl-jfm3.7).
         covered_buckets = _covered_buckets_from_scan_jobs(
             session,
             scan_config_id=config.id,
@@ -731,6 +771,7 @@ def collect_metrics(
             evaluation_start=anomaly_evaluation_start,
             evaluation_end=time_to_dt,
             covered_buckets=covered_buckets,
+            settling_delay=ANOMALY_INGESTION_SETTLING,
         )
         breakdown_anomalies_detected = _recalculate_metric_breakdown_anomalies(
             session,
@@ -738,6 +779,7 @@ def collect_metrics(
             evaluation_start=anomaly_evaluation_start,
             evaluation_end=time_to_dt,
             covered_buckets=covered_buckets,
+            settling_delay=ANOMALY_INGESTION_SETTLING,
         )
         release_regressions_detected = _recalculate_release_regressions(
             session,

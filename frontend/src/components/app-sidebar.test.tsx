@@ -152,6 +152,18 @@ afterEach(() => {
 })
 
 describe('AppSidebar', () => {
+  it('exposes the site nav as a navigation landmark, not a complementary one', async () => {
+    mockProjectsFetch()
+
+    renderSidebar('/p/demo/events')
+    await screen.findByText('Events')
+
+    // <aside aria-label="Main navigation"> announced as "complementary", so the
+    // nav rotor never listed it (tripl-jfm3.65).
+    expect(screen.getByRole('navigation', { name: 'Main navigation' })).toBeInTheDocument()
+    expect(screen.queryByRole('complementary', { name: 'Main navigation' })).toBeNull()
+  })
+
   it('renders the job-based navigation groups for the active project', async () => {
     mockProjectsFetch()
 

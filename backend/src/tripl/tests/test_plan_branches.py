@@ -1733,12 +1733,12 @@ async def test_router_branch_param_threads_variables(client: AsyncClient) -> Non
     assert create_resp.status_code == 201
 
     main_vars = (await client.get("/api/v1/projects/branch-route-vars/variables")).json()
-    assert main_vars == []
+    assert main_vars == {"items": [], "total": 0}
 
     branch_vars = (
         await client.get(f"/api/v1/projects/branch-route-vars/variables?branch={branch_id}")
     ).json()
-    assert [v["name"] for v in branch_vars] == ["spot_id"]
+    assert [v["name"] for v in branch_vars["items"]] == ["spot_id"]
 
 
 @pytest.mark.asyncio

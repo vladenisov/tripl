@@ -5,11 +5,13 @@ import { eventsApi } from '@/api/events'
 import { variablesApi } from '@/api/variables'
 import { variableDriftsApi } from '@/api/variableDrifts'
 import { variableOverridesApi } from '@/api/variableOverrides'
+import type { Variable } from '@/types'
 import { VariablesTab } from './VariablesTab'
 
 vi.mock('@/api/variables', () => ({
   variablesApi: {
     list: vi.fn(),
+    listPage: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
     del: vi.fn(),
@@ -40,13 +42,30 @@ vi.mock('@/api/events', () => ({
   },
 }))
 
-function renderVariablesTab() {
+function makeVariable(overrides: Partial<Variable> & { id: string; name: string }): Variable {
+  return {
+    project_id: 'project-1',
+    source_name: null,
+    variable_type: 'string',
+    allowed_values: [],
+    bindings: [],
+    description: '',
+    ...overrides,
+  }
+}
+
+/** The list endpoint returns a page envelope; every test seeds it through here. */
+function mockList(items: Variable[], total = items.length) {
+  vi.mocked(variablesApi.listPage).mockResolvedValue({ items, total })
+}
+
+function renderVariablesTab(props: { focusId?: string } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
   return render(
     <QueryClientProvider client={queryClient}>
-      <VariablesTab slug="demo" />
+      <VariablesTab slug="demo" {...props} />
     </QueryClientProvider>,
   )
 }
@@ -56,159 +75,154 @@ afterEach(() => {
 })
 
 describe('VariablesTab', () => {
-  it('groups a variable into one row and lists its events as a sub-list', async () => {
-    vi.mocked(variablesApi.list).mockResolvedValue([
-      {
+  it('renders a row from the list response alone — no per-variable request', async () => {
+    // One variable referenced by two events. Both event names and the unioned
+    // observed values ship with the list row, so the page must not issue the
+    // per-variable /values call that used to fan out once per row (tripl-jfm3.10).
+    mockList([
+      makeVariable({
         id: 'var-1',
-        project_id: 'project-1',
         name: 'spot_id',
         source_name: 'spot_id',
-        variable_type: 'string',
-        allowed_values: [],
-        bindings: [],
         description: 'Spot identifier',
         event_count: 2,
+        event_names: ['Checkout Started', 'Profile View'],
         context_count: 2,
-        low_context_count: 1,
-        high_context_count: 1,
-        sample_values: ['s1', 's2'],
-      },
-    ])
-    // One variable referenced by two events => two contexts. The page must show
-    // a single variable row with both events nested, not two duplicate rows.
-    vi.mocked(variablesApi.values).mockResolvedValue([
-      {
-        id: 'ctx-1',
-        variable_id: 'var-1',
-        variable_name: 'spot_id',
-        event_id: 'ev-1',
-        event_name: 'Profile View',
-        field_definition_id: 'fd-1',
-        field_name: 'spot_id',
-        field_display_name: 'Spot ID',
-        source_column: 'spot_id',
-        value_kind: 'low',
-        observed_count: 2,
-        values: ['s1', 's2'],
-      },
-      {
-        id: 'ctx-2',
-        variable_id: 'var-1',
-        variable_name: 'spot_id',
-        event_id: 'ev-2',
-        event_name: 'Checkout Started',
-        field_definition_id: 'fd-2',
-        field_name: 'spot_id',
-        field_display_name: 'Spot ID',
-        source_column: 'spot_id',
-        value_kind: 'high',
-        observed_count: 5,
-        values: ['s2', 's3'],
-      },
+        sample_values: ['s1', 's2', 's3'],
+      }),
     ])
 
     renderVariablesTab()
 
-    await waitFor(() => expect(variablesApi.list).toHaveBeenCalled())
-    await waitFor(() => expect(variablesApi.values).toHaveBeenCalledWith('demo', 'var-1', null))
-    expect(screen.getByRole('columnheader', { name: 'Events' })).toBeInTheDocument()
+    await waitFor(() => expect(variablesApi.listPage).toHaveBeenCalledTimes(1))
 
     // Exactly one body row (the single variable), not one per event.
     const varCode = await screen.findByText('${spot_id}')
+    expect(screen.getByRole('columnheader', { name: 'Events' })).toBeInTheDocument()
     const bodyRow = varCode.closest('tr') as HTMLElement
     expect(within(bodyRow).getByText('Profile View')).toBeInTheDocument()
     expect(within(bodyRow).getByText('Checkout Started')).toBeInTheDocument()
-
-    // The variable placeholder is rendered once, so no duplicate rows exist.
     expect(screen.getAllByText('${spot_id}')).toHaveLength(1)
 
-    // Values are unioned across contexts and de-duplicated (s2 appears once).
-    expect(screen.getAllByText('s2')).toHaveLength(1)
-    expect(screen.getByText('s3')).toBeInTheDocument()
+    // Observed values come straight off the row.
+    expect(within(bodyRow).getByText('s1')).toBeInTheDocument()
+    expect(within(bodyRow).getByText('s3')).toBeInTheDocument()
+
+    // The regression this test exists for: zero per-variable requests.
+    expect(variablesApi.values).not.toHaveBeenCalled()
+    expect(variablesApi.list).not.toHaveBeenCalled()
   })
 
   it('header counts distinct variables, agreeing with the sidebar badge semantics', async () => {
-    // Two distinct variables, one of which spans two events (two contexts). The
-    // header must read "2 variables" (distinct) — the same count the sidebar
-    // badge derives from summary.variable_count — not 3 (context rows).
-    vi.mocked(variablesApi.list).mockResolvedValue([
-      {
+    // Two distinct variables, one of which spans two events. The header must
+    // read "2 variables" (distinct) — the same count the sidebar badge derives
+    // from summary.variable_count — not 3 (context rows).
+    mockList([
+      makeVariable({
         id: 'var-1',
-        project_id: 'project-1',
         name: 'spot_id',
         source_name: 'spot_id',
-        variable_type: 'string',
-        allowed_values: [],
-        bindings: [],
-        description: '',
-      },
-      {
-        id: 'var-2',
-        project_id: 'project-1',
-        name: 'user_id',
-        source_name: 'user_id',
-        variable_type: 'string',
-        allowed_values: [],
-        bindings: [],
-        description: '',
-      },
+        event_count: 2,
+        event_names: ['Checkout Started', 'Profile View'],
+      }),
+      makeVariable({ id: 'var-2', name: 'user_id', source_name: 'user_id' }),
     ])
-    vi.mocked(variablesApi.values).mockImplementation((_slug, id) =>
-      Promise.resolve(
-        id === 'var-1'
-          ? [
-              {
-                id: 'ctx-1',
-                variable_id: 'var-1',
-                variable_name: 'spot_id',
-                event_id: 'ev-1',
-                event_name: 'Profile View',
-                field_definition_id: 'fd-1',
-                field_name: 'spot_id',
-                field_display_name: 'Spot ID',
-                source_column: 'spot_id',
-                value_kind: 'low',
-                observed_count: 2,
-                values: ['s1'],
-              },
-              {
-                id: 'ctx-2',
-                variable_id: 'var-1',
-                variable_name: 'spot_id',
-                event_id: 'ev-2',
-                event_name: 'Checkout Started',
-                field_definition_id: 'fd-2',
-                field_name: 'spot_id',
-                field_display_name: 'Spot ID',
-                source_column: 'spot_id',
-                value_kind: 'low',
-                observed_count: 2,
-                values: ['s2'],
-              },
-            ]
-          : [],
+
+    renderVariablesTab()
+
+    expect(await screen.findByText('2 variables')).toBeInTheDocument()
+  })
+
+  it('shows a loading skeleton, not the empty state, while the list is pending', async () => {
+    // The list resolving to [] and the list still loading are different things;
+    // conflating them flashed "No variables" over a 1.2k-variable project
+    // (tripl-jfm3.52).
+    vi.mocked(variablesApi.listPage).mockReturnValue(new Promise(() => {}))
+
+    renderVariablesTab()
+
+    expect(await screen.findByLabelText('Loading variables')).toBeInTheDocument()
+    expect(screen.queryByText('No variables')).not.toBeInTheDocument()
+    expect(screen.getByText('Loading…')).toBeInTheDocument()
+  })
+
+  it('renders the empty state once the list resolves empty', async () => {
+    mockList([])
+
+    renderVariablesTab()
+
+    expect(await screen.findByText('No variables')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Loading variables')).not.toBeInTheDocument()
+  })
+
+  it('renders one page of rows for a large project instead of all of them', async () => {
+    // 120 variables must not become 120 rows: the unwindowed table was the
+    // reason one checkbox click took hundreds of ms (tripl-jfm3.49).
+    mockList(
+      Array.from({ length: 120 }, (_, index) =>
+        makeVariable({ id: `var-${index}`, name: `var_${String(index).padStart(3, '0')}` }),
       ),
     )
 
     renderVariablesTab()
 
-    await waitFor(() => expect(variablesApi.values).toHaveBeenCalledWith('demo', 'var-1', null))
-    expect(await screen.findByText('2 variables')).toBeInTheDocument()
+    await screen.findByText('${var_000}')
+    expect(screen.getAllByRole('row')).toHaveLength(51) // 50 body rows + header
+    expect(screen.getByText('Page 1 of 3')).toBeInTheDocument()
+    expect(screen.getByText('Showing 1–50 of 120')).toBeInTheDocument()
+    expect(screen.queryByText('${var_050}')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }))
+
+    expect(await screen.findByText('${var_050}')).toBeInTheDocument()
+    expect(screen.queryByText('${var_000}')).not.toBeInTheDocument()
+    expect(screen.getByText('Page 2 of 3')).toBeInTheDocument()
+  })
+
+  it('filters the whole set, not just the visible page', async () => {
+    mockList(
+      Array.from({ length: 120 }, (_, index) =>
+        makeVariable({ id: `var-${index}`, name: `var_${String(index).padStart(3, '0')}` }),
+      ),
+    )
+
+    renderVariablesTab()
+    await screen.findByText('${var_000}')
+
+    // var_117 sits on page 3 — the filter must reach it from page 1.
+    fireEvent.change(screen.getByLabelText('Filter variables'), { target: { value: 'var_117' } })
+
+    expect(await screen.findByText('${var_117}')).toBeInTheDocument()
+    expect(screen.getAllByRole('row')).toHaveLength(2) // header + the single match
+    expect(screen.queryByText('Page 1 of 3')).not.toBeInTheDocument()
+  })
+
+  it('paginates to the page holding the focused variable', async () => {
+    mockList(
+      Array.from({ length: 120 }, (_, index) =>
+        makeVariable({ id: `var-${index}`, name: `var_${String(index).padStart(3, '0')}` }),
+      ),
+    )
+
+    renderVariablesTab({ focusId: 'var-117' })
+
+    expect(await screen.findByText('${var_117}')).toBeInTheDocument()
+    expect(screen.getByText('Page 3 of 3')).toBeInTheDocument()
   })
 
   it('shows all observed values when editing a variable', async () => {
-    vi.mocked(variablesApi.list).mockResolvedValue([
-      {
+    mockList([
+      makeVariable({
         id: 'var-1',
-        project_id: 'project-1',
         name: 'user_id',
         source_name: 'user_id',
-        variable_type: 'string',
-        allowed_values: [],
-        bindings: [],
         description: 'User identifier',
-      },
+        event_count: 1,
+        event_names: ['Profile View'],
+        sample_values: ['u1'],
+      }),
     ])
+    // The full per-event breakdown is fetched for the edited variable only.
     vi.mocked(variablesApi.values).mockResolvedValue([
       {
         id: 'ctx-1',
@@ -228,12 +242,13 @@ describe('VariablesTab', () => {
 
     renderVariablesTab()
 
-    await waitFor(() => expect(variablesApi.values).toHaveBeenCalled())
-    const row = screen.getByText('Profile View').closest('tr')
-    expect(row).not.toBeNull()
-    fireEvent.click(within(row as HTMLElement).getAllByRole('button')[0])
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable user_id' }))
 
     const dialog = await screen.findByRole('dialog')
+    await waitFor(() =>
+      expect(variablesApi.values).toHaveBeenCalledWith('demo', 'var-1', null),
+    )
+    expect(variablesApi.values).toHaveBeenCalledTimes(1)
     expect(within(dialog).getByText('Edit: user_id')).toBeInTheDocument()
     expect(within(dialog).getByText('Observed values')).toBeInTheDocument()
     expect(within(dialog).getByRole('columnheader', { name: 'Variable' })).toBeInTheDocument()
@@ -241,23 +256,19 @@ describe('VariablesTab', () => {
     expect(within(dialog).getByRole('columnheader', { name: 'Event' })).toBeInTheDocument()
     expect(within(dialog).getByRole('columnheader', { name: 'Description' })).toBeInTheDocument()
     expect(within(dialog).getByRole('columnheader', { name: 'Possible values' })).toBeInTheDocument()
-    expect(within(dialog).getByText('Profile View')).toBeInTheDocument()
-    expect(within(dialog).getByText('u1')).toBeInTheDocument()
-    expect(within(dialog).getByText('u2')).toBeInTheDocument()
+    expect(await within(dialog).findByText('u2')).toBeInTheDocument()
   })
 
   it('creates a variable with documented values and bindings', async () => {
-    vi.mocked(variablesApi.list).mockResolvedValue([])
-    vi.mocked(variablesApi.create).mockResolvedValue({
-      id: 'var-new',
-      project_id: 'p',
-      name: 'variant',
-      source_name: null,
-      variable_type: 'string',
-      allowed_values: ['a'],
-      bindings: ['page_data.extra.variant'],
-      description: '',
-    })
+    mockList([])
+    vi.mocked(variablesApi.create).mockResolvedValue(
+      makeVariable({
+        id: 'var-new',
+        name: 'variant',
+        allowed_values: ['a'],
+        bindings: ['page_data.extra.variant'],
+      }),
+    )
 
     renderVariablesTab()
     fireEvent.click(await screen.findByRole('button', { name: /add variable/i }))
@@ -286,7 +297,7 @@ describe('VariablesTab', () => {
   })
 
   it('rejects an invalid binding path in the chip input', async () => {
-    vi.mocked(variablesApi.list).mockResolvedValue([])
+    mockList([])
     renderVariablesTab()
     fireEvent.click(await screen.findByRole('button', { name: /add variable/i }))
 
@@ -298,17 +309,14 @@ describe('VariablesTab', () => {
   })
 
   it('saves a per-event override from the edit dialog', async () => {
-    vi.mocked(variablesApi.list).mockResolvedValue([
-      {
+    mockList([
+      makeVariable({
         id: 'var-1',
-        project_id: 'p',
         name: 'variant',
         source_name: 'page_data.extra.variant',
-        variable_type: 'string',
         allowed_values: ['a', 'b'],
         bindings: ['page_data.extra.variant'],
-        description: '',
-      },
+      }),
     ])
     vi.mocked(variablesApi.values).mockResolvedValue([])
     vi.mocked(variableOverridesApi.list).mockResolvedValue([
@@ -356,17 +364,13 @@ describe('VariablesTab', () => {
   })
 
   it('keeps a legacy dotted name editable while unchanged but restricts renames', async () => {
-    vi.mocked(variablesApi.list).mockResolvedValue([
-      {
+    mockList([
+      makeVariable({
         id: 'var-legacy',
-        project_id: 'p',
         name: 'page_data.extra.variant',
         source_name: 'page_data.extra.variant',
-        variable_type: 'string',
-        allowed_values: [],
         bindings: ['page_data.extra.variant'],
-        description: '',
-      },
+      }),
     ])
     vi.mocked(variablesApi.values).mockResolvedValue([])
     vi.mocked(variableOverridesApi.list).mockResolvedValue([])
@@ -389,29 +393,10 @@ describe('VariablesTab', () => {
   })
 
   it('bulk-updates selected variables from the bulk bar', async () => {
-    vi.mocked(variablesApi.list).mockResolvedValue([
-      {
-        id: 'var-1',
-        project_id: 'p',
-        name: 'one',
-        source_name: null,
-        variable_type: 'string',
-        allowed_values: [],
-        bindings: [],
-        description: '',
-      },
-      {
-        id: 'var-2',
-        project_id: 'p',
-        name: 'two',
-        source_name: null,
-        variable_type: 'string',
-        allowed_values: [],
-        bindings: [],
-        description: '',
-      },
+    mockList([
+      makeVariable({ id: 'var-1', name: 'one' }),
+      makeVariable({ id: 'var-2', name: 'two' }),
     ])
-    vi.mocked(variablesApi.values).mockResolvedValue([])
     vi.mocked(variablesApi.bulkUpdate).mockResolvedValue(undefined)
 
     renderVariablesTab()
@@ -440,19 +425,30 @@ describe('VariablesTab', () => {
     )
   })
 
+  it('select-all covers every matching variable, including off-page ones', async () => {
+    mockList(
+      Array.from({ length: 60 }, (_, index) =>
+        makeVariable({ id: `var-${index}`, name: `var_${String(index).padStart(3, '0')}` }),
+      ),
+    )
+    vi.mocked(variablesApi.bulkUpdate).mockResolvedValue(undefined)
+
+    renderVariablesTab()
+    await screen.findByText('${var_000}')
+
+    fireEvent.click(screen.getByLabelText('Select all variables'))
+    expect(screen.getByText('60')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Bulk set type'), { target: { value: 'number' } })
+    await waitFor(() => expect(variablesApi.bulkUpdate).toHaveBeenCalled())
+    const [, payload] = vi.mocked(variablesApi.bulkUpdate).mock.calls[0]
+    expect(payload.variable_ids).toHaveLength(60)
+    expect(payload.variable_ids).toContain('var-59')
+  })
+
   it('shows a drift badge and accepts drift values into the documented list', async () => {
-    vi.mocked(variablesApi.list).mockResolvedValue([
-      {
-        id: 'var-1',
-        project_id: 'p',
-        name: 'variant',
-        source_name: null,
-        variable_type: 'string',
-        allowed_values: ['a'],
-        bindings: [],
-        open_drift_count: 1,
-        description: '',
-      },
+    mockList([
+      makeVariable({ id: 'var-1', name: 'variant', allowed_values: ['a'], open_drift_count: 1 }),
     ])
     vi.mocked(variablesApi.values).mockResolvedValue([])
     vi.mocked(variableOverridesApi.list).mockResolvedValue([])
@@ -502,30 +498,20 @@ describe('VariablesTab', () => {
   })
 
   it('excludes a variable from scans and restores it from the excluded section', async () => {
-    vi.mocked(variablesApi.list).mockResolvedValue([
-      {
+    mockList([
+      makeVariable({
         id: 'var-1',
-        project_id: 'p',
         name: 'variant',
         source_name: 'payload.variant',
-        variable_type: 'string',
-        allowed_values: [],
         bindings: ['payload.variant'],
-        description: '',
-      },
-      {
+      }),
+      makeVariable({
         id: 'var-2',
-        project_id: 'p',
         name: 'old_junk',
         source_name: 'old.junk',
-        variable_type: 'string',
-        allowed_values: [],
-        bindings: [],
         excluded_from_scans: true,
-        description: '',
-      },
+      }),
     ])
-    vi.mocked(variablesApi.values).mockResolvedValue([])
     vi.mocked(variablesApi.update).mockResolvedValue({} as never)
 
     renderVariablesTab()

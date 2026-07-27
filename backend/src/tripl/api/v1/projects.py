@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from tripl.api.deps import EditorUserDep, OwnerUserDep, SessionDep, get_editor_user, get_owner_user
+from tripl.api.deps import EditorUserDep, OwnerUserDep, SessionDep, get_owner_user
 from tripl.config import settings
 from tripl.models.domain_enums import UserRole
 from tripl.models.project import Project
 from tripl.models.user import User
 from tripl.schemas.project import (
     AnomalyResetCounts,
+    DemoCancelResponse,
     DetectionResetPeriod,
     DriftResetCounts,
     ProjectCreate,
@@ -22,8 +23,12 @@ from tripl.services import (
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
-_editor_required = [Depends(get_editor_user)]
 _owner_required = [Depends(get_owner_user)]
+
+
+def _is_project_manager(user: User, project: Project) -> bool:
+    """An instance owner, or the editor who created this project."""
+    return user.role == UserRole.owner.value or project.created_by_user_id == user.id
 
 
 def _require_demo_manager(user: User, project: Project) -> None:
@@ -33,11 +38,29 @@ def _require_demo_manager(user: User, project: Project) -> None:
     so a creator may also reset or delete the demo they made, while owners may
     manage any demo. Real projects stay owner-only for deletion.
     """
-    if user.role == UserRole.owner.value or project.created_by_user_id == user.id:
+    if _is_project_manager(user, project):
         return
     raise HTTPException(
         status_code=403,
         detail="Only the demo creator or an owner can manage this demo",
+    )
+
+
+def _require_project_manager(user: User, project: Project) -> None:
+    """Guard project-identity edits (name, slug, retention policy).
+
+    The editor role is instance-wide, so without this any registered editor
+    could rename or re-slug every project on the instance, including ones they
+    have never touched (tripl-jfm3.19). There is no per-project membership model
+    yet, so the honest owner set is: the instance owner, plus whoever created
+    the project. Projects created before creators were recorded have no creator
+    and are therefore owner-managed.
+    """
+    if _is_project_manager(user, project):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Only the project creator or an owner can edit this project",
     )
 
 
@@ -62,10 +85,13 @@ async def list_projects(session: SessionDep) -> list[ProjectResponse]:
     "",
     response_model=ProjectResponse,
     status_code=201,
-    dependencies=_editor_required,
 )
-async def create_project(session: SessionDep, data: ProjectCreate) -> ProjectResponse:
-    return await project_service.create_project(session, data)
+async def create_project(
+    session: SessionDep, current_user: EditorUserDep, data: ProjectCreate
+) -> ProjectResponse:
+    # Record the creator so the editor who made a project keeps control of it
+    # (see _require_project_manager) without needing an owner for every rename.
+    return await project_service.create_project(session, data, created_by=current_user.id)
 
 
 @router.post(
@@ -76,6 +102,18 @@ async def create_project(session: SessionDep, data: ProjectCreate) -> ProjectRes
 async def create_demo_project(session: SessionDep, current_user: EditorUserDep) -> ProjectResponse:
     _require_demo_enabled()
     return await demo_service.create_demo_project(session, created_by=current_user.id)
+
+
+@router.post("/demo/cancel", response_model=DemoCancelResponse)
+async def cancel_demo_provisioning(
+    session: SessionDep, current_user: EditorUserDep
+) -> DemoCancelResponse:
+    """Abandon this user's in-flight demo provision, if one is still seeding.
+
+    Deliberately ungated by the kill switch: it only ever removes work. Declared
+    before ``/demo/{slug}/reset`` so the literal path is never shadowed.
+    """
+    return await demo_service.request_demo_cancel(session, created_by=current_user.id)
 
 
 @router.post("/demo/{slug}/reset", response_model=ProjectResponse)
@@ -110,12 +148,12 @@ async def get_project(session: SessionDep, slug: str) -> ProjectResponse:
     return await project_service.get_project(session, slug)
 
 
-@router.patch(
-    "/{slug}",
-    response_model=ProjectResponse,
-    dependencies=_editor_required,
-)
-async def update_project(session: SessionDep, slug: str, data: ProjectUpdate) -> ProjectResponse:
+@router.patch("/{slug}", response_model=ProjectResponse)
+async def update_project(
+    session: SessionDep, current_user: EditorUserDep, slug: str, data: ProjectUpdate
+) -> ProjectResponse:
+    project = await project_service.get_project_by_slug(session, slug)
+    _require_project_manager(current_user, project)
     return await project_service.update_project(session, slug, data)
 
 

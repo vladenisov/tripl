@@ -73,10 +73,30 @@ class VariableResponse(BaseModel):
     context_count: int = 0
     low_context_count: int = 0
     high_context_count: int = 0
-    sample_values: list[str] = []
+    sample_values: list[str] = Field(
+        default=[],
+        description=(
+            "Observed values unioned across every (variable, event, field) context,"
+            " de-duplicated and capped at 20. Lets a list client render the row's"
+            " value chips without one /values call per variable."
+        ),
+    )
     open_drift_count: int = 0
+    event_names: list[str] = Field(
+        default=[],
+        description=(
+            "Distinct names of the events this variable was observed in, alphabetical"
+            " and capped at 20. 'event_count' carries the untruncated total; fetch"
+            " /variables/{id}/values for the full per-event breakdown."
+        ),
+    )
 
     model_config = {"from_attributes": True}
+
+
+class VariableListResponse(BaseModel):
+    items: list[VariableResponse]
+    total: int
 
 
 class VariableBulkUpdate(BaseModel):

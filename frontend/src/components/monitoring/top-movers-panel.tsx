@@ -5,6 +5,7 @@ import { Area, ComposedChart, ResponsiveContainer, XAxis, YAxis } from 'recharts
 
 import { metricsApi } from '@/api/metrics'
 import { Card, CardContent } from '@/components/ui/card'
+import { CHART_SURFACE_TAB_INDEX } from '@/components/ui/chart-format'
 import { formatSignalSeverity } from '@/lib/monitoring'
 import { cn } from '@/lib/utils'
 import type { TopMoverItem } from '@/types'
@@ -238,7 +239,11 @@ function BreakdownDrilldown({
         className="h-[120px] w-full"
       >
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={points} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+          <ComposedChart
+            data={points}
+            margin={{ top: 4, right: 4, bottom: 0, left: 0 }}
+            tabIndex={CHART_SURFACE_TAB_INDEX}
+          >
             <XAxis
               dataKey="bucket"
               hide

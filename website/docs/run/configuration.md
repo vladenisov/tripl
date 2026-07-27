@@ -148,6 +148,12 @@ development the Vite dev server serves the SPA with HMR and proxies `/api` to
 the backend, so these stay at their defaults.
 :::
 
+### Registration
+
+| Variable | Default | Required in prod? | Purpose |
+| --- | --- | --- | --- |
+| `REGISTRATION_MODE` | `disabled` | No | Who may create an account: `disabled` refuses `POST /auth/register` with `403`; `open` allows self-service signup. The first registration on an **empty** instance is always allowed and becomes the owner. Overridable at runtime in **Settings → Instance → Security & access**, where it applies immediately. See [Security & Hardening](./security.md#self-service-registration). |
+
 ### Rate limiting
 
 | Variable | Default | Required in prod? | Purpose |
@@ -184,6 +190,29 @@ with a shared limiter or LB.
 `compose.yaml` defaults `LOG_JSON` to `true` (overridable). Expose `/metrics`
 only on an internal-only ingress path or scrape via a sidecar.
 :::
+
+---
+
+## Demo workspace
+
+Two independent switches control the generated demo project. Both default to
+**on**, and neither affects real projects in any state.
+
+| Variable | Default | Required in prod? | Purpose |
+| --- | --- | --- | --- |
+| `DEMO_ENABLED` | `true` | No | Master kill switch for demo **provisioning**. When `false`, `POST /projects/demo` **and** demo reset are refused with `403 Demo provisioning is disabled`. |
+| `DEMO_RUNTIME_ENABLED` | `true` | No | Gates the `advance_demos` beat task that keeps an existing demo fresh (new buckets, jobs, and signals). When `false` that task is a no-op and existing demos keep the data they already have. |
+
+:::note Reset is a provisioning path — delete is not
+A reset re-seeds a demo from scratch, so `DEMO_ENABLED=false` blocks **Create**
+and **Reset** alike. **Deleting** a demo stays available in every state of both
+flags, so a workspace can never be stuck with a demo it cannot remove. Real
+project create / scan / delete, and the real scan and metric schedulers, are
+untouched by either flag.
+:::
+
+See [The demo workspace](../use/demo-workspace.md) for what a demo contains and
+which parts of it are synthetic.
 
 ---
 

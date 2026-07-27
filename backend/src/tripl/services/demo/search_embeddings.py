@@ -11,6 +11,25 @@ ever needed at runtime.
 The fixture keys documents by ``sha256(embed_text)`` — NOT by ``content_hash``,
 which mixes in the per-install random demo slug and entity ids and is therefore
 not install-stable.
+
+Identity fallback (bd tripl-jfm3.8)
+-----------------------------------
+Keying by embed text alone is fragile: the demo runs the REAL scan/collection
+pipeline, and that pipeline rewrites the very text the key is derived from
+(observed field values replace ``${product_id}`` templates, catalog sync appends
+auto-created field descriptors, variable contexts are re-recorded). One scan —
+step 1 of the coached "Run the live loop" chapter — therefore missed every key
+and left the whole index ``embedding_status='disabled'`` with no provider to
+re-embed it, so semantic search died permanently on the demo's own showcase
+query.
+
+So each vector also carries a CONTENT-INDEPENDENT identity key,
+``entity_type \x1f title \x1f subtitle``, in the JSON sidecar next to the
+archive. A document whose descriptive text a scan has changed still resolves to
+the vector generated for that same entity. The sidecar is derived, not embedded:
+regenerate it by rebuilding a pristine demo, computing
+``embed_text_key(embed_text_for(...))`` per search document and mapping the
+identity key onto it — no embedding API call is involved.
 """
 
 from __future__ import annotations
@@ -22,7 +41,7 @@ import re
 import uuid
 import zipfile
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -42,6 +61,15 @@ DEFAULT_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "search_em
 # Module attribute (not inlined) so tests can monkeypatch the location.
 _FIXTURE_PATH = DEFAULT_FIXTURE_PATH
 
+# Sidecar mapping ``identity key -> embed-text key`` for the same fixture. Kept
+# beside the archive (and derived from it) so the content-independent fallback
+# needs no re-embedding and stays reviewable as plain text.
+IDENTITY_SIDECAR_SUFFIX = ".identity.json"
+
+# Field separator for the identity key. A unit separator can never occur in a
+# title/subtitle, so the joined key is unambiguous.
+_IDENTITY_SEP = "\x1f"
+
 
 def normalize_demo_query(query: str) -> str:
     """Canonical form for canned-query lookup: casefold + collapsed whitespace."""
@@ -53,14 +81,42 @@ def embed_text_key(embed_text: str) -> str:
     return hashlib.sha256(embed_text.encode("utf-8")).hexdigest()
 
 
+def identity_sidecar_path(fixture_path: Path) -> Path:
+    """Location of the identity sidecar for a given fixture archive."""
+    return fixture_path.with_suffix(fixture_path.suffix + IDENTITY_SIDECAR_SUFFIX)
+
+
+def identity_key(entity_type: str, title: str, subtitle: str) -> str:
+    """Content-INDEPENDENT fixture key for one search document.
+
+    Built from what the document *is* rather than what it currently says, so a
+    scan that rewrites a document's body/keywords cannot orphan its vector
+    (bd tripl-jfm3.8).
+    """
+    return _IDENTITY_SEP.join((entity_type, title, subtitle or ""))
+
+
 @dataclass(frozen=True)
 class DemoEmbeddingFixture:
-    """Parsed fixture: vectors keyed by embed-text sha256 / normalized query."""
+    """Parsed fixture: vectors keyed by embed-text sha256 / normalized query.
+
+    ``identity_vectors`` holds the same vectors under their content-independent
+    identity key (see :func:`identity_key`); it is empty when the sidecar is
+    missing, which simply disables the fallback.
+    """
 
     model: str
     dimensions: int
     doc_vectors: dict[str, list[float]]
     query_vectors: dict[str, list[float]]
+    identity_vectors: dict[str, list[float]] = field(default_factory=dict)
+
+    def vector_for(self, *, embed_key: str, identity: str) -> list[float] | None:
+        """The document's vector: exact embed text first, identity as fallback."""
+        vector = self.doc_vectors.get(embed_key)
+        if vector is not None:
+            return vector
+        return self.identity_vectors.get(identity)
 
 
 def load_demo_embedding_fixture() -> DemoEmbeddingFixture | None:
@@ -135,18 +191,48 @@ def _parse_fixture(path: Path) -> DemoEmbeddingFixture | None:
         )
         return None
 
+    resolved_docs = {
+        str(key): [float(value) for value in row]
+        for key, row in zip(doc_keys, doc_vectors, strict=True)
+    }
     return DemoEmbeddingFixture(
         model=model,
         dimensions=dimensions,
-        doc_vectors={
-            str(key): [float(value) for value in row]
-            for key, row in zip(doc_keys, doc_vectors, strict=True)
-        },
+        doc_vectors=resolved_docs,
         query_vectors={
             str(key): [float(value) for value in row]
             for key, row in zip(query_keys, query_vectors, strict=True)
         },
+        identity_vectors=_load_identity_vectors(path, resolved_docs),
     )
+
+
+def _load_identity_vectors(
+    path: Path, doc_vectors: dict[str, list[float]]
+) -> dict[str, list[float]]:
+    """Resolve the ``identity key -> embed-text key`` sidecar into vectors.
+
+    Absent, unreadable or stale entries are skipped silently (one INFO log at
+    most): the fallback is an enhancement, and losing it only takes the demo back
+    to matching on exact embed text.
+    """
+    sidecar = identity_sidecar_path(path)
+    if not sidecar.is_file():
+        return {}
+    try:
+        mapping = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.info("Demo embedding identity sidecar at %s is unreadable (%s); ignoring", path, exc)
+        return {}
+    if not isinstance(mapping, dict):
+        logger.info("Demo embedding identity sidecar at %s is not an object; ignoring", sidecar)
+        return {}
+    resolved: dict[str, list[float]] = {}
+    for key, embed_key in mapping.items():
+        vector = doc_vectors.get(str(embed_key))
+        if vector is not None:
+            resolved[str(key)] = vector
+    return resolved
 
 
 def demo_query_embedding(query: str) -> list[float] | None:
@@ -180,6 +266,7 @@ async def apply_demo_embedding_fixture(
         await session.execute(
             select(
                 SearchDocument.id,
+                SearchDocument.entity_type,
                 SearchDocument.title,
                 SearchDocument.subtitle,
                 SearchDocument.keywords,
@@ -196,15 +283,17 @@ async def apply_demo_embedding_fixture(
     for row in rows:
         if row.embedding_status == "ready":
             continue
-        key = embed_text_key(
-            embed_text_for(
-                title=row.title,
-                subtitle=row.subtitle,
-                keywords=row.keywords,
-                body=row.body,
-            )
+        embedding = fixture.vector_for(
+            embed_key=embed_text_key(
+                embed_text_for(
+                    title=row.title,
+                    subtitle=row.subtitle,
+                    keywords=row.keywords,
+                    body=row.body,
+                )
+            ),
+            identity=identity_key(row.entity_type, row.title, row.subtitle),
         )
-        embedding = fixture.doc_vectors.get(key)
         if embedding is None:
             continue
         vector = "[" + ",".join(f"{value:.8f}" for value in embedding) + "]"

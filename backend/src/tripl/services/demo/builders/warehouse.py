@@ -31,6 +31,25 @@ from tripl.services.project_service import demo_data_source_name
 # only deviation the real detector turns into an anomaly per scope.
 SPIKE_EVENT_NAME = "Home Screen View"
 
+# Columns the demo scan reads from the synthetic ``events`` table: everything the
+# curated plan models as a field, the reserved metric dimensions, and the
+# ``event_name`` identity column the group rules key on. Deliberately EXCLUDES
+# ``user_id``/``session_id`` — see ``_build_scan_config``. Public so the
+# governance builder can report an honest ``columns_analyzed``.
+SCAN_COLUMNS: tuple[str, ...] = (
+    "event_time",
+    "event_type",
+    "event_name",
+    "screen_name",
+    "platform",
+    "button_id",
+    "product_id",
+    "amount",
+    "currency",
+    "app_version",
+)
+_SCAN_BASE_QUERY = f"SELECT {', '.join(SCAN_COLUMNS)} FROM events"
+
 
 def _synthetic_event_group_rules() -> list[dict[str, object]]:
     """One anchored group rule per distinct synthetic ``event_name``.
@@ -101,7 +120,17 @@ async def _build_scan_config(session: AsyncSession, ctx: DemoContext) -> None:
         name="Demo scan",
         # Selects the synthetic ``events`` table so the normal preview/scan paths
         # run against the in-memory dataset served by the SyntheticAdapter.
-        base_query="SELECT * FROM events",
+        #
+        # The projection is EXPLICIT rather than ``SELECT *`` (bd tripl-jfm3.57):
+        # ``user_id``/``session_id`` back the ``active_sessions`` sql metric, not
+        # the catalog, and a ``SELECT *`` scan handed them to the hourly catalog
+        # sync, which auto-created ``USER_ID``/``SESSION_ID`` FieldDefinitions on
+        # every event type and filled the curated events table with raw sample
+        # values (``s29_5``, ``u0``). Listing the columns the plan actually models
+        # — plus the reserved dimensions (time, event type, platform, app
+        # version) and the ``event_name`` identity the group rules key on — keeps
+        # a rescan a no-op for the catalog.
+        base_query=_SCAN_BASE_QUERY,
         time_column="event_time",  # required for _get_default_scan_config_id
         # ``event_type`` groups synthetic rows into the authored event types
         # (screen_view/click/purchase) so a real Run now / Replay over the

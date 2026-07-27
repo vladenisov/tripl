@@ -51,6 +51,7 @@ SECURITY_FIELDS = (
     "rate_limit_login_per_minute",
     "rate_limit_register_per_hour",
     "rate_limit_trust_forwarded_for",
+    "registration_mode",
 )
 STORAGE_FIELDS = (
     "photo_storage_backend",
@@ -178,6 +179,7 @@ def env_service_values() -> dict[str, Any]:
         "rate_limit_login_per_minute": settings.rate_limit_login_per_minute,
         "rate_limit_register_per_hour": settings.rate_limit_register_per_hour,
         "rate_limit_trust_forwarded_for": settings.rate_limit_trust_forwarded_for,
+        "registration_mode": settings.registration_mode,
         "photo_storage_backend": settings.photo_storage_backend,
         "photo_local_dir": settings.photo_local_dir,
         "photo_max_size_mb": settings.photo_max_size_mb,
@@ -383,17 +385,35 @@ def get_runtime_config_sync(session: Session | None = None) -> RuntimeConfig:
         return env_runtime_config()
 
 
+# Fields excluded from the startup apply below because they are resolved live
+# per request instead. ``registration_mode`` gates POST /auth/register, and an
+# owner closing registration on a public instance must take effect on the very
+# next request — "on the next deploy" is not an acceptable latency for shutting
+# a door. See ``get_registration_mode``.
+LIVE_APPLIED_FIELDS: frozenset[str] = frozenset({"registration_mode"})
+
 # Sections whose values are read directly off the ``settings`` singleton by
 # import-time consumers — the middleware stack, auth rate limiters, logging
 # config and the /metrics route. Unlike runtime/email/ai (consumed through
 # build_*_config at request/task time), their overrides only take effect when
 # applied back onto ``settings`` at process startup. None of these fields are
 # secrets (SECRET_FIELDS are ai/smtp only), so no decryption is needed here.
-STARTUP_APPLIED_FIELDS: tuple[str, ...] = (
-    *SECURITY_FIELDS,
-    *STORAGE_FIELDS,
-    *OBSERVABILITY_FIELDS,
+STARTUP_APPLIED_FIELDS: tuple[str, ...] = tuple(
+    field
+    for field in (*SECURITY_FIELDS, *STORAGE_FIELDS, *OBSERVABILITY_FIELDS)
+    if field not in LIVE_APPLIED_FIELDS
 )
+
+
+async def get_registration_mode(session: AsyncSession) -> str:
+    """Effective self-service registration mode (DB override -> env).
+
+    Read per request rather than pinned onto ``settings`` at startup, so an
+    owner toggling registration in Settings -> Security closes (or reopens) the
+    door immediately. Returns one of :data:`tripl.config.REGISTRATION_MODES`.
+    """
+    values = build_service_values(await get_service_overrides(session))
+    return str(values["registration_mode"])
 
 
 def apply_startup_service_overrides(session: Session | None = None) -> list[str]:
@@ -508,6 +528,7 @@ def public_service_settings(overrides: dict[str, Any]) -> dict[str, Any]:
             "rate_limit_login_per_minute": values["rate_limit_login_per_minute"],
             "rate_limit_register_per_hour": values["rate_limit_register_per_hour"],
             "rate_limit_trust_forwarded_for": values["rate_limit_trust_forwarded_for"],
+            "registration_mode": values["registration_mode"],
         },
         "storage": {
             "photo_storage_backend": values["photo_storage_backend"],

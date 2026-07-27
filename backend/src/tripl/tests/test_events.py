@@ -854,6 +854,45 @@ async def test_filter_by_status(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["active", "proposed", "review", "zzz", ""])
+async def test_filter_by_out_of_enum_status_returns_422(client: AsyncClient, value: str):
+    """A status outside EventStatus is user input, not a server fault.
+
+    The column is a native Postgres enum, so an unvalidated value reached the
+    driver and surfaced as a 500 with an unusable request_id (tripl-jfm3.24).
+    """
+    await _setup_events(client, f"ev-badstatus-{value or 'empty'}")
+    resp = await client.get(
+        f"/api/v1/projects/ev-badstatus-{value or 'empty'}/events?limit=1&status={value}"
+    )
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    status_errors = [error for error in detail if "status" in error["loc"]]
+    assert status_errors, detail
+    # The error names the accepted members so an API consumer can self-correct.
+    assert "live" in str(status_errors[0])
+
+
+@pytest.mark.asyncio
+async def test_filter_by_multiple_statuses(client: AsyncClient):
+    """Repeated status params still union — the enum type keeps list semantics."""
+    et_id, field_id, _ = await _setup_events(client, "ev-multistatus")
+    for name, status in (("Live One", "live"), ("Draft One", "draft"), ("Gone", "archived")):
+        await client.post(
+            "/api/v1/projects/ev-multistatus/events",
+            json={
+                "event_type_id": et_id,
+                "name": name,
+                "status": status,
+                "field_values": [{"field_definition_id": field_id, "value": "s"}],
+            },
+        )
+    resp = await client.get("/api/v1/projects/ev-multistatus/events?status=live&status=draft")
+    assert resp.status_code == 200
+    assert {item["name"] for item in resp.json()["items"]} == {"Live One", "Draft One"}
+
+
+@pytest.mark.asyncio
 async def test_filter_by_tag(client: AsyncClient):
     et_id, field_id, _ = await _setup_events(client, "ev-ftag")
     await client.post(

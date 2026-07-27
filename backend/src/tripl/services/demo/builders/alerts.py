@@ -21,7 +21,9 @@ calls a service that commits internally.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, timedelta
+from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
+from statistics import median
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,11 +61,27 @@ _DISABLED_EXTERNAL_NAME = "Slack (disabled — connect a webhook to enable)"
 _FIRING_RULE_NAME = "Spike & drift watch (demo)"
 _HEALTHY_RULE_NAME = "Weekly release health (quiet)"
 
-_METRIC_ANOMALY_LOOKBACK_DAYS = 1
-_METRIC_ANOMALY_SPIKE_FACTOR = 1.5
+# Seeded catalog-metric spike: scored against the median of the whole stored
+# series, over the most recent complete buckets, so the signal is on-grid and
+# genuinely high against its own baseline (bd tripl-jfm3.63).
+_METRIC_ANOMALY_RECENT_BUCKETS = 7
+_METRIC_ANOMALY_MIN_POINTS = 3
+_METRIC_ANOMALY_Z_SCORE = 3.0
+_METRIC_ANOMALY_MIN_STDDEV = 0.001
 _LOCAL_NOTICE = (
     "Simulated local delivery (demo_sink) — rendered and recorded locally with "
     "no external message sent."
+)
+
+# One FAILED earlier attempt at the same incident. The Audit table only offers
+# Retry on a failed row, and the local sink cannot fail, so without a seeded
+# failure the retry the docs promise is unreachable in a demo (tripl-jfm3.59).
+# It is recorded against the local sink, so pressing Retry re-dispatches it down
+# the normal path and it succeeds — a complete, safe round trip.
+_FAILED_DELIVERY_AGE_HOURS = 3
+_FAILED_DELIVERY_ERROR = (
+    "Simulated transport failure (demo): the local sink was unavailable on the "
+    "first attempt. Use Retry to re-dispatch this delivery."
 )
 
 
@@ -168,6 +186,30 @@ async def build_alerts(session: AsyncSession, ctx: DemoContext) -> None:
         },
     )
     session.add(delivery)
+    # The earlier, failed attempt at the same incident (no items of its own —
+    # the successful delivery above owns the incident's item list).
+    session.add(
+        AlertDelivery(
+            project_id=ctx.project_id,
+            scan_config_id=ctx.scan_config_id,
+            destination_id=demo_sink.id,
+            rule_id=firing_rule.id,
+            status=AlertDeliveryStatus.failed.value,
+            channel=AlertDestinationType.demo_sink.value,
+            matched_count=len(firings),
+            dispatch_attempts=1,
+            error_message=_FAILED_DELIVERY_ERROR,
+            created_at=ctx.now - timedelta(hours=_FAILED_DELIVERY_AGE_HOURS),
+            payload_snapshot={
+                "message_format": AlertMessageFormat.plain.value,
+                "rendered_message": rendered_message,
+                "delivery_mode": "local_sink",
+                "is_local": True,
+                "simulated": True,
+                "local_notice": _LOCAL_NOTICE,
+            },
+        )
+    )
     await session.flush()
 
     for firing in firings:
@@ -245,39 +287,61 @@ async def build_alerts(session: AsyncSession, ctx: DemoContext) -> None:
 async def _seed_catalog_metric_anomaly(
     session: AsyncSession, ctx: DemoContext
 ) -> MetricAnomaly | None:
-    """Seed one ``metric``-scope anomaly over the first seeded catalog metric.
+    """Seed one ``metric``-scope anomaly over the demo's first catalog metric.
 
     Catalog metrics ship per-bucket values but no anomaly, so without this the
     firing rule's ``include_metrics`` opt-in would have nothing to match. The
     row is project-global (NULL ``scan_config_id``), matching the live metric
-    detector, and is derived from the metric's latest stored value so the numbers
-    read plausibly.
-    """
-    metric = (
-        await session.execute(
-            select(MetricDefinition)
-            .where(MetricDefinition.project_id == ctx.project_id)
-            .order_by(MetricDefinition.created_at)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if metric is None:
-        return None
+    detector.
 
-    latest_value = (
-        await session.execute(
-            select(MetricValue.value)
-            .where(MetricValue.metric_definition_id == metric.id)
-            .order_by(MetricValue.bucket.desc())
-            .limit(1)
+    The anomaly describes a REAL feature of the stored series (bd tripl-jfm3.63):
+    it lands ON an existing stored bucket — so it is always on the metric's
+    interval grid instead of adding a half-day-offset point to a daily chart —
+    reports that bucket's stored value as ``actual``, and scores it against the
+    series' median rather than against the newest bucket (which is the current
+    PARTIAL period, and therefore itself the lowest point on the chart).
+    """
+    metrics = (
+        (
+            await session.execute(
+                select(MetricDefinition)
+                .where(MetricDefinition.project_id == ctx.project_id)
+                # ``order`` first: every demo metric is inserted with the same
+                # ``created_at``, so ordering by it alone let Postgres break the
+                # tie arbitrarily and the seeded anomaly landed on a different
+                # metric per install (bd tripl-jfm3.63).
+                .order_by(MetricDefinition.order, MetricDefinition.created_at, MetricDefinition.id)
+            )
         )
-    ).scalar_one_or_none()
-    expected = float(latest_value) if latest_value else 1.0
-    actual = expected * _METRIC_ANOMALY_SPIKE_FACTOR
-    bucket = (ctx.now - timedelta(days=_METRIC_ANOMALY_LOOKBACK_DAYS)).replace(
-        minute=0, second=0, microsecond=0
+        .scalars()
+        .all()
     )
-    stddev = abs(actual - expected) / 3.0 or 0.001
+    # The FIRST metric (in display order) whose stored series is long enough to
+    # score. Ordering alone is not sufficient: a metric whose values could not be
+    # derived would otherwise silently leave the firing rule's ``include_metrics``
+    # opt-in with nothing to match.
+    scored: tuple[datetime, float, float] | None = None
+    metric: MetricDefinition | None = None
+    for candidate in metrics:
+        stored = (
+            (
+                await session.execute(
+                    select(MetricValue.bucket, MetricValue.value)
+                    .where(MetricValue.metric_definition_id == candidate.id)
+                    .order_by(MetricValue.bucket)
+                )
+            )
+            .tuples()
+            .all()
+        )
+        scored = _pick_metric_anomaly_bucket(stored)
+        if scored is not None:
+            metric = candidate
+            break
+    if metric is None or scored is None:
+        return None
+    bucket, actual, expected = scored
+
     anomaly = MetricAnomaly(
         scan_config_id=None,
         scope_type=MetricScopeType.metric.value,
@@ -287,13 +351,37 @@ async def _seed_catalog_metric_anomaly(
         bucket=bucket,
         actual_count=actual,
         expected_count=expected,
-        stddev=stddev,
-        z_score=3.0,
+        # Consistent with z: actual = expected + z * stddev. Floored so a
+        # near-flat series can never store a zero/degenerate stddev.
+        stddev=max((actual - expected) / _METRIC_ANOMALY_Z_SCORE, _METRIC_ANOMALY_MIN_STDDEV),
+        z_score=_METRIC_ANOMALY_Z_SCORE,
         direction=AnomalyDirection.spike.value,
     )
     session.add(anomaly)
     await session.flush()
     return anomaly
+
+
+def _pick_metric_anomaly_bucket(
+    stored: Sequence[tuple[datetime, float]],
+) -> tuple[datetime, float, float] | None:
+    """``(bucket, actual, expected)`` for the seeded metric spike, or ``None``.
+
+    ``actual`` is the largest stored value in the recent candidate window and
+    ``expected`` the median of the whole series, so the seeded alert quotes a
+    value that really is high against the surrounding baseline. The newest bucket
+    is excluded: it is the current, still-filling period.
+    """
+    candidates = list(stored[:-1])
+    if len(candidates) < _METRIC_ANOMALY_MIN_POINTS:
+        return None
+    expected = float(median(value for _bucket, value in candidates))
+    bucket, actual = max(
+        candidates[-_METRIC_ANOMALY_RECENT_BUCKETS:], key=lambda point: (point[1], point[0])
+    )
+    if float(actual) <= expected:
+        return None
+    return bucket, float(actual), expected
 
 
 async def _select_firing_anomalies(

@@ -18,11 +18,12 @@ from tripl.auth_utils import (
     password_hash_needs_rehash,
     verify_password,
 )
-from tripl.config import settings
+from tripl.config import REGISTRATION_OPEN, settings
 from tripl.models.password_reset_token import PasswordResetToken
 from tripl.models.user import User
 from tripl.models.user_session import UserSession
 from tripl.schemas.auth import LoginRequest, RegisterRequest
+from tripl.services import app_settings_service
 
 # Password-reset link lifetime. Short on purpose: a reset link is a bearer
 # credential, so it should be usable just long enough for a human to open their
@@ -31,6 +32,14 @@ PASSWORD_RESET_TTL_HOURS = 1
 # 32 bytes ≈ 256 bits of entropy via ``secrets.token_urlsafe`` — the same
 # generator and width as session tokens, so a reset token is never guessable.
 PASSWORD_RESET_TOKEN_BYTES = 32
+
+# Shown when a closed instance refuses a signup. Names the exact lever so the
+# would-be member can tell an owner what to do, without hinting at whether the
+# submitted address already has an account.
+REGISTRATION_CLOSED_MESSAGE = (
+    "Registration is closed on this instance. Ask an owner to enable it under "
+    "Settings -> Security (or set REGISTRATION_MODE=open) to create an account."
+)
 
 # Single neutral message for both the "we emailed you" and "no such account"
 # cases so the request endpoint never reveals whether an address is registered.
@@ -108,14 +117,20 @@ async def _acquire_first_owner_xact_lock(session: AsyncSession) -> None:
     )
 
 
+async def is_registration_allowed(session: AsyncSession, *, is_first_user: bool) -> bool:
+    """Whether POST /auth/register would be accepted right now.
+
+    The first-owner bootstrap on an empty instance is always allowed — otherwise
+    a fresh deploy with the (default) closed policy could never be claimed by
+    anyone. Every later signup needs the instance to be in "open" mode.
+    """
+    if is_first_user:
+        return True
+    return await app_settings_service.get_registration_mode(session) == REGISTRATION_OPEN
+
+
 async def register_user(session: AsyncSession, data: RegisterRequest) -> tuple[User, str]:
     email = normalize_email(data.email)
-    existing = await _get_user_by_email(session, email)
-    if existing is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="User with this email already exists",
-        )
 
     # First registered user becomes owner so the instance always has at least
     # one operator who can manage roles; subsequent users default to editor.
@@ -123,7 +138,25 @@ async def register_user(session: AsyncSession, data: RegisterRequest) -> tuple[U
     # check and held until this registration's commit, so a concurrent first
     # registration waits and then observes this user — exactly one owner.
     await _acquire_first_owner_xact_lock(session)
-    role = "owner" if not await has_any_users(session) else "editor"
+    is_first_user = not await has_any_users(session)
+
+    # Checked BEFORE the duplicate-email lookup on purpose: on a closed instance
+    # every anonymous signup attempt gets the same 403, so the endpoint can't be
+    # used to probe which addresses are registered.
+    if not await is_registration_allowed(session, is_first_user=is_first_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=REGISTRATION_CLOSED_MESSAGE,
+        )
+
+    existing = await _get_user_by_email(session, email)
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="User with this email already exists",
+        )
+
+    role = "owner" if is_first_user else "editor"
 
     user = User(
         email=email,

@@ -581,7 +581,7 @@ async def test_revert_restores_a_variables_documented_values(client: AsyncClient
     branch_id = await _branch(client, slug)
 
     variables = await client.get(f"/api/v1/projects/{slug}/variables?branch={branch_id}")
-    branch_var = next(v for v in variables.json() if v["name"] == "currency")
+    branch_var = next(v for v in variables.json()["items"] if v["name"] == "currency")
     await client.patch(
         f"/api/v1/projects/{slug}/variables/{branch_var['id']}?branch={branch_id}",
         json={"allowed_values": ["USD", "EUR"]},
@@ -598,7 +598,7 @@ async def test_revert_restores_a_variables_documented_values(client: AsyncClient
     assert resp.status_code == 200, resp.text
     assert resp.json()["entries"] == []
     variables = await client.get(f"/api/v1/projects/{slug}/variables?branch={branch_id}")
-    restored = next(v for v in variables.json() if v["name"] == "currency")
+    restored = next(v for v in variables.json()["items"] if v["name"] == "currency")
     assert restored["allowed_values"] == ["USD"]
 
 
@@ -619,7 +619,7 @@ async def test_revert_rebuilds_a_deleted_variable(client: AsyncClient) -> None:
     branch_id = await _branch(client, slug)
 
     variables = await client.get(f"/api/v1/projects/{slug}/variables?branch={branch_id}")
-    branch_var = next(v for v in variables.json() if v["name"] == "currency")
+    branch_var = next(v for v in variables.json()["items"] if v["name"] == "currency")
     deleted = await client.delete(
         f"/api/v1/projects/{slug}/variables/{branch_var['id']}?branch={branch_id}"
     )
@@ -630,6 +630,6 @@ async def test_revert_rebuilds_a_deleted_variable(client: AsyncClient) -> None:
     assert resp.json()["entries"] == []
 
     variables = await client.get(f"/api/v1/projects/{slug}/variables?branch={branch_id}")
-    restored = next(v for v in variables.json() if v["name"] == "currency")
+    restored = next(v for v in variables.json()["items"] if v["name"] == "currency")
     assert restored["allowed_values"] == ["USD"]
     assert restored["bindings"] == ["page_data.currency"]

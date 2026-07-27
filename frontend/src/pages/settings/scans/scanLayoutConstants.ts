@@ -12,13 +12,16 @@ export const INTERVAL_LABEL: Record<string, string> = {
 
 // Status derived from the latest job. The real ScanConfig has no status field, so
 // callers map their job state into this canonical set.
-export type ScanStatus = 'ok' | 'running' | 'failed' | 'idle'
+// `unknown` covers the window before a scan's job query resolves — the row has
+// no verdict yet, so it must not claim "Never run" (tripl-jfm3.28).
+export type ScanStatus = 'ok' | 'running' | 'failed' | 'idle' | 'unknown'
 
 export const STATUS_META: Record<ScanStatus, { tone: DotTone; chip: ChipTone; label: string }> = {
   ok: { tone: 'success', chip: 'success', label: 'Healthy' },
   running: { tone: 'info', chip: 'info', label: 'Running' },
   failed: { tone: 'danger', chip: 'danger', label: 'Last run failed' },
   idle: { tone: 'neutral', chip: 'neutral', label: 'Never run' },
+  unknown: { tone: 'neutral', chip: 'neutral', label: 'Loading…' },
 }
 
 // Format a row/count number compactly (e.g. 1.8M) to mirror the mockup's fmtS.

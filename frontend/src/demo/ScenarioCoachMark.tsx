@@ -112,6 +112,12 @@ export function ScenarioCoachMark({
     anchorEl.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' })
   }, [visible, anchorEl, step])
 
+  // A control inside a data table has no adjacent space that is not table: every
+  // side the card can open on lands on the rows it is explaining, and Radix only
+  // flips to avoid the VIEWPORT edge, not the content underneath (tripl-jfm3.62).
+  // Such marks keep the ring on the control and dock the card clear of the grid.
+  const docked = visible && anchorEl?.closest('table') != null
+
   if (!visible) return <>{children}</>
 
   const position = steps.findIndex((candidate) => candidate.id === activeStep.id) + 1
@@ -119,6 +125,32 @@ export function ScenarioCoachMark({
   // Deep-link steps carry no placement of their own; a mark placed on one
   // anyway falls back to a neutral bottom/center card.
   const coach = activeStep.coach
+  const ringed = (emphasis ?? coach?.emphasis ?? 'ring') === 'ring'
+  const card = (
+    <CoachCard position={position} total={steps.length} instruction={activeStep.instruction} onMute={muteHints} />
+  )
+
+  if (docked) {
+    return (
+      <>
+        {isValidElement(children)
+          ? cloneElement(children as ReactElement<Record<string, unknown>>, {
+              ref: anchorRef,
+              'data-coach-target': step,
+            })
+          : children}
+        {ringed && anchorEl && <CoachBeacon anchor={anchorEl} />}
+        <div
+          role="note"
+          data-coach-docked="true"
+          className="fixed bottom-4 right-4 z-50 w-64 rounded-lg border p-3 shadow-lg motion-reduce:animate-none"
+          style={{ background: 'var(--bg-elevated)', borderColor: 'var(--accent)' }}
+        >
+          {card}
+        </div>
+      </>
+    )
+  }
 
   return (
     // Open with no `onOpenChange`: Escape and outside clicks reach Radix and
@@ -139,9 +171,7 @@ export function ScenarioCoachMark({
       ) : (
         <PopoverAnchor>{children}</PopoverAnchor>
       )}
-      {(emphasis ?? coach?.emphasis ?? 'ring') === 'ring' && anchorEl && (
-        <CoachBeacon anchor={anchorEl} />
-      )}
+      {ringed && anchorEl && <CoachBeacon anchor={anchorEl} />}
       <PopoverContent
         role="note"
         side={side ?? coach?.side ?? 'bottom'}
@@ -159,22 +189,41 @@ export function ScenarioCoachMark({
           height={6}
           style={{ fill: 'var(--bg-elevated)', stroke: 'var(--accent)' }}
         />
-        <p
-          className="text-[10px] font-semibold uppercase tracking-[0.07em]"
-          style={{ color: 'var(--fg-faint)' }}
-        >
-          Step {position} of {steps.length}
-        </p>
-        <p className="mt-1 text-[12px] leading-[1.5]">{activeStep.instruction}</p>
-        <button
-          type="button"
-          onClick={muteHints}
-          className="mt-2 rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
-          style={{ color: 'var(--fg-muted)' }}
-        >
-          Hide hints
-        </button>
+        {card}
       </PopoverContent>
     </Popover>
+  )
+}
+
+/** The card body, identical whether it is anchored or docked. */
+function CoachCard({
+  position,
+  total,
+  instruction,
+  onMute,
+}: {
+  position: number
+  total: number
+  instruction: string
+  onMute: () => void
+}) {
+  return (
+    <>
+      <p
+        className="text-[10px] font-semibold uppercase tracking-[0.07em]"
+        style={{ color: 'var(--fg-faint)' }}
+      >
+        Step {position} of {total}
+      </p>
+      <p className="mt-1 text-[12px] leading-[1.5]">{instruction}</p>
+      <button
+        type="button"
+        onClick={onMute}
+        className="mt-2 rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+        style={{ color: 'var(--fg-muted)' }}
+      >
+        Hide hints
+      </button>
+    </>
   )
 }

@@ -64,7 +64,7 @@ async def test_list_value_drifts_and_open_count(client: AsyncClient):
     assert other.json()["total"] == 0
 
     variables = await client.get("/api/v1/projects/vvd-list/variables")
-    assert variables.json()[0]["open_drift_count"] == 1
+    assert variables.json()["items"][0]["open_drift_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -80,7 +80,7 @@ async def test_accept_global_appends_to_allowed_values(client: AsyncClient):
     assert resp.json()["status"] == "accepted"
 
     variables = await client.get("/api/v1/projects/vvd-accept/variables")
-    var = variables.json()[0]
+    var = variables.json()["items"][0]
     assert var["allowed_values"] == ["a", "b", "x"]
     # Accepted drift no longer counts as open.
     assert var["open_drift_count"] == 0
@@ -99,7 +99,7 @@ async def test_accept_event_scope_seeds_override(client: AsyncClient):
 
     # Global list untouched; the override is seeded from it plus the novel value.
     variables = await client.get("/api/v1/projects/vvd-accept-ev/variables")
-    assert variables.json()[0]["allowed_values"] == ["a", "b"]
+    assert variables.json()["items"][0]["allowed_values"] == ["a", "b"]
     overrides = await client.get(
         f"/api/v1/projects/vvd-accept-ev/variables/{var_id}/event-overrides"
     )
@@ -126,7 +126,7 @@ async def test_snooze_requires_until_then_resolve_and_reopen(client: AsyncClient
     assert snoozed.json()["status"] == "snoozed"
     variables = await client.get("/api/v1/projects/vvd-snooze/variables")
     # Snoozed into the future -> not open.
-    assert variables.json()[0]["open_drift_count"] == 0
+    assert variables.json()["items"][0]["open_drift_count"] == 0
 
     fp = await client.post(
         f"/api/v1/projects/vvd-snooze/variables/drifts/{drift_id}/action",

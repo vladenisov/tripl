@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { ScanJob } from '@/types'
+import { STATUS_META } from './scanLayoutConstants'
 import {
+  LOADING_SCAN_RUN_INFO,
   consecutiveFailedRuns,
   deriveScanRunInfo,
   eligibleChunkIntervals,
@@ -55,6 +57,16 @@ describe('summarizeScanChanges', () => {
 describe('deriveScanRunInfo', () => {
   it('returns idle when there are no jobs', () => {
     expect(deriveScanRunInfo([])).toMatchObject({ status: 'idle', lastRunLabel: 'never' })
+  })
+
+  // "Never run" is a verdict. Coercing an unresolved job query to `[]` made
+  // every row claim it had never run while the activity rail on the same screen
+  // listed completed runs (tripl-jfm3.28).
+  it('reports unknown — not idle — while the job query is still loading', () => {
+    expect(deriveScanRunInfo(undefined)).toEqual(LOADING_SCAN_RUN_INFO)
+    expect(deriveScanRunInfo(undefined).status).toBe('unknown')
+    expect(deriveScanRunInfo(undefined).lastRunLabel).not.toBe('never')
+    expect(STATUS_META[deriveScanRunInfo(undefined).status].label).not.toBe('Never run')
   })
 
   it('reports running for an in-flight latest job', () => {

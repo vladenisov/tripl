@@ -8,7 +8,11 @@ import { ErrorState } from './components/error-state'
 import Layout from './components/Layout'
 import { ThemeProvider } from './components/theme-provider'
 import { Toaster } from './components/ui/sonner'
-import { resolveTitleFromPath, useDocumentTitle } from './hooks/useDocumentTitle'
+import {
+  NOT_FOUND_TITLE_LABEL,
+  resolveTitleFromPath,
+  useDocumentTitle,
+} from './hooks/useDocumentTitle'
 
 const AuthPage = lazy(() => import('./pages/AuthPage'))
 const MainPage = lazy(() => import('./pages/ProjectsPage'))
@@ -245,7 +249,24 @@ function HomeRoute() {
 function DocumentTitle() {
   const { pathname } = useLocation()
   const { label, slug } = resolveTitleFromPath(pathname)
-  useDocumentTitle(label, slug)
+  // `enabled: false` — this only READS the shared `['projects']` cache that the
+  // shell already populates; it must never fetch, because DocumentTitle is also
+  // mounted on `/auth` where there is no session. Until the cache fills, an
+  // unknown slug is indistinguishable from a not-yet-loaded one and the
+  // path-derived title stands.
+  const { data: projects } = useQuery({
+    queryKey: ['projects'],
+    queryFn: projectsApi.list,
+    enabled: false,
+  })
+  const slugIsUnknown = !!slug && !!projects && !projects.some((p) => p.slug === slug)
+
+  // An invented slug must not be echoed back as if it named a real workspace —
+  // the shell shows a not-found state for it, so the tab has to agree.
+  useDocumentTitle(
+    slugIsUnknown ? NOT_FOUND_TITLE_LABEL : label,
+    slugIsUnknown ? undefined : slug,
+  )
   return null
 }
 
@@ -325,6 +346,12 @@ export default function App() {
             <Route path="/p/:slug/settings/:tab" element={withSuspense(<ProjectSettingsPage />)} />
             <Route path="/p/:slug/settings" element={withSuspense(<ProjectSettingsPage />)} />
             <Route path="/p/:slug" element={withSuspense(<EventsPage />)} />
+            {/* Project-scoped catch-all. It has to exist separately from the
+                global one below: only a route that declares `:slug` puts the
+                param in scope for Layout, so an unmatched path under a real
+                project keeps THAT project's sidebar and breadcrumb instead of
+                collapsing to the workspace shell (tripl-jfm3.3). */}
+            <Route path="/p/:slug/*" element={withSuspense(<NotFoundPage />)} />
             {/* Catch-all: render the app shell + not-found state for any
                 unmatched authed path instead of a blank screen. */}
             <Route path="*" element={withSuspense(<NotFoundPage />)} />

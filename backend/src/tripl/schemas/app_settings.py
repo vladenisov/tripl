@@ -6,6 +6,10 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field, field_validator
 
 SettingSource = Literal["env", "override"]
+# Self-service registration policy. "open" lets anyone reaching the instance
+# create an account; "disabled" refuses new signups (the first-owner bootstrap
+# on an empty instance stays exempt so a fresh install can still be claimed).
+RegistrationMode = Literal["open", "disabled"]
 
 
 class RuntimeSettings(BaseModel):
@@ -33,6 +37,7 @@ class SecuritySettings(BaseModel):
     rate_limit_login_per_minute: int
     rate_limit_register_per_hour: int
     rate_limit_trust_forwarded_for: bool
+    registration_mode: RegistrationMode
 
 
 class SecuritySettingsUpdate(BaseModel):
@@ -48,6 +53,7 @@ class SecuritySettingsUpdate(BaseModel):
     rate_limit_login_per_minute: int | None = Field(default=None, ge=0)
     rate_limit_register_per_hour: int | None = Field(default=None, ge=0)
     rate_limit_trust_forwarded_for: bool | None = None
+    registration_mode: RegistrationMode | None = None
 
 
 class StorageSettings(BaseModel):

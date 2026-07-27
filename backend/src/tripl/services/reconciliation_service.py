@@ -252,10 +252,17 @@ async def list_dead_events(
                 Event.project_id == project_id,
                 Event.branch_id == main_branch_id,
                 Event.status.in_(["implemented", "live"]),
-                # Grace period: an event created inside the window legitimately
-                # has no data yet — don't report it as dead.
-                Event.created_at < cutoff,
-                (Event.last_seen_at.is_(None)) | (Event.last_seen_at < cutoff),
+                # An event that HAS been seen and then went quiet is dead
+                # regardless of when its plan row was written. The grace period
+                # covers only the never-seen case, where a freshly authored
+                # event legitimately has no data yet. Gating both cases on
+                # created_at hid genuinely stale events behind a young plan row
+                # and made every backdated demo event permanently unflaggable
+                # (tripl-jfm3.58).
+                (
+                    (Event.last_seen_at.is_(None) & (Event.created_at < cutoff))
+                    | (Event.last_seen_at < cutoff)
+                ),
             )
             .order_by(Event.last_seen_at.asc().nulls_first(), Event.name)
         )

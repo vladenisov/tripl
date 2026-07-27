@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+import { DEMO_PROVISION_ESTIMATE } from '@/demo/provisioningPhases'
 import { WorkspaceWelcome } from './workspace-welcome'
 import { WELCOME_PILLARS } from './workspace-welcome-pillars'
 
@@ -31,8 +32,10 @@ describe('WorkspaceWelcome', () => {
     ).toBeInTheDocument()
 
     // Primary demo CTA with its caption, secondary empty-project CTA with its own.
+    // The wait-time claim comes from the one shared constant the provisioning
+    // dialog also renders, so the hero cannot drift from it (tripl-jfm3.16).
     expect(
-      screen.getByText(/Builds a complete example in ~10 seconds/),
+      screen.getByText(new RegExp(`Builds a complete example in ${DEMO_PROVISION_ESTIMATE}`)),
     ).toBeInTheDocument()
     expect(
       screen.getByText('Start empty and connect your own warehouse.'),

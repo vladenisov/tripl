@@ -1,30 +1,38 @@
 """Tests for the demo project generator endpoint."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from statistics import median
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tripl.core.adapters.registry import build_adapter
 from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT
 from tripl.core.analyzers.distribution_drift import PSI_BAND_MINOR, PSI_BAND_SIGNIFICANT
+from tripl.core.bucketing import floor_to_bucket
 from tripl.models.data_source import DataSource, TestStatus
 from tripl.models.distribution_drift import DistributionDrift
-from tripl.models.domain_enums import ProjectGenerationStatus
+from tripl.models.domain_enums import MetricScopeType, ProjectGenerationStatus
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_definition import MetricDefinition
+from tripl.models.metric_value import MetricValue
 from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
+from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.schema_drift import SCHEMA_DRIFT_STATUS_OPEN
+from tripl.models.variable import Variable
 from tripl.models.variable_value_drift import VariableValueDrift
-from tripl.services import plan_branch_service
+from tripl.services import demo_service, plan_branch_service
 from tripl.services.demo import DemoContext, noise, seed_demo_content
 from tripl.services.demo.builders import plan
+from tripl.services.demo.builders.variables import DRIFT_OBSERVED_VALUES
 from tripl.services.demo.scenario import DEMO_SEED
 from tripl.tests.conftest import TestSessionLocal
 
@@ -665,3 +673,472 @@ async def test_reset_purges_branch_plan_entities_and_drift(client: AsyncClient) 
             )
         ).scalar_one()
         assert new_drifts == 1
+
+
+async def _seeded_metric_anomaly(
+    session: AsyncSession, project_id: uuid.UUID
+) -> tuple[MetricAnomaly, MetricDefinition]:
+    """The project's one seeded ``metric``-scope anomaly and its definition."""
+    metric_ids = {
+        str(metric_id)
+        for metric_id in (
+            await session.execute(
+                select(MetricDefinition.id).where(MetricDefinition.project_id == project_id)
+            )
+        )
+        .scalars()
+        .all()
+    }
+    rows = (
+        (
+            await session.execute(
+                select(MetricAnomaly).where(
+                    MetricAnomaly.scope_type == MetricScopeType.metric.value,
+                    MetricAnomaly.scan_config_id.is_(None),
+                    MetricAnomaly.scope_ref.in_(metric_ids),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1, f"expected exactly one seeded metric anomaly, got {len(rows)}"
+    metric = await session.get(MetricDefinition, uuid.UUID(rows[0].scope_ref))
+    assert metric is not None
+    return rows[0], metric
+
+
+def _same_instant(left: datetime, right: datetime) -> bool:
+    """Compare two datetimes that may differ only in tz-awareness (SQLite)."""
+    return left.replace(tzinfo=None) == right.replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
+async def test_seeded_scan_history_runs_are_internally_consistent() -> None:
+    """Each backfilled run reports its OWN hour, rows and wall time.
+
+    They used to be constants: three consecutive hourly runs all claimed the
+    same window (anchored to the seed instant, so the older two "scanned" an
+    hour that had not happened yet), byte-identical millions of rows and an
+    identical 42.0s — next to a real Run now reporting ~30K rows in ~3s
+    (bd tripl-jfm3.61).
+    """
+    async with TestSessionLocal() as session:
+        project_id = await _seed_fixture(session, "demo-scanhistory")
+        scan_config_id = await _scan_config_id_for_project(session, project_id)
+        jobs = (
+            (
+                await session.execute(
+                    select(ScanJob)
+                    .where(
+                        ScanJob.scan_config_id == scan_config_id,
+                        ScanJob.status == ScanJobStatus.completed.value,
+                    )
+                    .order_by(ScanJob.started_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        totals = (
+            (
+                await session.execute(
+                    select(EventMetric.bucket, func.sum(EventMetric.count))
+                    .where(
+                        EventMetric.scan_config_id == scan_config_id,
+                        EventMetric.event_type_id.is_not(None),
+                    )
+                    .group_by(EventMetric.bucket)
+                )
+            )
+            .tuples()
+            .all()
+        )
+
+    assert len(jobs) >= 3
+    seeded_hour_totals = {bucket: total for bucket, total in totals}
+    windows: set[tuple[str, str]] = set()
+    rows_seen: set[int] = set()
+    for job in jobs:
+        summary = job.result_summary or {}
+        window_from = datetime.fromisoformat(str(summary["scan_window_from"]))
+        window_to = datetime.fromisoformat(str(summary["scan_window_to"]))
+        windows.add((str(summary["scan_window_from"]), str(summary["scan_window_to"])))
+        rows_seen.add(int(summary["scan_rows_processed"]))
+
+        # A run can only have scanned a window that had already closed. (SQLite
+        # hands datetimes back naive; the recipe stores UTC.)
+        started_at = job.started_at.replace(tzinfo=window_to.tzinfo)
+        assert window_to <= started_at, (window_to, started_at)
+        assert window_to - window_from == timedelta(hours=1)
+        # And it reports the volume the seeded warehouse holds for that hour.
+        bucket = next(key for key in seeded_hour_totals if _same_instant(key, window_from))
+        assert int(summary["scan_rows_processed"]) == seeded_hour_totals[bucket]
+
+    assert len(windows) == len(jobs), "each run must report its own window"
+    assert len(rows_seen) == len(jobs), "each run must report its own row count"
+    durations = [job.completed_at - job.started_at for job in jobs]
+    # The reported defect was three consecutive runs stamped with a byte-identical
+    # constant; two real runs may legitimately land on the same tenth of a second.
+    assert len(set(durations)) > 1, (
+        f"backfilled runs must not all report the same wall time, got {durations}"
+    )
+    assert all(timedelta(seconds=1) < duration < timedelta(seconds=30) for duration in durations), (
+        f"backfilled runs must land in the same band as a real Run now, got {durations}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_seeded_metric_anomaly_sits_on_the_metrics_own_bucket_grid() -> None:
+    """The seeded catalog-metric spike is on-grid and scored against a baseline.
+
+    It used to be written at ``now - 1 day`` with the hour preserved, which put a
+    half-day-offset point inside a 1-day series, and its ``expected`` was the
+    newest stored value — the current PARTIAL period, i.e. the lowest point on
+    the chart (bd tripl-jfm3.63).
+    """
+    async with TestSessionLocal() as session:
+        project_id = await _seed_fixture(session, "demo-metricanom")
+        anomaly, metric = await _seeded_metric_anomaly(session, project_id)
+        values = (
+            (
+                await session.execute(
+                    select(MetricValue.bucket, MetricValue.value)
+                    .where(MetricValue.metric_definition_id == metric.id)
+                    .order_by(MetricValue.bucket)
+                )
+            )
+            .tuples()
+            .all()
+        )
+        # Deterministic pick: the first SCOREABLE catalog metric by display
+        # order, not a Postgres tie-break over four identical created_at values.
+        second_project_id = await _seed_fixture(session, "demo-metricanom2")
+        _second_anomaly, second_metric = await _seeded_metric_anomaly(session, second_project_id)
+    assert second_metric.name == metric.name
+
+    by_bucket = {bucket: value for bucket, value in values}
+    # ON an existing stored bucket, so the chart gains no extra point...
+    assert anomaly.bucket in by_bucket
+    # ...and on the metric's own interval grid. (An event_composition metric
+    # inherits the scan config's interval and stores ``interval`` as NULL.)
+    if metric.interval is not None:
+        assert anomaly.bucket == floor_to_bucket(anomaly.bucket, str(metric.interval))
+    # Reports the stored value, scored against the series baseline (not the
+    # newest, still-filling bucket).
+    assert anomaly.actual_count == pytest.approx(by_bucket[anomaly.bucket])
+    assert anomaly.expected_count < anomaly.actual_count
+    assert anomaly.bucket != max(by_bucket)
+    assert anomaly.expected_count == pytest.approx(
+        median(by_bucket[b] for b in sorted(by_bucket)[:-1])
+    )
+
+
+@pytest.mark.asyncio
+async def test_demo_variables_document_their_allowed_values() -> None:
+    """``product_id`` ships a documented value list.
+
+    The coached "Variables & value drift" chapter tells the user to "compare
+    observed values against the documented list", but every demo variable had an
+    empty ``allowed_values``, so the column read "—" (bd tripl-jfm3.56).
+    """
+    async with TestSessionLocal() as session:
+        project_id = await _seed_fixture(session, "demo-allowedvalues")
+        variables = (
+            (
+                await session.execute(
+                    select(Variable)
+                    .where(Variable.project_id == project_id)
+                    .order_by(Variable.name)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    by_name = {variable.name: variable for variable in variables}
+    assert by_name["product_id"].allowed_values == [
+        "prod_monthly",
+        "prod_annual",
+        "prod_lifetime",
+    ]
+    # The seeded drift value must sit OUTSIDE the documented list, or the
+    # chapter's "a scan saw prod_weekly outside the documented values" is false.
+    assert not set(DRIFT_OBSERVED_VALUES) & set(by_name["product_id"].allowed_values)
+    # Unbounded identifiers stay undocumented — a list there would be a lie.
+    assert by_name["user_id"].allowed_values == []
+    assert by_name["session_id"].allowed_values == []
+
+
+@pytest.mark.asyncio
+async def test_demo_scan_config_does_not_expose_non_catalog_columns() -> None:
+    """The demo scan projects only the columns the curated plan models.
+
+    A ``SELECT *`` scan handed ``user_id``/``session_id`` (the active-sessions
+    metric's columns) to the hourly catalog sync, which auto-created USER_ID and
+    SESSION_ID FieldDefinitions on every event type and filled the curated events
+    table with raw sample values like ``s29_5`` (bd tripl-jfm3.57).
+    """
+    async with TestSessionLocal() as session:
+        project_id = await _seed_fixture(session, "demo-scancolumns")
+        config = (
+            await session.execute(select(ScanConfig).where(ScanConfig.project_id == project_id))
+        ).scalar_one()
+        data_source = await session.get(DataSource, config.data_source_id)
+    assert data_source is not None
+
+    adapter = build_adapter(data_source)
+    try:
+        exposed = {column.name for column in adapter.get_columns(config.base_query)}
+    finally:
+        adapter.close()
+
+    assert "user_id" not in exposed
+    assert "session_id" not in exposed
+    # Everything the plan models (plus the reserved metric dimensions and the
+    # identity column the group rules key on) is still there.
+    assert {
+        "event_time",
+        "event_type",
+        "event_name",
+        "screen_name",
+        "platform",
+        "button_id",
+        "product_id",
+        "amount",
+        "currency",
+        "app_version",
+    } <= exposed
+
+
+# ── Provisioning guardrails: cancel, per-creator cap, failed-shell sweep ──────
+
+
+@pytest.mark.asyncio
+async def test_cancel_request_reports_nothing_to_cancel_when_idle(client: AsyncClient) -> None:
+    """No in-flight provision means the caller must be told plainly, not lied to."""
+    resp = await client.post("/api/v1/projects/demo/cancel")
+    assert resp.status_code == 200
+    assert resp.json() == {"cancelled": False, "slug": None}
+
+
+@pytest.mark.asyncio
+async def test_cancel_request_flags_a_seeding_shell(client: AsyncClient) -> None:
+    """A shell still `seeding` is flagged so phase 2 abandons itself."""
+    me = (await client.get("/api/v1/auth/me")).json()
+    async with TestSessionLocal() as session:
+        shell = Project(
+            name="Demo Project",
+            slug="demo-inflight",
+            is_demo=True,
+            generation_status=ProjectGenerationStatus.seeding.value,
+            generation_stage="init",
+            created_by_user_id=uuid.UUID(me["id"]),
+        )
+        session.add(shell)
+        await session.commit()
+
+    resp = await client.post("/api/v1/projects/demo/cancel")
+    assert resp.status_code == 200
+    assert resp.json() == {"cancelled": True, "slug": "demo-inflight"}
+
+    async with TestSessionLocal() as session:
+        stage = await session.scalar(
+            select(Project.generation_stage).where(Project.slug == "demo-inflight")
+        )
+    assert stage == demo_service.DEMO_CANCEL_REQUESTED_STAGE
+
+
+@pytest.mark.asyncio
+async def test_cancelled_provision_deletes_its_shell_instead_of_promoting(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression for tripl-jfm3.12: a cancel must leave NO project behind.
+
+    Before the fix the create ran to completion regardless and a fully-seeded
+    demo appeared seconds after the user abandoned it. The cancel arrives from a
+    second request mid-seed; here the monkeypatched seeder stands in for that
+    concurrent write so the assertion is on what phase 2 does with the flag.
+    """
+    real_seed = demo_service._seed_demo_content
+
+    async def cancelling_seed(session: AsyncSession, **kwargs: object) -> None:
+        await real_seed(session, **kwargs)  # type: ignore[arg-type]
+        await session.execute(
+            update(Project)
+            .where(Project.id == kwargs["project_id"])
+            .values(generation_stage=demo_service.DEMO_CANCEL_REQUESTED_STAGE)
+        )
+
+    monkeypatch.setattr(demo_service, "_seed_demo_content", cancelling_seed)
+
+    resp = await client.post("/api/v1/projects/demo")
+    assert resp.status_code == 409
+
+    async with TestSessionLocal() as session:
+        remaining = (
+            (await session.execute(select(Project).where(Project.is_demo.is_(True))))
+            .scalars()
+            .all()
+        )
+    assert remaining == []
+
+
+@pytest.mark.asyncio
+async def test_demo_creation_is_capped_per_creator(client: AsyncClient) -> None:
+    """The (N+1)-th demo is refused with a message that points at reset/delete."""
+    for _ in range(demo_service.MAX_DEMOS_PER_CREATOR):
+        assert (await client.post("/api/v1/projects/demo")).status_code == 201
+
+    resp = await client.post("/api/v1/projects/demo")
+    assert resp.status_code == 409
+    assert "Reset or delete" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_repeated_demos_get_distinguishable_names(client: AsyncClient) -> None:
+    """Two demos must not be two identically-titled cards (tripl-jfm3.14)."""
+    first = (await client.post("/api/v1/projects/demo")).json()
+    second = (await client.post("/api/v1/projects/demo")).json()
+    assert first["name"] == "Demo Project"
+    assert second["name"] == "Demo Project 2"
+
+
+@pytest.mark.asyncio
+async def test_reset_keeps_the_demos_name(client: AsyncClient) -> None:
+    """A reset refreshes content, so the numbered name must survive it."""
+    await client.post("/api/v1/projects/demo")
+    second = (await client.post("/api/v1/projects/demo")).json()
+
+    resp = await client.post(f"/api/v1/projects/demo/{second['slug']}/reset")
+    assert resp.status_code == 200
+    assert resp.json()["name"] == second["name"]
+
+
+@pytest.mark.asyncio
+async def test_stale_failed_shells_are_swept_on_the_next_create(client: AsyncClient) -> None:
+    """Failed shells stop accumulating forever (tripl-jfm3.17/.76)."""
+    async with TestSessionLocal() as session:
+        old = Project(
+            name="Demo Project",
+            slug="demo-oldfail",
+            is_demo=True,
+            generation_status=ProjectGenerationStatus.failed.value,
+            generation_error="Demo provisioning failed during seeding (IntegrityError).",
+            created_at=datetime.now(UTC)
+            - timedelta(days=demo_service.FAILED_SHELL_RETENTION_DAYS + 1),
+        )
+        recent = Project(
+            name="Demo Project",
+            slug="demo-newfail",
+            is_demo=True,
+            generation_status=ProjectGenerationStatus.failed.value,
+            generation_error="Demo provisioning failed during seeding (IntegrityError).",
+        )
+        session.add_all([old, recent])
+        await session.commit()
+
+    assert (await client.post("/api/v1/projects/demo")).status_code == 201
+
+    async with TestSessionLocal() as session:
+        slugs = set(
+            (
+                await session.scalars(
+                    select(Project.slug).where(
+                        Project.generation_status == ProjectGenerationStatus.failed.value
+                    )
+                )
+            ).all()
+        )
+    assert "demo-oldfail" not in slugs
+    assert "demo-newfail" in slugs
+
+
+# ── Explorability of the surfaces the docs promise ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_demo_surfaces_its_planted_dead_event(client: AsyncClient) -> None:
+    """Coverage claimed zero gaps while the catalog showed a stale event.
+
+    The recipe deliberately ages one event's warehouse volume out, but the
+    dead-events query also requires ``created_at < cutoff`` (a grace period), and
+    every demo event was staggered INSIDE the 30-day window — so the planted
+    example was permanently unflaggable (tripl-jfm3.58).
+    """
+    slug = (await client.post("/api/v1/projects/demo")).json()["slug"]
+
+    resp = await client.get(f"/api/v1/projects/{slug}/reconciliation/dead-events?days=30")
+    assert resp.status_code == 200
+    names = [item["name"] for item in resp.json()["items"]]
+    assert "Subscription Cancelled" in names
+
+
+@pytest.mark.asyncio
+async def test_demo_seeds_a_retryable_failed_delivery(client: AsyncClient) -> None:
+    """The Audit table only offers Retry on a failed row (tripl-jfm3.59)."""
+    slug = (await client.post("/api/v1/projects/demo")).json()["slug"]
+
+    resp = await client.get(f"/api/v1/projects/{slug}/alert-deliveries")
+    assert resp.status_code == 200
+    deliveries = resp.json()["items"]
+    failed = [row for row in deliveries if row["status"] == "failed"]
+    assert len(failed) == 1
+    assert failed[0]["error_message"]
+
+    # …and the Retry the docs promise actually resolves for it.
+    retry = await client.post(f"/api/v1/projects/{slug}/alert-deliveries/{failed[0]['id']}/retry")
+    assert retry.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_demo_audit_log_is_not_empty_out_of_the_box(client: AsyncClient) -> None:
+    """A fresh demo used to land on "No audit entries yet" (tripl-jfm3.60)."""
+    slug = (await client.post("/api/v1/projects/demo")).json()["slug"]
+
+    resp = await client.get(f"/api/v1/audit?project_slug={slug}&limit=200")
+    assert resp.status_code == 200
+    entries = resp.json()["items"]
+    assert entries
+
+    actions = {entry["action"] for entry in entries}
+    # Every seeded action is one the Audit tab's filter offers, so the trail is
+    # filterable rather than only visible.
+    assert {"event_type.create", "variable.create", "alert_rule.create"} <= actions
+    # Attributed to the demo's creator, not to nobody.
+    assert all(entry["user_email"] for entry in entries)
+
+
+@pytest.mark.asyncio
+async def test_a_shell_abandoned_mid_seed_never_locks_out_the_creator(
+    client: AsyncClient,
+) -> None:
+    """A crash between the phase-1 commit and the outcome must not eat a cap slot.
+
+    The shell is hidden from every list, so a user could neither see nor delete
+    it — a stalled one has to stop counting and get reclaimed.
+    """
+    me = (await client.get("/api/v1/auth/me")).json()
+    stalled_age = timedelta(hours=demo_service.STALLED_SEEDING_HOURS + 1)
+    async with TestSessionLocal() as session:
+        session.add_all(
+            [
+                Project(
+                    name="Demo Project",
+                    slug=f"demo-stalled{index}",
+                    is_demo=True,
+                    generation_status=ProjectGenerationStatus.seeding.value,
+                    created_by_user_id=uuid.UUID(me["id"]),
+                    created_at=datetime.now(UTC) - stalled_age,
+                )
+                for index in range(demo_service.MAX_DEMOS_PER_CREATOR)
+            ]
+        )
+        await session.commit()
+
+    assert (await client.post("/api/v1/projects/demo")).status_code == 201
+
+    async with TestSessionLocal() as session:
+        left = (
+            await session.scalars(select(Project.slug).where(Project.slug.like("demo-stalled%")))
+        ).all()
+    assert list(left) == []

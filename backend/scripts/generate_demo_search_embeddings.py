@@ -5,7 +5,9 @@ search documents for BOTH demo branches (main + the deep-copied feature
 branch, whose single edited event description must land in the fixture too),
 embeds the deduped texts plus a curated query list via the OpenAI embedding
 API, and writes ``search_embeddings_v4.npz`` into
-``src/tripl/services/demo/fixtures/``.
+``src/tripl/services/demo/fixtures/`` together with its
+``.identity.json`` sidecar (the content-independent fallback index — see
+``services.demo.search_embeddings``; both files must ship together).
 
 Usage (needs OPENAI_API_KEY or SEARCH_EMBEDDING_API_KEY in the env):
 
@@ -34,6 +36,8 @@ from tripl.services.demo.scenario import DEMO_RECIPE_VERSION
 from tripl.services.demo.search_embeddings import (
     DEFAULT_FIXTURE_PATH,
     embed_text_key,
+    identity_key,
+    identity_sidecar_path,
     normalize_demo_query,
 )
 from tripl.services.embedding_service import embed_texts
@@ -80,19 +84,43 @@ def _openai_embedder() -> Embedder:
     return _embed
 
 
-async def _collect_demo_embed_texts(session: AsyncSession) -> list[str]:
-    """Seed a demo project and return its deduped embed texts (both branches)."""
+@dataclass(frozen=True)
+class CollectedTexts:
+    """Deduped embed texts plus the identity -> embed-key sidecar mapping."""
+
+    texts: list[str]
+    identity_keys: dict[str, str]
+
+
+async def _collect_demo_embed_texts(session: AsyncSession) -> CollectedTexts:
+    """Seed a demo project and return its deduped embed texts (both branches).
+
+    Also builds the ``identity key -> embed-text key`` map that ships beside the
+    archive (bd tripl-jfm3.8), so a document whose text the real scan/collection
+    pipeline later rewrites still resolves to its own vector. MAIN wins every
+    identity: a working branch deep-copies the plan, so both branches produce the
+    same identity, and main's text is the canonical one.
+    """
     from tripl.services import demo_service
 
     project = await demo_service.create_demo_project(session, slug="demo-fixture-gen")
-    branch_ids = list(
-        (await session.execute(select(PlanBranch.id).where(PlanBranch.project_id == project.id)))
-        .scalars()
+    branches = list(
+        (
+            await session.execute(
+                select(PlanBranch.id, PlanBranch.name)
+                .where(PlanBranch.project_id == project.id)
+                # "main" sorts first among the demo's branch names; the explicit
+                # key keeps that true if a branch is ever renamed.
+                .order_by(PlanBranch.name != "main", PlanBranch.name)
+            )
+        )
+        .tuples()
         .all()
     )
     texts: list[str] = []
     seen: set[str] = set()
-    for branch_id in branch_ids:
+    identity_keys: dict[str, str] = {}
+    for branch_id, _branch_name in branches:
         documents = await build_documents(session, project.id, branch_id, project.slug)
         for doc in documents:
             embed_text = embed_text_for(
@@ -102,11 +130,15 @@ async def _collect_demo_embed_texts(session: AsyncSession) -> list[str]:
                 body=doc.body,
             )
             key = embed_text_key(embed_text)
+            identity_keys.setdefault(
+                identity_key(doc.entity_type, doc.title, doc.subtitle),
+                key,
+            )
             if key in seen:
                 continue
             seen.add(key)
             texts.append(embed_text)
-    return texts
+    return CollectedTexts(texts=texts, identity_keys=identity_keys)
 
 
 def _embed_all(
@@ -148,10 +180,11 @@ async def generate_fixture(
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         async with session_local() as session:
-            texts = await _collect_demo_embed_texts(session)
+            collected = await _collect_demo_embed_texts(session)
     finally:
         await engine.dispose()
 
+    texts = collected.texts
     resolved_embedder = embedder if embedder is not None else _openai_embedder()
     resolved_model = model if model is not None else env_ai_config().search_embedding_model
 
@@ -178,6 +211,14 @@ async def generate_fixture(
         query_vectors=np.asarray(query_vectors, dtype=np.float16).reshape(
             len(query_keys), dimensions
         ),
+    )
+    # Content-independent fallback index, written beside the archive so the demo
+    # keeps its vectors after a scan rewrites document text (bd tripl-jfm3.8).
+    sidecar = identity_sidecar_path(output_path)
+    sidecar.write_text(
+        json.dumps(dict(sorted(collected.identity_keys.items())), indent=1, ensure_ascii=False)
+        + "\n",
+        encoding="utf-8",
     )
     return GeneratedFixture(
         path=output_path,

@@ -40,6 +40,9 @@ describe('ConceptsPage', () => {
       'Relations',
       'Monitors',
       'Signals',
+      // The sidebar has an "Anomalies" surface; the glossary that claims to be
+      // the naming authority has to define it (tripl-jfm3.39).
+      'Anomalies',
       'Scopes',
       'Reconciliation',
       'Shadow events',
@@ -50,6 +53,17 @@ describe('ConceptsPage', () => {
         screen.getByRole('heading', { name: term, level: 3 }),
       ).toBeInTheDocument()
     }
+  })
+
+  it('does not claim a monitor raises signals (tripl-jfm3.39)', () => {
+    renderConcepts()
+
+    // The product raises signals from detection on every scan — a project with
+    // zero monitors still shows open signals — so the glossary must not make a
+    // monitor the cause of a signal.
+    expect(screen.queryByText(/open anomaly raised by a monitor/i)).toBeNull()
+    expect(screen.getByText(/no monitor has to exist for one to appear/i)).toBeInTheDocument()
+    expect(screen.getByText(/a monitor decides which signals matter/i)).toBeInTheDocument()
   })
 
   it('links a term to where it lives in the app, scoped to the project slug', () => {

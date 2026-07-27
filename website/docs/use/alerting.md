@@ -18,6 +18,15 @@ destination) → **Delivery** (a single send attempt, carrying the matched items
 Rules are project-level: they evaluate the signals produced by every scan in the
 project.
 
+:::note Demo projects are zero-egress
+In a generated demo project the only destination that can exist is the local
+**demo sink**: the API refuses to create a Slack, Telegram, webhook, email, Jira,
+or Linear destination there, and every delivery is rendered and recorded locally
+rather than sent. Because that local sink cannot fail, demo deliveries are always
+`sent`, so the failed-delivery states and the **Retry** action below only appear
+in a real project. See [The demo workspace](./demo-workspace.md).
+:::
+
 ## Where signals come from
 
 A rule never invents an alert — it reacts to **signals** the anomaly detector

@@ -188,3 +188,13 @@ export function axisWidthForValues(
   const width = Math.ceil(Y_AXIS_TICK_MARGIN + maxLen * Y_AXIS_CHAR_PX + Y_AXIS_PADDING)
   return Math.min(Y_AXIS_MAX_WIDTH, Math.max(Y_AXIS_MIN_WIDTH, width))
 }
+
+/**
+ * Keeps the recharts <svg class="recharts-surface"> out of the tab order.
+ *
+ * Recharts focuses its surface by default, which added an unnamed tab stop on
+ * every page carrying a chart (tripl-jfm3.67). Each chart wrapper already
+ * carries role="img", an aria-label and an sr-only text summary of the series,
+ * so the surface itself has nothing to announce.
+ */
+export const CHART_SURFACE_TAB_INDEX = -1

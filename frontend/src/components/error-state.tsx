@@ -35,7 +35,9 @@ export function ErrorState({
           <AlertTriangle className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
-          <h3 className={cn('font-semibold text-foreground', compact ? 'text-sm' : 'text-base')}>{title}</h3>
+          {/* h2 for the same reason as EmptyState: an error surface replaces a
+              page's content directly under its h1 (tripl-jfm3.69). */}
+          <h2 className={cn('font-semibold text-foreground', compact ? 'text-sm' : 'text-base')}>{title}</h2>
           {description && (
             <p className={cn('mt-1 text-muted-foreground', compact ? 'text-xs' : 'text-sm')}>
               {description}

@@ -19,6 +19,7 @@ import { useConfirm } from '@/hooks/useConfirm'
 import { formatIsoDate } from '@/lib/datetime'
 import { getErrorMessage } from '@/lib/utils'
 import { SCard, SHeader } from '@/components/settings/kit'
+import { describeKeyCounts, isKeyInactive } from './apiKeyStatus'
 import type { ApiKey, ApiKeyScope, ApiKeyWithToken } from '@/types'
 
 /**
@@ -82,6 +83,13 @@ export default function ApiKeysSection() {
 
   const keys = listQuery.data ?? []
   const canCreateWriteKeys = user?.role === 'owner' || user?.role === 'editor'
+
+  // The card used to headline "Active keys · N keys" off the unfiltered list,
+  // so revoked and expired tokens were counted as live ones on a credentials
+  // surface (tripl-jfm3.33). Count only the keys that can still authenticate,
+  // and name the inactive remainder explicitly.
+  const inactiveCount = keys.filter((k) => isKeyInactive(k)).length
+  const activeCount = keys.length - inactiveCount
 
   return (
     <div>
@@ -194,7 +202,7 @@ export default function ApiKeysSection() {
         </div>
       </div>
 
-      <SCard title="Active keys" description={`${keys.length} keys`}>
+      <SCard title="All keys" description={describeKeyCounts(activeCount, inactiveCount)}>
         {listQuery.isLoading ? (
           <div className="px-[18px] py-3 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
             Loading…

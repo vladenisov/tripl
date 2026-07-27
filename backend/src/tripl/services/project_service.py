@@ -635,11 +635,23 @@ def _should_touch_demo_access(project: Project) -> bool:
     return (datetime.now(UTC) - last_aware).total_seconds() >= _DEMO_ACCESS_TOUCH_SECONDS
 
 
-async def create_project(session: AsyncSession, data: ProjectCreate) -> ProjectResponse:
+async def create_project(
+    session: AsyncSession,
+    data: ProjectCreate,
+    *,
+    created_by: uuid.UUID | None = None,
+) -> ProjectResponse:
+    """Create a real (non-demo) project.
+
+    ``created_by`` records who made it, mirroring demo provisioning. The API
+    always passes it; it stays optional so scripts/fixtures can create a
+    creator-less project (which is then owner-managed, see
+    ``api.v1.projects._require_project_manager``).
+    """
     existing = await session.execute(select(Project).where(Project.slug == data.slug))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Project with this slug already exists")
-    project = Project(**data.model_dump())
+    project = Project(**data.model_dump(), created_by_user_id=created_by)
     session.add(project)
     await session.flush()
     # Every project owns one main branch (the live plan); create it up front so

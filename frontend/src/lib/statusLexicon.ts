@@ -89,13 +89,18 @@ export const SCAN_RUN_STATUS: Record<RunPillStatus, StatusLexeme> = {
 }
 
 // ---------------------------------------------------------------------------
-// Signal state — a live anomaly on an event row. A signal from the latest scan
-// is treated like a firing monitor (danger); an older "recent" signal is a
-// warning. Same words as MONITOR_STATUS so the two read as one language.
+// Signal state — an open anomaly on an event row. A signal from the latest scan
+// is Live (danger); an older still-open one is Recent (warning).
+//
+// These deliberately do NOT reuse the MONITOR_STATUS words. Signals are raised
+// by detection and exist whether or not a monitor does, so labelling one
+// "Firing" put a firing verdict on 30 event rows of a project whose Monitors
+// page correctly read "No monitors yet" (tripl-jfm3.4). Firing/Warning/Healthy
+// stay reserved for monitors (alert rules).
 // ---------------------------------------------------------------------------
 export const SIGNAL_LEVEL = {
-  firing: { label: MONITOR_STATUS.firing.label, tone: 'danger' },
-  warning: { label: MONITOR_STATUS.warning.label, tone: 'warning' },
+  firing: { label: 'Live', tone: 'danger' },
+  warning: { label: 'Recent', tone: 'warning' },
 } as const satisfies Record<'firing' | 'warning', { label: string; tone: 'danger' | 'warning' }>
 
 /**

@@ -22,8 +22,10 @@ Design
 * Every abstract method aggregates the in-memory rows in Python according to the
   STRUCTURED params it receives (time window, regular/breakdown columns,
   aggregation + measure, ``AggregateSpec`` list, top-N ``values_limit``). It does
-  not parse SQL beyond deciding which table ``base_query`` selects: a query that
-  mentions ``orders`` reads the orders table, otherwise the events table.
+  not parse SQL beyond deciding which table ``base_query`` selects and which
+  columns it projects: a query that mentions ``orders`` reads the orders table,
+  otherwise the events table, and a bare ``SELECT a, b, c FROM ...`` list narrows
+  the columns the caller sees (anything else means "every column").
 * The sql-metric path funnels through ``get_preview_rows`` with the metric SQL as
   ``base_query``. The one seeded aggregate shape (distinct sessions per day) is
   recognized and computed from the dataset; a plain table scan returns rows; any
@@ -39,6 +41,7 @@ import hashlib
 import math
 import re
 from datetime import UTC, datetime, timedelta
+from typing import NamedTuple
 
 from tripl.core.adapters.base import (
     AggregateSpec,
@@ -60,13 +63,21 @@ DEFAULT_SEED = 20260711
 # orders. The hard cap is a defence-in-depth guard so no code path can generate
 # an unbounded dataset regardless of the requested window.
 SYNTHETIC_HISTORY_DAYS = 30
-SYNTHETIC_MAX_ROWS = 40000
+# Sized so the ONGOING window (``SYNTHETIC_ONGOING_HOURS`` hours at the summed
+# per-event base of the full 18-event roster, at the seasonal shape's peak) plus
+# the small older sampled tail fit with headroom. ``_generate_events`` fills the
+# window oldest-first, so a cap that bites would silently truncate the NEWEST
+# hours — exactly the buckets a live scan reads — hence the headroom.
+# ``test_synthetic_dataset_stays_within_row_budget`` pins the margin.
+SYNTHETIC_MAX_ROWS = 65000
 
 # Read/scan budget. In-memory scans are effectively instant, but an explicit
 # wall-clock and row-count guard keeps the "bounded, read-only" contract honest.
 _DEFAULT_TIMEOUT_SECONDS = 300
 
 _IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
+# ``SELECT <projection> FROM ...`` — the only projection shape recognized.
+_SELECT_LIST_RE = re.compile(r"^\s*select\s+(.+?)\s+from\b", re.IGNORECASE | re.DOTALL)
 # Aggregate / join / function tokens that make a query more than a plain table
 # scan. Any such token in a query that is NOT the recognized sql-metric shape is a
 # capability boundary — we refuse rather than guess.
@@ -115,21 +126,87 @@ _ORDERS_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 _EVENTS_NULLABLE = frozenset({"button_id", "product_id", "amount", "currency"})
 
-# (event_type, event_name, screen_name, button_id, product_id, ongoing_base).
-# ``ongoing_base`` is the seeded hourly volume for the *most-recent* hours (the
-# ongoing window a live scan reads back). It MIRRORS the matching event's ``base``
-# in ``services.demo.builders.plan.event_specs`` — the demo's single source of
-# truth for event volumes — so a rescan continues the seeded baseline rather than
-# dropping (bd tripl-yfsj.14). core/ cannot import services/, so the values are
-# duplicated here; ``test_demo_metric_collection`` pins them to ``event_specs``.
-_EVENT_DEFS: tuple[tuple[str, str, str, str | None, str | None, int], ...] = (
-    ("screen_view", "Home Screen View", "home", None, None, 1800),
-    ("screen_view", "Paywall View", "paywall", None, None, 600),
-    ("screen_view", "Profile Screen View", "profile", None, None, 400),
-    ("click", "Buy Button Click", "paywall", "buy_now", None, 300),
-    ("click", "Skip Onboarding Click", "onboarding_step1", "skip_onboarding", None, 180),
-    ("purchase", "Purchase Completed", "paywall", None, "prod_pro_monthly", 120),
-    ("purchase", "Trial Started", "paywall", None, "prod_trial", 250),
+
+class SyntheticEventDef(NamedTuple):
+    """One synthetic event identity and the column values its rows carry."""
+
+    event_type: str
+    event_name: str
+    screen_name: str | None
+    button_id: str | None
+    product_id: str | None
+    amount: float | None
+    currency: str | None
+    ongoing_base: int
+
+
+# The synthetic warehouse's event roster. It MIRRORS
+# ``services.demo.builders.plan.event_specs`` — the demo's single source of truth
+# for the authored catalog — EXHAUSTIVELY: one row per seeded event, with the
+# same ``ongoing_base`` volume and the same per-event column values the plan
+# documents as field values. ``ongoing_base`` is the hourly volume generated for
+# the *most-recent* hours (the ongoing window a live scan reads back), so a
+# rescan continues the seeded baseline rather than dropping (bd tripl-yfsj.14).
+#
+# Exhaustiveness is the whole point: this used to list only the 7 highest-volume
+# identities, so an hourly metrics collection rewrote the window with counts for
+# 7 of 18 events and the detector read the other 11 as "dropped to zero" within
+# an hour of a demo's creation (bd tripl-jfm3.55 / .71). core/ cannot import
+# services/, so the values are duplicated here and
+# ``test_synthetic_event_defs_cover_every_seeded_event_spec`` pins the two
+# rosters together in BOTH directions.
+_EVENT_DEFS: tuple[SyntheticEventDef, ...] = (
+    # screen_view — the plan documents ``screen_name`` (+ ``${platform}``).
+    SyntheticEventDef("screen_view", "Home Screen View", "home", None, None, None, None, 1800),
+    SyntheticEventDef("screen_view", "Paywall View", "paywall", None, None, None, None, 600),
+    SyntheticEventDef(
+        "screen_view", "Onboarding Step 1 View", "onboarding_step1", None, None, None, None, 900
+    ),
+    SyntheticEventDef(
+        "screen_view", "Onboarding Step 2 View", "onboarding_step2", None, None, None, None, 700
+    ),
+    SyntheticEventDef("screen_view", "Profile Screen View", "profile", None, None, None, None, 400),
+    SyntheticEventDef(
+        "screen_view", "Settings Screen View", "settings", None, None, None, None, 200
+    ),
+    # click — the plan documents ``button_id`` (+ ``screen_name`` where authored).
+    SyntheticEventDef("click", "Buy Button Click", "paywall", "buy_now", None, None, None, 300),
+    SyntheticEventDef(
+        "click",
+        "Skip Onboarding Click",
+        "onboarding_step1",
+        "skip_onboarding",
+        None,
+        None,
+        None,
+        180,
+    ),
+    SyntheticEventDef(
+        "click", "Restore Purchase Click", "paywall", "restore_purchase", None, None, None, 40
+    ),
+    SyntheticEventDef("click", "Share Button Click", None, "share", None, None, None, 120),
+    SyntheticEventDef("click", "Legacy CTA Click", None, "old_cta", None, None, None, 20),
+    # purchase — ``product_id`` values stay inside the demo's DOCUMENTED value
+    # list (see ``services.demo.builders.variables``) so a rescan cannot invent an
+    # undocumented SKU; ``amount``/``currency`` are emitted only for the events
+    # whose plan spec documents them.
+    SyntheticEventDef(
+        "purchase", "Purchase Completed", "paywall", None, "prod_monthly", 9.99, "USD", 120
+    ),
+    SyntheticEventDef(
+        "purchase", "Purchase Failed", "paywall", None, "prod_monthly", None, "USD", 15
+    ),
+    SyntheticEventDef("purchase", "Trial Started", "paywall", None, "prod_annual", None, None, 250),
+    SyntheticEventDef(
+        "purchase", "Subscription Renewed", "paywall", None, "prod_annual", 9.99, "USD", 80
+    ),
+    SyntheticEventDef(
+        "purchase", "Refund Processed", "paywall", None, "prod_lifetime", 9.99, None, 8
+    ),
+    SyntheticEventDef("purchase", "Promo Applied", "paywall", None, "prod_monthly", None, None, 35),
+    SyntheticEventDef(
+        "purchase", "Subscription Cancelled", "paywall", None, "prod_annual", None, None, 22
+    ),
 )
 
 # Distinct ``event_name`` values the synthetic adapter can emit — the single
@@ -140,7 +217,7 @@ _EVENT_DEFS: tuple[tuple[str, str, str, str | None, str | None, int], ...] = (
 # so a new synthetic name can never silently reintroduce raw pipe-named drafts.
 # ``dict.fromkeys`` de-dupes while preserving first-seen order.
 SYNTHETIC_EVENT_NAMES: tuple[str, ...] = tuple(
-    dict.fromkeys(event_name for _, event_name, _, _, _, _ in _EVENT_DEFS)
+    dict.fromkeys(event_def.event_name for event_def in _EVENT_DEFS)
 )
 
 _PLATFORMS = ("ios", "android", "web")
@@ -179,6 +256,28 @@ _ONGOING_RECENT_DRIFT = 0.04
 # inside the detector's drop band (worst-case |z| ~= 2.65 vs the 3-sigma gate)
 # even at the low-volume trough of a mid-volume event.
 _ONGOING_TEXTURE_PCT = 1
+
+
+def _projection_columns(base_query: str) -> tuple[str, ...] | None:
+    """The explicit column list a query projects, or ``None`` for "everything".
+
+    A real warehouse only ever hands a scan the columns its query selects, so the
+    catalog pipeline only sees those. This adapter used to answer ``get_columns``
+    with the whole table no matter what the query asked for, which made a demo
+    scan observe warehouse-internal columns the curated plan does not model —
+    and the hourly catalog sync then auto-created junk ``FieldDefinition`` rows
+    (with raw sample values like ``s29_5``) for them (bd tripl-jfm3.57).
+
+    Only a bare comma-separated identifier list is recognized; ``*``, expressions
+    and aliases fall back to the full table, so the adapter still never guesses.
+    """
+    match = _SELECT_LIST_RE.match(base_query)
+    if match is None:
+        return None
+    items = [item.strip() for item in match.group(1).split(",")]
+    if not items or any(not _IDENT_RE.match(item) for item in items):
+        return None
+    return tuple(items)
 
 
 def _digest_int(*parts: object) -> int:
@@ -221,7 +320,7 @@ def _ongoing_hourly_count(seed: int, base: int, event_name: str, bucket: datetim
 def _event_row(
     seed: int,
     bucket: datetime,
-    event_def: tuple[str, str, str, str | None, str | None, int],
+    event_def: SyntheticEventDef,
     session_span: int,
     day_index: int,
     *occ: object,
@@ -232,21 +331,19 @@ def _event_row(
     ``(hour, event_name, k)`` for an ongoing per-event row) so the two generation
     regimes stay independent yet reproducible.
     """
-    event_type, event_name, screen_name, button_id, product_id, _base = event_def
     minute = _digest_int(seed, "ev_minute", *occ) % 60
     second = _digest_int(seed, "ev_second", *occ) % 60
-    is_purchase = event_type == "purchase"
     session_slot = _digest_int(seed, "ev_sess", *occ) % session_span
     return {
         "event_time": bucket + timedelta(minutes=minute, seconds=second),
-        "event_type": event_type,
-        "event_name": event_name,
-        "screen_name": screen_name,
+        "event_type": event_def.event_type,
+        "event_name": event_def.event_name,
+        "screen_name": event_def.screen_name,
         "platform": _PLATFORMS[_digest_int(seed, "ev_plat", *occ) % len(_PLATFORMS)],
-        "button_id": button_id,
-        "product_id": product_id,
-        "amount": 9.99 if is_purchase else None,
-        "currency": "USD" if is_purchase else None,
+        "button_id": event_def.button_id,
+        "product_id": event_def.product_id,
+        "amount": event_def.amount,
+        "currency": event_def.currency,
         "app_version": _APP_VERSIONS[_digest_int(seed, "ev_ver", *occ) % len(_APP_VERSIONS)],
         "user_id": f"u{_digest_int(seed, 'ev_user', *occ) % 500}",
         "session_id": f"s{day_index}_{session_slot}",
@@ -259,8 +356,8 @@ def _ongoing_hour_rows(
     """One ongoing-window hour: each event at its seeded ``ongoing_base`` volume."""
     out: list[dict[str, object]] = []
     for event_def in _EVENT_DEFS:
-        event_name = event_def[1]
-        count = _ongoing_hourly_count(seed, event_def[5], event_name, bucket)
+        event_name = event_def.event_name
+        count = _ongoing_hourly_count(seed, event_def.ongoing_base, event_name, bucket)
         for k in range(count):
             occ = (hour, event_name, k)
             out.append(_event_row(seed, bucket, event_def, session_span, day_index, *occ))
@@ -279,6 +376,15 @@ def _sampled_hour_rows(
     return out
 
 
+def _session_span(seed: int, day_index: int) -> int:
+    """Distinct sessions per day, in a bounded band.
+
+    Keeps the sql metric's per-day distinct-session series live-looking but
+    stable for a given seed.
+    """
+    return 25 + _digest_int(seed, "day_sessions", day_index) % 20
+
+
 def _generate_events(
     seed: int, anchor: datetime, history_days: int, max_rows: int
 ) -> list[dict[str, object]]:
@@ -288,26 +394,38 @@ def _generate_events(
     ``ongoing_base`` volume (so a live scan's current window continues the demo's
     baseline, bd tripl-yfsj.14); older hours keep the small sampled scale so the
     full-history dataset stays within ``max_rows``.
+
+    The ongoing window is generated FIRST and is never truncated. It is the only
+    part a live scan reads back, so spending the row budget on the old sampled
+    tail and clipping the newest hours would read as a volume drop on every
+    series — the exact failure the ongoing window exists to prevent.
     """
-    rows: list[dict[str, object]] = []
     start = anchor - timedelta(days=history_days)
     total_hours = history_days * 24
     ongoing_start_hour = max(0, total_hours - SYNTHETIC_ONGOING_HOURS)
-    for hour in range(total_hours):
-        remaining = max_rows - len(rows)
+
+    ongoing: list[dict[str, object]] = []
+    for hour in range(ongoing_start_hour, total_hours):
+        day_index = hour // 24
+        ongoing.extend(
+            _ongoing_hour_rows(
+                seed, start + timedelta(hours=hour), hour, _session_span(seed, day_index), day_index
+            )
+        )
+    ongoing = ongoing[:max_rows]
+
+    older: list[dict[str, object]] = []
+    older_budget = max_rows - len(ongoing)
+    for hour in range(ongoing_start_hour):
+        remaining = older_budget - len(older)
         if remaining <= 0:
             break
-        bucket = start + timedelta(hours=hour)
         day_index = hour // 24
-        # Distinct sessions per day vary in a bounded band so the sql metric's
-        # per-day distinct-session series is a live-looking (but stable) line.
-        session_span = 25 + _digest_int(seed, "day_sessions", day_index) % 20
-        if hour >= ongoing_start_hour:
-            hour_rows = _ongoing_hour_rows(seed, bucket, hour, session_span, day_index)
-        else:
-            hour_rows = _sampled_hour_rows(seed, bucket, hour, session_span, day_index)
-        rows.extend(hour_rows[:remaining])
-    return rows
+        hour_rows = _sampled_hour_rows(
+            seed, start + timedelta(hours=hour), hour, _session_span(seed, day_index), day_index
+        )
+        older.extend(hour_rows[:remaining])
+    return older + ongoing
 
 
 def _generate_orders(
@@ -391,7 +509,7 @@ class SyntheticAdapter(BaseAdapter):
         table = self._table_for_query(base_query)
         columns = [
             ColumnInfo(name=name, type_name=type_name, is_nullable=name in _EVENTS_NULLABLE)
-            for name, type_name in self._columns_for_table(table)
+            for name, type_name in self._columns_for_query(base_query, table)
         ]
         self._allowed_columns = {column.name for column in columns}
         return columns
@@ -422,7 +540,7 @@ class SyntheticAdapter(BaseAdapter):
         self._reject_unsupported_scan(base_query)
 
         table = self._table_for_query(base_query)
-        column_names = [name for name, _ in self._columns_for_table(table)]
+        column_names = [name for name, _ in self._columns_for_query(base_query, table)]
         if time_column is not None:
             self._validate_column(table, time_column)
         rows = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
@@ -677,6 +795,20 @@ class SyntheticAdapter(BaseAdapter):
 
     def _columns_for_table(self, table: str) -> tuple[tuple[str, str], ...]:
         return _ORDERS_COLUMNS if table == "orders" else _EVENTS_COLUMNS
+
+    def _columns_for_query(self, base_query: str, table: str) -> tuple[tuple[str, str], ...]:
+        """Columns the query actually projects, in table order.
+
+        An unrecognized or ``*`` projection — and one that names no known column
+        — yields the full table, so the adapter never silently returns nothing.
+        """
+        columns = self._columns_for_table(table)
+        projection = _projection_columns(base_query)
+        if projection is None:
+            return columns
+        selected = {name.casefold() for name in projection}
+        projected = tuple(column for column in columns if column[0].casefold() in selected)
+        return projected or columns
 
     def _rows_for_table(self, table: str) -> list[dict[str, object]]:
         return self._orders if table == "orders" else self._events

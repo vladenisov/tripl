@@ -293,7 +293,15 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
       <PageHead
         eyebrow="Observe"
         title="Alerting"
-        description="Route active anomaly signals to Slack, Telegram, or a generic webhook. Rules are project-level and apply to every scan in the project."
+        // A demo can only reach the local sink, so promising Slack/Telegram
+        // delivery at the top of the page sells something this project cannot
+        // do — the honest note used to appear only below the destination cards
+        // (tripl-jfm3.64).
+        description={
+          isDemo
+            ? 'Route active anomaly signals through rules and destinations. In a demo workspace every destination is a local sink: deliveries are recorded and rendered here, and none of them leave this instance.'
+            : 'Route active anomaly signals to Slack, Telegram, or a generic webhook. Rules are project-level and apply to every scan in the project.'
+        }
       />
 
       {showGuidedSetup ? (

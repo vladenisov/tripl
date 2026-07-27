@@ -37,13 +37,18 @@ describe('statusLexicon — colour meaning key', () => {
     expect(SCAN_RUN_STATUS.never.tone).toBe('neutral')
   })
 
-  it('treats a latest-scan signal as firing (danger) and an older signal as warning', () => {
+  it('treats a latest-scan signal as Live (danger) and an older signal as Recent (warning)', () => {
     expect(rowSignalLevel('latest_scan')).toBe(SIGNAL_LEVEL.firing)
     expect(rowSignalLevel('recent')).toBe(SIGNAL_LEVEL.warning)
-    // signal words match monitor words so the two read as one language
-    expect(SIGNAL_LEVEL.firing.label).toBe(MONITOR_STATUS.firing.label)
     expect(SIGNAL_LEVEL.firing.tone).toBe('danger')
     expect(SIGNAL_LEVEL.warning.tone).toBe('warning')
+    // tripl-jfm3.4: signals get their OWN words. Detection raises a signal with
+    // or without a monitor, so borrowing "Firing"/"Warning" from MONITOR_STATUS
+    // put a monitor verdict on rows of a project that had no monitors at all.
+    expect(SIGNAL_LEVEL.firing.label).toBe('Live')
+    expect(SIGNAL_LEVEL.warning.label).toBe('Recent')
+    expect(SIGNAL_LEVEL.firing.label).not.toBe(MONITOR_STATUS.firing.label)
+    expect(SIGNAL_LEVEL.warning.label).not.toBe(MONITOR_STATUS.warning.label)
   })
 
   it('maps review status: reviewed=success, needs_review=neutral', () => {

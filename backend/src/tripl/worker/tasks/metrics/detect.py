@@ -21,6 +21,7 @@ from tripl.core.analyzers.anomaly_detector import (
     detect_anomalies,
     is_provably_silent,
     required_history_buckets,
+    settling_buckets_for,
 )
 from tripl.core.intervals import get_interval
 from tripl.models.domain_enums import MetricBreakdownAnomalyKind, MetricStatus
@@ -50,6 +51,12 @@ _FRACTIONAL_MIN_EXPECTED_COUNT = 1e-6
 # ages markers out for rendering, so this only trims long-dead rows and never
 # touches ``metric``-scope rows (NULL scan_config_id, shared across configs).
 ANOMALY_RETENTION_DAYS = 180
+# Default ingestion-settling allowance for the recalculation entrypoints: none.
+# The scan orchestrator owns the policy and passes its own allowance (see
+# ``tasks.ANOMALY_INGESTION_SETTLING``); callers that hand in an explicit,
+# already-settled window (replays, tests, conformance harnesses) get the
+# historical behavior of scoring every bucket they asked for.
+NO_INGESTION_SETTLING = timedelta(0)
 
 
 def _build_anomaly_settings(
@@ -739,6 +746,7 @@ def _recalculate_project_metric_anomalies(
     evaluation_start: datetime,
     evaluation_end: datetime,
     covered_buckets: set[datetime] | None = None,
+    settling_delay: timedelta = NO_INGESTION_SETTLING,
 ) -> int:
     """Detect anomalies over the project's active catalog metric series.
 
@@ -795,6 +803,9 @@ def _recalculate_project_metric_anomalies(
                 settings=metric_settings,
                 fill_gaps=count_shaped,
                 covered_buckets=covered_buckets,
+                # Per-metric grid: a 1d ratio needs a whole bucket withheld for
+                # the same allowance that withholds two hourly ones.
+                settling_buckets=settling_buckets_for(interval_spec.delta, settling_delay),
             ),
         )
     return detected
@@ -824,6 +835,7 @@ def _recalculate_metric_anomalies(
     evaluation_start: datetime,
     evaluation_end: datetime,
     covered_buckets: set[datetime] | None = None,
+    settling_delay: timedelta = NO_INGESTION_SETTLING,
 ) -> int:
     project_settings = _get_project_anomaly_settings(session, config.project_id)
     if project_settings is None or not project_settings.anomaly_detection_enabled:
@@ -839,6 +851,10 @@ def _recalculate_metric_anomalies(
 
     interval_spec = get_interval(config.interval)
     settings = _build_anomaly_settings(project_settings)
+    # Buckets at the head of the window that the warehouse may still be filling.
+    # They stay in the loaded series (so baselines are complete) but no anomaly
+    # is emitted for them until a later scan re-evaluates them (tripl-jfm3.7).
+    settling_buckets = settling_buckets_for(interval_spec.delta, settling_delay)
     history_from = evaluation_start - interval_spec.delta * required_history_buckets(
         interval_spec.delta, settings
     )
@@ -869,6 +885,7 @@ def _recalculate_metric_anomalies(
                 evaluation_end=evaluation_end,
                 settings=settings,
                 covered_buckets=covered_buckets,
+                settling_buckets=settling_buckets,
             ),
         )
     else:
@@ -940,6 +957,7 @@ def _recalculate_metric_anomalies(
                     evaluation_end=evaluation_end,
                     settings=settings,
                     covered_buckets=covered_buckets,
+                    settling_buckets=settling_buckets,
                 ),
             )
     else:
@@ -1007,6 +1025,7 @@ def _recalculate_metric_anomalies(
                     evaluation_end=evaluation_end,
                     settings=settings,
                     covered_buckets=covered_buckets,
+                    settling_buckets=settling_buckets,
                 ),
             )
     else:
@@ -1027,6 +1046,7 @@ def _recalculate_metric_anomalies(
             evaluation_start=evaluation_start,
             evaluation_end=evaluation_end,
             covered_buckets=covered_buckets,
+            settling_delay=settling_delay,
         )
     else:
         _purge_project_metric_anomalies(
@@ -1049,6 +1069,7 @@ def _recalculate_platform_parity_anomalies(
     evaluation_start: datetime,
     evaluation_end: datetime,
     covered_buckets: set[datetime] | None = None,
+    settling_delay: timedelta = NO_INGESTION_SETTLING,
 ) -> int:
     platform_column = config.platform_column
     if not platform_column or not config.interval:
@@ -1070,6 +1091,7 @@ def _recalculate_platform_parity_anomalies(
 
     interval_spec = get_interval(config.interval)
     ratio_settings = replace(settings, min_expected_count=0)
+    settling_buckets = settling_buckets_for(interval_spec.delta, settling_delay)
     history_from = evaluation_start - interval_spec.delta * required_history_buckets(
         interval_spec.delta, ratio_settings
     )
@@ -1153,6 +1175,7 @@ def _recalculate_platform_parity_anomalies(
                     evaluation_end=evaluation_end,
                     settings=ratio_settings,
                     fill_gaps=False,
+                    settling_buckets=settling_buckets,
                 ),
                 kind=MetricBreakdownAnomalyKind.parity,
             )
@@ -1166,6 +1189,7 @@ def _recalculate_metric_breakdown_anomalies(
     evaluation_start: datetime,
     evaluation_end: datetime,
     covered_buckets: set[datetime] | None = None,
+    settling_delay: timedelta = NO_INGESTION_SETTLING,
 ) -> int:
     project_settings = _get_project_anomaly_settings(session, config.project_id)
     if project_settings is None or not project_settings.anomaly_detection_enabled:
@@ -1190,6 +1214,7 @@ def _recalculate_metric_breakdown_anomalies(
 
     interval_spec = get_interval(config.interval)
     settings = _build_anomaly_settings(project_settings)
+    settling_buckets = settling_buckets_for(interval_spec.delta, settling_delay)
     app_version_column = config.app_version_column
     if app_version_column:
         # Clear markers produced before app-version series became observational.
@@ -1247,6 +1272,7 @@ def _recalculate_metric_breakdown_anomalies(
                     evaluation_end=evaluation_end,
                     settings=settings,
                     covered_buckets=covered_buckets,
+                    settling_buckets=settling_buckets,
                 ),
             )
     else:
@@ -1302,6 +1328,7 @@ def _recalculate_metric_breakdown_anomalies(
                     evaluation_end=evaluation_end,
                     settings=settings,
                     covered_buckets=covered_buckets,
+                    settling_buckets=settling_buckets,
                 ),
             )
     else:
@@ -1357,6 +1384,7 @@ def _recalculate_metric_breakdown_anomalies(
                     evaluation_end=evaluation_end,
                     settings=settings,
                     covered_buckets=covered_buckets,
+                    settling_buckets=settling_buckets,
                 ),
             )
     else:
@@ -1377,6 +1405,7 @@ def _recalculate_metric_breakdown_anomalies(
         evaluation_start=evaluation_start,
         evaluation_end=evaluation_end,
         covered_buckets=covered_buckets,
+        settling_delay=settling_delay,
     )
 
     session.flush()

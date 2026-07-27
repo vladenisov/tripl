@@ -142,7 +142,7 @@ export const EventRow = memo(function EventRow({
     position: 'relative',
     zIndex: isDragging ? 1 : undefined,
   }
-  // One incident, one saturated indicator: the Monitor-cell signal chip is the
+  // One incident, one saturated indicator: the Signal-cell chip is the
   // single act-on-me affordance. The name-cell dot stays on the (orthogonal)
   // lifecycle status, the SignalLink arrow is dropped, and the volume sparkline
   // is neutralised when a signal is live — so a single anomaly no longer reads
@@ -290,11 +290,16 @@ export const EventRow = memo(function EventRow({
               {signalLevel?.label ?? SIGNAL_LEVEL.firing.label}
             </Chip>
           ) : ev.monitored ? (
-            <Chip tone="neutral" variant="outline" size="xs" title="Covered by an alert rule">
+            <Chip
+              tone="neutral"
+              variant="outline"
+              size="xs"
+              title="No open signal. A monitor (alert rule) covers this event."
+            >
               Monitored
             </Chip>
           ) : (
-            <NoData title="Not covered by any alert rule" />
+            <NoData title="No open signal, and no monitor (alert rule) covers this event" />
           )}
         </TableCell>
       )}

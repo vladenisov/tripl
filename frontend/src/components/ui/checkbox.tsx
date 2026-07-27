@@ -15,7 +15,9 @@ function Checkbox({
         // sunken table row the old border token sat too close to the background
         // and the box was effectively invisible. --fg-faint stays muted but
         // reads as a real control outline in both themes.
-        "peer border-[var(--fg-faint)] data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground data-[state=checked]:border-primary focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 aria-invalid:border-destructive size-4 shrink-0 rounded-[4px] border shadow-xs outline-none transition-shadow focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer",
+        // `hit-target-24` keeps the 16px box but pads the pointer target out to
+        // the WCAG 2.2 minimum — these are the row-select boxes on every table.
+        "hit-target-24 peer border-[var(--fg-faint)] data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground data-[state=checked]:border-primary focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 aria-invalid:border-destructive size-4 shrink-0 rounded-[4px] border shadow-xs outline-none transition-shadow focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer",
         className
       )}
       {...props}
