@@ -2,8 +2,11 @@ import uuid
 
 from fastapi import APIRouter, Depends, Query
 
-from tripl.api.deps import OwnerUserDep, SessionDep, get_owner_user
+from tripl.api.deps import CurrentUserDep, OwnerUserDep, SessionDep, get_owner_user
+from tripl.models.domain_enums import UserRole
+from tripl.models.user import User
 from tripl.schemas.data_source import (
+    ConnectionSettingsResponse,
     DataSourceCreate,
     DataSourceResponse,
     DataSourceStatsResponse,
@@ -25,9 +28,59 @@ router = APIRouter(
 _owner_required = [Depends(get_owner_user)]
 
 
+# What a non-owner legitimately needs from a data source, and nothing else.
+#
+# Data sources are owner-managed (create / update / delete / test are all
+# owner-only), but the READ side was open to every authenticated user — viewers
+# included — and handed out the full warehouse connection: host, port, database,
+# username, whether a password is stored, TLS material and the last connection
+# error (tripl-jfm3.79). That is an internal network map plus a credential
+# inventory, and nothing outside the owner-only Data Sources settings form
+# consumes it.
+#
+# What the rest of the product actually reads off a data source is the *identity*
+# of the warehouse a scan or metric points at:
+#   id            — the join key from ScanConfig.data_source_id / MetricDefinition
+#   project_id    — lets project surfaces hide sources owned by other projects
+#   name          — the label in the scan/metric pickers and cards
+#   db_type       — selects the SQL dialect for the measure/filter editors
+#   is_synthetic  — badges a demo's in-memory warehouse
+#   last_test_*   — the health pill (status/timestamp only, never the message,
+#                   which quotes hosts, ports and driver errors verbatim)
+#   created_at / updated_at — ordering and "last changed" labels
+#
+# Everything else is blanked for non-owners. The response *schema* is unchanged
+# on purpose so this is a pure authorization narrowing: no OpenAPI/TS churn, and
+# a client that reads a redacted field gets an empty value rather than a crash.
+def _redact_connection(ds: DataSourceResponse) -> DataSourceResponse:
+    """Strip warehouse connection metadata from a data source for non-owners."""
+    return ds.model_copy(
+        update={
+            "host": "",
+            "port": 0,
+            "database_name": "",
+            "username": "",
+            "password_set": False,
+            "timeout_seconds": None,
+            "json_path_discovery": None,
+            "connection_settings": ConnectionSettingsResponse(),
+            "last_test_message": None,
+        }
+    )
+
+
+def _visible_to(ds: DataSourceResponse, user: User) -> DataSourceResponse:
+    if user.role == UserRole.owner.value:
+        return ds
+    return _redact_connection(ds)
+
+
 @router.get("", response_model=list[DataSourceResponse])
-async def list_data_sources(session: SessionDep) -> list[DataSourceResponse]:
-    return await datasource_service.list_data_sources(session)
+async def list_data_sources(
+    session: SessionDep, current_user: CurrentUserDep
+) -> list[DataSourceResponse]:
+    sources = await datasource_service.list_data_sources(session)
+    return [_visible_to(ds, current_user) for ds in sources]
 
 
 @router.post("", response_model=DataSourceResponse, status_code=201)
@@ -50,8 +103,11 @@ async def create_data_source(
 
 
 @router.get("/{ds_id}", response_model=DataSourceResponse)
-async def get_data_source(session: SessionDep, ds_id: uuid.UUID) -> DataSourceResponse:
-    return await datasource_service.get_data_source(session, ds_id)
+async def get_data_source(
+    session: SessionDep, ds_id: uuid.UUID, current_user: CurrentUserDep
+) -> DataSourceResponse:
+    ds = await datasource_service.get_data_source(session, ds_id)
+    return _visible_to(ds, current_user)
 
 
 @router.get("/{ds_id}/stats", response_model=DataSourceStatsResponse)

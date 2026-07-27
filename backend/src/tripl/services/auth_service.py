@@ -122,8 +122,9 @@ async def is_registration_allowed(session: AsyncSession, *, is_first_user: bool)
     """Whether POST /auth/register would be accepted right now.
 
     The first-owner bootstrap on an empty instance is always allowed — otherwise
-    a fresh deploy with the (default) closed policy could never be claimed by
-    anyone. Every later signup needs the instance to be in "open" mode.
+    an instance whose owner had closed registration could never be re-claimed
+    after a reset. Every later signup needs the instance to be in "open" mode
+    (the shipped default; see ``Settings.registration_mode``).
     """
     if is_first_user:
         return True

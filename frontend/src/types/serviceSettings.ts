@@ -6,7 +6,13 @@ export interface RuntimeSettings {
   metrics_row_limit_default: number
 }
 
+/** Self-service registration policy (backend `RegistrationMode`). `open` lets
+ *  anyone who can reach the instance create an account; `disabled` refuses new
+ *  signups apart from the first-owner bootstrap on an empty instance. */
+export type RegistrationMode = 'open' | 'disabled'
+
 export interface SecuritySettings {
+  registration_mode: RegistrationMode
   cors_allow_origins: string
   session_cookie_name: string
   session_ttl_hours: number

@@ -80,10 +80,20 @@ Each row shows the member's name (or email), email, join date, and role
 this screen — use another owner account if you need to step down, and remember
 the last-owner guard above.
 
-:::note No invitations yet — open the door, then close it
-There is no email-invitation flow in the current release, and **self-service
-registration is disabled by default**: an instance on the public internet does
-not hand out accounts. To add a member:
+:::warning No invitations yet — registration is the only way in, and it ships open
+There is no email-invitation flow in the current release and no
+owner-creates-user endpoint, so **self-service registration is the only way to
+add a person** — which is why it ships **open by default**. On an open instance
+anyone who can reach the URL can sign up, join as **editor**, and immediately
+read the whole tracking plan, this member roster, and every data source's
+connection metadata. Decide the policy before you expose the instance; see
+[Security & access](#security--access) and
+[Security & Hardening](../run/security.md#self-service-registration).
+
+Adding a member while registration is **Open**: have them register at the
+sign-in page, then adjust their role from **Settings → Members**.
+
+Adding a member once you have closed it:
 
 1. **Settings → Instance → Security & access → Registration** → set **Open**.
    (Owner only. This applies immediately — no restart.)
@@ -91,11 +101,13 @@ not hand out accounts. To add a member:
    their role from **Settings → Members** if needed.
 3. Set Registration back to **Disabled**.
 
-While registration is disabled, `POST /auth/register` is refused with a `403`
-that tells the visitor to ask an owner. The one exception is a brand-new
-instance with **no users at all** — that first registration always works and
-becomes the owner, so a fresh deploy can be claimed. Registration is also
-rate-limited (see [Security & access](#security--access)).
+The instance really is open for the length of that window, so keep it short.
+While registration is disabled the sign-in page shows no sign-up form at all,
+and `POST /auth/register` is refused with a `403` that tells the visitor to ask
+an owner. The one exception is an instance with **no users at all** — that first
+registration always works and becomes the owner, so a fresh or reset deploy can
+always be claimed. Registration is also rate-limited (see
+[Security & access](#security--access)).
 :::
 
 ## Profile & account security
@@ -304,10 +316,16 @@ If no key is set on either AI secret field, the server falls back to the
 
 Authentication and network policy for everyone on the instance.
 
-- **Registration** (`registration_mode`, default **Disabled**) — whether
-  strangers can create their own account. **Disabled** refuses
-  `POST /auth/register` with a `403`; **Open** allows self-service signup (new
-  accounts join as editor). See [Members](#members) for the onboarding flow.
+- **Registration** (`registration_mode`, default **Open**) — whether strangers
+  can create their own account. **Open** allows self-service signup: anyone who
+  can reach this instance creates an account, joins as **editor**, and can
+  immediately read the whole tracking plan, the member roster, and every data
+  source's connection metadata (name, type, host, port, username — never the
+  password). **Disabled** refuses `POST /auth/register` with a `403` and hides
+  the sign-up form on the sign-in page. It defaults to Open only because there
+  is no invite or owner-creates-user flow yet, so a closed instance cannot
+  onboard anyone; close it once your team has accounts. See
+  [Members](#members) for the onboarding flow.
 - **Sessions:** Session cookie name (`session_cookie_name`, default
   `tripl_session`), Session TTL hours (`session_ttl_hours`, default 168), Secure
   cookie (`session_cookie_secure`).

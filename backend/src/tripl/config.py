@@ -9,7 +9,9 @@ from pydantic_settings import BaseSettings
 _DEV_CREDENTIAL_MARKERS = ("tripl:tripl", "guest:guest")
 
 # Self-service registration modes for ``Settings.registration_mode``.
-# "open"     — anyone who can reach the instance may create an account.
+# "open"     — anyone who can reach the instance may create an account, and a
+#              new account can read the whole tracking plan, the user roster and
+#              every data source's connection metadata.
 # "disabled" — POST /auth/register is refused (403), except for the
 #              first-owner bootstrap on an instance with no users yet.
 REGISTRATION_OPEN = "open"
@@ -77,15 +79,24 @@ class Settings(BaseSettings):
     # unauthenticated caller rotate it per request to bypass the limit entirely.
     rate_limit_trust_forwarded_for: bool = False
 
-    # Self-service registration. One of REGISTRATION_MODES. Defaults to
-    # "disabled" (fail closed): a tripl instance holds warehouse credentials and
-    # the whole workspace's tracking plan, so an instance reachable from the
-    # internet must never hand out accounts by accident. The first-owner
-    # bootstrap on an EMPTY instance is exempt, so a fresh install still works
-    # out of the box; an owner then flips this to "open" (env REGISTRATION_MODE
-    # or Settings -> Security, which takes effect immediately) while teammates
-    # sign up, and back to "disabled" afterwards.
-    registration_mode: str = REGISTRATION_DISABLED
+    # Self-service registration. One of REGISTRATION_MODES. Defaults to "open".
+    #
+    # This is a deliberate, documented trade-off, not an oversight. "open" means
+    # anyone who can reach this instance can create an account and immediately
+    # read the whole tracking plan, the user roster and every data source's
+    # connection metadata (host, port, username — not the password). It is the
+    # default only because there is currently NO other way to onboard a person:
+    # /api/v1/users has no create route, there is no invite flow, and SMTP is
+    # optional, so defaulting to "disabled" left real instances unable to add
+    # anybody at all (tripl-jfm3.80).
+    #
+    # An operator deploying publicly is expected to close it — REGISTRATION_MODE
+    # env var, or Settings -> Instance -> Security & access, which takes effect on
+    # the very next request with no redeploy. Close it only once the team already
+    # has accounts: until an owner-initiated account-create/invite endpoint
+    # exists, "disabled" also means nobody new can be added. See
+    # website/docs/run/security.md.
+    registration_mode: str = REGISTRATION_OPEN
 
     # Event photo uploads. Backend can be "local" (filesystem) or "gcs"
     # (Google Cloud Storage). Local files are served through an authenticated

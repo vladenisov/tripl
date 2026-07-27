@@ -20,6 +20,9 @@ export interface ProjectSummary {
   variable_count: number
   scan_count: number
   alert_destination_count: number
+  // Enabled alert rules across this project's destinations. A destination on
+  // its own routes nothing, so "alerting is set up" needs both counters.
+  alert_rule_count: number
   monitoring_signal_count: number
   firing_monitor_count: number
   // Number of scan configs whose latest run failed. Counts hidden per-config

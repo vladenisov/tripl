@@ -37,6 +37,10 @@ from tripl.models.data_source import DataSource
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.project import Project
+from tripl.models.project_anomaly_settings import (
+    DEFAULT_ANOMALY_INGESTION_SETTLING_MINUTES,
+    ProjectAnomalySettings,
+)
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.services import app_settings_service
@@ -102,7 +106,29 @@ ANOMALY_TRAILING_REEVAL_BUCKETS = 30
 # with headroom while keeping an hourly grid within one re-eval window.
 # ``detect.settling_buckets_for`` converts it to whole buckets per grid, so a
 # daily metric withholds one day and a 15-minute grid withholds eight buckets.
-ANOMALY_INGESTION_SETTLING = timedelta(hours=2)
+#
+# This is now the FALLBACK only: the allowance is a per-project setting
+# (``ProjectAnomalySettings.anomaly_ingestion_settling_minutes``, tripl-jfm3.79)
+# whose default reproduces this value. Projects with no settings row yet — and
+# every caller that does not resolve one — keep the historical two hours.
+ANOMALY_INGESTION_SETTLING = timedelta(minutes=DEFAULT_ANOMALY_INGESTION_SETTLING_MINUTES)
+
+
+def _ingestion_settling_delay(session: Session, project_id: uuid.UUID) -> timedelta:
+    """The project's configured ingestion-settling allowance.
+
+    Falls back to ``ANOMALY_INGESTION_SETTLING`` when the project has no
+    monitoring settings row yet, so a scan on a never-configured project keeps
+    the historical behaviour.
+    """
+    minutes = session.execute(
+        select(ProjectAnomalySettings.anomaly_ingestion_settling_minutes).where(
+            ProjectAnomalySettings.project_id == project_id
+        )
+    ).scalar()
+    if minutes is None:
+        return ANOMALY_INGESTION_SETTLING
+    return timedelta(minutes=minutes)
 
 
 def _covered_buckets_from_scan_jobs(
@@ -765,13 +791,14 @@ def collect_metrics(
         anomaly_evaluation_start = min(
             time_from_dt, time_to_dt - delta * ANOMALY_TRAILING_REEVAL_BUCKETS
         )
+        settling_delay = _ingestion_settling_delay(session, config.project_id)
         anomalies_detected = _recalculate_metric_anomalies(
             session,
             config,
             evaluation_start=anomaly_evaluation_start,
             evaluation_end=time_to_dt,
             covered_buckets=covered_buckets,
-            settling_delay=ANOMALY_INGESTION_SETTLING,
+            settling_delay=settling_delay,
         )
         breakdown_anomalies_detected = _recalculate_metric_breakdown_anomalies(
             session,
@@ -779,7 +806,7 @@ def collect_metrics(
             evaluation_start=anomaly_evaluation_start,
             evaluation_end=time_to_dt,
             covered_buckets=covered_buckets,
-            settling_delay=ANOMALY_INGESTION_SETTLING,
+            settling_delay=settling_delay,
         )
         release_regressions_detected = _recalculate_release_regressions(
             session,

@@ -174,6 +174,9 @@ export interface ProjectAnomalySettings {
   // How long a detected anomaly keeps counting as an "open" signal for the
   // Anomalies page and the sidebar badge.
   recent_signal_window_hours: number
+  // Wall-clock allowance for the warehouse to finish delivering a bucket before
+  // that bucket is scored. Holds the newest buckets back from raising signals.
+  anomaly_ingestion_settling_minutes: number
   created_at: string
   updated_at: string
 }

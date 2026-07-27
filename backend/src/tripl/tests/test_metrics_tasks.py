@@ -4849,3 +4849,246 @@ def test_grouped_event_type_lookup_is_scoped_to_the_main_plan(
 
         assert by_name["Purchase"].id == main_type.id
         assert branch_type.id not in {et.id for et in by_name.values()}
+
+
+def test_ingestion_settling_delay_reads_the_project_setting(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """tripl-jfm3.79: the settling allowance is a per-project knob, not a constant.
+
+    A project with no monitoring settings row keeps the historical two hours;
+    once the row exists the scan honours whatever the operator configured,
+    including 0 (score every collected bucket immediately).
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+
+        assert (
+            metrics._ingestion_settling_delay(session, config.project_id)
+            == metrics.ANOMALY_INGESTION_SETTLING
+        )
+
+        settings = ProjectAnomalySettings(
+            project_id=config.project_id,
+            anomaly_detection_enabled=True,
+            anomaly_ingestion_settling_minutes=45,
+        )
+        session.add(settings)
+        session.commit()
+
+        assert metrics._ingestion_settling_delay(session, config.project_id) == timedelta(
+            minutes=45
+        )
+
+        settings.anomaly_ingestion_settling_minutes = 0
+        session.commit()
+
+        assert metrics._ingestion_settling_delay(session, config.project_id) == timedelta(0)
+
+
+def test_collect_metrics_uses_the_projects_configured_settling_allowance(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The orchestrator must hand BOTH recalculation entrypoints the project's
+    own allowance, not the module constant (tripl-jfm3.79)."""
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.event_type_id is not None
+        event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Login",
+            description="",
+            status="implemented",
+        )
+        session.add(event)
+        session.add(
+            ProjectAnomalySettings(
+                project_id=config.project_id,
+                anomaly_detection_enabled=True,
+                anomaly_ingestion_settling_minutes=15,
+            )
+        )
+        session.commit()
+        config_id = str(config.id)
+        event_id = event.id
+
+    class FakeAdapter:
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            return (["event_name"], [], [(datetime(2026, 1, 1, 10), "Login", 12)])
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: FakeAdapter())
+    monkeypatch.setattr(
+        metrics,
+        "_resolve_collection_window",
+        lambda *args, **kwargs: (datetime(2026, 1, 1, 10), datetime(2026, 1, 1, 11), False),
+    )
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+
+    def fake_generate_events(*args: object, **kwargs: object) -> GenerationResult:
+        with sync_session_factory() as session:
+            persisted_event = session.get(Event, event_id)
+            assert persisted_event is not None
+            return GenerationResult(
+                columns_analyzed=1,
+                col_meta={"event_name": {"is_json": False, "is_low": True}},
+                events_by_name={"event_name=Login": persisted_event},
+            )
+
+    monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
+
+    seen: dict[str, object] = {}
+
+    def capture(name: str) -> object:
+        def _recalculate(*args: object, **kwargs: object) -> int:
+            seen[name] = kwargs.get("settling_delay")
+            return 0
+
+        return _recalculate
+
+    monkeypatch.setattr(metrics, "_recalculate_metric_anomalies", capture("anomalies"))
+    monkeypatch.setattr(metrics, "_recalculate_metric_breakdown_anomalies", capture("breakdown"))
+
+    metrics.collect_metrics.run(config_id)
+
+    assert seen == {
+        "anomalies": timedelta(minutes=15),
+        "breakdown": timedelta(minutes=15),
+    }
+
+
+def test_breakdown_recalculate_skips_sub_threshold_scopes_but_ages_out_stale_rows(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """tripl-jfm3.73: the breakdown pass gets the same prefilter as the volume pass.
+
+    ``detect_anomalies`` already early-exits on a provably-silent count series,
+    but the breakdown loops paid for the ~500-bucket history load first — one
+    query per silent (scope, column, value) triple, every run. The scopes are
+    still replaced with an empty anomaly list, so stale window rows age out.
+    """
+    from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT
+    from tripl.worker.tasks.metrics import detect as metrics_detect
+
+    base = _ANOMALY_BASE
+    stale_bucket = base + timedelta(hours=9)
+    with sync_session_factory() as session:
+        config, event_type, event = _seed_anomaly_scan_state(session, base=base)
+        config.metric_breakdown_columns = ["platform"]
+        settings_row = session.execute(
+            select(ProjectAnomalySettings).where(
+                ProjectAnomalySettings.project_id == config.project_id
+            )
+        ).scalar_one()
+        # 2 * 10 < 50: every breakdown series below is provably silent.
+        settings_row.min_expected_count = 50
+        for hour in range(10):
+            bucket = base + timedelta(hours=hour)
+            session.add(
+                EventMetricBreakdown(
+                    id=uuid.uuid4(),
+                    scan_config_id=config.id,
+                    event_id=event.id,
+                    event_type_id=None,
+                    bucket=bucket,
+                    breakdown_column="platform",
+                    breakdown_value="ios",
+                    is_other=False,
+                    count=10,
+                )
+            )
+            session.add(
+                EventMetricBreakdown(
+                    id=uuid.uuid4(),
+                    scan_config_id=config.id,
+                    event_id=None,
+                    event_type_id=event_type.id,
+                    bucket=bucket,
+                    breakdown_column="platform",
+                    breakdown_value="ios",
+                    is_other=False,
+                    count=10,
+                )
+            )
+        session.add(
+            MetricBreakdownAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                scope_type=SCOPE_EVENT,
+                scope_ref=str(event.id),
+                event_id=event.id,
+                event_type_id=None,
+                bucket=stale_bucket,
+                breakdown_column="platform",
+                breakdown_value="ios",
+                is_other=False,
+                actual_count=0,
+                expected_count=10.0,
+                stddev=1.0,
+                z_score=-10.0,
+                direction="drop",
+            )
+        )
+        session.commit()
+
+        history_loads: list[str] = []
+        real_load = metrics_detect._load_breakdown_scope_points
+
+        def counting_load(*args: object, **kwargs: object) -> object:
+            history_loads.append(str(kwargs.get("scope_type")))
+            return real_load(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(metrics_detect, "_load_breakdown_scope_points", counting_load)
+
+        detected = metrics_detect._recalculate_metric_breakdown_anomalies(
+            session,
+            config,
+            evaluation_start=base,
+            evaluation_end=base + timedelta(hours=10),
+            covered_buckets={base + timedelta(hours=h) for h in range(10)},
+        )
+        session.commit()
+
+        assert detected == 0
+        # Only the project-total rollup still loads history: its series SUMS
+        # across event types, so no per-row MAX bounds it. The event-type and
+        # event breakdown series were skipped before the load.
+        assert history_loads == ["project_total"]
+
+        remaining = (
+            session.execute(
+                select(MetricBreakdownAnomaly).where(
+                    MetricBreakdownAnomaly.scan_config_id == config.id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert remaining == []

@@ -42,12 +42,7 @@ export default function AuthPage() {
   // A reset link lands on /auth?reset_token=... (the SPA has no dedicated reset
   // route), so an incoming token puts the page straight into reset mode.
   const resetToken = searchParams.get('reset_token') ?? ''
-  // A live reset token always forces reset mode: a reset link must show the reset
-  // form even when /auth was ALREADY mounted (same route, new ?reset_token=, no
-  // remount). Deriving `mode` from the token — rather than syncing it in an effect —
-  // means the token can never be missed and avoids set-state-in-effect.
   const [chosenMode, setChosenMode] = useState<AuthMode>('login')
-  const mode: AuthMode = resetToken ? 'reset' : chosenMode
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -57,13 +52,29 @@ export default function AuthPage() {
     location.state as { from?: { pathname?: string } } | null
   )?.from?.pathname ?? '/'
 
-  // Unauthenticated bootstrap check so the "first account becomes owner" note
-  // only shows on a brand-new instance with no users yet.
+  // Unauthenticated instance probe: drives the "first account becomes owner"
+  // note and whether a sign-up form is worth offering at all.
   const statusQuery = useQuery({
     queryKey: ['auth', 'status'],
     queryFn: authApi.status,
   })
   const isFreshInstance = statusQuery.data?.has_users === false
+  // Only a definite `false` closes the door in the UI. While the probe is in
+  // flight (or if it failed) we keep offering sign-up — the server is the real
+  // gate and still answers 403; guessing "closed" here would hide the form on
+  // an open instance every time the page loads.
+  const registrationClosed = statusQuery.data?.registration_enabled === false
+  // A live reset token always forces reset mode: a reset link must show the reset
+  // form even when /auth was ALREADY mounted (same route, new ?reset_token=, no
+  // remount). Deriving `mode` — rather than syncing it in an effect — means the
+  // token can never be missed and avoids set-state-in-effect. The same derivation
+  // falls back to login if the probe resolves "closed" while register mode is
+  // already showing (the tab is hidden, but the mode is state that predates it).
+  const mode: AuthMode = resetToken
+    ? 'reset'
+    : registrationClosed && chosenMode === 'register'
+      ? 'login'
+      : chosenMode
 
   const authMutation = useMutation({
     mutationFn: () =>
@@ -168,7 +179,7 @@ export default function AuthPage() {
             </div>
           </CardHeader>
           <CardContent className="space-y-6 px-6 py-6">
-            {isAuthTab && (
+            {isAuthTab && !registrationClosed && (
               <div className="grid grid-cols-2 gap-2 rounded-xl border border-white/10 bg-white/5 p-1">
                 <button
                   type="button"
@@ -439,6 +450,17 @@ export default function AuthPage() {
                   </button>
                 </form>
               ))}
+
+            {mode === 'login' && registrationClosed && (
+              <p
+                role="status"
+                className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm leading-6 text-slate-300"
+              >
+                Sign-ups are closed on this instance. Ask an owner to create an account for
+                you, or to reopen registration under Settings → Instance → Security &amp;
+                access.
+              </p>
+            )}
 
             {mode === 'login' && (
               <div className="space-y-2 text-sm leading-6 text-slate-400">

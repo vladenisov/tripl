@@ -21,14 +21,22 @@ import { EventName } from '@/components/event-name'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { useActiveBranchId } from '@/hooks/useBranch'
+import { DEAD_EVENT_DAYS } from '@/lib/coverage'
 import { formatRelativeTime } from '@/lib/datetime'
 import { getMonitoringPath } from '@/lib/monitoring'
 import { coverageTone, toneVar } from '@/lib/statusLexicon'
 
 const COVERAGE_DAYS = 14 as const
-// Same window as COVERAGE_DAYS so the whole page reads as one 14-day view
-// instead of silently mixing look-backs (the header's "Last 14 days").
-const DEAD_DAYS = 14 as const
+// Deliberately NOT COVERAGE_DAYS. Dead events answer a different question than
+// the data-match card ("has this implemented event gone silent?" vs "what share
+// of occurrences matched the plan?"), and Coverage's "Instrumentation gaps"
+// panel links straight into this one. While that panel used 30 days and this
+// one 14, the hand-off silently widened the population — 14 days is a weaker
+// silence test, so this list showed MORE events than the count the user clicked
+// (tripl-jfm3.79). Both now share one constant, which also matches the backend
+// default and the Events page's "Silent > 30d" filter. The panel subtitle names
+// the window, so the page never leaves the look-back implicit.
+const DEAD_DAYS = DEAD_EVENT_DAYS
 const SHADOW_TABS: readonly ShadowEventStatus[] = ['new', 'accepted', 'dismissed']
 
 // One-line clarifier for the headline number. It reads as "coverage" but is a
@@ -225,9 +233,14 @@ export default function ReconciliationPage() {
             Compare what your plan defines against what your data sources actually send.
           </p>
         </div>
+        {/* Scoped to the panels it actually describes. Dead events runs on the
+            shared DEAD_EVENT_DAYS window so it agrees with Coverage's gap count
+            (tripl-jfm3.79), so a bare page-level "Last 14 days" would now
+            misdescribe one of the three panels; that panel names its own window
+            in its subtitle. */}
         <Button variant="outline" size="sm" disabled>
           <Calendar className="h-3 w-3" />
-          Last {COVERAGE_DAYS} days
+          Data match: last {COVERAGE_DAYS} days
         </Button>
       </div>
 
@@ -390,10 +403,11 @@ export default function ReconciliationPage() {
         {/* Dead events */}
         <Panel
           title="Dead events"
-          // Name the window and the population. Coverage links here from a panel
-          // computed over its own (30-day) window, so leaving this as "not seen
-          // recently" made two adjacent surfaces look like they disagreed about
-          // the same question (tripl-jfm3.23).
+          // Name the window and the population. Coverage links here from its
+          // "Instrumentation gaps" panel, so leaving this as "not seen recently"
+          // made two adjacent surfaces look like they disagreed about the same
+          // question (tripl-jfm3.23). Both now compute over DEAD_EVENT_DAYS, so
+          // this subtitle and Coverage's report the same number.
           subtitle={`Implemented events with no data in the last ${DEAD_DAYS} days`}
           right={
             deadItems.length > 0 ? (

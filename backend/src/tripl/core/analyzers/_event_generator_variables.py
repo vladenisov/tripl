@@ -127,20 +127,52 @@ def delete_variable_contexts_for_event_type(
     project_id: uuid.UUID,
     branch_id: uuid.UUID | None,
     event_type_id: uuid.UUID,
+    contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]],
+    rewritten_fields: set[tuple[uuid.UUID, uuid.UUID]],
 ) -> None:
+    """Drop the contexts this run replaces or invalidated — and nothing else.
+
+    Two disjoint reasons to delete a row:
+
+    * its ``(variable, event, field)`` key is in ``contexts``, so
+      ``insert_variable_contexts`` is about to re-add it and the old row has to
+      go first (``uq_variable_value_context``);
+    * this run REWROTE the field value the row describes. A context means "this
+      event field's value references ``${variable}``", so it stops being true
+      exactly when ``_upsert_field_values`` changes (or newly writes) that
+      ``(event, field)`` value — which is what ``rewritten_fields`` carries.
+
+    Everything else is left alone. This used to delete every context for the
+    event type unconditionally, which also wiped rows the run had no opinion
+    about: values enriched by an earlier replay, and — the case that surfaced it
+    — a demo's seeded observed values hanging off authored field values the scan
+    is not allowed to touch, so the demo's very first scan emptied its own
+    "Variables & value drift" story (bd tripl-jfm3.56). The scheduled metrics
+    path already merges into existing rows rather than replacing them
+    (``_merge_replay_variable_samples``); this brings the scan path in line.
+    """
     event_ids = select(Event.id).where(
         Event.project_id == project_id,
         Event.event_type_id == event_type_id,
     )
     if branch_id is not None:
         event_ids = event_ids.where(Event.branch_id == branch_id)
-    delete_query = delete(VariableValue).where(
+    query = select(VariableValue).where(
         VariableValue.project_id == project_id,
         VariableValue.event_id.in_(event_ids),
     )
     if branch_id is not None:
-        delete_query = delete_query.where(VariableValue.branch_id == branch_id)
-    session.execute(delete_query)
+        query = query.where(VariableValue.branch_id == branch_id)
+
+    stale_ids = [
+        existing.id
+        for existing in session.execute(query).scalars().all()
+        if (existing.variable_id, existing.event_id, existing.field_definition_id) in contexts
+        or (existing.event_id, existing.field_definition_id) in rewritten_fields
+    ]
+    if not stale_ids:
+        return
+    session.execute(delete(VariableValue).where(VariableValue.id.in_(stale_ids)))
 
 
 def preserve_existing_variable_context_values(

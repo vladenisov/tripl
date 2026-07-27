@@ -491,6 +491,15 @@ async def _build_events(session: AsyncSession, ctx: DemoContext) -> None:
                     event_id=ev.id,
                     field_definition_id=ctx.field_ids[field_key],
                     value=value,
+                    # These values are HAND-AUTHORED by the recipe, exactly as if a
+                    # human had typed them in the event editor (which stamps
+                    # ``is_authored=True`` — see event_service), so a scan must not
+                    # rewrite them. Left unauthored, the demo's own guided first
+                    # scan replaced the documented ``${product_id}`` / ``${platform}``
+                    # templates with whatever literal the synthetic warehouse
+                    # happened to emit, which also cut the seeded variable value
+                    # contexts loose from the field they describe (bd tripl-jfm3.56).
+                    is_authored=True,
                 )
             )
         for tag_name in spec.tags:

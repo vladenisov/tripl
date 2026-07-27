@@ -58,6 +58,7 @@ export const RESET_FIELDS: Record<SectionKey, readonly string[]> = {
     'smtp_from_address',
   ],
   security: [
+    'registration_mode',
     'cors_allow_origins',
     'session_cookie_name',
     'session_ttl_hours',

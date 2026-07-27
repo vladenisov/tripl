@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.schemas.project_anomaly_settings import ProjectAnomalySettingsUpdate
-from tripl.services.project_lookup import get_project_by_slug
+from tripl.services.project_lookup import get_project_id_by_slug
 
 
 async def _ensure_settings(
@@ -29,8 +29,8 @@ async def get_project_anomaly_settings(
     session: AsyncSession,
     slug: str,
 ) -> ProjectAnomalySettings:
-    project = await get_project_by_slug(session, slug)
-    return await _ensure_settings(session, project.id)
+    project_id = await get_project_id_by_slug(session, slug)
+    return await _ensure_settings(session, project_id)
 
 
 async def update_project_anomaly_settings(
@@ -38,8 +38,8 @@ async def update_project_anomaly_settings(
     slug: str,
     data: ProjectAnomalySettingsUpdate,
 ) -> ProjectAnomalySettings:
-    project = await get_project_by_slug(session, slug)
-    settings = await _ensure_settings(session, project.id)
+    project_id = await get_project_id_by_slug(session, slug)
+    settings = await _ensure_settings(session, project_id)
     for key, value in data.model_dump(exclude_unset=True).items():
         setattr(settings, key, value)
     await session.commit()

@@ -13,12 +13,19 @@ export interface PasswordResetConfirmResponse {
   message: string
 }
 
+/** Unauthenticated instance probe for the auth screen. Both flags are
+ *  instance-wide (never per-account): `has_users` gates the "first account
+ *  becomes owner" note, `registration_enabled` says whether POST /auth/register
+ *  would be accepted right now, so a closed instance can hide the sign-up form
+ *  instead of letting a visitor discover the policy from a 403. */
+export interface AuthStatusResponse {
+  has_users: boolean
+  registration_enabled: boolean
+}
+
 export const authApi = {
   me: () => api.get<AuthUser>('/auth/me'),
-  // Unauthenticated bootstrap check: tells the auth screen whether this instance
-  // already has users, so the "first account becomes owner" note only shows on a
-  // brand-new instance.
-  status: () => api.get<{ has_users: boolean }>('/auth/status'),
+  status: () => api.get<AuthStatusResponse>('/auth/status'),
   login: (data: { email: string; password: string }) =>
     api.post<AuthUser>('/auth/login', data),
   register: (data: { email: string; password: string; name?: string }) =>

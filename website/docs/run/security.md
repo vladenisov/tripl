@@ -176,27 +176,49 @@ account, and it is governed by a single instance setting, `REGISTRATION_MODE`
 
 | Mode | Behaviour |
 |---|---|
-| `disabled` (**default**) | New signups are refused with `403`. |
-| `open` | Anyone who can reach the instance can create an account (rate-limited). |
+| `open` (**default**) | Anyone who can reach the instance can create an account (rate-limited). |
+| `disabled` | New signups are refused with `403`. |
 
-**The default is `disabled` — tripl fails closed.** A tripl instance holds the
-workspace's whole tracking plan plus warehouse connection metadata, so an
-instance exposed to the internet must not hand out accounts by accident.
+:::danger Read this before you expose an instance publicly
+**The default is `open`, and `open` means anyone who can reach the URL can
+create an account.** A new account joins as **editor**, and an editor can
+immediately read:
+
+- the workspace's **entire tracking plan** — every project, event, variable,
+  metric and annotation;
+- the **member roster** (`GET /api/v1/users`: names, emails, roles);
+- **every data source's connection metadata** — name, database type, host, port,
+  username, and whether a password is set (the secret itself is never returned).
+
+If your instance is reachable from the internet, decide the policy **before**
+the first deploy, not after. Setting `REGISTRATION_MODE=disabled` (or flipping
+Registration to **Disabled** in the UI) closes it.
+:::
+
+The default is `open` because it is currently the **only** way to onboard a
+person. There is no invitation flow, `/api/v1/users` has no create route, and
+SMTP is optional — so a closed instance can add nobody at all. Closing
+registration is the right end state; just close it **after** your team has
+accounts, or plan to reopen it briefly each time someone joins.
 
 - **First-owner bootstrap is always exempt.** On an instance with **no users**,
   the first registration is accepted regardless of the mode and becomes `owner`.
-  A fresh deploy is therefore claimable out of the box; every *later* signup is
-  subject to the policy.
-- **Onboarding a teammate** (there is no invitation flow yet): an owner switches
-  Registration to **Open**, the teammate registers, the owner switches it back to
-  **Disabled**. The override applies **immediately** — unlike the rest of the
-  Security section it is resolved per request, not pinned at process start, so
-  closing the door never waits for a redeploy.
+  A fresh (or reset) deploy is therefore always claimable; every *later* signup
+  is subject to the policy.
+- **Adding a teammate to a closed instance** (there is no invitation flow yet):
+  an owner switches Registration to **Open**, the teammate registers, the owner
+  switches it back to **Disabled**. The override applies **immediately** —
+  unlike the rest of the Security section it is resolved per request, not pinned
+  at process start, so opening and closing the door never waits for a redeploy.
+  The instance is genuinely open for the length of that window, so keep it
+  short and do it at a time you can watch the member list.
 - **No account enumeration.** The policy check runs *before* the duplicate-email
   lookup, so a closed instance returns the same `403` for a registered address
   and an unknown one.
 - `GET /api/v1/auth/status` reports `registration_enabled` (instance-wide, no
-  per-account information) so the sign-in screen can hide the sign-up form.
+  per-account information), so the sign-in screen hides the sign-up form
+  entirely on a closed instance instead of letting a visitor discover the policy
+  from a `403`.
 
 Rate limiting (`RATE_LIMIT_REGISTER_PER_HOUR`) still applies on top and is *not*
 a substitute: it slows signups, it never closes them.
@@ -310,7 +332,7 @@ Operations:
 - [ ] Rate limiting left enabled (`RATE_LIMIT_ENABLED=true`); add a proxy-tier limit if you run multiple workers/replicas.
 - [ ] `/metrics` (if enabled) and any admin surfaces restricted to an internal network.
 - [ ] First-run owner account created promptly so self-registration cannot grab `owner`.
-- [ ] `REGISTRATION_MODE` left at `disabled` (the default), and no `registration_mode` override set to `open` in **Settings → Instance**. Open it only while onboarding a teammate, then close it again.
+- [ ] **`REGISTRATION_MODE` decided deliberately. The default is `open`** — anyone who can reach the instance can create an account and read the whole tracking plan, the member roster and every data source's connection metadata. Set `REGISTRATION_MODE=disabled` (or Registration → **Disabled** in **Settings → Instance → Security & access**) once your team has accounts; there is no invite flow yet, so while it is closed nobody new can be added except by reopening it briefly.
 - [ ] Database and broker on a private network; `ENCRYPTION_KEY` and `SECRET_KEY` not committed to the repo or image.
 
 For symptom-level help (login loops, blocked CORS, 429s), see [Troubleshooting & FAQ](../use/troubleshooting.md).

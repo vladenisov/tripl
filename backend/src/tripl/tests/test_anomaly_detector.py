@@ -1116,3 +1116,81 @@ def test_trend_rows_never_report_expectation_below_the_volume_gate() -> None:
 
         assert any(anomaly.kind == "trend" for anomaly in anomalies)
         assert all(anomaly.expected_count >= settings.min_expected_count for anomaly in anomalies)
+
+
+def test_identical_series_share_one_stl_fit() -> None:
+    """tripl-jfm3.1/.73: the robust MSTL fit is the dominant scan cost and a PURE
+    function of (series, grid), so identical series must be fitted once.
+
+    This is not hypothetical: a scan whose platform column carries a single
+    value (an iOS-only scan) produces a platform-parity ratio of exactly 1.0 for
+    every scope, and the parity path has no volume gate to skip them — so the
+    same decomposition was recomputed once per scope, every run.
+    """
+    interval = timedelta(hours=1)
+    counts = [float(_daily_pattern_count(hour)) for hour in range(24 * 24)]
+
+    anomaly_detector._fit_components_cached.cache_clear()
+    first = _fit_components(counts, interval=interval)
+    assert first is not None
+    assert anomaly_detector._fit_components_cached.cache_info().misses == 1
+
+    # An equal-but-distinct list is the same key: one fit, shared result.
+    second = _fit_components(list(counts), interval=interval)
+    assert second is first
+    assert anomaly_detector._fit_components_cached.cache_info().hits == 1
+
+    # A series that differs anywhere is a different key — no stale reuse.
+    changed = list(counts)
+    changed[17] += 1.0
+    third = _fit_components(changed, interval=interval)
+    assert third is not None
+    assert third != first
+    assert anomaly_detector._fit_components_cached.cache_info().misses == 2
+
+    # ...and so is the same series on a different grid.
+    _fit_components(counts, interval=timedelta(minutes=15))
+    assert anomaly_detector._fit_components_cached.cache_info().misses == 3
+
+
+def test_flat_series_decomposition_matches_the_fitted_one() -> None:
+    """The flat-series shortcut must reproduce what STL computes, not approximate it.
+
+    A single-platform scan makes every scope's parity ratio exactly 1.0
+    (tripl-jfm3.1); those fits are skipped analytically, so pin the equivalence
+    against the real fit rather than trusting the algebra.
+    """
+    from statsmodels.tsa.seasonal import MSTL
+
+    interval = timedelta(hours=1)
+    counts = [1.0] * (24 * 24)
+
+    anomaly_detector._fit_components_cached.cache_clear()
+    trend, seasonal, residuals = _fit_components(counts, interval=interval)  # type: ignore[misc]
+    assert anomaly_detector._fit_components_cached.cache_info().misses == 1
+
+    fitted = MSTL(counts, periods=(24, 168), stl_kwargs={"robust": True}).fit()
+    fitted_seasonal = fitted.seasonal
+    fitted_seasonal = fitted_seasonal if fitted_seasonal.ndim == 1 else fitted_seasonal.sum(axis=1)
+    assert all(abs(a - b) < 1e-9 for a, b in zip(trend, fitted.trend, strict=True))
+    assert all(abs(a - b) < 1e-9 for a, b in zip(seasonal, fitted_seasonal, strict=True))
+    assert all(abs(a - b) < 1e-9 for a, b in zip(residuals, fitted.resid, strict=True))
+
+    # And a flat series still raises no anomaly, shortcut or not.
+    points = [SeriesPoint(bucket=_bucket(hour), count=1.0) for hour in range(24 * 24)]
+    assert (
+        detect_anomalies(
+            points,
+            interval=interval,
+            evaluation_start=_bucket(24 * 23),
+            evaluation_end=_bucket(24 * 24),
+            settings=AnomalyDetectionSettings(
+                baseline_window_buckets=14,
+                min_history_buckets=7,
+                sigma_threshold=3.0,
+                min_expected_count=0,
+            ),
+            fill_gaps=False,
+        )
+        == []
+    )

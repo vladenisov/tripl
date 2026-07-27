@@ -78,3 +78,51 @@ async def test_recent_signal_window_hours_out_of_range_is_rejected(
     )
 
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_ingestion_settling_minutes_defaults_and_updates(client: AsyncClient) -> None:
+    """tripl-jfm3.79: the ingestion-settling allowance is a per-project setting.
+
+    Its default must reproduce the module constant it replaced (2 hours), so a
+    project that never touches it keeps today's detection latency.
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Settling Project", "slug": "settling-project", "description": ""},
+    )
+    assert project_resp.status_code == 201
+
+    defaults = await client.get("/api/v1/projects/settling-project/anomaly-settings")
+    assert defaults.status_code == 200
+    assert defaults.json()["anomaly_ingestion_settling_minutes"] == 120
+
+    updated = await client.patch(
+        "/api/v1/projects/settling-project/anomaly-settings",
+        json={"anomaly_ingestion_settling_minutes": 45},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["anomaly_ingestion_settling_minutes"] == 45
+
+    read_back = await client.get("/api/v1/projects/settling-project/anomaly-settings")
+    assert read_back.status_code == 200
+    assert read_back.json()["anomaly_ingestion_settling_minutes"] == 45
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("label", "minutes"), [("negative", -1), ("too-long", 1441)])
+async def test_ingestion_settling_minutes_out_of_range_is_rejected(
+    client: AsyncClient, label: str, minutes: int
+) -> None:
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": f"Settling {label}", "slug": f"settling-{label}", "description": ""},
+    )
+    assert project_resp.status_code == 201
+
+    resp = await client.patch(
+        f"/api/v1/projects/settling-{label}/anomaly-settings",
+        json={"anomaly_ingestion_settling_minutes": minutes},
+    )
+
+    assert resp.status_code == 422

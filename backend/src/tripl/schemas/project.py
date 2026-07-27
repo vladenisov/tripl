@@ -111,6 +111,12 @@ class ProjectSummary(BaseModel):
     variable_count: int = 0
     scan_count: int = 0
     alert_destination_count: int = 0
+    # ENABLED alert rules across this project's destinations. A destination on
+    # its own routes nothing — a rule is what binds a signal to a channel — so
+    # "is alerting actually wired up?" needs both counters, not just the
+    # destination one (tripl-jfm3.81). Disabled rules are excluded because they
+    # deliver nothing either.
+    alert_rule_count: int = 0
     monitoring_signal_count: int = 0
     firing_monitor_count: int = 0
     # Number of scan configs whose *latest* run failed. Distinct from

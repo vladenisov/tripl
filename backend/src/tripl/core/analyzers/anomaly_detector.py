@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import lru_cache
 from math import ceil, sqrt
 from statistics import fmean, median
 
@@ -252,19 +253,45 @@ def _continues_monotonic_trend(counts: Sequence[float], idx: int) -> bool:
     return increasing or decreasing
 
 
-def _fit_components(
-    counts: list[float],
-    *,
-    interval: timedelta,
-) -> tuple[list[float], list[float], list[float]] | None:
-    """STL/MSTL decomposition returning (trend, seasonal, residuals).
+# The robust MSTL fit below is the single most expensive thing a metrics scan
+# does: ~1.4s per scope over the ~530-bucket history an hourly grid loads, and it
+# is 97% of the wall time of a collection once the provably-silent scopes are
+# skipped (measured on the demo's in-memory warehouse, tripl-jfm3.73). It is also
+# a PURE function of (series, grid) — and identical series are routine on real
+# projects: a scan whose platform column carries a single value (an iOS-only or
+# Android-only scan, tripl-jfm3.1) produces a platform-parity ratio of exactly
+# 1.0 for EVERY scope, and the parity path has no volume gate to skip them, so
+# the same fit was recomputed once per scope per run. Memoizing on the full
+# series makes those runs collapse to one fit while staying byte-identical to the
+# uncached path: a series that differs anywhere is a different key.
+#
+# 64 entries of three ~530-float tuples is well under a megabyte.
+_FIT_CACHE_MAX_ENTRIES = 64
 
-    Used only by the trend-shift detector and to reconstruct the pre-shift
-    expected level. Returns None when there isn't enough history to fit.
-    """
+_FitComponents = tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]
+
+
+@lru_cache(maxsize=_FIT_CACHE_MAX_ENTRIES)
+def _fit_components_cached(
+    counts: tuple[float, ...],
+    interval: timedelta,
+) -> _FitComponents | None:
     periods = _select_seasonal_periods(interval, len(counts))
     if not periods:
         return None
+
+    # A FLAT series decomposes exactly: LOESS reproduces a constant, so STL on
+    # ``y == c`` gives trend == c, seasonal == 0, residuals == 0 analytically.
+    # statsmodels computes that same answer to ~1e-13 by running fifteen robust
+    # iterations of three LOESS passes per period, at ~1.4s a go. Flat series are
+    # routine here rather than a curiosity: a scan whose platform column carries
+    # a single value gives EVERY scope a platform-parity ratio of exactly 1.0
+    # (tripl-jfm3.1). This is a shortcut, not an approximation — and a flat trend
+    # can never trip the shift detector either way (level change is 0).
+    if len(set(counts)) == 1:
+        level = float(counts[0])
+        flat = (0.0,) * len(counts)
+        return (level,) * len(counts), flat, flat
 
     values = np.asarray(counts, dtype=float)
 
@@ -285,7 +312,24 @@ def _fit_components(
     except Exception:
         return None
 
-    return trend.tolist(), seasonal.tolist(), residuals.tolist()
+    return tuple(trend.tolist()), tuple(seasonal.tolist()), tuple(residuals.tolist())
+
+
+def _fit_components(
+    counts: Sequence[float],
+    *,
+    interval: timedelta,
+) -> _FitComponents | None:
+    """STL/MSTL decomposition returning (trend, seasonal, residuals).
+
+    Used only by the trend-shift detector and to reconstruct the pre-shift
+    expected level. Returns None when there isn't enough history to fit.
+
+    The components are immutable tuples because they are shared out of a cache
+    keyed on the exact input series (see ``_fit_components_cached``); callers
+    read and slice them, never mutate.
+    """
+    return _fit_components_cached(tuple(counts), interval)
 
 
 def _select_phase_period(interval: timedelta, idx: int) -> int | None:
@@ -461,7 +505,7 @@ class TrendShiftResult:
 
 def _detect_trend_shift(
     expanded: list[SeriesPoint],
-    components: tuple[list[float], list[float], list[float]],
+    components: _FitComponents,
     *,
     evaluation_start: datetime,
     settings: AnomalyDetectionSettings,

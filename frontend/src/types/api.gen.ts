@@ -781,7 +781,16 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Branches */
+        /**
+         * List Branches
+         * @description List a project's branches.
+         *
+         *     ``include_diff_counts`` fills each feature branch's ``ahead`` /
+         *     ``behind_base`` from a single shared main snapshot, so a branches list does
+         *     not need one ``/branches/{id}/diff`` call per row. It is opt-in because it
+         *     makes the response cost N+1 plan snapshots; leave it off when you only need
+         *     the branch rows.
+         */
         get: operations["list_branches_api_v1_projects__slug__branches_get"];
         put?: never;
         /** Create Branch */
@@ -7103,10 +7112,14 @@ export interface components {
         };
         /** PlanBranchDetailResponse */
         PlanBranchDetailResponse: {
+            /** Ahead */
+            ahead?: number | null;
             /** Approvals */
             approvals: components["schemas"]["BranchApprovalResponse"][];
             /** Base Revision Id */
             base_revision_id: string | null;
+            /** Behind Base */
+            behind_base?: boolean | null;
             /**
              * Created At
              * Format: date-time
@@ -7162,8 +7175,12 @@ export interface components {
         };
         /** PlanBranchResponse */
         PlanBranchResponse: {
+            /** Ahead */
+            ahead?: number | null;
             /** Base Revision Id */
             base_revision_id: string | null;
+            /** Behind Base */
+            behind_base?: boolean | null;
             /**
              * Created At
              * Format: date-time
@@ -7432,6 +7449,8 @@ export interface components {
         ProjectAnomalySettingsResponse: {
             /** Anomaly Detection Enabled */
             anomaly_detection_enabled: boolean;
+            /** Anomaly Ingestion Settling Minutes */
+            anomaly_ingestion_settling_minutes: number;
             /** Baseline Window Buckets */
             baseline_window_buckets: number;
             /**
@@ -7475,6 +7494,8 @@ export interface components {
         ProjectAnomalySettingsUpdate: {
             /** Anomaly Detection Enabled */
             anomaly_detection_enabled?: boolean | null;
+            /** Anomaly Ingestion Settling Minutes */
+            anomaly_ingestion_settling_minutes?: number | null;
             /** Baseline Window Buckets */
             baseline_window_buckets?: number | null;
             /** Detect Event Types */
@@ -7672,6 +7693,11 @@ export interface components {
              * @default 0
              */
             alert_destination_count: number;
+            /**
+             * Alert Rule Count
+             * @default 0
+             */
+            alert_rule_count: number;
             /**
              * Archived Event Count
              * @default 0
@@ -11040,7 +11066,9 @@ export interface operations {
     };
     list_branches_api_v1_projects__slug__branches_get: {
         parameters: {
-            query?: never;
+            query?: {
+                include_diff_counts?: boolean;
+            };
             header?: never;
             path: {
                 slug: string;

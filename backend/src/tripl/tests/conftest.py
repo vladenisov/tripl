@@ -14,8 +14,9 @@ from tripl.config import REGISTRATION_OPEN, settings
 # session don't cause spurious 429s on repeated /auth/register calls.
 settings.rate_limit_enabled = False
 
-# Keep self-service registration open for the suite. Production defaults to
-# "disabled" (fail closed, see Settings.registration_mode), but most suites
+# Pin self-service registration open for the suite. This matches the shipped
+# default (see Settings.registration_mode) but is set explicitly so the suite
+# does not silently change behaviour if that default ever moves — most suites
 # register a second/third user to exercise editor and viewer roles. Tests that
 # assert the closed behaviour set the mode themselves via monkeypatch or a
 # persisted override.

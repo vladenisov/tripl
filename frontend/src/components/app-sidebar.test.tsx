@@ -50,6 +50,7 @@ function mockProjectsFetch() {
             variable_count: 5,
             scan_count: 4,
             alert_destination_count: 1,
+            alert_rule_count: 0,
             // H1: monitoring_signal_count is the OPEN-SIGNAL population (anomalies
             // across project_total + event_type + event scope). It must NOT drive
             // the "Monitors" nav badge, which counts MONITOR configs needing

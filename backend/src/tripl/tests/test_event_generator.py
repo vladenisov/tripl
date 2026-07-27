@@ -306,6 +306,146 @@ class TestEventGeneration:
         assert context.observed_count == 2
         assert context.values == ["u1", "u2"]
 
+    def _seed_curated_event_with_context(
+        self,
+        sync_session: Session,
+        project,
+        et,
+        fds,
+        *,
+        screen_is_authored: bool,
+    ) -> VariableValue:
+        """A hand-curated event whose ``screen`` reads ``${myvar}``, plus its context.
+
+        The generated identity for the analysis below is ``screen=/home |
+        action=click``, so the scan matches this event instead of creating one.
+        """
+        variable = Variable(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name="myvar",
+            source_name="myvar",
+            variable_type="string",
+        )
+        event = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name="Curated",
+            source_name="screen=/home | action=click",
+            order=0,
+            status="live",
+        )
+        sync_session.add_all([variable, event])
+        sync_session.flush()
+        sync_session.add_all(
+            [
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=event.id,
+                    field_definition_id=fds["screen"].id,
+                    value="${myvar}",
+                    is_authored=screen_is_authored,
+                ),
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=event.id,
+                    field_definition_id=fds["action"].id,
+                    value="click",
+                    is_authored=True,
+                ),
+            ]
+        )
+        context = VariableValue(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            variable_id=variable.id,
+            event_id=event.id,
+            field_definition_id=fds["screen"].id,
+            source_column="screen",
+            value_kind="low",
+            observed_count=42,
+            values=["curated_a", "curated_b"],
+        )
+        sync_session.add(context)
+        sync_session.flush()
+        sync_session.commit()
+        return context
+
+    @staticmethod
+    def _low_card_analysis() -> BreakdownAnalysis:
+        """Both columns low-cardinality, so the run detects NO variables at all."""
+        return _make_analysis(
+            {
+                "screen": CardinalityResult(
+                    column=ColumnInfo("screen", "String"),
+                    count=1,
+                    is_low=True,
+                    sample_values=["/home"],
+                ),
+                "action": CardinalityResult(
+                    column=ColumnInfo("action", "String"),
+                    count=1,
+                    is_low=True,
+                    sample_values=["click"],
+                ),
+            }
+        )
+
+    def test_rescan_keeps_variable_contexts_behind_authored_field_values(
+        self, sync_session: Session, project_and_type
+    ):
+        """A scan must not wipe contexts hanging off values it is not allowed to write.
+
+        The scan used to delete EVERY variable context for the event type before
+        re-recording, so a curated ``${myvar}`` template it enumerates literally
+        (low cardinality → no variable observations) lost its recorded values on
+        the first scan — which is how a fresh demo emptied its own "Variables &
+        value drift" chapter (bd tripl-jfm3.56).
+        """
+        project, et, fds = project_and_type
+        context = self._seed_curated_event_with_context(
+            sync_session, project, et, fds, screen_is_authored=True
+        )
+
+        result = generate_events(sync_session, project.id, et.id, self._low_card_analysis(), fds)
+        sync_session.commit()
+        assert result.events_created == 0
+        assert result.events_skipped == 1
+
+        survived = sync_session.get(VariableValue, context.id)
+        assert survived is not None
+        assert survived.observed_count == 42
+        assert survived.values == ["curated_a", "curated_b"]
+        # The authored template is still what the events table shows.
+        field_value = sync_session.execute(
+            select(EventFieldValue).where(
+                EventFieldValue.event_id == survived.event_id,
+                EventFieldValue.field_definition_id == fds["screen"].id,
+            )
+        ).scalar_one()
+        assert field_value.value == "${myvar}"
+
+    def test_rescan_drops_variable_contexts_whose_field_value_it_rewrote(
+        self, sync_session: Session, project_and_type
+    ):
+        """The same context IS stale once the scan overwrites the value it describes."""
+        project, et, fds = project_and_type
+        context = self._seed_curated_event_with_context(
+            sync_session, project, et, fds, screen_is_authored=False
+        )
+
+        generate_events(sync_session, project.id, et.id, self._low_card_analysis(), fds)
+        sync_session.commit()
+
+        assert sync_session.get(VariableValue, context.id) is None
+        field_value = sync_session.execute(
+            select(EventFieldValue).where(
+                EventFieldValue.field_definition_id == fds["screen"].id,
+            )
+        ).scalar_one()
+        assert field_value.value == "/home"
+
     def test_event_name_column_enumerated_despite_high_cardinality(
         self, sync_session: Session, project_and_type
     ):

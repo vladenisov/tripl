@@ -81,6 +81,8 @@ GET /api/v1/projects/{slug}/branches
 
 The response includes each branch `id`, `name`, `kind`, and `status`. Use the `id` as the `branch` query parameter on plan endpoints.
 
+Add `?include_diff_counts=true` when you need a per-branch summary rather than the branches themselves. Each working branch then also carries `ahead` (how many entities it changed against its base) and `behind_base` (whether main moved since the branch was cut), computed for the whole list from a single plan snapshot — one request instead of a `/diff` call per branch. It is opt-in because building those snapshots is the expensive part of the response; leave it off when you only need the branch rows.
+
 Review what a working branch changed, and undo one change of it:
 
 ```http

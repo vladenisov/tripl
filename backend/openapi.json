@@ -11764,6 +11764,17 @@
       },
       "PlanBranchDetailResponse": {
         "properties": {
+          "ahead": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ahead"
+          },
           "approvals": {
             "items": {
               "$ref": "#/components/schemas/BranchApprovalResponse"
@@ -11782,6 +11793,17 @@
               }
             ],
             "title": "Base Revision Id"
+          },
+          "behind_base": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Behind Base"
           },
           "created_at": {
             "format": "date-time",
@@ -11932,6 +11954,17 @@
       },
       "PlanBranchResponse": {
         "properties": {
+          "ahead": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ahead"
+          },
           "base_revision_id": {
             "anyOf": [
               {
@@ -11943,6 +11976,17 @@
               }
             ],
             "title": "Base Revision Id"
+          },
+          "behind_base": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Behind Base"
           },
           "created_at": {
             "format": "date-time",
@@ -12556,6 +12600,10 @@
             "title": "Anomaly Detection Enabled",
             "type": "boolean"
           },
+          "anomaly_ingestion_settling_minutes": {
+            "title": "Anomaly Ingestion Settling Minutes",
+            "type": "integer"
+          },
           "baseline_window_buckets": {
             "title": "Baseline Window Buckets",
             "type": "integer"
@@ -12626,6 +12674,7 @@
           "sigma_threshold",
           "min_expected_count",
           "recent_signal_window_hours",
+          "anomaly_ingestion_settling_minutes",
           "created_at",
           "updated_at"
         ],
@@ -12644,6 +12693,19 @@
               }
             ],
             "title": "Anomaly Detection Enabled"
+          },
+          "anomaly_ingestion_settling_minutes": {
+            "anyOf": [
+              {
+                "maximum": 1440.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anomaly Ingestion Settling Minutes"
           },
           "baseline_window_buckets": {
             "anyOf": [
@@ -13179,6 +13241,11 @@
           "alert_destination_count": {
             "default": 0,
             "title": "Alert Destination Count",
+            "type": "integer"
+          },
+          "alert_rule_count": {
+            "default": 0,
+            "title": "Alert Rule Count",
             "type": "integer"
           },
           "archived_event_count": {
@@ -20440,6 +20507,7 @@
     },
     "/api/v1/projects/{slug}/branches": {
       "get": {
+        "description": "List a project's branches.\n\n``include_diff_counts`` fills each feature branch's ``ahead`` /\n``behind_base`` from a single shared main snapshot, so a branches list does\nnot need one ``/branches/{id}/diff`` call per row. It is opt-in because it\nmakes the response cost N+1 plan snapshots; leave it off when you only need\nthe branch rows.",
         "operationId": "list_branches_api_v1_projects__slug__branches_get",
         "parameters": [
           {
@@ -20449,6 +20517,16 @@
             "schema": {
               "title": "Slug",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_diff_counts",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Diff Counts",
+              "type": "boolean"
             }
           }
         ],

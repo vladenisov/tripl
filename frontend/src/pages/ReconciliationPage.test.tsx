@@ -8,6 +8,7 @@ import type {
   ShadowEventStatus,
   ShadowEventsResponse,
 } from '@/api/reconciliation'
+import { DEAD_EVENT_DAYS } from '@/lib/coverage'
 import ReconciliationPage from './ReconciliationPage'
 
 function jsonResponse(body: unknown) {
@@ -261,15 +262,36 @@ describe('ReconciliationPage', () => {
     ).toBeInTheDocument()
     // The panel names its window and population, so arriving here from
     // Coverage's own gap panel does not read as two contradictory answers to
-    // the same question (tripl-jfm3.23).
+    // the same question (tripl-jfm3.23) — and the window it names is the one
+    // Coverage counted over, not a second, shorter one (tripl-jfm3.79).
     expect(
-      screen.getByText('Implemented events with no data in the last 14 days'),
+      screen.getByText(`Implemented events with no data in the last ${DEAD_EVENT_DAYS} days`),
     ).toBeInTheDocument()
     // "never" reads as a calm amber, never as an alarming danger-red wall.
     const neverRows = screen.getAllByText('never')
     expect(neverRows.length).toBeGreaterThan(0)
     expect(neverRows[0]).toHaveStyle({ color: 'var(--warning)' })
     expect(neverRows[0]).not.toHaveStyle({ color: 'var(--danger)' })
+  })
+
+  // Coverage's "Instrumentation gaps" panel links here with "Triage in
+  // Reconciliation". This page used to ask for a 14-day window while Coverage
+  // counted over 30, so the destination list was a SUPERSET of the count that
+  // sent the user here — a shorter window is a weaker silence test
+  // (tripl-jfm3.79). CoveragePage.test.tsx pins the other half of the pair.
+  it('requests dead events over the same window Coverage counts', async () => {
+    mockFetch()
+    renderPage()
+
+    await screen.findByText('legacy_banner_shown')
+
+    const deadRequest = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.map(([input]) => String(input))
+      .find((url) => url.includes('/reconciliation/dead-events'))
+
+    expect(deadRequest).toBeDefined()
+    expect(deadRequest).toContain(`days=${DEAD_EVENT_DAYS}`)
   })
 
   it('renders 0-encoded empty segments as a placeholder, never a bare "0"', async () => {

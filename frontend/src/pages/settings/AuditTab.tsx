@@ -16,7 +16,35 @@ const ACTION_TONE: Record<string, string> = {
   delete: 'bg-rose-500/15 text-rose-700',
 }
 
-// Grouped action vocabulary — kept in sync with the backend wire-in.
+/**
+ * Grouped action vocabulary for the filter — every action the backend records
+ * *with a project scope*, and nothing else.
+ *
+ * This list has to be exactly the project-scoped half of the backend's
+ * vocabulary, because the query it feeds is always narrowed by `projectSlug`
+ * (see `queryParams` below):
+ *
+ *  - An offered action the backend never scopes to a project returns zero rows
+ *    no matter what the project did. `data_source.*` used to sit here under
+ *    "Data sources & scans" and could never match: `api/v1/data_sources.py`
+ *    records those entries with no `project`/`project_slug`, because a data
+ *    source is an instance-level resource. Selecting one read as "nothing ever
+ *    happened" rather than "wrong place to look" (tripl-jfm3.79).
+ *  - An action the backend *does* record but the list omits is unfilterable —
+ *    it shows up in the unfiltered feed but can't be isolated. The list had
+ *    drifted a long way behind: branches, metrics, fact tables, inbox and
+ *    drift triage, scan cancellation, bulk variable edits and the project-level
+ *    resets were all missing.
+ *
+ * Sourced from every `audit_service.record(...)` call that passes `project=` or
+ * `project_slug=`. The `*.<verb>` families spelled out below come from typed
+ * literals on the backend: `BranchTransitionAction` (schemas/plan_branch.py),
+ * `SchemaDriftAction` (schemas/schema_drift.py) and `AlertInboxAction`
+ * (schemas/alerting.py).
+ *
+ * Deliberately excluded because they are recorded WITHOUT a project and so can
+ * never appear here: `data_source.*`, `user.role_update`, `api_key.revoke`.
+ */
 const ACTION_GROUPS: { label: string; actions: string[] }[] = [
   {
     label: 'Schema',
@@ -24,6 +52,8 @@ const ACTION_GROUPS: { label: string; actions: string[] }[] = [
       'event_type.create',
       'event_type.update',
       'event_type.delete',
+      'event_type.add_owner',
+      'event_type.remove_owner',
       'field.create',
       'field.update',
       'field.delete',
@@ -32,24 +62,65 @@ const ACTION_GROUPS: { label: string; actions: string[] }[] = [
       'meta_field.delete',
       'relation.create',
       'relation.delete',
+      'schema_drift.accept',
+      'schema_drift.snooze',
+      'schema_drift.false_positive',
+      'schema_drift.reopen',
+    ],
+  },
+  {
+    label: 'Variables',
+    actions: [
       'variable.create',
       'variable.update',
       'variable.delete',
+      'variable.bulk_update',
+      'variable.bulk_delete',
+      'variable.override_set',
+      'variable.override_delete',
+      'variable.drift_action',
     ],
   },
   {
     label: 'Versioning',
-    actions: ['plan_revision.create'],
+    actions: [
+      'plan_revision.create',
+      'plan_branch.create',
+      'plan_branch.delete',
+      'plan_branch.submit',
+      'plan_branch.request_changes',
+      'plan_branch.approve',
+      'plan_branch.reopen',
+      'plan_branch.close',
+      'plan_branch.merge',
+      'plan_branch.revert',
+      'plan_branch.add_reviewer',
+      'plan_branch.remove_reviewer',
+      'plan_branch_settings.update',
+    ],
   },
   {
-    label: 'Data sources & scans',
+    label: 'Scans',
+    // Data sources are an instance-level resource: their audit entries carry no
+    // project, so they are filtered on the workspace surface, not here.
     actions: [
-      'data_source.create',
-      'data_source.update',
-      'data_source.delete',
       'scan_config.create',
       'scan_config.update',
       'scan_config.delete',
+      'scan_config.event_groups.apply',
+      'scan_job.cancel',
+    ],
+  },
+  {
+    label: 'Metrics & fact tables',
+    actions: [
+      'metric_definition.create',
+      'metric_definition.update',
+      'metric_definition.delete',
+      'metric_definition.collect',
+      'fact_table.create',
+      'fact_table.update',
+      'fact_table.delete',
     ],
   },
   {
@@ -61,6 +132,25 @@ const ACTION_GROUPS: { label: string; actions: string[] }[] = [
       'alert_rule.create',
       'alert_rule.update',
       'alert_rule.delete',
+      'alert_rule.mute',
+      'alert_rule.unmute',
+      'alert_delivery.retry',
+      'alert_inbox.acknowledge',
+      'alert_inbox.resolve',
+      'alert_inbox.mute',
+      'alert_inbox.reopen',
+      'alert_inbox.false_positive',
+    ],
+  },
+  {
+    label: 'Project',
+    actions: [
+      'project_tracker_config.update',
+      'project.reset_anomalies',
+      'project.reset_drifts',
+      // Only recorded with a project when the key is scoped to one; a
+      // workspace-wide key carries no project and never lands here.
+      'api_key.create',
     ],
   },
 ]

@@ -1,8 +1,13 @@
 import type { ServiceSettings } from '@/types'
-import { Field, SCard, TextArea, TextInput, ToggleRow } from '@/components/settings/kit'
+import { Field, SCard, Select, TextArea, TextInput, ToggleRow } from '@/components/settings/kit'
 import { ResetRow, SourceBadge } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
+
+const REGISTRATION_OPTIONS = [
+  { value: 'open', label: 'Open — anyone who can reach this instance can sign up' },
+  { value: 'disabled', label: 'Disabled — no new accounts' },
+] as const
 
 export function SecuritySection({
   form,
@@ -17,8 +22,34 @@ export function SecuritySection({
   onReset: () => void
   resetting: boolean
 }) {
+  const registrationOpen = form.security.registration_mode === 'open'
+
   return (
     <>
+      <SCard
+        title="Registration"
+        description="Who is allowed to create an account on this instance. Unlike everything else in this section, this applies on the very next signup attempt — no redeploy."
+      >
+        <Field
+          label="Self-service registration"
+          htmlFor="security-registration-mode"
+          labelRight={<SourceBadge source={sourceFor(settings, 'security', 'registration_mode')} />}
+          hint={
+            registrationOpen
+              ? 'Open: anyone who can reach this instance can create an account. A new account joins as editor and can immediately read the whole tracking plan, the member roster, and every data source’s connection metadata (name, type, host, port, username). Close this once your team has accounts.'
+              : 'Disabled: POST /auth/register is refused with a 403 — except the very first account on an instance with no users, which always works and becomes owner. There is no invite or owner-creates-user flow yet, so while this is disabled nobody new can be added at all: reopen it to onboard someone, then close it again.'
+          }
+          last
+        >
+          <Select
+            id="security-registration-mode"
+            value={form.security.registration_mode}
+            onChange={value => setField('security', 'registration_mode', value)}
+            options={REGISTRATION_OPTIONS}
+          />
+        </Field>
+      </SCard>
+
       <SCard title="Sessions" footer={<ResetRow onReset={onReset} resetting={resetting} />}>
         <Field
           label="Session cookie"

@@ -152,7 +152,7 @@ the backend, so these stay at their defaults.
 
 | Variable | Default | Required in prod? | Purpose |
 | --- | --- | --- | --- |
-| `REGISTRATION_MODE` | `disabled` | No | Who may create an account: `disabled` refuses `POST /auth/register` with `403`; `open` allows self-service signup. The first registration on an **empty** instance is always allowed and becomes the owner. Overridable at runtime in **Settings → Instance → Security & access**, where it applies immediately. See [Security & Hardening](./security.md#self-service-registration). |
+| `REGISTRATION_MODE` | `open` | **Decide it** | Who may create an account. `open` (**the default**) allows self-service signup — anyone who can reach the instance gets an **editor** account that can read the whole tracking plan, the member roster and every data source's connection metadata. `disabled` refuses `POST /auth/register` with `403` and hides the sign-up form. Open is the default only because there is no invite or owner-creates-user flow yet, so a closed instance cannot onboard anyone; set `disabled` once your team has accounts. The first registration on an **empty** instance is always allowed and becomes the owner. Overridable at runtime in **Settings → Instance → Security & access**, where it applies immediately. See [Security & Hardening](./security.md#self-service-registration). |
 
 ### Rate limiting
 
