@@ -20,7 +20,8 @@ from tripl.schemas.auth import (
     RegisterRequest,
     validate_password_strength,
 )
-from tripl.services import app_settings_service, auth_service
+from tripl.schemas.invitation import InvitationAcceptRequest, InvitationPreview
+from tripl.services import app_settings_service, auth_service, invitation_service
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +165,57 @@ async def register(
     response: Response, session: SessionDep, data: RegisterRequest
 ) -> AuthUserResponse:
     user, session_token = await auth_service.register_user(session, data)
+    _set_session_cookie(response, session_token)
+    return AuthUserResponse.model_validate(user)
+
+
+@router.get(
+    "/invitations/{token}",
+    response_model=InvitationPreview,
+    dependencies=[Depends(enforce(status_rate_limiter))],
+)
+async def preview_invitation(session: SessionDep, token: str) -> InvitationPreview:
+    """Show who an invitation is for, before the invitee has an account.
+
+    Unauthenticated by necessity — the whole point is that this person cannot
+    sign in yet. It discloses nothing the token holder does not already have:
+    the address it was issued to, the role it grants, and when it lapses. It
+    does not reveal whether the instance has other users, or who they are.
+
+    Shares the cheap /status bucket rather than the register bucket: previewing
+    is a read, and it must not consume the quota the invitee needs to actually
+    redeem. Unknown, expired and used tokens all return the same 400.
+    """
+    invitation = await invitation_service.get_valid_invitation(session, token)
+    return InvitationPreview(
+        email=invitation.email,
+        role=invitation.role,
+        expires_at=invitation.expires_at,
+    )
+
+
+@router.post(
+    "/invitations/{token}/accept",
+    response_model=AuthUserResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(enforce(register_rate_limiter))],
+)
+async def accept_invitation(
+    response: Response, session: SessionDep, token: str, data: InvitationAcceptRequest
+) -> AuthUserResponse:
+    """Redeem an invitation into an account, and sign the new user straight in.
+
+    Reachable regardless of ``registration_mode`` — that is the entire point:
+    an owner-issued, single-use, expiring, address-bound invitation is a
+    different mechanism from the instance-wide door, so a closed instance can
+    still onboard exactly the people its owner named.
+
+    On the register rate-limit bucket, so guessing tokens costs the same as
+    hammering signup.
+    """
+    user, session_token = await invitation_service.redeem_invitation(
+        session, raw_token=token, password=data.password, name=data.name
+    )
     _set_session_cookie(response, session_token)
     return AuthUserResponse.model_validate(user)
 

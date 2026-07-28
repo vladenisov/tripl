@@ -41,6 +41,7 @@ function makeSummary(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
     variable_count: 0,
     scan_count: 0,
     alert_destination_count: 0,
+    alert_rule_count: 0,
     monitoring_signal_count: 0,
     firing_monitor_count: 0,
     failing_scan_config_count: 0,
@@ -209,6 +210,7 @@ describe('OnboardingChecklist', () => {
         latest_scan_job: executedJob(),
         implemented_event_count: 3,
         alert_destination_count: 1,
+        alert_rule_count: 1,
       }),
       sourceCount: 0,
     })
@@ -296,11 +298,77 @@ describe('OnboardingChecklist', () => {
         latest_scan_job: executedJob(),
         implemented_event_count: 3,
         alert_destination_count: 1,
+        alert_rule_count: 1,
       }),
       sourceCount: 1,
     })
 
     expect(screen.queryByText('Get started')).not.toBeInTheDocument()
+  })
+
+  // --- "Set up alerting" needs a ROUTE, not just a channel (tripl-jfm3.81) ---
+  // A destination with no enabled rule delivers nothing: rules decide which
+  // signals matter and where they go. Ticking the step on the destination alone
+  // let a user stop half-way and read a complete checklist over an alerting
+  // setup that could never reach anyone.
+
+  it('does not complete "Set up alerting" on a destination with no rule', () => {
+    renderChecklist({
+      summary: makeSummary({
+        event_type_count: 4,
+        latest_scan_job: executedJob(),
+        implemented_event_count: 3,
+        alert_destination_count: 1,
+        alert_rule_count: 0,
+      }),
+      sourceCount: 1,
+    })
+
+    // Four of five: the destination exists but routes nothing, so the card
+    // still points at alerting instead of vanishing at "5 of 5".
+    expect(screen.getByText('4 of 5')).toBeInTheDocument()
+    expect(screen.getByText(/1 step left: Set up alerting/)).toBeInTheDocument()
+  })
+
+  it('completes "Set up alerting" once a rule is bound to the destination', () => {
+    const { container } = renderChecklist({
+      summary: makeSummary({
+        event_type_count: 4,
+        latest_scan_job: executedJob(),
+        implemented_event_count: 3,
+        alert_destination_count: 1,
+        alert_rule_count: 1,
+      }),
+      sourceCount: 1,
+    })
+
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('does not complete alerting on a rule with no destination', () => {
+    // Defensive: the two counters are independent on the wire, and a rule
+    // cannot route without a channel any more than the reverse.
+    renderChecklist({
+      summary: makeSummary({
+        event_type_count: 4,
+        latest_scan_job: executedJob(),
+        implemented_event_count: 3,
+        alert_destination_count: 0,
+        alert_rule_count: 1,
+      }),
+      sourceCount: 1,
+    })
+
+    expect(screen.getByText('4 of 5')).toBeInTheDocument()
+  })
+
+  it('tells the user a RULE is what routes anomalies', () => {
+    renderChecklist({ summary: makeSummary({ event_type_count: 4 }), sourceCount: 1 })
+
+    // The old hint ("Add a destination so anomalies reach your team.") taught
+    // the same wrong model the done-check encoded.
+    expect(screen.getByText(/the rule is what routes anomalies/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Add a destination so anomalies reach your team/)).toBeNull()
   })
 
   it('auto-hides for an established project when only an optional step remains (tripl-7l83.12)', () => {

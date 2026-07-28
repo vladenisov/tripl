@@ -11,6 +11,8 @@ This page explains *why* a particular time bucket gets flagged as anomalous, and
 
 Every scan reads your warehouse and rolls the raw events up into **time-bucketed counts** — one count per event (and per event type, and for the project as a whole) for each time bucket (15 minutes, hourly, 6-hourly, or daily, depending on the scan's interval). The detector then compares the **most recent bucket(s)** against a **baseline** built from the history of that same series. For each bucket it produces three numbers: an **expected** value (where the baseline thought the count should land), a **spread** (how much that series normally wobbles), and a **z-score** that says how many "normal wobbles" away from expected the actual count fell. When the z-score is large enough and the expected count is high enough, the bucket is recorded as a detected anomaly with a direction of **spike** (too high) or **drop** (too low). That record is the raw material every alert rule later consumes.
 
+The very newest buckets are the one exception: they are collected and charted immediately, but held back from *scoring* until your warehouse has had time to finish delivering rows for them. That is the **ingestion-settling allowance**, and it is why a signal shows up somewhat after the bucket it describes — see [Detection latency](#detection-latency).
+
 :::note
 Anomaly detection is **off by default**. Nothing is flagged until an admin enables it in **Project settings → Monitoring** (where all the sensitivity controls below also live). See [Alerting](./alerting.md) for turning detected anomalies into notifications.
 :::
@@ -117,6 +119,7 @@ These live in the project's **monitoring settings** and apply to every scan in t
 | `sigma_threshold` | `4.0` | How many normal wobbles of deviation are required to flag a bucket. |
 | `min_expected_count` | `50` | Minimum expected volume before a bucket is eligible to be flagged. |
 | `recent_signal_window_hours` | `24` | How long a flagged bucket keeps counting as an **open signal**. |
+| `anomaly_ingestion_settling_minutes` | `120` | How long a bucket is left unscored after it closes, to let late-arriving warehouse rows land. Also the detection latency it buys. |
 
 The two dials you will actually reach for:
 
@@ -124,6 +127,30 @@ The two dials you will actually reach for:
 - **`min_expected_count`** — **raise it** to ignore lower-traffic series and focus on your busiest ones; **lower it** to extend monitoring down to smaller events (expect more noise from them).
 
 `recent_signal_window_hours` is a presentation dial rather than a detection one: it does not change what gets flagged, only how long a flagged bucket keeps counting as an open signal on the **Anomalies page** and in the sidebar badge. **Lower it** (say to 6) when a busy project's open count is dominated by burned-out spikes that have long since recovered — they age out of the count sooner; **raise it** when you want a full day or more of history to stay visible. The latest-scan freshness rule below still floors the horizon at `3 × scan interval`, so shortening this window never closes a long-interval scan's signal early. **Alert delivery is deliberately unaffected**: alert candidates and monitor status stay on the fixed 24-hour window, so narrowing this dial can never close an alert state or make an already-notified rule fire again.
+
+### Detection latency
+
+A signal for a given time bucket does **not** appear the moment that bucket closes. It appears up to one **ingestion-settling allowance** later — **two hours by default**. This is designed behaviour, not a stall.
+
+The reason is that a warehouse keeps writing rows for a time interval well after that interval has ended on the clock. Pipelines batch, mobile clients buffer events offline and flush them hours later, and backfills land out of order. On a real hourly project the newest bucket grew by roughly 9% and the second-newest by roughly 6% between two consecutive scans — and **every** revision was upward. Scoring a bucket while it is still filling therefore manufactures **drops that evaporate on the next scan**: the detector compares a half-delivered count against a fully-delivered baseline and correctly concludes the count is low.
+
+The allowance closes that hole without hiding data:
+
+- **Collection is unaffected.** The newest buckets are still read, stored, and drawn on every chart, so the series you look at is always complete and current. Only anomaly *emission* waits.
+- **The wait is converted into whole buckets** of each series' own grid, rounding up. With the 120-minute default, an hourly series withholds its 2 newest buckets, a 15-minute series withholds 8, and a daily series withholds 1 (a full day).
+- **Nothing is skipped.** Each scan re-evaluates a trailing window of recent buckets, so a bucket that was too young to score last time is scored on the next run, once it has settled.
+
+The withheld buckets are counted from the **end of the collected series**, which itself stops at the last *complete* clock interval. On an hourly scan with the default allowance that means the 09:00 bucket is still settling for the runs whose series end at 09:00 and at 10:00, and is first scored by a run whose series reaches 11:00. In practice, expect a signal to trail the bucket it describes by **the settling allowance plus the scan's own interval**, and never to arrive sooner than the next scan after that. Alerts inherit the same delay, because a rule can only fire on a bucket the detector has scored.
+
+**Tuning it.** The allowance is a per-project setting, `anomaly_ingestion_settling_minutes`, in **Project settings → Monitoring** as **"Ingestion settling (minutes)"**. It accepts 0–1440 minutes.
+
+- **Lower it** (down to `0`, which scores every bucket immediately) when your warehouse is genuinely real-time and you want the fastest possible detection. The cost is false drops on the newest bucket whenever a scan happens to run before ingestion finishes.
+- **Raise it** when you see drops that disappear by the next scan, or when you know a pipeline lags by more than two hours. The cost is proportionally later detection — the setting *is* the latency.
+- Set it near your ingestion pipeline's real worst-case lag. Note that it is rounded up to whole buckets, so on a daily grid anything above 0 withholds a full day.
+
+:::tip
+If a spike you can see on the chart has no marker on it yet, check the bucket's age against this setting before assuming detection is broken. A bucket younger than the allowance is deliberately unscored, and the next scan will score it.
+:::
 
 ## Distribution drift
 
@@ -247,5 +274,5 @@ So the detector's `sigma_threshold` and `min_expected_count` decide what is *fla
 When you mark an alert in the inbox as a **false positive**, the system doesn't just dismiss it — it **automatically nudges the detector to be stricter** on the scans that produced it. Each false-positive action raises `sigma_threshold` by 0.5 (capped at 10) and `min_expected_count` by 5 (capped at 1000), on both the affected scans and the project's monitoring settings. In effect, telling the system "this wasn't real" teaches it to demand a larger, higher-volume deviation next time. If you find the detector has grown too quiet, check whether repeated false-positive marks have ratcheted these values up, and reset them in the monitoring settings.
 
 :::tip Troubleshooting
-If a series you expect to be watched is never flagged, the usual causes are: detection is disabled, the series sits below `min_expected_count`, the series is too young for a phase baseline (and too sparse for the rolling fallback), or false-positive feedback has raised the thresholds. See [Troubleshooting](./troubleshooting.md).
+If a series you expect to be watched is never flagged, the usual causes are: detection is disabled, the series sits below `min_expected_count`, the series is too young for a phase baseline (and too sparse for the rolling fallback), or false-positive feedback has raised the thresholds. If instead it is flagged but *late*, that is the [ingestion-settling allowance](#detection-latency) — the newest buckets are deliberately held unscored until they have settled. See [Troubleshooting](./troubleshooting.md).
 :::

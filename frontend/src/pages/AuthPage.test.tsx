@@ -19,13 +19,16 @@ function urlOf(input: RequestInfo | URL) {
       : input.url
 }
 
-// Default the unauthenticated /auth/status probe to a provisioned instance so the
-// owner note stays hidden unless a test opts into the fresh-instance response.
-function mockStatus(hasUsers: boolean) {
+// Default the unauthenticated /auth/status probe to a provisioned instance with
+// registration open, so the owner note stays hidden and the sign-up tab stays
+// visible unless a test opts into another instance shape.
+function mockStatus(hasUsers: boolean, registrationEnabled = true) {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
     const url = urlOf(input)
     if (url.endsWith('/api/v1/auth/status')) {
-      return Promise.resolve(jsonResponse({ has_users: hasUsers }))
+      return Promise.resolve(
+        jsonResponse({ has_users: hasUsers, registration_enabled: registrationEnabled }),
+      )
     }
     return Promise.reject(new Error(`Unexpected request: ${url}`))
   })
@@ -38,7 +41,7 @@ function mockAuthFetch(options: { emailConfigured?: boolean } = {}) {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
     const url = urlOf(input)
     if (url.endsWith('/api/v1/auth/status')) {
-      return Promise.resolve(jsonResponse({ has_users: true }))
+      return Promise.resolve(jsonResponse({ has_users: true, registration_enabled: true }))
     }
     if (url.endsWith('/api/v1/auth/password-reset/request')) {
       return Promise.resolve(
@@ -231,5 +234,33 @@ describe('AuthPage', () => {
     expect(
       screen.queryByText(/The first account on a new instance becomes the owner/),
     ).not.toBeInTheDocument()
+  })
+
+  it('offers no sign-up form when the instance has registration closed (tripl-jfm3.79)', async () => {
+    mockStatus(true, false)
+    renderAuth()
+
+    // The policy is stated up front instead of being discovered from a 403 after
+    // the visitor has filled in the form.
+    expect(
+      await screen.findByText(/Sign-ups are closed on this instance/),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Create account' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Create your account' }),
+    ).not.toBeInTheDocument()
+    // Signing in still works — only the sign-up half is withdrawn.
+    expect(screen.getByRole('button', { name: 'Sign In' })).toBeInTheDocument()
+  })
+
+  it('keeps the sign-up tab on an instance with registration open', async () => {
+    renderAuth()
+
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
+
+    expect(
+      await screen.findByRole('button', { name: 'Create account' }),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Sign-ups are closed on this instance/)).not.toBeInTheDocument()
   })
 })

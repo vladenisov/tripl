@@ -17,6 +17,8 @@ from sqlalchemy.orm import Session
 from tripl.core.adapters.registry import build_adapter
 from tripl.models.data_source import DataSource, DBType
 from tripl.models.event import Event
+from tripl.models.event_field_value import EventFieldValue
+from tripl.models.field_definition import FieldDefinition
 from tripl.models.scan_config import ScanConfig
 from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks.scan import _scan_with_grouping
@@ -159,6 +161,16 @@ def _non_archived(items: list[dict]) -> list[dict]:
     return [item for item in items if item["status"] != "archived"]
 
 
+async def _observed_values(client: AsyncClient, slug: str) -> dict[str, tuple[int, list[str]]]:
+    """``{variable name: (event_count, sample_values)}`` — the Variables table's two columns."""
+    resp = await client.get(f"/api/v1/projects/{slug}/variables")
+    assert resp.status_code == 200
+    return {
+        variable["name"]: (variable["event_count"], sorted(variable["sample_values"]))
+        for variable in resp.json()["items"]
+    }
+
+
 @pytest.mark.asyncio
 async def test_demo_rescan_folds_synthetic_events_without_flooding_catalog(
     client: AsyncClient,
@@ -240,3 +252,78 @@ async def test_demo_rescan_folds_synthetic_events_without_flooding_catalog(
 
     cov_after = (await client.get(f"/api/v1/projects/{slug}/reconciliation/coverage")).json()
     assert cov_after["summary"]["matched_count"] == matched_before
+
+
+@pytest.mark.asyncio
+async def test_demo_rescan_keeps_seeded_variable_values_and_templates(
+    client: AsyncClient,
+) -> None:
+    """The demo's variable story survives its own guided first scan.
+
+    Regression for bd tripl-jfm3.56. The coached "Variables & value drift"
+    chapter tells the user to run a scan and then compare ``${product_id}``'s
+    observed values against its documented list — but the scan rewrote the
+    curated ``${product_id}`` / ``${platform}`` templates with literal warehouse
+    values and then wiped EVERY variable context of the scanned event types, so
+    the chapter opened on two empty columns (events "—", observed values "—").
+    """
+    slug = await _demo_slug(client)
+    scan_id = await _scan_id(client, slug)
+
+    observed_before = await _observed_values(client, slug)
+    assert sorted(observed_before["product_id"][1]) == [
+        "prod_annual",
+        "prod_lifetime",
+        "prod_monthly",
+    ], observed_before
+    assert all(count > 0 for count, _ in observed_before.values()), observed_before
+
+    async with TestSessionLocal() as session:
+        ds = (
+            await session.execute(select(DataSource).where(DataSource.db_type == DBType.synthetic))
+        ).scalar_one()
+        project_id = ds.project_id
+        adapter = build_adapter(ds)
+
+        def _rescan(sync_session: Session) -> None:
+            config = sync_session.get(ScanConfig, uuid.UUID(scan_id))
+            assert config is not None
+            columns = [
+                column
+                for column in adapter.get_columns(config.base_query)
+                if column.name != config.time_column
+            ]
+            _scan_with_grouping(
+                sync_session,
+                config.project_id,
+                config,
+                adapter,
+                columns,
+                scan_window=None,
+                row_limit=100000,
+            )
+
+        await session.run_sync(_rescan)
+        await session.commit()
+        adapter.close()
+
+    assert await _observed_values(client, slug) == observed_before
+
+    # The templates the chapter points at are still templates, not literals.
+    async with TestSessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(Event.name, FieldDefinition.name, EventFieldValue.value)
+                .join(EventFieldValue, EventFieldValue.event_id == Event.id)
+                .join(
+                    FieldDefinition,
+                    FieldDefinition.id == EventFieldValue.field_definition_id,
+                )
+                .where(Event.project_id == project_id)
+            )
+        ).all()
+    values_by_event: dict[str, dict[str, str]] = {}
+    for event_name, field_name, value in rows:
+        values_by_event.setdefault(event_name, {})[field_name] = value
+    assert values_by_event["Purchase Completed"]["product_id"] == "${product_id}"
+    assert values_by_event["Home Screen View"]["platform"] == "${platform}"

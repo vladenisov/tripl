@@ -62,6 +62,27 @@ def _truncate_sample_value(value: object | None) -> str | None:
     return text
 
 
+def _carries_no_data(name: str, results: dict[str, CardinalityResult]) -> bool:
+    """Whether this column held nothing at all for the event type being diffed.
+
+    A grouped scan reads ONE flat table and hands every event type the same
+    global column list, while the cardinality results it also passes are already
+    scoped to that type's rows. Without this check each type reports `new_field`
+    for every column it never populates — so a purchase-only ``amount`` becomes
+    drift on Screen View and on Click, and the demo alone produced ~24 such rows
+    per scan (tripl-jfm3.57). That is noise, not drift: the column is not new,
+    this event simply does not use it.
+
+    ``count`` is a distinct count built with NULLs excluded
+    (``cardinality._build_analysis``), so 0 means "no value in any row of this
+    group". Absent from ``results`` is treated as "we have no evidence" and left
+    alone, which keeps the ungrouped path — where callers may pass no results at
+    all — reporting exactly as before.
+    """
+    result = results.get(name)
+    return result is not None and result.count == 0
+
+
 def _diff_event_type_schema(
     event_type: EventType,
     columns: list[ColumnInfo],
@@ -84,6 +105,8 @@ def _diff_event_type_schema(
     drift_items: list[dict[str, object]] = []
     for name, col in observed.items():
         if name in declared:
+            continue
+        if _carries_no_data(name, results):
             continue
         drift_items.append(
             {

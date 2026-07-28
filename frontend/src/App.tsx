@@ -15,6 +15,7 @@ import {
 } from './hooks/useDocumentTitle'
 
 const AuthPage = lazy(() => import('./pages/AuthPage'))
+const InvitePage = lazy(() => import('./pages/InvitePage'))
 const MainPage = lazy(() => import('./pages/ProjectsPage'))
 const EventsPage = lazy(() => import('./pages/EventsPage'))
 const EventEditPage = lazy(() => import('./pages/events/EventForm'))
@@ -279,6 +280,13 @@ export default function App() {
           <Route
             path="/auth"
             element={<AnonymousOnly>{withSuspense(<AuthPage />)}</AnonymousOnly>}
+          />
+          {/* Redeeming an invitation. AnonymousOnly like /auth: someone already
+              signed in has no use for it, and following a link while logged in
+              as a different user would be confusing rather than helpful. */}
+          <Route
+            path="/invite/:token"
+            element={<AnonymousOnly>{withSuspense(<InvitePage />)}</AnonymousOnly>}
           />
           {/* Full-takeover Settings area — its own viewport shell, so each route
               mounts OUTSIDE the app Layout (no app sidebar) but requires auth. */}

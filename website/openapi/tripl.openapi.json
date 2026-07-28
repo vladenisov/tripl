@@ -6,6 +6,27 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/auth/status": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Get Status",
+        "operationId": "get_status_api_v1_auth_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/register": {
       "post": {
         "tags": [
@@ -71,6 +92,88 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AuthUserResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/password-reset/request": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Request Password Reset",
+        "operationId": "request_password_reset_api_v1_auth_password_reset_request_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordResetRequestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/password-reset/confirm": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Confirm Password Reset",
+        "operationId": "confirm_password_reset_api_v1_auth_password_reset_confirm_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetConfirmBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordResetConfirmResponse"
                 }
               }
             }
@@ -708,6 +811,28 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProjectResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/demo/cancel": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Cancel Demo Provisioning",
+        "description": "Abandon this user's in-flight demo provision, if one is still seeding.\n\nDeliberately ungated by the kill switch: it only ever removes work. Declared\nbefore ``/demo/{slug}/reset`` so the literal path is never shadowed.",
+        "operationId": "cancel_demo_provisioning_api_v1_projects_demo_cancel_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoCancelResponse"
                 }
               }
             }
@@ -3780,7 +3905,7 @@
                 {
                   "type": "array",
                   "items": {
-                    "type": "string"
+                    "$ref": "#/components/schemas/EventStatus"
                   }
                 },
                 {
@@ -5298,6 +5423,29 @@
               "type": "string",
               "title": "Slug"
             }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 5000,
+              "minimum": 1,
+              "default": 200,
+              "title": "Limit"
+            }
           }
         ],
         "responses": {
@@ -5306,11 +5454,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/VariableResponse"
-                  },
-                  "title": "Response List Variables Api V1 Projects  Slug  Variables Get"
+                  "$ref": "#/components/schemas/VariableListResponse"
                 }
               }
             }
@@ -7652,7 +7796,7 @@
           "metrics"
         ],
         "summary": "Get Active Signals",
-        "description": "Cacheable no-args variant. For filtering by a large event-id list\n(>>a few), prefer ``POST /anomalies/signals/query`` \u2014 GET's query-string\noverflow is real once you cross ~50 ids (proxy/browser limits).",
+        "description": "Cacheable no-args variant. For filtering by a large event-id list\n(>>a few), prefer ``POST /anomalies/signals/query`` \u2014 GET's query-string\noverflow is real once you cross ~50 ids (proxy/browser limits).\n\n``expanded=true`` (the AnomaliesPage view) also surfaces per-event scopes\nand keeps each incident's child rows, tagged ``incident_child`` rather than\ncollapsed into the parent project_total signal.",
         "operationId": "get_active_signals_api_v1_projects__slug__anomalies_signals_get",
         "parameters": [
           {
@@ -7682,6 +7826,16 @@
                 }
               ],
               "title": "Event Id"
+            }
+          },
+          {
+            "name": "expanded",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Expanded"
             }
           }
         ],
@@ -10021,6 +10175,7 @@
           "plan-branches"
         ],
         "summary": "List Branches",
+        "description": "List a project's branches.\n\n``include_diff_counts`` fills each feature branch's ``ahead`` /\n``behind_base`` from a single shared main snapshot, so a branches list does\nnot need one ``/branches/{id}/diff`` call per row. It is opt-in because it\nmakes the response cost N+1 plan snapshots; leave it off when you only need\nthe branch rows.",
         "operationId": "list_branches_api_v1_projects__slug__branches_get",
         "parameters": [
           {
@@ -10030,6 +10185,16 @@
             "schema": {
               "type": "string",
               "title": "Slug"
+            }
+          },
+          {
+            "name": "include_diff_counts",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Diff Counts"
             }
           }
         ],
@@ -14764,7 +14929,7 @@
           "sigma_threshold": {
             "type": "number",
             "title": "Sigma Threshold",
-            "default": 3.0
+            "default": 4.0
           },
           "versions": {
             "items": {
@@ -14941,7 +15106,7 @@
           "sigma_threshold": {
             "type": "number",
             "title": "Sigma Threshold",
-            "default": 3.0
+            "default": 4.0
           },
           "versions": {
             "items": {
@@ -15078,6 +15243,24 @@
           "total"
         ],
         "title": "AuditListResponse"
+      },
+      "AuthStatusResponse": {
+        "properties": {
+          "has_users": {
+            "type": "boolean",
+            "title": "Has Users"
+          },
+          "registration_enabled": {
+            "type": "boolean",
+            "title": "Registration Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "has_users"
+        ],
+        "title": "AuthStatusResponse"
       },
       "AuthUserResponse": {
         "properties": {
@@ -16080,6 +16263,18 @@
             "format": "uuid",
             "title": "Id"
           },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
           "name": {
             "type": "string",
             "title": "Name"
@@ -16559,6 +16754,31 @@
           "days"
         ],
         "title": "DeadEventListResponse"
+      },
+      "DemoCancelResponse": {
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "title": "Cancelled"
+          },
+          "slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slug"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cancelled"
+        ],
+        "title": "DemoCancelResponse",
+        "description": "Outcome of asking an in-flight demo provision to abandon itself.\n\n``cancelled`` is only true when a still-seeding shell was found and flagged;\nthe provision then deletes itself instead of promoting. When it is false the\ncreate had already finished (or never started), so the caller must be told\nplainly that the demo will appear rather than pretending it was stopped."
       },
       "DetectionResetPeriod": {
         "properties": {
@@ -17962,6 +18182,17 @@
             ],
             "title": "Scan Config Id"
           },
+          "scan_config_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Name"
+          },
           "event_id": {
             "anyOf": [
               {
@@ -18009,7 +18240,7 @@
           "sigma_threshold": {
             "type": "number",
             "title": "Sigma Threshold",
-            "default": 3.0
+            "default": 4.0
           },
           "data": {
             "items": {
@@ -22794,6 +23025,11 @@
           },
           "direction": {
             "$ref": "#/components/schemas/AnomalyDirection"
+          },
+          "incident_child": {
+            "type": "boolean",
+            "title": "Incident Child",
+            "default": false
           }
         },
         "type": "object",
@@ -23438,21 +23674,87 @@
             "type": "integer",
             "title": "Days"
           },
-          "active_events": {
+          "new_events": {
             "items": {
               "type": "integer"
             },
             "type": "array",
-            "title": "Active Events"
+            "title": "New Events"
           }
         },
         "type": "object",
         "required": [
           "days",
-          "active_events"
+          "new_events"
         ],
         "title": "OverviewKpiSeriesResponse",
-        "description": "Real daily series behind Overview KPI sparklines.\n\nOnly ``active_events`` (new events created per day, from Event.created_at)\nhas genuine history; other KPIs (open signals, review-pending) have no\ntime series until snapshotting is added, so they are intentionally omitted\nrather than fabricated."
+        "description": "Real daily series behind Overview KPI sparklines.\n\nOnly ``new_events`` (events created per day on the main branch, from\nEvent.created_at) has genuine history; other KPIs (active events, open\nsignals, review-pending) have no time series until snapshotting is added,\nso they are intentionally omitted rather than fabricated. The field was\nnamed ``active_events`` until tripl-jfm3.22 \u2014 it never held active-event\ncounts, and the Overview sparkline repeated that false claim in its label."
+      },
+      "PasswordResetConfirmBody": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Token"
+          },
+          "new_password": {
+            "type": "string",
+            "maxLength": 255,
+            "title": "New Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token",
+          "new_password"
+        ],
+        "title": "PasswordResetConfirmBody"
+      },
+      "PasswordResetConfirmResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "PasswordResetConfirmResponse"
+      },
+      "PasswordResetRequestBody": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "title": "Email"
+          }
+        },
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "title": "PasswordResetRequestBody"
+      },
+      "PasswordResetRequestResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "email_configured": {
+            "type": "boolean",
+            "title": "Email Configured"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message",
+          "email_configured"
+        ],
+        "title": "PasswordResetRequestResponse"
       },
       "PlanBranchCreate": {
         "properties": {
@@ -23555,6 +23857,28 @@
             "type": "string",
             "format": "date-time",
             "title": "Updated At"
+          },
+          "ahead": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ahead"
+          },
+          "behind_base": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Behind Base"
           },
           "reviewers": {
             "items": {
@@ -23723,6 +24047,28 @@
             "type": "string",
             "format": "date-time",
             "title": "Updated At"
+          },
+          "ahead": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ahead"
+          },
+          "behind_base": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Behind Base"
           }
         },
         "type": "object",
@@ -24308,6 +24654,14 @@
             "type": "integer",
             "title": "Min Expected Count"
           },
+          "recent_signal_window_hours": {
+            "type": "integer",
+            "title": "Recent Signal Window Hours"
+          },
+          "anomaly_ingestion_settling_minutes": {
+            "type": "integer",
+            "title": "Anomaly Ingestion Settling Minutes"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -24332,6 +24686,8 @@
           "min_history_buckets",
           "sigma_threshold",
           "min_expected_count",
+          "recent_signal_window_hours",
+          "anomaly_ingestion_settling_minutes",
           "created_at",
           "updated_at"
         ],
@@ -24441,6 +24797,32 @@
               }
             ],
             "title": "Min Expected Count"
+          },
+          "recent_signal_window_hours": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 720.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recent Signal Window Hours"
+          },
+          "anomaly_ingestion_settling_minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1440.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anomaly Ingestion Settling Minutes"
           }
         },
         "type": "object",
@@ -24908,6 +25290,11 @@
             "title": "Alert Destination Count",
             "default": 0
           },
+          "alert_rule_count": {
+            "type": "integer",
+            "title": "Alert Rule Count",
+            "default": 0
+          },
           "monitoring_signal_count": {
             "type": "integer",
             "title": "Monitoring Signal Count",
@@ -25177,7 +25564,6 @@
           "password": {
             "type": "string",
             "maxLength": 255,
-            "minLength": 8,
             "title": "Password"
           },
           "name": {
@@ -27243,6 +27629,14 @@
           "rate_limit_trust_forwarded_for": {
             "type": "boolean",
             "title": "Rate Limit Trust Forwarded For"
+          },
+          "registration_mode": {
+            "type": "string",
+            "enum": [
+              "open",
+              "disabled"
+            ],
+            "title": "Registration Mode"
           }
         },
         "type": "object",
@@ -27258,7 +27652,8 @@
           "rate_limit_enabled",
           "rate_limit_login_per_minute",
           "rate_limit_register_per_hour",
-          "rate_limit_trust_forwarded_for"
+          "rate_limit_trust_forwarded_for",
+          "registration_mode"
         ],
         "title": "SecuritySettings"
       },
@@ -27401,6 +27796,21 @@
               }
             ],
             "title": "Rate Limit Trust Forwarded For"
+          },
+          "registration_mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "disabled"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Registration Mode"
           }
         },
         "type": "object",
@@ -28694,6 +29104,27 @@
         ],
         "title": "VariableEventOverrideUpsert"
       },
+      "VariableListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/VariableResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "VariableListResponse"
+      },
       "VariableResponse": {
         "properties": {
           "id": {
@@ -28775,12 +29206,22 @@
             },
             "type": "array",
             "title": "Sample Values",
+            "description": "Observed values unioned across every (variable, event, field) context, de-duplicated and capped at 20. Lets a list client render the row's value chips without one /values call per variable.",
             "default": []
           },
           "open_drift_count": {
             "type": "integer",
             "title": "Open Drift Count",
             "default": 0
+          },
+          "event_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Event Names",
+            "description": "Distinct names of the events this variable was observed in, alphabetical and capped at 20. 'event_count' carries the untruncated total; fetch /variables/{id}/values for the full per-event breakdown.",
+            "default": []
           }
         },
         "type": "object",

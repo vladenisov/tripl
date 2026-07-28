@@ -146,9 +146,16 @@ function buildSteps(slug: string, summary: ProjectSummary, sourceCount: number):
     {
       id: 'alert',
       title: 'Set up alerting',
-      hint: 'Add a destination so anomalies reach your team.',
+      // A destination is only half of it: the RULE is what routes a signal to
+      // that destination. Saying "add a destination" taught the wrong mental
+      // model and matched a done-check that ticked on the destination alone.
+      hint: 'Add a destination, then a rule — the rule is what routes anomalies to it.',
       href: `${base}/settings/alerting`,
-      done: summary.alert_destination_count > 0,
+      // Both halves, because a destination with no enabled rule delivers
+      // nothing: ticking this off on the destination alone let a user stop
+      // half-way and read 5 of 5 while no anomaly could reach anyone
+      // (tripl-jfm3.81). `alert_rule_count` counts ENABLED rules only.
+      done: summary.alert_destination_count > 0 && summary.alert_rule_count > 0,
     },
   ]
 }

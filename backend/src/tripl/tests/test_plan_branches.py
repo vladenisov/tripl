@@ -518,6 +518,68 @@ async def test_diff_only_reports_branch_changes_when_main_advances(client: Async
 
 
 @pytest.mark.asyncio
+async def test_branch_list_can_carry_diff_counts(client: AsyncClient) -> None:
+    """``?include_diff_counts=true`` answers the list's ahead/behind badge.
+
+    The Branches tab used to need one ``/branches/{id}/diff`` per feature branch
+    just for those two numbers, and every one of those calls rebuilt main's plan
+    snapshot (tripl-jfm3.79). The list now derives them for the whole page from a
+    single main snapshot; they must agree with the diff endpoint exactly.
+    """
+    slug = "branch-list-counts"
+    await _seed_plan(client, slug)
+    edited_id = await _create_branch(client, slug, name="edited")
+    untouched_id = await _create_branch(client, slug, name="untouched")
+
+    # Off by default: no extra snapshots for callers that only want the rows.
+    plain = await client.get(f"/api/v1/projects/{slug}/branches")
+    assert plain.status_code == 200
+    assert all(item["ahead"] is None for item in plain.json()["items"])
+    assert all(item["behind_base"] is None for item in plain.json()["items"])
+
+    async with TestSessionLocal() as session:
+        branch_event = (
+            await session.execute(
+                select(Event).where(
+                    Event.branch_id == uuid.UUID(edited_id),
+                    Event.name == "purchase:success",
+                )
+            )
+        ).scalar_one()
+        branch_event.description = "edited on branch"
+        await session.commit()
+
+    main_event_types = await client.get(f"/api/v1/projects/{slug}/event-types")
+    track_id = next(et["id"] for et in main_event_types.json() if et["name"] == "track")
+    advanced = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": track_id, "name": "main:added-after-branch"},
+    )
+    assert advanced.status_code == 201
+
+    listed = await client.get(f"/api/v1/projects/{slug}/branches?include_diff_counts=true")
+    assert listed.status_code == 200
+    by_id = {item["id"]: item for item in listed.json()["items"]}
+
+    assert by_id[edited_id]["ahead"] == 1
+    assert by_id[edited_id]["behind_base"] is True
+    assert by_id[untouched_id]["ahead"] == 0
+    assert by_id[untouched_id]["behind_base"] is True
+
+    # main is not a feature branch, so it carries no counts either way.
+    main_row = next(item for item in listed.json()["items"] if item["kind"] == "main")
+    assert main_row["ahead"] is None
+    assert main_row["behind_base"] is None
+
+    for branch_id in (edited_id, untouched_id):
+        diff = await client.get(f"/api/v1/projects/{slug}/branches/{branch_id}/diff")
+        assert diff.status_code == 200
+        summary = diff.json()["summary"]
+        assert by_id[branch_id]["ahead"] == sum(summary.values())
+        assert by_id[branch_id]["behind_base"] == diff.json()["behind_base"]
+
+
+@pytest.mark.asyncio
 async def test_diff_entries_carry_before_after_state(client: AsyncClient) -> None:
     """Added/removed entries expose one-sided full state for the detail view.
 

@@ -21,7 +21,7 @@ from tripl.schemas.project_tracker_config import (
     ProjectTrackerConfigResponse,
     ProjectTrackerConfigUpdate,
 )
-from tripl.services.project_lookup import get_project_by_slug
+from tripl.services.project_lookup import get_project_id_by_slug
 
 DEFAULT_ENABLED = False
 DEFAULT_TRACKER_TYPE = "jira"
@@ -104,12 +104,12 @@ async def get_project_tracker_config(
 ) -> ProjectTrackerConfigResponse:
     """Read-only: projects that never configured a tracker get the defaults back
     without a row being written (GETs must not mutate the database)."""
-    project = await get_project_by_slug(session, slug)
+    project_id = await get_project_id_by_slug(session, slug)
     config = await session.scalar(
-        select(ProjectTrackerConfig).where(ProjectTrackerConfig.project_id == project.id)
+        select(ProjectTrackerConfig).where(ProjectTrackerConfig.project_id == project_id)
     )
     if config is None:
-        return _defaults_response(project.id)
+        return _defaults_response(project_id)
     return _to_response(config)
 
 
@@ -118,8 +118,8 @@ async def update_project_tracker_config(
     slug: str,
     data: ProjectTrackerConfigUpdate,
 ) -> ProjectTrackerConfigResponse:
-    project = await get_project_by_slug(session, slug)
-    config = await _ensure_config(session, project.id)
+    project_id = await get_project_id_by_slug(session, slug)
+    config = await _ensure_config(session, project_id)
     payload = data.model_dump(exclude_unset=True)
 
     # api_token is encrypted at rest and never stored raw. ""/clears the token;

@@ -176,30 +176,92 @@ account, and it is governed by a single instance setting, `REGISTRATION_MODE`
 
 | Mode | Behaviour |
 |---|---|
-| `disabled` (**default**) | New signups are refused with `403`. |
-| `open` | Anyone who can reach the instance can create an account (rate-limited). |
+| `open` (**default**) | Anyone who can reach the instance can create an account (rate-limited). |
+| `disabled` | New signups are refused with `403`. |
 
-**The default is `disabled` — tripl fails closed.** A tripl instance holds the
-workspace's whole tracking plan plus warehouse connection metadata, so an
-instance exposed to the internet must not hand out accounts by accident.
+:::danger Read this before you expose an instance publicly
+**The default is `open`, and `open` means anyone who can reach the URL can
+create an account.** A new account joins as **editor** — not as a read-only
+viewer — so a stranger who registers can immediately **read**:
+
+- the workspace's **entire tracking plan** — every project, event, variable,
+  metric and annotation;
+- the **member roster** (`GET /api/v1/users`: names, emails, roles);
+- each data source's **name, database type and health status** — enough to tell
+  which warehouse a scan or metric points at. Connection details (host, port,
+  username, whether a password is set, TLS settings) are owner-only and redacted
+  from everyone else, and the password itself is never returned to anybody.
+  Reading the warehouse's **table and column names**
+  (`GET /api/v1/data-sources/{id}/schema`) stops at **editor**, because the scan,
+  metric and fact-table forms drive their column pickers off it; a **viewer**
+  gets `403`. `/stats` is owner-only.
+
+…and **write**:
+
+- create, rename and edit **any shared project** — the tracking plan an owner
+  created, and any project predating creator tracking — including its events,
+  event types, variables and scan configuration.
+
+Another member's **demo workspace** and a project created by a **different
+editor** stay closed, and deleting a project or creating/editing a data source
+remains owner-only. See [Roles and access control](#roles-and-access-control-rbac).
+
+If your instance is reachable from the internet, decide the policy **before**
+the first deploy, not after. Setting `REGISTRATION_MODE=disabled` (or flipping
+Registration to **Disabled** in the UI) closes it.
+:::
+
+The default is `open` for historical reasons: it used to be the only way to
+onboard anyone. **That is no longer true** — an owner can now invite people
+directly (see below), so a closed instance can still add exactly the people its
+owner names. Closing registration is the right end state for a publicly
+reachable instance.
 
 - **First-owner bootstrap is always exempt.** On an instance with **no users**,
   the first registration is accepted regardless of the mode and becomes `owner`.
-  A fresh deploy is therefore claimable out of the box; every *later* signup is
-  subject to the policy.
-- **Onboarding a teammate** (there is no invitation flow yet): an owner switches
-  Registration to **Open**, the teammate registers, the owner switches it back to
-  **Disabled**. The override applies **immediately** — unlike the rest of the
-  Security section it is resolved per request, not pinned at process start, so
-  closing the door never waits for a redeploy.
+  A fresh (or reset) deploy is therefore always claimable; every *later* signup
+  is subject to the policy.
+- **Adding a teammate to a closed instance:** invite them. **Settings → Members
+  → Invite a member** takes an email and a role and returns a single-use link.
+  Nothing about the instance-wide policy changes, so there is no window during
+  which strangers can sign up. See [Invitations](#invitations) below.
+  (The old workaround — flip Registration to **Open**, have them register, flip
+  it back — still works, since the override applies immediately rather than at
+  process start. But it genuinely opens the instance for the length of that
+  window, so prefer an invitation.)
 - **No account enumeration.** The policy check runs *before* the duplicate-email
   lookup, so a closed instance returns the same `403` for a registered address
   and an unknown one.
 - `GET /api/v1/auth/status` reports `registration_enabled` (instance-wide, no
-  per-account information) so the sign-in screen can hide the sign-up form.
+  per-account information), so the sign-in screen hides the sign-up form
+  entirely on a closed instance instead of letting a visitor discover the policy
+  from a `403`.
 
 Rate limiting (`RATE_LIMIT_REGISTER_PER_HOUR`) still applies on top and is *not*
 a substitute: it slows signups, it never closes them.
+
+### Invitations
+
+An owner can add one named person without touching the instance-wide policy.
+**Settings → Members → Invite a member** takes an email and a role and returns a
+single-use link.
+
+| Property | Behaviour |
+|---|---|
+| Who can issue one | **Owner only, from an interactive session.** The route uses the dependency that rejects API keys of every scope, so an automation token can never mint an identity. |
+| Works while registration is closed | **Yes** — that is the point. Redemption is a separate mechanism from the instance-wide door, not a special case inside it. |
+| Address | Fixed by the invitation. The redeem form never asks for one, so a link cannot be turned into an account for someone else. |
+| Role | Fixed by the **owner** at invite time. The invitee cannot influence it. |
+| Lifetime | 72 hours, single use. Re-inviting the same address invalidates the previous link. |
+| Delivery | The link appears **once**, in the response to creating it, and is never retrievable afterwards. Copy it then. This is deliberate: SMTP is optional, so handing the link over out of band has to be a first-class path. |
+| Storage | Only a keyed HMAC digest of the token is stored, like session and reset tokens — a leaked `invitations` table is useless without `SECRET_KEY`. |
+| Rejection | Unknown, expired and already-used links return one identical error, so a rejected redemption never reveals which it hit. |
+| Revoking | **Settings → Members** lists pending invitations; revoking one kills its link immediately. |
+
+Endpoints: `POST`/`GET` `/api/v1/users/invitations`, `DELETE
+/api/v1/users/invitations/{id}` (all owner-only), plus the unauthenticated
+`GET /api/v1/auth/invitations/{token}` preview and
+`POST /api/v1/auth/invitations/{token}/accept`.
 
 ### Passwords
 
@@ -248,13 +310,42 @@ Enforcement lives in `backend/src/tripl/api/deps.py`. The route-facing FastAPI d
 | `require_owner` | Only `owner` passes |
 | `get_owner_user` | Owner-only **and** rejects API keys entirely (any scope) — owner actions require an interactive session |
 
-Because the `editor` role is **instance-wide**, two surfaces that would otherwise
-be reachable by every editor carry a stricter gate:
+### Roles are instance-wide, but mutations are scoped per project
+
+The three roles above are properties of the **user**, not of a project — an
+`editor` is an editor everywhere. That alone would let anyone who can register
+edit every project on the instance, so `get_editor_user` additionally resolves a
+per-project scope (`project_service.ProjectMutationScope`) for every slug-scoped
+route that carries it. Reads are unaffected; so are routes with no project slug.
+
+| Who is mutating | Verdict |
+|---|---|
+| An instance `owner` | Allowed |
+| The project's creator | Allowed |
+| Anyone else, on someone's **demo workspace** | **Denied, always** — a demo belongs to one person |
+| Any `editor`, on a project created by an **owner**, or predating creator tracking (`created_by_user_id IS NULL`) | Allowed — this is the shared team tracking plan |
+| Any other `editor`, on a project a **different editor** created | **Denied** |
+
+The fourth row is the deliberate part. Strict "creator or owner" everywhere
+would have locked editors out of every project they did not personally create —
+including every project that predates creator tracking, which has no creator at
+all — and that is the entire point of the `editor` role on a normal deployment
+where the owner creates projects and editors maintain the plan.
+
+The consequence is worth stating plainly: on a shared project, **any editor can
+edit the tracking plan**. If the instance also has registration `open`, anyone
+who can reach the URL can become that editor. Close registration, or keep the
+instance private.
+
+Two further surfaces carry a stricter gate than the role table alone implies:
 
 | Surface | Gate | Why |
 |---|---|---|
-| Scan configs — create / update / delete, `preview`, `preview-jobs`, `run`, `metrics/replay`, `event-groups/apply` | `get_owner_user` (owner, interactive session) | A scan's `base_query` is free-text SQL executed verbatim against an owner-configured warehouse credential, so it can read anything that credential can. Data sources are owner-only; the SQL run against them now matches. Editors keep every read-only view (list/get a scan, its jobs, platform presence) and can still cancel a running job. |
-| `PATCH /api/v1/projects/{slug}` (name, slug, retention) | Project **creator** or owner | Otherwise any editor could rename or re-slug every project on the instance, including ones they have never touched. The creator is recorded at project-creation time; projects with no recorded creator are owner-managed. |
+| Scan configs — create / update / delete, `preview`, `preview-jobs`, `metrics/replay` | `get_owner_user` (owner, interactive session) | A scan's `base_query` is free-text SQL executed verbatim against an owner-configured warehouse credential, so it can read anything that credential can. Data sources are owner-only; authoring the SQL run against them matches. |
+| `POST /scans/{id}/run`, `event-groups/apply`, cancelling a job | `get_editor_user` | Running a **stored** config executes no new SQL, so it stays with the role that maintains the plan — and with the API keys that automate it. Only *authoring* the query is owner-only. |
+| `PATCH /api/v1/projects/{slug}` (name, slug, retention) | Project **creator** or owner | Identity, not content: otherwise any editor could rename or re-slug every project on the instance. Stricter than the content rule above, which permits shared-project edits. |
+| `GET /data-sources/{id}/schema` | `get_editor_user` | Warehouse table and column names. Editors need it — the scan, metric and fact-table forms drive column pickers off it — but a `viewer` edits none of those. |
+| `GET /data-sources/{id}/stats`, and connection details (host, port, username, `password_set`, TLS) on every data-source read | Owner | Non-owners see a data source's name, type and health, which is all the scan picker and metric card need. |
 
 `base_query` is additionally validated by the shared read-only-SELECT gate
 (`validate_select_sql_safety`, the same one `metric_sql` uses): single statement,
@@ -310,7 +401,7 @@ Operations:
 - [ ] Rate limiting left enabled (`RATE_LIMIT_ENABLED=true`); add a proxy-tier limit if you run multiple workers/replicas.
 - [ ] `/metrics` (if enabled) and any admin surfaces restricted to an internal network.
 - [ ] First-run owner account created promptly so self-registration cannot grab `owner`.
-- [ ] `REGISTRATION_MODE` left at `disabled` (the default), and no `registration_mode` override set to `open` in **Settings → Instance**. Open it only while onboarding a teammate, then close it again.
+- [ ] **`REGISTRATION_MODE` decided deliberately. The default is `open`** — anyone who can reach the instance can create an account, read the whole tracking plan and the member roster, and edit any shared project. Set `REGISTRATION_MODE=disabled` (or Registration → **Disabled** in **Settings → Instance → Security & access**) once your team has accounts; there is no invite flow yet, so while it is closed nobody new can be added except by reopening it briefly.
 - [ ] Database and broker on a private network; `ENCRYPTION_KEY` and `SECRET_KEY` not committed to the repo or image.
 
 For symptom-level help (login loops, blocked CORS, 429s), see [Troubleshooting & FAQ](../use/troubleshooting.md).

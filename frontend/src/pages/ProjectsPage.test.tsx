@@ -79,6 +79,7 @@ describe('ProjectsPage', () => {
               variable_count: 5,
               scan_count: 2,
               alert_destination_count: 1,
+              alert_rule_count: 0,
               monitoring_signal_count: 2,
               failing_scan_config_count: 0,
               latest_scan_job: {
@@ -204,6 +205,7 @@ describe('ProjectsPage', () => {
               variable_count: 0,
               scan_count: 0,
               alert_destination_count: 0,
+              alert_rule_count: 0,
               monitoring_signal_count: 0,
               latest_scan_job: null,
               latest_signal: null,
@@ -256,6 +258,7 @@ describe('ProjectsPage', () => {
               variable_count: 3,
               scan_count: 1,
               alert_destination_count: 1,
+              alert_rule_count: 0,
               monitoring_signal_count: 1,
               failing_scan_config_count: 1,
               latest_scan_job: {
@@ -385,6 +388,7 @@ describe('ProjectsPage', () => {
               variable_count: 2,
               scan_count: 1,
               alert_destination_count: 0,
+              alert_rule_count: 0,
               monitoring_signal_count: 0,
               latest_scan_job: {
                 id: 'job-3',
@@ -454,6 +458,7 @@ describe('ProjectsPage', () => {
               variable_count: 2,
               scan_count: 3,
               alert_destination_count: 0,
+              alert_rule_count: 0,
               monitoring_signal_count: 0,
               failing_scan_config_count: 2,
               latest_scan_job: {
@@ -581,6 +586,7 @@ describe('ProjectsPage', () => {
                   variable_count: 0,
                   scan_count: 0,
                   alert_destination_count: 0,
+                  alert_rule_count: 0,
                   monitoring_signal_count: 0,
                   failing_scan_config_count: 0,
                   latest_scan_job: null,

@@ -351,6 +351,8 @@ async def test_project_summary_counts(client: AsyncClient):
     assert summary["variable_count"] == 1
     assert summary["scan_count"] == 1
     assert summary["alert_destination_count"] == 1
+    # One enabled rule is bound to that destination, so alerting can actually route.
+    assert summary["alert_rule_count"] == 1
     assert summary["monitoring_signal_count"] == 1
     assert summary["firing_monitor_count"] == 1
     # The single scan config's latest (only) job completed, so nothing is failing.
@@ -384,6 +386,81 @@ async def test_project_summary_counts(client: AsyncClient):
         "z_score": 7.0,
         "direction": "spike",
     }
+
+
+@pytest.mark.asyncio
+async def test_project_summary_alert_rule_count_ignores_ruleless_and_disabled(
+    client: AsyncClient,
+) -> None:
+    """``alert_rule_count`` must count only rules that can actually route.
+
+    A destination on its own delivers nothing — a rule is what binds a signal to
+    a channel — and a disabled rule delivers nothing either. The onboarding
+    checklist reads both counters to decide whether alerting is wired up, so a
+    project with destinations but no *enabled* rule has to report 0
+    (tripl-jfm3.81).
+    """
+    slug = "alert-rule-count"
+    create_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Alert Rule Count", "slug": slug},
+    )
+    assert create_resp.status_code == 201
+
+    async def _add_destination(name: str) -> str:
+        resp = await client.post(
+            f"/api/v1/projects/{slug}/alert-destinations",
+            json={
+                "type": "slack",
+                "name": name,
+                "webhook_url": "https://hooks.slack.com/services/T000/B000/XXX",
+            },
+        )
+        assert resp.status_code == 201
+        return str(resp.json()["id"])
+
+    # A destination that never gets a rule: it must keep counting as a
+    # destination while contributing nothing to the rule count.
+    await _add_destination("Bare")
+    ruled_destination_id = await _add_destination("Has rules")
+
+    # Two destinations, zero rules: routing nothing.
+    summary = (await client.get(f"/api/v1/projects/{slug}")).json()["summary"]
+    assert summary["alert_destination_count"] == 2
+    assert summary["alert_rule_count"] == 0
+
+    # A DISABLED rule still routes nothing, so the count must stay at 0.
+    async with TestSessionLocal() as session:
+        session.add(
+            AlertRule(
+                id=uuid.uuid4(),
+                destination_id=uuid.UUID(ruled_destination_id),
+                name="Paused monitor",
+                enabled=False,
+            )
+        )
+        await session.commit()
+
+    summary = (await client.get(f"/api/v1/projects/{slug}")).json()["summary"]
+    assert summary["alert_destination_count"] == 2
+    assert summary["alert_rule_count"] == 0
+
+    # One enabled rule flips it — and the LEFT JOIN must not double-count the
+    # rule-less destination alongside the one that now has two rules.
+    async with TestSessionLocal() as session:
+        session.add(
+            AlertRule(
+                id=uuid.uuid4(),
+                destination_id=uuid.UUID(ruled_destination_id),
+                name="Live monitor",
+                enabled=True,
+            )
+        )
+        await session.commit()
+
+    summary = (await client.get(f"/api/v1/projects/{slug}")).json()["summary"]
+    assert summary["alert_destination_count"] == 2
+    assert summary["alert_rule_count"] == 1
 
 
 async def test_project_summary_counts_configs_whose_latest_run_failed(client: AsyncClient):

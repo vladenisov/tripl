@@ -152,7 +152,7 @@ the backend, so these stay at their defaults.
 
 | Variable | Default | Required in prod? | Purpose |
 | --- | --- | --- | --- |
-| `REGISTRATION_MODE` | `disabled` | No | Who may create an account: `disabled` refuses `POST /auth/register` with `403`; `open` allows self-service signup. The first registration on an **empty** instance is always allowed and becomes the owner. Overridable at runtime in **Settings → Instance → Security & access**, where it applies immediately. See [Security & Hardening](./security.md#self-service-registration). |
+| `REGISTRATION_MODE` | `open` | **Decide it** | Who may create an account. `open` (**the default**) allows self-service signup — anyone who can reach the instance gets an **editor** account that can read the whole tracking plan and the member roster, and edit any shared project. Data source connection details (host, port, username) are owner-only. `disabled` refuses `POST /auth/register` with `403` and hides the sign-up form. `open` is the default for historical reasons — it used to be the only way to onboard anyone. An owner can now invite people directly (**Settings → Members → Invite a member**), so `disabled` no longer blocks onboarding; set it once your team has accounts. The first registration on an **empty** instance is always allowed and becomes the owner. Overridable at runtime in **Settings → Instance → Security & access**, where it applies immediately. See [Security & Hardening](./security.md#self-service-registration). |
 
 ### Rate limiting
 
@@ -202,6 +202,16 @@ Two independent switches control the generated demo project. Both default to
 | --- | --- | --- | --- |
 | `DEMO_ENABLED` | `true` | No | Master kill switch for demo **provisioning**. When `false`, `POST /projects/demo` **and** demo reset are refused with `403 Demo provisioning is disabled`. |
 | `DEMO_RUNTIME_ENABLED` | `true` | No | Gates the `advance_demos` beat task that keeps an existing demo fresh (new buckets, jobs, and signals). When `false` that task is a no-op and existing demos keep the data they already have. |
+
+:::note A demo's two refresh paths run at different rates
+`advance_demos` runs **hourly**: it appends the newest bucket, re-runs the real
+detector for volume anomalies, and records a scan job, so a demo always looks
+live. The full scheduled collection — which additionally produces breakdown
+anomalies and distribution drift — runs at most **every 6 hours** per demo
+instead of hourly, because it costs 67–141 s against the in-memory dataset and
+every demo on a deployment used to pay that every hour. Real projects are
+unaffected and keep their configured `interval`.
+:::
 
 :::note Reset is a provisioning path — delete is not
 A reset re-seeds a demo from scratch, so `DEMO_ENABLED=false` blocks **Create**

@@ -9,9 +9,86 @@ from tripl.api.deps import CurrentUserDep, OwnerUserDep, SessionDep
 from tripl.models.user import User
 from tripl.models.user_session import UserSession
 from tripl.schemas.auth import UserListItem, UserRoleUpdate
-from tripl.services import audit_service
+from tripl.schemas.invitation import (
+    InvitationCreate,
+    InvitationCreatedResponse,
+    InvitationResponse,
+)
+from tripl.services import audit_service, invitation_service
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+@router.post(
+    "/invitations",
+    response_model=InvitationCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_invitation(
+    session: SessionDep,
+    data: InvitationCreate,
+    current_user: OwnerUserDep,
+) -> InvitationCreatedResponse:
+    """Invite one person, at a role the owner picks.
+
+    ``OwnerUserDep`` is owner-only AND rejects API keys of any scope, so minting
+    an account always requires an interactive owner session — an automation
+    token can never conjure a new identity.
+
+    The redeem link is returned in the body, not merely emailed: SMTP is
+    optional and unconfigured on many instances, so a body-only path is the one
+    that always works. It appears here and nowhere else.
+    """
+    invitation, raw_token = await invitation_service.create_invitation(
+        session,
+        email=data.email,
+        role=data.role,
+        invited_by_user_id=current_user.id,
+    )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="user.invite",
+        target_type="invitation",
+        target_id=invitation.id,
+        target_name=invitation.email,
+        payload={"role": invitation.role},
+    )
+    return InvitationCreatedResponse(
+        invitation=InvitationResponse.model_validate(invitation),
+        accept_path=f"/invite/{raw_token}",
+        expires_at=invitation.expires_at,
+    )
+
+
+@router.get("/invitations", response_model=list[InvitationResponse])
+async def list_invitations(
+    session: SessionDep,
+    current_user: OwnerUserDep,
+) -> list[InvitationResponse]:
+    """Outstanding invitations. Owner-only: this is the roster of pending access."""
+    del current_user
+    rows = await invitation_service.list_pending_invitations(session)
+    return [InvitationResponse.model_validate(row) for row in rows]
+
+
+@router.delete("/invitations/{invitation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_invitation(
+    session: SessionDep,
+    invitation_id: uuid.UUID,
+    current_user: OwnerUserDep,
+) -> None:
+    """Revoke an invitation; its link stops working immediately."""
+    await invitation_service.revoke_invitation(session, invitation_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="user.invite_revoke",
+        target_type="invitation",
+        target_id=invitation_id,
+        target_name=str(invitation_id),
+        payload={},
+    )
 
 
 @router.get("", response_model=list[UserListItem])

@@ -57,6 +57,7 @@ function makeProject(slug: string, name: string) {
       variable_count: 0,
       scan_count: 0,
       alert_destination_count: 0,
+      alert_rule_count: 0,
       monitoring_signal_count: 0,
       firing_monitor_count: 0,
       latest_scan_job: null,

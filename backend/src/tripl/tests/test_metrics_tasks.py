@@ -210,6 +210,124 @@ def test_check_metrics_due_skips_dispatch_when_active_job_exists(
     assert jobs[0].status == ScanJobStatus.pending.value
 
 
+def _prepare_demo_dispatch(
+    session: Session, *, recent_scheduled_job: bool, tick_job: bool
+) -> uuid.UUID:
+    """A demo scan config that is due, with an optional recent job history."""
+    config = _create_scan_config(session)
+    project = session.get(Project, config.project_id)
+    assert project is not None
+    project.is_demo = True
+    now = datetime.now(UTC)
+    if recent_scheduled_job:
+        session.add(
+            ScanJob(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                status=ScanJobStatus.completed.value,
+                created_at=now - timedelta(hours=1),
+                completed_at=now - timedelta(hours=1),
+                result_summary={"events_created": 0},
+            )
+        )
+    if tick_job:
+        # What advance_demos writes every hour.
+        session.add(
+            ScanJob(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                status=ScanJobStatus.completed.value,
+                created_at=now - timedelta(minutes=5),
+                completed_at=now - timedelta(minutes=5),
+                result_summary={"demo_runtime_tick": True, "buckets_appended": 1},
+            )
+        )
+    session.commit()
+    return config.id
+
+
+def test_demo_collection_is_deferred_by_the_cooldown(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A demo that collected an hour ago must not collect again (tripl-jfm3.73)."""
+    with sync_session_factory() as session:
+        _prepare_demo_dispatch(session, recent_scheduled_job=True, tick_job=False)
+
+    dispatched: list[tuple[str, str]] = []
+    monkeypatch.setattr(metrics_schedule, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(
+        metrics_schedule.collect_metrics,
+        "delay",
+        lambda scan_config_id, scan_job_id: dispatched.append((scan_config_id, scan_job_id)),
+    )
+
+    result = metrics_schedule.check_metrics_due.run()
+
+    assert result["dispatched"] == 0
+    assert dispatched == []
+
+
+def test_demo_cooldown_ignores_the_hourly_runtime_tick_jobs(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The demo tick writes a ScanJob every hour; it must not hold off collection.
+
+    Without this, the newest job would always be a tick job minutes old and the
+    scheduled collection — the only producer of breakdown anomalies and
+    distribution drift — would be deferred forever.
+    """
+    with sync_session_factory() as session:
+        _prepare_demo_dispatch(session, recent_scheduled_job=False, tick_job=True)
+
+    dispatched: list[tuple[str, str]] = []
+    monkeypatch.setattr(metrics_schedule, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(
+        metrics_schedule.collect_metrics,
+        "delay",
+        lambda scan_config_id, scan_job_id: dispatched.append((scan_config_id, scan_job_id)),
+    )
+
+    result = metrics_schedule.check_metrics_due.run()
+
+    assert result["dispatched"] == 1
+    assert len(dispatched) == 1
+
+
+def test_non_demo_projects_are_not_subject_to_the_cooldown(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The cooldown is demo-only — a real project keeps its configured cadence."""
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        now = datetime.now(UTC)
+        session.add(
+            ScanJob(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                status=ScanJobStatus.completed.value,
+                created_at=now - timedelta(minutes=10),
+                completed_at=now - timedelta(minutes=10),
+                result_summary={"events_created": 0},
+            )
+        )
+        session.commit()
+
+    dispatched: list[tuple[str, str]] = []
+    monkeypatch.setattr(metrics_schedule, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(
+        metrics_schedule.collect_metrics,
+        "delay",
+        lambda scan_config_id, scan_job_id: dispatched.append((scan_config_id, scan_job_id)),
+    )
+
+    result = metrics_schedule.check_metrics_due.run()
+
+    assert result["dispatched"] == 1
+
+
 def test_check_metrics_due_creates_pending_job_before_dispatch(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
@@ -1142,6 +1260,62 @@ def test_reserved_catalog_columns_includes_version_and_platform() -> None:
     assert reserved_catalog_columns(partial) == {"time", "app_version"}
 
     assert reserved_catalog_columns(ScanConfig()) == set()
+
+
+def test_reserved_catalog_columns_includes_event_group_rule_columns() -> None:
+    """The column group rules match on is identity, so it must stay out of the catalog.
+
+    It is the scan's SECOND grouping column and was the one the catalog sync did
+    not know about: it auto-created a FieldDefinition for it and the scan filled
+    that field with the rule's own regex (tripl-jfm3.57). The demo shows it
+    plainly — event_type_column is "event_type" while the rules key on
+    "event_name", so reserving only the former left the latter exposed.
+    """
+    from tripl.worker.tasks.metrics.tasks import reserved_catalog_columns
+
+    config = ScanConfig(
+        event_type_column="event_type",
+        time_column="event_time",
+        event_group_rules=[
+            {
+                "name": "Home Screen View",
+                "condition_logic": "all",
+                "conditions": [{"field": "event_name", "pattern": r"^Home\ Screen\ View$"}],
+            },
+            {
+                "name": "Checkout",
+                "condition_logic": "any",
+                "conditions": [
+                    {"field": "event_name", "pattern": "^Purchase"},
+                    {"field": "screen_name", "pattern": "^Checkout"},
+                ],
+            },
+        ],
+    )
+    assert reserved_catalog_columns(config) == {
+        "event_type",
+        "event_time",
+        "event_name",
+        "screen_name",
+    }
+
+
+def test_reserved_catalog_columns_survives_malformed_group_rules() -> None:
+    """event_group_rules is a JSON column, so an older or hand-edited row must not crash a scan."""
+    from tripl.worker.tasks.metrics.tasks import reserved_catalog_columns
+
+    config = ScanConfig(
+        time_column="event_time",
+        event_group_rules=[
+            "not-a-mapping",
+            {"name": "no conditions key"},
+            {"name": "conditions not a list", "conditions": {"field": "x"}},
+            {"name": "condition not a mapping", "conditions": ["nope"]},
+            {"name": "blank field", "conditions": [{"field": "   ", "pattern": "^x"}]},
+            {"name": "good", "conditions": [{"field": "event_name", "pattern": "^x"}]},
+        ],
+    )
+    assert reserved_catalog_columns(config) == {"event_time", "event_name"}
 
 
 def test_ensure_event_type_skips_reserved_columns(
@@ -2447,6 +2621,75 @@ def test_diff_event_type_schema_detects_three_drift_kinds(
             .all()
         )
         assert len(rows) == 3
+
+
+def test_diff_event_type_schema_ignores_columns_this_event_type_never_fills(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A grouped scan hands every event type the whole table's column list.
+
+    The cardinality results it passes alongside are already scoped to that
+    type's rows, so a column with count 0 held nothing here — reporting it as
+    `new_field` says "your plan is missing a field" about a column this event
+    does not use. The demo produced ~24 such rows per scan (tripl-jfm3.57).
+
+    An undeclared column that DOES carry data is a genuine plan gap and must
+    still drift, which is the other half of this test.
+    """
+    from tripl.core.analyzers.cardinality import CardinalityResult
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        et = _make_event_type_with_fields(session, config, fields=[("screen_name", "string")])
+        columns = [
+            ColumnInfo(name="screen_name", type_name="String"),
+            # Belongs to a different event type in the same flat table: always
+            # NULL for these rows.
+            ColumnInfo(name="amount", type_name="Float64"),
+            # Undeclared AND populated — a real gap.
+            ColumnInfo(name="device_id", type_name="String"),
+        ]
+        results = {
+            "screen_name": CardinalityResult(
+                column=columns[0], is_low=True, count=3, sample_values=["home"]
+            ),
+            # count excludes NULLs, so 0 == "no value in any row of this group".
+            "amount": CardinalityResult(column=columns[1], is_low=True, count=0, sample_values=[]),
+            "device_id": CardinalityResult(
+                column=columns[2], is_low=True, count=2, sample_values=["ios-42"]
+            ),
+        }
+
+        drift_items = metrics_schema_drift._diff_event_type_schema(
+            et,
+            columns,
+            skip_columns=set(),
+            cardinality_results=results,
+        )
+
+        reported = sorted((item["field_name"], item["drift_type"]) for item in drift_items)
+        assert reported == [("device_id", "new_field")]
+
+
+def test_diff_event_type_schema_still_reports_when_it_has_no_cardinality_evidence(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """No results passed means no evidence — report as before rather than guess.
+
+    Pins that the emptiness filter never silences a caller that simply does not
+    supply cardinality (the ungrouped path).
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        et = _make_event_type_with_fields(session, config, fields=[("screen_name", "string")])
+        columns = [
+            ColumnInfo(name="screen_name", type_name="String"),
+            ColumnInfo(name="amount", type_name="Float64"),
+        ]
+
+        drift_items = metrics_schema_drift._diff_event_type_schema(et, columns, skip_columns=set())
+
+        assert sorted(item["field_name"] for item in drift_items) == ["amount"]
 
 
 def test_diff_event_type_schema_attaches_sample_value(
@@ -4849,3 +5092,246 @@ def test_grouped_event_type_lookup_is_scoped_to_the_main_plan(
 
         assert by_name["Purchase"].id == main_type.id
         assert branch_type.id not in {et.id for et in by_name.values()}
+
+
+def test_ingestion_settling_delay_reads_the_project_setting(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """tripl-jfm3.79: the settling allowance is a per-project knob, not a constant.
+
+    A project with no monitoring settings row keeps the historical two hours;
+    once the row exists the scan honours whatever the operator configured,
+    including 0 (score every collected bucket immediately).
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+
+        assert (
+            metrics._ingestion_settling_delay(session, config.project_id)
+            == metrics.ANOMALY_INGESTION_SETTLING
+        )
+
+        settings = ProjectAnomalySettings(
+            project_id=config.project_id,
+            anomaly_detection_enabled=True,
+            anomaly_ingestion_settling_minutes=45,
+        )
+        session.add(settings)
+        session.commit()
+
+        assert metrics._ingestion_settling_delay(session, config.project_id) == timedelta(
+            minutes=45
+        )
+
+        settings.anomaly_ingestion_settling_minutes = 0
+        session.commit()
+
+        assert metrics._ingestion_settling_delay(session, config.project_id) == timedelta(0)
+
+
+def test_collect_metrics_uses_the_projects_configured_settling_allowance(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The orchestrator must hand BOTH recalculation entrypoints the project's
+    own allowance, not the module constant (tripl-jfm3.79)."""
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.event_type_id is not None
+        event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Login",
+            description="",
+            status="implemented",
+        )
+        session.add(event)
+        session.add(
+            ProjectAnomalySettings(
+                project_id=config.project_id,
+                anomaly_detection_enabled=True,
+                anomaly_ingestion_settling_minutes=15,
+            )
+        )
+        session.commit()
+        config_id = str(config.id)
+        event_id = event.id
+
+    class FakeAdapter:
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            return (["event_name"], [], [(datetime(2026, 1, 1, 10), "Login", 12)])
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: FakeAdapter())
+    monkeypatch.setattr(
+        metrics,
+        "_resolve_collection_window",
+        lambda *args, **kwargs: (datetime(2026, 1, 1, 10), datetime(2026, 1, 1, 11), False),
+    )
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+
+    def fake_generate_events(*args: object, **kwargs: object) -> GenerationResult:
+        with sync_session_factory() as session:
+            persisted_event = session.get(Event, event_id)
+            assert persisted_event is not None
+            return GenerationResult(
+                columns_analyzed=1,
+                col_meta={"event_name": {"is_json": False, "is_low": True}},
+                events_by_name={"event_name=Login": persisted_event},
+            )
+
+    monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
+
+    seen: dict[str, object] = {}
+
+    def capture(name: str) -> object:
+        def _recalculate(*args: object, **kwargs: object) -> int:
+            seen[name] = kwargs.get("settling_delay")
+            return 0
+
+        return _recalculate
+
+    monkeypatch.setattr(metrics, "_recalculate_metric_anomalies", capture("anomalies"))
+    monkeypatch.setattr(metrics, "_recalculate_metric_breakdown_anomalies", capture("breakdown"))
+
+    metrics.collect_metrics.run(config_id)
+
+    assert seen == {
+        "anomalies": timedelta(minutes=15),
+        "breakdown": timedelta(minutes=15),
+    }
+
+
+def test_breakdown_recalculate_skips_sub_threshold_scopes_but_ages_out_stale_rows(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """tripl-jfm3.73: the breakdown pass gets the same prefilter as the volume pass.
+
+    ``detect_anomalies`` already early-exits on a provably-silent count series,
+    but the breakdown loops paid for the ~500-bucket history load first — one
+    query per silent (scope, column, value) triple, every run. The scopes are
+    still replaced with an empty anomaly list, so stale window rows age out.
+    """
+    from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT
+    from tripl.worker.tasks.metrics import detect as metrics_detect
+
+    base = _ANOMALY_BASE
+    stale_bucket = base + timedelta(hours=9)
+    with sync_session_factory() as session:
+        config, event_type, event = _seed_anomaly_scan_state(session, base=base)
+        config.metric_breakdown_columns = ["platform"]
+        settings_row = session.execute(
+            select(ProjectAnomalySettings).where(
+                ProjectAnomalySettings.project_id == config.project_id
+            )
+        ).scalar_one()
+        # 2 * 10 < 50: every breakdown series below is provably silent.
+        settings_row.min_expected_count = 50
+        for hour in range(10):
+            bucket = base + timedelta(hours=hour)
+            session.add(
+                EventMetricBreakdown(
+                    id=uuid.uuid4(),
+                    scan_config_id=config.id,
+                    event_id=event.id,
+                    event_type_id=None,
+                    bucket=bucket,
+                    breakdown_column="platform",
+                    breakdown_value="ios",
+                    is_other=False,
+                    count=10,
+                )
+            )
+            session.add(
+                EventMetricBreakdown(
+                    id=uuid.uuid4(),
+                    scan_config_id=config.id,
+                    event_id=None,
+                    event_type_id=event_type.id,
+                    bucket=bucket,
+                    breakdown_column="platform",
+                    breakdown_value="ios",
+                    is_other=False,
+                    count=10,
+                )
+            )
+        session.add(
+            MetricBreakdownAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                scope_type=SCOPE_EVENT,
+                scope_ref=str(event.id),
+                event_id=event.id,
+                event_type_id=None,
+                bucket=stale_bucket,
+                breakdown_column="platform",
+                breakdown_value="ios",
+                is_other=False,
+                actual_count=0,
+                expected_count=10.0,
+                stddev=1.0,
+                z_score=-10.0,
+                direction="drop",
+            )
+        )
+        session.commit()
+
+        history_loads: list[str] = []
+        real_load = metrics_detect._load_breakdown_scope_points
+
+        def counting_load(*args: object, **kwargs: object) -> object:
+            history_loads.append(str(kwargs.get("scope_type")))
+            return real_load(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(metrics_detect, "_load_breakdown_scope_points", counting_load)
+
+        detected = metrics_detect._recalculate_metric_breakdown_anomalies(
+            session,
+            config,
+            evaluation_start=base,
+            evaluation_end=base + timedelta(hours=10),
+            covered_buckets={base + timedelta(hours=h) for h in range(10)},
+        )
+        session.commit()
+
+        assert detected == 0
+        # Only the project-total rollup still loads history: its series SUMS
+        # across event types, so no per-row MAX bounds it. The event-type and
+        # event breakdown series were skipped before the load.
+        assert history_loads == ["project_total"]
+
+        remaining = (
+            session.execute(
+                select(MetricBreakdownAnomaly).where(
+                    MetricBreakdownAnomaly.scan_config_id == config.id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert remaining == []

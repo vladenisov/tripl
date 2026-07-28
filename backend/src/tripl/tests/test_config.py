@@ -162,10 +162,19 @@ def test_assert_production_ready_requires_secure_cookies() -> None:
     assert "SESSION_COOKIE_SECURE" in str(exc.value)
 
 
-def test_registration_is_closed_by_default() -> None:
-    # Fail closed: an instance reachable from the internet must not hand out
-    # accounts until an operator explicitly opens the door (tripl-jfm3.9).
-    assert Settings().registration_mode == REGISTRATION_DISABLED
+def test_registration_is_open_by_default() -> None:
+    # Deliberate trade-off (tripl-jfm3.80): there is no owner-initiated
+    # account-create or invite endpoint yet, so a "disabled" default leaves an
+    # instance unable to onboard anybody. Operators close it explicitly once
+    # their team has accounts.
+    assert Settings().registration_mode == REGISTRATION_OPEN
+
+
+def test_registration_mode_env_can_still_close_the_door() -> None:
+    # The fail-closed path stays reachable and unchanged: setting the env var
+    # (REGISTRATION_MODE=disabled) is what an operator does before exposing the
+    # instance publicly.
+    assert Settings(registration_mode="disabled").registration_mode == REGISTRATION_DISABLED
 
 
 def test_registration_mode_is_case_and_whitespace_insensitive() -> None:

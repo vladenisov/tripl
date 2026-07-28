@@ -314,8 +314,9 @@ async def test_password_reset_confirm_enforces_password_policy(
 async def test_closed_instance_still_allows_the_first_owner(
     anon_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ):
-    # A fresh deploy ships closed, but must still be claimable: the bootstrap
-    # registration on an empty instance is exempt from the policy.
+    # An instance whose operator closed registration must still be claimable
+    # after a reset: the bootstrap registration on an empty instance is exempt
+    # from the policy.
     monkeypatch.setattr(settings, "registration_mode", REGISTRATION_DISABLED)
 
     first = await anon_client.post(

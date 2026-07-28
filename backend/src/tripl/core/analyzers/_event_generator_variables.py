@@ -127,20 +127,78 @@ def delete_variable_contexts_for_event_type(
     project_id: uuid.UUID,
     branch_id: uuid.UUID | None,
     event_type_id: uuid.UUID,
+    contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]],
+    rewritten_fields: set[tuple[uuid.UUID, uuid.UUID]],
 ) -> None:
+    """Drop the contexts this run replaces or invalidated — and nothing else.
+
+    Two disjoint reasons to delete a row:
+
+    * its ``(variable, event, field)`` key is in ``contexts``, so
+      ``insert_variable_contexts`` is about to re-add it and the old row has to
+      go first (``uq_variable_value_context``);
+    * this run REWROTE the field value the row describes. A context means "this
+      event field's value references ``${variable}``", so it stops being true
+      exactly when ``_upsert_field_values`` changes (or newly writes) that
+      ``(event, field)`` value — which is what ``rewritten_fields`` carries.
+
+    Everything else is left alone. This used to delete every context for the
+    event type unconditionally, which also wiped rows the run had no opinion
+    about: values enriched by an earlier replay, and — the case that surfaced it
+    — a demo's seeded observed values hanging off authored field values the scan
+    is not allowed to touch, so the demo's very first scan emptied its own
+    "Variables & value drift" story (bd tripl-jfm3.56). The scheduled metrics
+    path already merges into existing rows rather than replacing them
+    (``_merge_replay_variable_samples``); this brings the scan path in line.
+    """
+    # Nothing was re-recorded and nothing was rewritten -> no row can be stale.
+    if not contexts and not rewritten_fields:
+        return
+
+    # A row can only be stale if BOTH its event and its field appear in one of
+    # the two key sets, so pre-filter on those in SQL. Both are necessary (not
+    # sufficient) conditions, which is why the exact tuple match still runs in
+    # Python below. Deliberately two single-column INs rather than one composite
+    # ``tuple_(...).in_(...)``: a composite IN would send 2-3 bind params per key
+    # and a large scan can carry tens of thousands of keys, which runs into
+    # PostgreSQL's 65535-parameter ceiling — these two stay one param per
+    # distinct id and prune the scan just as effectively.
+    candidate_events = {event_id for _, event_id, _ in contexts}
+    candidate_fields = {field_id for _, _, field_id in contexts}
+    candidate_events.update(event_id for event_id, _ in rewritten_fields)
+    candidate_fields.update(field_id for _, field_id in rewritten_fields)
+
     event_ids = select(Event.id).where(
         Event.project_id == project_id,
         Event.event_type_id == event_type_id,
+        Event.id.in_(candidate_events),
     )
     if branch_id is not None:
         event_ids = event_ids.where(Event.branch_id == branch_id)
-    delete_query = delete(VariableValue).where(
+    # Only the four columns the staleness test reads — the previous version
+    # hydrated whole ``VariableValue`` entities just to look at their keys.
+    query = select(
+        VariableValue.id,
+        VariableValue.variable_id,
+        VariableValue.event_id,
+        VariableValue.field_definition_id,
+    ).where(
         VariableValue.project_id == project_id,
         VariableValue.event_id.in_(event_ids),
+        VariableValue.field_definition_id.in_(candidate_fields),
     )
     if branch_id is not None:
-        delete_query = delete_query.where(VariableValue.branch_id == branch_id)
-    session.execute(delete_query)
+        query = query.where(VariableValue.branch_id == branch_id)
+
+    stale_ids = [
+        row_id
+        for row_id, variable_id, event_id, field_definition_id in session.execute(query)
+        if (variable_id, event_id, field_definition_id) in contexts
+        or (event_id, field_definition_id) in rewritten_fields
+    ]
+    if not stale_ids:
+        return
+    session.execute(delete(VariableValue).where(VariableValue.id.in_(stale_ids)))
 
 
 def preserve_existing_variable_context_values(

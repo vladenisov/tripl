@@ -460,6 +460,12 @@ function DataSourceCard({
   // host:port/database summary would print a meaningless ":8123". It is a
   // project and a dataset.
   const isBigQuery = ds.db_type === 'bigquery'
+  // Non-owners get the connection redacted server-side (tripl-jfm3.19), so
+  // host/port/database_name arrive blank and this summary would render as a
+  // bare ":0/" (tripl-jfm3.84). Keyed off the payload rather than the viewer's
+  // role on purpose: the response is the ground truth for what we were allowed
+  // to see, so this stays correct if the redaction rule changes.
+  const connectionRedacted = !ds.host
   const connectionLabel = isBigQuery
     ? `${ds.host}/${ds.database_name}`
     : `${ds.host}:${ds.port}/${ds.database_name}`
@@ -488,13 +494,15 @@ function DataSourceCard({
             <Dot tone={dotTone} size={6} pulse={dotTone === 'success'} />
             <span className="truncate text-[13px] font-semibold">{ds.name}</span>
           </div>
-          <div
-            className="mono mt-0.5 truncate text-[11px]"
-            style={{ color: 'var(--fg-subtle)' }}
-            title={connectionLabel}
-          >
-            {connectionLabel}
-          </div>
+          {!connectionRedacted && (
+            <div
+              className="mono mt-0.5 truncate text-[11px]"
+              style={{ color: 'var(--fg-subtle)' }}
+              title={connectionLabel}
+            >
+              {connectionLabel}
+            </div>
+          )}
         </div>
         {ds.password_set && (
           <span title={secretLabel} style={{ color: 'var(--fg-subtle)' }}>

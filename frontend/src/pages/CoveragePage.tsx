@@ -9,13 +9,15 @@ import { ErrorState } from '@/components/error-state'
 import { PageHead, Panel } from '@/components/settings/kit'
 import { Chip } from '@/components/primitives/chip'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
-import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
+import { DEAD_EVENT_DAYS, formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
 import { formatRelativeTime } from '@/lib/datetime'
 import type { DeadEvent } from '@/api/reconciliation'
 
-// Window for "is this event still emitting data" — matches the reconciliation
-// dead-events default so the two governance views agree on what counts as dead.
-const DEAD_DAYS = 30
+// Window for "is this event still emitting data". Shared with Reconciliation's
+// Dead events panel — the "Triage in Reconciliation" link below hands off to
+// it, and two different windows made the destination list disagree with the
+// count that sent the user there (tripl-jfm3.79).
+const DEAD_DAYS = DEAD_EVENT_DAYS
 const GAP_LIMIT = 50
 
 // One-line clarifier for the headline number. "Plan coverage" sits one nav item

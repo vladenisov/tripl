@@ -31,8 +31,22 @@ router = APIRouter(prefix="/projects/{slug}/branches", tags=["plan-branches"])
 
 
 @router.get("", response_model=PlanBranchList)
-async def list_branches(session: SessionDep, slug: str) -> PlanBranchList:
-    return await plan_branch_service.list_branches(session, slug)
+async def list_branches(
+    session: SessionDep,
+    slug: str,
+    include_diff_counts: bool = False,
+) -> PlanBranchList:
+    """List a project's branches.
+
+    ``include_diff_counts`` fills each feature branch's ``ahead`` /
+    ``behind_base`` from a single shared main snapshot, so a branches list does
+    not need one ``/branches/{id}/diff`` call per row. It is opt-in because it
+    makes the response cost N+1 plan snapshots; leave it off when you only need
+    the branch rows.
+    """
+    return await plan_branch_service.list_branches(
+        session, slug, include_diff_counts=include_diff_counts
+    )
 
 
 @router.post("", response_model=PlanBranchResponse, status_code=201)

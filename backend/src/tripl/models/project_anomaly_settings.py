@@ -22,6 +22,13 @@ DEFAULT_MIN_EXPECTED_COUNT = 50
 # so behaviour is unchanged until a project opts into a different window.
 DEFAULT_RECENT_SIGNAL_WINDOW_HOURS = 24
 
+# Wall-clock allowance for the warehouse to finish delivering a bucket before
+# its value is scored. 120 minutes is the historical module constant
+# ``worker.tasks.metrics.tasks.ANOMALY_INGESTION_SETTLING``, kept as the default
+# so behaviour is unchanged until a project opts into a different allowance.
+# 0 disables the hold-back entirely (score every collected bucket immediately).
+DEFAULT_ANOMALY_INGESTION_SETTLING_MINUTES = 120
+
 
 class ProjectAnomalySettings(UUIDMixin, Base):
     __tablename__ = "project_anomaly_settings"
@@ -48,6 +55,16 @@ class ProjectAnomalySettings(UUIDMixin, Base):
         Integer,
         default=DEFAULT_RECENT_SIGNAL_WINDOW_HOURS,
         server_default="24",
+    )
+    # Ingestion-settling allowance (tripl-jfm3.79): the newest buckets of a
+    # freshly collected series are held back from anomaly EMISSION for this many
+    # wall-clock minutes, because a warehouse keeps delivering rows for a bucket
+    # after its clock interval closes. Server default 120 reproduces the module
+    # constant this replaced, so existing rows read 120 rather than NULL.
+    anomaly_ingestion_settling_minutes: Mapped[int] = mapped_column(
+        Integer,
+        default=DEFAULT_ANOMALY_INGESTION_SETTLING_MINUTES,
+        server_default="120",
     )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
