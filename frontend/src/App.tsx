@@ -27,7 +27,8 @@ const CHUNK_RELOAD_KEY = 'tripl:chunk-reload'
  * "Failed to fetch dynamically imported module", which is what a user hits the
  * first time they navigate to a code-split route after a release.
  *
- * Server-side `Cache-Control` (see middleware/static_cache.py) stops NEW page
+ * Server-side `Cache-Control` (backend/src/tripl/middleware/static_cache.py,
+ * which sets `no-cache` on the shell) stops NEW page
  * loads from booting a stale shell, but it cannot help a document that is
  * already running. Reloading once re-fetches index.html and with it the current
  * graph. A successful import re-arms the guard, so the next deploy is covered
