@@ -345,7 +345,7 @@ Operations:
 - [ ] Rate limiting left enabled (`RATE_LIMIT_ENABLED=true`); add a proxy-tier limit if you run multiple workers/replicas.
 - [ ] `/metrics` (if enabled) and any admin surfaces restricted to an internal network.
 - [ ] First-run owner account created promptly so self-registration cannot grab `owner`.
-- [ ] **`REGISTRATION_MODE` decided deliberately. The default is `open`** — anyone who can reach the instance can create an account and read the whole tracking plan, the member roster and every data source's connection metadata. Set `REGISTRATION_MODE=disabled` (or Registration → **Disabled** in **Settings → Instance → Security & access**) once your team has accounts; there is no invite flow yet, so while it is closed nobody new can be added except by reopening it briefly.
+- [ ] **`REGISTRATION_MODE` decided deliberately. The default is `open`** — anyone who can reach the instance can create an account, read the whole tracking plan and the member roster, and edit any shared project. Set `REGISTRATION_MODE=disabled` (or Registration → **Disabled** in **Settings → Instance → Security & access**) once your team has accounts; there is no invite flow yet, so while it is closed nobody new can be added except by reopening it briefly.
 - [ ] Database and broker on a private network; `ENCRYPTION_KEY` and `SECRET_KEY` not committed to the repo or image.
 
 For symptom-level help (login loops, blocked CORS, 429s), see [Troubleshooting & FAQ](../use/troubleshooting.md).

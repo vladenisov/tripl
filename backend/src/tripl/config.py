@@ -9,9 +9,10 @@ from pydantic_settings import BaseSettings
 _DEV_CREDENTIAL_MARKERS = ("tripl:tripl", "guest:guest")
 
 # Self-service registration modes for ``Settings.registration_mode``.
-# "open"     — anyone who can reach the instance may create an account, and a
-#              new account can read the whole tracking plan, the user roster and
-#              every data source's connection metadata.
+# "open"     — anyone who can reach the instance may create an account. A new
+#              account joins as EDITOR: it can read the whole tracking plan and
+#              the user roster, and edit any shared project. Data source
+#              connection details are owner-only.
 # "disabled" — POST /auth/register is refused (403), except for the
 #              first-owner bootstrap on an instance with no users yet.
 REGISTRATION_OPEN = "open"
@@ -82,9 +83,11 @@ class Settings(BaseSettings):
     # Self-service registration. One of REGISTRATION_MODES. Defaults to "open".
     #
     # This is a deliberate, documented trade-off, not an oversight. "open" means
-    # anyone who can reach this instance can create an account and immediately
-    # read the whole tracking plan, the user roster and every data source's
-    # connection metadata (host, port, username — not the password). It is the
+    # anyone who can reach this instance can create an account, joining as
+    # EDITOR — so they can immediately read the whole tracking plan and the user
+    # roster, AND edit any shared project. A data source's connection details
+    # (host, port, username) are owner-only; the password is never returned to
+    # anybody. Note the write half: "can read X" alone understates it. It is the
     # default only because there is currently NO other way to onboard a person:
     # /api/v1/users has no create route, there is no invite flow, and SMTP is
     # optional, so defaulting to "disabled" left real instances unable to add

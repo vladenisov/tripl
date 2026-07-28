@@ -320,9 +320,11 @@ Authentication and network policy for everyone on the instance.
 - **Registration** (`registration_mode`, default **Open**) — whether strangers
   can create their own account. **Open** allows self-service signup: anyone who
   can reach this instance creates an account, joins as **editor**, and can
-  immediately read the whole tracking plan, the member roster, and every data
-  source's connection metadata (name, type, host, port, username — never the
-  password). **Disabled** refuses `POST /auth/register` with a `403` and hides
+  immediately read the whole tracking plan and the member roster, and **edit any
+  shared project**. Each data source's name, type and health are visible to
+  everyone; its connection details (host, port, username, whether a password is
+  set) are owner-only, and the password itself is never returned to anybody.
+  **Disabled** refuses `POST /auth/register` with a `403` and hides
   the sign-up form on the sign-in page. It defaults to Open only because there
   is no invite or owner-creates-user flow yet, so a closed instance cannot
   onboard anyone; close it once your team has accounts. See
