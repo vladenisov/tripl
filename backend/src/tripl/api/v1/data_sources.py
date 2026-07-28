@@ -2,7 +2,13 @@ import uuid
 
 from fastapi import APIRouter, Depends, Query
 
-from tripl.api.deps import CurrentUserDep, OwnerUserDep, SessionDep, get_owner_user
+from tripl.api.deps import (
+    CurrentUserDep,
+    OwnerUserDep,
+    SessionDep,
+    get_editor_user,
+    get_owner_user,
+)
 from tripl.models.domain_enums import UserRole
 from tripl.models.user import User
 from tripl.schemas.data_source import (
@@ -26,6 +32,14 @@ router = APIRouter(
     tags=["data-sources"],
 )
 _owner_required = [Depends(get_owner_user)]
+# Reading the warehouse's table and column names is an AUTHORING capability, so
+# it stops at editor rather than at "any authenticated user". Three editor
+# surfaces genuinely need it — the scan form, the metric form and the fact-table
+# form all drive column pickers off it — but a viewer edits none of those, and
+# the response is a map of the customer's warehouse (tripl-jfm3.83). That made it
+# a wider disclosure than the host/port this router already redacts, and it is
+# reachable by anyone who can register once the instance is in "open" mode.
+_editor_required = [Depends(get_editor_user)]
 
 
 # What a non-owner legitimately needs from a data source, and nothing else.
@@ -110,14 +124,20 @@ async def get_data_source(
     return _visible_to(ds, current_user)
 
 
-@router.get("/{ds_id}/stats", response_model=DataSourceStatsResponse)
+# Owner-only: nothing in the product reads this. No frontend caller exists
+# (`dataSourcesApi` has no stats method) and no MCP tool exposes it, so it is a
+# pure operator/diagnostic surface — there is no role below owner whose workflow
+# it would break, and it reports per-source ingestion volume.
+@router.get("/{ds_id}/stats", response_model=DataSourceStatsResponse, dependencies=_owner_required)
 async def get_data_source_stats(
     session: SessionDep, ds_id: uuid.UUID, window_hours: int = Query(48, ge=1, le=720)
 ) -> DataSourceStatsResponse:
     return await metrics_service.get_data_source_stats(session, ds_id, window_hours=window_hours)
 
 
-@router.get("/{ds_id}/schema", response_model=DataSourceSchemaResponse)
+@router.get(
+    "/{ds_id}/schema", response_model=DataSourceSchemaResponse, dependencies=_editor_required
+)
 async def get_data_source_schema(session: SessionDep, ds_id: uuid.UUID) -> DataSourceSchemaResponse:
     return await datasource_schema_service.get_schema_tables(session, ds_id)
 

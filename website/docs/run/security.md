@@ -187,11 +187,14 @@ viewer — so a stranger who registers can immediately **read**:
 - the workspace's **entire tracking plan** — every project, event, variable,
   metric and annotation;
 - the **member roster** (`GET /api/v1/users`: names, emails, roles);
-- each data source's **name, database type and health status**, and — via
-  `GET /api/v1/data-sources/{id}/schema` and `/stats` — the **table and column
-  names of your warehouse**. Connection details (host, port, username, whether a
-  password is set, TLS settings) are owner-only and redacted from everyone else;
-  the secret itself is never returned to anybody.
+- each data source's **name, database type and health status** — enough to tell
+  which warehouse a scan or metric points at. Connection details (host, port,
+  username, whether a password is set, TLS settings) are owner-only and redacted
+  from everyone else, and the password itself is never returned to anybody.
+  Reading the warehouse's **table and column names**
+  (`GET /api/v1/data-sources/{id}/schema`) stops at **editor**, because the scan,
+  metric and fact-table forms drive their column pickers off it; a **viewer**
+  gets `403`. `/stats` is owner-only.
 
 …and **write**:
 

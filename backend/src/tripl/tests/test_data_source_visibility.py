@@ -11,7 +11,9 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from tripl.api.v1 import data_sources as data_sources_router
 from tripl.main import app
+from tripl.schemas.data_source_schema import DataSourceSchemaResponse
 
 PASSWORD = "Password123!"
 
@@ -161,6 +163,54 @@ async def test_non_owners_keep_what_the_scan_and_metric_forms_need(stand, actor:
     assert row["is_synthetic"] is False
     assert row["project_id"] is None
     assert set(row) >= VISIBLE_FIELDS
+
+
+@pytest.mark.asyncio
+async def test_viewer_cannot_enumerate_the_warehouse_schema(stand) -> None:
+    """A viewer must not read the warehouse's table and column names (tripl-jfm3.83).
+
+    Redacting host/port off the data-source payload was pointless while this
+    route handed the same viewer a map of every table and column in the
+    warehouse. It matters more now that registration ships open: a stranger who
+    registers reaches this with no further access.
+    """
+    _owner, _editor, viewer, ds_id = stand
+
+    schema = await viewer.get(f"/api/v1/data-sources/{ds_id}/schema")
+    assert schema.status_code == 403
+
+    stats = await viewer.get(f"/api/v1/data-sources/{ds_id}/stats")
+    assert stats.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_editor_keeps_schema_access_but_not_stats(stand, monkeypatch) -> None:
+    """Editors author scans, metrics and fact tables, so they still need /schema.
+
+    Pins the boundary deliberately: locking /schema to owner-only would silently
+    break the column pickers in the scan form, the metric form and the
+    fact-table form, all of which are editor surfaces. /stats has no consumer at
+    all, so it stays owner-only.
+
+    The schema service is stubbed for the success path: reaching the handler at
+    all means dialling the deliberately unreachable fixture warehouse, and the
+    driver raises straight through the HTTP layer rather than answering with a
+    status. What is under test is the authorization decision, not the driver.
+    """
+    _owner, editor, _viewer, ds_id = stand
+
+    async def _fake_schema(_session, _ds_id):
+        return DataSourceSchemaResponse(tables=[])
+
+    monkeypatch.setattr(
+        data_sources_router.datasource_schema_service, "get_schema_tables", _fake_schema
+    )
+
+    schema = await editor.get(f"/api/v1/data-sources/{ds_id}/schema")
+    assert schema.status_code == 200
+
+    stats = await editor.get(f"/api/v1/data-sources/{ds_id}/stats")
+    assert stats.status_code == 403
 
 
 @pytest.mark.asyncio
