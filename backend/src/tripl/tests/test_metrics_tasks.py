@@ -2692,6 +2692,40 @@ def test_diff_event_type_schema_still_reports_when_it_has_no_cardinality_evidenc
         assert sorted(item["field_name"] for item in drift_items) == ["amount"]
 
 
+def test_diff_event_type_schema_does_not_call_a_reserved_column_missing(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A declared field whose column is RESERVED must not read as "it vanished".
+
+    Regression from tripl-jfm3.57. Reserving event-group-rule columns removed
+    them from `observed`, and the missing_field branch then reported every
+    declared field of the same name — production groups on `action` AND declares
+    `action` on the same event type, so the first scan after deploy raised a
+    false "missing_field action" alert. Reserved means "not catalog-managed",
+    which is neither new nor missing.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        et = _make_event_type_with_fields(
+            session,
+            config,
+            fields=[("action", "string"), ("really_gone", "string")],
+        )
+        columns = [ColumnInfo(name="screen_name", type_name="String")]
+
+        drift_items = metrics_schema_drift._diff_event_type_schema(
+            et,
+            columns,
+            # What reserved_catalog_columns now yields for a grouped scan.
+            skip_columns={"action", "event_time"},
+        )
+
+        reported = sorted((item["field_name"], item["drift_type"]) for item in drift_items)
+        # `screen_name` is genuinely undeclared, `really_gone` genuinely vanished,
+        # and `action` is neither.
+        assert reported == [("really_gone", "missing_field"), ("screen_name", "new_field")]
+
+
 def test_diff_event_type_schema_attaches_sample_value(
     sync_session_factory: sessionmaker[Session],
 ) -> None:
