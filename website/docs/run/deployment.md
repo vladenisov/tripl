@@ -178,6 +178,22 @@ docker compose ps
 curl -fsS https://tripl.example.com/health
 ```
 
+### Browser caching across an upgrade
+
+Every frontend file under `/assets/` carries a content hash, so an upgrade
+replaces the whole set. The app serves `index.html` with `Cache-Control:
+no-cache` (revalidate every time — the `ETag` keeps that a cheap `304`) and
+`/assets/*` with `max-age=31536000, immutable`. That pairing is what stops a
+browser from running yesterday's shell against today's chunk names, which
+otherwise shows up as intermittent `404`s and
+`Failed to fetch dynamically imported module` after a release.
+
+If you put a CDN or reverse proxy in front of tripl, **preserve those headers**.
+Overriding them with a blanket TTL on HTML reintroduces exactly this failure,
+and it will look random because it only affects clients whose cached copy has
+not expired. A tab left open across the upgrade reloads itself once when it
+meets a missing chunk, so users do not have to hard-refresh.
+
 ## Local preview
 
 The production stack is hardened for HTTPS and will not run comfortably over plain HTTP. To just try tripl on your laptop, use the dev stack, which builds from source with hot-reload and needs no secrets:
