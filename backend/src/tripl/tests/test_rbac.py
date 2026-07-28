@@ -84,6 +84,12 @@ READ_LIKE_MUTATING_PATHS = {
     # they were never added to the list; they are correct as written.
     "/api/v1/auth/password-reset/request",
     "/api/v1/auth/password-reset/confirm",
+    # Redeeming an invitation: an auth endpoint by nature, since the caller has
+    # no account yet and therefore no role to gate on. Its authorization is the
+    # single-use, expiring, owner-issued token itself, and MINTING one is
+    # owner-only with API keys rejected (POST /users/invitations). Rate-limited
+    # on the register bucket.
+    "/api/v1/auth/invitations/{token}/accept",
     "/api/v1/projects/{slug}/events/window-metrics",
     "/api/v1/projects/{slug}/anomalies/signals/query",
     "/api/v1/projects/{slug}/alert-destinations/{destination_id}/rules/{rule_id}/simulate",

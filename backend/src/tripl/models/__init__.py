@@ -28,6 +28,7 @@ from tripl.models.event_type_relation import EventTypeRelation
 from tripl.models.fact_table import FactTable
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.implementation_ticket import ImplementationTicket
+from tripl.models.invitation import Invitation
 from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
@@ -90,6 +91,7 @@ __all__ = [
     "EventPhoto",
     "EventPhotoComment",
     "ImplementationTicket",
+    "Invitation",
     "MetricAnomaly",
     "MetricBreakdownAnomaly",
     "MetricDefinition",

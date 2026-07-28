@@ -55,6 +55,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/invitations/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview Invitation
+         * @description Show who an invitation is for, before the invitee has an account.
+         *
+         *     Unauthenticated by necessity — the whole point is that this person cannot
+         *     sign in yet. It discloses nothing the token holder does not already have:
+         *     the address it was issued to, the role it grants, and when it lapses. It
+         *     does not reveal whether the instance has other users, or who they are.
+         *
+         *     Shares the cheap /status bucket rather than the register bucket: previewing
+         *     is a read, and it must not consume the quota the invitee needs to actually
+         *     redeem. Unknown, expired and used tokens all return the same 400.
+         */
+        get: operations["preview_invitation_api_v1_auth_invitations__token__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/invitations/{token}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept Invitation
+         * @description Redeem an invitation into an account, and sign the new user straight in.
+         *
+         *     Reachable regardless of ``registration_mode`` — that is the entire point:
+         *     an owner-issued, single-use, expiring, address-bound invitation is a
+         *     different mechanism from the instance-wide door, so a closed instance can
+         *     still onboard exactly the people its owner named.
+         *
+         *     On the register rate-limit bucket, so guessing tokens costs the same as
+         *     hammering signup.
+         */
+        post: operations["accept_invitation_api_v1_auth_invitations__token__accept_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -2852,6 +2909,58 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Invitations
+         * @description Outstanding invitations. Owner-only: this is the roster of pending access.
+         */
+        get: operations["list_invitations_api_v1_users_invitations_get"];
+        put?: never;
+        /**
+         * Create Invitation
+         * @description Invite one person, at a role the owner picks.
+         *
+         *     ``OwnerUserDep`` is owner-only AND rejects API keys of any scope, so minting
+         *     an account always requires an interactive owner session — an automation
+         *     token can never conjure a new identity.
+         *
+         *     The redeem link is returned in the body, not merely emailed: SMTP is
+         *     optional and unconfigured on many instances, so a body-only path is the one
+         *     that always works. It appears here and nowhere else.
+         */
+        post: operations["create_invitation_api_v1_users_invitations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/invitations/{invitation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke Invitation
+         * @description Revoke an invitation; its link stops working immediately.
+         */
+        delete: operations["revoke_invitation_api_v1_users_invitations__invitation_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -6135,6 +6244,110 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /**
+         * InvitationAcceptRequest
+         * @description Redeeming an invitation.
+         *
+         *     Carries no email: the address comes from the invitation itself, so a link
+         *     cannot be turned into an account for someone else. Password strength is the
+         *     same policy as registration — enforced here at the schema boundary, so an
+         *     invalid password never reaches the service.
+         */
+        InvitationAcceptRequest: {
+            /** Name */
+            name?: string | null;
+            /** Password */
+            password: string;
+        };
+        /**
+         * InvitationCreate
+         * @description What an owner submits to invite one person.
+         */
+        InvitationCreate: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** @default editor */
+            role: components["schemas"]["UserRole"];
+        };
+        /**
+         * InvitationCreatedResponse
+         * @description The mint response — the ONLY place the redeem link ever appears.
+         *
+         *     ``accept_path`` is a path, not an absolute URL: the backend does not reliably
+         *     know its own public origin (it sits behind a proxy, and the SPA may be served
+         *     from a different host), so the client joins it to its own origin rather than
+         *     the server guessing wrong and producing an unusable link.
+         */
+        InvitationCreatedResponse: {
+            /** Accept Path */
+            accept_path: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            invitation: components["schemas"]["InvitationResponse"];
+        };
+        /**
+         * InvitationPreview
+         * @description What the redeem screen may show before an account exists.
+         *
+         *     Reveals only what the person holding the link already has, so it stays
+         *     unauthenticated. Notably it does NOT confirm whether the instance has other
+         *     users or what they are.
+         */
+        InvitationPreview: {
+            /** Email */
+            email: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            role: components["schemas"]["UserRole"];
+        };
+        /**
+         * InvitationResponse
+         * @description A pending invitation as shown on the Members screen.
+         *
+         *     Carries no token and no digest of one: the raw token is returned exactly
+         *     once, by the create call, and listing invitations must never hand out a way
+         *     to redeem them.
+         */
+        InvitationResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Email */
+            email: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Invited By User Id */
+            invited_by_user_id: string | null;
+            /**
+             * Is Expired
+             * @description Whether this link has aged out.
+             *
+             *     Computed rather than stored so it cannot go stale, and surfaced because
+             *     expired-but-unused rows are deliberately still listed — an owner needs
+             *     to see that a link they sent no longer works.
+             */
+            readonly is_expired: boolean;
+            role: components["schemas"]["UserRole"];
+        };
         /** LoginRequest */
         LoginRequest: {
             /** Email */
@@ -9370,6 +9583,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuditListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_invitation_api_v1_auth_invitations__token__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    accept_invitation_api_v1_auth_invitations__token__accept_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvitationAcceptRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthUserResponse"];
                 };
             };
             /** @description Validation Error */
@@ -16062,6 +16341,88 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["UserListItem"][];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_invitations_api_v1_users_invitations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationResponse"][];
+                };
+            };
+        };
+    };
+    create_invitation_api_v1_users_invitations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvitationCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationCreatedResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_invitation_api_v1_users_invitations__invitation_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
