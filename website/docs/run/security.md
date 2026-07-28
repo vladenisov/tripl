@@ -286,13 +286,42 @@ Enforcement lives in `backend/src/tripl/api/deps.py`. The route-facing FastAPI d
 | `require_owner` | Only `owner` passes |
 | `get_owner_user` | Owner-only **and** rejects API keys entirely (any scope) — owner actions require an interactive session |
 
-Because the `editor` role is **instance-wide**, two surfaces that would otherwise
-be reachable by every editor carry a stricter gate:
+### Roles are instance-wide, but mutations are scoped per project
+
+The three roles above are properties of the **user**, not of a project — an
+`editor` is an editor everywhere. That alone would let anyone who can register
+edit every project on the instance, so `get_editor_user` additionally resolves a
+per-project scope (`project_service.ProjectMutationScope`) for every slug-scoped
+route that carries it. Reads are unaffected; so are routes with no project slug.
+
+| Who is mutating | Verdict |
+|---|---|
+| An instance `owner` | Allowed |
+| The project's creator | Allowed |
+| Anyone else, on someone's **demo workspace** | **Denied, always** — a demo belongs to one person |
+| Any `editor`, on a project created by an **owner**, or predating creator tracking (`created_by_user_id IS NULL`) | Allowed — this is the shared team tracking plan |
+| Any other `editor`, on a project a **different editor** created | **Denied** |
+
+The fourth row is the deliberate part. Strict "creator or owner" everywhere
+would have locked editors out of every project they did not personally create —
+including every project that predates creator tracking, which has no creator at
+all — and that is the entire point of the `editor` role on a normal deployment
+where the owner creates projects and editors maintain the plan.
+
+The consequence is worth stating plainly: on a shared project, **any editor can
+edit the tracking plan**. If the instance also has registration `open`, anyone
+who can reach the URL can become that editor. Close registration, or keep the
+instance private.
+
+Two further surfaces carry a stricter gate than the role table alone implies:
 
 | Surface | Gate | Why |
 |---|---|---|
-| Scan configs — create / update / delete, `preview`, `preview-jobs`, `run`, `metrics/replay`, `event-groups/apply` | `get_owner_user` (owner, interactive session) | A scan's `base_query` is free-text SQL executed verbatim against an owner-configured warehouse credential, so it can read anything that credential can. Data sources are owner-only; the SQL run against them now matches. Editors keep every read-only view (list/get a scan, its jobs, platform presence) and can still cancel a running job. |
-| `PATCH /api/v1/projects/{slug}` (name, slug, retention) | Project **creator** or owner | Otherwise any editor could rename or re-slug every project on the instance, including ones they have never touched. The creator is recorded at project-creation time; projects with no recorded creator are owner-managed. |
+| Scan configs — create / update / delete, `preview`, `preview-jobs`, `metrics/replay` | `get_owner_user` (owner, interactive session) | A scan's `base_query` is free-text SQL executed verbatim against an owner-configured warehouse credential, so it can read anything that credential can. Data sources are owner-only; authoring the SQL run against them matches. |
+| `POST /scans/{id}/run`, `event-groups/apply`, cancelling a job | `get_editor_user` | Running a **stored** config executes no new SQL, so it stays with the role that maintains the plan — and with the API keys that automate it. Only *authoring* the query is owner-only. |
+| `PATCH /api/v1/projects/{slug}` (name, slug, retention) | Project **creator** or owner | Identity, not content: otherwise any editor could rename or re-slug every project on the instance. Stricter than the content rule above, which permits shared-project edits. |
+| `GET /data-sources/{id}/schema` | `get_editor_user` | Warehouse table and column names. Editors need it — the scan, metric and fact-table forms drive column pickers off it — but a `viewer` edits none of those. |
+| `GET /data-sources/{id}/stats`, and connection details (host, port, username, `password_set`, TLS) on every data-source read | Owner | Non-owners see a data source's name, type and health, which is all the scan picker and metric card need. |
 
 `base_query` is additionally validated by the shared read-only-SELECT gate
 (`validate_select_sql_safety`, the same one `metric_sql` uses): single statement,
