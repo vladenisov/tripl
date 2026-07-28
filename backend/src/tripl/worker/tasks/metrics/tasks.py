@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func as sa_func
@@ -196,14 +197,52 @@ def _covered_buckets_from_scan_jobs(
     return covered
 
 
+def _event_group_rule_columns(config: ScanConfig) -> set[str]:
+    """Columns the scan's event group rules match on.
+
+    A group rule decides WHICH catalog event a row folds into, so the columns it
+    reads are identity inputs — exactly like ``event_type_column`` — not tracked
+    properties of the resulting event. They were missing from the reserved set,
+    which is the second grouping column the catalog sync never knew about: it
+    auto-created a FieldDefinition for the rule's column on every event type,
+    and the scan then captured a sample value for it. On the demo that produced
+    a "Screen View" field literally rendering the rule's own pattern,
+    ``/^Home\\ Screen\\ View$/`` (tripl-jfm3.57).
+
+    Read defensively: ``event_group_rules`` is a JSON column, so a row written
+    by an older release (or by hand) may not match the current shape.
+    """
+    columns: set[str] = set()
+    for rule in config.event_group_rules or ():
+        if not isinstance(rule, Mapping):
+            continue
+        conditions = rule.get("conditions")
+        if not isinstance(conditions, list):
+            continue
+        for condition in conditions:
+            if not isinstance(condition, Mapping):
+                continue
+            field = str(condition.get("field", "")).strip()
+            if field:
+                columns.add(field)
+    return columns
+
+
 def reserved_catalog_columns(config: ScanConfig) -> set[str]:
-    """Scan columns that are metric dimensions, not tracked event fields.
+    """Scan columns that are metric dimensions or identity, not tracked event fields.
 
     The event-type/time grouping columns and the app-version & platform breakdown
     columns are collected into metric tables (EventMetric / EventMetricBreakdown),
     never the catalog. Excluding them from FieldDefinition creation keeps them off
     the events table, where they'd otherwise show up as useless columns carrying
-    non-deterministic per-event sample values.
+    non-deterministic per-event sample values. Event-group-rule columns join them
+    for the same reason — see ``_event_group_rule_columns``.
+
+    Only the catalog is affected: the result reaches ``catalog_sync`` as
+    ``skip_columns`` and nothing else, so reserving a column here does not change
+    metric collection, and it deliberately does NOT feed
+    ``check_scalar_columns_unreserved`` — a project that already selected a
+    group-rule column as a breakdown keeps working.
     """
     reserved = (
         config.event_type_column,
@@ -211,7 +250,7 @@ def reserved_catalog_columns(config: ScanConfig) -> set[str]:
         config.app_version_column,
         config.platform_column,
     )
-    return {column for column in reserved if column}
+    return {column for column in reserved if column} | _event_group_rule_columns(config)
 
 
 def main_plan_event_types_by_name(session: Session, project_id: uuid.UUID) -> dict[str, EventType]:

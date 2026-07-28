@@ -1144,6 +1144,62 @@ def test_reserved_catalog_columns_includes_version_and_platform() -> None:
     assert reserved_catalog_columns(ScanConfig()) == set()
 
 
+def test_reserved_catalog_columns_includes_event_group_rule_columns() -> None:
+    """The column group rules match on is identity, so it must stay out of the catalog.
+
+    It is the scan's SECOND grouping column and was the one the catalog sync did
+    not know about: it auto-created a FieldDefinition for it and the scan filled
+    that field with the rule's own regex (tripl-jfm3.57). The demo shows it
+    plainly — event_type_column is "event_type" while the rules key on
+    "event_name", so reserving only the former left the latter exposed.
+    """
+    from tripl.worker.tasks.metrics.tasks import reserved_catalog_columns
+
+    config = ScanConfig(
+        event_type_column="event_type",
+        time_column="event_time",
+        event_group_rules=[
+            {
+                "name": "Home Screen View",
+                "condition_logic": "all",
+                "conditions": [{"field": "event_name", "pattern": r"^Home\ Screen\ View$"}],
+            },
+            {
+                "name": "Checkout",
+                "condition_logic": "any",
+                "conditions": [
+                    {"field": "event_name", "pattern": "^Purchase"},
+                    {"field": "screen_name", "pattern": "^Checkout"},
+                ],
+            },
+        ],
+    )
+    assert reserved_catalog_columns(config) == {
+        "event_type",
+        "event_time",
+        "event_name",
+        "screen_name",
+    }
+
+
+def test_reserved_catalog_columns_survives_malformed_group_rules() -> None:
+    """event_group_rules is a JSON column, so an older or hand-edited row must not crash a scan."""
+    from tripl.worker.tasks.metrics.tasks import reserved_catalog_columns
+
+    config = ScanConfig(
+        time_column="event_time",
+        event_group_rules=[
+            "not-a-mapping",
+            {"name": "no conditions key"},
+            {"name": "conditions not a list", "conditions": {"field": "x"}},
+            {"name": "condition not a mapping", "conditions": ["nope"]},
+            {"name": "blank field", "conditions": [{"field": "   ", "pattern": "^x"}]},
+            {"name": "good", "conditions": [{"field": "event_name", "pattern": "^x"}]},
+        ],
+    )
+    assert reserved_catalog_columns(config) == {"event_time", "event_name"}
+
+
 def test_ensure_event_type_skips_reserved_columns(
     sync_session_factory: sessionmaker[Session],
 ) -> None:
