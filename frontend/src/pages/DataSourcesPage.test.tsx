@@ -304,6 +304,28 @@ describe('DataSourcesPage', () => {
     expect(screen.getByText('re-test to confirm')).toBeInTheDocument()
   })
 
+  it('hides the connection line entirely when the server redacted it', async () => {
+    // A non-owner gets host/port/database_name blanked by the API
+    // (tripl-jfm3.19). The card used to render that as a bare ":0/"
+    // (tripl-jfm3.84) — it must show nothing instead, while still identifying
+    // the source by name, type and health.
+    const redacted: DataSource = {
+      ...DATA_SOURCE,
+      host: '',
+      port: 0,
+      database_name: '',
+      username: '',
+      password_set: false,
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(listFetchMock([redacted]))
+
+    renderDataSourcesPage('/settings/data-sources', 'editor')
+
+    expect(await screen.findByText('Warehouse')).toBeInTheDocument()
+    expect(screen.queryByText(/:0\//)).not.toBeInTheDocument()
+    expect(screen.getByText('clickhouse')).toBeInTheDocument()
+  })
+
   it('presents a recent successful health check as healthy', async () => {
     const freshSource: DataSource = {
       ...DATA_SOURCE,

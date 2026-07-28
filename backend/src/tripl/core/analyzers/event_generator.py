@@ -167,7 +167,14 @@ def generate_events(
 
         fd = field_definitions.get(col_name)
         if fd is None:
-            result.details.append(f"Skipped column {col_name!r}: no matching field definition")
+            # A grouped scan reads one flat table, so this pass sees every
+            # column of the query even when the event type in hand uses only a
+            # few. Staying silent about a column that held NOTHING for these
+            # rows keeps the warning meaningful: an undeclared column that DOES
+            # carry data is a real plan gap and still reports (tripl-jfm3.57).
+            # ``count`` excludes NULLs, so 0 means no value in any row here.
+            if card_result.count > 0:
+                result.details.append(f"Skipped column {col_name!r}: no matching field definition")
             continue
 
         result.columns_analyzed += 1
@@ -283,6 +290,9 @@ def generate_events(
     next_event_order = 0 if next_event_order is None else int(next_event_order) + 1
     logger.info(f"Loaded {len(existing_by_identity)} existing events for dedup")
     variable_contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]] = {}
+    # ``(event_id, field_definition_id)`` pairs whose stored value this run
+    # actually rewrote. Only those can invalidate an existing variable context.
+    rewritten_fields: set[tuple[uuid.UUID, uuid.UUID]] = set()
 
     # Iterate breakdown rows — each row is one event
     for row in analysis.rows:
@@ -397,7 +407,7 @@ def generate_events(
         existing = existing_by_identity.get(event_name)
         if existing is not None:
             # Update field values on existing event
-            _upsert_field_values(existing, field_values)
+            rewritten_fields |= _upsert_field_values(existing, field_values)
             _record_variable_contexts(
                 variable_contexts,
                 event=existing,
@@ -422,7 +432,7 @@ def generate_events(
         session.flush()
         next_event_order += 1
 
-        _upsert_field_values(event, field_values)
+        rewritten_fields |= _upsert_field_values(event, field_values)
         _record_variable_contexts(
             variable_contexts,
             event=event,
@@ -454,6 +464,8 @@ def generate_events(
         project_id=project_id,
         branch_id=main_branch_id,
         event_type_id=event_type_id,
+        contexts=variable_contexts,
+        rewritten_fields=rewritten_fields,
     )
     _insert_variable_contexts(
         session,
@@ -494,7 +506,7 @@ def _format_value(raw_val: object) -> str:
 def _upsert_field_values(
     event: Event,
     field_values: Sequence[tuple[uuid.UUID, str, str]],
-) -> None:
+) -> set[tuple[uuid.UUID, uuid.UUID]]:
     """Set field values on ``event``, deduplicating by ``field_definition_id``.
 
     Writes through the ``field_values`` relationship (not a bare ``session.add``)
@@ -503,13 +515,20 @@ def _upsert_field_values(
     event (e.g. via scan group rules) re-queue the same
     ``(event_id, field_definition_id)`` pair and violate
     ``uq_event_field_value_event_field`` on flush.
+
+    Returns the ``(event_id, field_definition_id)`` pairs this call actually
+    changed or newly created — an authored value, or one that already reads the
+    same, is NOT reported. Callers use that to scope what the run invalidated:
+    see ``delete_variable_contexts_for_event_type``.
     """
+    rewritten: set[tuple[uuid.UUID, uuid.UUID]] = set()
     fv_by_fd = {fv.field_definition_id: fv for fv in event.field_values}
     for fd_id, _, value in field_values:
         existing_fv = fv_by_fd.get(fd_id)
         if existing_fv is not None:
-            if not existing_fv.is_authored:
+            if not existing_fv.is_authored and existing_fv.value != value:
                 existing_fv.value = value
+                rewritten.add((event.id, fd_id))
             continue
         new_fv = EventFieldValue(
             id=uuid.uuid4(),
@@ -520,6 +539,8 @@ def _upsert_field_values(
         )
         event.field_values.append(new_fv)
         fv_by_fd[fd_id] = new_fv
+        rewritten.add((event.id, fd_id))
+    return rewritten
 
 
 def _raw_values_from_row(

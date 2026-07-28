@@ -25,6 +25,7 @@ from tripl.models.domain_enums import MetricKind, MetricStatus
 from tripl.models.event_metric import EventMetric
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
+from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.worker.celery_app import celery_app
@@ -45,6 +46,64 @@ from tripl.worker.tasks.metrics.metric_collect import (
 from tripl.worker.tasks.metrics.tasks import collect_metrics
 
 logger = logging.getLogger(__name__)
+
+# How rarely a DEMO project's scheduled collection may run (tripl-jfm3.73).
+#
+# A demo pays 67-141 s per collection against an in-memory dataset, and every
+# demo on a deployment paid it every hour. Almost all of that is per-scope
+# MSTL(24,168) — 21 volume scopes plus 81-131 breakdown scopes at ~1.2 s each —
+# and none of the existing fast paths apply, because demo volumes sit far above
+# ``min_expected_count`` and every demo series is unique so the decomposition
+# cache added for tripl-jfm3.1 has nothing to reuse.
+#
+# The demo does NOT go dark between runs: ``advance_demos`` already appends
+# hourly buckets and re-runs the real detector for volume anomalies every hour,
+# so the series and the headline signals stay live. What this cooldown defers is
+# the part only the scheduled collection produces — breakdown anomalies and
+# distribution drift — from 24x a day to 4x, which for a demo is invisible.
+#
+# Deliberately NOT implemented by lengthening ``ScanConfig.interval``: that is
+# the BUCKET size, and the demo's whole seasonality story (periods 24 and 168 in
+# hourly buckets, 23 days of history) is built on it being 1h.
+DEMO_COLLECTION_COOLDOWN_HOURS = 6
+
+# Bound on how many recent jobs to inspect when finding the last SCHEDULED
+# collection. ``advance_demos`` also writes a ScanJob per hourly tick, so a few
+# of those sit between two scheduled runs; 40 covers the cooldown with room to
+# spare and keeps this a cheap indexed read.
+_RECENT_JOB_SCAN_LIMIT = 40
+
+
+def _is_scheduled_collection_job(result_summary: object) -> bool:
+    """Whether a ScanJob came from the dispatcher rather than the demo tick.
+
+    ``demo_runtime._record_scan_job`` writes a completed job per tick with
+    ``demo_runtime_tick: True`` so the demo's scan history keeps growing. Those
+    must not be mistaken for scheduled collections, or the cooldown below would
+    see a fresh job every hour and defer the real collection forever.
+    """
+    return not (isinstance(result_summary, dict) and result_summary.get("demo_runtime_tick"))
+
+
+def _hours_since_last_scheduled_collection(
+    session: Session, scan_config_id: uuid.UUID, *, now: datetime
+) -> float | None:
+    """Age of the newest dispatcher-created job, or None if there is none."""
+    rows = session.execute(
+        select(ScanJob.created_at, ScanJob.result_summary)
+        .where(ScanJob.scan_config_id == scan_config_id)
+        .order_by(ScanJob.created_at.desc())
+        .limit(_RECENT_JOB_SCAN_LIMIT)
+    ).all()
+    for created_at, result_summary in rows:
+        if not _is_scheduled_collection_job(result_summary):
+            continue
+        created = _normalize_job_timestamp(created_at)
+        if created is None:
+            continue
+        return (now - created).total_seconds() / 3600.0
+    return None
+
 
 # A single Postgres session-level advisory lock serialises the whole dispatcher
 # across worker processes. With concurrency=N, a backlog of redelivered
@@ -89,16 +148,16 @@ def check_metrics_due() -> dict[str, int]:
                 lock_conn = None
                 return {"checked": 0, "dispatched": 0}
 
-        configs = (
-            session.execute(
-                select(ScanConfig).where(
-                    ScanConfig.interval.isnot(None),
-                    ScanConfig.time_column.isnot(None),
-                )
+        config_rows = session.execute(
+            select(ScanConfig, Project.is_demo)
+            .join(Project, Project.id == ScanConfig.project_id)
+            .where(
+                ScanConfig.interval.isnot(None),
+                ScanConfig.time_column.isnot(None),
             )
-            .scalars()
-            .all()
-        )
+        ).all()
+        configs = [row[0] for row in config_rows]
+        is_demo_by_config = {row[0].id: bool(row[1]) for row in config_rows}
 
         dispatched = 0
         for config in configs:
@@ -145,6 +204,16 @@ def check_metrics_due() -> dict[str, int]:
                 latest_complete = _floor_to_interval(now, delta) - delta
                 if last_bucket < latest_complete:
                     should_run = True
+
+            if should_run and is_demo_by_config.get(config.id):
+                age_hours = _hours_since_last_scheduled_collection(session, config.id, now=now)
+                if age_hours is not None and age_hours < DEMO_COLLECTION_COOLDOWN_HOURS:
+                    logger.info(
+                        f"Skipping collect_metrics for demo {config.name!r}: "
+                        f"last scheduled collection was {age_hours:.1f}h ago "
+                        f"(cooldown {DEMO_COLLECTION_COOLDOWN_HOURS}h)"
+                    )
+                    should_run = False
 
             if should_run:
                 job = ScanJob(

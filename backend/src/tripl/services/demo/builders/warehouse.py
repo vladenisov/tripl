@@ -15,6 +15,7 @@ import re
 import uuid
 from datetime import datetime
 
+from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.core.adapters.synthetic import SYNTHETIC_EVENT_NAMES
@@ -165,6 +166,13 @@ async def _build_event_metrics(session: AsyncSession, ctx: DemoContext) -> None:
     type_bucket_counts: dict[tuple[uuid.UUID, datetime], int] = {}
     home_series: dict[datetime, int] = {}
 
+    # Built as plain dicts and inserted in one executemany rather than one ORM
+    # instance per row. 18 events x 552 hourly buckets plus the per-type
+    # aggregates is ~11.6k rows for a single demo, and every test that creates a
+    # demo paid the unit-of-work cost for all of them (tripl-jfm3.88). ``id``
+    # carries a Python-side uuid4 default and the timestamps are server-side, so
+    # a core insert still produces complete rows.
+    event_rows: list[dict[str, object]] = []
     for spec in event_specs(ctx.now):
         event_id = ctx.event_ids[spec.name]
         et_id = ctx.event_type_ids[spec.event_type]
@@ -176,32 +184,32 @@ async def _build_event_metrics(session: AsyncSession, ctx: DemoContext) -> None:
             count = noise.hourly_volume(spec.base, bucket, idx, noise_seed, total_buckets)
             if is_spike and bucket == spike_bucket:
                 count *= noise.DEMO_SPIKE_MULTIPLIER
-            session.add(
-                EventMetric(
-                    scan_config_id=ctx.scan_config_id,
-                    event_id=event_id,
-                    event_type_id=None,
-                    bucket=bucket,
-                    count=count,
-                )
+            event_rows.append(
+                {
+                    "scan_config_id": ctx.scan_config_id,
+                    "event_id": event_id,
+                    "event_type_id": None,
+                    "bucket": bucket,
+                    "count": count,
+                }
             )
             type_bucket_counts[(et_id, bucket)] = type_bucket_counts.get((et_id, bucket), 0) + count
             if is_spike:
                 home_series[bucket] = count
-    await session.flush()
 
     # Per-type aggregate rows (event_id NULL, event_type_id set).
-    for (et_id, bucket), count in type_bucket_counts.items():
-        session.add(
-            EventMetric(
-                scan_config_id=ctx.scan_config_id,
-                event_id=None,
-                event_type_id=et_id,
-                bucket=bucket,
-                count=count,
-            )
-        )
-    await session.flush()
+    event_rows.extend(
+        {
+            "scan_config_id": ctx.scan_config_id,
+            "event_id": None,
+            "event_type_id": et_id,
+            "bucket": bucket,
+            "count": count,
+        }
+        for (et_id, bucket), count in type_bucket_counts.items()
+    )
+    if event_rows:
+        await session.execute(insert(EventMetric), event_rows)
 
     ctx.home_series = home_series
     ctx.type_bucket_counts = type_bucket_counts
@@ -220,6 +228,7 @@ async def _build_breakdown(session: AsyncSession, ctx: DemoContext) -> None:
     fallback_seed = noise.derive_seed(ctx.seed, SPIKE_EVENT_NAME) % 997
 
     breakdown_buckets = noise.hour_buckets(ctx.now, days=noise.DEMO_DRIFT_SPAN_DAYS)
+    breakdown_rows: list[dict[str, object]] = []
     for idx, bucket in enumerate(breakdown_buckets):
         total_count = ctx.home_series.get(
             bucket,
@@ -227,16 +236,18 @@ async def _build_breakdown(session: AsyncSession, ctx: DemoContext) -> None:
         )
         days_before = (ctx.now - bucket).total_seconds() / 86400.0
         shares = noise.platform_shares(noise.drift_span_progress(days_before))
-        for platform, count in noise.shares_to_counts(shares, total_count).items():
-            session.add(
-                EventMetricBreakdown(
-                    scan_config_id=ctx.scan_config_id,
-                    event_id=spike_event_id,
-                    bucket=bucket,
-                    breakdown_column="platform",
-                    breakdown_value=platform,
-                    is_other=False,
-                    count=max(1, count),
-                )
-            )
-    await session.flush()
+        breakdown_rows.extend(
+            {
+                "scan_config_id": ctx.scan_config_id,
+                "event_id": spike_event_id,
+                "bucket": bucket,
+                "breakdown_column": "platform",
+                "breakdown_value": platform,
+                "is_other": False,
+                "count": max(1, count),
+            }
+            for platform, count in noise.shares_to_counts(shares, total_count).items()
+        )
+    # Same executemany treatment as the volume rows above.
+    if breakdown_rows:
+        await session.execute(insert(EventMetricBreakdown), breakdown_rows)

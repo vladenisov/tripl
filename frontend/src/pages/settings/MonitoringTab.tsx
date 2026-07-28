@@ -1,4 +1,4 @@
-import { useId } from "react"
+import { useId, type ChangeEvent } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { anomalySettingsApi } from "@/api/anomalySettings"
 import type { ProjectAnomalySettings } from "@/types"
@@ -8,6 +8,27 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { getErrorMessage } from '@/lib/utils'
+
+/**
+ * Commit a numeric settings edit, ignoring a transient empty field.
+ *
+ * These inputs save on every keystroke, and the field is briefly empty whenever
+ * someone selects-all and retypes. `Number('')` is `0`, which is a *valid*
+ * value for `min_expected_count` and `anomaly_ingestion_settling_minutes` — so
+ * a blank frame would silently persist "0" (for settling: score immediately,
+ * i.e. the very behaviour the allowance exists to prevent) instead of being
+ * rejected the way an out-of-range `0` is on the min-1 fields. Empty and
+ * non-numeric input is dropped; the input keeps showing the last saved value.
+ */
+function onNumberChange(commit: (value: number) => void) {
+  return (e: ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value.trim()
+    if (raw === '') return
+    const value = Number(raw)
+    if (!Number.isFinite(value)) return
+    commit(value)
+  }
+}
 
 export function MonitoringTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
@@ -28,6 +49,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
   const sigmaThresholdId = useId()
   const minExpectedCountId = useId()
   const recentSignalWindowId = useId()
+  const settlingMinutesId = useId()
 
   if (!settings) {
     return <div className="text-sm text-muted-foreground">Loading detection settings…</div>
@@ -103,7 +125,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
                 type="number"
                 min={1}
                 value={settings.baseline_window_buckets}
-                onChange={e => updateMut.mutate({ baseline_window_buckets: Number(e.target.value) })}
+                onChange={onNumberChange(v => updateMut.mutate({ baseline_window_buckets: v }))}
               />
             </div>
             <div className="grid gap-2">
@@ -113,7 +135,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
                 type="number"
                 min={1}
                 value={settings.min_history_buckets}
-                onChange={e => updateMut.mutate({ min_history_buckets: Number(e.target.value) })}
+                onChange={onNumberChange(v => updateMut.mutate({ min_history_buckets: v }))}
               />
             </div>
             <div className="grid gap-2">
@@ -124,7 +146,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
                 min={0.1}
                 step="0.1"
                 value={settings.sigma_threshold}
-                onChange={e => updateMut.mutate({ sigma_threshold: Number(e.target.value) })}
+                onChange={onNumberChange(v => updateMut.mutate({ sigma_threshold: v }))}
               />
             </div>
             <div className="grid gap-2">
@@ -134,7 +156,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
                 type="number"
                 min={0}
                 value={settings.min_expected_count}
-                onChange={e => updateMut.mutate({ min_expected_count: Number(e.target.value) })}
+                onChange={onNumberChange(v => updateMut.mutate({ min_expected_count: v }))}
               />
             </div>
             <div className="grid gap-2">
@@ -145,14 +167,34 @@ export function MonitoringTab({ slug }: { slug: string }) {
                 min={1}
                 max={720}
                 value={settings.recent_signal_window_hours}
-                onChange={e =>
-                  updateMut.mutate({ recent_signal_window_hours: Number(e.target.value) })
-                }
+                onChange={onNumberChange(v =>
+                  updateMut.mutate({ recent_signal_window_hours: v })
+                )}
               />
               <p className="text-xs text-muted-foreground">
                 How long an anomaly keeps counting as an open signal on the Anomalies page
                 and in the sidebar badge. Between 1 and 720 hours (30 days). Alert delivery
                 is unaffected.
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor={settlingMinutesId}>Ingestion settling (minutes)</Label>
+              <Input
+                id={settlingMinutesId}
+                type="number"
+                min={0}
+                max={1440}
+                value={settings.anomaly_ingestion_settling_minutes}
+                onChange={onNumberChange(v =>
+                  updateMut.mutate({ anomaly_ingestion_settling_minutes: v })
+                )}
+              />
+              <p className="text-xs text-muted-foreground">
+                How long a warehouse keeps delivering rows for a bucket after that bucket
+                closes. The newest buckets are still collected and charted, but raise no
+                signal until the allowance has passed — so a half-delivered bucket is not
+                read as a drop. Between 0 (score immediately) and 1440 minutes (24 hours);
+                it is also the detection latency it buys.
               </p>
             </div>
           </div>

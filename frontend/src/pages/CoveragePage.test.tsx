@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { projectsApi } from '@/api/projects'
 import { reconciliationApi } from '@/api/reconciliation'
 import type { DeadEventsResponse } from '@/api/reconciliation'
+import { DEAD_EVENT_DAYS } from '@/lib/coverage'
 import type { Project, ProjectSummary } from '@/types'
 import CoveragePage from './CoveragePage'
 
@@ -22,6 +23,7 @@ function summary(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
     variable_count: 0,
     scan_count: 3,
     alert_destination_count: 0,
+    alert_rule_count: 0,
     monitoring_signal_count: 0,
     firing_monitor_count: 0,
     failing_scan_config_count: 0,
@@ -114,6 +116,22 @@ describe('CoveragePage', () => {
     // The 568 tile is explicitly about the review queue, not the remainder.
     expect(screen.getByText('568')).toBeInTheDocument()
     expect(screen.getByText('Awaiting review')).toBeInTheDocument()
+  })
+
+  // The "Triage in Reconciliation" link hands off to Reconciliation's Dead
+  // events panel. While the two pages held their own windows (30 here, 14
+  // there) the destination answered a different question than the count that
+  // sent the user there — a shorter window is a WEAKER silence test, so
+  // Reconciliation listed MORE events (tripl-jfm3.79). Both now read
+  // DEAD_EVENT_DAYS; ReconciliationPage.test.tsx pins the other half.
+  it('queries dead events over the shared DEAD_EVENT_DAYS window', async () => {
+    vi.spyOn(projectsApi, 'get').mockResolvedValue(project())
+    const deadEvents = vi.spyOn(reconciliationApi, 'deadEvents').mockResolvedValue(dead)
+
+    renderPage()
+
+    await screen.findByText(/implemented events with no data/)
+    expect(deadEvents).toHaveBeenCalledWith('windy-ios', DEAD_EVENT_DAYS)
   })
 
   it('keeps the no-gaps message scoped to implemented events', async () => {

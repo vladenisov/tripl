@@ -18,6 +18,12 @@ class ProjectAnomalySettingsUpdate(BaseModel):
     # anything current, and the latest-scan horizon (max(window, 3 x interval))
     # already covers long scan intervals.
     recent_signal_window_hours: int | None = Field(None, ge=1, le=720)
+    # Wall-clock allowance for the warehouse to finish delivering a bucket
+    # before its value is scored (tripl-jfm3.79). 0 scores every collected
+    # bucket immediately; capped at 24h because the allowance is also the
+    # detection latency it buys, and the trailing re-eval window that re-scores
+    # the held-back buckets is 30 buckets wide.
+    anomaly_ingestion_settling_minutes: int | None = Field(None, ge=0, le=1440)
 
 
 class ProjectAnomalySettingsResponse(BaseModel):
@@ -33,6 +39,7 @@ class ProjectAnomalySettingsResponse(BaseModel):
     sigma_threshold: float
     min_expected_count: int
     recent_signal_window_hours: int
+    anomaly_ingestion_settling_minutes: int
     created_at: datetime
     updated_at: datetime
 

@@ -98,6 +98,17 @@ async def _create_user_session(session: AsyncSession, user_id: uuid.UUID) -> str
     return session_token
 
 
+async def create_session_for_user(session: AsyncSession, user_id: uuid.UUID) -> str:
+    """Issue a session token for an existing user, for flows outside this module.
+
+    Exists so ``invitation_service`` can log the invitee straight in after
+    redeeming, without reaching across a module boundary into a private helper
+    or growing a second copy of the TTL and hashing rules. Does not commit —
+    the caller owns the transaction.
+    """
+    return await _create_user_session(session, user_id)
+
+
 async def _acquire_first_owner_xact_lock(session: AsyncSession) -> None:
     """Serialise the first-user-becomes-owner decision across concurrent registrations.
 
@@ -122,8 +133,9 @@ async def is_registration_allowed(session: AsyncSession, *, is_first_user: bool)
     """Whether POST /auth/register would be accepted right now.
 
     The first-owner bootstrap on an empty instance is always allowed — otherwise
-    a fresh deploy with the (default) closed policy could never be claimed by
-    anyone. Every later signup needs the instance to be in "open" mode.
+    an instance whose owner had closed registration could never be re-claimed
+    after a reset. Every later signup needs the instance to be in "open" mode
+    (the shipped default; see ``Settings.registration_mode``).
     """
     if is_first_user:
         return True

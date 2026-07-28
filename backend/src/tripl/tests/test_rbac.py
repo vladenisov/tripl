@@ -32,33 +32,88 @@ async def _set_role(owner_client: AsyncClient, target_email: str, role: str) -> 
     assert resp.status_code == 200, resp.text
 
 
+def iter_api_routes() -> list[tuple[str, APIRoute]]:
+    """Every ``(full_path, APIRoute)`` in the app, including nested routers.
+
+    FastAPI 0.140 wraps each ``include_router`` result in a private
+    ``_IncludedRouter`` node instead of copying the child's routes up, so
+    ``app.routes`` yields only the handful declared directly on the app
+    (``/health``, ``/docs``, ...) and each route's ``path`` is missing the
+    prefixes of the routers it was included *into*. Walking it naively made this
+    module's route audits inspect exactly one route and report "no offenders" for
+    the entire API, so they must recurse through ``original_router`` and rebuild
+    the path (a route already carries its own router's prefix; what is missing is
+    every ancestor's).
+    """
+    found: list[tuple[str, APIRoute]] = []
+
+    def walk(router: object, prefix: str) -> None:
+        child_prefix = prefix + str(getattr(router, "prefix", ""))
+        for route in getattr(router, "routes", []):
+            if isinstance(route, APIRoute):
+                found.append((prefix + route.path, route))
+            else:
+                included = getattr(route, "original_router", None)
+                if included is not None:
+                    walk(included, child_prefix)
+
+    walk(app.router, "")
+    return found
+
+
+def test_route_audit_sees_the_whole_api() -> None:
+    """Guard the guard: if the walker silently stops finding routes, say so here."""
+    routes = iter_api_routes()
+    assert len(routes) > 150, f"route audit only reached {len(routes)} routes"
+    paths = {path for path, _ in routes}
+    # Paths must be reconstructed in full, or every ``/api/v1`` filter below
+    # silently matches nothing.
+    assert "/api/v1/auth/login" in paths
+    assert "/api/v1/projects/{slug}/event-types" in paths
+
+
+# POSTs that only carry a request body for a read: no state changes, so they are
+# deliberately ungated. Shared with the project-scope audit in
+# test_project_mutation_authorization.py so both lists cannot drift apart.
+READ_LIKE_MUTATING_PATHS = {
+    "/api/v1/auth/register",
+    "/api/v1/auth/login",
+    "/api/v1/auth/logout",
+    # Unauthenticated by definition — a logged-out user has no role to gate on.
+    # Both shipped while this audit was silently inspecting a single route, so
+    # they were never added to the list; they are correct as written.
+    "/api/v1/auth/password-reset/request",
+    "/api/v1/auth/password-reset/confirm",
+    # Redeeming an invitation: an auth endpoint by nature, since the caller has
+    # no account yet and therefore no role to gate on. Its authorization is the
+    # single-use, expiring, owner-issued token itself, and MINTING one is
+    # owner-only with API keys rejected (POST /users/invitations). Rate-limited
+    # on the register bucket.
+    "/api/v1/auth/invitations/{token}/accept",
+    "/api/v1/projects/{slug}/events/window-metrics",
+    "/api/v1/projects/{slug}/anomalies/signals/query",
+    "/api/v1/projects/{slug}/alert-destinations/{destination_id}/rules/{rule_id}/simulate",
+    # Read-like: NL question over the plan; POST only to carry the body.
+    "/api/v1/projects/{slug}/ai/ask",
+}
+
+
 def test_mutating_routes_require_write_gate() -> None:
     """Every mutating API route needs a write-scope dependency unless it is
     intentionally read-like or an auth endpoint."""
-    allowed_without_write_gate = {
-        "/api/v1/auth/register",
-        "/api/v1/auth/login",
-        "/api/v1/auth/logout",
-        "/api/v1/projects/{slug}/events/window-metrics",
-        "/api/v1/projects/{slug}/anomalies/signals/query",
-        "/api/v1/projects/{slug}/alert-destinations/{destination_id}/rules/{rule_id}/simulate",
-        # Read-like: NL question over the plan; POST only to carry the body.
-        "/api/v1/projects/{slug}/ai/ask",
-    }
+    allowed_without_write_gate = READ_LIKE_MUTATING_PATHS
     write_gates = {get_write_user, get_editor_user, get_owner_user}
     offenders: list[str] = []
 
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
+    for path, route in iter_api_routes():
         mutating_methods = (route.methods or set()) & {"POST", "PATCH", "PUT", "DELETE"}
-        if not mutating_methods or not route.path.startswith("/api/v1"):
+        if not mutating_methods or not path.startswith("/api/v1"):
             continue
-        if route.path in allowed_without_write_gate:
+        if path in allowed_without_write_gate:
             continue
         dependency_calls = {dependency.call for dependency in route.dependant.dependencies}
         if dependency_calls.isdisjoint(write_gates):
-            offenders.append(f"{','.join(sorted(mutating_methods))} {route.path}")
+            offenders.append(f"{','.join(sorted(mutating_methods))} {path}")
 
     assert offenders == []
 

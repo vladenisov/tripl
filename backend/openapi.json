@@ -8955,6 +8955,157 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "InvitationAcceptRequest": {
+        "description": "Redeeming an invitation.\n\nCarries no email: the address comes from the invitation itself, so a link\ncannot be turned into an account for someone else. Password strength is the\nsame policy as registration \u2014 enforced here at the schema boundary, so an\ninvalid password never reaches the service.",
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "password": {
+            "maxLength": 255,
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "password"
+        ],
+        "title": "InvitationAcceptRequest",
+        "type": "object"
+      },
+      "InvitationCreate": {
+        "description": "What an owner submits to invite one person.",
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole",
+            "default": "editor"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "InvitationCreate",
+        "type": "object"
+      },
+      "InvitationCreatedResponse": {
+        "description": "The mint response \u2014 the ONLY place the redeem link ever appears.\n\n``accept_path`` is a path, not an absolute URL: the backend does not reliably\nknow its own public origin (it sits behind a proxy, and the SPA may be served\nfrom a different host), so the client joins it to its own origin rather than\nthe server guessing wrong and producing an unusable link.",
+        "properties": {
+          "accept_path": {
+            "title": "Accept Path",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "invitation": {
+            "$ref": "#/components/schemas/InvitationResponse"
+          }
+        },
+        "required": [
+          "invitation",
+          "accept_path",
+          "expires_at"
+        ],
+        "title": "InvitationCreatedResponse",
+        "type": "object"
+      },
+      "InvitationPreview": {
+        "description": "What the redeem screen may show before an account exists.\n\nReveals only what the person holding the link already has, so it stays\nunauthenticated. Notably it does NOT confirm whether the instance has other\nusers or what they are.",
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole"
+          }
+        },
+        "required": [
+          "email",
+          "role",
+          "expires_at"
+        ],
+        "title": "InvitationPreview",
+        "type": "object"
+      },
+      "InvitationResponse": {
+        "description": "A pending invitation as shown on the Members screen.\n\nCarries no token and no digest of one: the raw token is returned exactly\nonce, by the create call, and listing invitations must never hand out a way\nto redeem them.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "invited_by_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invited By User Id"
+          },
+          "is_expired": {
+            "description": "Whether this link has aged out.\n\nComputed rather than stored so it cannot go stale, and surfaced because\nexpired-but-unused rows are deliberately still listed \u2014 an owner needs\nto see that a link they sent no longer works.",
+            "readOnly": true,
+            "title": "Is Expired",
+            "type": "boolean"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "role",
+          "invited_by_user_id",
+          "expires_at",
+          "created_at",
+          "is_expired"
+        ],
+        "title": "InvitationResponse",
+        "type": "object"
+      },
       "LoginRequest": {
         "properties": {
           "email": {
@@ -11764,6 +11915,17 @@
       },
       "PlanBranchDetailResponse": {
         "properties": {
+          "ahead": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ahead"
+          },
           "approvals": {
             "items": {
               "$ref": "#/components/schemas/BranchApprovalResponse"
@@ -11782,6 +11944,17 @@
               }
             ],
             "title": "Base Revision Id"
+          },
+          "behind_base": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Behind Base"
           },
           "created_at": {
             "format": "date-time",
@@ -11932,6 +12105,17 @@
       },
       "PlanBranchResponse": {
         "properties": {
+          "ahead": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ahead"
+          },
           "base_revision_id": {
             "anyOf": [
               {
@@ -11943,6 +12127,17 @@
               }
             ],
             "title": "Base Revision Id"
+          },
+          "behind_base": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Behind Base"
           },
           "created_at": {
             "format": "date-time",
@@ -12556,6 +12751,10 @@
             "title": "Anomaly Detection Enabled",
             "type": "boolean"
           },
+          "anomaly_ingestion_settling_minutes": {
+            "title": "Anomaly Ingestion Settling Minutes",
+            "type": "integer"
+          },
           "baseline_window_buckets": {
             "title": "Baseline Window Buckets",
             "type": "integer"
@@ -12626,6 +12825,7 @@
           "sigma_threshold",
           "min_expected_count",
           "recent_signal_window_hours",
+          "anomaly_ingestion_settling_minutes",
           "created_at",
           "updated_at"
         ],
@@ -12644,6 +12844,19 @@
               }
             ],
             "title": "Anomaly Detection Enabled"
+          },
+          "anomaly_ingestion_settling_minutes": {
+            "anyOf": [
+              {
+                "maximum": 1440.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anomaly Ingestion Settling Minutes"
           },
           "baseline_window_buckets": {
             "anyOf": [
@@ -13179,6 +13392,11 @@
           "alert_destination_count": {
             "default": 0,
             "title": "Alert Destination Count",
+            "type": "integer"
+          },
+          "alert_rule_count": {
+            "default": 0,
+            "title": "Alert Rule Count",
             "type": "integer"
           },
           "archived_event_count": {
@@ -17792,6 +18010,102 @@
         ]
       }
     },
+    "/api/v1/auth/invitations/{token}": {
+      "get": {
+        "description": "Show who an invitation is for, before the invitee has an account.\n\nUnauthenticated by necessity \u2014 the whole point is that this person cannot\nsign in yet. It discloses nothing the token holder does not already have:\nthe address it was issued to, the role it grants, and when it lapses. It\ndoes not reveal whether the instance has other users, or who they are.\n\nShares the cheap /status bucket rather than the register bucket: previewing\nis a read, and it must not consume the quota the invitee needs to actually\nredeem. Unknown, expired and used tokens all return the same 400.",
+        "operationId": "preview_invitation_api_v1_auth_invitations__token__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Invitation",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/invitations/{token}/accept": {
+      "post": {
+        "description": "Redeem an invitation into an account, and sign the new user straight in.\n\nReachable regardless of ``registration_mode`` \u2014 that is the entire point:\nan owner-issued, single-use, expiring, address-bound invitation is a\ndifferent mechanism from the instance-wide door, so a closed instance can\nstill onboard exactly the people its owner named.\n\nOn the register rate-limit bucket, so guessing tokens costs the same as\nhammering signup.",
+        "operationId": "accept_invitation_api_v1_auth_invitations__token__accept_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationAcceptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthUserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Accept Invitation",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "operationId": "login_api_v1_auth_login_post",
@@ -20440,6 +20754,7 @@
     },
     "/api/v1/projects/{slug}/branches": {
       "get": {
+        "description": "List a project's branches.\n\n``include_diff_counts`` fills each feature branch's ``ahead`` /\n``behind_base`` from a single shared main snapshot, so a branches list does\nnot need one ``/branches/{id}/diff`` call per row. It is opt-in because it\nmakes the response cost N+1 plan snapshots; leave it off when you only need\nthe branch rows.",
         "operationId": "list_branches_api_v1_projects__slug__branches_get",
         "parameters": [
           {
@@ -20449,6 +20764,16 @@
             "schema": {
               "title": "Slug",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_diff_counts",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Diff Counts",
+              "type": "boolean"
             }
           }
         ],
@@ -29465,6 +29790,109 @@
           }
         },
         "summary": "List Users",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/users/invitations": {
+      "get": {
+        "description": "Outstanding invitations. Owner-only: this is the roster of pending access.",
+        "operationId": "list_invitations_api_v1_users_invitations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/InvitationResponse"
+                  },
+                  "title": "Response List Invitations Api V1 Users Invitations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Invitations",
+        "tags": [
+          "users"
+        ]
+      },
+      "post": {
+        "description": "Invite one person, at a role the owner picks.\n\n``OwnerUserDep`` is owner-only AND rejects API keys of any scope, so minting\nan account always requires an interactive owner session \u2014 an automation\ntoken can never conjure a new identity.\n\nThe redeem link is returned in the body, not merely emailed: SMTP is\noptional and unconfigured on many instances, so a body-only path is the one\nthat always works. It appears here and nowhere else.",
+        "operationId": "create_invitation_api_v1_users_invitations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationCreatedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Invitation",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/users/invitations/{invitation_id}": {
+      "delete": {
+        "description": "Revoke an invitation; its link stops working immediately.",
+        "operationId": "revoke_invitation_api_v1_users_invitations__invitation_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invitation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Invitation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Invitation",
         "tags": [
           "users"
         ]

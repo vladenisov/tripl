@@ -47,6 +47,12 @@ class PlanBranchResponse(BaseModel):
     merged_by: uuid.UUID | None
     created_at: datetime
     updated_at: datetime
+    # Diff counts for the branches list' ahead/behind badge. Only populated by
+    # ``GET /branches?include_diff_counts=true``, which computes them for every
+    # feature branch off a single main snapshot; ``None`` everywhere else, so a
+    # caller can tell "not asked for" from "nothing to show" (tripl-jfm3.79).
+    ahead: int | None = None
+    behind_base: bool | None = None
 
     model_config = {"from_attributes": True}
 

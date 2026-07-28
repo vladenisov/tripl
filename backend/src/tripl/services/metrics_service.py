@@ -1513,35 +1513,49 @@ async def get_events_window_metrics(
         return []
 
     project = await _resolve_project(session, slug)
-    valid_event_ids = list(
-        (
-            await session.execute(
-                select(Event.id).where(
-                    Event.project_id == project.id,
-                    Event.id.in_(event_ids),
-                )
-            )
-        ).scalars()
-    )
-    if not valid_event_ids:
-        return []
 
-    latest_rows = (
+    # Which scan config last reported each requested event, resolved as a
+    # correlated "newest bucket wins" lookup per event.
+    #
+    # This used to SELECT (event_id, scan_config_id, bucket) for every metric row
+    # the project had ever recorded for these events and keep the first row per
+    # event in Python. On a real project that is hundreds of thousands of rows
+    # decoded and thrown away for a 100-id bucket — measured at 5.4 s of the
+    # endpoint's 6.1 s (tripl-jfm3.79). The correlated form probes
+    # ``ix_event_metric_event_bucket`` once per event (ORDER BY bucket DESC
+    # LIMIT 1) and returns exactly one row per event; it is plain SQL, so it
+    # behaves the same on SQLite as on Postgres.
+    latest_scan_for_event = (
+        select(EventMetric.scan_config_id)
+        .where(
+            EventMetric.event_id == Event.id,
+            EventMetric.scan_config_id.in_(
+                select(ScanConfig.id).where(ScanConfig.project_id == project.id)
+            ),
+        )
+        .order_by(EventMetric.bucket.desc())
+        .limit(1)
+        .correlate(Event)
+        .scalar_subquery()
+    )
+    event_rows = (
         await session.execute(
-            select(EventMetric.event_id, EventMetric.scan_config_id, EventMetric.bucket)
-            .join(ScanConfig, ScanConfig.id == EventMetric.scan_config_id)
-            .where(
-                ScanConfig.project_id == project.id,
-                EventMetric.event_id.in_(valid_event_ids),
+            select(Event.id, latest_scan_for_event).where(
+                Event.project_id == project.id,
+                Event.id.in_(event_ids),
             )
-            .order_by(EventMetric.event_id, EventMetric.bucket.desc())
         )
     ).all()
 
-    latest_scan_by_event: dict[uuid.UUID, uuid.UUID] = {}
-    for event_id, scan_config_id, _bucket in latest_rows:
-        if event_id is not None and event_id not in latest_scan_by_event:
-            latest_scan_by_event[event_id] = scan_config_id
+    valid_event_ids = [event_id for event_id, _scan_config_id in event_rows]
+    if not valid_event_ids:
+        return []
+
+    latest_scan_by_event: dict[uuid.UUID, uuid.UUID] = {
+        event_id: scan_config_id
+        for event_id, scan_config_id in event_rows
+        if scan_config_id is not None
+    }
 
     interval_by_scan: dict[uuid.UUID, str | None] = {}
     if latest_scan_by_event:

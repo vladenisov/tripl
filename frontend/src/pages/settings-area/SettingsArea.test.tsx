@@ -46,6 +46,7 @@ function project(slug: string, name: string): Project {
       variable_count: 0,
       scan_count: 0,
       alert_destination_count: 0,
+      alert_rule_count: 0,
       monitoring_signal_count: 0,
       firing_monitor_count: 0,
       failing_scan_config_count: 0,

@@ -145,10 +145,27 @@ async def resolve_branch_id(
 
 
 async def _resolve_project(session: AsyncSession, slug: str) -> Project:
+    """Slug -> Project entity. Kept for ``plan_branch_conflicts`` and
+    ``plan_branch_merge_service``, which import it; every caller in THIS module
+    uses :func:`_resolve_project_id` instead."""
     project = await session.scalar(select(Project).where(Project.slug == slug))
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
+
+
+async def _resolve_project_id(session: AsyncSession, slug: str) -> uuid.UUID:
+    """Resolve a slug to a project id without materialising the Project entity.
+
+    Every branch endpoint only ever needed ``project.id``, but selecting the
+    entity used to drag the project's whole plan in with it (tripl-jfm3.54), so
+    ``GET /branches`` cost 559 ms on the largest project against 84 ms on the
+    smallest. Selecting the single indexed column keeps it flat.
+    """
+    project_id = await session.scalar(select(Project.id).where(Project.slug == slug))
+    if project_id is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project_id
 
 
 async def _load_for_branch(
@@ -174,15 +191,63 @@ def _to_response(branch: PlanBranch) -> PlanBranchResponse:
     return PlanBranchResponse.model_validate(branch)
 
 
-async def list_branches(session: AsyncSession, slug: str) -> PlanBranchList:
-    project = await _resolve_project(session, slug)
-    await ensure_main_branch_id(session, project.id)
+async def _diff_counts_for_branches(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    main_branch_id: uuid.UUID,
+    branches: list[PlanBranch],
+) -> dict[uuid.UUID, tuple[int, bool]]:
+    """ahead/behind for every feature branch, off ONE main snapshot.
+
+    The Branches tab wants an ahead/behind badge per row. Asking
+    ``/branches/{id}/diff`` per row is what makes that page expensive: a diff is
+    two plan snapshots, a snapshot is essentially the whole cost of the call
+    (measured 507 ms main + 157 ms branch of a 484 ms diff on a 1300-variable
+    project), and every row rebuilt main's snapshot again. Answering the whole
+    list here builds main once and each branch once — N+1 snapshots instead of
+    2N — and collapses N HTTP calls into the one the page already makes.
+    """
+    feature_branches = [b for b in branches if b.kind != BranchKind.main.value]
+    if not feature_branches:
+        return {}
+
+    main_snapshot = await build_plan_snapshot(session, project_id, branch_id=main_branch_id)
+    counts: dict[uuid.UUID, tuple[int, bool]] = {}
+    for branch in feature_branches:
+        branch_snapshot = await build_plan_snapshot(session, project_id, branch_id=branch.id)
+        base_payload: dict[str, Any] | None = None
+        if branch.base_revision_id is not None:
+            base_revision = await session.get(PlanRevision, branch.base_revision_id)
+            if base_revision is not None:
+                base_payload = base_revision.payload or {}
+        if base_payload is None:
+            # Legacy branch with no base snapshot: same fallback as diff_branch —
+            # it cannot tell branch-authored changes from later main changes.
+            counts[branch.id] = (
+                len(compute_plan_diff_entries(main_snapshot, branch_snapshot)),
+                False,
+            )
+            continue
+        ahead = len(compute_plan_diff_entries(base_payload, branch_snapshot))
+        behind = len(compute_plan_diff_entries(base_payload, main_snapshot)) > 0
+        counts[branch.id] = (ahead, behind)
+    return counts
+
+
+async def list_branches(
+    session: AsyncSession,
+    slug: str,
+    *,
+    include_diff_counts: bool = False,
+) -> PlanBranchList:
+    project_id = await _resolve_project_id(session, slug)
+    main_branch_id = await ensure_main_branch_id(session, project_id)
     await session.commit()
     rows = (
         (
             await session.execute(
                 select(PlanBranch)
-                .where(PlanBranch.project_id == project.id)
+                .where(PlanBranch.project_id == project_id)
                 # main first, then most-recent working branches.
                 .order_by(PlanBranch.kind.desc(), PlanBranch.created_at.desc())
             )
@@ -192,10 +257,19 @@ async def list_branches(session: AsyncSession, slug: str) -> PlanBranchList:
     )
     total = (
         await session.execute(
-            select(func.count(PlanBranch.id)).where(PlanBranch.project_id == project.id)
+            select(func.count(PlanBranch.id)).where(PlanBranch.project_id == project_id)
         )
     ).scalar_one()
-    return PlanBranchList(items=[_to_response(b) for b in rows], total=total)
+    items = [_to_response(b) for b in rows]
+    if include_diff_counts:
+        counts = await _diff_counts_for_branches(session, project_id, main_branch_id, list(rows))
+        items = [
+            item.model_copy(update={"ahead": counts[item.id][0], "behind_base": counts[item.id][1]})
+            if item.id in counts
+            else item
+            for item in items
+        ]
+    return PlanBranchList(items=items, total=total)
 
 
 async def _get_branch(
@@ -249,8 +323,8 @@ async def _to_detail(session: AsyncSession, branch: PlanBranch) -> PlanBranchDet
 async def get_branch(
     session: AsyncSession, slug: str, branch_id: uuid.UUID
 ) -> PlanBranchDetailResponse:
-    project = await _resolve_project(session, slug)
-    branch = await _get_branch(session, project.id, branch_id)
+    project_id = await _resolve_project_id(session, slug)
+    branch = await _get_branch(session, project_id, branch_id)
     return await _to_detail(session, branch)
 
 
@@ -590,12 +664,12 @@ async def create_branch(
     *,
     user_id: uuid.UUID | None = None,
 ) -> PlanBranchResponse:
-    project = await _resolve_project(session, slug)
-    main_branch_id = await ensure_main_branch_id(session, project.id)
+    project_id = await _resolve_project_id(session, slug)
+    main_branch_id = await ensure_main_branch_id(session, project_id)
 
     dup = await session.scalar(
         select(PlanBranch.id).where(
-            PlanBranch.project_id == project.id,
+            PlanBranch.project_id == project_id,
             PlanBranch.name == data.name,
         )
     )
@@ -603,9 +677,9 @@ async def create_branch(
         raise HTTPException(status_code=409, detail="Branch with this name already exists")
 
     # Capture the main snapshot as the merge base.
-    base_payload = await build_plan_snapshot(session, project.id, branch_id=main_branch_id)
+    base_payload = await build_plan_snapshot(session, project_id, branch_id=main_branch_id)
     base_revision = PlanRevision(
-        project_id=project.id,
+        project_id=project_id,
         created_by=user_id,
         summary=f"Base snapshot for branch '{data.name}'",
         payload=base_payload,
@@ -614,7 +688,7 @@ async def create_branch(
     await session.flush()
 
     branch = PlanBranch(
-        project_id=project.id,
+        project_id=project_id,
         name=data.name,
         kind=BranchKind.working.value,
         status=BranchStatus.draft.value,
@@ -627,7 +701,7 @@ async def create_branch(
 
     await deep_copy_plan_to_branch(
         session,
-        project_id=project.id,
+        project_id=project_id,
         source_branch_id=main_branch_id,
         target_branch_id=branch.id,
     )
@@ -637,8 +711,8 @@ async def create_branch(
 
 
 async def delete_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) -> None:
-    project = await _resolve_project(session, slug)
-    branch = await _get_branch(session, project.id, branch_id)
+    project_id = await _resolve_project_id(session, slug)
+    branch = await _get_branch(session, project_id, branch_id)
     if branch.kind == BranchKind.main.value:
         raise HTTPException(status_code=400, detail="The main branch cannot be deleted")
     await session.delete(branch)
@@ -657,8 +731,8 @@ async def transition_branch(
     action: BranchTransitionAction,
     user_id: uuid.UUID,
 ) -> PlanBranchDetailResponse:
-    project = await _resolve_project(session, slug)
-    branch = await _get_branch(session, project.id, branch_id)
+    project_id = await _resolve_project_id(session, slug)
+    branch = await _get_branch(session, project_id, branch_id)
     _reject_main(branch)
     if branch.status == BranchStatus.merged.value:
         raise HTTPException(status_code=400, detail="Merged branches are immutable")
@@ -671,7 +745,7 @@ async def transition_branch(
         )
 
     if action == "approve":
-        policy = await read_branch_merge_policy(session, project.id)
+        policy = await read_branch_merge_policy(session, project_id)
         if policy.block_self_approval and branch.created_by == user_id:
             raise HTTPException(
                 status_code=403,
@@ -698,7 +772,7 @@ async def transition_branch(
         # Pin the approval to the content being approved: the merge gates only
         # count approvals whose hash still matches the branch (tripl-d8v6).
         current_hash = plan_snapshot_hash(
-            await build_plan_snapshot(session, project.id, branch_id=branch.id)
+            await build_plan_snapshot(session, project_id, branch_id=branch.id)
         )
         # Upsert: re-approving by the same user restamps the content hash.
         existing = await session.scalar(
@@ -723,7 +797,7 @@ async def transition_branch(
             assign_owner_reviewers_for_branch,
         )
 
-        await assign_owner_reviewers_for_branch(session, project_id=project.id, branch=branch)
+        await assign_owner_reviewers_for_branch(session, project_id=project_id, branch=branch)
 
     await session.commit()
     await session.refresh(branch)
@@ -743,8 +817,8 @@ async def add_reviewer(
     branch_id: uuid.UUID,
     data: BranchReviewerCreate,
 ) -> BranchReviewerResponse:
-    project = await _resolve_project(session, slug)
-    branch = await _get_branch(session, project.id, branch_id)
+    project_id = await _resolve_project_id(session, slug)
+    branch = await _get_branch(session, project_id, branch_id)
     _reject_main(branch)
     await _resolve_user(session, data.user_id)
     existing = await session.scalar(
@@ -765,8 +839,8 @@ async def add_reviewer(
 async def remove_reviewer(
     session: AsyncSession, slug: str, branch_id: uuid.UUID, user_id: uuid.UUID
 ) -> None:
-    project = await _resolve_project(session, slug)
-    branch = await _get_branch(session, project.id, branch_id)
+    project_id = await _resolve_project_id(session, slug)
+    branch = await _get_branch(session, project_id, branch_id)
     _reject_main(branch)
     reviewer = await session.scalar(
         select(PlanBranchReviewer).where(
@@ -783,8 +857,8 @@ async def remove_reviewer(
 async def list_comments(
     session: AsyncSession, slug: str, branch_id: uuid.UUID
 ) -> list[BranchCommentResponse]:
-    project = await _resolve_project(session, slug)
-    branch = await _get_branch(session, project.id, branch_id)
+    project_id = await _resolve_project_id(session, slug)
+    branch = await _get_branch(session, project_id, branch_id)
     rows = (
         (
             await session.execute(
@@ -806,8 +880,8 @@ async def create_comment(
     data: BranchCommentCreate,
     user_id: uuid.UUID,
 ) -> BranchCommentResponse:
-    project = await _resolve_project(session, slug)
-    branch = await _get_branch(session, project.id, branch_id)
+    project_id = await _resolve_project_id(session, slug)
+    branch = await _get_branch(session, project_id, branch_id)
     if data.parent_id is not None:
         parent = await session.get(PlanBranchComment, data.parent_id)
         if parent is None or parent.branch_id != branch.id:
@@ -827,8 +901,8 @@ async def create_comment(
 async def delete_comment(
     session: AsyncSession, slug: str, branch_id: uuid.UUID, comment_id: uuid.UUID
 ) -> None:
-    project = await _resolve_project(session, slug)
-    branch = await _get_branch(session, project.id, branch_id)
+    project_id = await _resolve_project_id(session, slug)
+    branch = await _get_branch(session, project_id, branch_id)
     comment = await session.get(PlanBranchComment, comment_id)
     if comment is None or comment.branch_id != branch.id:
         raise HTTPException(status_code=404, detail="Comment not found")
@@ -844,13 +918,13 @@ def _summary_counts(entries: list[Any]) -> dict[str, int]:
 
 
 async def diff_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) -> PlanBranchDiff:
-    project = await _resolve_project(session, slug)
-    branch = await _get_branch(session, project.id, branch_id)
+    project_id = await _resolve_project_id(session, slug)
+    branch = await _get_branch(session, project_id, branch_id)
     _reject_main(branch)
-    main_branch_id = await ensure_main_branch_id(session, project.id)
+    main_branch_id = await ensure_main_branch_id(session, project_id)
 
-    main_snapshot = await build_plan_snapshot(session, project.id, branch_id=main_branch_id)
-    branch_snapshot = await build_plan_snapshot(session, project.id, branch_id=branch.id)
+    main_snapshot = await build_plan_snapshot(session, project_id, branch_id=main_branch_id)
+    branch_snapshot = await build_plan_snapshot(session, project_id, branch_id=branch.id)
     entries: list[Any] = []
     behind_base = False
     if branch.base_revision_id is not None:

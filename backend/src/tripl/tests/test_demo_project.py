@@ -17,6 +17,7 @@ from tripl.models.data_source import DataSource, TestStatus
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.domain_enums import MetricScopeType, ProjectGenerationStatus
 from tripl.models.event import Event
+from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_metric import EventMetric
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_definition import MetricDefinition
@@ -867,6 +868,35 @@ async def test_demo_variables_document_their_allowed_values() -> None:
     # Unbounded identifiers stay undocumented — a list there would be a lie.
     assert by_name["user_id"].allowed_values == []
     assert by_name["session_id"].allowed_values == []
+
+
+@pytest.mark.asyncio
+async def test_demo_event_field_values_are_authored() -> None:
+    """The recipe's field values are hand-authored, so a scan must not rewrite them.
+
+    Seeded unauthored, the demo's own guided first scan replaced the documented
+    ``${product_id}`` / ``${platform}`` templates with whatever literal the
+    synthetic warehouse emitted, and the seeded variable value contexts — which
+    describe exactly those templates — were dropped with them (bd tripl-jfm3.56).
+    """
+    async with TestSessionLocal() as session:
+        project_id = await _seed_fixture(session, "demo-authoredvalues")
+        field_values = (
+            (
+                await session.execute(
+                    select(EventFieldValue)
+                    .join(Event, Event.id == EventFieldValue.event_id)
+                    .where(Event.project_id == project_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert field_values
+    assert all(field_value.is_authored for field_value in field_values)
+    # The variable templates the coached chapter points at are among them.
+    assert {"${product_id}", "${platform}"} <= {field_value.value for field_value in field_values}
 
 
 @pytest.mark.asyncio

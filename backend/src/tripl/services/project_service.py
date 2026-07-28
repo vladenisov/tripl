@@ -1,5 +1,6 @@
 import uuid
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
@@ -16,7 +17,7 @@ from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.data_source import DataSource
-from tripl.models.domain_enums import ProjectGenerationStatus
+from tripl.models.domain_enums import ProjectGenerationStatus, UserRole
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
@@ -25,6 +26,7 @@ from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
+from tripl.models.user import User
 from tripl.models.variable import Variable
 from tripl.schemas.project import (
     ProjectCreate,
@@ -44,6 +46,9 @@ from tripl.services.monitoring_utils import (
     classify_signal_state,
     scan_interval_to_timedelta,
     summarize_monitor_states,
+)
+from tripl.services.project_lookup import (
+    PROJECT_NOT_FOUND,
 )
 from tripl.services.project_lookup import (
     get_project_by_slug as _lookup_project_by_slug,
@@ -139,13 +144,27 @@ async def _get_project_summaries(
     for project_id, scan_count in scan_rows.all():
         summaries[project_id].scan_count = int(scan_count or 0)
 
+    # Destinations AND their enabled rules in one pass. A destination with no
+    # enabled rule routes nothing, so callers that ask "is alerting wired up?"
+    # (the onboarding checklist) need both numbers — tripl-jfm3.81. The LEFT
+    # JOIN keeps rule-less destinations in the destination count, and
+    # COUNT(DISTINCT ...) stops the join fan-out inflating it; the CASE yields
+    # NULL for disabled rows, which COUNT skips.
     alert_rows = await session.execute(
-        select(AlertDestination.project_id, func.count(AlertDestination.id))
+        select(
+            AlertDestination.project_id,
+            func.count(func.distinct(AlertDestination.id)),
+            func.count(func.distinct(case((AlertRule.enabled.is_(True), AlertRule.id)))),
+        )
+        .select_from(AlertDestination)
+        .outerjoin(AlertRule, AlertRule.destination_id == AlertDestination.id)
         .where(AlertDestination.project_id.in_(project_ids))
         .group_by(AlertDestination.project_id)
     )
-    for project_id, alert_destination_count in alert_rows.all():
-        summaries[project_id].alert_destination_count = int(alert_destination_count or 0)
+    for project_id, alert_destination_count, alert_rule_count in alert_rows.all():
+        summary = summaries[project_id]
+        summary.alert_destination_count = int(alert_destination_count or 0)
+        summary.alert_rule_count = int(alert_rule_count or 0)
 
     await _populate_latest_scan_jobs(session, summaries)
     await _populate_failing_scan_configs(session, summaries)
@@ -595,6 +614,68 @@ async def list_projects(session: AsyncSession) -> list[ProjectResponse]:
 
 async def get_project_by_slug(session: AsyncSession, slug: str) -> Project:
     return await _lookup_project_by_slug(session, slug)
+
+
+@dataclass(frozen=True)
+class ProjectMutationScope:
+    """Who may MUTATE one project — the closest thing to per-project membership.
+
+    Roles are instance-wide (``owner`` / ``editor`` / ``viewer``), so on an
+    instance with more than one editor the editor role alone said "may edit
+    every project on the box", including another user's demo (tripl-jfm3.19).
+    There is no membership table, so membership is derived from provenance:
+
+    * an instance owner may mutate anything;
+    * the user who created a project may mutate it;
+    * a project that is NOT a demo and was created by an instance owner — or
+      predates creator tracking (``created_by_user_id IS NULL``) — is a *shared
+      workspace project*. That is the collaborative tracking plan the editor
+      role exists for, so any editor may mutate its contents;
+    * anything else — a demo, or a real project another **editor** created — is
+      that user's own space and is closed to other editors.
+
+    Demos always record a creator (``create_demo_project`` / ``reset_demo_project``
+    both pass one), so a demo never falls through to the shared-project rule.
+    """
+
+    is_demo: bool
+    created_by_user_id: uuid.UUID | None
+    creator_is_owner: bool
+
+    def allows(self, user: User) -> bool:
+        if user.role == UserRole.owner.value:
+            return True
+        if self.created_by_user_id is not None and self.created_by_user_id == user.id:
+            return True
+        if self.is_demo:
+            return False
+        return self.created_by_user_id is None or self.creator_is_owner
+
+
+async def get_project_mutation_scope(session: AsyncSession, slug: str) -> ProjectMutationScope:
+    """Resolve a slug to its mutation scope in one round trip.
+
+    Deliberately column-scoped rather than ``get_project_by_slug``: this runs on
+    every project mutation and ``Project`` eager-loads the whole plan
+    (``lazy="selectin"`` on event types / variables / relations / meta fields),
+    which would make an authorization check the most expensive query in the
+    request (tripl-jfm3.54).
+    """
+    row = (
+        await session.execute(
+            select(Project.is_demo, Project.created_by_user_id, User.role)
+            .outerjoin(User, User.id == Project.created_by_user_id)
+            .where(Project.slug == slug)
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail=PROJECT_NOT_FOUND)
+    is_demo, created_by_user_id, creator_role = row
+    return ProjectMutationScope(
+        is_demo=bool(is_demo),
+        created_by_user_id=created_by_user_id,
+        creator_is_owner=creator_role == UserRole.owner.value,
+    )
 
 
 # A demo's ``demo_last_accessed_at`` is only rewritten when it is this stale, so a

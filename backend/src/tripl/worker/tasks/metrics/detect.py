@@ -312,6 +312,7 @@ def _load_platform_ratio_points(
     history_from: datetime,
     time_to: datetime,
     covered_buckets: set[datetime] | None = None,
+    total_points: list[SeriesPoint] | None = None,
 ) -> list[SeriesPoint]:
     breakdown_points = _load_breakdown_scope_points(
         session,
@@ -325,14 +326,18 @@ def _load_platform_ratio_points(
         time_to=time_to,
     )
     breakdown_by_bucket = {point.bucket: point.count for point in breakdown_points}
-    total_points = _load_scope_points(
-        session,
-        scan_config_id=scan_config_id,
-        scope_type=scope_type,
-        scope_ref=scope_ref,
-        history_from=history_from,
-        time_to=time_to,
-    )
+    # The scope TOTAL is the same series for every breakdown value of that scope,
+    # so the caller may hand in a cached copy instead of re-reading ~500 rows once
+    # per platform value (tripl-jfm3.1).
+    if total_points is None:
+        total_points = _load_scope_points(
+            session,
+            scan_config_id=scan_config_id,
+            scope_type=scope_type,
+            scope_ref=scope_ref,
+            history_from=history_from,
+            time_to=time_to,
+        )
     return [
         SeriesPoint(
             bucket=point.bucket,
@@ -479,6 +484,62 @@ def _scope_max_counts(
         .group_by(metric_column)
     ).all()
     return {scope_id: float(max_count) for scope_id, max_count in rows}
+
+
+def _breakdown_scope_max_counts(
+    session: Session,
+    *,
+    scan_config_id: uuid.UUID,
+    scope_type: str,
+    history_from: datetime,
+    time_to: datetime,
+) -> dict[tuple[uuid.UUID, str, str, bool], float]:
+    """MAX(count) per breakdown series over the detection history window, in one query.
+
+    The breakdown twin of ``_scope_max_counts`` (tripl-h353). ``detect_anomalies``
+    already early-exits on a provably-silent count series, but only AFTER the
+    caller has loaded that series' ~500-bucket history — one query per silent
+    (scope, column, value) triple, on every run, on a project that may have
+    hundreds of them. Event and event-type breakdown series carry exactly one
+    stored row per bucket (``uq_event_metric_breakdown_config_event_bucket_value``
+    / ``..._type_bucket_value``), so this stored-row MAX is precisely the max the
+    detector sees once the grid is zero-filled — the skip is exact, not a
+    heuristic. ``project_total`` is excluded on purpose: its series SUMS across
+    event types, so no per-row MAX bounds it.
+    """
+    id_column = (
+        EventMetricBreakdown.event_type_id
+        if scope_type == SCOPE_EVENT_TYPE
+        else EventMetricBreakdown.event_id
+    )
+    filters = [
+        EventMetricBreakdown.scan_config_id == scan_config_id,
+        id_column.is_not(None),
+        EventMetricBreakdown.bucket >= history_from,
+        EventMetricBreakdown.bucket < time_to,
+    ]
+    if scope_type == SCOPE_EVENT_TYPE:
+        filters.append(EventMetricBreakdown.event_id.is_(None))
+    rows = session.execute(
+        select(
+            id_column,
+            EventMetricBreakdown.breakdown_column,
+            EventMetricBreakdown.breakdown_value,
+            EventMetricBreakdown.is_other,
+            sa_func.max(EventMetricBreakdown.count),
+        )
+        .where(*filters)
+        .group_by(
+            id_column,
+            EventMetricBreakdown.breakdown_column,
+            EventMetricBreakdown.breakdown_value,
+            EventMetricBreakdown.is_other,
+        )
+    ).all()
+    return {
+        (scope_id, column, value, bool(is_other)): float(max_count)
+        for scope_id, column, value, is_other, max_count in rows
+    }
 
 
 def _collect_scope_ids(
@@ -1124,6 +1185,8 @@ def _recalculate_platform_parity_anomalies(
             scope_type=scope_type,
             kind=MetricBreakdownAnomalyKind.parity,
         )
+        # One scope's total series is shared by all of its platform values.
+        totals_by_scope: dict[str, list[SeriesPoint]] = {}
         for event_id, event_type_id, column, value, is_other in keys:
             if column != platform_column:
                 continue
@@ -1144,6 +1207,17 @@ def _recalculate_platform_parity_anomalies(
                 stored_event_id = event_id
                 stored_event_type_id = None
 
+            total_points = totals_by_scope.get(scope_ref)
+            if total_points is None:
+                total_points = _load_scope_points(
+                    session,
+                    scan_config_id=config.id,
+                    scope_type=scope_type,
+                    scope_ref=scope_ref,
+                    history_from=history_from,
+                    time_to=evaluation_end,
+                )
+                totals_by_scope[scope_ref] = total_points
             points = _load_platform_ratio_points(
                 session,
                 scan_config_id=config.id,
@@ -1155,6 +1229,7 @@ def _recalculate_platform_parity_anomalies(
                 history_from=history_from,
                 time_to=evaluation_end,
                 covered_buckets=covered_buckets,
+                total_points=total_points,
             )
             detected += _replace_scope_breakdown_anomalies(
                 session,
@@ -1286,6 +1361,13 @@ def _recalculate_metric_breakdown_anomalies(
         )
 
     if project_settings.detect_event_types:
+        type_breakdown_max = _breakdown_scope_max_counts(
+            session,
+            scan_config_id=config.id,
+            scope_type=SCOPE_EVENT_TYPE,
+            history_from=history_from,
+            time_to=evaluation_end,
+        )
         for _event_id, event_type_id, column, value, is_other in _collect_breakdown_scope_keys(
             session,
             scan_config_id=config.id,
@@ -1298,6 +1380,29 @@ def _recalculate_metric_breakdown_anomalies(
             if event_type_id is None:
                 continue
             scope_ref = str(event_type_id)
+            # Provably silent (tripl-h353, extended to breakdowns in tripl-jfm3.73):
+            # the detector would early-exit on this series anyway, so skip loading
+            # its history — but still run the replace with no anomalies so stale
+            # window rows age out.
+            if is_provably_silent(
+                type_breakdown_max.get((event_type_id, column, value, is_other), 0.0),
+                settings.min_expected_count,
+            ):
+                anomalies_detected += _replace_scope_breakdown_anomalies(
+                    session,
+                    scan_config_id=config.id,
+                    scope_type=SCOPE_EVENT_TYPE,
+                    scope_ref=scope_ref,
+                    breakdown_column=column,
+                    breakdown_value=value,
+                    is_other=is_other,
+                    evaluation_start=evaluation_start,
+                    evaluation_end=evaluation_end,
+                    event_id=None,
+                    event_type_id=event_type_id,
+                    anomalies=[],
+                )
+                continue
             points = _load_breakdown_scope_points(
                 session,
                 scan_config_id=config.id,
@@ -1342,6 +1447,13 @@ def _recalculate_metric_breakdown_anomalies(
         )
 
     if project_settings.detect_events:
+        event_breakdown_max = _breakdown_scope_max_counts(
+            session,
+            scan_config_id=config.id,
+            scope_type=SCOPE_EVENT,
+            history_from=history_from,
+            time_to=evaluation_end,
+        )
         for event_id, _event_type_id, column, value, is_other in _collect_breakdown_scope_keys(
             session,
             scan_config_id=config.id,
@@ -1354,6 +1466,26 @@ def _recalculate_metric_breakdown_anomalies(
             if event_id is None:
                 continue
             scope_ref = str(event_id)
+            # Provably silent (see the event-type loop above).
+            if is_provably_silent(
+                event_breakdown_max.get((event_id, column, value, is_other), 0.0),
+                settings.min_expected_count,
+            ):
+                anomalies_detected += _replace_scope_breakdown_anomalies(
+                    session,
+                    scan_config_id=config.id,
+                    scope_type=SCOPE_EVENT,
+                    scope_ref=scope_ref,
+                    breakdown_column=column,
+                    breakdown_value=value,
+                    is_other=is_other,
+                    evaluation_start=evaluation_start,
+                    evaluation_end=evaluation_end,
+                    event_id=event_id,
+                    event_type_id=None,
+                    anomalies=[],
+                )
+                continue
             points = _load_breakdown_scope_points(
                 session,
                 scan_config_id=config.id,

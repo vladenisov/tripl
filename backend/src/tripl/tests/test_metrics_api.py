@@ -15,6 +15,7 @@ from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.tests.conftest import TestSessionLocal
+from tripl.tests.test_project_lookup_perf import captured_sql
 
 
 class EventMetricSeedRow(TypedDict):
@@ -699,6 +700,130 @@ async def test_get_events_window_metrics_returns_last_day_counts_per_event(
         _plain_point("2026-01-01T10:00:00", 10),
         _plain_point("2026-01-01T11:00:00", 15),
     ]
+
+
+async def _seed_event_metrics_at(
+    project_id: str,
+    event_id: str,
+    *,
+    name: str,
+    points: list[tuple[datetime, int]],
+) -> uuid.UUID:
+    """Seed one scan config plus explicit (bucket, count) rows for one event."""
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"Window DS {uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=uuid.UUID(project_id),
+            event_type_id=None,
+            name=name,
+            base_query="SELECT time, event_name FROM events",
+            event_type_column="event_name",
+            time_column="time",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+        await session.flush()
+        for bucket, count in points:
+            session.add(
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=uuid.UUID(event_id),
+                    event_type_id=None,
+                    bucket=bucket,
+                    count=count,
+                )
+            )
+        await session.commit()
+        return scan_config.id
+
+
+@pytest.mark.asyncio
+async def test_get_events_window_metrics_uses_the_scan_with_the_newest_bucket(
+    client: AsyncClient,
+) -> None:
+    """The series must come from whichever scan reported the event most recently.
+
+    Also pins the SHAPE of that lookup (tripl-jfm3.79): it used to select every
+    metric row the project had ever recorded for the requested events and keep
+    the first per event in Python, which cost 5.4 s of a 6.1 s response on a
+    real project. Every ``event_metrics`` read here must therefore be bounded —
+    either by ``LIMIT`` (the newest-scan probe) or by the requested bucket range
+    (the series pull).
+    """
+    setup = await _setup_metrics_project(client, "window-latest-scan")
+
+    event_resp = await client.post(
+        "/api/v1/projects/window-latest-scan/events",
+        json={
+            "event_type_id": setup["page_type_id"],
+            "name": "Alpha Viewed",
+            "status": "implemented",
+            "field_values": [{"field_definition_id": setup["page_field_id"], "value": "home"}],
+        },
+    )
+    event_id = event_resp.json()["id"]
+
+    # The stale scan is seeded LAST so insertion order cannot be what decides.
+    newest_scan_id = await _seed_event_metrics_at(
+        setup["project_id"],
+        event_id,
+        name="Current Scan",
+        points=[
+            (datetime(2026, 1, 2, 10, tzinfo=UTC), 100),
+            (datetime(2026, 1, 2, 11, tzinfo=UTC), 200),
+        ],
+    )
+    await _seed_event_metrics_at(
+        setup["project_id"],
+        event_id,
+        name="Retired Scan",
+        points=[
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), 1),
+            (datetime(2026, 1, 1, 11, tzinfo=UTC), 2),
+        ],
+    )
+
+    with captured_sql() as statements:
+        resp = await client.post(
+            "/api/v1/projects/window-latest-scan/events/window-metrics",
+            json={
+                "event_ids": [event_id],
+                "time_from": "2026-01-01T00:00:00Z",
+                "time_to": "2026-01-03T00:00:00Z",
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["scan_config_id"] == str(newest_scan_id)
+    assert body[0]["total_count"] == 300
+    assert body[0]["data"] == [
+        _plain_point("2026-01-02T10:00:00", 100),
+        _plain_point("2026-01-02T11:00:00", 200),
+    ]
+
+    unbounded = [
+        statement
+        for statement in statements
+        if "FROM event_metrics" in statement
+        and "LIMIT" not in statement.upper()
+        and "event_metrics.bucket >=" not in statement
+    ]
+    assert unbounded == [], f"unbounded event_metrics scan: {unbounded}"
 
 
 @pytest.mark.asyncio

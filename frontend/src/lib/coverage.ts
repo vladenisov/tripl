@@ -12,6 +12,23 @@
  *    format as "100.0%" is clamped down to "99.9%" so the display never lies.
  */
 
+/**
+ * Look-back window for "dead" (implemented but silent) events, shared by every
+ * surface that asks the question.
+ *
+ * Coverage's "Instrumentation gaps" panel links straight into Reconciliation's
+ * "Dead events" panel with "Triage in Reconciliation". While the two pages held
+ * their own copies (30 here, 14 there) that hand-off silently changed the
+ * question: a shorter window is a WEAKER silence test, so Reconciliation listed
+ * more events than the count that sent the user there (tripl-jfm3.79). One
+ * constant keeps the hand-off honest.
+ *
+ * 30 is the value the backend already defaults to
+ * (`reconciliation_service.DEFAULT_DEAD_EVENT_DAYS`) and the widest option on
+ * the Events page's "Silent > 30d" filter, so all four surfaces now agree.
+ */
+export const DEAD_EVENT_DAYS = 30
+
 /** Coverage as a ratio in [0, 1]. Returns 0 when there are no active events. */
 export function planCoverageRatio(implemented: number, active: number): number {
   if (active <= 0) {

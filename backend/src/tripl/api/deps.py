@@ -10,7 +10,7 @@ from tripl.database import get_session
 from tripl.models.plan_branch import PlanBranch
 from tripl.models.project import Project
 from tripl.models.user import User
-from tripl.services import api_key_service
+from tripl.services import api_key_service, project_service
 from tripl.services.auth_service import get_user_by_session_token
 from tripl.services.project_service import get_project_id_by_slug
 
@@ -131,9 +131,44 @@ async def get_write_user(request: Request, user: CurrentUserDep) -> User:
     return user
 
 
-async def get_editor_user(request: Request, user: CurrentUserDep) -> User:
+async def require_project_mutation_access(
+    request: Request, session: AsyncSession, user: User
+) -> None:
+    """Project-scope the instance-wide editor role.
+
+    ``require_editor`` only answers "may this user edit *something*". Every route
+    whose path carries a project ``slug`` also has to answer "…may they edit
+    *this* project", otherwise an editor can rewrite the tracking plan of every
+    project on the instance and inject content into other users' demos
+    (tripl-jfm3.19).
+
+    Hooked into :func:`get_editor_user` rather than sprinkled over ~20 routers on
+    purpose: the mutation surface is exactly the set of slug-scoped routes that
+    already carry the editor gate (no ``GET`` uses it), so doing it here closes
+    the whole surface at once and keeps future routes closed by default. Routes
+    without a ``slug`` (``/projects``, ``/me/...``) are unaffected, and reads stay
+    open to any authenticated user.
+    """
+    slug = request.path_params.get("slug")
+    if not slug:
+        return
+    scope = await project_service.get_project_mutation_scope(session, slug)
+    if scope.allows(user):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            "Only the demo creator or an owner can modify this demo"
+            if scope.is_demo
+            else "Only the project creator or an owner can modify this project"
+        ),
+    )
+
+
+async def get_editor_user(request: Request, session: SessionDep, user: CurrentUserDep) -> User:
     require_write_scope(request)
     require_editor(user)
+    await require_project_mutation_access(request, session, user)
     return user
 
 
