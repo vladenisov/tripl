@@ -24,7 +24,11 @@ apply_startup_service_overrides()
 from tripl.api.v1.router import router as v1_router  # noqa: E402
 from tripl.database import engine  # noqa: E402
 from tripl.logging_config import configure_logging  # noqa: E402
-from tripl.middleware import RequestIDMiddleware, SecurityHeadersMiddleware  # noqa: E402
+from tripl.middleware import (  # noqa: E402
+    RequestIDMiddleware,
+    SecurityHeadersMiddleware,
+    StaticCacheMiddleware,
+)
 from tripl.middleware.request_id import current_request_id  # noqa: E402
 from tripl.observability.metrics import render_metrics  # noqa: E402
 
@@ -114,6 +118,11 @@ setup_api_tracing(app)
 #   stream where compression adds buffering risk to latency-sensitive chunks.
 if settings.security_headers_enabled:
     app.add_middleware(SecurityHeadersMiddleware)
+# Cache-Control for the SPA build. app.frontend() sets etag/last-modified but no
+# freshness, which lets a browser keep serving a stale index.html for hours after
+# a deploy and then 404 on chunk names the new build no longer has. No-op unless
+# serve_frontend is on.
+app.add_middleware(StaticCacheMiddleware)
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     BrotliMiddleware,

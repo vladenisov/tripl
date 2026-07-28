@@ -121,6 +121,16 @@ def _diff_event_type_schema(
     for name, fd in declared.items():
         if name in observed:
             continue
+        # A RESERVED column is not missing — it is simply not catalog-managed.
+        # ``observed`` has skip_columns filtered out above, so without this a
+        # declared field whose column is reserved reads as "the warehouse stopped
+        # sending it". Latent until tripl-jfm3.57 put event-group-rule columns in
+        # the reserved set: event_type/time columns are essentially never also
+        # declared as fields, but a grouping column very often is — production
+        # groups on ``action`` and declares ``action`` on the same event type,
+        # which fired a false "missing_field action" alert straight after deploy.
+        if name in skip_columns:
+            continue
         drift_items.append(
             {
                 "field_name": name,
