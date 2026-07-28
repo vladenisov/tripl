@@ -1,4 +1,4 @@
-import { lazy, Suspense, type ReactNode } from 'react'
+import { lazy, Suspense, type ComponentType, type ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { projectsApi } from './api/projects'
@@ -14,25 +14,66 @@ import {
   useDocumentTitle,
 } from './hooks/useDocumentTitle'
 
-const AuthPage = lazy(() => import('./pages/AuthPage'))
-const InvitePage = lazy(() => import('./pages/InvitePage'))
-const MainPage = lazy(() => import('./pages/ProjectsPage'))
-const EventsPage = lazy(() => import('./pages/EventsPage'))
-const EventEditPage = lazy(() => import('./pages/events/EventForm'))
-const OverviewPage = lazy(() => import('./pages/OverviewPage'))
-const MonitorsPage = lazy(() => import('./pages/MonitorsPage'))
-const MonitorDetailPage = lazy(() => import('./pages/MonitorDetailPage'))
-const MonitoringDetailPage = lazy(() => import('./pages/MonitoringDetailPage'))
-const ProjectSettingsPage = lazy(() => import('./pages/ProjectSettingsPage'))
-const ReconciliationPage = lazy(() => import('./pages/ReconciliationPage'))
-const AnomaliesPage = lazy(() => import('./pages/AnomaliesPage'))
-const MetricsPage = lazy(() => import('./pages/metrics/MetricsPage'))
-const MetricEditPage = lazy(() => import('./pages/metrics/MetricForm'))
-const FactTableEditPage = lazy(() => import('./pages/fact-tables/FactTableForm'))
-const CoveragePage = lazy(() => import('./pages/CoveragePage'))
-const ConceptsPage = lazy(() => import('./pages/ConceptsPage'))
-const SettingsArea = lazy(() => import('./pages/settings-area/SettingsArea'))
-const NotFoundPage = lazy(() => import('./pages/NotFoundPage'))
+// One reload is allowed to recover from a chunk that no longer exists; the flag
+// makes sure a genuinely broken build cannot put the tab in a reload loop.
+const CHUNK_RELOAD_KEY = 'tripl:chunk-reload'
+
+/**
+ * `React.lazy` that survives a deploy happening under an open tab.
+ *
+ * Every chunk filename carries a content hash, so a release replaces the whole
+ * set. A tab loaded before the deploy still holds the OLD module graph and asks
+ * for filenames the server no longer has — the request 404s and React surfaces
+ * "Failed to fetch dynamically imported module", which is what a user hits the
+ * first time they navigate to a code-split route after a release.
+ *
+ * Server-side `Cache-Control` (see middleware/static_cache.py) stops NEW page
+ * loads from booting a stale shell, but it cannot help a document that is
+ * already running. Reloading once re-fetches index.html and with it the current
+ * graph. A successful import re-arms the guard, so the next deploy is covered
+ * too.
+ */
+// Mirrors React.lazy's own constraint. Narrowing it (e.g. ComponentType<unknown>)
+// erases each page's props, so routes that pass `section`/`tab` stop
+// typechecking — the wrapper must stay as permissive as what it wraps.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function lazyRoute<T extends ComponentType<any>>(factory: () => Promise<{ default: T }>) {
+  return lazy(() =>
+    factory()
+      .then(module => {
+        sessionStorage.removeItem(CHUNK_RELOAD_KEY)
+        return module
+      })
+      .catch((error: unknown) => {
+        if (sessionStorage.getItem(CHUNK_RELOAD_KEY)) throw error
+        sessionStorage.setItem(CHUNK_RELOAD_KEY, '1')
+        window.location.reload()
+        // The reload replaces the document, so this promise intentionally never
+        // settles — resolving would flash an error UI on the way out.
+        return new Promise<never>(() => {})
+      }),
+  )
+}
+
+const AuthPage = lazyRoute(() => import('./pages/AuthPage'))
+const InvitePage = lazyRoute(() => import('./pages/InvitePage'))
+const MainPage = lazyRoute(() => import('./pages/ProjectsPage'))
+const EventsPage = lazyRoute(() => import('./pages/EventsPage'))
+const EventEditPage = lazyRoute(() => import('./pages/events/EventForm'))
+const OverviewPage = lazyRoute(() => import('./pages/OverviewPage'))
+const MonitorsPage = lazyRoute(() => import('./pages/MonitorsPage'))
+const MonitorDetailPage = lazyRoute(() => import('./pages/MonitorDetailPage'))
+const MonitoringDetailPage = lazyRoute(() => import('./pages/MonitoringDetailPage'))
+const ProjectSettingsPage = lazyRoute(() => import('./pages/ProjectSettingsPage'))
+const ReconciliationPage = lazyRoute(() => import('./pages/ReconciliationPage'))
+const AnomaliesPage = lazyRoute(() => import('./pages/AnomaliesPage'))
+const MetricsPage = lazyRoute(() => import('./pages/metrics/MetricsPage'))
+const MetricEditPage = lazyRoute(() => import('./pages/metrics/MetricForm'))
+const FactTableEditPage = lazyRoute(() => import('./pages/fact-tables/FactTableForm'))
+const CoveragePage = lazyRoute(() => import('./pages/CoveragePage'))
+const ConceptsPage = lazyRoute(() => import('./pages/ConceptsPage'))
+const SettingsArea = lazyRoute(() => import('./pages/settings-area/SettingsArea'))
+const NotFoundPage = lazyRoute(() => import('./pages/NotFoundPage'))
 
 function RouteFallback() {
   return (
