@@ -210,6 +210,124 @@ def test_check_metrics_due_skips_dispatch_when_active_job_exists(
     assert jobs[0].status == ScanJobStatus.pending.value
 
 
+def _prepare_demo_dispatch(
+    session: Session, *, recent_scheduled_job: bool, tick_job: bool
+) -> uuid.UUID:
+    """A demo scan config that is due, with an optional recent job history."""
+    config = _create_scan_config(session)
+    project = session.get(Project, config.project_id)
+    assert project is not None
+    project.is_demo = True
+    now = datetime.now(UTC)
+    if recent_scheduled_job:
+        session.add(
+            ScanJob(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                status=ScanJobStatus.completed.value,
+                created_at=now - timedelta(hours=1),
+                completed_at=now - timedelta(hours=1),
+                result_summary={"events_created": 0},
+            )
+        )
+    if tick_job:
+        # What advance_demos writes every hour.
+        session.add(
+            ScanJob(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                status=ScanJobStatus.completed.value,
+                created_at=now - timedelta(minutes=5),
+                completed_at=now - timedelta(minutes=5),
+                result_summary={"demo_runtime_tick": True, "buckets_appended": 1},
+            )
+        )
+    session.commit()
+    return config.id
+
+
+def test_demo_collection_is_deferred_by_the_cooldown(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A demo that collected an hour ago must not collect again (tripl-jfm3.73)."""
+    with sync_session_factory() as session:
+        _prepare_demo_dispatch(session, recent_scheduled_job=True, tick_job=False)
+
+    dispatched: list[tuple[str, str]] = []
+    monkeypatch.setattr(metrics_schedule, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(
+        metrics_schedule.collect_metrics,
+        "delay",
+        lambda scan_config_id, scan_job_id: dispatched.append((scan_config_id, scan_job_id)),
+    )
+
+    result = metrics_schedule.check_metrics_due.run()
+
+    assert result["dispatched"] == 0
+    assert dispatched == []
+
+
+def test_demo_cooldown_ignores_the_hourly_runtime_tick_jobs(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The demo tick writes a ScanJob every hour; it must not hold off collection.
+
+    Without this, the newest job would always be a tick job minutes old and the
+    scheduled collection — the only producer of breakdown anomalies and
+    distribution drift — would be deferred forever.
+    """
+    with sync_session_factory() as session:
+        _prepare_demo_dispatch(session, recent_scheduled_job=False, tick_job=True)
+
+    dispatched: list[tuple[str, str]] = []
+    monkeypatch.setattr(metrics_schedule, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(
+        metrics_schedule.collect_metrics,
+        "delay",
+        lambda scan_config_id, scan_job_id: dispatched.append((scan_config_id, scan_job_id)),
+    )
+
+    result = metrics_schedule.check_metrics_due.run()
+
+    assert result["dispatched"] == 1
+    assert len(dispatched) == 1
+
+
+def test_non_demo_projects_are_not_subject_to_the_cooldown(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The cooldown is demo-only — a real project keeps its configured cadence."""
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        now = datetime.now(UTC)
+        session.add(
+            ScanJob(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                status=ScanJobStatus.completed.value,
+                created_at=now - timedelta(minutes=10),
+                completed_at=now - timedelta(minutes=10),
+                result_summary={"events_created": 0},
+            )
+        )
+        session.commit()
+
+    dispatched: list[tuple[str, str]] = []
+    monkeypatch.setattr(metrics_schedule, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(
+        metrics_schedule.collect_metrics,
+        "delay",
+        lambda scan_config_id, scan_job_id: dispatched.append((scan_config_id, scan_job_id)),
+    )
+
+    result = metrics_schedule.check_metrics_due.run()
+
+    assert result["dispatched"] == 1
+
+
 def test_check_metrics_due_creates_pending_job_before_dispatch(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,

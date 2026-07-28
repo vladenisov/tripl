@@ -203,6 +203,16 @@ Two independent switches control the generated demo project. Both default to
 | `DEMO_ENABLED` | `true` | No | Master kill switch for demo **provisioning**. When `false`, `POST /projects/demo` **and** demo reset are refused with `403 Demo provisioning is disabled`. |
 | `DEMO_RUNTIME_ENABLED` | `true` | No | Gates the `advance_demos` beat task that keeps an existing demo fresh (new buckets, jobs, and signals). When `false` that task is a no-op and existing demos keep the data they already have. |
 
+:::note A demo's two refresh paths run at different rates
+`advance_demos` runs **hourly**: it appends the newest bucket, re-runs the real
+detector for volume anomalies, and records a scan job, so a demo always looks
+live. The full scheduled collection — which additionally produces breakdown
+anomalies and distribution drift — runs at most **every 6 hours** per demo
+instead of hourly, because it costs 67–141 s against the in-memory dataset and
+every demo on a deployment used to pay that every hour. Real projects are
+unaffected and keep their configured `interval`.
+:::
+
 :::note Reset is a provisioning path — delete is not
 A reset re-seeds a demo from scratch, so `DEMO_ENABLED=false` blocks **Create**
 and **Reset** alike. **Deleting** a demo stays available in every state of both
