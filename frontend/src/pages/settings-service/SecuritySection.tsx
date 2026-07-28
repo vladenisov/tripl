@@ -36,7 +36,7 @@ export function SecuritySection({
           labelRight={<SourceBadge source={sourceFor(settings, 'security', 'registration_mode')} />}
           hint={
             registrationOpen
-              ? 'Open: anyone who can reach this instance can create an account. A new account joins as editor and can immediately read the whole tracking plan, the member roster, and every data source’s connection metadata (name, type, host, port, username). Close this once your team has accounts.'
+              ? 'Open: anyone who can reach this instance can create an account. A new account joins as editor — it can read the whole tracking plan and the member roster, and edit any shared project. Data source connection details stay owner-only. Close this once your team has accounts.'
               : 'Disabled: POST /auth/register is refused with a 403 — except the very first account on an instance with no users, which always works and becomes owner. There is no invite or owner-creates-user flow yet, so while this is disabled nobody new can be added at all: reopen it to onboard someone, then close it again.'
           }
           last

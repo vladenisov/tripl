@@ -456,9 +456,8 @@ export default function AuthPage() {
                 role="status"
                 className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm leading-6 text-slate-300"
               >
-                Sign-ups are closed on this instance. Ask an owner to create an account for
-                you, or to reopen registration under Settings → Instance → Security &amp;
-                access.
+                Sign-ups are closed on this instance. Ask an owner to reopen registration
+                under Settings → Instance → Security &amp; access so you can sign up.
               </p>
             )}
 

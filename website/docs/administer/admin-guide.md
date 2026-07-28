@@ -85,8 +85,9 @@ There is no email-invitation flow in the current release and no
 owner-creates-user endpoint, so **self-service registration is the only way to
 add a person** — which is why it ships **open by default**. On an open instance
 anyone who can reach the URL can sign up, join as **editor**, and immediately
-read the whole tracking plan, this member roster, and every data source's
-connection metadata. Decide the policy before you expose the instance; see
+read the whole tracking plan and this member roster — and **edit any shared
+project**. Data source connection details (host, port, username) are owner-only.
+Decide the policy before you expose the instance; see
 [Security & access](#security--access) and
 [Security & Hardening](../run/security.md#self-service-registration).
 

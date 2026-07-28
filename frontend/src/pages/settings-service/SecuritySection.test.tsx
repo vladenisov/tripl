@@ -112,7 +112,14 @@ describe('Instance Security & access — registration', () => {
     const hint = screen.getByText(/anyone who can reach this instance can create an account/i)
     expect(hint).toHaveTextContent(/tracking plan/i)
     expect(hint).toHaveTextContent(/roster/i)
-    expect(hint).toHaveTextContent(/connection metadata/i)
+    // A new account joins as EDITOR, so the hint has to name the write
+    // capability too — "can read X" alone reads as harmless.
+    expect(hint).toHaveTextContent(/edit any shared project/i)
+    // ...and must NOT keep claiming connection metadata is exposed: this branch
+    // made host/port/username owner-only (tripl-jfm3.19), so the old wording
+    // now overstates the blast radius.
+    expect(hint).not.toHaveTextContent(/connection metadata/i)
+    expect(hint).toHaveTextContent(/owner-only/i)
   })
 
   it('warns that closing registration currently leaves no way to add anyone', () => {
