@@ -75,5 +75,17 @@ export default defineConfig({
     // unhelpful "Test timed out" instead of surfacing what the DOM actually held.
     // Headroom for a loaded machine, not licence for genuinely slow tests.
     testTimeout: 15000,
+    // Vitest defaults to roughly one worker per core. On a small dev box that
+    // exhausts memory and surfaces as a bare "Test timed out" with no assertion
+    // failure — a false red that reads like a real regression. Capped for local
+    // runs, left at the default in CI where the runner is sized for it.
+    //
+    // This has to be declarative rather than a flag on the command: passing
+    // `pnpm test -- --maxWorkers=2` silently does NOTHING, because pnpm appends
+    // the flag after vitest's own `--` passthrough separator and cac files it
+    // into args['--'] without either applying or rejecting it. The run then
+    // looks capped while executing at full concurrency (tripl-jfm3.87). Set
+    // here, it cannot be bypassed by how the suite happens to be invoked.
+    maxWorkers: process.env.CI ? undefined : 2,
   },
 })
