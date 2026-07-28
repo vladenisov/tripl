@@ -122,12 +122,18 @@ describe('Instance Security & access — registration', () => {
     expect(hint).toHaveTextContent(/owner-only/i)
   })
 
-  it('warns that closing registration currently leaves no way to add anyone', () => {
+  it('points a closed instance at invitations rather than at reopening the door', () => {
+    // This used to assert the hint said there was NO way to add anyone while
+    // disabled. That premise died with tripl-jfm3.82 — an owner can now invite
+    // directly — so the hint must send them there instead of telling them to
+    // reopen registration, which is the advice that made instances stay open.
     renderSection(settingsFixture({ registration_mode: 'disabled' }))
 
-    expect(
-      screen.getByText(/no invite or owner-creates-user flow yet/i),
-    ).toBeInTheDocument()
+    const hint = screen.getByText(/POST \/auth\/register is refused/i)
+    expect(hint).toHaveTextContent(/invite a member/i)
+    expect(hint).not.toHaveTextContent(/nobody new can be added/i)
+    // The first-owner bootstrap exemption is still worth stating.
+    expect(hint).toHaveTextContent(/first account on an instance with no users/i)
   })
 
   it('reports whether the mode comes from an override or the environment', () => {

@@ -211,23 +211,24 @@ the first deploy, not after. Setting `REGISTRATION_MODE=disabled` (or flipping
 Registration to **Disabled** in the UI) closes it.
 :::
 
-The default is `open` because it is currently the **only** way to onboard a
-person. There is no invitation flow, `/api/v1/users` has no create route, and
-SMTP is optional — so a closed instance can add nobody at all. Closing
-registration is the right end state; just close it **after** your team has
-accounts, or plan to reopen it briefly each time someone joins.
+The default is `open` for historical reasons: it used to be the only way to
+onboard anyone. **That is no longer true** — an owner can now invite people
+directly (see below), so a closed instance can still add exactly the people its
+owner names. Closing registration is the right end state for a publicly
+reachable instance.
 
 - **First-owner bootstrap is always exempt.** On an instance with **no users**,
   the first registration is accepted regardless of the mode and becomes `owner`.
   A fresh (or reset) deploy is therefore always claimable; every *later* signup
   is subject to the policy.
-- **Adding a teammate to a closed instance** (there is no invitation flow yet):
-  an owner switches Registration to **Open**, the teammate registers, the owner
-  switches it back to **Disabled**. The override applies **immediately** —
-  unlike the rest of the Security section it is resolved per request, not pinned
-  at process start, so opening and closing the door never waits for a redeploy.
-  The instance is genuinely open for the length of that window, so keep it
-  short and do it at a time you can watch the member list.
+- **Adding a teammate to a closed instance:** invite them. **Settings → Members
+  → Invite a member** takes an email and a role and returns a single-use link.
+  Nothing about the instance-wide policy changes, so there is no window during
+  which strangers can sign up. See [Invitations](#invitations) below.
+  (The old workaround — flip Registration to **Open**, have them register, flip
+  it back — still works, since the override applies immediately rather than at
+  process start. But it genuinely opens the instance for the length of that
+  window, so prefer an invitation.)
 - **No account enumeration.** The policy check runs *before* the duplicate-email
   lookup, so a closed instance returns the same `403` for a registered address
   and an unknown one.
@@ -238,6 +239,29 @@ accounts, or plan to reopen it briefly each time someone joins.
 
 Rate limiting (`RATE_LIMIT_REGISTER_PER_HOUR`) still applies on top and is *not*
 a substitute: it slows signups, it never closes them.
+
+### Invitations
+
+An owner can add one named person without touching the instance-wide policy.
+**Settings → Members → Invite a member** takes an email and a role and returns a
+single-use link.
+
+| Property | Behaviour |
+|---|---|
+| Who can issue one | **Owner only, from an interactive session.** The route uses the dependency that rejects API keys of every scope, so an automation token can never mint an identity. |
+| Works while registration is closed | **Yes** — that is the point. Redemption is a separate mechanism from the instance-wide door, not a special case inside it. |
+| Address | Fixed by the invitation. The redeem form never asks for one, so a link cannot be turned into an account for someone else. |
+| Role | Fixed by the **owner** at invite time. The invitee cannot influence it. |
+| Lifetime | 72 hours, single use. Re-inviting the same address invalidates the previous link. |
+| Delivery | The link appears **once**, in the response to creating it, and is never retrievable afterwards. Copy it then. This is deliberate: SMTP is optional, so handing the link over out of band has to be a first-class path. |
+| Storage | Only a keyed HMAC digest of the token is stored, like session and reset tokens — a leaked `invitations` table is useless without `SECRET_KEY`. |
+| Rejection | Unknown, expired and already-used links return one identical error, so a rejected redemption never reveals which it hit. |
+| Revoking | **Settings → Members** lists pending invitations; revoking one kills its link immediately. |
+
+Endpoints: `POST`/`GET` `/api/v1/users/invitations`, `DELETE
+/api/v1/users/invitations/{id}` (all owner-only), plus the unauthenticated
+`GET /api/v1/auth/invitations/{token}` preview and
+`POST /api/v1/auth/invitations/{token}/accept`.
 
 ### Passwords
 

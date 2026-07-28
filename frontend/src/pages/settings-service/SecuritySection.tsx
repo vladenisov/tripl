@@ -37,7 +37,7 @@ export function SecuritySection({
           hint={
             registrationOpen
               ? 'Open: anyone who can reach this instance can create an account. A new account joins as editor — it can read the whole tracking plan and the member roster, and edit any shared project. Data source connection details stay owner-only. Close this once your team has accounts.'
-              : 'Disabled: POST /auth/register is refused with a 403 — except the very first account on an instance with no users, which always works and becomes owner. There is no invite or owner-creates-user flow yet, so while this is disabled nobody new can be added at all: reopen it to onboard someone, then close it again.'
+              : 'Disabled: POST /auth/register is refused with a 403 — except the very first account on an instance with no users, which always works and becomes owner. You can still add people while this is off: Settings → Members → Invite a member issues a single-use link for one address, at a role you pick.'
           }
           last
         >

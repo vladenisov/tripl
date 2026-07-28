@@ -80,10 +80,11 @@ Each row shows the member's name (or email), email, join date, and role
 this screen — use another owner account if you need to step down, and remember
 the last-owner guard above.
 
-:::warning No invitations yet — registration is the only way in, and it ships open
-There is no email-invitation flow in the current release and no
-owner-creates-user endpoint, so **self-service registration is the only way to
-add a person** — which is why it ships **open by default**. On an open instance
+:::warning Registration ships open — close it once your team has accounts
+Self-service registration used to be the only way to add a person, which is why
+it ships **open by default**. You can now **invite people directly** instead
+(see below), so closing registration no longer blocks onboarding. On an open
+instance
 anyone who can reach the URL can sign up, join as **editor**, and immediately
 read the whole tracking plan and this member roster — and **edit any shared
 project**. Data source connection details (host, port, username) are owner-only.
@@ -91,18 +92,30 @@ Decide the policy before you expose the instance; see
 [Security & access](#security--access) and
 [Security & Hardening](../run/security.md#self-service-registration).
 
-Adding a member while registration is **Open**: have them register at the
-sign-in page, then adjust their role from **Settings → Members**.
+### Invite a member
 
-Adding a member once you have closed it:
+The recommended way to add someone, and the only one that works without opening
+the instance to the world:
 
-1. **Settings → Instance → Security & access → Registration** → set **Open**.
-   (Owner only. This applies immediately — no restart.)
-2. Have them **register** at the sign-in page. They join as **editor**; adjust
-   their role from **Settings → Members** if needed.
-3. Set Registration back to **Disabled**.
+1. **Settings → Members → Invite a member**. Enter their email and pick a role.
+2. **Copy the link it returns.** It is shown once and cannot be retrieved
+   afterwards — send it however you like (the instance may have no SMTP).
+3. They open the link, set a password, and land in the workspace at the role you
+   chose.
 
-The instance really is open for the length of that window, so keep it short.
+Owner only, and only from a signed-in browser session — an API key cannot mint
+an account whatever its scope. The link works a single time, expires after 72
+hours, and is bound to the address you typed, so it cannot be redeemed into a
+different identity. Pending invitations are listed under **Settings → Members**
+and revoking one kills its link immediately. Inviting the same address again
+invalidates the previous link.
+
+This works while registration is **Disabled** — that is the point of it.
+
+Adding a member while registration is **Open**: they can also just register
+themselves at the sign-in page, and you adjust their role from
+**Settings → Members**.
+
 While registration is disabled the sign-in page shows no sign-up form at all,
 and `POST /auth/register` is refused with a `403` that tells the visitor to ask
 an owner. The one exception is an instance with **no users at all** — that first
