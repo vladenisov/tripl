@@ -167,7 +167,14 @@ def generate_events(
 
         fd = field_definitions.get(col_name)
         if fd is None:
-            result.details.append(f"Skipped column {col_name!r}: no matching field definition")
+            # A grouped scan reads one flat table, so this pass sees every
+            # column of the query even when the event type in hand uses only a
+            # few. Staying silent about a column that held NOTHING for these
+            # rows keeps the warning meaningful: an undeclared column that DOES
+            # carry data is a real plan gap and still reports (tripl-jfm3.57).
+            # ``count`` excludes NULLs, so 0 means no value in any row here.
+            if card_result.count > 0:
+                result.details.append(f"Skipped column {col_name!r}: no matching field definition")
             continue
 
         result.columns_analyzed += 1

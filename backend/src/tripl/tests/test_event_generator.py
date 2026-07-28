@@ -1138,6 +1138,33 @@ class TestEventGeneration:
         assert result.events_created == 0
         assert "no matching field definition" in result.details[0].lower()
 
+    def test_does_not_warn_about_a_column_this_event_type_never_fills(
+        self, sync_session: Session, project_and_type
+    ):
+        """A grouped scan sees the whole table's columns on every event type.
+
+        Warning about one that held nothing for these rows is noise, not a plan
+        gap — the demo logged ~21 of them per scan (tripl-jfm3.57). ``count``
+        excludes NULLs, so 0 means no value in any row of this group.
+        """
+        project, et, fds = project_and_type
+        cardinality = {
+            "belongs_to_another_event": CardinalityResult(
+                column=ColumnInfo("belongs_to_another_event", "Float64"),
+                count=0,
+                is_low=True,
+                sample_values=[],
+            ),
+        }
+        analysis = _make_analysis(cardinality)
+        result = generate_events(sync_session, project.id, et.id, analysis, fds)
+
+        assert not any("no matching field definition" in d.lower() for d in result.details)
+        # The separate "nothing matched at all" notice is a different, accurate
+        # message and must survive — this test suppresses per-column noise, not
+        # the summary that tells you the scan produced nothing.
+        assert result.details == ["No columns matched field definitions"]
+
     def test_event_type_column_excluded(self, sync_session: Session, project_and_type):
         project, et, fds = project_and_type
         cardinality = {

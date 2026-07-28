@@ -2505,6 +2505,75 @@ def test_diff_event_type_schema_detects_three_drift_kinds(
         assert len(rows) == 3
 
 
+def test_diff_event_type_schema_ignores_columns_this_event_type_never_fills(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A grouped scan hands every event type the whole table's column list.
+
+    The cardinality results it passes alongside are already scoped to that
+    type's rows, so a column with count 0 held nothing here — reporting it as
+    `new_field` says "your plan is missing a field" about a column this event
+    does not use. The demo produced ~24 such rows per scan (tripl-jfm3.57).
+
+    An undeclared column that DOES carry data is a genuine plan gap and must
+    still drift, which is the other half of this test.
+    """
+    from tripl.core.analyzers.cardinality import CardinalityResult
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        et = _make_event_type_with_fields(session, config, fields=[("screen_name", "string")])
+        columns = [
+            ColumnInfo(name="screen_name", type_name="String"),
+            # Belongs to a different event type in the same flat table: always
+            # NULL for these rows.
+            ColumnInfo(name="amount", type_name="Float64"),
+            # Undeclared AND populated — a real gap.
+            ColumnInfo(name="device_id", type_name="String"),
+        ]
+        results = {
+            "screen_name": CardinalityResult(
+                column=columns[0], is_low=True, count=3, sample_values=["home"]
+            ),
+            # count excludes NULLs, so 0 == "no value in any row of this group".
+            "amount": CardinalityResult(column=columns[1], is_low=True, count=0, sample_values=[]),
+            "device_id": CardinalityResult(
+                column=columns[2], is_low=True, count=2, sample_values=["ios-42"]
+            ),
+        }
+
+        drift_items = metrics_schema_drift._diff_event_type_schema(
+            et,
+            columns,
+            skip_columns=set(),
+            cardinality_results=results,
+        )
+
+        reported = sorted((item["field_name"], item["drift_type"]) for item in drift_items)
+        assert reported == [("device_id", "new_field")]
+
+
+def test_diff_event_type_schema_still_reports_when_it_has_no_cardinality_evidence(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """No results passed means no evidence — report as before rather than guess.
+
+    Pins that the emptiness filter never silences a caller that simply does not
+    supply cardinality (the ungrouped path).
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        et = _make_event_type_with_fields(session, config, fields=[("screen_name", "string")])
+        columns = [
+            ColumnInfo(name="screen_name", type_name="String"),
+            ColumnInfo(name="amount", type_name="Float64"),
+        ]
+
+        drift_items = metrics_schema_drift._diff_event_type_schema(et, columns, skip_columns=set())
+
+        assert sorted(item["field_name"] for item in drift_items) == ["amount"]
+
+
 def test_diff_event_type_schema_attaches_sample_value(
     sync_session_factory: sessionmaker[Session],
 ) -> None:
