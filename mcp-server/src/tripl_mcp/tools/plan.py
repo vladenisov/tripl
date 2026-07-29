@@ -34,15 +34,17 @@ async def list_event_types(
     )
     if not isinstance(data, list):
         return data
-    return [
-        {
-            **trim(item, EVENT_TYPE_LIST_FIELDS),
-            "field_count": len(item.get("field_definitions") or [])
-            if isinstance(item, dict)
-            else 0,
-        }
-        for item in data
-    ]
+    return [_event_type_summary(item) for item in data]
+
+
+def _event_type_summary(item: Any) -> Any:
+    """Trim one event type, passing anything unexpected through untouched."""
+    if not isinstance(item, dict):
+        return item
+    return {
+        **trim(item, EVENT_TYPE_LIST_FIELDS),
+        "field_count": len(item.get("field_definitions") or []),
+    }
 
 
 async def get_event_type_fields(
