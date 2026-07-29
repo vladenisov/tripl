@@ -25,6 +25,7 @@ import type {
   FactTableRowFilter,
   FactTableUpdate,
 } from '@/types'
+import { dataSourcesKey } from '@/lib/queryKeys'
 
 const DEFAULT_COLOR = '#6366f1'
 
@@ -552,7 +553,7 @@ export default function FactTableEditPage() {
   const goBack = () => navigate(`/p/${slug}/metrics/fact-tables`)
 
   const dataSourcesQuery = useQuery({
-    queryKey: ['data-sources'],
+    queryKey: dataSourcesKey(),
     queryFn: () => dataSourcesApi.list(),
   })
   const factTableQuery = useQuery({

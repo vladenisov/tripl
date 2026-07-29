@@ -47,6 +47,7 @@ import type {
   DataSource,
   MonitoringSignal,
 } from '@/types'
+import { dataSourcesKey } from '@/lib/queryKeys'
 
 const SIGNAL_LIMIT = 6
 const ACTIVITY_LIMIT = 8
@@ -128,7 +129,7 @@ export default function OverviewPage() {
     staleTime: 60_000,
   })
   const sourcesQuery = useQuery({
-    queryKey: ['dataSources'],
+    queryKey: dataSourcesKey(),
     queryFn: dataSourcesApi.list,
   })
 

@@ -616,6 +616,63 @@ def test_collect_fact_writes_breakdown_values(
         }
 
 
+def test_truncated_breakdown_query_fails_instead_of_erasing_the_window(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A capped read must not become a window-delete plus a short re-insert.
+
+    Collection deletes the chunk window before UPSERTing, so a query that hit the
+    row ceiling used to erase rows it would never write back — silently, leaving
+    a metric that reads as a clean series with a hole in it (tripl-jfm3.112).
+    """
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        definition = _make_fact_metric(
+            session,
+            project,
+            fact_table,
+            breakdown_columns=["country"],
+            breakdown_values_limit=2,
+        )
+        def_id = str(definition.id)
+
+    adapter = _FactBreakdownAdapter([(datetime(2026, 1, 1, 10), 12.0)])
+    monkeypatch.setattr(metric_collect, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metric_collect, "_build_adapter", lambda ds: adapter)
+    monkeypatch.setattr(
+        metric_collect,
+        "_resolve_value_window",
+        lambda *a, **k: (datetime(2026, 1, 1, 10), datetime(2026, 1, 1, 11)),
+    )
+
+    # A good run first, so there is a populated window to lose.
+    assert metric_collect.collect_metric_definitions.run(def_id)["breakdown_values"] == 2
+
+    # Now the same two rows come back over a ceiling of one: the probe row makes
+    # that detectable, where asking for exactly the limit could not tell a full
+    # window from a cut-off one.
+    monkeypatch.setattr(metric_collect, "METRIC_QUERY_ROW_LIMIT", 1)
+
+    with pytest.raises(ValueError, match="reached the metric query row limit"):
+        metric_collect.collect_metric_definitions.run(def_id)
+
+    with sync_session_factory() as session:
+        rows = (
+            session.execute(
+                select(MetricValueBreakdown).where(
+                    MetricValueBreakdown.metric_definition_id == uuid.UUID(def_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # Untouched: the guard runs before the window delete, so the last good
+        # collection still stands.
+        assert {(row.breakdown_value, row.value) for row in rows} == {("US", 8.0), ("Other", 4.0)}
+
+
 # ── sql ──────────────────────────────────────────────────────────────────────
 
 
