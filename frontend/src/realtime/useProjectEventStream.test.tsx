@@ -116,7 +116,7 @@ describe('useProjectEventStream', () => {
     act(() => source.emit('signals.updated', '{}', '5'))
     act(() => source.emit('signals.updated', '{}', '5')) // replayed, same id
 
-    expect(invalidateCallsFor(invalidateSpy, ['anomalies', 'signals', 'demo'])).toBe(1)
+    expect(invalidateCallsFor(invalidateSpy, ['activeSignals', 'demo'])).toBe(1)
   })
 
   it('reconnects with backoff carrying the Last-Event-ID cursor', () => {

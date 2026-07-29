@@ -468,8 +468,11 @@ its history.
 
 ### Audit log
 
-**Where:** Govern › Audit log. A record of mutating actions, filterable by
-action, user, and time range.
+**Where:** Govern › Audit log — **owners only**; the nav item is hidden from
+everyone else. A record of mutating actions across the whole instance,
+filterable by action, user, project, and time range. Each entry keeps the
+request payload, which is why it is owner-gated: see
+[Security](../run/security.md#roles-and-access-control-rbac).
 
 ---
 

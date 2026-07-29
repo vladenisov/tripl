@@ -131,11 +131,31 @@ describe('TopBar notifications', () => {
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
 
     await waitFor(() => {
-      expect(screen.getByText('Spike on event type type-123')).toBeInTheDocument()
+      expect(screen.getByText('Spike on Event type type-123')).toBeInTheDocument()
     })
     expect(screen.getByText('Active Signals')).toBeInTheDocument()
     expect(screen.getByText('Recent Alert Deliveries')).toBeInTheDocument()
     expect(screen.getByText('Spike alerts')).toBeInTheDocument()
+  })
+
+  it('names non-event scopes for what they are (tripl-jfm3.120)', async () => {
+    // The bell's own label function fell through to `event ${ref}`, so once it
+    // started reading the expanded list (tripl-jfm3.89) every metric and drift
+    // signal was announced as an event.
+    mockNotificationsFetch(
+      [
+        { ...mockSignal(), scope_type: 'metric', scope_ref: 'm1234567-aaaa-bbbb-cccc-dddddddddddd' },
+      ],
+      [],
+    )
+
+    renderTopBar()
+    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Spike on Metric m1234567')).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/on Event m1234567/)).toBeNull()
   })
 
   it('labels a drop-to-zero signal as "dropped to zero" instead of the clamped z-score', async () => {
@@ -149,7 +169,7 @@ describe('TopBar notifications', () => {
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
 
     await waitFor(() => {
-      expect(screen.getByText('Drop on event type type-123')).toBeInTheDocument()
+      expect(screen.getByText('Drop on Event type type-123')).toBeInTheDocument()
     })
     // The zeroed drop reads "dropped to zero"; the repeated clamped z is hidden.
     expect(screen.getByText(/dropped to zero/)).toBeInTheDocument()
@@ -165,7 +185,7 @@ describe('TopBar notifications', () => {
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
 
     await waitFor(() => {
-      expect(screen.getByText('Spike on event type type-123')).toBeInTheDocument()
+      expect(screen.getByText('Spike on Event type type-123')).toBeInTheDocument()
     })
     // Header reads 1 active (signals.length), not 2 (signals + delivery).
     expect(screen.getByText('1 active')).toBeInTheDocument()

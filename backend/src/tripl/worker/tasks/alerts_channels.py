@@ -245,7 +245,23 @@ def _send_email_message(
             conn.starttls()
         if smtp_username:
             conn.login(smtp_username, smtp_password)
-        conn.send_message(msg)
+        refused = conn.send_message(msg)
+    # smtplib raises ONLY when every recipient is refused (SMTPRecipientsRefused);
+    # a partial refusal is returned quietly as {address: (code, reason)}. That
+    # return used to be discarded, so an alert that reached two of five people was
+    # stored and displayed as "sent" (tripl-jfm3.117).
+    #
+    # Failing the whole delivery is deliberate: a manual retry may duplicate the
+    # mail for the recipients who did get it, but the alternative — the operator
+    # believing an alert was delivered when it silently was not — is worse for the
+    # one job alerting has. The refused addresses go in the message so the Audit
+    # view names them rather than just saying "failed".
+    if refused:
+        detail = (
+            f"SMTP refused {len(refused)} of {len(recipients)} recipients: "
+            f"{', '.join(sorted(refused))}"
+        )
+        raise ValueError(detail)
 
 
 def _send_digest_to_destination(

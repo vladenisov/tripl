@@ -560,6 +560,27 @@ def _condition_text(value: object, dialect: SqlDialect) -> str:
     return text
 
 
+def _escape_like_wildcards(text: str) -> str:
+    """Neutralise ``%`` and ``_`` so ``contains`` means *contains* (tripl-jfm3.111).
+
+    ``contains`` is a substring test in the UI, but it compiled to a bare
+    ``LIKE '%value%'``, so a value holding a wildcard silently widened the match:
+    ``contains "100%"`` matched every row starting ``100``, and ``contains "a_b"``
+    matched ``axb``. Nothing raised — the metric was simply computed over the
+    wrong rows. ``like`` / ``not_like`` deliberately do NOT come through here:
+    there the pattern is the point.
+
+    The escape character is a backslash and no ``ESCAPE`` clause is emitted,
+    because all three dialects converge on it once their own literal quoting has
+    run: ``quote_sql_string_literal`` doubles backslashes for ClickHouse and
+    BigQuery and leaves them alone for PostgreSQL (``standard_conforming_strings``),
+    so a pattern of ``\\%`` here reaches every engine as the value ``\\%`` — an
+    escaped percent, which is LIKE's default reading in all three. Backslash is
+    doubled FIRST so a value containing one cannot escape the escape.
+    """
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _condition_list_literals(
     value: object,
     *,
@@ -673,7 +694,11 @@ def _resolve_condition_fragment(
             msg = f"fact operand condition {operator!r} requires a value"
             raise ScanError(msg)
         text = _condition_text(value, dialect)
-        pattern = f"%{text}%" if operator in {"contains", "not_contains"} else text
+        pattern = (
+            f"%{_escape_like_wildcards(text)}%"
+            if operator in {"contains", "not_contains"}
+            else text
+        )
         keyword = "NOT LIKE" if operator in {"not_like", "not_contains"} else "LIKE"
         try:
             literal = quote_sql_string_literal(pattern, dialect)

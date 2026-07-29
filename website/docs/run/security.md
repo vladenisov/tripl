@@ -346,6 +346,7 @@ Two further surfaces carry a stricter gate than the role table alone implies:
 | `PATCH /api/v1/projects/{slug}` (name, slug, retention) | Project **creator** or owner | Identity, not content: otherwise any editor could rename or re-slug every project on the instance. Stricter than the content rule above, which permits shared-project edits. |
 | `GET /data-sources/{id}/schema` | `get_editor_user` | Warehouse table and column names. Editors need it — the scan, metric and fact-table forms drive column pickers off it — but a `viewer` edits none of those. |
 | `GET /data-sources/{id}/stats`, and connection details (host, port, username, `password_set`, TLS) on every data-source read | Owner | Non-owners see a data source's name, type and health, which is all the scan picker and metric card need. |
+| `GET /api/v1/audit` | Owner | Every entry carries the payload that produced it, so the feed re-exposed both of the rows above: `data_source.*` payloads carry the connection details blanked on a direct read, and `scan_config.create` payloads carry `base_query`. It is also instance-wide — `project_slug` is a filter, not a scope. Passwords were always redacted (`audit_service._redact`). |
 
 `base_query` is additionally validated by the shared read-only-SELECT gate
 (`validate_select_sql_safety`, the same one `metric_sql` uses): single statement,

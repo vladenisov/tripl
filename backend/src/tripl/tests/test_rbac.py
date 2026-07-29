@@ -247,6 +247,31 @@ async def test_data_source_management_is_owner_only(fresh_anon_client: AsyncClie
 
 
 @pytest.mark.asyncio
+async def test_audit_log_is_owner_only(fresh_anon_client: AsyncClient) -> None:
+    """The audit feed was the back door around two owner-only gates (tripl-jfm3.110).
+
+    Entries carry the payload that produced them, so a non-owner could read the
+    warehouse connection details that data_sources.py:69 blanks on a direct
+    read, and the ``base_query`` SQL that authoring a scan is owner-only to
+    protect. ``project_slug`` is a filter, not a scope, so the reach was every
+    project on the instance.
+    """
+    await _register(fresh_anon_client, "audit-owner@example.com")
+    as_owner = await fresh_anon_client.get("/api/v1/audit")
+    assert as_owner.status_code == 200, as_owner.text
+
+    await fresh_anon_client.post("/api/v1/auth/logout")
+    await _register(fresh_anon_client, "audit-editor@example.com")
+
+    as_editor = await fresh_anon_client.get("/api/v1/audit")
+    assert as_editor.status_code == 403
+
+    # Filters do not buy their way past the gate.
+    filtered = await fresh_anon_client.get("/api/v1/audit", params={"action": "scan_config.create"})
+    assert filtered.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_only_owner_can_change_roles(fresh_anon_client: AsyncClient) -> None:
     await _register(fresh_anon_client, "owner2@example.com")
     await fresh_anon_client.post("/api/v1/auth/logout")

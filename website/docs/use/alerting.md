@@ -69,6 +69,14 @@ There is no separate destination-test endpoint. Use rule replay to validate
 matching, then confirm the first real delivery in **Audit**; a failing webhook
 or an unverified bot token is the most common transport failure.
 
+:::note
+**Email is all-or-nothing.** If the SMTP server refuses *some* recipients, the
+whole delivery is recorded as **failed** and the error names the addresses that
+bounced. Retrying re-sends to everyone on the list, including anyone who already
+received it — a duplicate is preferable to believing an alert was delivered when
+it was not.
+:::
+
 Enabled **Slack** and **Email** destinations also receive the scheduled weekly
 plan digest. The digest is destination-level and independent of routing rules;
 disable the destination if it should receive neither alerts nor the digest.

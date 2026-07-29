@@ -14,7 +14,8 @@ import {
   XCircle,
 } from 'lucide-react'
 import { alertingApi } from '@/api/alerting'
-import { metricsApi } from '@/api/metrics'
+import { useExpandedSignals } from '@/hooks/useExpandedSignals'
+import { signalScopeLabel } from '@/lib/signalScope'
 import { getErrorMessage } from '@/lib/utils'
 import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
 import { selectSignificantSignals } from '@/lib/signalMagnitude'
@@ -122,18 +123,14 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
   // Stream-aware fallback: the SSE invalidation map refreshes these on
   // signals.updated / activity.created, so poll only when the stream is down.
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
-  const signalsQuery = useQuery({
-    // Expanded, then gated on the shared Significant threshold — the same set
-    // the sidebar badge and the Overview headline report. The collapsed variant
-    // this used to call queries only project_total/event_type, so a project
-    // whose anomalies are all event-scope (prod windy-ios: 150 of them) left the
-    // bell completely clean while every other surface showed 30 (tripl-jfm3.89).
-    queryKey: ['topbarNotifications', projectSlug, 'signals', 'expanded'],
-    queryFn: () => metricsApi.getActiveSignals(projectSlug!, undefined, { expanded: true }),
-    enabled: !!projectSlug,
-    refetchInterval,
-    staleTime: 30_000,
-  })
+  // Expanded, then gated on the shared Significant threshold — the same set the
+  // sidebar badge and the Overview headline report. The collapsed variant this
+  // used to call queries only project_total/event_type, so a project whose
+  // anomalies are all event-scope (prod windy-ios: 150 of them) left the bell
+  // completely clean while every other surface showed 30 (tripl-jfm3.89). The
+  // request is now shared with Overview and Anomalies under one key
+  // (tripl-jfm3.119) — Overview renders this bar, so it used to fetch twice.
+  const signalsQuery = useExpandedSignals(projectSlug)
   const deliveriesQuery = useQuery({
     queryKey: ['topbarNotifications', projectSlug, 'deliveries'],
     queryFn: () => alertingApi.listDeliveries(projectSlug!, { limit: 5 }),
@@ -409,9 +406,7 @@ function EmptySectionText({ children }: { children: ReactNode }) {
   )
 }
 
-function signalScopeLabel(signal: MonitoringSignal) {
-  if (signal.scope_type === 'project_total') return 'project total'
-  const shortRef = signal.scope_ref.slice(0, 8)
-  if (signal.scope_type === 'event_type') return `event type ${shortRef}`
-  return `event ${shortRef}`
-}
+// The bell deliberately passes no name maps: it previews four rows and links to
+// the full page, so it renders "<Scope> <ref8>" rather than making every route
+// in the app pay for the event / event-type / metric catalogs. What it must not
+// do is name the scope wrongly — see lib/signalScope.ts (tripl-jfm3.120).

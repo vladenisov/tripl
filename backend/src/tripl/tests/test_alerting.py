@@ -2501,6 +2501,74 @@ async def test_alerting_email_destination_crud_and_validation(client: AsyncClien
     assert body["email_recipients"] == "carol@example.com"
 
 
+def _email_sender_with(refused: object):
+    """``_send_email_message`` bound to a fake SMTP returning ``refused``."""
+    from tripl.worker.tasks.alerts_channels import _send_email_message
+
+    class FakeSMTP:
+        def __init__(self, host: str, port: int, timeout: int = 10) -> None:
+            pass
+
+        def __enter__(self) -> FakeSMTP:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def starttls(self) -> None:
+            pass
+
+        def login(self, username: str, password: str) -> None:
+            pass
+
+        def send_message(self, msg) -> object:  # type: ignore[no-untyped-def]
+            return refused
+
+    def send() -> None:
+        _send_email_message(
+            smtp_cls=FakeSMTP,
+            smtp_host="smtp.example.com",
+            smtp_port=587,
+            smtp_username="",
+            smtp_password="",
+            smtp_use_tls=False,
+            from_address="alerts@example.com",
+            recipients=["alice@example.com", "bob@example.com", "carol@example.com"],
+            subject="Subject",
+            body="Body",
+        )
+
+    return send
+
+
+def test_email_partial_recipient_refusal_is_not_a_successful_send() -> None:
+    """smtplib only raises when EVERY recipient is refused (tripl-jfm3.117).
+
+    The partial-refusal dict used to be discarded, so a mail that reached one of
+    three people was stored and shown as "sent".
+    """
+    send = _email_sender_with(
+        {
+            "bob@example.com": (550, b"No such user"),
+            "carol@example.com": (552, b"Mailbox full"),
+        }
+    )
+
+    with pytest.raises(ValueError, match="refused 2 of 3") as error:
+        send()
+
+    # The Audit view shows this string, so it has to name who missed out.
+    assert "bob@example.com" in str(error.value)
+    assert "carol@example.com" in str(error.value)
+    assert "alice@example.com" not in str(error.value)
+
+
+@pytest.mark.parametrize("refused", [{}, None])
+def test_email_send_succeeds_when_nothing_is_refused(refused: object) -> None:
+    # ``None`` covers SMTP stand-ins whose send_message returns nothing.
+    _email_sender_with(refused)()
+
+
 def test_send_alert_delivery_sends_email(monkeypatch, tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'alerting_email_send.db'}")
     Base.metadata.create_all(engine)

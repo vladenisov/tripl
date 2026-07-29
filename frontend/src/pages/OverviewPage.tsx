@@ -34,6 +34,11 @@ import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
 import { selectSignificantSignals } from '@/lib/signalMagnitude'
 import { friendlyScanError } from '@/lib/scanError'
 import { useActiveBranchId } from '@/hooks/useBranch'
+import { useExpandedSignals } from '@/hooks/useExpandedSignals'
+import {
+  signalScopeLabel as sharedSignalScopeLabel,
+  type NameMap,
+} from '@/lib/signalScope'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type {
   ActivityItem,
@@ -88,16 +93,11 @@ export default function OverviewPage() {
     enabled: !!slug && projectQuery.isSuccess,
     staleTime: 60_000,
   })
-  const signalsQuery = useQuery({
-    // Expanded (all scopes, incident children tagged) so the headline count matches
-    // the sidebar badge and the Anomalies page rather than only project-total /
-    // event-type incidents (issue tripl-yfsj.1).
-    queryKey: ['overview', 'signals', slug, 'expanded'],
-    queryFn: () => metricsApi.getActiveSignals(slug!, undefined, { expanded: true }),
-    enabled: !!slug && projectQuery.isSuccess,
-    staleTime: 30_000,
-    refetchInterval,
-  })
+  // Expanded (all scopes, incident children tagged) so the headline count matches
+  // the sidebar badge and the Anomalies page rather than only project-total /
+  // event-type incidents (issue tripl-yfsj.1). Shared key with the top bar and
+  // the Anomalies page (tripl-jfm3.119).
+  const signalsQuery = useExpandedSignals(slug, { enabled: projectQuery.isSuccess })
   const activityQuery = useQuery({
     queryKey: ['activity', slug ?? 'workspace'],
     queryFn: () => activityApi.list({ slug, limit: ACTIVITY_LIMIT }),
@@ -576,34 +576,17 @@ function newEventsTrendLabel(counts: number[]): string {
 }
 
 /** Entity id → display name, for labelling metric / event-type / event signals. */
-type NameMap = ReadonlyMap<string, string>
 
-// Mirrors AnomaliesPage's copy (issues .17, tripl-yfsj.16): every named scope
-// carries only its id, so an anomaly must read "<Scope> · <name>" instead of a
-// raw "Event <uuid8>". Each lookup falls back to the short ref while its list
-// loads or when the entity is gone (e.g. deleted event / event type / metric),
-// which is what keeps the panel renderable before the name maps arrive.
+// Thin adapter over the shared label (issues .17, tripl-yfsj.16, tripl-jfm3.120):
+// every named scope carries only its id, so an anomaly must read
+// "<Scope> · <name>" instead of a raw "Event <uuid8>".
 function signalScopeLabel(
   signal: MonitoringSignal,
   metricNames: NameMap,
   eventTypeNames: NameMap,
   eventNames: NameMap,
 ): string {
-  if (signal.scope_type === 'project_total') return 'Project total'
-  const ref = signal.scope_ref.slice(0, 8)
-  if (signal.scope_type === 'event_type') {
-    const name = eventTypeNames.get(signal.scope_ref)
-    return name ? `Event type · ${name}` : `Event type ${ref}`
-  }
-  if (signal.scope_type === 'event') {
-    const name = eventNames.get(signal.scope_ref)
-    return name ? `Event · ${name}` : `Event ${ref}`
-  }
-  if (signal.scope_type === 'metric') {
-    const name = metricNames.get(signal.scope_ref)
-    return name ? `Metric · ${name}` : `Metric ${ref}`
-  }
-  return `${signal.scope_type} ${ref}`
+  return sharedSignalScopeLabel(signal, { metricNames, eventTypeNames, eventNames })
 }
 
 function SignalRow({
