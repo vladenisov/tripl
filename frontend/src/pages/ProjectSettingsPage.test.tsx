@@ -171,8 +171,15 @@ describe('ProjectSettingsPage', () => {
     expect(screen.getByDisplayValue('36')).toBeInTheDocument()
 
     fireEvent.click(screen.getByLabelText('Toggle signal detection'))
-    fireEvent.change(screen.getByDisplayValue('4.5'), { target: { value: '5.5' } })
-    fireEvent.change(screen.getByDisplayValue('36'), { target: { value: '48' } })
+    // Numeric settings commit on blur, not per keystroke: saving as you type
+    // persisted every intermediate value ("168" wrote 1, then 16, then 168) as a
+    // live detection setting (tripl-jfm3.105). Toggles still save immediately.
+    const sigma = screen.getByDisplayValue('4.5')
+    fireEvent.change(sigma, { target: { value: '5.5' } })
+    fireEvent.blur(sigma)
+    const settling = screen.getByDisplayValue('36')
+    fireEvent.change(settling, { target: { value: '48' } })
+    fireEvent.blur(settling)
 
     await waitFor(() => {
       expect(patchBodies).toContainEqual({ anomaly_detection_enabled: false })

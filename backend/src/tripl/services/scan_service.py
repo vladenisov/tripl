@@ -342,10 +342,20 @@ async def trigger_metrics_replay(
     return job
 
 
-async def list_scan_jobs(session: AsyncSession, slug: str, scan_id: uuid.UUID) -> list[ScanJob]:
+async def list_scan_jobs(
+    session: AsyncSession,
+    slug: str,
+    scan_id: uuid.UUID,
+    *,
+    limit: int = 50,
+) -> list[ScanJob]:
+    """Newest jobs first. Capped — see the route docstring (tripl-jfm3.107)."""
     await get_scan_config(session, slug, scan_id)
     result = await session.execute(
-        select(ScanJob).where(ScanJob.scan_config_id == scan_id).order_by(ScanJob.created_at.desc())
+        select(ScanJob)
+        .where(ScanJob.scan_config_id == scan_id)
+        .order_by(ScanJob.created_at.desc())
+        .limit(limit)
     )
     return list(result.scalars().all())
 

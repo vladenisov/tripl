@@ -1,6 +1,7 @@
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from tripl.api.deps import (
     EditorUserDep,
@@ -213,8 +214,20 @@ async def replay_scan_metrics(
 
 
 @router.get("/{scan_id}/jobs", response_model=list[ScanJobResponse])
-async def list_scan_jobs(session: SessionDep, slug: str, scan_id: uuid.UUID) -> list[ScanJob]:
-    return await scan_service.list_scan_jobs(session, slug, scan_id)
+async def list_scan_jobs(
+    session: SessionDep,
+    slug: str,
+    scan_id: uuid.UUID,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[ScanJob]:
+    """Newest jobs first, capped.
+
+    This was uncapped, and the Scans tab fans it out over every scan config on a
+    10-second poll: production configs hold 1,366-1,551 jobs each, so an open tab
+    pulled roughly 4,400 rows every 10 seconds and rendered them unvirtualized
+    (tripl-jfm3.107).
+    """
+    return await scan_service.list_scan_jobs(session, slug, scan_id, limit=limit)
 
 
 @router.get("/{scan_id}/jobs/{job_id}", response_model=ScanJobResponse)

@@ -1,4 +1,4 @@
-import { useId, type ChangeEvent } from "react"
+import { useId, useState, type ChangeEvent } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { anomalySettingsApi } from "@/api/anomalySettings"
 import type { ProjectAnomalySettings } from "@/types"
@@ -10,24 +10,71 @@ import { Switch } from "@/components/ui/switch"
 import { getErrorMessage } from '@/lib/utils'
 
 /**
- * Commit a numeric settings edit, ignoring a transient empty field.
+ * A numeric detection setting that saves when you finish, not as you type.
  *
- * These inputs save on every keystroke, and the field is briefly empty whenever
- * someone selects-all and retypes. `Number('')` is `0`, which is a *valid*
- * value for `min_expected_count` and `anomaly_ingestion_settling_minutes` — so
- * a blank frame would silently persist "0" (for settling: score immediately,
- * i.e. the very behaviour the allowance exists to prevent) instead of being
- * rejected the way an out-of-range `0` is on the min-1 fields. Empty and
- * non-numeric input is dropped; the input keeps showing the last saved value.
+ * These inputs used to fire the mutation from `onChange`, so typing "168" into
+ * Baseline Window persisted 1, then 16, then 168 — and each intermediate value
+ * was a live detection setting that a collection running in that window would
+ * read. The field is also briefly empty whenever someone selects-all and
+ * retypes, and `Number('')` is `0`, which is *valid* for `min_expected_count`
+ * and `anomaly_ingestion_settling_minutes` (settling 0 = score immediately, the
+ * very behaviour the allowance exists to prevent). Committing on blur/Enter
+ * removes the whole class (tripl-jfm3.105).
+ *
+ * Local state is seeded from the server value and re-seeded whenever it changes,
+ * so an edit made elsewhere still lands here; empty and non-numeric input is
+ * dropped and the field snaps back to the last saved value.
  */
-function onNumberChange(commit: (value: number) => void) {
-  return (e: ChangeEvent<HTMLInputElement>) => {
-    const raw = e.target.value.trim()
-    if (raw === '') return
-    const value = Number(raw)
-    if (!Number.isFinite(value)) return
-    commit(value)
+function NumberSetting({
+  id,
+  value,
+  min,
+  max,
+  step,
+  onCommit,
+}: {
+  id: string
+  value: number
+  min?: number
+  max?: number
+  step?: string
+  onCommit: (value: number) => void
+}) {
+  // Re-seed from the server value when it changes, without an effect: this is
+  // React's documented "adjust state while rendering" pattern, and it lands the
+  // new value in the same pass rather than flashing the stale one first.
+  const [draft, setDraft] = useState(String(value))
+  const [seeded, setSeeded] = useState(value)
+  if (seeded !== value) {
+    setSeeded(value)
+    setDraft(String(value))
   }
+
+  const commit = () => {
+    const raw = draft.trim()
+    const parsed = Number(raw)
+    if (raw === '' || !Number.isFinite(parsed)) {
+      setDraft(String(value))
+      return
+    }
+    if (parsed !== value) onCommit(parsed)
+  }
+
+  return (
+    <Input
+      id={id}
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      value={draft}
+      onChange={(e: ChangeEvent<HTMLInputElement>) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === 'Enter') e.currentTarget.blur()
+      }}
+    />
+  )
 }
 
 export function MonitoringTab({ slug }: { slug: string }) {
@@ -120,56 +167,49 @@ export function MonitoringTab({ slug }: { slug: string }) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="grid gap-2">
               <Label htmlFor={baselineWindowId}>Baseline Window</Label>
-              <Input
+              <NumberSetting
                 id={baselineWindowId}
-                type="number"
                 min={1}
                 value={settings.baseline_window_buckets}
-                onChange={onNumberChange(v => updateMut.mutate({ baseline_window_buckets: v }))}
+                onCommit={v => updateMut.mutate({ baseline_window_buckets: v })}
               />
             </div>
             <div className="grid gap-2">
               <Label htmlFor={minHistoryId}>Min History</Label>
-              <Input
+              <NumberSetting
                 id={minHistoryId}
-                type="number"
                 min={1}
                 value={settings.min_history_buckets}
-                onChange={onNumberChange(v => updateMut.mutate({ min_history_buckets: v }))}
+                onCommit={v => updateMut.mutate({ min_history_buckets: v })}
               />
             </div>
             <div className="grid gap-2">
               <Label htmlFor={sigmaThresholdId}>Sigma Threshold</Label>
-              <Input
+              <NumberSetting
                 id={sigmaThresholdId}
-                type="number"
                 min={0.1}
                 step="0.1"
                 value={settings.sigma_threshold}
-                onChange={onNumberChange(v => updateMut.mutate({ sigma_threshold: v }))}
+                onCommit={v => updateMut.mutate({ sigma_threshold: v })}
               />
             </div>
             <div className="grid gap-2">
               <Label htmlFor={minExpectedCountId}>Min Expected Count</Label>
-              <Input
+              <NumberSetting
                 id={minExpectedCountId}
-                type="number"
                 min={0}
                 value={settings.min_expected_count}
-                onChange={onNumberChange(v => updateMut.mutate({ min_expected_count: v }))}
+                onCommit={v => updateMut.mutate({ min_expected_count: v })}
               />
             </div>
             <div className="grid gap-2">
               <Label htmlFor={recentSignalWindowId}>Open signal window (hours)</Label>
-              <Input
+              <NumberSetting
                 id={recentSignalWindowId}
-                type="number"
                 min={1}
                 max={720}
                 value={settings.recent_signal_window_hours}
-                onChange={onNumberChange(v =>
-                  updateMut.mutate({ recent_signal_window_hours: v })
-                )}
+                onCommit={v => updateMut.mutate({ recent_signal_window_hours: v })}
               />
               <p className="text-xs text-muted-foreground">
                 How long an anomaly keeps counting as an open signal on the Anomalies page
@@ -179,15 +219,12 @@ export function MonitoringTab({ slug }: { slug: string }) {
             </div>
             <div className="grid gap-2">
               <Label htmlFor={settlingMinutesId}>Ingestion settling (minutes)</Label>
-              <Input
+              <NumberSetting
                 id={settlingMinutesId}
-                type="number"
                 min={0}
                 max={1440}
                 value={settings.anomaly_ingestion_settling_minutes}
-                onChange={onNumberChange(v =>
-                  updateMut.mutate({ anomaly_ingestion_settling_minutes: v })
-                )}
+                onCommit={v => updateMut.mutate({ anomaly_ingestion_settling_minutes: v })}
               />
               <p className="text-xs text-muted-foreground">
                 How long a warehouse keeps delivering rows for a bucket after that bucket
