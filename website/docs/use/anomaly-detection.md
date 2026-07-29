@@ -217,10 +217,10 @@ User-defined **metrics** are watched by the very same detector, at a dedicated *
   traffic drop.
 - **Fractional** metrics drop both. A gap means "no data for this bucket" rather than zero — a ratio whose denominator was zero produces *no value at all* — and the minimum-count gate is lifted, so a ratio that naturally sits below 1, or a sparse average, is neither silenced nor constantly flagged as "too low".
 
-Per project, **`detect_metrics`** turns the metric scope on or off; per alert
-rule, the API's **`include_metrics`** field decides whether metric anomalies are
-actually delivered (the visual rule editor does not expose this switch yet; see
-[Alerting](./alerting.md)). Everything else — the seasonal baseline, the robust
+Per project, **`detect_metrics`** turns the metric scope on or off (the
+**Metrics** box in monitoring settings); per alert rule, **`include_metrics`**
+decides whether metric anomalies are actually delivered — the **Metrics** box in
+the rule editor, off by default (see [Alerting](./alerting.md)). Everything else — the seasonal baseline, the robust
 spread and its floor, the z-score, and false-positive self-tuning — works exactly
 as it does for events.
 

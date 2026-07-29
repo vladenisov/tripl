@@ -140,7 +140,11 @@ export function MonitoringTab({ slug }: { slug: string }) {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {/* Four scopes, not three: catalog metrics have always been detected
+              (detect_metrics defaults to on) but had no control here, so the
+              only way to stop scoring them was to disable detection entirely
+              (tripl-jfm3.108). */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <label className="flex items-center gap-2 text-sm">
               <Checkbox
                 checked={settings.detect_project_total}
@@ -161,6 +165,13 @@ export function MonitoringTab({ slug }: { slug: string }) {
                 onCheckedChange={checked => updateMut.mutate({ detect_events: !!checked })}
               />
               Events
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={settings.detect_metrics}
+                onCheckedChange={checked => updateMut.mutate({ detect_metrics: !!checked })}
+              />
+              Metrics
             </label>
           </div>
 

@@ -91,8 +91,8 @@ the drift/regression signals are opt-in:
 | Release regression | off |
 | Metric anomaly | off |
 
-**Metric anomalies** are opt-in via a rule's **`include_metrics`** API field
-(off by default; the visual rule editor does not expose this switch yet). Unlike
+**Metric anomalies** are opt-in via a rule's **`include_metrics`** field — the
+**Metrics** box in the rule editor, off by default. Unlike
 the drift and regression signals they behave like a volume anomaly — they carry
 a real spike/drop direction and **do** honor the count thresholds below.
 
@@ -117,6 +117,10 @@ fire regardless of the count thresholds.
 **Filters** narrow further by `event_type`, `event`, or `direction`, with
 operators `eq` / `ne` / `in` / `not_in`. Multiple filters are ANDed; a signal
 that doesn't carry the filtered field passes through.
+
+The `event` value picker searches the catalog server-side and shows one page of
+matches at a time, so type to reach an event that isn't in the first page — the
+footer tells you how many matches are still hidden.
 
 Variable-value drift carries its affected `event_id`, so event filters apply;
 its alert item uses the variable name as `drift_field` and a bounded novel-value

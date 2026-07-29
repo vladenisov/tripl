@@ -4,7 +4,6 @@ import { ClipboardList, Globe, Mail, Send, Ticket, Trash2, Webhook, type LucideI
 
 import { alertingApi } from '@/api/alerting'
 import { eventTypesApi } from '@/api/eventTypes'
-import { eventsApi } from '@/api/events'
 import { projectsApi } from '@/api/projects'
 import { scansApi } from '@/api/scans'
 import { Badge } from '@/components/ui/badge'
@@ -74,10 +73,6 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
     queryKey: ['eventTypes', slug],
     queryFn: () => eventTypesApi.list(slug),
   })
-  const { data: eventsResp } = useQuery({
-    queryKey: ['events', slug, 'alerting'],
-    queryFn: () => eventsApi.list(slug, { limit: 10000, offset: 0 }),
-  })
   const { data: scans = [] } = useQuery({
     queryKey: ['scans', slug],
     queryFn: () => scansApi.list(slug),
@@ -100,7 +95,6 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
     queryFn: () => alertingApi.listInbox(slug, { limit: 20 }),
   })
 
-  const events = eventsResp?.items ?? []
   // A demo's local sink has no entry in CHANNEL_META (it is not a channel anyone
   // can add), so it fell straight through the per-channel grouping below and its
   // card was never rendered: a demo's Destinations panel showed only the
@@ -386,7 +380,6 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                   slug={slug}
                   destination={destination}
                   eventTypes={eventTypes}
-                  events={events}
                   onEditDestination={openEdit}
                 />
               ))}
@@ -409,7 +402,6 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                       slug={slug}
                       destination={destination}
                       eventTypes={eventTypes}
-                      events={events}
                       onEditDestination={openEdit}
                     />
                     <div className="mt-2 flex justify-end">

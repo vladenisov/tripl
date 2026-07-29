@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -24,6 +24,8 @@ function makeRule(overrides: Record<string, unknown> = {}) {
     include_schema_drifts: false,
     include_distribution_drifts: false,
     include_release_regressions: false,
+    include_variable_value_drifts: false,
+    include_metrics: false,
     notify_on_spike: true,
     notify_on_drop: false,
     ai_explanation_enabled: false,
@@ -217,6 +219,61 @@ describe('ProjectAlertingTab — demo workspaces are zero-egress (tripl-2su6.12)
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
     }
     expect(screen.queryByText(/never sent to Slack/i)).toBeNull()
+  })
+})
+
+describe('ProjectAlertingTab — catalog metric scope (tripl-jfm3.108)', () => {
+  // Detection has always scored catalog metrics, but include_metrics had no box
+  // on the rule form, so a metric-scope signal could not be routed anywhere.
+  function mockWithRulePatches(rule: Record<string, unknown>) {
+    const patches: Record<string, unknown>[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (/\/rules\//.test(url) && init?.method === 'PATCH') {
+        const body = JSON.parse(String(init.body))
+        patches.push(body)
+        return jsonResponse({ ...rule, ...body })
+      }
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: false })
+      }
+      if (url.includes('/alert-destinations')) {
+        return jsonResponse([makeDestination({ rules: [rule] })])
+      }
+      if (url.includes('/alert-deliveries')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/alert-inbox')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.includes('/events')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/scans')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    return patches
+  }
+
+  it('seeds the Metrics box from the saved rule', async () => {
+    mockWithRulePatches(makeRule({ include_metrics: true }))
+    renderTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Edit rule/ }))
+
+    expect(await screen.findByLabelText('Metrics')).toBeChecked()
+  })
+
+  it('sends include_metrics when the box is ticked', async () => {
+    const patches = mockWithRulePatches(makeRule({ include_metrics: false }))
+    renderTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Edit rule/ }))
+    fireEvent.click(await screen.findByLabelText('Metrics'))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(patches).toHaveLength(1))
+    expect(patches[0].include_metrics).toBe(true)
+    // The neighbouring scopes ride along unchanged rather than being reset.
+    expect(patches[0].include_events).toBe(false)
   })
 })
 

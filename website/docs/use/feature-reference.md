@@ -390,8 +390,7 @@ variable value drift** opt-in alongside schema, distribution, and release drift;
 and message and items templates with variables such as `${channel}`,
 `${destination_name}`, `${rule_name}`, `${scan_name}`, `${scope_label}`,
 `${matched_count}`, and `${items_text}`. Metric-scope anomalies are also safe-off
-and can currently be enabled through the API's `include_metrics` field (the
-visual rule editor does not expose that switch yet). A rule can be
+and are enabled by the rule editor's **Metrics** box (`include_metrics`). A rule can be
 **simulated/replayed** over the last N days (default 7), optionally overriding
 the saved cooldown. The **Inbox** groups correlated deliveries; the **Audit**
 view lists deliveries filterable by status (pending / sent / failed) with retry
