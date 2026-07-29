@@ -458,7 +458,12 @@ scalar breakdown/drift fields.
 Running a scan creates a job. From a config you can run a scan, apply event
 groups, jump directly to **Review events**, or replay metrics over historical
 chunks (replay requires a time column and an interval). Jobs expose status,
-progress, and curated failure detail. Repeated identical failures collapse into
+progress, and curated failure detail. A job's **details** list flags warehouse
+columns that carried data but had no matching field in the plan — a real
+coverage gap worth fixing. It stays quiet about columns that were empty for
+those rows, and about reserved role columns (event type, time, version,
+platform, and any column an event-group rule matches on), which are collected as
+metric dimensions or identity and are never expected to have a plan field. Repeated identical failures collapse into
 a streak with an expander, and **Run again** retries the config without losing
 its history.
 

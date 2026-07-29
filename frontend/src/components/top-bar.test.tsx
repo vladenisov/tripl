@@ -106,10 +106,13 @@ function mockDelivery(overrides: DeliveryOverrides = {}) {
   }
 }
 
+/** The bell asks for the EXPANDED list; a collapsed URL would be the bug. */
+const SIGNALS_URL = '/api/v1/projects/demo/anomalies/signals?expanded=true'
+
 function mockNotificationsFetch(signals: unknown[], deliveries: unknown[]) {
   vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
     const url = String(input)
-    if (url.endsWith('/api/v1/projects/demo/anomalies/signals')) {
+    if (url.endsWith(SIGNALS_URL)) {
       return mockJsonResponse(signals)
     }
     if (url.endsWith('/api/v1/projects/demo/alert-deliveries?limit=5')) {
@@ -191,6 +194,45 @@ describe('TopBar notifications', () => {
     expect(screen.getByRole('button', { name: 'Notifications' })).toBeInTheDocument()
   })
 
+  it('counts event-scope signals, which the collapsed endpoint would have dropped', async () => {
+    // tripl-jfm3.89: the bell used the collapsed variant (project_total +
+    // event_type only). On prod windy-ios every open signal was event-scope, so
+    // an incident with no parent to roll into vanished and the bell read clean
+    // while the sidebar and the Anomalies page both showed 30.
+    mockNotificationsFetch(
+      [
+        { ...mockSignal(), scope_type: 'event', scope_ref: 'event-aaaaaaaa', event_id: 'event-aaaaaaaa' },
+        { ...mockSignal(), scope_type: 'event', scope_ref: 'event-bbbbbbbb', event_id: 'event-bbbbbbbb' },
+      ],
+      [],
+    )
+
+    renderTopBar()
+
+    expect(
+      await screen.findByRole('button', { name: 'Notifications — 2 active' }),
+    ).toBeInTheDocument()
+  })
+
+  it('applies the shared Significant gate, so the bell equals the sidebar badge', async () => {
+    // The sidebar's monitoring_signal_count only counts signals whose relative
+    // effect clears 0.5. Counting the raw list here would put a bigger number on
+    // the bell than on every other surface — the same disagreement, inverted.
+    mockNotificationsFetch(
+      [
+        { ...mockSignal(), actual_count: 100, expected_count: 20 }, // rel 4.0 → counts
+        { ...mockSignal(), scope_ref: 'type-87654321', actual_count: 105, expected_count: 100 }, // rel 0.05 → below
+      ],
+      [],
+    )
+
+    renderTopBar()
+
+    expect(
+      await screen.findByRole('button', { name: 'Notifications — 1 active' }),
+    ).toBeInTheDocument()
+  })
+
   it('surfaces a failed-delivery count badge distinct from the active count', async () => {
     mockNotificationsFetch([], [mockDelivery({ status: 'failed' })])
 
@@ -228,7 +270,7 @@ describe('TopBar notifications', () => {
   it('retries a failed delivery from the notifications menu', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
-      if (url.endsWith('/api/v1/projects/demo/anomalies/signals')) {
+      if (url.endsWith(SIGNALS_URL)) {
         return mockJsonResponse([])
       }
       if (url.endsWith('/api/v1/projects/demo/alert-deliveries?limit=5')) {

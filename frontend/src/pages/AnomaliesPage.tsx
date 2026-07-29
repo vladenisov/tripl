@@ -13,6 +13,12 @@ import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { formatRelativeTime } from '@/lib/datetime'
 import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
+import {
+  DEFAULT_MAGNITUDE_LEVEL,
+  MAGNITUDE_PRESETS,
+  type MagnitudeLevel,
+  relativeEffect,
+} from '@/lib/signalMagnitude'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { MonitoringSignal } from '@/types'
@@ -24,30 +30,10 @@ type NameMap = ReadonlyMap<string, string>
 
 // ───────── Magnitude filter ─────────
 //
-// Signals are ranked by |z|, but z is inflated on low-volume series, so a tiny
-// absolute change on a quiet scope can outrank a large one on a busy scope. The
-// user-facing filter therefore keys off a *relative effect size* — how far the
-// actual count strayed from the expectation, as a fraction of the expectation —
-// which stays meaningful across volumes.
-const MAGNITUDE_PRESETS = [
-  { id: 'all', label: 'All', minRelEffect: 0 },
-  { id: 'significant', label: 'Significant', minRelEffect: 0.5 },
-  { id: 'major', label: 'Major', minRelEffect: 1 },
-] as const
-
-type MagnitudeLevel = (typeof MAGNITUDE_PRESETS)[number]['id']
-
-// Default to "Significant" (±50%) so the flooded list is usable immediately;
-// the control lets users drop to "All" to see everything.
-const DEFAULT_MAGNITUDE_LEVEL: MagnitudeLevel = 'significant'
-
-/** Relative effect: |actual − expected| / max(expected, 1). Preferred over z
- * for the filter because it does not blow up on low-volume series. */
-function relativeEffect(signal: MonitoringSignal): number {
-  return (
-    Math.abs(signal.actual_count - signal.expected_count) / Math.max(signal.expected_count, 1)
-  )
-}
+// The presets, the threshold and relativeEffect() live in @/lib/signalMagnitude
+// so this page, the Overview headline, the top-bar bell and the backend badge
+// all rank and gate signals identically — they drifted apart twice when each
+// surface kept its own copy (tripl-yfsj.1, tripl-jfm3.89).
 
 // The four scopes that have a monitoring detail route (metric scope_ref is the
 // metric definition id, routed via getMetricMonitoringPath); getMonitoringPath

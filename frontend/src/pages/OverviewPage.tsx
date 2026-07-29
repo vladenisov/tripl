@@ -31,6 +31,7 @@ import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
 import { coverageTone, dataSourceHealthLexeme, type StatusLexeme } from '@/lib/statusLexicon'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
+import { selectSignificantSignals } from '@/lib/signalMagnitude'
 import { friendlyScanError } from '@/lib/scanError'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
@@ -44,15 +45,11 @@ import type {
 
 const SIGNAL_LIMIT = 6
 const ACTIVITY_LIMIT = 8
-// Mirrors AnomaliesPage.relativeEffect / MAGNITUDE_PRESETS and the backend
-// metrics_insights_service.SIGNIFICANT_MIN_REL_EFFECT: |actual − expected| /
-// max(expected, 1). Gating the "Open signals" headline on this same threshold keeps
-// it equal to the sidebar badge (project summary monitoring_signal_count) and the
-// Anomalies page's default "Significant" view (issue tripl-yfsj.1).
-const SIGNIFICANT_MIN_REL_EFFECT = 0.5
-function relativeEffect(signal: MonitoringSignal): number {
-  return Math.abs(signal.actual_count - signal.expected_count) / Math.max(signal.expected_count, 1)
-}
+// The magnitude gate lives in @/lib/signalMagnitude, shared with AnomaliesPage,
+// the top-bar bell and the backend's metrics_insights_service. Gating the "Open
+// signals" headline on it keeps the number equal to the sidebar badge (project
+// summary monitoring_signal_count) and the Anomalies page's default
+// "Significant" view (issue tripl-yfsj.1).
 // A successful source connection test older than this is shown as "stale" rather
 // than a confident "healthy" — an old green check is misleading (issue M1).
 const SOURCE_HEALTH_STALE_MS = 24 * 60 * 60 * 1000
@@ -144,11 +141,8 @@ export default function OverviewPage() {
   // Match the AnomaliesPage default "Significant" view so the "Open signals"
   // headline, the sidebar badge (monitoring_signal_count) and the Anomalies page
   // all report the same count (issue tripl-yfsj.1). Sorted biggest-effect-first so
-  // the capped panel previews the top anomalies. `filter` returns a fresh array, so
-  // the subsequent `sort` never mutates the React Query cache.
-  const signals = (signalsQuery.data ?? [])
-    .filter((s) => relativeEffect(s) >= SIGNIFICANT_MIN_REL_EFFECT)
-    .sort((a, b) => relativeEffect(b) - relativeEffect(a))
+  // the capped panel previews the top anomalies.
+  const signals = selectSignificantSignals(signalsQuery.data)
   const activity = activityQuery.data ?? []
   // Only the first SIGNAL_LIMIT rows are rendered, so only their event ids need
   // a name. Fetching them one by one replaces a `GET /events?limit=10000` that

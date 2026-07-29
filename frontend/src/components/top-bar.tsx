@@ -17,6 +17,7 @@ import { alertingApi } from '@/api/alerting'
 import { metricsApi } from '@/api/metrics'
 import { getErrorMessage } from '@/lib/utils'
 import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
+import { selectSignificantSignals } from '@/lib/signalMagnitude'
 import { commandPaletteShortcutLabel } from '@/lib/platform'
 import {
   COMMAND_PALETTE_TRIGGER_ATTR,
@@ -122,8 +123,13 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
   // signals.updated / activity.created, so poll only when the stream is down.
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
   const signalsQuery = useQuery({
-    queryKey: ['topbarNotifications', projectSlug, 'signals'],
-    queryFn: () => metricsApi.getActiveSignals(projectSlug!),
+    // Expanded, then gated on the shared Significant threshold — the same set
+    // the sidebar badge and the Overview headline report. The collapsed variant
+    // this used to call queries only project_total/event_type, so a project
+    // whose anomalies are all event-scope (prod windy-ios: 150 of them) left the
+    // bell completely clean while every other surface showed 30 (tripl-jfm3.89).
+    queryKey: ['topbarNotifications', projectSlug, 'signals', 'expanded'],
+    queryFn: () => metricsApi.getActiveSignals(projectSlug!, undefined, { expanded: true }),
     enabled: !!projectSlug,
     refetchInterval,
     staleTime: 30_000,
@@ -136,7 +142,9 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
     staleTime: 30_000,
   })
 
-  const signals = signalsQuery.data ?? []
+  // Sorted biggest-effect-first, so the four rows previewed below are the four
+  // worst rather than an arbitrary slice.
+  const signals = selectSignificantSignals(signalsQuery.data)
   const deliveries = deliveriesQuery.data?.items ?? []
   // "Active" semantics belong to currently-firing signals only. Deliveries are
   // history (see Recent Alert Deliveries below) and must never be folded in.
