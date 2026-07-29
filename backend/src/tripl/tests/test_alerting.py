@@ -261,6 +261,31 @@ async def test_alert_inbox_false_positive_updates_state_and_thresholds(
         assert state.note == "Rolled back"
 
 
+def test_every_drift_type_the_pipeline_writes_exists_in_the_enum() -> None:
+    """alert_delivery_items.drift_type is a NATIVE Postgres enum.
+
+    A value the candidate builders write but the type does not contain fails the
+    INSERT, and since dispatch runs inside collect_metrics the whole collection
+    transaction dies with it. That is exactly what 'value_drift' did: the scope
+    shipped in d1c2b3a4f5e6, which extended metric_scope_type and forgot
+    alert_drift_type (tripl-jfm3.97).
+
+    SQLite stores enums as unvalidated text, so no behavioural test on this
+    suite can catch it — hence checking the literals against the enum directly.
+    """
+    import re
+    from pathlib import Path
+
+    from tripl.models.domain_enums import AlertDriftType
+
+    source = Path(__file__).resolve().parents[1] / "worker" / "tasks" / "metrics" / "signals.py"
+    written = set(re.findall(r'drift_type=["\']([a-z_]+)["\']', source.read_text()))
+    assert written, "expected to find literal drift_type assignments to check"
+
+    known = {member.value for member in AlertDriftType}
+    assert written <= known, f"drift_type values with no enum member: {sorted(written - known)}"
+
+
 def test_delivery_errors_never_carry_the_destination_secret() -> None:
     """A failed delivery's error text reaches the API and the UI verbatim.
 

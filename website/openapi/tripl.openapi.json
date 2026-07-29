@@ -13903,7 +13903,8 @@
           "range_violation",
           "distribution_shift",
           "missing",
-          "volume_drop"
+          "volume_drop",
+          "value_drift"
         ],
         "title": "AlertDriftType"
       },

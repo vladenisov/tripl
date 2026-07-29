@@ -311,6 +311,19 @@ class TestScanConfigsCRUD:
         assert cancel_resp.status_code == 200
         assert cancel_resp.json()["status"] == "cancelled"
 
+        # A cancelled job is not live, so the config is runnable again.
+        again = await client.post(f"/api/v1/projects/{project['slug']}/scans/{scan_id}/run")
+        assert again.status_code == 201
+
+        # ...but a SECOND run while that one is live is refused. The scheduler
+        # already skipped dispatch in this situation; the manual trigger had no
+        # guard, so a double-click ran two collections over the same metric
+        # windows — and collection deletes a window before rewriting it
+        # (tripl-jfm3.100).
+        concurrent = await client.post(f"/api/v1/projects/{project['slug']}/scans/{scan_id}/run")
+        assert concurrent.status_code == 409, concurrent.text
+        assert "already running" in concurrent.json()["detail"]
+
         # Cancelling an already-terminal job is rejected.
         again = await client.post(
             f"/api/v1/projects/{project['slug']}/scans/{scan_id}/jobs/{job_id}/cancel"

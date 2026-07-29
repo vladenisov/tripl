@@ -327,6 +327,19 @@ def _prepare_alert_deliveries(
             if not anomalies_to_send:
                 continue
 
+            # A muted monitor delivers nothing. The rule states above are still
+            # updated first, deliberately: open/close tracking has to stay
+            # accurate through the mute so the monitor is not stuck "firing" on
+            # a stale scope once the mute lapses.
+            #
+            # AlertRule.muted_until had no reader in the worker at all — the
+            # model comment called worker-side suppression "a separate
+            # follow-up" — so the Monitors UI shipped a Mute button that wrote a
+            # column and changed nothing (tripl-jfm3.99).
+            rule_muted_until = _as_utc(rule.muted_until)
+            if rule_muted_until is not None and rule_muted_until > now:
+                continue
+
             # EVERY item gets a correlation_group_id, not just co-fired ones.
             # The id doubles as the inbox handle, and the inbox only lists items
             # that have one — so while it was reserved for 2+ peers, a solitary
