@@ -22411,6 +22411,11 @@
           "total": {
             "type": "integer",
             "title": "Total"
+          },
+          "active_total": {
+            "type": "integer",
+            "title": "Active Total",
+            "default": 0
           }
         },
         "type": "object",

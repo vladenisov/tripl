@@ -1691,7 +1691,8 @@
           "range_violation",
           "distribution_shift",
           "missing",
-          "volume_drop"
+          "volume_drop",
+          "value_drift"
         ],
         "title": "AlertDriftType",
         "type": "string"
@@ -10176,6 +10177,11 @@
       },
       "MetricDefinitionListResponse": {
         "properties": {
+          "active_total": {
+            "default": 0,
+            "title": "Active Total",
+            "type": "integer"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/MetricDefinitionListItem"
@@ -28263,6 +28269,7 @@
     },
     "/api/v1/projects/{slug}/scans/{scan_id}/jobs": {
       "get": {
+        "description": "Newest jobs first, capped.\n\nThis was uncapped, and the Scans tab fans it out over every scan config on a\n10-second poll: production configs hold 1,366-1,551 jobs each, so an open tab\npulled roughly 4,400 rows every 10 seconds and rendered them unvirtualized\n(tripl-jfm3.107).",
         "operationId": "list_scan_jobs_api_v1_projects__slug__scans__scan_id__jobs_get",
         "parameters": [
           {
@@ -28282,6 +28289,18 @@
               "format": "uuid",
               "title": "Scan Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
             }
           }
         ],

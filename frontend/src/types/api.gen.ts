@@ -2519,7 +2519,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Scan Jobs */
+        /**
+         * List Scan Jobs
+         * @description Newest jobs first, capped.
+         *
+         *     This was uncapped, and the Scans tab fans it out over every scan config on a
+         *     10-second poll: production configs hold 1,366-1,551 jobs each, so an open tab
+         *     pulled roughly 4,400 rows every 10 seconds and rendered them unvirtualized
+         *     (tripl-jfm3.107).
+         */
         get: operations["list_scan_jobs_api_v1_projects__slug__scans__scan_id__jobs_get"];
         put?: never;
         post?: never;
@@ -3531,7 +3539,7 @@ export interface components {
          * AlertDriftType
          * @enum {string}
          */
-        AlertDriftType: "new_field" | "missing_field" | "type_changed" | "enum_violation" | "required_null_violation" | "regex_violation" | "range_violation" | "distribution_shift" | "missing" | "volume_drop";
+        AlertDriftType: "new_field" | "missing_field" | "type_changed" | "enum_violation" | "required_null_violation" | "regex_violation" | "range_violation" | "distribution_shift" | "missing" | "volume_drop" | "value_drift";
         /** AlertInboxActionRequest */
         AlertInboxActionRequest: {
             /**
@@ -6687,6 +6695,11 @@ export interface components {
         };
         /** MetricDefinitionListResponse */
         MetricDefinitionListResponse: {
+            /**
+             * Active Total
+             * @default 0
+             */
+            active_total: number;
             /** Items */
             items: components["schemas"]["MetricDefinitionListItem"][];
             /** Total */
@@ -15417,7 +15430,9 @@ export interface operations {
     };
     list_scan_jobs_api_v1_projects__slug__scans__scan_id__jobs_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+            };
             header?: never;
             path: {
                 slug: string;

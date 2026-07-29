@@ -102,6 +102,7 @@ const TWO_METRICS: MetricDefinitionListResponse = {
     makeItem({ id: 'm-2', name: 'signups', display_name: 'Signups' }),
   ],
   total: 2,
+  active_total: 2,
 }
 
 /** The collect-metric step, reached the way the user reaches it: a scan landed. */
