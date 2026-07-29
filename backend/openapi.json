@@ -15693,6 +15693,14 @@
             "title": "Cells",
             "type": "array"
           },
+          "hourly_resolution": {
+            "title": "Hourly Resolution",
+            "type": "boolean"
+          },
+          "interval": {
+            "title": "Interval",
+            "type": "string"
+          },
           "max_count": {
             "title": "Max Count",
             "type": "integer"
@@ -15720,7 +15728,9 @@
           "scope_ref",
           "cells",
           "max_count",
-          "total_count"
+          "total_count",
+          "interval",
+          "hourly_resolution"
         ],
         "title": "SeasonalityHeatmapResponse",
         "type": "object"

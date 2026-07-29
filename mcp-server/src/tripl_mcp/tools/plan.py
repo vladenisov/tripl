@@ -7,27 +7,70 @@ from typing import Any
 from mcp.server.fastmcp import Context, FastMCP
 
 from tripl_mcp.runtime import client_for
-from tripl_mcp.tools._common import READ_ONLY
+from tripl_mcp.tools._common import (
+    EVENT_TYPE_LIST_FIELDS,
+    FIELD_DEFINITION_FIELDS,
+    READ_ONLY,
+    trim,
+)
 
 
 async def list_event_types(
     slug: str,
     ctx: Context,  # type: ignore[type-arg]
+    branch_id: str | None = None,
 ) -> Any:
+    """List a project's event types on ``branch_id`` (default: main).
+
+    Branch-scoped like every other plan read — without ``branch`` the API
+    resolves main, so an agent working on a branch was silently answered with
+    main's event types (tripl-jfm3.126). Field definitions are NOT embedded
+    here; call ``get_event_type_fields`` for one type's fields.
+    """
     client = client_for(ctx)
-    return await client.get(f"/projects/{slug}/event-types")
+    data = await client.get(
+        f"/projects/{slug}/event-types",
+        params={"branch": branch_id},
+    )
+    if not isinstance(data, list):
+        return data
+    return [
+        {
+            **trim(item, EVENT_TYPE_LIST_FIELDS),
+            "field_count": len(item.get("field_definitions") or [])
+            if isinstance(item, dict)
+            else 0,
+        }
+        for item in data
+    ]
 
 
 async def get_event_type_fields(
     slug: str,
     event_type_id: str,
     ctx: Context,  # type: ignore[type-arg]
+    branch_id: str | None = None,
 ) -> dict[str, Any]:
     client = client_for(ctx)
-    event_type = await client.get(f"/projects/{slug}/event-types/{event_type_id}")
-    fields = await client.get(f"/projects/{slug}/event-types/{event_type_id}/fields")
-    merged = dict(event_type) if isinstance(event_type, dict) else {"event_type": event_type}
-    merged["fields"] = fields
+    params = {"branch": branch_id}
+    event_type = await client.get(
+        f"/projects/{slug}/event-types/{event_type_id}",
+        params=params,
+    )
+    fields = await client.get(
+        f"/projects/{slug}/event-types/{event_type_id}/fields",
+        params=params,
+    )
+    merged = (
+        dict(trim(event_type, EVENT_TYPE_LIST_FIELDS))
+        if isinstance(event_type, dict)
+        else {"event_type": event_type}
+    )
+    merged["fields"] = (
+        [trim(field, FIELD_DEFINITION_FIELDS) for field in fields]
+        if isinstance(fields, list)
+        else fields
+    )
     return merged
 
 
@@ -81,9 +124,11 @@ def register(mcp: FastMCP) -> None:
         name="list_event_types",
         annotations=READ_ONLY,
         description=(
-            "List the project's event types (schemas events belong to), each with its "
-            "embedded field definitions. Use before creating events to pick the right "
-            "event_type_id. Requires a tk_r_ or tk_w_ key."
+            "List the project's event types (schemas events belong to) with a "
+            "field_count each — field definitions are NOT embedded; call "
+            "get_event_type_fields for one type's fields. Use before creating events "
+            "to pick the right event_type_id. Pass branch_id to read a plan branch "
+            "instead of main. Requires a tk_r_ or tk_w_ key."
         ),
     )(list_event_types)
     mcp.tool(
@@ -91,9 +136,10 @@ def register(mcp: FastMCP) -> None:
         annotations=READ_ONLY,
         description=(
             "Fetch one event type merged with its field definitions (name, "
-            "display_name, field_type, required, enum options) under a 'fields' key. "
-            "Consult this before writing field_values so payloads validate. Requires "
-            "a tk_r_ or tk_w_ key."
+            "display_name, field_type, is_required, enum_options, sensitivity) under "
+            "a 'fields' key. Consult this before writing field_values so payloads "
+            "validate. Pass branch_id to read a plan branch instead of main. "
+            "Requires a tk_r_ or tk_w_ key."
         ),
     )(get_event_type_fields)
     mcp.tool(

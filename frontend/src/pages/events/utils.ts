@@ -22,6 +22,23 @@ export const EMPTY_META_FIELDS: MetaFieldDefinition[] = []
 export const EMPTY_VARIABLES: Variable[] = []
 export const EMPTY_TAGS: string[] = []
 export const EMPTY_SIGNALS: MonitoringSignal[] = []
+
+// Per-row queries key on the event ids they cover, so the ids are split into
+// fixed-size, INDEX-ALIGNED buckets rather than sent as one accumulated list.
+// With 200-row pages + infinite scroll, an all-ids key changed on every append
+// and re-sent the entire set; bucketing keeps each already-loaded bucket's key
+// (and cache entry) stable, so appending a page only fetches the new bucket.
+// Window metrics were fixed this way in tripl-jfm3.51; the signals query next to
+// them kept the accumulating key until tripl-jfm3.121.
+export const EVENT_ID_BUCKET_SIZE = 100
+
+export function chunkEventIds(eventIds: string[]): string[][] {
+  const buckets: string[][] = []
+  for (let start = 0; start < eventIds.length; start += EVENT_ID_BUCKET_SIZE) {
+    buckets.push(eventIds.slice(start, start + EVENT_ID_BUCKET_SIZE))
+  }
+  return buckets
+}
 export const EMPTY_EVENT_WINDOW_METRICS: {
   event_id: string
   scan_config_id: string | null

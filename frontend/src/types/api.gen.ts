@@ -8747,6 +8747,10 @@ export interface components {
         SeasonalityHeatmapResponse: {
             /** Cells */
             cells: components["schemas"]["SeasonalityCell"][];
+            /** Hourly Resolution */
+            hourly_resolution: boolean;
+            /** Interval */
+            interval: string;
             /** Max Count */
             max_count: number;
             /**

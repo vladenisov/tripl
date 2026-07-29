@@ -136,6 +136,24 @@ export function SeasonalityHeatmap({
     )
   }
 
+  // A daily or weekly scan floors every bucket into hour 0, so 23 of each row's
+  // 24 cells can never hold anything. Drawing the grid anyway reads as missing
+  // data — say what is actually true instead (tripl-jfm3.128).
+  if (data.hourly_resolution === false) {
+    return (
+      <Card>
+        <CardContent className="space-y-2 p-6">
+          <h2 className="text-sm font-semibold">Hour × weekday heatmap</h2>
+          <p className="text-sm text-muted-foreground">
+            This scan collects every <span className="font-medium">{data.interval}</span>, so
+            there is no hour-of-day detail to plot — every bucket falls on one hour.
+            Set the scan to an hourly (or finer) interval to see this heatmap.
+          </p>
+        </CardContent>
+      </Card>
+    )
+  }
+
   const { busiest, quietest } = scale
   const gridSummary =
     busiest && quietest
@@ -153,6 +171,12 @@ export function SeasonalityHeatmap({
             <span className="font-medium">{formatCount(data.total_count)}</span>.
           </p>
         </div>
+        {/* The ramp is a RANK scale, not a count scale: buildScale spreads active
+            slots across the luminance range by quantile so a skewed distribution
+            does not collapse into a uniform block. Labelling the ends with the
+            min and max while implying a linear count in between made a mid-tone
+            unreadable — it means "middle of the pack", not the midpoint of these
+            two numbers (tripl-jfm3.127). */}
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
           <span className="tabular-nums">{formatCount(scale.minCount)}</span>
           <div
@@ -168,7 +192,12 @@ export function SeasonalityHeatmap({
             ))}
           </div>
           <span className="tabular-nums">{formatCount(scale.maxCount)}</span>
-          <span className="ml-0.5">events / slot</span>
+          <span
+            className="ml-0.5"
+            title="Slots are shaded by rank among the active slots, not linearly by count, so a skewed distribution still spreads across the ramp. Hover a cell for its exact count."
+          >
+            events / slot, shaded by rank
+          </span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full table-fixed text-[10px]">

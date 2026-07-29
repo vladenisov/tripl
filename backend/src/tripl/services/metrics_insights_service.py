@@ -17,6 +17,7 @@ from tripl.core.analyzers.anomaly_detector import (
     SCOPE_METRIC,
     SCOPE_PROJECT_TOTAL,
 )
+from tripl.core.intervals import get_interval
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.domain_enums import MetricBreakdownAnomalyKind
 from tripl.models.event_metric import EventMetric
@@ -701,6 +702,18 @@ async def get_seasonality_heatmap(
                 )
             )
 
+    # Say which interval produced these bins. Below an hour of resolution every
+    # bucket floors into hour 0, so the 7x24 grid is 23/24 structurally empty and
+    # a reader takes it for missing data rather than a coarser scan
+    # (tripl-jfm3.128).
+    interval_code = scan_config.interval or ""
+    try:
+        hourly_resolution = get_interval(interval_code).delta < timedelta(days=1)
+    except ValueError:
+        # Unset or unknown is a configuration problem, not a reason to fail a
+        # read-only chart: assume the finer rendering and let the grid speak.
+        hourly_resolution = True
+
     return SeasonalityHeatmapResponse(
         scan_config_id=scan_config_id,
         scope_type=scope_type,
@@ -708,6 +721,8 @@ async def get_seasonality_heatmap(
         cells=cells,
         max_count=max_count,
         total_count=total,
+        interval=interval_code,
+        hourly_resolution=hourly_resolution,
     )
 
 

@@ -111,27 +111,30 @@ point `SEARCH_EMBEDDING_*` and `AI_BASE_URL` at that endpoint.
 ### Compose / environment
 
 Like all backend settings, these are read from the process environment or a
-`.env` file. In Docker Compose, add them to the API service environment:
+`.env` file. In Docker Compose, add them to the shared `x-app-environment`
+anchor at the top of `compose.yaml`, **not** to a single service: `app` serves
+the API while `celery-worker` runs the embedding task, and both read these
+settings. Every service that runs the app image inherits the anchor.
 
 ```yaml
-services:
-  api:
-    environment:
-      # Semantic search embeddings (opt-in)
-      SEARCH_EMBEDDINGS_ENABLED: "true"
-      SEARCH_EMBEDDING_PROVIDER: openai
-      SEARCH_EMBEDDING_MODEL: text-embedding-3-small
-      SEARCH_EMBEDDING_DIMENSIONS: "1536"
+x-app-environment: &app-environment
+  # …existing entries…
 
-      # AI assistance (opt-in)
-      AI_ENABLED: "true"
-      AI_BASE_URL: https://api.openai.com/v1
-      AI_MODEL: gpt-4o-mini
-      AI_TIMEOUT_SECONDS: "30"
-      AI_MAX_OUTPUT_TOKENS: "700"
+  # Semantic search embeddings (opt-in)
+  SEARCH_EMBEDDINGS_ENABLED: "true"
+  SEARCH_EMBEDDING_PROVIDER: openai
+  SEARCH_EMBEDDING_MODEL: text-embedding-3-small
+  SEARCH_EMBEDDING_DIMENSIONS: "1536"
 
-      # Shared credential fallback for both groups
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+  # AI assistance (opt-in)
+  AI_ENABLED: "true"
+  AI_BASE_URL: https://api.openai.com/v1
+  AI_MODEL: gpt-4o-mini
+  AI_TIMEOUT_SECONDS: "30"
+  AI_MAX_OUTPUT_TOKENS: "700"
+
+  # Shared credential fallback for both groups
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
 ```
 
 Provide the key through your secret mechanism rather than committing it. See the

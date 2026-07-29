@@ -216,7 +216,7 @@ A handful of conditions are surfaced **verbatim** because they're actionable:
 
 | Adapter | Common cause | Fix |
 | --- | --- | --- |
-| **PostgreSQL** | TLS negotiation or unreachable host; non-local hosts default to `sslmode=prefer`, local hosts to no SSL. | Confirm host/port reachable from the worker container; check the server's TLS settings. |
+| **PostgreSQL** | TLS negotiation or unreachable host. Non-local hosts default to **`sslmode=require`**, so a remote server with no TLS fails loudly rather than silently falling back to plaintext; localhost defaults to `prefer`. | Confirm host/port reachable from the worker container; check the server's TLS settings. A remote server that genuinely has no TLS needs `sslmode` set explicitly to `prefer`/`disable` on the data source. |
 | **ClickHouse** | Wrong host/port/secure flag, or a probe query that returns no rows. | Verify connection params; *"Connection probe returned no rows"* means it connected but the probe was empty — check the query/permissions. |
 | **BigQuery** | Missing project id or invalid service-account JSON: *"BigQuery: host (project_id) is required"* / *"BigQuery: service-account JSON credentials are required"* / *"BigQuery: invalid service-account JSON"*. | Set the project id in the host field and paste valid service-account JSON. |
 

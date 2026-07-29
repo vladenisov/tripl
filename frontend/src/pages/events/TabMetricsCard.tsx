@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, ChevronDown } from 'lucide-react'
 
 import { metricsApi } from '@/api/metrics'
+import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -65,11 +66,8 @@ export function TabMetricsCard({
   const [rangeDays, setRangeDays] = useState(TAB_METRICS_RANGE_DAYS_DEFAULT)
   const [granularity, setGranularity] = useState<MetricsGranularity>('hour')
 
-  const range = useMemo(() => {
-    const to = new Date()
-    const from = new Date(to.getTime() - rangeDays * 24 * 60 * 60 * 1000)
-    return { from: from.toISOString(), to: to.toISOString() }
-  }, [rangeDays])
+  // Live bound, not a mount-time snapshot (tripl-jfm3.114).
+  const range = useLiveTimeRange(rangeDays * 24 * 60 * 60 * 1000)
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   const { data: tabMetrics, isLoading } = useQuery({

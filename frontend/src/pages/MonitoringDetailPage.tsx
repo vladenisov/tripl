@@ -37,6 +37,7 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useActiveBranchId } from '@/hooks/useBranch'
+import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
 import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/metricFormat'
 import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, defaultGranularityForRange, type MetricsGranularity } from '@/lib/metrics'
@@ -292,11 +293,9 @@ export default function MonitoringDetailPage() {
   // primary chart/tab reads "Value" for the metric scope and "Volume" elsewhere.
   const volumeLabel = scope === 'metric' ? 'Value' : 'Volume'
 
-  const timeRange = useMemo(() => {
-    const to = new Date()
-    const from = new Date(to.getTime() - rangeDays * 24 * 60 * 60 * 1000)
-    return { from: from.toISOString(), to: to.toISOString() }
-  }, [rangeDays])
+  // Follows the clock: the upper bound used to be pinned at mount, so a chart
+  // left open never showed a bucket recorded after you opened it (tripl-jfm3.114).
+  const timeRange = useLiveTimeRange(rangeDays * 24 * 60 * 60 * 1000)
   // Live-metric/monitoring queries fall back to polling only while the stream is
   // unavailable; metric_collection.updated / signals.updated refresh them live.
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
