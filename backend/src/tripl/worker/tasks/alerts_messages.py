@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections import Counter
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
@@ -315,6 +316,14 @@ def _build_ai_explanation(
     """
     ai_config = app_settings_service.get_ai_config_sync()
     lines: list[str] = [f"Project: {project_name}", f"Scan: {scan_name}", "Alert items:"]
+    # Every item now carries a correlation_group_id (it doubles as the inbox
+    # handle), so its mere presence no longer means "co-fired". Count peers in
+    # this delivery instead, or a solitary alert would claim companions.
+    group_sizes: Counter[uuid.UUID | None] = Counter(
+        item.correlation_group_id
+        for item in delivery.items
+        if item.correlation_group_id is not None
+    )
     for item in delivery.items[:_AI_EXPLANATION_MAX_ITEMS]:
         sparkline, top_movers = item_context_cache.get(item.id, ("", ""))
         if item.scope_type == SCOPE_RELEASE_REGRESSION:
@@ -349,7 +358,7 @@ def _build_ai_explanation(
             line += f", recent trend (old→new): {sparkline}"
         if top_movers:
             line += f", top movers: {top_movers}"
-        if item.correlation_group_id is not None:
+        if group_sizes.get(item.correlation_group_id, 0) > 1:
             line += " [co-fired with other items]"
         lines.append(line)
     try:

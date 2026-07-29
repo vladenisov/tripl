@@ -1312,10 +1312,140 @@ def test_reserved_catalog_columns_survives_malformed_group_rules() -> None:
             {"name": "conditions not a list", "conditions": {"field": "x"}},
             {"name": "condition not a mapping", "conditions": ["nope"]},
             {"name": "blank field", "conditions": [{"field": "   ", "pattern": "^x"}]},
+            # A non-string field used to be coerced with str(), so null became the
+            # literal reserved column "None" — which would then exempt a real
+            # column of that name from plan-gap reporting (Copilot review, #72).
+            {"name": "null field", "conditions": [{"field": None, "pattern": "^x"}]},
+            {"name": "numeric field", "conditions": [{"field": 7, "pattern": "^x"}]},
+            {"name": "no field key", "conditions": [{"pattern": "^x"}]},
             {"name": "good", "conditions": [{"field": "event_name", "pattern": "^x"}]},
         ],
     )
     assert reserved_catalog_columns(config) == {"event_time", "event_name"}
+
+
+def test_correlation_group_id_is_the_same_across_buckets() -> None:
+    """The group is the INCIDENT, not the hour it was last seen.
+
+    With the bucket in the key, every collection minted a group the user had
+    never acted on, so acknowledging/resolving/muting in the inbox silenced
+    exactly the delivery already in hand and the next hour alerted again
+    (tripl-jfm3.91).
+    """
+    from tripl.worker.tasks.metrics.dispatch import _correlation_group_id
+
+    scan_config_id = uuid.uuid4()
+    rule_id = uuid.uuid4()
+
+    first = _correlation_group_id(scan_config_id=scan_config_id, rule_id=rule_id, direction="drop")
+    second = _correlation_group_id(scan_config_id=scan_config_id, rule_id=rule_id, direction="drop")
+    assert first == second
+
+    # Direction still separates incidents: a spike is not the drop you acked.
+    spike = _correlation_group_id(scan_config_id=scan_config_id, rule_id=rule_id, direction="spike")
+    assert spike != first
+    # And so does the rule.
+    other_rule = _correlation_group_id(
+        scan_config_id=scan_config_id, rule_id=uuid.uuid4(), direction="drop"
+    )
+    assert other_rule != first
+
+
+def test_acknowledged_groups_are_suppressed(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Acknowledge must stop re-delivery, like resolve/mute already did.
+
+    It was the one inbox action with no effect on delivery at all, so an
+    operator who acked an incident kept being paged for it every hour.
+    """
+    from tripl.models.alert_correlation_state import AlertCorrelationState
+    from tripl.worker.tasks.metrics.dispatch import _suppressed_correlation_group_ids
+
+    with sync_session_factory() as session:
+        project = Project(name="Ack", slug="ack-suppression", description="")
+        session.add(project)
+        session.flush()
+        acknowledged = uuid.uuid4()
+        still_open = uuid.uuid4()
+        session.add_all(
+            [
+                AlertCorrelationState(
+                    project_id=project.id,
+                    correlation_group_id=acknowledged,
+                    status="acknowledged",
+                ),
+                AlertCorrelationState(
+                    project_id=project.id,
+                    correlation_group_id=still_open,
+                    status="open",
+                ),
+            ]
+        )
+        session.flush()
+
+        suppressed = _suppressed_correlation_group_ids(session, project_id=project.id)
+
+    assert acknowledged in suppressed
+    assert still_open not in suppressed
+
+
+def test_closing_an_incident_reopens_its_inbox_decision(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Suppression must not outlive the incident, or it would be permanent.
+
+    Acknowledging a drop silences that rule's drops — but only until every scope
+    stops firing. The next drop is a new incident and has to alert.
+    """
+    from tripl.models.alert_correlation_state import AlertCorrelationState
+    from tripl.worker.tasks.metrics.dispatch import (
+        _correlation_group_id,
+        _reopen_closed_incidents,
+    )
+
+    with sync_session_factory() as session:
+        project = Project(name="Reopen", slug="reopen-incident", description="")
+        session.add(project)
+        session.flush()
+        scan_config_id = uuid.uuid4()
+        rule_id = uuid.uuid4()
+        group_id = _correlation_group_id(
+            scan_config_id=scan_config_id, rule_id=rule_id, direction="drop"
+        )
+        unrelated = uuid.uuid4()
+        session.add_all(
+            [
+                AlertCorrelationState(
+                    project_id=project.id,
+                    correlation_group_id=group_id,
+                    status="acknowledged",
+                ),
+                AlertCorrelationState(
+                    project_id=project.id,
+                    correlation_group_id=unrelated,
+                    status="acknowledged",
+                ),
+            ]
+        )
+        session.flush()
+
+        _reopen_closed_incidents(
+            session,
+            project_id=project.id,
+            scan_config_id=scan_config_id,
+            rule_id=rule_id,
+        )
+        session.flush()
+
+        states = {
+            state.correlation_group_id: state.status
+            for state in session.execute(select(AlertCorrelationState)).scalars()
+        }
+
+    assert states[group_id] == "open"
+    # Another rule's decision is untouched.
+    assert states[unrelated] == "acknowledged"
 
 
 def test_ensure_event_type_skips_reserved_columns(

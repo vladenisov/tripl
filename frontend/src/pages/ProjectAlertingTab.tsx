@@ -235,6 +235,12 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
 
   const destinationMutation = editingDestination ? updateDestinationMut : createDestinationMut
 
+  // Draft note per group. The backend has accepted a note on every inbox action
+  // since the feature shipped, but nothing ever sent one — the field was
+  // unreachable, so an operator had no way to record WHY they acked something
+  // (tripl-jfm3.91). Omitting the key leaves the stored note untouched.
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({})
+
   const inboxActionMut = useMutation({
     mutationFn: ({
       group,
@@ -244,12 +250,21 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
       action: 'acknowledge' | 'resolve' | 'mute' | 'reopen' | 'false_positive'
     }) => {
       const mutedUntil = new Date(Date.now() + 7 * 86_400_000).toISOString()
+      const draft = (noteDrafts[group.correlation_group_id] ?? '').trim()
       return alertingApi.applyInboxAction(slug, group.correlation_group_id, {
         action,
+        ...(draft ? { note: draft } : {}),
         ...(action === 'mute' ? { muted_until: mutedUntil } : {}),
       })
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
+      // The draft has been persisted server-side; drop it so the input goes
+      // back to showing the placeholder rather than a stale copy.
+      setNoteDrafts(current => {
+        const rest = { ...current }
+        delete rest[variables.group.correlation_group_id]
+        return rest
+      })
       qc.invalidateQueries({ queryKey: ['alertInbox', slug] })
       qc.invalidateQueries({ queryKey: ['alertDeliveries', slug] })
       qc.invalidateQueries({ queryKey: ['scans', slug] })
@@ -496,6 +511,24 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                           muted until {formatDateTime(group.muted_until)}
                         </div>
                       )}
+                      {group.note && (
+                        <p className="mt-2 rounded border-l-2 border-muted-foreground/30 bg-muted/40 px-2 py-1 text-[11px] leading-5">
+                          {group.note}
+                        </p>
+                      )}
+                      <Input
+                        aria-label={`Note for alert group ${group.correlation_group_id}`}
+                        placeholder={group.note ? 'Replace the note…' : 'Add a note (sent with the next action)'}
+                        maxLength={2000}
+                        value={noteDrafts[group.correlation_group_id] ?? ''}
+                        onChange={event =>
+                          setNoteDrafts(current => ({
+                            ...current,
+                            [group.correlation_group_id]: event.target.value,
+                          }))
+                        }
+                        className="mt-2 h-7 text-[11px]"
+                      />
                     </div>
                   ))}
                 </div>

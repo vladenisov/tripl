@@ -12,6 +12,7 @@ from tripl.models.alert_correlation_state import AlertCorrelationState
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_rule_state import AlertRuleState
+from tripl.models.domain_enums import AnomalyDirection
 from tripl.models.scan_config import ScanConfig
 from tripl.worker.tasks.metrics.alert_payload import (
     _build_alert_scope_names,
@@ -43,13 +44,31 @@ def _correlation_group_id(
     *,
     scan_config_id: uuid.UUID,
     rule_id: uuid.UUID,
-    bucket: datetime,
     direction: str,
 ) -> uuid.UUID:
+    """The stable handle for one ongoing incident: a rule firing one direction.
+
+    The bucket used to be part of this key, which made every hour of the same
+    incident a brand-new group. Nothing the user did in the inbox could survive
+    the next collection: acknowledging, resolving or muting a group silenced
+    exactly the bucket already delivered, and an hour later an unseen group
+    alerted again (tripl-jfm3.91).
+
+    Dropping the bucket makes the group live as long as the incident does.
+    ``_reopen_closed_incidents`` resets it once every scope of the rule has
+    closed, so a genuinely new incident is never silenced by an old decision.
+    """
     return uuid.uuid5(
         _CORRELATION_NAMESPACE,
-        f"{scan_config_id}:{rule_id}:{bucket.isoformat()}:{direction}",
+        f"{scan_config_id}:{rule_id}:{direction}",
     )
+
+
+# Statuses that stop re-delivery. ``acknowledged`` means "seen, being worked on"
+# — it belongs here: an operator who acked an incident and kept getting paged
+# for it every hour reported the inbox as decorative, which it was, since ack
+# was the one action with no effect on delivery at all (tripl-jfm3.91).
+_SUPPRESSING_INBOX_STATUSES = ("acknowledged", "resolved", "false_positive", "muted")
 
 
 def _suppressed_correlation_group_ids(
@@ -61,7 +80,7 @@ def _suppressed_correlation_group_ids(
     rows = session.execute(
         select(AlertCorrelationState).where(
             AlertCorrelationState.project_id == project_id,
-            AlertCorrelationState.status.in_(("resolved", "false_positive", "muted")),
+            AlertCorrelationState.status.in_(_SUPPRESSING_INBOX_STATUSES),
         )
     ).scalars()
     suppressed: set[uuid.UUID] = set()
@@ -72,6 +91,38 @@ def _suppressed_correlation_group_ids(
             continue
         suppressed.add(state.correlation_group_id)
     return suppressed
+
+
+def _reopen_closed_incidents(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    scan_config_id: uuid.UUID,
+    rule_id: uuid.UUID,
+) -> None:
+    """Clear an inbox decision once the incident it was about is over.
+
+    Without this, suppression would be permanent: acknowledging a drop would
+    silence that rule's drops forever. Called only when the rule has no active
+    scope left, so the next firing is a new incident and alerts normally.
+    """
+    group_ids = [
+        _correlation_group_id(
+            scan_config_id=scan_config_id,
+            rule_id=rule_id,
+            direction=direction.value,
+        )
+        for direction in AnomalyDirection
+    ]
+    for state in session.execute(
+        select(AlertCorrelationState).where(
+            AlertCorrelationState.project_id == project_id,
+            AlertCorrelationState.correlation_group_id.in_(group_ids),
+            AlertCorrelationState.status != "open",
+        )
+    ).scalars():
+        state.status = "open"
+        state.muted_until = None
 
 
 def _touch_correlation_state(
@@ -194,6 +245,16 @@ def _prepare_alert_deliveries(
                 if existing_state.is_active and key not in matched_keys:
                     existing_state.is_active = False
                     existing_state.closed_at = now
+            # The incident is over once no scope of this rule is firing. Clear
+            # any inbox decision now so the NEXT incident is not silenced by a
+            # stale acknowledge — suppression would otherwise be permanent.
+            if existing_states and not any(state.is_active for state in existing_states.values()):
+                _reopen_closed_incidents(
+                    session,
+                    project_id=config.project_id,
+                    scan_config_id=config.id,
+                    rule_id=rule.id,
+                )
 
             anomalies_to_send: list[AlertMatchCandidate] = []
             for anomaly in matched_anomalies:
@@ -243,26 +304,20 @@ def _prepare_alert_deliveries(
             if not anomalies_to_send:
                 continue
 
-            # Correlate anomalies that co-fired in the same bucket+direction
-            # within this delivery. Anything with at least one peer gets a
-            # shared correlation_group_id so the UI can chip + group rows.
-            correlation_groups: dict[tuple[datetime, str], list[AlertMatchCandidate]] = {}
-            for anomaly in anomalies_to_send:
-                correlation_groups.setdefault((anomaly.bucket, anomaly.direction), []).append(
-                    anomaly
-                )
+            # EVERY item gets a correlation_group_id, not just co-fired ones.
+            # The id doubles as the inbox handle, and the inbox only lists items
+            # that have one — so while it was reserved for 2+ peers, a solitary
+            # alert never reached the inbox and no action could reach it either.
+            # That is the common case, and it was unactionable (tripl-jfm3.91).
+            # Co-firing is now derived from the peer count when rendering, not
+            # from whether the id exists.
             correlation_by_anomaly: dict[int, uuid.UUID] = {}
-            for (bucket, direction), peers in correlation_groups.items():
-                if len(peers) < 2:
-                    continue
-                group_id = _correlation_group_id(
+            for anomaly in anomalies_to_send:
+                correlation_by_anomaly[id(anomaly)] = _correlation_group_id(
                     scan_config_id=config.id,
                     rule_id=rule.id,
-                    bucket=bucket,
-                    direction=direction,
+                    direction=anomaly.direction,
                 )
-                for peer in peers:
-                    correlation_by_anomaly[id(peer)] = group_id
 
             if suppressed_group_ids:
                 anomalies_to_send = [

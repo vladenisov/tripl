@@ -13,12 +13,21 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 // Maps correlation_group_id -> a stable short label ("A", "B", ...). The
 // concrete ids are UUIDs and aren't worth showing; the per-delivery letter is
 // enough for the eye to spot rows that co-fired.
+//
+// Only groups with a PEER get a letter. Every item now carries a group id — it
+// doubles as the inbox handle — so labelling on mere presence would put a badge
+// on every row and the letter would stop meaning "these fired together".
 function buildCorrelationLabels(items: AlertDeliveryItem[]): Map<string, string> {
+  const sizes = new Map<string, number>()
+  for (const item of items) {
+    const id = item.correlation_group_id
+    if (id) sizes.set(id, (sizes.get(id) ?? 0) + 1)
+  }
   const labels = new Map<string, string>()
   let cursor = 0
   for (const item of items) {
     const id = item.correlation_group_id
-    if (id && !labels.has(id)) {
+    if (id && (sizes.get(id) ?? 0) > 1 && !labels.has(id)) {
       labels.set(id, String.fromCharCode(65 + cursor))
       cursor += 1
     }

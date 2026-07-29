@@ -37,9 +37,16 @@ def _event_group_rule_columns(config: ScanConfig) -> set[str]:
         for condition in conditions:
             if not isinstance(condition, Mapping):
                 continue
-            field = str(condition.get("field", "")).strip()
-            if field:
-                columns.add(field)
+            # Only a real string is a column name. Coercing with str() turned a
+            # ``{"field": null}`` condition into the literal column "None" and
+            # reserved it, which would silently exempt a column actually named
+            # "None" from plan-gap reporting (Copilot review, PR #72).
+            field = condition.get("field")
+            if not isinstance(field, str):
+                continue
+            name = field.strip()
+            if name:
+                columns.add(name)
     return columns
 
 

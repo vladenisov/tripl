@@ -68,6 +68,102 @@
         }
       }
     },
+    "/api/v1/auth/invitations/{token}": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Preview Invitation",
+        "description": "Show who an invitation is for, before the invitee has an account.\n\nUnauthenticated by necessity \u2014 the whole point is that this person cannot\nsign in yet. It discloses nothing the token holder does not already have:\nthe address it was issued to, the role it grants, and when it lapses. It\ndoes not reveal whether the instance has other users, or who they are.\n\nShares the cheap /status bucket rather than the register bucket: previewing\nis a read, and it must not consume the quota the invitee needs to actually\nredeem. Unknown, expired and used tokens all return the same 400.",
+        "operationId": "preview_invitation_api_v1_auth_invitations__token__get",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationPreview"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/invitations/{token}/accept": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Accept Invitation",
+        "description": "Redeem an invitation into an account, and sign the new user straight in.\n\nReachable regardless of ``registration_mode`` \u2014 that is the entire point:\nan owner-issued, single-use, expiring, address-bound invitation is a\ndifferent mechanism from the instance-wide door, so a closed instance can\nstill onboard exactly the people its owner named.\n\nOn the register rate-limit bucket, so guessing tokens costs the same as\nhammering signup.",
+        "operationId": "accept_invitation_api_v1_auth_invitations__token__accept_post",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationAcceptRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthUserResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "tags": [
@@ -11797,6 +11893,109 @@
         }
       }
     },
+    "/api/v1/users/invitations": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "List Invitations",
+        "description": "Outstanding invitations. Owner-only: this is the roster of pending access.",
+        "operationId": "list_invitations_api_v1_users_invitations_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/InvitationResponse"
+                  },
+                  "type": "array",
+                  "title": "Response List Invitations Api V1 Users Invitations Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Create Invitation",
+        "description": "Invite one person, at a role the owner picks.\n\n``OwnerUserDep`` is owner-only AND rejects API keys of any scope, so minting\nan account always requires an interactive owner session \u2014 an automation\ntoken can never conjure a new identity.\n\nThe redeem link is returned in the body, not merely emailed: SMTP is\noptional and unconfigured on many instances, so a body-only path is the one\nthat always works. It appears here and nowhere else.",
+        "operationId": "create_invitation_api_v1_users_invitations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationCreatedResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/invitations/{invitation_id}": {
+      "delete": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Revoke Invitation",
+        "description": "Revoke an invitation; its link stops working immediately.",
+        "operationId": "revoke_invitation_api_v1_users_invitations__invitation_id__delete",
+        "parameters": [
+          {
+            "name": "invitation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Invitation Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/users": {
       "get": {
         "tags": [
@@ -20966,6 +21165,157 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "InvitationAcceptRequest": {
+        "properties": {
+          "password": {
+            "type": "string",
+            "maxLength": 255,
+            "title": "Password"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "title": "InvitationAcceptRequest",
+        "description": "Redeeming an invitation.\n\nCarries no email: the address comes from the invitation itself, so a link\ncannot be turned into an account for someone else. Password strength is the\nsame policy as registration \u2014 enforced here at the schema boundary, so an\ninvalid password never reaches the service."
+      },
+      "InvitationCreate": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "title": "Email"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole",
+            "default": "editor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "title": "InvitationCreate",
+        "description": "What an owner submits to invite one person."
+      },
+      "InvitationCreatedResponse": {
+        "properties": {
+          "invitation": {
+            "$ref": "#/components/schemas/InvitationResponse"
+          },
+          "accept_path": {
+            "type": "string",
+            "title": "Accept Path"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "invitation",
+          "accept_path",
+          "expires_at"
+        ],
+        "title": "InvitationCreatedResponse",
+        "description": "The mint response \u2014 the ONLY place the redeem link ever appears.\n\n``accept_path`` is a path, not an absolute URL: the backend does not reliably\nknow its own public origin (it sits behind a proxy, and the SPA may be served\nfrom a different host), so the client joins it to its own origin rather than\nthe server guessing wrong and producing an unusable link."
+      },
+      "InvitationPreview": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "title": "Email"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "email",
+          "role",
+          "expires_at"
+        ],
+        "title": "InvitationPreview",
+        "description": "What the redeem screen may show before an account exists.\n\nReveals only what the person holding the link already has, so it stays\nunauthenticated. Notably it does NOT confirm whether the instance has other\nusers or what they are."
+      },
+      "InvitationResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole"
+          },
+          "invited_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invited By User Id"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "is_expired": {
+            "type": "boolean",
+            "title": "Is Expired",
+            "description": "Whether this link has aged out.\n\nComputed rather than stored so it cannot go stale, and surfaced because\nexpired-but-unused rows are deliberately still listed \u2014 an owner needs\nto see that a link they sent no longer works.",
+            "readOnly": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "role",
+          "invited_by_user_id",
+          "expires_at",
+          "created_at",
+          "is_expired"
+        ],
+        "title": "InvitationResponse",
+        "description": "A pending invitation as shown on the Members screen.\n\nCarries no token and no digest of one: the raw token is returned exactly\nonce, by the create call, and listing invitations must never hand out a way\nto redeem them."
       },
       "LoginRequest": {
         "properties": {

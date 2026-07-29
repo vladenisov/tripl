@@ -489,8 +489,12 @@ class AlertDeliveryItemResponse(BaseModel):
     drift_field: str | None
     drift_type: AlertDriftType | None
     sample_value: str | None
-    # Items that co-fired in the same bucket+direction inside one delivery
-    # share this id. NULL means the row is a singleton (no peers).
+    # The incident this row belongs to: one (scan config, rule, direction).
+    # It is also the handle the alert inbox acts on, so EVERY item written since
+    # tripl-jfm3.91 carries one — a solitary alert had none before and was
+    # therefore invisible to the inbox and impossible to acknowledge. Co-firing
+    # is the peer COUNT within a delivery, not the presence of this id. NULL
+    # only on rows written by older releases.
     correlation_group_id: uuid.UUID | None = None
 
     model_config = {"from_attributes": True}

@@ -175,10 +175,20 @@ Each match creates a **delivery** that moves through `pending → sent` or
 deliveries that get stuck (roughly every 5 minutes, up to a few attempts). You can
 **retry** failed deliveries manually from the UI.
 
-The **Inbox** groups alerts that fired **together** — two or more items in the same
-bucket and direction — over the last 30 days; isolated single-scope firings aren't
-shown there. From the Inbox you can **acknowledge**, **resolve**, **mute**,
-**reopen**, or mark a group as a **false positive**.
+The **Inbox** is one row per **incident** — a rule firing in one direction on a
+scan — over the last 30 days. An incident stays the same row for as long as it
+keeps firing, however many buckets and scopes it spans, so a decision you make
+about it holds. From the Inbox you can **acknowledge**, **resolve**, **mute**,
+**reopen**, or mark it a **false positive**, and attach a **note** saying why.
+
+**Acknowledge, resolve and mute all stop further deliveries** for that incident.
+The suppression lasts until the incident is over — once no scope of the rule is
+firing any more, the row returns to `open` on its own, so the next occurrence
+alerts normally and an old decision can never silence a new problem. **Reopen**
+lifts the suppression by hand.
+
+The note is attached to the incident, survives later actions, and is only
+replaced when you write a new one.
 
 :::note
 Marking a group **false positive** doesn't just hide it — it nudges the detector

@@ -229,6 +229,37 @@ async def test_alert_inbox_false_positive_updates_state_and_thresholds(
         assert config.sigma_threshold == 3.5
         assert config.min_expected_count == 15
 
+    # A second action carrying no note must not erase the first one's. The
+    # assignment was unconditional, so every follow-up action silently wiped the
+    # note written with the previous one (tripl-jfm3.91).
+    await client.post(
+        f"/api/v1/projects/inbox-workflow/alert-inbox/{group_id}/actions",
+        json={"action": "acknowledge"},
+    )
+    async with TestSessionLocal() as session:
+        state = await session.scalar(
+            select(AlertCorrelationState).where(
+                AlertCorrelationState.correlation_group_id == group_id
+            )
+        )
+        assert state is not None
+        assert state.status == "acknowledged"
+        assert state.note == "Noisy deploy window"
+
+    # An explicit new note still replaces it.
+    await client.post(
+        f"/api/v1/projects/inbox-workflow/alert-inbox/{group_id}/actions",
+        json={"action": "resolve", "note": "Rolled back"},
+    )
+    async with TestSessionLocal() as session:
+        state = await session.scalar(
+            select(AlertCorrelationState).where(
+                AlertCorrelationState.correlation_group_id == group_id
+            )
+        )
+        assert state is not None
+        assert state.note == "Rolled back"
+
 
 @pytest.mark.asyncio
 async def test_alerting_destination_rule_crud_and_secret_masking(client: AsyncClient) -> None:
