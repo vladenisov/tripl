@@ -609,8 +609,22 @@ def _load_existing_generation_results(
 ) -> tuple[dict[str, GenerationResult], GenerationResult | None]:
     """Build replay-time event matching metadata without warehouse cardinality scans."""
     if config.event_type_column:
+        # Branch-scoped, like catalog_sync's own lookup. A working branch
+        # deep-copies event types under the SAME names, so an unscoped query
+        # feeding a name-keyed dict lets the branch copy win: the main-plan
+        # series then stops at the last write and the detector reads it as
+        # "dropped to zero", while a bucket holding rows from both branches
+        # double-counts. Documented at length on
+        # ``tasks.main_plan_event_types_by_name``; the replay path was the one
+        # place still missing it (tripl-jfm3.95).
+        plan_branch = main_branch_id(session, config.project_id)
         event_types = (
-            session.execute(select(EventType).where(EventType.project_id == config.project_id))
+            session.execute(
+                select(EventType).where(
+                    EventType.project_id == config.project_id,
+                    EventType.branch_id == plan_branch,
+                )
+            )
             .scalars()
             .all()
         )

@@ -239,8 +239,19 @@ class Settings(BaseSettings):
         Called from the FastAPI lifespan; tests and CLI tools that import the
         Settings object directly are not blocked.
         """
+        problems = self.production_problems()
+        if problems:
+            raise RuntimeError("Production startup checks failed:\n  - " + "\n  - ".join(problems))
+
+    def production_problems(self) -> list[str]:
+        """Everything that would make ``assert_production_ready`` refuse to boot.
+
+        Split out so a caller can ask "would THIS change break startup?" by
+        diffing two settings objects, instead of inheriting every unrelated
+        complaint the ambient environment already carries (tripl-jfm3.93).
+        """
         if self.debug:
-            return
+            return []
 
         problems: list[str] = []
 
@@ -298,8 +309,7 @@ class Settings(BaseSettings):
                     "connection string before deploying."
                 )
 
-        if problems:
-            raise RuntimeError("Production startup checks failed:\n  - " + "\n  - ".join(problems))
+        return problems
 
     def resolved_search_embedding_api_key(self) -> str:
         return self.search_embedding_api_key or self.openai_api_key

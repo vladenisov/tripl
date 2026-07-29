@@ -1448,6 +1448,71 @@ def test_closing_an_incident_reopens_its_inbox_decision(
     assert states[unrelated] == "acknowledged"
 
 
+def test_closing_an_incident_does_not_cancel_a_timed_mute(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """ "Muted until T" outlives the incident; "acknowledged" does not.
+
+    Reopening on quiet killed a seven-day mute the moment the signal paused for
+    one collection, and the incident paged the user again hours later
+    (tripl-jfm3.98). A LAPSED mute still reopens — that path lives in
+    _suppressed_correlation_group_ids.
+    """
+    from tripl.models.alert_correlation_state import AlertCorrelationState
+    from tripl.worker.tasks.metrics.dispatch import (
+        _correlation_group_id,
+        _reopen_closed_incidents,
+    )
+
+    with sync_session_factory() as session:
+        project = Project(name="Mute", slug="mute-survives", description="")
+        session.add(project)
+        session.flush()
+        scan_config_id = uuid.uuid4()
+        rule_id = uuid.uuid4()
+        group_id = _correlation_group_id(
+            scan_config_id=scan_config_id, rule_id=rule_id, direction="drop"
+        )
+        lapsed_id = _correlation_group_id(
+            scan_config_id=scan_config_id, rule_id=rule_id, direction="spike"
+        )
+        now = datetime.now(UTC)
+        session.add_all(
+            [
+                AlertCorrelationState(
+                    project_id=project.id,
+                    correlation_group_id=group_id,
+                    status="muted",
+                    muted_until=now + timedelta(days=7),
+                ),
+                AlertCorrelationState(
+                    project_id=project.id,
+                    correlation_group_id=lapsed_id,
+                    status="muted",
+                    muted_until=now - timedelta(minutes=1),
+                ),
+            ]
+        )
+        session.flush()
+
+        _reopen_closed_incidents(
+            session,
+            project_id=project.id,
+            scan_config_id=scan_config_id,
+            rule_id=rule_id,
+        )
+        session.flush()
+
+        states = {
+            state.correlation_group_id: (state.status, state.muted_until)
+            for state in session.execute(select(AlertCorrelationState)).scalars()
+        }
+
+    assert states[group_id][0] == "muted"
+    assert states[group_id][1] is not None
+    assert states[lapsed_id] == ("open", None)
+
+
 def test_ensure_event_type_skips_reserved_columns(
     sync_session_factory: sessionmaker[Session],
 ) -> None:

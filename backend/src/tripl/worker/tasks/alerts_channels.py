@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import json
-import re
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -37,7 +36,23 @@ class SendSlackMessage(Protocol):
     def __call__(self, webhook_url: str, text: str, *, message_format: str) -> None: ...
 
 
-_TELEGRAM_BOT_URL_TOKEN_RE = re.compile(r"(/bot)([^/]+)(/)")
+def _safe_url_for_error(url: str) -> str:
+    """Scheme and host only — the rest of a destination URL is often the secret.
+
+    This used to mask the Telegram bot token with a Telegram-shaped regex, which
+    left every other channel untouched: a failed Slack delivery put the full
+    incoming-webhook URL into ``alert_deliveries.error_message``, which the API
+    returns and the UI renders. That URL IS the credential — anyone who can read
+    it can post to the channel (tripl-jfm3.94). Generic webhooks and tracker URLs
+    carry tokens in the path or query just as often.
+
+    The status code and the response body already carry the diagnostic value;
+    the host is enough to say which destination failed.
+    """
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return "the destination URL"
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def _decrypt_secret(encrypted: str | None) -> str:
@@ -100,7 +115,7 @@ def _post_json(
                 if isinstance(description, str) and description.strip():
                     detail = description.strip()
 
-        safe_url = _TELEGRAM_BOT_URL_TOKEN_RE.sub(r"\1***\3", url)
+        safe_url = _safe_url_for_error(url)
         message = f"HTTP {exc.code} from {safe_url}"
         if detail:
             message = f"{message}: {detail}"
@@ -148,7 +163,7 @@ def _get_json(
                 if isinstance(description, str) and description.strip():
                     detail = description.strip()
 
-        safe_url = _TELEGRAM_BOT_URL_TOKEN_RE.sub(r"\1***\3", url)
+        safe_url = _safe_url_for_error(url)
         message = f"HTTP {exc.code} from {safe_url}"
         if detail:
             message = f"{message}: {detail}"

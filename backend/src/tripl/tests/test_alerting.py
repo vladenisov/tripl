@@ -261,6 +261,29 @@ async def test_alert_inbox_false_positive_updates_state_and_thresholds(
         assert state.note == "Rolled back"
 
 
+def test_delivery_errors_never_carry_the_destination_secret() -> None:
+    """A failed delivery's error text reaches the API and the UI verbatim.
+
+    Masking used to be a Telegram-shaped regex, so a Slack incoming-webhook URL
+    — which IS the credential — was written to alert_deliveries.error_message in
+    full and readable by any project member (tripl-jfm3.94).
+    """
+    from tripl.worker.tasks.alerts_channels import _safe_url_for_error
+
+    slack = "https://hooks.slack.com/services/T00000000/B00000000/abcdef123456SECRET"
+    assert _safe_url_for_error(slack) == "https://hooks.slack.com"
+
+    telegram = "https://api.telegram.org/bot123456:AAH-TOKEN/sendMessage"
+    assert _safe_url_for_error(telegram) == "https://api.telegram.org"
+
+    # Tokens hide in the query string just as often as in the path.
+    webhook = "https://hooks.example.com/ingest?signature=deadbeef"
+    assert _safe_url_for_error(webhook) == "https://hooks.example.com"
+
+    # Nothing parseable: say so rather than echoing whatever was passed.
+    assert _safe_url_for_error("not-a-url") == "the destination URL"
+
+
 @pytest.mark.asyncio
 async def test_alerting_destination_rule_crud_and_secret_masking(client: AsyncClient) -> None:
     project_resp = await client.post(

@@ -50,9 +50,45 @@ x-app-environment: &app-environment
   # projects.
   DEMO_ENABLED: ${DEMO_ENABLED:-true}
   DEMO_RUNTIME_ENABLED: ${DEMO_RUNTIME_ENABLED:-true}
+  # Everything below is documented in website/docs/run/configuration.md as an
+  # environment variable, so it has to actually reach the container. The same
+  # omission is what made the DEMO_ENABLED switch inert (tripl-2su6.16) and then
+  # REGISTRATION_MODE — whose whole purpose is closing self-service signup on a
+  # public instance (tripl-jfm3.101). An unset value falls through to the
+  # application default, so listing them here costs nothing.
+  REGISTRATION_MODE: ${REGISTRATION_MODE:-}
+  CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-}
+  CONTENT_SECURITY_POLICY: ${CONTENT_SECURITY_POLICY:-}
+  SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-}
+  SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-}
+  HSTS_MAX_AGE_SECONDS: ${HSTS_MAX_AGE_SECONDS:-}
+  RATE_LIMIT_LOGIN_PER_MINUTE: ${RATE_LIMIT_LOGIN_PER_MINUTE:-}
+  RATE_LIMIT_REGISTER_PER_HOUR: ${RATE_LIMIT_REGISTER_PER_HOUR:-}
+  # Only meaningful behind a trusted proxy — see the note above about the app
+  # being the edge by default.
+  RATE_LIMIT_TRUST_FORWARDED_FOR: ${RATE_LIMIT_TRUST_FORWARDED_FOR:-}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_USE_TLS: ${SMTP_USE_TLS:-}
+  SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-}
+  PROMETHEUS_METRICS_ENABLED: ${PROMETHEUS_METRICS_ENABLED:-}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-}
+  LOG_LEVEL: ${LOG_LEVEL:-}
+  REQUEST_ID_HEADER: ${REQUEST_ID_HEADER:-}
+  AI_ENABLED: ${AI_ENABLED:-}
+  AI_BASE_URL: ${AI_BASE_URL:-}
+  AI_MODEL: ${AI_MODEL:-}
+  AI_API_KEY: ${AI_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  SEARCH_EMBEDDINGS_ENABLED: ${SEARCH_EMBEDDINGS_ENABLED:-}
+  SEARCH_EMBEDDING_API_KEY: ${SEARCH_EMBEDDING_API_KEY:-}
 
 services:
   postgres:
+    restart: unless-stopped
     image: pgvector/pgvector:0.8.2-pg18-trixie
     environment:
       POSTGRES_USER: tripl
@@ -68,6 +104,7 @@ services:
       retries: 5
 
   rabbitmq:
+    restart: unless-stopped
     image: rabbitmq:3.13-management
     environment:
       RABBITMQ_DEFAULT_USER: tripl
@@ -82,6 +119,7 @@ services:
       start_period: 30s
 
   redis:
+    restart: unless-stopped
     image: redis:8.6.2-alpine
     command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
     healthcheck:
@@ -101,6 +139,7 @@ services:
 
   # The ONE app container: JSON API + built SPA on a single port.
   app:
+    restart: unless-stopped
     image: *app-image
     environment: *app-environment
     ports:
@@ -116,6 +155,7 @@ services:
         condition: service_completed_successfully
 
   celery-worker:
+    restart: unless-stopped
     image: *app-image
     command: ["celery", "-A", "tripl.worker.celery_app", "worker", "--loglevel=info"]
     environment: *app-environment
@@ -130,6 +170,7 @@ services:
         condition: service_completed_successfully
 
   celery-beat:
+    restart: unless-stopped
     image: *app-image
     command: ["celery", "-A", "tripl.worker.celery_app", "beat", "--loglevel=info", "--schedule", "/tmp/celerybeat-schedule"]
     environment: *app-environment
@@ -149,6 +190,7 @@ services:
   # Uses the published MCP image when available (TRIPL_MCP_IMAGE); from a source
   # checkout, `docker compose --profile mcp build mcp` builds mcp-server/.
   mcp:
+    restart: unless-stopped
     image: "${TRIPL_MCP_IMAGE:-ghcr.io/vladenisov/tripl-mcp}:${TRIPL_VERSION:-latest}"
     build: ./mcp-server
     # The image ENTRYPOINT is already `tripl-mcp`, so command holds flags only.

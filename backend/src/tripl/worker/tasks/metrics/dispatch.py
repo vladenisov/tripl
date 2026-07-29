@@ -40,6 +40,17 @@ _rule_matches_anomaly = rule_matches_anomaly
 _CORRELATION_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "tripl-alert-correlation")
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Postgres hands back tz-aware values for timestamptz; SQLite does not.
+
+    Comparing a naive stored value against ``datetime.now(UTC)`` raises, so the
+    mute-expiry checks below normalise first rather than assume the driver.
+    """
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=UTC)
+
+
 def _correlation_group_id(
     *,
     scan_config_id: uuid.UUID,
@@ -85,7 +96,8 @@ def _suppressed_correlation_group_ids(
     ).scalars()
     suppressed: set[uuid.UUID] = set()
     for state in rows:
-        if state.status == "muted" and state.muted_until is not None and state.muted_until <= now:
+        muted_until = _as_utc(state.muted_until)
+        if state.status == "muted" and muted_until is not None and muted_until <= now:
             state.status = "open"
             state.muted_until = None
             continue
@@ -100,11 +112,18 @@ def _reopen_closed_incidents(
     scan_config_id: uuid.UUID,
     rule_id: uuid.UUID,
 ) -> None:
-    """Clear an inbox decision once the incident it was about is over.
+    """Clear an incident-scoped inbox decision once the incident is over.
 
     Without this, suppression would be permanent: acknowledging a drop would
     silence that rule's drops forever. Called only when the rule has no active
     scope left, so the next firing is a new incident and alerts normally.
+
+    A TIMED mute is deliberately excluded. "Acknowledged" means "I am on this
+    incident" and dies with it; "muted until T" means "do not tell me before T"
+    regardless of what the signal does in between. Resetting it here killed a
+    seven-day mute on the first quiet collection and paged the user again hours
+    later (tripl-jfm3.98). A lapsed mute is already reopened by
+    ``_suppressed_correlation_group_ids``, so mutes have their own lifecycle.
     """
     group_ids = [
         _correlation_group_id(
@@ -114,6 +133,7 @@ def _reopen_closed_incidents(
         )
         for direction in AnomalyDirection
     ]
+    now = datetime.now(UTC)
     for state in session.execute(
         select(AlertCorrelationState).where(
             AlertCorrelationState.project_id == project_id,
@@ -121,6 +141,9 @@ def _reopen_closed_incidents(
             AlertCorrelationState.status != "open",
         )
     ).scalars():
+        muted_until = _as_utc(state.muted_until)
+        if state.status == "muted" and muted_until is not None and muted_until > now:
+            continue
         state.status = "open"
         state.muted_until = None
 
