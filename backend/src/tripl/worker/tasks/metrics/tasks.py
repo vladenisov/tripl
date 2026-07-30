@@ -82,6 +82,14 @@ from tripl.worker.utils.reserved_columns import reserved_catalog_columns
 
 logger = logging.getLogger(__name__)
 
+# ``ScanJob.result_summary["mode"]`` for the two things collect_metrics does.
+# ScanJob is shared with manual catalog scans, replays and event-group applies on
+# the same scan_config_id, and only this key tells them apart — the dispatcher
+# stamps it at job CREATION (schedule.py) so a run that fails before writing its
+# summary is still identifiable as a scheduled collection.
+METRICS_COLLECTION_MODE = "metrics_collection"
+METRICS_REPLAY_MODE = "metrics_replay"
+
 COLLECT_METRICS_SOFT_TIME_LIMIT_SECONDS = 24 * 60 * 60
 COLLECT_METRICS_TIME_LIMIT_SECONDS = 25 * 60 * 60
 
@@ -235,7 +243,7 @@ def _build_replay_progress_summary(
     safe_total = max(total_chunks, 0)
     safe_completed = min(max(completed_chunks, 0), safe_total)
     summary: dict[str, object] = {
-        "mode": "metrics_replay",
+        "mode": METRICS_REPLAY_MODE,
         "time_from": time_from_dt.isoformat(),
         "time_to": time_to_dt.isoformat(),
         "catalog_sync_skipped": True,
@@ -807,7 +815,7 @@ def collect_metrics(
         signals_removed = len(visible_signals_before - visible_signals_after)
 
         result_summary: dict[str, object] = {
-            "mode": "metrics_replay" if is_replay else "metrics_collection",
+            "mode": METRICS_REPLAY_MODE if is_replay else METRICS_COLLECTION_MODE,
             "time_from": time_from_dt.isoformat(),
             "time_to": time_to_dt.isoformat(),
             "catalog_sync_skipped": is_replay,

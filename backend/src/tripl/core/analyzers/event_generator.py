@@ -66,6 +66,7 @@ from tripl.core.analyzers.variable_detector import (
     DetectedPattern,
     detect_variables,
 )
+from tripl.core.name_template import NAME_FORMAT_PATTERN, format_keys
 from tripl.json_paths import (
     build_json_value,
     decode_json_path_value,
@@ -88,11 +89,29 @@ __all__ = [
     "_ensure_variable",
     "_resolve_main_branch_id",
     "apply_event_group_rules",
+    "event_name_format_columns",
     "generate_events",
     "merge_existing_events_for_group_rules",
 ]
 
-_FMT_PATTERN = re.compile(r"\{([^}]+)\}")
+# The ``{key}`` grammar has exactly one definition, in ``core.name_template``.
+# It used to be re-declared here and in worker/tasks/metrics/generation.py, held
+# in step by a comment in name_template's docstring saying the three "MUST stay
+# identical" — which is the drift this repo keeps paying for (Copilot, PR #74).
+_FMT_PATTERN = NAME_FORMAT_PATTERN
+
+
+def event_name_format_columns(event_name_format: str | None) -> set[str]:
+    """Columns an ``event_name_format`` builds the event name from.
+
+    Shared with ``worker.utils.reserved_columns`` and the replay path in
+    ``worker.tasks.metrics.generation`` so none of them can disagree about what
+    a placeholder is: a column named here is the event's identity, which makes
+    it both something to enumerate (see ``name_columns`` below) and something
+    that must never be reserved away — reserving it skips its FieldDefinition,
+    and the name format is then evaluated without it (tripl-lpin).
+    """
+    return set(format_keys(event_name_format)) if event_name_format else set()
 
 
 @dataclass
@@ -145,9 +164,7 @@ def generate_events(
     # Columns referenced by the event-name format are the event's identity, so they must be
     # enumerated (one event per distinct value) even when high-cardinality — otherwise they
     # collapse into a single ${col} template and every row dedups to one event.
-    name_columns: set[str] = (
-        set(_FMT_PATTERN.findall(event_name_format)) if event_name_format else set()
-    )
+    name_columns: set[str] = event_name_format_columns(event_name_format)
     cardinality_results = analysis.results
     reg_index = {name: i for i, name in enumerate(analysis.reg_names)}
     json_index = {name: i for i, name in enumerate(analysis.json_names)}

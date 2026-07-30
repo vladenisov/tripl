@@ -53,6 +53,9 @@ from tripl.services._search_query import (
     postgres_search as _postgres_search,
 )
 from tripl.services._search_query import (
+    sanitize_query as _sanitize_query,
+)
+from tripl.services._search_query import (
     sqlite_search as _sqlite_search,
 )
 from tripl.services._search_query import (
@@ -76,6 +79,7 @@ __all__ = [
     "_join",
     "_queue_embedding_refresh",
     "_reindex_branch_documents",
+    "_sanitize_query",
     "_token_boundary_regex",
     "document_to_result",
     "fallback_score",
@@ -370,7 +374,11 @@ async def search_project(
     include_archived: bool = False,
     limit: int = 20,
 ) -> SearchResponse:
-    normalized_query = query.strip()
+    # Sanitize here rather than in the router: this is the single funnel every
+    # caller goes through (HTTP search, ai_service.ask_plan, search_event_ids),
+    # and it runs before the dialect split so the lexical SQL, the embedding
+    # call, and the demo fixture lookup all see the same cleaned string.
+    normalized_query = _sanitize_query(query)
     if not normalized_query:
         return SearchResponse(items=[], total=0, semantic_used=False)
 

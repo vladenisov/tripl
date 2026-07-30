@@ -2403,3 +2403,134 @@ async def test_platform_presence_empty_without_platform_column(client: AsyncClie
     assert body["platform_column"] is None
     assert body["platforms"] == []
     assert body["items"] == []
+
+
+# --- tripl-57g0: enum-shaped query params reject garbage at the edge ---------
+#
+# ``status`` and every ``scope_type`` below bind against a native Postgres enum
+# column, so while they were declared ``str`` a typo travelled all the way to
+# the driver and came back as a 500 ("not among the defined enum values"). Each
+# test pins BOTH halves of the contract: garbage 422s, and the values that
+# worked before still return 200 — the fix must reject junk, not narrow the
+# accepted set.
+
+
+class EnumParamCtx(TypedDict):
+    slug: str
+    event_id: str
+    event_type_id: str
+    scan_config_id: str
+
+
+async def _setup_enum_param_project(client: AsyncClient, slug: str) -> EnumParamCtx:
+    """Project + one live event + a scan config with its hourly metrics.
+
+    That is the minimum every scan-scoped insights endpoint needs to get past
+    its own 404/400 guards, so a non-422 response proves the enum value really
+    reached the service rather than being short-circuited earlier.
+    """
+    setup = await _setup_metrics_project(client, slug=slug)
+    event_resp = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": setup["page_type_id"],
+            "name": "Checkout Started",
+            "status": "live",
+            "field_values": [{"field_definition_id": setup["page_field_id"], "value": "checkout"}],
+        },
+    )
+    assert event_resp.status_code == 201, event_resp.text
+    event_id = event_resp.json()["id"]
+    scan_config_id = await _seed_group_metrics(
+        setup["project_id"], [{"event_id": event_id, "counts": [4, 6]}]
+    )
+    return EnumParamCtx(
+        slug=slug,
+        event_id=event_id,
+        event_type_id=setup["page_type_id"],
+        scan_config_id=str(scan_config_id),
+    )
+
+
+@pytest.mark.asyncio
+async def test_events_metrics_status_rejects_unknown_enum_member(client: AsyncClient) -> None:
+    ctx = await _setup_enum_param_project(client, slug="enum-events-metrics")
+    path = f"/api/v1/projects/{ctx['slug']}/events-metrics"
+
+    rejected = await client.get(path, params={"status": "BOGUS"})
+    assert rejected.status_code == 422, rejected.text
+
+    # A repeated param must fail on the one bad member rather than quietly drop
+    # it — silently widening the filter is the failure mode a list invites.
+    partly_rejected = await client.get(path, params={"status": ["live", "BOGUS"]})
+    assert partly_rejected.status_code == 422, partly_rejected.text
+
+    accepted = await client.get(path, params={"status": ["live", "draft"]})
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["data"] == [
+        _plain_point("2026-01-01T10:00:00", 4),
+        _plain_point("2026-01-01T11:00:00", 6),
+    ]
+
+    # Filtering still narrows: the event is `live`, so `draft` alone matches nothing.
+    narrowed = await client.get(path, params={"status": "draft"})
+    assert narrowed.status_code == 200
+    assert narrowed.json()["data"] == []
+
+
+def _scope_type_cases(ctx: EnumParamCtx) -> list[tuple[str, str, dict[str, str]]]:
+    """``(path, a scope_type that works today, the endpoint's other required params)``.
+
+    One row per endpoint that takes a ``scope_type``. The valid value differs by
+    endpoint because each supports its own subset of MetricScopeType; the point
+    of the case list is that the subset is unchanged, only garbage is rejected.
+    """
+    base = f"/api/v1/projects/{ctx['slug']}"
+    scan = f"{base}/scans/{ctx['scan_config_id']}"
+    return [
+        (
+            f"{scan}/top-movers",
+            "event",
+            {"scope_ref": ctx["event_id"], "bucket": "2026-01-01T10:00:00Z"},
+        ),
+        (f"{scan}/seasonality", "event", {"scope_ref": ctx["event_id"]}),
+        (
+            f"{scan}/breakdown-timeline",
+            "event",
+            {
+                "scope_ref": ctx["event_id"],
+                "breakdown_column": "country",
+                "breakdown_value": "US",
+            },
+        ),
+        (f"{scan}/app-versions", "project_total", {}),
+        (f"{scan}/release-regressions", "event", {}),
+        (f"{base}/distribution-drifts", "event_type", {"scope_ref": ctx["event_type_id"]}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scope_type_query_params_reject_unknown_enum_member(client: AsyncClient) -> None:
+    ctx = await _setup_enum_param_project(client, slug="enum-scope-type")
+
+    for path, valid_scope, extra in _scope_type_cases(ctx):
+        rejected = await client.get(path, params={**extra, "scope_type": "BOGUS"})
+        assert rejected.status_code == 422, f"{path} accepted a bogus scope_type: {rejected.text}"
+
+        accepted = await client.get(path, params={**extra, "scope_type": valid_scope})
+        assert accepted.status_code == 200, (
+            f"{path} rejected scope_type={valid_scope}: {accepted.text}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_app_versions_keeps_its_project_total_default(client: AsyncClient) -> None:
+    """The default moved from the literal "project_total" to the enum member;
+    omitting scope_type entirely must still resolve to the project-total scope."""
+    ctx = await _setup_enum_param_project(client, slug="enum-app-versions-default")
+
+    resp = await client.get(
+        f"/api/v1/projects/{ctx['slug']}/scans/{ctx['scan_config_id']}/app-versions"
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["scope_type"] == "project_total"

@@ -5,7 +5,10 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
 from tripl.api.deps import EditorUserDep, SessionDep
+from tripl.models.alert_delivery import AlertDeliveryStatus
+from tripl.models.alert_destination import AlertDestinationType
 from tripl.models.alert_rule import AlertRule
+from tripl.models.domain_enums import AlertInboxStatus
 from tripl.schemas.alerting import (
     AlertDeliveryDetailResponse,
     AlertDeliveryListResponse,
@@ -213,8 +216,13 @@ async def simulate_alert_rule(
 async def list_alert_deliveries(
     session: SessionDep,
     slug: str,
-    status: str | None = None,
-    channel: str | None = None,
+    # AlertDeliveryStatus / AlertDestinationType (not str): both columns are
+    # native Postgres enums, so a garbage value used to travel all the way to
+    # the driver and blow up as a 500 ("not among the defined enum values").
+    # FastAPI now 422s it at the edge, like GET /events?status= already did
+    # (tripl-57g0).
+    status: AlertDeliveryStatus | None = None,
+    channel: AlertDestinationType | None = None,
     destination_id: uuid.UUID | None = None,
     rule_id: uuid.UUID | None = None,
     scan_config_id: uuid.UUID | None = None,
@@ -319,7 +327,11 @@ async def unmute_monitor(
 async def list_alert_inbox(
     session: SessionDep,
     slug: str,
-    status: str | None = None,
+    # Inbox status is filtered in Python against the derived group status, so a
+    # typo never reached the driver — it silently matched nothing and reported
+    # "no incidents", which is worse than a crash. AlertInboxStatus makes the
+    # typo a 422 (tripl-57g0).
+    status: AlertInboxStatus | None = None,
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
 ) -> AlertInboxListResponse:

@@ -283,7 +283,12 @@ The sections, with the fields each exposes:
 Core server configuration.
 
 - **App base URL** — used in emails, webhooks and the ingest endpoint
-  (`app_base_url`).
+  (`app_base_url`). It is also the origin advertised in the `servers` block of
+  the published OpenAPI document, so generated API clients and the "Try it out"
+  panel in `/docs` send their requests there. Like the rest of this section it is
+  read per request, so correcting it here fixes those links immediately — but do
+  check it: an internal address left over from setup is invisible in the UI and
+  only shows up as clients failing to reach the API from outside your network.
 - **Scan row limit default** — default warehouse row cap for scans
   (`scan_row_limit_default`, default 50,000).
 - **Metrics row limit default** — default row cap for metric queries

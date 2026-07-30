@@ -15,6 +15,7 @@ from tripl.middleware.rate_limit import (
     register_rate_limiter,
     status_rate_limiter,
 )
+from tripl.middleware.security_headers import build_security_headers
 
 
 class _FakeClient:
@@ -39,6 +40,32 @@ async def test_security_headers_present_on_health(anon_client: AsyncClient) -> N
     assert response.headers.get("x-frame-options") == "DENY"
     assert response.headers.get("referrer-policy") == "strict-origin-when-cross-origin"
     assert "camera=()" in response.headers.get("permissions-policy", "")
+
+
+@pytest.mark.asyncio
+async def test_security_headers_on_a_normal_response_match_the_shared_builder(
+    anon_client: AsyncClient,
+) -> None:
+    """Pins the middleware to ``build_security_headers``.
+
+    The catch-all 500 handler in ``main`` has to attach the same set by hand,
+    because ServerErrorMiddleware answers from outside this middleware
+    (tripl-qu9m). Asserting both ends against the one builder — here for a 200,
+    in test_error_handling for a 500 — is what keeps the two from drifting.
+    """
+    response = await anon_client.get("/health")
+
+    expected = build_security_headers()
+    assert expected, "empty header set would make the comparison below vacuous"
+    assert {name: response.headers.get(name) for name in expected} == expected
+
+
+def test_build_security_headers_is_empty_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The enabled/disabled gate lives inside the builder rather than at each
+    call site, so an instance with headers turned off cannot end up serving a
+    500 that carries more than its 200s do."""
+    monkeypatch.setattr(settings, "security_headers_enabled", False)
+    assert build_security_headers() == {}
 
 
 @pytest.mark.asyncio

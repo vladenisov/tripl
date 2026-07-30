@@ -34,6 +34,30 @@ from tripl.services.embedding_service import embed_query
 _TYPE_BOOST_WEIGHT = 0.75
 
 
+def sanitize_query(query: str) -> str:
+    """Trim the incoming query and drop codepoints no backend can carry.
+
+    Postgres ``text`` cannot represent U+0000, so a query containing one aborts
+    inside the driver (``asyncpg.exceptions.CharacterNotInRepertoireError``)
+    before any SQL runs — ``?q=%00``, the first thing a routine security scan
+    sends, used to surface as a 500 for any authenticated caller (tripl-q4q7).
+
+    We strip rather than reject with 422 because stripping is *lossless here*:
+    an indexed document cannot contain a NUL either (same column type, same
+    restriction), so removing it cannot change which rows match or how they
+    rank. The user who pasted text with a stray NUL gets the results they meant
+    and no API client loses behaviour it could have relied on — the surprise
+    argument against silently rewriting a query has no bite when the rewrite is
+    provably a no-op on the result set. That reasoning does NOT generalise:
+    anything with search meaning must survive, which is why this removes
+    exactly U+0000 and leaves every other character alone.
+
+    A query made only of NULs collapses to ``""`` and then takes the same
+    empty-result path a whitespace-only query already took.
+    """
+    return query.replace("\x00", "").strip()
+
+
 def _normalize(value: str) -> str:
     return re.sub(r"\s+", " ", value.casefold()).strip()
 

@@ -12,7 +12,11 @@ from tripl.models.search_document import SearchDocument
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
 from tripl.schemas.search import SearchResult
-from tripl.services.search_service import _finalize_results, _token_boundary_regex
+from tripl.services.search_service import (
+    _finalize_results,
+    _sanitize_query,
+    _token_boundary_regex,
+)
 from tripl.tests.conftest import TestSessionLocal
 
 
@@ -85,6 +89,21 @@ def test_token_boundary_regex_uses_single_postgres_escapes() -> None:
     assert _token_boundary_regex("ecmwf") == r"\mecmwf\M"
     assert _token_boundary_regex("vip_segment") == r"\mvip_segment\M"
     assert _token_boundary_regex("ecmwf model") is None
+
+
+def test_sanitize_query_removes_nul_bytes_and_nothing_else() -> None:
+    # tripl-q4q7: a NUL survives str.strip() (it is not whitespace) and then
+    # aborts in asyncpg, so it has to be removed explicitly.
+    assert "\x00".strip() == "\x00"
+    assert _sanitize_query("check\x00out") == "checkout"
+    assert _sanitize_query("  завершение покупки\x00 ") == "завершение покупки"
+    # An all-NUL query degrades to the pre-existing empty-query path.
+    assert _sanitize_query("\x00\x00") == ""
+    # Everything that carries search meaning is left exactly as it was —
+    # stripping is deliberately limited to the one codepoint Postgres text
+    # cannot represent.
+    meaningful = 'vip_segment 100% "exact phrase"'
+    assert _sanitize_query(meaningful) == meaningful
 
 
 async def _create_event_type(
@@ -352,6 +371,43 @@ async def test_search_filters_archived_and_excludes_sensitive_values(client: Asy
     )
     assert secret_resp.status_code == 200
     assert secret_resp.json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_search_query_with_nul_byte_behaves_like_the_clean_query(
+    client: AsyncClient,
+) -> None:
+    """tripl-q4q7: ``?q=%00`` used to 500 (asyncpg CharacterNotInRepertoireError).
+
+    Asserted through the HTTP status and body rather than the driver
+    exception, so the test still fails for the right reason on SQLite, where
+    the NUL never reached a driver: without the sanitiser the scorer sees a
+    different query string, and the two response bodies below diverge on
+    ``score``, ``highlights`` and ``snippet``.
+    """
+    await client.post("/api/v1/projects", json={"name": "Nul", "slug": "search-nul"})
+    await _create_event_type(
+        client,
+        "search-nul",
+        name="checkout",
+        display_name="Checkout",
+        description="Fires on the checkout screen",
+    )
+
+    clean = await client.get("/api/v1/projects/search-nul/search", params={"q": "checkout"})
+    assert clean.status_code == 200
+    assert [item["title"] for item in clean.json()["items"]] != []
+
+    laced = await client.get("/api/v1/projects/search-nul/search", params={"q": "check\x00out"})
+    assert laced.status_code == 200
+    assert laced.json() == clean.json()
+
+    # A query made only of NULs collapses to empty and takes the same
+    # 200-with-no-items path a whitespace-only query already took — not a 500,
+    # and deliberately not a 422 either (see ``sanitize_query``).
+    only_nuls = await client.get("/api/v1/projects/search-nul/search", params={"q": "\x00"})
+    assert only_nuls.status_code == 200
+    assert only_nuls.json() == {"items": [], "total": 0, "semantic_used": False}
 
 
 async def _create_fact_table(
