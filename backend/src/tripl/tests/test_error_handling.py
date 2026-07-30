@@ -1,3 +1,6 @@
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from unittest.mock import AsyncMock
 
 import pytest
@@ -5,8 +8,46 @@ from httpx import ASGITransport, AsyncClient
 
 import tripl.database as database
 import tripl.main as main_module
+from tripl.config import settings
 from tripl.database import get_session
+from tripl.logging_config import _RequestIDFilter
 from tripl.main import app
+from tripl.middleware.security_headers import build_security_headers
+
+
+@contextmanager
+def _boom_route(path: str) -> Iterator[None]:
+    """Register a route that raises, then take it back out.
+
+    Routes live on the module-level ``app`` that every test in the session
+    shares, so leaving one behind would leak a 500 into unrelated tests.
+    """
+
+    @app.get(path, include_in_schema=False)
+    async def _boom() -> None:
+        raise RuntimeError("kaboom")
+
+    try:
+        yield
+    finally:
+        app.router.routes = [r for r in app.router.routes if getattr(r, "path", None) != path]
+
+
+class _RecordingHandler(logging.Handler):
+    """Root handler wired the way the production one is.
+
+    ``_RequestIDFilter`` is what stamps ``record.request_id`` in a real deploy
+    (see ``logging_config._build_handler``), so attaching the same filter here
+    means the assertion covers that wiring rather than just the contextvar.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.addFilter(_RequestIDFilter())
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
 
 
 @pytest.mark.asyncio
@@ -39,24 +80,67 @@ async def test_get_session_rolls_back_on_handler_error() -> None:
 
 @pytest.mark.asyncio
 async def test_unhandled_exception_returns_generic_500_with_request_id() -> None:
-    @app.get("/__boom__", include_in_schema=False)
-    async def _boom() -> None:
-        raise RuntimeError("kaboom")
-
-    try:
+    with _boom_route("/__boom__"):
         transport = ASGITransport(app=app, raise_app_exceptions=False)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            resp = await ac.get("/__boom__")
-        assert resp.status_code == 500
-        body = resp.json()
-        assert body["detail"] == "Internal server error"
-        # The request id is echoed so logs can be correlated.
-        assert body["request_id"]
-        assert "kaboom" not in resp.text
+            resp = await ac.get("/__boom__", headers={settings.request_id_header: "boom-body-1"})
+
+    assert resp.status_code == 500
+    body = resp.json()
+    assert body["detail"] == "Internal server error"
+    # The *real* id, not the "-" placeholder. Asserting mere truthiness passed
+    # for as long as the handler could only see the already-reset contextvar,
+    # which is how tripl-qu9m survived having a test.
+    assert body["request_id"] == "boom-body-1"
+    assert "kaboom" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_unhandled_exception_response_carries_request_id_and_security_headers() -> None:
+    """A 500 is written by ServerErrorMiddleware, which wraps the app from
+    outside every middleware, so nothing they add on the way out lands on this
+    response unless the handler reproduces it (tripl-qu9m).
+
+    The header set is compared against ``build_security_headers()`` rather than
+    a literal list: a header added there must not be able to quietly skip the
+    error path, which is the drift the shared builder exists to prevent.
+    """
+    with _boom_route("/__boom_headers__"):
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.get(
+                "/__boom_headers__", headers={settings.request_id_header: "boom-hdr-2"}
+            )
+
+    assert resp.status_code == 500
+    assert resp.headers.get(settings.request_id_header) == "boom-hdr-2"
+    expected = build_security_headers()
+    assert expected, "empty header set would make the comparison below vacuous"
+    assert {name: resp.headers.get(name) for name in expected} == expected
+
+
+@pytest.mark.asyncio
+async def test_unhandled_exception_log_line_shares_the_response_request_id() -> None:
+    """Correlating a user's 500 with its log line is the entire point of the id.
+    Before tripl-qu9m both sides read "-", which correlated nothing."""
+    handler = _RecordingHandler()
+    root = logging.getLogger()
+    root.addHandler(handler)
+    try:
+        with _boom_route("/__boom_log__"):
+            transport = ASGITransport(app=app, raise_app_exceptions=False)
+            async with AsyncClient(transport=transport, base_url="http://test") as ac:
+                resp = await ac.get(
+                    "/__boom_log__", headers={settings.request_id_header: "boom-log-3"}
+                )
     finally:
-        app.router.routes = [
-            r for r in app.router.routes if getattr(r, "path", None) != "/__boom__"
-        ]
+        root.removeHandler(handler)
+
+    logged = [r for r in handler.records if r.getMessage() == "unhandled exception"]
+    assert len(logged) == 1
+    assert getattr(logged[0], "request_id", None) == "boom-log-3"
+    # Same id on both sides — that is what makes the pair usable in support.
+    assert resp.json()["request_id"] == "boom-log-3"
 
 
 @pytest.mark.asyncio

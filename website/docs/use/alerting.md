@@ -22,9 +22,12 @@ project.
 In a generated demo project the only destination that can exist is the local
 **demo sink**: the API refuses to create a Slack, Telegram, webhook, email, Jira,
 or Linear destination there, and every delivery is rendered and recorded locally
-rather than sent. Because that local sink cannot fail, demo deliveries are always
-`sent`, so the failed-delivery states and the **Retry** action below only appear
-in a real project. See [The demo workspace](./demo-workspace.md).
+rather than sent — the UI labels those rows as simulated, never as a real send.
+That local sink never fails on its own, so the demo deliberately seeds one
+**failed** earlier attempt at the same incident: the failed-delivery state and
+the **Retry** action below are both reachable without leaving the demo, and
+retrying re-dispatches down the normal path and succeeds. See
+[The demo workspace](./demo-workspace.md).
 :::
 
 ## Where signals come from

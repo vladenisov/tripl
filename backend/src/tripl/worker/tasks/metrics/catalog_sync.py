@@ -27,6 +27,7 @@ from tripl.models.field_definition import FieldDefinition
 from tripl.models.scan_config import ScanConfig
 from tripl.models.variable import Variable
 from tripl.worker.plan_scope import main_branch_id
+from tripl.worker.tasks._errors import ScanError
 from tripl.worker.tasks.metrics.generation import (
     _build_variable_lookup,
     _ensure_event_type_with_fields,
@@ -170,7 +171,11 @@ def sync_catalog(
                 "Grouped scan query reached configured row limit "
                 f"({scan_row_limit}); increase scan_row_limit to avoid partial generation"
             )
-            raise ValueError(msg)
+            # ScanError, not ValueError: the message names the setting to change,
+            # and user_facing_error only surfaces ScanError verbatim — anything
+            # else is replaced by "Scan failed due to an internal error."
+            # (tripl-embs).
+            raise ScanError(msg)
         logger.info(f"Grouped scan: {len(group_values)} groups for {config.event_type_column!r}")
 
         # Catalog sync targets the main plan; a working branch deep-copies
@@ -254,7 +259,7 @@ def sync_catalog(
                 "Scan query reached configured row limit "
                 f"({scan_row_limit}); increase scan_row_limit to avoid partial generation"
             )
-            raise ValueError(msg)
+            raise ScanError(msg)  # curated wording, see the grouped guard above
 
         event_type = session.get(EventType, config.event_type_id)
         if event_type is None:

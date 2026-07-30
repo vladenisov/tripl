@@ -655,7 +655,9 @@ def test_truncated_breakdown_query_fails_instead_of_erasing_the_window(
     # window from a cut-off one.
     monkeypatch.setattr(metric_collect, "METRIC_QUERY_ROW_LIMIT", 1)
 
-    with pytest.raises(ValueError, match="reached the metric query row limit"):
+    # ScanError, not ValueError: a hit row limit is user-actionable, so its
+    # message has to survive user_facing_error verbatim (tripl-embs).
+    with pytest.raises(ScanError, match="reached the metric query row limit"):
         metric_collect.collect_metric_definitions.run(def_id)
 
     with sync_session_factory() as session:

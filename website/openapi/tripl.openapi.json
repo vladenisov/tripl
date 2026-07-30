@@ -2120,7 +2120,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "$ref": "#/components/schemas/AlertDeliveryStatus"
                 },
                 {
                   "type": "null"
@@ -2136,7 +2136,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "$ref": "#/components/schemas/AlertDestinationType"
                 },
                 {
                   "type": "null"
@@ -2572,7 +2572,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "$ref": "#/components/schemas/AlertInboxStatus"
                 },
                 {
                   "type": "null"
@@ -7283,7 +7283,7 @@
                 {
                   "type": "array",
                   "items": {
-                    "type": "string"
+                    "$ref": "#/components/schemas/EventStatus"
                   }
                 },
                 {
@@ -8065,8 +8065,7 @@
             "in": "query",
             "required": true,
             "schema": {
-              "type": "string",
-              "title": "Scope Type"
+              "$ref": "#/components/schemas/MetricScopeType"
             }
           },
           {
@@ -8162,8 +8161,7 @@
             "in": "query",
             "required": true,
             "schema": {
-              "type": "string",
-              "title": "Scope Type"
+              "$ref": "#/components/schemas/MetricScopeType"
             }
           },
           {
@@ -8267,8 +8265,7 @@
             "in": "query",
             "required": true,
             "schema": {
-              "type": "string",
-              "title": "Scope Type"
+              "$ref": "#/components/schemas/MetricScopeType"
             }
           },
           {
@@ -8399,9 +8396,8 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "default": "project_total",
-              "title": "Scope Type"
+              "$ref": "#/components/schemas/MetricScopeType",
+              "default": "project_total"
             }
           },
           {
@@ -8599,7 +8595,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "$ref": "#/components/schemas/MetricScopeType"
                 },
                 {
                   "type": "null"
@@ -8655,8 +8651,7 @@
             "in": "query",
             "required": true,
             "schema": {
-              "type": "string",
-              "title": "Scope Type"
+              "$ref": "#/components/schemas/MetricScopeType"
             }
           },
           {
@@ -10095,7 +10090,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "$ref": "#/components/schemas/ChartAnnotationScopeType"
                 },
                 {
                   "type": "null"

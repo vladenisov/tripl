@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.core.adapters.base import ColumnInfo, FieldContractViolation
@@ -34,6 +34,7 @@ from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.schema_drift import SchemaDrift
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue, VariableValueKind
+from tripl.worker.tasks._errors import ScanError, user_facing_error
 from tripl.worker.tasks.metrics import collect as metrics_collect
 from tripl.worker.tasks.metrics import dispatch as metrics_dispatch
 from tripl.worker.tasks.metrics import schedule as metrics_schedule
@@ -521,6 +522,240 @@ def test_check_metrics_due_reaps_shadowed_stale_running_job(
     assert jobs[stale_id].status == ScanJobStatus.failed.value
     assert jobs[stale_id].completed_at is not None
     assert jobs[fresh_id].status == ScanJobStatus.pending.value
+
+
+def _seed_job_history(
+    session: Session,
+    scan_config_id: uuid.UUID,
+    *,
+    statuses: list[str],
+    newest_age: timedelta,
+    mode: str | None = metrics.METRICS_COLLECTION_MODE,
+) -> None:
+    """Write one terminal ScanJob per status, newest first, spaced an hour apart.
+
+    ``mode`` defaults to what the dispatcher stamps on its own jobs, because the
+    failure streak only counts those. Pass ``None`` to simulate the rows another
+    producer writes against the same scan_config_id — a manual scan, a replay, an
+    event-group apply — which must neither feed the streak nor clear it.
+    """
+    now = datetime.now(UTC)
+    for offset, status in enumerate(statuses):
+        stamped = now - newest_age - timedelta(hours=offset)
+        session.add(
+            ScanJob(
+                id=uuid.uuid4(),
+                scan_config_id=scan_config_id,
+                status=status,
+                created_at=stamped,
+                completed_at=stamped,
+                result_summary=None if mode is None else {"mode": mode},
+            )
+        )
+    session.commit()
+
+
+def _run_dispatcher(
+    sync_session_factory: sessionmaker[Session], monkeypatch: MonkeyPatch
+) -> tuple[dict[str, int], list[tuple[str, str]]]:
+    """Run check_metrics_due against the test DB, capturing what it dispatched."""
+    dispatched: list[tuple[str, str]] = []
+    monkeypatch.setattr(metrics_schedule, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(
+        metrics_schedule.collect_metrics,
+        "delay",
+        lambda scan_config_id, scan_job_id: dispatched.append((scan_config_id, scan_job_id)),
+    )
+    return metrics_schedule.check_metrics_due.run(), dispatched
+
+
+def test_check_metrics_due_backs_off_after_consecutive_failures(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A config that keeps failing waits instead of retrying on every beat tick.
+
+    "Due" is derived from max(EventMetric.bucket), which a collection that dies
+    before writing a row never advances — so before tripl-n9ee this config was
+    re-dispatched every 300 s forever (prod: 200 failed jobs in 17 h, each a ~30 s
+    warehouse query).
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        config_id = config.id
+        _seed_job_history(
+            session,
+            config_id,
+            statuses=[ScanJobStatus.failed.value] * metrics_schedule.FAILURE_BACKOFF_AFTER,
+            # Well inside the one-interval (1h) wait the third failure earns.
+            newest_age=timedelta(minutes=10),
+        )
+
+    result, dispatched = _run_dispatcher(sync_session_factory, monkeypatch)
+
+    assert result == {"checked": 1, "dispatched": 0}
+    assert dispatched == []
+
+    # No junk pending row either — the whole point is to stop filling scan_jobs.
+    with sync_session_factory() as session:
+        jobs = (
+            session.execute(select(ScanJob).where(ScanJob.scan_config_id == config_id))
+            .scalars()
+            .all()
+        )
+    assert len(jobs) == metrics_schedule.FAILURE_BACKOFF_AFTER
+    assert {job.status for job in jobs} == {ScanJobStatus.failed.value}
+
+
+def test_failure_streak_ignores_jobs_this_dispatcher_did_not_create(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Manual scans share scan_jobs with collection and must not move the streak.
+
+    ``scan_jobs`` is keyed on scan_config_id and written by run_scan, metrics
+    replay, event-group apply and the demo tick as well as by this dispatcher.
+    Counting them by exclusion broke both ways: a user's failed "Run now" would
+    trigger a backoff on collection, and one successful "Run now" would clear a
+    real streak and let the 5-minute storm resume.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        config_id = config.id
+        # Enough foreign failures to trip the threshold if they were counted.
+        _seed_job_history(
+            session,
+            config_id,
+            statuses=[ScanJobStatus.failed.value] * (metrics_schedule.FAILURE_BACKOFF_AFTER + 2),
+            newest_age=timedelta(minutes=5),
+            mode=None,
+        )
+
+    result, dispatched = _run_dispatcher(sync_session_factory, monkeypatch)
+    assert result == {"checked": 1, "dispatched": 1}, "foreign failures must not defer collection"
+    assert len(dispatched) == 1
+
+    # And the mirror case: a foreign SUCCESS on top of a real streak must not
+    # look like a recovery.
+    with sync_session_factory() as session:
+        session.execute(delete(ScanJob).where(ScanJob.scan_config_id == config_id))
+        session.commit()
+        _seed_job_history(
+            session,
+            config_id,
+            statuses=[ScanJobStatus.failed.value] * metrics_schedule.FAILURE_BACKOFF_AFTER,
+            newest_age=timedelta(minutes=10),
+        )
+        _seed_job_history(
+            session,
+            config_id,
+            statuses=[ScanJobStatus.completed.value],
+            newest_age=timedelta(minutes=1),
+            mode=None,
+        )
+
+    result, dispatched = _run_dispatcher(sync_session_factory, monkeypatch)
+    assert result == {"checked": 1, "dispatched": 0}, "a foreign success must not clear the streak"
+    assert dispatched == []
+
+
+def test_check_metrics_due_retries_once_the_backoff_window_has_elapsed(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Backoff defers the retry; it never abandons the config."""
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        _seed_job_history(
+            session,
+            config.id,
+            statuses=[ScanJobStatus.failed.value] * metrics_schedule.FAILURE_BACKOFF_AFTER,
+            # Past the 1h (one interval) wait for the first backed-off attempt.
+            newest_age=timedelta(minutes=90),
+        )
+
+    result, dispatched = _run_dispatcher(sync_session_factory, monkeypatch)
+
+    assert result == {"checked": 1, "dispatched": 1}
+    assert len(dispatched) == 1
+
+
+def test_check_metrics_due_does_not_back_off_below_the_failure_threshold(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A short run of failures still retries immediately.
+
+    This is what keeps the stale-job reaper above honest: it marks a hung job
+    failed moments before the streak is measured, and that single fresh failure
+    must not defer the replacement dispatch it exists to trigger.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        _seed_job_history(
+            session,
+            config.id,
+            statuses=[ScanJobStatus.failed.value] * (metrics_schedule.FAILURE_BACKOFF_AFTER - 1),
+            newest_age=timedelta(minutes=1),
+        )
+
+    result, dispatched = _run_dispatcher(sync_session_factory, monkeypatch)
+
+    assert result == {"checked": 1, "dispatched": 1}
+    assert len(dispatched) == 1
+
+
+def test_check_metrics_due_dispatches_healthy_config_despite_older_failures(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A healthy config keeps its cadence — the streak breaks at the first success.
+
+    A config that failed for a while and then recovered must dispatch the instant
+    its bucket check says due, with no residual penalty from the old failures.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        _seed_job_history(
+            session,
+            config.id,
+            statuses=[
+                ScanJobStatus.completed.value,
+                *[ScanJobStatus.failed.value] * (metrics_schedule.FAILURE_BACKOFF_AFTER + 2),
+            ],
+            newest_age=timedelta(minutes=1),
+        )
+
+    result, dispatched = _run_dispatcher(sync_session_factory, monkeypatch)
+
+    assert result == {"checked": 1, "dispatched": 1}
+    assert len(dispatched) == 1
+
+
+def test_failure_backoff_delay_grows_then_holds_at_a_bounded_ceiling() -> None:
+    """The delay doubles per failure and is clamped by both ceilings (tripl-n9ee)."""
+    hour = timedelta(hours=1)
+
+    # Below the threshold there is no wait at all — nothing changes for a config
+    # that merely blipped.
+    for streak in range(metrics_schedule.FAILURE_BACKOFF_AFTER):
+        assert metrics_schedule._failure_backoff_delay(streak, hour) is None
+
+    # 1x, 2x, 4x, 8x the interval, then held at FAILURE_BACKOFF_MAX_INTERVALS.
+    assert metrics_schedule._failure_backoff_delay(3, hour) == hour
+    assert metrics_schedule._failure_backoff_delay(4, hour) == 2 * hour
+    assert metrics_schedule._failure_backoff_delay(5, hour) == 4 * hour
+    assert metrics_schedule._failure_backoff_delay(6, hour) == 8 * hour
+    assert metrics_schedule._failure_backoff_delay(9, hour) == 8 * hour
+
+    # A short interval hits the 8x multiple long before the absolute ceiling...
+    quarter = timedelta(minutes=15)
+    assert metrics_schedule._failure_backoff_delay(20, quarter) == 2 * hour
+
+    # ...while a coarse one is held at its own interval rather than being pushed
+    # out to 8 weeks, so a fixed weekly config is not left looking dead.
+    week = timedelta(weeks=1)
+    assert metrics_schedule._failure_backoff_delay(20, week) == week
 
 
 def test_replace_scope_anomalies_upserts_on_conflict(
@@ -1298,6 +1533,52 @@ def test_reserved_catalog_columns_includes_event_group_rule_columns() -> None:
         "event_name",
         "screen_name",
     }
+
+
+def test_reserved_catalog_columns_never_reserves_the_event_name_source() -> None:
+    """A column the event name is built from outranks every reservation rule.
+
+    Reserving it makes catalog_sync skip its FieldDefinition, and generate_events
+    assembles format arguments only from columns that have one — so the name
+    format is evaluated with its placeholder missing and collection dies with
+    "event_name_format references unknown keys".
+
+    This is production's 'Old events (iOS)' config: group rules keyed on
+    ``action`` plus ``event_name_format='{action}'``. tripl-jfm3.90 reserved
+    ``action`` and took the scan down for 200 consecutive runs (tripl-lpin).
+    """
+    from tripl.worker.tasks.metrics.tasks import reserved_catalog_columns
+
+    config = ScanConfig(
+        time_column="time",
+        event_name_format="{action}",
+        event_group_rules=[
+            {
+                "name": "wind_alert_regularity_select_*",
+                "condition_logic": "all",
+                "conditions": [{"field": "action", "pattern": "^wind_alert_regularity_select_.*"}],
+            }
+        ],
+    )
+    assert reserved_catalog_columns(config) == {"time"}
+
+    # A multi-key format is covered the same way, and a group-rule column the
+    # name does NOT use stays reserved — the tripl-jfm3.57 fix is intact.
+    multi = ScanConfig(
+        event_type_column="event_type",
+        time_column="time",
+        app_version_column="app_version",
+        event_name_format="{category}:{action}",
+        event_group_rules=[
+            {
+                "conditions": [
+                    {"field": "action", "pattern": "^x"},
+                    {"field": "screen_name", "pattern": "^y"},
+                ]
+            }
+        ],
+    )
+    assert reserved_catalog_columns(multi) == {"event_type", "time", "app_version", "screen_name"}
 
 
 def test_reserved_catalog_columns_survives_malformed_group_rules() -> None:
@@ -4427,11 +4708,26 @@ def test_collect_metrics_fails_when_query_exceeds_row_limit(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
 ) -> None:
+    """A truncated read aborts the chunk AND tells the user what to change.
+
+    The guard raises ``ScanError`` rather than ``ValueError`` so that
+    ``user_facing_error`` surfaces the curated text verbatim. As a ``ValueError``
+    it fell through to the generic "Scan failed due to an internal error.", which
+    left the one actionable instruction — raise ``metrics_row_limit`` — visible
+    only in the worker log (tripl-embs).
+    """
     with sync_session_factory() as session:
         config = _create_scan_config(session, with_event_type=True)
         config.metrics_row_limit = 1
+        job = ScanJob(
+            id=uuid.uuid4(),
+            scan_config_id=config.id,
+            status=ScanJobStatus.pending.value,
+        )
+        session.add(job)
         session.commit()
         config_id = str(config.id)
+        job_id = str(job.id)
 
     class FakeAdapter:
         def test_connection(self) -> bool:
@@ -4481,8 +4777,21 @@ def test_collect_metrics_fails_when_query_exceeds_row_limit(
 
     monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
 
-    with pytest.raises(ValueError, match="Metrics query reached configured row limit"):
-        metrics.collect_metrics.run(config_id)
+    with pytest.raises(ScanError, match="Metrics query reached configured row limit") as excinfo:
+        metrics.collect_metrics.run(config_id, job_id)
+
+    # The curated message survives the sanitiser instead of being genericised...
+    assert user_facing_error(excinfo.value) == str(excinfo.value)
+
+    # ...and that is exactly what the user reads off the failed job.
+    with sync_session_factory() as session:
+        persisted_job = session.get(ScanJob, uuid.UUID(job_id))
+    assert persisted_job is not None
+    assert persisted_job.status == ScanJobStatus.failed.value
+    assert persisted_job.error_message is not None
+    assert "Metrics query reached configured row limit (1)" in persisted_job.error_message
+    assert "increase metrics_row_limit" in persisted_job.error_message
+    assert persisted_job.error_message != "Scan failed due to an internal error."
 
 
 def test_replace_scope_anomalies_persists_effective_stddev_and_detector_kind(

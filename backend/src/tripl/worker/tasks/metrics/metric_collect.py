@@ -146,6 +146,14 @@ def _reject_truncated_rows[RowT](
     for one row more than the ceiling, so ``> limit`` means the warehouse had
     more to give. Raising is the point — the alternative is a window-delete
     followed by a short re-insert, which loses the tail with no error anywhere.
+
+    Raises ``ScanError``, not ``ValueError``: the message below is written for
+    the user and names the two things they can change, but only a ``ScanError``
+    is surfaced verbatim by ``user_facing_error`` — as a ``ValueError`` it was
+    overwritten with the generic internal-error summary on
+    ``last_collection_error`` / ``ScanJob.error_message`` (tripl-embs). Every
+    caller funnels this into an ``except Exception`` that stamps the failure via
+    ``user_facing_error``, so the change is confined to which text is persisted.
     """
     if len(rows) > METRIC_QUERY_ROW_LIMIT:
         window = ""
@@ -156,7 +164,7 @@ def _reject_truncated_rows[RowT](
             f"{window}; narrow the metric's breakdown or use a shorter replay chunk "
             "interval — collecting it would overwrite the window with partial data"
         )
-        raise ValueError(msg)
+        raise ScanError(msg)
     return list(rows)
 
 

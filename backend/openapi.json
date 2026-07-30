@@ -19304,7 +19304,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "$ref": "#/components/schemas/AlertDeliveryStatus"
                 },
                 {
                   "type": "null"
@@ -19320,7 +19320,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "$ref": "#/components/schemas/AlertDestinationType"
                 },
                 {
                   "type": "null"
@@ -20120,7 +20120,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "$ref": "#/components/schemas/AlertInboxStatus"
                 },
                 {
                   "type": "null"
@@ -20263,7 +20263,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "$ref": "#/components/schemas/ChartAnnotationScopeType"
                 },
                 {
                   "type": "null"
@@ -21775,8 +21775,7 @@
             "name": "scope_type",
             "required": true,
             "schema": {
-              "title": "Scope Type",
-              "type": "string"
+              "$ref": "#/components/schemas/MetricScopeType"
             }
           },
           {
@@ -23180,7 +23179,7 @@
               "anyOf": [
                 {
                   "items": {
-                    "type": "string"
+                    "$ref": "#/components/schemas/EventStatus"
                   },
                   "type": "array"
                 },
@@ -27497,9 +27496,8 @@
             "name": "scope_type",
             "required": false,
             "schema": {
-              "default": "project_total",
-              "title": "Scope Type",
-              "type": "string"
+              "$ref": "#/components/schemas/MetricScopeType",
+              "default": "project_total"
             }
           },
           {
@@ -27610,8 +27608,7 @@
             "name": "scope_type",
             "required": true,
             "schema": {
-              "title": "Scope Type",
-              "type": "string"
+              "$ref": "#/components/schemas/MetricScopeType"
             }
           },
           {
@@ -27744,7 +27741,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "$ref": "#/components/schemas/MetricScopeType"
                 },
                 {
                   "type": "null"
@@ -27811,8 +27808,7 @@
             "name": "scope_type",
             "required": true,
             "schema": {
-              "title": "Scope Type",
-              "type": "string"
+              "$ref": "#/components/schemas/MetricScopeType"
             }
           },
           {
@@ -27916,8 +27912,7 @@
             "name": "scope_type",
             "required": true,
             "schema": {
-              "title": "Scope Type",
-              "type": "string"
+              "$ref": "#/components/schemas/MetricScopeType"
             }
           },
           {

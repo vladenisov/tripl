@@ -1105,12 +1105,30 @@ class TestScanConfigsCRUD:
         finally:
             engine.dispose()
 
-    def test_user_facing_error_sanitizes_internals_but_keeps_curated_messages(self) -> None:
+    def test_user_facing_error_sanitizes_internals_but_keeps_curated_messages(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # Curated ScanError messages are user-actionable and surfaced verbatim.
         curated = scan_tasks.ScanError(
             "Scan query reached configured row limit (60000); increase scan_row_limit"
         )
         assert scan_tasks._user_facing_error(curated) == str(curated)
+
+        # The metrics row-limit guards are the real producers of that shape, and
+        # they must raise ScanError — as bare ValueErrors their (already
+        # user-written) text was thrown away and replaced by the generic internal
+        # -error line, which is why a real failing scan told the operator nothing
+        # (tripl-embs). Exercise the guard itself rather than a hand-written
+        # string so a regression to ValueError fails here.
+        from tripl.worker.tasks.metrics import metric_collect
+
+        monkeypatch.setattr(metric_collect, "METRIC_QUERY_ROW_LIMIT", 2)
+        with pytest.raises(scan_tasks.ScanError) as excinfo:
+            metric_collect._reject_truncated_rows([1, 2, 3], what="Fact metric aggregate")
+        row_limit_message = scan_tasks._user_facing_error(excinfo.value)
+        assert row_limit_message == str(excinfo.value)
+        assert "Fact metric aggregate reached the metric query row limit (2)" in row_limit_message
+        assert row_limit_message != "Scan failed due to an internal error."
 
         # A ClickHouse read-timeout carries host/port — replace with a summary.
         timeout = TimeoutError(
