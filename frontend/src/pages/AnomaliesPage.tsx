@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Activity, ArrowDown, ArrowUp, Settings2 } from 'lucide-react'
-import { metricsApi } from '@/api/metrics'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
@@ -13,41 +12,28 @@ import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { formatRelativeTime } from '@/lib/datetime'
 import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
+import {
+  DEFAULT_MAGNITUDE_LEVEL,
+  MAGNITUDE_PRESETS,
+  type MagnitudeLevel,
+  relativeEffect,
+} from '@/lib/signalMagnitude'
 import { useActiveBranchId } from '@/hooks/useBranch'
-import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
+import { useExpandedSignals } from '@/hooks/useExpandedSignals'
+import {
+  signalScopeLabel as sharedSignalScopeLabel,
+  type NameMap,
+} from '@/lib/signalScope'
 import type { MonitoringSignal } from '@/types'
 
 const ANOMALY_GRID = 'grid grid-cols-[1.7fr_1fr_72px_96px] items-center gap-3 px-4'
 
-/** Entity id → display name, for labelling metric / event-type / event signals. */
-type NameMap = ReadonlyMap<string, string>
-
 // ───────── Magnitude filter ─────────
 //
-// Signals are ranked by |z|, but z is inflated on low-volume series, so a tiny
-// absolute change on a quiet scope can outrank a large one on a busy scope. The
-// user-facing filter therefore keys off a *relative effect size* — how far the
-// actual count strayed from the expectation, as a fraction of the expectation —
-// which stays meaningful across volumes.
-const MAGNITUDE_PRESETS = [
-  { id: 'all', label: 'All', minRelEffect: 0 },
-  { id: 'significant', label: 'Significant', minRelEffect: 0.5 },
-  { id: 'major', label: 'Major', minRelEffect: 1 },
-] as const
-
-type MagnitudeLevel = (typeof MAGNITUDE_PRESETS)[number]['id']
-
-// Default to "Significant" (±50%) so the flooded list is usable immediately;
-// the control lets users drop to "All" to see everything.
-const DEFAULT_MAGNITUDE_LEVEL: MagnitudeLevel = 'significant'
-
-/** Relative effect: |actual − expected| / max(expected, 1). Preferred over z
- * for the filter because it does not blow up on low-volume series. */
-function relativeEffect(signal: MonitoringSignal): number {
-  return (
-    Math.abs(signal.actual_count - signal.expected_count) / Math.max(signal.expected_count, 1)
-  )
-}
+// The presets, the threshold and relativeEffect() live in @/lib/signalMagnitude
+// so this page, the Overview headline, the top-bar bell and the backend badge
+// all rank and gate signals identically — they drifted apart twice when each
+// surface kept its own copy (tripl-yfsj.1, tripl-jfm3.89).
 
 // The four scopes that have a monitoring detail route (metric scope_ref is the
 // metric definition id, routed via getMetricMonitoringPath); getMonitoringPath
@@ -67,24 +53,7 @@ function signalScopeLabel(
   eventTypeNames: NameMap,
   eventNames: NameMap,
 ): string {
-  if (signal.scope_type === 'project_total') return 'Project total'
-  // Every named scope carries only its id; the corresponding list resolves it to
-  // a display name. Fall back to the short ref while the list loads or when the
-  // entity is gone (e.g. deleted event / event type / metric).
-  const ref = signal.scope_ref.slice(0, 8)
-  if (signal.scope_type === 'event_type') {
-    const name = eventTypeNames.get(signal.scope_ref)
-    return name ? `Event type · ${name}` : `Event type ${ref}`
-  }
-  if (signal.scope_type === 'event') {
-    const name = eventNames.get(signal.scope_ref)
-    return name ? `Event · ${name}` : `Event ${ref}`
-  }
-  if (signal.scope_type === 'metric') {
-    const name = metricNames.get(signal.scope_ref)
-    return name ? `Metric · ${name}` : `Metric ${ref}`
-  }
-  return `${signal.scope_type} ${ref}`
+  return sharedSignalScopeLabel(signal, { metricNames, eventTypeNames, eventNames })
 }
 
 /** Single-select segmented control for the magnitude filter. */
@@ -129,20 +98,12 @@ function MagnitudeFilter({
 export default function AnomaliesPage() {
   const { slug } = useParams<{ slug: string }>()
   const branchId = useActiveBranchId()
-  // Stream-aware fallback: signals.updated invalidates this key; poll only when
-  // the stream is down.
-  const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
   const [level, setLevel] = useState<MagnitudeLevel>(DEFAULT_MAGNITUDE_LEVEL)
 
-  const signalsQuery = useQuery({
-    // expanded: surface every flagged scope — project_total, each event_type and
-    // each event — instead of collapsing an incident's fan-out into one total row.
-    queryKey: ['anomalies', 'signals', slug, 'expanded'],
-    queryFn: () => metricsApi.getActiveSignals(slug!, undefined, { expanded: true }),
-    enabled: !!slug,
-    staleTime: 30_000,
-    refetchInterval,
-  })
+  // expanded: surface every flagged scope — project_total, each event_type and
+  // each event — instead of collapsing an incident's fan-out into one total row.
+  // Shared key with the top bar and Overview (tripl-jfm3.119).
+  const signalsQuery = useExpandedSignals(slug)
 
   // Metric-scope signals only carry the definition id; the catalog list
   // resolves it to a display name. Shares the 'metrics-catalog' key prefix so

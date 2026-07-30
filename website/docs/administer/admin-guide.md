@@ -367,9 +367,10 @@ replaces.
 trusted proxy/load balancer sits in front and overwrites `X-Real-IP` on every
 request. On a directly-exposed API, a raw `X-Forwarded-For` is
 attacker-controlled — trusting it lets an unauthenticated caller rotate the
-header per request and bypass the rate limit entirely. Because this section is
-read from the environment, set it via the `RATE_LIMIT_TRUST_FORWARDED_FOR` env
-var, not the UI override.
+header per request and bypass the rate limit entirely. Set it either way: the
+`RATE_LIMIT_TRUST_FORWARDED_FOR` env var and the **Security & access** override
+both work, and the override wins. Like the rest of this section it is read once
+at startup, so either route takes effect on the next restart.
 :::
 
 ### Storage

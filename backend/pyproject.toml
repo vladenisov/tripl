@@ -76,7 +76,14 @@ filterwarnings = [
 target-version = "py314"
 line-length = 100
 src = ["src"]
-extend-exclude = ["alembic/versions"]
+# alembic/versions is deliberately NOT excluded. It used to be, and that is
+# exactly how PR #64 swept ~1,600 lines of formatting-only churn into 12
+# historical migrations: an exclude in config is overridden the moment someone
+# names the path explicitly (`ruff format src/tripl alembic/versions`), so the
+# directory had never been formatted and every file rewrote at once. Linting it
+# like everything else removes the trap — there is no longer a second, dirtier
+# state for an explicit path to discover. `script.py.mako` generates migrations
+# that already satisfy these rules (tripl-ln1k).
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

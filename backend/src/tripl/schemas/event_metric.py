@@ -85,6 +85,14 @@ class SeasonalityHeatmapResponse(BaseModel):
     cells: list[SeasonalityCell]
     max_count: int
     total_count: int
+    #: The scan interval the cells were binned from, and whether that interval
+    #: actually resolves an hour. A daily or weekly scan puts EVERY bucket in
+    #: hour 0, so 23 of each row's 24 cells are structurally empty — a 7x24 grid
+    #: then reads as missing data instead of as a coarser interval
+    #: (tripl-jfm3.128). Clients render the weekday strip alone when this is
+    #: false rather than drawing a grid that can never fill.
+    interval: str
+    hourly_resolution: bool
 
 
 class BreakdownTimelinePoint(BaseModel):

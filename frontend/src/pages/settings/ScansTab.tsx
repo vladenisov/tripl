@@ -23,6 +23,7 @@ import { LOADING_SCAN_RUN_INFO, deriveScanRunInfo, jobDurationSeconds, jobRowsSc
 import { useAdaptiveRefetchIntervalFn } from "@/realtime/streamContext"
 import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
+import { dataSourcesKey } from '@/lib/queryKeys'
 
 interface RecentRun {
   jobId: string
@@ -51,7 +52,7 @@ export function ScansTab({ slug }: { slug: string }) {
   const [mountedAtMs] = useState(() => Date.now())
 
   const { data: dataSources = [] } = useQuery({
-    queryKey: ['dataSources'],
+    queryKey: dataSourcesKey(),
     queryFn: () => dataSourcesApi.list(),
   })
 

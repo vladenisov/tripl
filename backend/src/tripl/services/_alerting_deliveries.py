@@ -444,7 +444,12 @@ async def apply_alert_inbox_action(
     else:
         raise HTTPException(status_code=422, detail="Unsupported alert inbox action")
 
-    state.note = data.note
+    # Only a supplied note replaces the stored one. Assigning unconditionally
+    # meant every later action — acknowledge, then resolve — silently erased the
+    # note written with the previous one, which is the opposite of what a note
+    # on an incident is for (tripl-jfm3.91).
+    if data.note is not None:
+        state.note = data.note.strip() or None
     state.acted_at = now
     state.acted_by = user_id
     await session.commit()

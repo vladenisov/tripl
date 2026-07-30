@@ -3,32 +3,20 @@ import { useQueries } from '@tanstack/react-query'
 import type { VirtualItem } from '@tanstack/react-virtual'
 
 import { metricsApi } from '@/api/metrics'
+import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { EventListItem, MonitoringSignal } from '@/types'
 
 import {
   EMPTY_EVENT_WINDOW_METRICS,
+  EVENT_ID_BUCKET_SIZE,
   ROW_METRICS_RANGE_HOURS,
+  chunkEventIds,
   deriveRowSignalFromMetrics,
 } from './utils'
 
-// Window metrics are fetched in fixed-size, index-aligned buckets rather than as
-// one query over every accumulated id. With 200-row pages + infinite scroll, a
-// single all-ids query key changed on every page append and refetched metrics
-// for the ENTIRE accumulated set (and the 60s interval re-pulled all of them).
-// Bucketing keeps each already-loaded bucket's key stable, so appending a page
-// only fetches the new bucket(s); every bucket still auto-refreshes on its own
-// interval, and results merge into one event-id → metric map (unchanged shape).
-const WINDOW_METRICS_BUCKET_SIZE = 100
-
-function chunkEventIds(eventIds: string[]): string[][] {
-  const buckets: string[][] = []
-  for (let start = 0; start < eventIds.length; start += WINDOW_METRICS_BUCKET_SIZE) {
-    buckets.push(eventIds.slice(start, start + WINDOW_METRICS_BUCKET_SIZE))
-  }
-  return buckets
-}
-
+// Bucketing (chunkEventIds) lives in ./utils — the signals hook next door needs
+// the identical scheme, and having two copies is how one of them drifts.
 /**
  * Inclusive bucket range covering the rows the virtualizer is actually
  * rendering. Only these buckets get a query: window-metrics is the dominant
@@ -50,8 +38,8 @@ export function visibleBucketRange(virtualItems: readonly VirtualItem[]): {
   const lastItem = virtualItems[virtualItems.length - 1]
   if (!firstItem || !lastItem) return { first: 0, last: 0 }
   return {
-    first: Math.floor(firstItem.index / WINDOW_METRICS_BUCKET_SIZE),
-    last: Math.floor(lastItem.index / WINDOW_METRICS_BUCKET_SIZE),
+    first: Math.floor(firstItem.index / EVENT_ID_BUCKET_SIZE),
+    last: Math.floor(lastItem.index / EVENT_ID_BUCKET_SIZE),
   }
 }
 
@@ -73,11 +61,14 @@ export function useEventRowMetrics({
   /** Rows the table is currently rendering; empty when not virtualizing. */
   virtualItems: readonly VirtualItem[]
 }) {
-  const rowMetricsRange = useMemo(() => {
-    const to = new Date()
-    const from = new Date(to.getTime() - ROW_METRICS_RANGE_HOURS * 60 * 60 * 1000)
-    return { time_from: from.toISOString(), time_to: to.toISOString() }
-  }, [])
+  // The memo had NO dependencies, so this window froze for the entire life of
+  // the Events page: sparklines kept re-requesting the hours around whenever the
+  // page was opened, however long it stayed open (tripl-jfm3.114).
+  const liveRange = useLiveTimeRange(ROW_METRICS_RANGE_HOURS * 60 * 60 * 1000)
+  const rowMetricsRange = useMemo(
+    () => ({ time_from: liveRange.from, time_to: liveRange.to }),
+    [liveRange],
+  )
 
   const eventIdsForWindowMetrics = useMemo(
     () => events.map(event => event.id),

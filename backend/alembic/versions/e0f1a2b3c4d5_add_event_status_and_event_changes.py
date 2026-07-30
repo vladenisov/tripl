@@ -109,7 +109,9 @@ def downgrade() -> None:
         SET
             archived    = (status = 'archived'),
             implemented = (status IN ('implemented', 'live', 'deprecated', 'archived')),
-            reviewed    = (status IN ('ready_for_dev', 'implemented', 'live', 'deprecated', 'archived'))
+            reviewed    = (status IN (
+                'ready_for_dev', 'implemented', 'live', 'deprecated', 'archived'
+            ))
         """
     )
 

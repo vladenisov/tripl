@@ -97,7 +97,20 @@ def settling_buckets_for(interval: timedelta, delay: timedelta) -> int:
 
 def _fractional_stddev_floor(counts: Sequence[float]) -> float:
     """Magnitude-derived absolute stddev floor for fractional series."""
-    magnitude = median(abs(value) for value in counts)
+    magnitudes = [abs(value) for value in counts]
+    if not magnitudes:
+        return _FRACTIONAL_STDDEV_FLOOR_EPSILON
+    magnitude = median(magnitudes)
+    if magnitude == 0.0:
+        # More than half the history is zero. A platform-parity ratio for an
+        # event that only fires on one platform looks exactly like this, and the
+        # parity path deliberately runs with min_expected_count=0, so nothing
+        # else gates it. Taking the median literally collapsed the floor to
+        # 1e-9, and any bucket where the other platform emitted even once scored
+        # z ~ 1e8 — a flood of false parity anomalies on a routine tracking plan
+        # (tripl-jfm3.96). Fall back to the series' own peak so the floor still
+        # reflects its scale instead of machine epsilon.
+        magnitude = max(magnitudes)
     return max(magnitude * _FRACTIONAL_STDDEV_FLOOR_RATIO, _FRACTIONAL_STDDEV_FLOOR_EPSILON)
 
 

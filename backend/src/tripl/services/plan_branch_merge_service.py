@@ -40,7 +40,6 @@ from tripl.services.plan_branch_conflicts import (
     _load_resolutions,
 )
 from tripl.services.plan_branch_service import (
-    _get_branch,
     _load_for_branch,
     _reject_main,
     _resolve_project,
@@ -1016,6 +1015,37 @@ async def _enqueue_implementation_ticket(
         logger.exception("Failed to enqueue implementation ticket for branch %s", branch_id)
 
 
+async def _lock_branch_for_merge(
+    session: AsyncSession, project_id: uuid.UUID, branch_id: uuid.UUID
+) -> PlanBranch:
+    """Load the branch row under a write lock held for the whole merge.
+
+    ``_get_branch`` is a plain ``session.get``, so two merges arriving together
+    both read ``approved``, both pass the status gate, and both apply the branch
+    onto main — duplicating every add and re-running every field write
+    (tripl-jfm3.113). ``merge_branch`` commits exactly once, at the very end, so
+    a row lock taken here is still held when the winner flips the status: the
+    loser blocks until that commit, then re-reads ``merged`` and is rejected by
+    the existing 400 below.
+
+    ``populate_existing`` matters — the branch may already sit in the identity
+    map from an earlier read in the request, and a cached instance would hand
+    back the stale pre-lock status.
+
+    On SQLite (tests) ``FOR UPDATE`` is a no-op; the guard is a PostgreSQL one,
+    which is what production runs.
+    """
+    branch = await session.scalar(
+        select(PlanBranch)
+        .where(PlanBranch.id == branch_id, PlanBranch.project_id == project_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if branch is None:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    return branch
+
+
 async def merge_branch(
     session: AsyncSession,
     slug: str,
@@ -1023,7 +1053,7 @@ async def merge_branch(
     user_id: uuid.UUID,
 ) -> PlanBranchDetailResponse:
     project = await _resolve_project(session, slug)
-    branch = await _get_branch(session, project.id, branch_id)
+    branch = await _lock_branch_for_merge(session, project.id, branch_id)
     _reject_main(branch)
     if branch.status == BranchStatus.merged.value:
         raise HTTPException(status_code=400, detail="Branch is already merged")

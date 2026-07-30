@@ -4,7 +4,6 @@ import { History, Pencil, Plus, Trash2 } from "lucide-react"
 import type {
   AlertDestination,
   AlertRule,
-  EventListItem,
   EventType,
 } from "@/types"
 import { alertingApi } from "@/api/alerting"
@@ -45,13 +44,11 @@ export function DestinationCard({
   slug,
   destination,
   eventTypes,
-  events,
   onEditDestination,
 }: {
   slug: string
   destination: AlertDestination
   eventTypes: EventType[]
-  events: EventListItem[]
   onEditDestination: (destination: AlertDestination) => void
 }) {
   const qc = useQueryClient()
@@ -343,6 +340,16 @@ export function DestinationCard({
                   />
                   Value drift
                 </label>
+                {/* Catalog metrics are a scope of their own: detection has always
+                    run on them, but without this box no rule could route the
+                    resulting signal anywhere (tripl-jfm3.108). */}
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={ruleForm.include_metrics}
+                    onCheckedChange={checked => setRuleForm(current => ({ ...current, include_metrics: !!checked }))}
+                  />
+                  Metrics
+                </label>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -465,7 +472,7 @@ export function DestinationCard({
               <FilterEditor
                 filters={ruleForm.filters}
                 eventTypes={eventTypes}
-                events={events}
+                slug={slug}
                 onChange={filters => setRuleForm(current => ({ ...current, filters }))}
               />
 

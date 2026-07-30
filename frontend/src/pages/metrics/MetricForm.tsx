@@ -56,6 +56,7 @@ import {
   type MetricTemplate,
   type SqlTemplateId,
 } from './metricTemplates'
+import { dataSourcesKey } from '@/lib/queryKeys'
 
 // The single fact operand shape sent to the backend (numerator / denominator /
 // the implicit single operand) — derived from the generated create schema so it
@@ -1606,7 +1607,7 @@ export default function MetricEditPage() {
   const goBack = () => navigate(`/p/${slug}/metrics`)
 
   const dataSourcesQuery = useQuery({
-    queryKey: ['data-sources'],
+    queryKey: dataSourcesKey(),
     queryFn: () => dataSourcesApi.list(),
   })
   const eventsQuery = useQuery({

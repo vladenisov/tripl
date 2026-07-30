@@ -37,13 +37,21 @@ same [safe defaults](./agent-api-guide.md#safe-agent-defaults) as for raw REST.
 Stdio is the default transport: the MCP client launches `tripl-mcp` as a child
 process and the key comes from the environment.
 
+:::note Not published to PyPI (yet)
+`tripl-mcp` is not on the package index, so a bare `uvx tripl-mcp` will not
+resolve. Install it straight from git with `uvx --from` as shown below, or run
+it from a checkout. The **container** image *is* published —
+`ghcr.io/vladenisov/tripl-mcp`, built alongside the app image on every release —
+and is what `docker compose --profile mcp up` pulls.
+:::
+
 ### Claude Code
 
 ```bash
 claude mcp add tripl \
   -e TRIPL_BASE_URL=https://tripl.example.com \
   -e TRIPL_API_KEY=tk_r_... \
-  -- uvx tripl-mcp
+  -- uvx --from 'git+https://github.com/vladenisov/tripl.git#subdirectory=mcp-server' tripl-mcp
 ```
 
 Or check a `.mcp.json` into the project (put the key itself in your shell
@@ -54,7 +62,11 @@ environment, not in the file):
   "mcpServers": {
     "tripl": {
       "command": "uvx",
-      "args": ["tripl-mcp"],
+      "args": [
+        "--from",
+        "git+https://github.com/vladenisov/tripl.git#subdirectory=mcp-server",
+        "tripl-mcp"
+      ],
       "env": {
         "TRIPL_BASE_URL": "https://tripl.example.com",
         "TRIPL_API_KEY": "${TRIPL_API_KEY}"
@@ -73,7 +85,11 @@ Add the same block under `mcpServers` in `claude_desktop_config.json`:
   "mcpServers": {
     "tripl": {
       "command": "uvx",
-      "args": ["tripl-mcp"],
+      "args": [
+        "--from",
+        "git+https://github.com/vladenisov/tripl.git#subdirectory=mcp-server",
+        "tripl-mcp"
+      ],
       "env": {
         "TRIPL_BASE_URL": "https://tripl.example.com",
         "TRIPL_API_KEY": "tk_r_..."

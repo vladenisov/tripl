@@ -51,6 +51,7 @@ import {
 import { dataSourceHealthLexeme } from '@/lib/statusLexicon'
 import { getErrorMessage } from '@/lib/utils'
 import { formatDate } from '@/lib/datetime'
+import { dataSourcesKey } from '@/lib/queryKeys'
 
 const EMPTY_DATA_SOURCES: DataSource[] = []
 
@@ -112,7 +113,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const canManageDataSources = user?.role === 'owner'
 
   const dataSourcesQuery = useQuery({
-    queryKey: ['dataSources'],
+    queryKey: dataSourcesKey(),
     queryFn: () => dataSourcesApi.list(),
   })
   const dataSources = dataSourcesQuery.data ?? EMPTY_DATA_SOURCES
@@ -128,7 +129,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       })
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['dataSources'] })
+      qc.invalidateQueries({ queryKey: dataSourcesKey() })
       resetForm()
     },
   })
@@ -148,14 +149,14 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       })
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['dataSources'] })
+      qc.invalidateQueries({ queryKey: dataSourcesKey() })
       closeEdit()
     },
   })
 
   const deleteMut = useMutation({
     mutationFn: (id: string) => dataSourcesApi.del(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['dataSources'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: dataSourcesKey() }),
   })
 
   const handleDelete = async (ds: DataSource) => {
@@ -172,13 +173,13 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     setTestingId(id)
     try {
       const result = await dataSourcesApi.testConnection(id)
-      qc.setQueryData<DataSource[] | undefined>(['dataSources'], (prev) =>
+      qc.setQueryData<DataSource[] | undefined>(dataSourcesKey(), (prev) =>
         prev?.map((ds) => (ds.id === id ? result.data_source : ds)),
       )
     } catch (err) {
       // HTTP failure before the backend persisted anything — reflect it locally
       // so the card shows the error instead of stale "unverified" state.
-      qc.setQueryData<DataSource[] | undefined>(['dataSources'], (prev) =>
+      qc.setQueryData<DataSource[] | undefined>(dataSourcesKey(), (prev) =>
         prev?.map((ds) =>
           ds.id === id
             ? {

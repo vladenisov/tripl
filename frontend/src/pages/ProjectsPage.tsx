@@ -58,6 +58,7 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react'
+import { dataSourcesKey } from '@/lib/queryKeys'
 
 export default function MainPage() {
   const queryClient = useQueryClient()
@@ -75,7 +76,7 @@ export default function MainPage() {
     queryFn: projectsApi.list,
   })
   const dataSourcesQuery = useQuery({
-    queryKey: ['dataSources'],
+    queryKey: dataSourcesKey(),
     queryFn: dataSourcesApi.list,
   })
 

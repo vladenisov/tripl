@@ -55,6 +55,7 @@ import type {
   ProjectBranchSettings,
   ResolutionChoice,
 } from '@/types'
+import { planBranchesKey } from '@/lib/queryKeys'
 
 const STATUS_LABEL: Record<PlanBranchStatus, string> = {
   draft: 'Draft',
@@ -187,11 +188,11 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
   const usersById = useUsersById()
 
   const { data, isLoading } = useQuery({
-    queryKey: ['planBranches', slug],
+    queryKey: planBranchesKey(slug),
     queryFn: () => planBranchesApi.list(slug),
   })
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: ['planBranches', slug] })
+  const invalidate = () => qc.invalidateQueries({ queryKey: planBranchesKey(slug) })
   const selectBranch = (branch: PlanBranchSummary) =>
     navigate(`/p/${slug}/settings/branches/${branch.id}`)
 
@@ -469,7 +470,7 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
   })
 
   const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ['planBranches', slug] })
+    qc.invalidateQueries({ queryKey: planBranchesKey(slug) })
     qc.invalidateQueries({ queryKey: ['planBranchDiff', slug, branch.id] })
     qc.invalidateQueries({ queryKey: ['planBranchDetail', slug, branch.id] })
   }
@@ -491,7 +492,7 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
 
   const deleteMut = useMutation({
     mutationFn: () => planBranchesApi.delete(slug, branch.id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['planBranches', slug] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: planBranchesKey(slug) }),
   })
 
   // Undo one diff entry — the whole entity, or one field of it — back to the

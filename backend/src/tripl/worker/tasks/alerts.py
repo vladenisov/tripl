@@ -274,6 +274,9 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                 scan_name=scan_config.name,
                 project_name=project.name if project else "",
                 item_context_cache=item_context_cache,
+                # Lets the explanation build on what this rule already sent for
+                # these scopes rather than restating it (tripl-ikee).
+                session=session,
             )
         if ai_explanation:
             text = _append_ai_explanation(text, ai_explanation, message_format)

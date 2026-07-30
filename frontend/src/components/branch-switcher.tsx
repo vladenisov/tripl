@@ -7,6 +7,7 @@ import { useBranchContext } from '@/hooks/useBranch'
 import { Chip } from '@/components/primitives/chip'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import type { PlanBranchSummary } from '@/types'
+import { planBranchesKey } from '@/lib/queryKeys'
 
 export function BranchSwitcher({ slug }: { slug: string }) {
   const { branchId, setBranchId } = useBranchContext()
@@ -14,7 +15,7 @@ export function BranchSwitcher({ slug }: { slug: string }) {
   const [open, setOpen] = useState(false)
 
   const branchesQuery = useQuery({
-    queryKey: ['plan-branches', slug],
+    queryKey: planBranchesKey(slug),
     queryFn: () => planBranchesApi.list(slug),
     enabled: Boolean(slug),
   })

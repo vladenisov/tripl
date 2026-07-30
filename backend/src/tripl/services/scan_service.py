@@ -241,9 +241,46 @@ async def delete_scan_config(session: AsyncSession, slug: str, scan_id: uuid.UUI
     await session.commit()
 
 
+async def _reject_if_already_running(session: AsyncSession, scan_config_id: uuid.UUID) -> None:
+    """409 rather than a second collection over the same metric windows.
+
+    The scheduler already skips dispatch while a live job exists
+    (worker/tasks/metrics/schedule.py), but the manual trigger had no guard at
+    all: a double-click, or Run pressed during the hourly run, started a second
+    scan on the same config. Collection deletes a chunk window and rewrites it,
+    so two interleaved runs lose rows (tripl-jfm3.100).
+
+    "Live" uses the same staleness rule as the scheduler: a job whose newest
+    activity marker is older than STALE_ACTIVE_SCAN_JOB_TIMEOUT is a corpse the
+    reaper will clear, and must not block a new run forever.
+    """
+    from tripl.worker.tasks.metrics._helpers import STALE_ACTIVE_SCAN_JOB_TIMEOUT
+
+    now = datetime.now(UTC)
+    active = (
+        await session.execute(
+            select(ScanJob).where(
+                ScanJob.scan_config_id == scan_config_id,
+                ScanJob.status.in_((ScanJobStatus.pending.value, ScanJobStatus.running.value)),
+            )
+        )
+    ).scalars()
+    for job in active:
+        markers = [m for m in (job.updated_at, job.started_at, job.created_at) if m is not None]
+        if not markers:
+            continue
+        latest = max(m if m.tzinfo else m.replace(tzinfo=UTC) for m in markers)
+        if now - latest < STALE_ACTIVE_SCAN_JOB_TIMEOUT:
+            raise HTTPException(
+                status_code=409,
+                detail="A scan is already running for this configuration.",
+            )
+
+
 async def trigger_scan(session: AsyncSession, slug: str, scan_id: uuid.UUID) -> ScanJob:
     """Create a ScanJob and dispatch the Celery task."""
     config = await get_scan_config(session, slug, scan_id)
+    await _reject_if_already_running(session, config.id)
 
     job = ScanJob(
         scan_config_id=config.id,
@@ -305,10 +342,20 @@ async def trigger_metrics_replay(
     return job
 
 
-async def list_scan_jobs(session: AsyncSession, slug: str, scan_id: uuid.UUID) -> list[ScanJob]:
+async def list_scan_jobs(
+    session: AsyncSession,
+    slug: str,
+    scan_id: uuid.UUID,
+    *,
+    limit: int = 50,
+) -> list[ScanJob]:
+    """Newest jobs first. Capped — see the route docstring (tripl-jfm3.107)."""
     await get_scan_config(session, slug, scan_id)
     result = await session.execute(
-        select(ScanJob).where(ScanJob.scan_config_id == scan_id).order_by(ScanJob.created_at.desc())
+        select(ScanJob)
+        .where(ScanJob.scan_config_id == scan_id)
+        .order_by(ScanJob.created_at.desc())
+        .limit(limit)
     )
     return list(result.scalars().all())
 

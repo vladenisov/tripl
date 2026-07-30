@@ -34,6 +34,7 @@ from tripl.worker.plan_scope import main_branch_id
 from tripl.worker.search_reindex import reindex_main_branch_from_worker
 from tripl.worker.tasks._errors import ScanError, user_facing_error
 from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
+from tripl.worker.utils.reserved_columns import reserved_catalog_columns
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +235,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
                 time_column=config.time_column,
                 event_name_format=config.event_name_format,
                 event_group_rules=config.event_group_rules,
+                reserved_columns=reserved_catalog_columns(config),
                 scan_config_id=config.id,
             )
             group_results = None
@@ -381,6 +383,7 @@ def _scan_with_grouping(
             time_column=config.time_column,
             event_name_format=config.event_name_format,
             event_group_rules=config.event_group_rules,
+            reserved_columns=reserved_catalog_columns(config),
         )
         combined.events_created += result.events_created
         combined.events_skipped += result.events_skipped

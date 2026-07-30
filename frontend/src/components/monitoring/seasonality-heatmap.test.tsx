@@ -18,7 +18,10 @@ function cell(
   return { anomaly_count: 0, ...overrides }
 }
 
-function heatmap(cells: SeasonalityCell[]): SeasonalityHeatmap {
+function heatmap(
+  cells: SeasonalityCell[],
+  overrides: Partial<SeasonalityHeatmap> = {},
+): SeasonalityHeatmap {
   const counts = cells.map(item => item.count)
   return {
     scan_config_id: 'scan-1',
@@ -27,6 +30,9 @@ function heatmap(cells: SeasonalityCell[]): SeasonalityHeatmap {
     cells,
     max_count: counts.length ? Math.max(...counts) : 0,
     total_count: counts.reduce((sum, value) => sum + value, 0),
+    interval: '1h',
+    hourly_resolution: true,
+    ...overrides,
   }
 }
 
@@ -83,5 +89,38 @@ describe('SeasonalityHeatmap', () => {
     await screen.findByText('Hour × weekday heatmap')
     expect(screen.getByText('50')).toBeInTheDocument()
     expect(screen.getByText('800')).toBeInTheDocument()
+  })
+
+  it('says the ramp is a rank scale, not a linear count scale (tripl-jfm3.127)', async () => {
+    vi.mocked(metricsApi.getSeasonalityHeatmap).mockResolvedValue(
+      heatmap([
+        cell({ weekday: 0, hour: 0, count: 50 }),
+        cell({ weekday: 3, hour: 14, count: 800 }),
+      ]),
+    )
+
+    renderHeatmap()
+
+    // The min/max labels are true endpoints, but the shading in between is by
+    // quantile rank — the legend used to read as "events / slot" alone, which
+    // invites reading a mid-tone as a mid-count.
+    expect(await screen.findByText(/shaded by rank/)).toBeInTheDocument()
+  })
+
+  it('does not draw a grid a coarse interval can never fill (tripl-jfm3.128)', async () => {
+    // A daily scan floors every bucket into hour 0, so 23 of each row's 24
+    // cells are structurally empty and the grid reads as missing data.
+    vi.mocked(metricsApi.getSeasonalityHeatmap).mockResolvedValue(
+      heatmap([cell({ weekday: 0, hour: 0, count: 500 })], {
+        interval: '1d',
+        hourly_resolution: false,
+      }),
+    )
+
+    const { container } = renderHeatmap()
+
+    expect(await screen.findByText(/no hour-of-day detail/)).toBeInTheDocument()
+    expect(screen.getByText('1d')).toBeInTheDocument()
+    expect(container.querySelector('table')).toBeNull()
   })
 })

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import mimetypes
 import re
 import uuid
@@ -15,6 +16,8 @@ from tripl.models.event_photo import EventPhoto
 from tripl.models.event_photo_comment import EventPhotoComment
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.storage import get_photo_storage
+
+logger = logging.getLogger(__name__)
 
 PHOTO_KIND_PHOTO = EventPhotoKind.photo.value
 PHOTO_KIND_FIGMA = EventPhotoKind.figma.value
@@ -137,8 +140,14 @@ async def upload_photo(
     except Exception:
         # If the DB write fails after the upload, best-effort clean the
         # orphaned object so the bucket / filesystem doesn't accumulate
-        # leaked files.
-        await storage.delete(storage_key)
+        # leaked files. Deliberately swallowed HERE and nowhere else: the
+        # caller needs the original DB error, not a cleanup failure raised on
+        # top of it. A failed cleanup leaves one unreferenced blob, which is
+        # why it is logged rather than ignored (tripl-jfm3.118).
+        try:
+            await storage.delete(storage_key)
+        except Exception:
+            logger.exception("Failed to clean up orphaned photo object %s", storage_key)
         raise
     await session.refresh(photo)
     return photo

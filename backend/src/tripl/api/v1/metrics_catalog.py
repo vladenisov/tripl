@@ -61,7 +61,10 @@ async def list_metric_definitions(
         offset=offset,
         limit=limit,
     )
-    return MetricDefinitionListResponse(items=items, total=total)
+    active_total = await metric_definition_service.count_active_metric_definitions(
+        session, slug, kind=kind, search=search
+    )
+    return MetricDefinitionListResponse(items=items, total=total, active_total=active_total)
 
 
 @router.post(

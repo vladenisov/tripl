@@ -12,6 +12,7 @@ export const anomalySettingsApi = {
       detect_project_total: boolean
       detect_event_types: boolean
       detect_events: boolean
+      detect_metrics: boolean
       baseline_window_buckets: number
       min_history_buckets: number
       sigma_threshold: number

@@ -130,6 +130,11 @@ export interface SeasonalityHeatmap {
   cells: SeasonalityCell[]
   max_count: number
   total_count: number
+  // The scan interval the cells were binned from. A daily/weekly scan puts every
+  // bucket in hour 0, so the 7×24 grid can never fill and must not be drawn
+  // (tripl-jfm3.128).
+  interval: string
+  hourly_resolution: boolean
 }
 
 export interface BreakdownTimelinePoint {

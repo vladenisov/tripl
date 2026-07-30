@@ -19,6 +19,7 @@ import {
   SourceQuerySection,
 } from './ScanFormSections'
 import { useScanForm } from './useScanForm'
+import { dataSourcesKey } from '@/lib/queryKeys'
 
 // ─── Configuration tab (page-style edit, each SCard has its own Save footer) ───
 export function ScanConfigurationTab({
@@ -37,7 +38,7 @@ export function ScanConfigurationTab({
   const form = useScanForm(slug, scanConfig)
 
   const { data: dataSources = [] } = useQuery({
-    queryKey: ['dataSources'],
+    queryKey: dataSourcesKey(),
     queryFn: () => dataSourcesApi.list(),
   })
   const { data: eventTypes = [] } = useQuery({
@@ -169,7 +170,7 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
   const form = useScanForm(slug, null)
 
   const { data: dataSources = [] } = useQuery({
-    queryKey: ['dataSources'],
+    queryKey: dataSourcesKey(),
     queryFn: () => dataSourcesApi.list(),
   })
   const { data: eventTypes = [] } = useQuery({

@@ -374,7 +374,10 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   // Internal names of the loaded catalog — the collision set for the "Duplicate
   // as draft" copy-name suffixing.
   const existingNames = useMemo(() => new Set(metrics.map(m => m.name)), [metrics])
-  const active = metrics.filter(m => m.status === 'active').length
+  // Server-side, so it sits on the same basis as the Metrics total beside it.
+  // Counting the loaded page made the two stats disagree the moment the catalog
+  // outgrew one page (tripl-jfm3.109).
+  const active = data?.active_total ?? metrics.filter(m => m.status === 'active').length
   // Operational rollups derived from the loaded list (tripl-nxk2.10). Counts
   // reflect every loaded metric regardless of the client-side signal filter, so
   // clicking a stat to filter never changes its own number.

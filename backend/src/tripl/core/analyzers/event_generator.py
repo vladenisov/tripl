@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -122,6 +122,7 @@ def generate_events(
     time_column: str | None = None,
     event_name_format: str | None = None,
     event_group_rules: Sequence[Mapping[str, object]] | None = None,
+    reserved_columns: Collection[str] | None = None,
     max_events: int = 10000,
     scan_config_id: uuid.UUID | None = None,
 ) -> GenerationResult:
@@ -158,6 +159,9 @@ def generate_events(
 
     # Pre-compute per-column metadata
     col_meta: dict[str, dict[str, Any]] = {}
+    # Membership is tested once per column; a list argument would make the loop
+    # quadratic on a wide table.
+    reserved = frozenset(reserved_columns or ())
 
     for col_name, card_result in cardinality_results.items():
         if col_name == event_type_column:
@@ -173,7 +177,17 @@ def generate_events(
             # rows keeps the warning meaningful: an undeclared column that DOES
             # carry data is a real plan gap and still reports (tripl-jfm3.57).
             # ``count`` excludes NULLs, so 0 means no value in any row here.
-            if card_result.count > 0:
+            #
+            # A RESERVED column is the other false positive: app_version,
+            # platform and the event-group-rule columns are metric dimensions or
+            # identity inputs, and ``reserved_catalog_columns`` is precisely what
+            # kept them from ever getting a FieldDefinition. Reporting that as a
+            # plan gap sent a fresh demo's first scan out claiming six missing
+            # fields when one was missing (tripl-jfm3.90). Only the MESSAGE is
+            # suppressed — a reserved column that does carry a FieldDefinition
+            # (an older project, declared before the column was reserved) falls
+            # through to the normal path and collects values exactly as before.
+            if card_result.count > 0 and col_name not in reserved:
                 result.details.append(f"Skipped column {col_name!r}: no matching field definition")
             continue
 

@@ -1121,6 +1121,13 @@ def _recalculate_metric_anomalies(
     return anomalies_detected
 
 
+# A platform-parity ratio needs a genuine two-platform history before the
+# comparison says anything. Five non-zero buckets is deliberately low: it clears
+# platform-exclusive events (whose ratio is zero almost everywhere) without
+# muting a real platform that merely has quiet hours (tripl-jfm3.96).
+_PARITY_MIN_NONZERO_BUCKETS = 5
+
+
 def _recalculate_platform_parity_anomalies(
     session: Session,
     config: ScanConfig,
@@ -1231,6 +1238,15 @@ def _recalculate_platform_parity_anomalies(
                 covered_buckets=covered_buckets,
                 total_points=total_points,
             )
+            # A parity ratio that is zero in most buckets is a platform-EXCLUSIVE
+            # event, not a platform imbalance. Scoring it flagged every bucket
+            # where the other platform emitted even once: the ratio path runs at
+            # min_expected_count=0 by design, so no volume gate stops it, and a
+            # near-zero baseline made the deviation look enormous
+            # (tripl-jfm3.96). Require a real two-platform history before the
+            # comparison means anything.
+            if sum(1 for point in points if point.count) < _PARITY_MIN_NONZERO_BUCKETS:
+                continue
             detected += _replace_scope_breakdown_anomalies(
                 session,
                 scan_config_id=config.id,

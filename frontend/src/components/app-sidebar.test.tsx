@@ -12,20 +12,22 @@ function mockJsonResponse(body: unknown) {
   })
 }
 
-const authValue: AuthContextValue = {
-  user: {
-    id: 'user-1',
-    email: 'owner@example.com',
-    name: 'Owner',
-    role: 'owner',
-    created_at: '2026-04-18T10:00:00Z',
-    updated_at: '2026-04-18T10:00:00Z',
-  },
-  status: 'authenticated',
-  error: null,
-  isLoggingOut: false,
-  logout: async () => {},
-  refresh: () => {},
+function makeAuth(role: 'owner' | 'editor' | 'viewer' = 'owner'): AuthContextValue {
+  return {
+    user: {
+      id: 'user-1',
+      email: `${role}@example.com`,
+      name: 'Owner',
+      role,
+      created_at: '2026-04-18T10:00:00Z',
+      updated_at: '2026-04-18T10:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
 }
 
 function mockProjectsFetch() {
@@ -116,13 +118,13 @@ function mockProjectsFetch() {
   })
 }
 
-function renderSidebar(initialEntry = '/p/demo/events') {
+function renderSidebar(initialEntry = '/p/demo/events', role: 'owner' | 'editor' | 'viewer' = 'owner') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
   return render(
     <QueryClientProvider client={queryClient}>
-      <AuthContext.Provider value={authValue}>
+      <AuthContext.Provider value={makeAuth(role)}>
         <MemoryRouter initialEntries={[initialEntry]}>
           <Routes>
             <Route path="/p/:slug/events" element={<AppSidebar />} />
@@ -229,6 +231,22 @@ describe('AppSidebar', () => {
     // Footer: workspace + project settings now point at the full-takeover area.
     expect(container.querySelector('a[href="/settings"]')).toBeInTheDocument()
     expect(container.querySelector('a[href="/settings/project/general"]')).toBeInTheDocument()
+  })
+
+  it('hides the owner-only Audit log from an editor (tripl-jfm3.110)', async () => {
+    mockProjectsFetch()
+
+    renderSidebar('/p/demo/events', 'editor')
+    await screen.findByText('Events')
+
+    // The feed behind it is instance-wide and now 403s for non-owners, so the
+    // link would only walk an editor into a wall.
+    expect(screen.queryByRole('link', { name: /Audit log/ })).toBeNull()
+    // The rest of Govern is unchanged — this hides one item, not the group.
+    expect(screen.getByText('Govern')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Reconciliation/ })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Coverage/ })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Scans/ })).toBeInTheDocument()
   })
 
   it('marks the active event type link based on the current route', async () => {

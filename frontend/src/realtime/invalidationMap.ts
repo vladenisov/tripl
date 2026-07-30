@@ -70,7 +70,11 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
         ['monitor', slug],
         ['monitor-history', slug],
         ['reconciliation'],
-        ['anomalies', 'signals', slug],
+        // Covers the Events tabs/rows signals AND the expanded list shared by
+        // the bell, Overview and the Anomalies page (tripl-jfm3.119). The old
+        // per-surface prefixes ('anomalies'/'overview'/'topbarNotifications'
+        // + signals) are gone — one key now, so a new surface cannot forget to
+        // register itself here.
         ['activeSignals', slug],
         ['topbarNotifications', slug],
         ['overview'],
@@ -78,7 +82,6 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
       ]
     case 'signals.updated':
       return [
-        ['anomalies', 'signals', slug],
         ['activeSignals', slug],
         ['monitors-summary', slug],
         ['monitor', slug],
