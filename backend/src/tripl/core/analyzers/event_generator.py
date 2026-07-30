@@ -95,6 +95,19 @@ __all__ = [
 _FMT_PATTERN = re.compile(r"\{([^}]+)\}")
 
 
+def event_name_format_columns(event_name_format: str | None) -> set[str]:
+    """Columns an ``event_name_format`` builds the event name from.
+
+    Shared with ``worker.utils.reserved_columns`` so the two cannot disagree
+    about what a placeholder is: a column named here is the event's identity,
+    which makes it both something to enumerate (see ``name_columns`` below) and
+    something that must never be reserved away — reserving it skips its
+    FieldDefinition, and the name format is then evaluated without it
+    (tripl-lpin).
+    """
+    return set(_FMT_PATTERN.findall(event_name_format)) if event_name_format else set()
+
+
 @dataclass
 class GenerationResult:
     event_type_id: uuid.UUID | None = None
@@ -145,9 +158,7 @@ def generate_events(
     # Columns referenced by the event-name format are the event's identity, so they must be
     # enumerated (one event per distinct value) even when high-cardinality — otherwise they
     # collapse into a single ${col} template and every row dedups to one event.
-    name_columns: set[str] = (
-        set(_FMT_PATTERN.findall(event_name_format)) if event_name_format else set()
-    )
+    name_columns: set[str] = event_name_format_columns(event_name_format)
     cardinality_results = analysis.results
     reg_index = {name: i for i, name in enumerate(analysis.reg_names)}
     json_index = {name: i for i, name in enumerate(analysis.json_names)}

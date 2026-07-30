@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from tripl.core.analyzers.event_generator import event_name_format_columns
 from tripl.models.scan_config import ScanConfig
 
 
@@ -70,6 +71,17 @@ def reserved_catalog_columns(config: ScanConfig) -> set[str]:
 
     It deliberately does NOT feed ``check_scalar_columns_unreserved`` — a project
     that already selected a group-rule column as a breakdown keeps working.
+
+    Columns named by ``event_name_format`` are subtracted last and win over every
+    rule above. Reserving one is not a cosmetic mistake: ``catalog_sync`` forwards
+    this set as ``skip_columns``, so the column gets no FieldDefinition, and
+    ``generate_events`` builds its format arguments only from columns that have
+    one. The name format is then evaluated with the placeholder missing and the
+    whole collection dies on ``event_name_format references unknown keys``. That
+    is what took production's 'Old events (iOS)' scan down for 200 consecutive
+    runs (tripl-lpin): its group rules match ``action`` and its name format is
+    ``{action}``, so tripl-jfm3.90 reserved away the one column the event's
+    identity was built from.
     """
     reserved = (
         config.event_type_column,
@@ -77,4 +89,5 @@ def reserved_catalog_columns(config: ScanConfig) -> set[str]:
         config.app_version_column,
         config.platform_column,
     )
-    return {column for column in reserved if column} | _event_group_rule_columns(config)
+    named = {column for column in reserved if column} | _event_group_rule_columns(config)
+    return named - event_name_format_columns(config.event_name_format)

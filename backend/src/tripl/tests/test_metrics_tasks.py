@@ -1300,6 +1300,52 @@ def test_reserved_catalog_columns_includes_event_group_rule_columns() -> None:
     }
 
 
+def test_reserved_catalog_columns_never_reserves_the_event_name_source() -> None:
+    """A column the event name is built from outranks every reservation rule.
+
+    Reserving it makes catalog_sync skip its FieldDefinition, and generate_events
+    assembles format arguments only from columns that have one — so the name
+    format is evaluated with its placeholder missing and collection dies with
+    "event_name_format references unknown keys".
+
+    This is production's 'Old events (iOS)' config: group rules keyed on
+    ``action`` plus ``event_name_format='{action}'``. tripl-jfm3.90 reserved
+    ``action`` and took the scan down for 200 consecutive runs (tripl-lpin).
+    """
+    from tripl.worker.tasks.metrics.tasks import reserved_catalog_columns
+
+    config = ScanConfig(
+        time_column="time",
+        event_name_format="{action}",
+        event_group_rules=[
+            {
+                "name": "wind_alert_regularity_select_*",
+                "condition_logic": "all",
+                "conditions": [{"field": "action", "pattern": "^wind_alert_regularity_select_.*"}],
+            }
+        ],
+    )
+    assert reserved_catalog_columns(config) == {"time"}
+
+    # A multi-key format is covered the same way, and a group-rule column the
+    # name does NOT use stays reserved — the tripl-jfm3.57 fix is intact.
+    multi = ScanConfig(
+        event_type_column="event_type",
+        time_column="time",
+        app_version_column="app_version",
+        event_name_format="{category}:{action}",
+        event_group_rules=[
+            {
+                "conditions": [
+                    {"field": "action", "pattern": "^x"},
+                    {"field": "screen_name", "pattern": "^y"},
+                ]
+            }
+        ],
+    )
+    assert reserved_catalog_columns(multi) == {"event_type", "time", "app_version", "screen_name"}
+
+
 def test_reserved_catalog_columns_survives_malformed_group_rules() -> None:
     """event_group_rules is a JSON column, so an older or hand-edited row must not crash a scan."""
     from tripl.worker.tasks.metrics.tasks import reserved_catalog_columns
