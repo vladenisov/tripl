@@ -10581,8 +10581,8 @@ export interface operations {
     list_alert_deliveries_api_v1_projects__slug__alert_deliveries_get: {
         parameters: {
             query?: {
-                status?: string | null;
-                channel?: string | null;
+                status?: components["schemas"]["AlertDeliveryStatus"] | null;
+                channel?: components["schemas"]["AlertDestinationType"] | null;
                 destination_id?: string | null;
                 rule_id?: string | null;
                 scan_config_id?: string | null;
@@ -10990,7 +10990,7 @@ export interface operations {
     list_alert_inbox_api_v1_projects__slug__alert_inbox_get: {
         parameters: {
             query?: {
-                status?: string | null;
+                status?: components["schemas"]["AlertInboxStatus"] | null;
                 offset?: number;
                 limit?: number;
             };
@@ -11061,7 +11061,7 @@ export interface operations {
     list_chart_annotations_api_v1_projects__slug__annotations_get: {
         parameters: {
             query?: {
-                scope_type?: string | null;
+                scope_type?: components["schemas"]["ChartAnnotationScopeType"] | null;
                 scope_ref?: string | null;
                 time_from?: string | null;
                 time_to?: string | null;
@@ -11964,7 +11964,7 @@ export interface operations {
     get_distribution_drifts_api_v1_projects__slug__distribution_drifts_get: {
         parameters: {
             query: {
-                scope_type: string;
+                scope_type: components["schemas"]["MetricScopeType"];
                 scope_ref: string;
                 scan_config_id?: string | null;
                 from?: string | null;
@@ -12655,7 +12655,7 @@ export interface operations {
                 event_type_id?: string | null;
                 search?: string | null;
                 tag?: string | null;
-                status?: string[] | null;
+                status?: components["schemas"]["EventStatus"][] | null;
                 from?: string | null;
                 to?: string | null;
             };
@@ -15085,7 +15085,7 @@ export interface operations {
     get_app_version_series_api_v1_projects__slug__scans__scan_config_id__app_versions_get: {
         parameters: {
             query?: {
-                scope_type?: string;
+                scope_type?: components["schemas"]["MetricScopeType"];
                 scope_ref?: string | null;
                 from?: string | null;
                 to?: string | null;
@@ -15122,7 +15122,7 @@ export interface operations {
     get_breakdown_timeline_api_v1_projects__slug__scans__scan_config_id__breakdown_timeline_get: {
         parameters: {
             query: {
-                scope_type: string;
+                scope_type: components["schemas"]["MetricScopeType"];
                 scope_ref: string;
                 breakdown_column: string;
                 breakdown_value: string;
@@ -15162,7 +15162,7 @@ export interface operations {
     get_release_regressions_api_v1_projects__slug__scans__scan_config_id__release_regressions_get: {
         parameters: {
             query?: {
-                scope_type?: string | null;
+                scope_type?: components["schemas"]["MetricScopeType"] | null;
             };
             header?: never;
             path: {
@@ -15196,7 +15196,7 @@ export interface operations {
     get_seasonality_heatmap_api_v1_projects__slug__scans__scan_config_id__seasonality_get: {
         parameters: {
             query: {
-                scope_type: string;
+                scope_type: components["schemas"]["MetricScopeType"];
                 scope_ref: string;
                 from?: string | null;
                 to?: string | null;
@@ -15233,7 +15233,7 @@ export interface operations {
     get_top_movers_api_v1_projects__slug__scans__scan_config_id__top_movers_get: {
         parameters: {
             query: {
-                scope_type: string;
+                scope_type: components["schemas"]["MetricScopeType"];
                 scope_ref: string;
                 bucket: string;
                 limit?: number;

@@ -5,6 +5,8 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 from tripl.api.deps import SessionDep
+from tripl.models.domain_enums import MetricScopeType
+from tripl.models.event import EventStatus
 from tripl.schemas.event_metric import (
     ActiveSignalsQuery,
     AppVersionAdoptionResponse,
@@ -29,6 +31,13 @@ router = APIRouter(tags=["metrics"])
 TimeFrom = Annotated[datetime | None, Query(alias="from")]
 TimeTo = Annotated[datetime | None, Query(alias="to")]
 EventIds = Annotated[list[uuid.UUID] | None, Query(alias="event_id")]
+# Every ``scope_type`` below is declared MetricScopeType rather than str: the
+# value is bound against a native Postgres ``metric_scope_type`` column, so an
+# out-of-enum string used to reach the driver and surface as a 500 instead of a
+# 422 (tripl-57g0). Spelling out the full enum is deliberate — the endpoints
+# that support only a subset (app-versions, distribution-drifts) already raise
+# their own 4xx for the scopes they don't handle, so this rejects garbage at the
+# edge without narrowing anything that works today.
 
 
 @router.get(
@@ -41,7 +50,10 @@ async def get_events_metrics(
     event_type_id: uuid.UUID | None = None,
     search: str | None = None,
     tag: str | None = None,
-    status: Annotated[list[str] | None, Query()] = None,
+    # list[EventStatus] (not list[str]): the filter lands in Event.status.in_(),
+    # a native Postgres enum, so one bad member 500'd the whole request. Mirrors
+    # GET /events?status= — same filter, same enum, now the same 422 (tripl-57g0).
+    status: Annotated[list[EventStatus] | None, Query()] = None,
     time_from: TimeFrom = None,
     time_to: TimeTo = None,
 ) -> EventMetricsResponse:
@@ -51,7 +63,7 @@ async def get_events_metrics(
         event_type_id=event_type_id,
         search=search,
         tag=tag,
-        status=status,
+        status=[member.value for member in status] if status else None,
         time_from=time_from,
         time_to=time_to,
     )
@@ -221,7 +233,7 @@ async def get_top_movers(
     session: SessionDep,
     slug: str,
     scan_config_id: uuid.UUID,
-    scope_type: str,
+    scope_type: MetricScopeType,
     scope_ref: str,
     bucket: datetime,
     limit: int = Query(10, ge=1, le=100),
@@ -246,7 +258,7 @@ async def get_seasonality_heatmap(
     session: SessionDep,
     slug: str,
     scan_config_id: uuid.UUID,
-    scope_type: str,
+    scope_type: MetricScopeType,
     scope_ref: str,
     time_from: TimeFrom = None,
     time_to: TimeTo = None,
@@ -271,7 +283,7 @@ async def get_breakdown_timeline(
     session: SessionDep,
     slug: str,
     scan_config_id: uuid.UUID,
-    scope_type: str,
+    scope_type: MetricScopeType,
     scope_ref: str,
     breakdown_column: str,
     breakdown_value: str,
@@ -302,7 +314,7 @@ async def get_app_version_series(
     session: SessionDep,
     slug: str,
     scan_config_id: uuid.UUID,
-    scope_type: str = "project_total",
+    scope_type: MetricScopeType = MetricScopeType.project_total,
     scope_ref: str | None = None,
     time_from: TimeFrom = None,
     time_to: TimeTo = None,
@@ -346,7 +358,7 @@ async def get_release_regressions(
     session: SessionDep,
     slug: str,
     scan_config_id: uuid.UUID,
-    scope_type: str | None = None,
+    scope_type: MetricScopeType | None = None,
 ) -> ReleaseRegressionsResponse:
     return await metrics_service.get_release_regressions(
         session,
@@ -363,7 +375,7 @@ async def get_release_regressions(
 async def get_distribution_drifts(
     session: SessionDep,
     slug: str,
-    scope_type: str,
+    scope_type: MetricScopeType,
     scope_ref: str,
     scan_config_id: uuid.UUID | None = None,
     time_from: TimeFrom = None,

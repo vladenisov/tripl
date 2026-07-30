@@ -230,6 +230,19 @@ the individual attempts. After fixing the source/query/configuration, use **Run
 again** on the failed config. This creates a new job and preserves the earlier
 failure history.
 
+:::note A config that keeps failing slows down on its own
+Scheduled collection is due whenever a new complete bucket exists, and a run that
+fails writes no bucket — so a broken config used to be retried on every dispatcher
+tick (every five minutes) no matter what its interval said. After three
+consecutive failures it now waits instead, roughly doubling the gap each time,
+never longer than 24 hours and never shorter than the config's own interval.
+
+Two consequences worth knowing: a fixed config can take up to that wait before it
+retries by itself — press **Run again** if you don't want to wait — and the
+backoff only counts *scheduled* runs, so your manual runs neither trigger it nor
+clear it.
+:::
+
 :::note
 Scan tasks have a hard time limit of 60 minutes (the worker's default) and do
 **not** retry automatically (`max_retries=0`). Metrics collection gets a much

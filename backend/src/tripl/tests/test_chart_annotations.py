@@ -168,3 +168,32 @@ async def test_delete_annotation_removes_it(client: AsyncClient) -> None:
 
     listed = await client.get(f"/api/v1/projects/{slug}/annotations")
     assert listed.json() == []
+
+
+@pytest.mark.asyncio
+async def test_list_rejects_unknown_scope_type(client: AsyncClient) -> None:
+    """The list filter binds against the native chart_annotation_scope_type
+    column, so while it was declared ``str`` a typo reached the driver as a 500.
+    Garbage now 422s and every member that worked before still 200s (tripl-57g0)."""
+    slug = await _setup_project(client, slug="ann-enum")
+
+    rejected = await client.get(
+        f"/api/v1/projects/{slug}/annotations",
+        params={"scope_type": "BOGUS", "scope_ref": "00000000-0000-0000-0000-000000000001"},
+    )
+    assert rejected.status_code == 422, rejected.text
+
+    # MetricScopeType members that annotations never carry are rejected too —
+    # this endpoint's enum is deliberately the narrower annotation one.
+    metric_only = await client.get(
+        f"/api/v1/projects/{slug}/annotations",
+        params={"scope_type": "distribution", "scope_ref": "00000000-0000-0000-0000-000000000001"},
+    )
+    assert metric_only.status_code == 422, metric_only.text
+
+    for scope_type in ("project_total", "event_type", "event", "metric"):
+        accepted = await client.get(
+            f"/api/v1/projects/{slug}/annotations",
+            params={"scope_type": scope_type, "scope_ref": "00000000-0000-0000-0000-000000000001"},
+        )
+        assert accepted.status_code == 200, f"{scope_type} was rejected: {accepted.text}"

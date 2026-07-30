@@ -35,6 +35,21 @@ function buildCorrelationLabels(items: AlertDeliveryItem[]): Map<string, string>
   return labels
 }
 
+// Copy for a detail whose item list is empty. A delivery can report a non-zero
+// matched_count and still own no rows: only one attempt per incident stores the
+// per-scope list, so a sibling attempt at the same incident just has none of its
+// own (the demo seed does exactly this — see demo/builders/alerts.py, "the
+// successful delivery above owns the incident's item list"). Rendering the bare
+// Grp/Scope/… header row there read as "4 matched, nothing matched" (tripl-gsom),
+// so say where the rows actually live instead.
+function emptyItemsNotice(matchedCount: number): string {
+  if (matchedCount <= 0) {
+    return 'This delivery matched nothing, so it has no per-scope rows.'
+  }
+  const matched = matchedCount === 1 ? '1 matched scope is' : `${matchedCount} matched scopes are`
+  return `No per-scope rows were stored with this attempt — its ${matched} recorded on the attempt that carried the same incident.`
+}
+
 export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: AlertDelivery }) {
   const [open, setOpen] = useState(false)
   const qc = useQueryClient()
@@ -147,68 +162,74 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
                   </Badge>
                 )}
               </div>
-              <div className="rounded-lg border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-12">Grp</TableHead>
-                      <TableHead>Scope</TableHead>
-                      <TableHead>Direction</TableHead>
-                      <TableHead>Actual</TableHead>
-                      <TableHead>Expected</TableHead>
-                      <TableHead>Abs Δ</TableHead>
-                      <TableHead>% Δ</TableHead>
-                      <TableHead>Link</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {detail.items.map(item => {
-                      const groupLabel = item.correlation_group_id
-                        ? correlationLabels.get(item.correlation_group_id)
-                        : null
-                      return (
-                        <TableRow key={item.id}>
-                          <TableCell className="text-xs">
-                            {groupLabel && (
-                              <Badge
-                                variant="outline"
-                                className="border-amber-500/60 bg-amber-400/15 text-amber-800 text-[10px]"
-                                title="Co-fired with other rows in this group"
-                              >
-                                {groupLabel}
-                              </Badge>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-xs">
-                            <div className="font-medium">{item.scope_name}</div>
-                            <div className="text-muted-foreground">{item.scope_type}</div>
-                          </TableCell>
-                          <TableCell className="text-xs">{item.direction}</TableCell>
-                          <TableCell className="text-xs">{item.actual_count}</TableCell>
-                          <TableCell className="text-xs">{item.expected_count}</TableCell>
-                          <TableCell className="text-xs">{item.absolute_delta}</TableCell>
-                          <TableCell className="text-xs">{item.percent_delta.toFixed(1)}%</TableCell>
-                          <TableCell className="text-xs">
-                            <div className="flex gap-3">
-                              {item.details_path && (
-                                <a href={item.details_path} aria-label={`Details for ${item.scope_name}`} className="text-primary underline" target="_blank" rel="noreferrer">
-                                  details
-                                </a>
+              {detail.items.length === 0 ? (
+                <div className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">
+                  {emptyItemsNotice(detail.matched_count)}
+                </div>
+              ) : (
+                <div className="rounded-lg border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-12">Grp</TableHead>
+                        <TableHead>Scope</TableHead>
+                        <TableHead>Direction</TableHead>
+                        <TableHead>Actual</TableHead>
+                        <TableHead>Expected</TableHead>
+                        <TableHead>Abs Δ</TableHead>
+                        <TableHead>% Δ</TableHead>
+                        <TableHead>Link</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {detail.items.map(item => {
+                        const groupLabel = item.correlation_group_id
+                          ? correlationLabels.get(item.correlation_group_id)
+                          : null
+                        return (
+                          <TableRow key={item.id}>
+                            <TableCell className="text-xs">
+                              {groupLabel && (
+                                <Badge
+                                  variant="outline"
+                                  className="border-amber-500/60 bg-amber-400/15 text-amber-800 text-[10px]"
+                                  title="Co-fired with other rows in this group"
+                                >
+                                  {groupLabel}
+                                </Badge>
                               )}
-                              {item.monitoring_path && (
-                                <a href={item.monitoring_path} aria-label={`Monitoring for ${item.scope_name}`} className="text-primary underline" target="_blank" rel="noreferrer">
-                                  monitoring
-                                </a>
-                              )}
-                              {!item.details_path && !item.monitoring_path && '—'}
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      )
-                    })}
-                  </TableBody>
-                </Table>
-              </div>
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              <div className="font-medium">{item.scope_name}</div>
+                              <div className="text-muted-foreground">{item.scope_type}</div>
+                            </TableCell>
+                            <TableCell className="text-xs">{item.direction}</TableCell>
+                            <TableCell className="text-xs">{item.actual_count}</TableCell>
+                            <TableCell className="text-xs">{item.expected_count}</TableCell>
+                            <TableCell className="text-xs">{item.absolute_delta}</TableCell>
+                            <TableCell className="text-xs">{item.percent_delta.toFixed(1)}%</TableCell>
+                            <TableCell className="text-xs">
+                              <div className="flex gap-3">
+                                {item.details_path && (
+                                  <a href={item.details_path} aria-label={`Details for ${item.scope_name}`} className="text-primary underline" target="_blank" rel="noreferrer">
+                                    details
+                                  </a>
+                                )}
+                                {item.monitoring_path && (
+                                  <a href={item.monitoring_path} aria-label={`Monitoring for ${item.scope_name}`} className="text-primary underline" target="_blank" rel="noreferrer">
+                                    monitoring
+                                  </a>
+                                )}
+                                {!item.details_path && !item.monitoring_path && '—'}
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
             </div>
           </TableCell>
         </TableRow>

@@ -3994,3 +3994,93 @@ async def test_monitor_detail_mute_and_unmute(client: AsyncClient) -> None:
 
     missing_resp = await client.get(f"/api/v1/projects/monitor-detail/monitors/{uuid.uuid4()}")
     assert missing_resp.status_code == 404
+
+
+# --- tripl-57g0: enum-shaped query params reject garbage at the edge ---------
+#
+# ``status`` and ``channel`` on /alert-deliveries bind against native Postgres
+# enums, so while they were declared ``str`` a typo travelled to the driver and
+# came back as a 500 ("not among the defined enum values"). /alert-inbox filters
+# in Python instead, so a typo there silently reported "no incidents" — a wrong
+# answer, which is worse. Each test pins BOTH halves of the contract: garbage
+# 422s, and the values that worked before still 200 with the same rows.
+
+
+@pytest.mark.asyncio
+async def test_alert_deliveries_reject_unknown_status_and_channel(client: AsyncClient) -> None:
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Delivery Enums", "slug": "delivery-enums", "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    await _seed_destination_rule_delivery(project_id, status=AlertDeliveryStatus.sent.value)
+
+    base = "/api/v1/projects/delivery-enums/alert-deliveries"
+    for params in ({"status": "BOGUS"}, {"channel": "BOGUS"}):
+        rejected = await client.get(base, params=params)
+        assert rejected.status_code == 422, f"{params} was accepted: {rejected.text}"
+
+    # Every member that worked before still selects its rows.
+    for status in AlertDeliveryStatus:
+        accepted = await client.get(base, params={"status": status.value})
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()["total"] == (1 if status is AlertDeliveryStatus.sent else 0)
+
+    by_channel = await client.get(base, params={"channel": "slack"})
+    assert by_channel.status_code == 200
+    assert by_channel.json()["total"] == 1
+
+    other_channel = await client.get(base, params={"channel": "telegram"})
+    assert other_channel.status_code == 200
+    assert other_channel.json()["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_alert_inbox_rejects_unknown_status_instead_of_reporting_empty(
+    client: AsyncClient,
+) -> None:
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Inbox Enums", "slug": "inbox-enums", "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    delivery_id, _destination_id, _rule_id = await _seed_destination_rule_delivery(
+        project_id, status=AlertDeliveryStatus.sent.value
+    )
+    # A correlated item is what promotes a delivery into an inbox group; with no
+    # AlertCorrelationState the group's effective status is `open`.
+    group_id = uuid.uuid4()
+    async with TestSessionLocal() as session:
+        session.add(
+            AlertDeliveryItem(
+                delivery_id=uuid.UUID(delivery_id),
+                scope_type="project_total",
+                scope_ref=str(uuid.uuid4()),
+                scope_name="Project total",
+                bucket=datetime.now(UTC) - timedelta(hours=1),
+                direction="spike",
+                actual_count=20,
+                expected_count=10,
+                absolute_delta=10,
+                percent_delta=100.0,
+                correlation_group_id=group_id,
+            )
+        )
+        await session.commit()
+
+    base = "/api/v1/projects/inbox-enums/alert-inbox"
+    rejected = await client.get(base, params={"status": "BOGUS"})
+    assert rejected.status_code == 422, rejected.text
+
+    accepted = await client.get(base, params={"status": "open"})
+    assert accepted.status_code == 200
+    assert accepted.json()["total"] == 1
+
+    # Filtering still narrows: a real-but-non-matching member returns no groups.
+    other = await client.get(base, params={"status": "resolved"})
+    assert other.status_code == 200
+    assert other.json()["total"] == 0

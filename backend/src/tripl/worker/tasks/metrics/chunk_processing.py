@@ -25,6 +25,7 @@ from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
 from tripl.models.shadow_event_candidate import SHADOW_STATUS_NEW
 from tripl.models.variable import Variable
+from tripl.worker.tasks._errors import ScanError
 from tripl.worker.tasks.metrics.collect import _bump_event_last_seen
 from tripl.worker.tasks.metrics.generation import (
     _accumulate_replay_variable_samples,
@@ -150,13 +151,19 @@ def process_chunk(
     rows = rows[:metrics_row_limit]
     stats.rows_scanned = len(rows)
     if query_truncated:
+        # ScanError, not ValueError: this message already names the setting to
+        # change, and only a ScanError survives ``user_facing_error`` verbatim.
+        # As a ValueError it was replaced on ScanJob.error_message by the generic
+        # "Scan failed due to an internal error.", so the one thing that would
+        # have told the user what to do only ever reached the worker log
+        # (tripl-embs).
         msg = (
             "Metrics query reached configured row limit "
             f"({metrics_row_limit}) for chunk "
             f"{chunk_from.isoformat()}..{chunk_to.isoformat()}; "
             "increase metrics_row_limit to avoid partial metrics"
         )
-        raise ValueError(msg)
+        raise ScanError(msg)
     logger.info(
         "Got %s bucketed rows from warehouse for %s..%s",
         len(rows),
@@ -316,13 +323,15 @@ def process_chunk(
         et_by_name=et_by_name,
     )
     if breakdown_truncated:
+        # ScanError so the "increase metrics_row_limit" instruction survives
+        # user_facing_error and lands on ScanJob.error_message (tripl-embs).
         msg = (
             "Metrics breakdown query reached configured row limit "
             f"({metrics_row_limit}) for chunk "
             f"{chunk_from.isoformat()}..{chunk_to.isoformat()}; "
             "increase metrics_row_limit to avoid partial breakdown metrics"
         )
-        raise ValueError(msg)
+        raise ScanError(msg)
 
     # App-version series are stored on the same breakdown path (same table and
     # row shape) but use SemVer-aware latest-N retention instead of top-N by
@@ -365,13 +374,15 @@ def process_chunk(
         et_by_name=et_by_name,
     )
     if drifts_truncated:
+        # ScanError so the "increase metrics_row_limit" instruction survives
+        # user_facing_error and lands on ScanJob.error_message (tripl-embs).
         msg = (
             "Distribution drift query reached configured row limit "
             f"({metrics_row_limit}) for chunk "
             f"{chunk_from.isoformat()}..{chunk_to.isoformat()}; "
             "increase metrics_row_limit to avoid partial drift detection"
         )
-        raise ValueError(msg)
+        raise ScanError(msg)
 
     if is_replay:
         event_delete_keys: list[tuple[uuid.UUID, datetime]] = [

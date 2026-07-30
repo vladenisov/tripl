@@ -25,23 +25,34 @@ _DEFAULT_SPA_CSP = (
 )
 
 
-def _build_static_headers() -> list[tuple[bytes, bytes]]:
-    headers: list[tuple[bytes, bytes]] = [
-        (b"x-content-type-options", b"nosniff"),
-        (b"x-frame-options", b"DENY"),
-        (b"referrer-policy", b"strict-origin-when-cross-origin"),
+def build_security_headers() -> dict[str, str]:
+    """The baseline header set, resolved from the current settings.
+
+    Public because :class:`SecurityHeadersMiddleware` is not the only writer:
+    the app's catch-all ``Exception`` handler answers from Starlette's
+    ServerErrorMiddleware, which sits *outside* the whole user middleware stack,
+    so a 500 never passes back through this middleware and has to attach the
+    same headers itself (tripl-qu9m). Two hand-maintained copies of the list is
+    exactly the drift that bug was — so both callers read this one function.
+
+    Returns an empty mapping when security headers are disabled, so a 500 always
+    carries precisely what a 200 on the same instance would.
+    """
+    if not settings.security_headers_enabled:
+        return {}
+    headers = {
+        "x-content-type-options": "nosniff",
+        "x-frame-options": "DENY",
+        "referrer-policy": "strict-origin-when-cross-origin",
         # No camera, microphone, geolocation, payment APIs.
-        (b"permissions-policy", b"camera=(), microphone=(), geolocation=(), payment=()"),
-    ]
+        "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=()",
+    }
     csp = settings.content_security_policy or (_DEFAULT_SPA_CSP if settings.serve_frontend else "")
     if csp:
-        headers.append((b"content-security-policy", csp.encode()))
+        headers["content-security-policy"] = csp
     if settings.hsts_enabled:
-        headers.append(
-            (
-                b"strict-transport-security",
-                f"max-age={settings.hsts_max_age_seconds}; includeSubDomains".encode(),
-            )
+        headers["strict-transport-security"] = (
+            f"max-age={settings.hsts_max_age_seconds}; includeSubDomains"
         )
     return headers
 
@@ -51,7 +62,10 @@ class SecurityHeadersMiddleware:
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
-        self._headers = _build_static_headers()
+        # Encode once at construction: the ASGI message carries raw bytes and
+        # the values are settings-derived, so there is nothing to re-resolve
+        # per response.
+        self._headers = [(k.encode(), v.encode()) for k, v in build_security_headers().items()]
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":

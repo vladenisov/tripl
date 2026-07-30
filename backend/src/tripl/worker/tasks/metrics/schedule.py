@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func as sa_func
 from sqlalchemy import select, text
@@ -43,7 +43,7 @@ from tripl.worker.tasks.metrics.metric_collect import (
     collect_fact_metrics_batch,
     collect_metric_definitions,
 )
-from tripl.worker.tasks.metrics.tasks import collect_metrics
+from tripl.worker.tasks.metrics.tasks import METRICS_COLLECTION_MODE, collect_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +103,120 @@ def _hours_since_last_scheduled_collection(
             continue
         return (now - created).total_seconds() / 3600.0
     return None
+
+
+# Consecutive-failure backoff for a config that can never succeed (tripl-n9ee).
+#
+# "Due" is derived purely from how far the WRITTEN metrics have advanced
+# (``max(EventMetric.bucket)``), so a collection that dies before writing its
+# first row leaves that watermark untouched and the config is due again on the
+# very next beat tick — every 300 s, forever, ignoring its own interval. Prod ran
+# 200 consecutive failed jobs in 17 h for one 1h-interval config, each a ~30 s
+# warehouse query, and the junk rows pushed real scan history out of the API's
+# 200-row window.
+#
+# Backoff engages only after a RUN of failures, so a single blip — including a
+# job the stale-job reaper above has just marked failed in this very tick —
+# still retries immediately, exactly as before. A config that has never
+# collected has no failures either, so its first run is untouched.
+FAILURE_BACKOFF_AFTER = 3
+
+# The delay doubles per failure past the threshold, in units of the config's OWN
+# interval: 1x, 2x, 4x, ... So a failing config is never retried more often than
+# a healthy one would run, which is the actual pathology here.
+#
+# Two ceilings, because one is not enough across a 15m..1w interval range:
+#   * ``MAX_INTERVALS`` keeps the delay a small bounded multiple, so a 15m config
+#     tops out at 2h rather than drifting into days;
+#   * ``CEILING`` caps the absolute wait, so a 1w config does not end up on an
+#     8-week retry (a fixed config would look dead for two months).
+# The final delay is floored at one interval, which is what makes 1d/1w configs
+# simply retry at their own cadence instead of being slowed below it.
+FAILURE_BACKOFF_MAX_INTERVALS = 8
+FAILURE_BACKOFF_CEILING = timedelta(hours=24)
+
+# How far back to walk the job history when measuring the streak. The delay stops
+# growing at ``FAILURE_BACKOFF_AFTER + 3`` failures, so this is comfortably past
+# saturation; truncating an even longer streak can only SHORTEN the delay, which
+# is the safe direction. Keeping it small also keeps this a cheap indexed read
+# (mirrors ``_RECENT_JOB_SCAN_LIMIT`` above).
+# Sized like ``_RECENT_JOB_SCAN_LIMIT`` rather than to the streak that saturates
+# the delay: the LIMIT counts ROWS, and a demo's hourly runtime tick plus manual
+# scans sit between two dispatcher jobs, so a tight bound would fill with rows
+# the streak then skips and never reach the failures underneath.
+_FAILURE_STREAK_SCAN_LIMIT = _RECENT_JOB_SCAN_LIMIT
+
+
+def _is_dispatcher_collection_job(result_summary: object) -> bool:
+    """Whether a ScanJob is one THIS dispatcher created for metrics collection.
+
+    Positive identification, not exclusion: ``scan_jobs`` is keyed on
+    ``scan_config_id`` and shared with manual catalog scans (``run_scan``),
+    metrics replays, event-group applies and the demo runtime tick. Only the
+    ``mode`` stamp distinguishes them, and the dispatcher writes it at job
+    creation so a failure that never reached its summary still carries it.
+
+    Rows written before this stamp existed have no ``mode`` and simply do not
+    count — the streak restarts, which is the safe direction (it can only delay
+    the backoff, never make it fire on someone else's failure).
+    """
+    return isinstance(result_summary, dict) and result_summary.get("mode") == (
+        METRICS_COLLECTION_MODE
+    )
+
+
+def _consecutive_failure_streak(
+    session: Session, scan_config_id: uuid.UUID
+) -> tuple[int, datetime | None]:
+    """Length of the run of failed jobs at the head of a config's history.
+
+    Returns ``(streak, last_failure_at)``, or ``(0, None)`` when the newest job
+    did not fail — the healthy case, and the only one that matters for cost since
+    this is only ever called for a config that is already about to dispatch.
+
+    Only this dispatcher's own collection jobs are considered. A manual scan, a
+    replay or a demo tick on the same config is neither counted as a failure nor
+    treated as the success that ends a streak, so a user pressing "Run now" can
+    neither trigger the backoff nor clear it. Pending/running rows cannot appear
+    here — the caller has already ``continue``d on a live job and reaped the
+    stale ones into ``failed`` — so any non-failed head row is a genuine success.
+    """
+    rows = session.execute(
+        select(ScanJob.status, ScanJob.completed_at, ScanJob.created_at, ScanJob.result_summary)
+        .where(ScanJob.scan_config_id == scan_config_id)
+        .order_by(ScanJob.created_at.desc())
+        .limit(_FAILURE_STREAK_SCAN_LIMIT)
+    ).all()
+
+    streak = 0
+    last_failure_at: datetime | None = None
+    for status, completed_at, created_at, result_summary in rows:
+        if not _is_dispatcher_collection_job(result_summary):
+            continue
+        if status != ScanJobStatus.failed.value:
+            break
+        streak += 1
+        if last_failure_at is None:
+            # ``completed_at`` is when the failure was recorded; fall back to
+            # ``created_at`` for a row that somehow never got stamped, so a NULL
+            # can't be read as "failed infinitely long ago" and defeat the wait.
+            stamped = completed_at if completed_at is not None else created_at
+            last_failure_at = _normalize_job_timestamp(stamped)
+    return streak, last_failure_at
+
+
+def _failure_backoff_delay(streak: int, interval_delta: timedelta) -> timedelta | None:
+    """How long to wait after ``streak`` consecutive failures, or None for no wait."""
+    if streak < FAILURE_BACKOFF_AFTER:
+        return None
+    ceiling = max(
+        interval_delta,
+        min(interval_delta * FAILURE_BACKOFF_MAX_INTERVALS, FAILURE_BACKOFF_CEILING),
+    )
+    # Pinned to int because ``int.__pow__`` is typed as returning Any (it yields a
+    # float for a negative exponent); this exponent is >= 0 by the guard above.
+    multiplier: int = 2 ** (streak - FAILURE_BACKOFF_AFTER)
+    return min(interval_delta * multiplier, ceiling)
 
 
 # A single Postgres session-level advisory lock serialises the whole dispatcher
@@ -205,6 +319,23 @@ def check_metrics_due() -> dict[str, int]:
                 if last_bucket < latest_complete:
                     should_run = True
 
+            if should_run:
+                # Only measured once the bucket check says "due", so a healthy
+                # config pays this read once per interval instead of once per
+                # 300 s beat tick — and, its newest job being a success, gets
+                # streak 0 and dispatches unchanged (tripl-n9ee).
+                streak, last_failure_at = _consecutive_failure_streak(session, config.id)
+                backoff = _failure_backoff_delay(streak, delta)
+                if backoff is not None and last_failure_at is not None:
+                    waited = now - last_failure_at
+                    if waited < backoff:
+                        logger.info(
+                            f"Skipping collect_metrics for {config.name!r}: "
+                            f"{streak} consecutive failures, backing off "
+                            f"{backoff} (last failure {waited} ago)"
+                        )
+                        should_run = False
+
             if should_run and is_demo_by_config.get(config.id):
                 age_hours = _hours_since_last_scheduled_collection(session, config.id, now=now)
                 if age_hours is not None and age_hours < DEMO_COLLECTION_COOLDOWN_HOURS:
@@ -220,6 +351,13 @@ def check_metrics_due() -> dict[str, int]:
                     id=uuid.uuid4(),
                     scan_config_id=config.id,
                     status=ScanJobStatus.pending.value,
+                    # Stamp the mode at CREATION, not on completion: a run that
+                    # dies before writing its summary leaves result_summary
+                    # empty, and an unlabelled failed row is indistinguishable
+                    # from a failed manual scan on the same scan_config_id. The
+                    # failure streak below would then both count other people's
+                    # failures and let one successful manual scan reset it.
+                    result_summary={"mode": METRICS_COLLECTION_MODE},
                 )
                 session.add(job)
                 session.commit()
