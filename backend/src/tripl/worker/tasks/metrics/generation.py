@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from tripl.core.adapters.base import ColumnInfo
 from tripl.core.analyzers.cardinality import _is_json_type
-from tripl.core.analyzers.event_generator import GenerationResult
+from tripl.core.analyzers.event_generator import GenerationResult, event_name_format_columns
 from tripl.core.intervals import get_interval
 from tripl.json_paths import format_json_path_value
 from tripl.models.event import Event
@@ -37,7 +37,6 @@ from tripl.worker.tasks.metrics.metric_rows import _get_scan_json_value_path_map
 
 logger = logging.getLogger(__name__)
 
-_FMT_PATTERN = re.compile(r"\{([^}]+)\}")
 _VARIABLE_TEMPLATE_PATTERN = re.compile(r"\$\{[^}]+\}")
 _VARIABLE_NAME_PATTERN = re.compile(r"\$\{([^}]+)\}")
 _JSON_PATH_PART_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -126,12 +125,6 @@ def _ensure_event_type_with_fields(
     session.flush()
     session.refresh(et)
     return et
-
-
-def _event_name_format_columns(event_name_format: str | None) -> set[str]:
-    if not event_name_format:
-        return set()
-    return set(_FMT_PATTERN.findall(event_name_format))
 
 
 def _field_template(values: list[str]) -> str | None:
@@ -552,7 +545,7 @@ def _load_existing_generation_result(
                 field_value.value
             )
 
-    name_columns = _event_name_format_columns(config.event_name_format)
+    name_columns = event_name_format_columns(config.event_name_format)
     json_value_path_map = _get_scan_json_value_path_map(config)
     col_meta: dict[str, dict[str, object]] = {}
     details: list[str] = []

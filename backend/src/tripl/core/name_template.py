@@ -1,11 +1,16 @@
 """Shared ``{key}`` grammar for scan event-name formats.
 
 The scan pipeline builds event identities by substituting ``{column}`` /
-``{column.json.path}`` placeholders with row values (see
-``core/analyzers/event_generator.py`` ``_FMT_PATTERN`` /
-``_apply_name_format`` — the grammar here MUST stay identical). The API uses
-this module to generate the same names from manually entered field values so
-hand-created events merge with their scan-generated counterparts.
+``{column.json.path}`` placeholders with row values. The API uses this module to
+generate the same names from manually entered field values so hand-created
+events merge with their scan-generated counterparts.
+
+This is the single definition of that grammar. ``event_generator`` and the
+replay path in ``worker/tasks/metrics/generation.py`` used to re-declare the
+pattern and keep it in step by a comment here telling all three they "MUST stay
+identical"; they now import it (Copilot, PR #74). Keeping one copy is the point
+— a placeholder the scan recognises but the reserved-column logic does not is
+how production lost a scan for 17 hours (tripl-lpin).
 """
 
 from __future__ import annotations
