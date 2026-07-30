@@ -23,3 +23,32 @@ export const dataSourcesKey = () => ['dataSources'] as const
 
 /** Plan branches for one project — `GET /projects/{slug}/branches`. */
 export const planBranchesKey = (slug: string | undefined) => ['planBranches', slug] as const
+
+/**
+ * Project variables, ITEMS ONLY — `variablesApi.list`, an array.
+ *
+ * The fourth drift, and the first that crashed rather than went stale: four
+ * queries shared the literal `['variables', slug, branchId]`, but VariablesTab
+ * fetched `listPage`, whose value is the `{items, total}` envelope, while the
+ * events table, the events page data hook and the event form fetched `list`,
+ * whose value is the array. One cache, two shapes — so opening
+ * Settings -> Variables and then switching to Events in the sidebar handed the
+ * event rows an object, and `for (const variable of variables)` threw
+ * "t is not iterable" on production.
+ *
+ * Same spelling, different value shape: the key-spelling check below would not
+ * have caught it, which is exactly why the two shapes now have two keys.
+ */
+export const variablesKey = (slug: string | undefined, branchId?: string | null) =>
+  ['variables', slug, branchId] as const
+
+/**
+ * Project variables, PAGE ENVELOPE — `variablesApi.listPage`, `{items, total}`.
+ *
+ * Deliberately an extension of {@link variablesKey} rather than a sibling: React
+ * Query matches invalidations by prefix, so every existing
+ * `invalidateQueries({ queryKey: variablesKey(...) })` still refreshes both
+ * caches after a variable is created, edited or deleted.
+ */
+export const variablesPageKey = (slug: string | undefined, branchId?: string | null) =>
+  [...variablesKey(slug, branchId), 'page'] as const

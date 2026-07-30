@@ -5,6 +5,7 @@ import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
 import { metaFieldsApi } from '@/api/metaFields'
 import { variablesApi } from '@/api/variables'
+import { variablesKey } from '@/lib/queryKeys'
 
 import {
   EMPTY_EVENT_TYPES,
@@ -33,7 +34,7 @@ export function useEventsPageData({
     enabled: !!slug,
   })
   const variablesQuery = useQuery({
-    queryKey: ['variables', slug, branchId],
+    queryKey: variablesKey(slug, branchId),
     queryFn: () => variablesApi.list(slug!, branchId),
     enabled: !!slug,
   })

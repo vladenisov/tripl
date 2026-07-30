@@ -4,6 +4,7 @@ import { variableDriftsApi } from '@/api/variableDrifts'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { Button } from '@/components/ui/button'
 import { getErrorMessage } from '@/lib/utils'
+import { variablesKey } from '@/lib/queryKeys'
 
 /** Value-drift review block for one event; renders nothing when clean. */
 export function EventValueDriftPanel({ slug, eventId }: { slug: string; eventId: string }) {
@@ -27,7 +28,7 @@ export function EventValueDriftPanel({ slug, eventId }: { slug: string; eventId:
     }) => variableDriftsApi.action(slug, driftId, { action, scope, snoozed_until: snoozedUntil }, branchId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['variable-drifts', slug, branchId] })
-      qc.invalidateQueries({ queryKey: ['variables', slug, branchId] })
+      qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
     },
   })
 
