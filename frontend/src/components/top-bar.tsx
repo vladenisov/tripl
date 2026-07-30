@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
   Bell,
@@ -14,8 +15,12 @@ import {
   XCircle,
 } from 'lucide-react'
 import { alertingApi } from '@/api/alerting'
+import { eventsApi } from '@/api/events'
+import { eventTypesApi } from '@/api/eventTypes'
+import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { useActiveBranchId } from '@/hooks/useBranch'
 import { useExpandedSignals } from '@/hooks/useExpandedSignals'
-import { signalScopeLabel } from '@/lib/signalScope'
+import { signalScopeLabel, type NameMap } from '@/lib/signalScope'
 import { getErrorMessage } from '@/lib/utils'
 import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
 import { selectSignificantSignals } from '@/lib/signalMagnitude'
@@ -119,7 +124,78 @@ export function TopBar({
   )
 }
 
+const SIGNAL_PREVIEW_LIMIT = 4
+
+/**
+ * Display names for the handful of signals the bell actually previews.
+ *
+ * The bell used to render "Spike on Event b1c2d3e4" while the Overview panel
+ * right below it rendered "Event · checkout_started" for the same signal — a
+ * uuid where a name was available, on the surface a non-technical reader meets
+ * first (tripl-9tyr). It fetches nothing until the bell is open, and then only
+ * what these ≤4 rows need:
+ *
+ * - event names come one id at a time under the key EventsPage and Overview
+ *   already use, so a project route that has shown either costs zero requests;
+ * - event types reuse the sidebar's key, which is always already in cache;
+ * - the metrics catalog is requested ONLY when a metric-scope row is on screen.
+ */
+function useBellScopeNames(
+  slug: string | undefined,
+  signals: MonitoringSignal[],
+  open: boolean,
+) {
+  const branchId = useActiveBranchId()
+  const eventRefs = useMemo(
+    () => [...new Set(signals.filter(s => s.scope_type === 'event').map(s => s.scope_ref))],
+    [signals],
+  )
+  const wantsEventTypes = signals.some(s => s.scope_type === 'event_type')
+  const wantsMetrics = signals.some(s => s.scope_type === 'metric')
+
+  const eventEntries = useQueries({
+    queries: eventRefs.map(eventId => ({
+      queryKey: ['event', slug, branchId, eventId],
+      queryFn: () => eventsApi.get(slug!, eventId, branchId),
+      enabled: open && !!slug,
+      staleTime: 60_000,
+    })),
+    combine: results =>
+      results.flatMap(r => (r.data ? ([[r.data.id, r.data.name]] as [string, string][]) : [])),
+  })
+
+  const eventTypesQuery = useQuery({
+    queryKey: ['eventTypes', slug, branchId],
+    queryFn: () => eventTypesApi.list(slug!, branchId),
+    enabled: open && !!slug && wantsEventTypes,
+    staleTime: 60_000,
+  })
+
+  const metricsQuery = useQuery({
+    queryKey: ['metrics-catalog', slug, 'names'],
+    queryFn: () => metricsCatalogApi.list(slug!),
+    enabled: open && !!slug && wantsMetrics,
+    staleTime: 60_000,
+  })
+
+  return useMemo(
+    () => ({
+      eventNames: new Map(eventEntries),
+      eventTypeNames: new Map(
+        (eventTypesQuery.data ?? []).map(et => [et.id, et.display_name] as [string, string]),
+      ),
+      metricNames: new Map(
+        (metricsQuery.data?.items ?? []).map(m => [m.id, m.display_name] as [string, string]),
+      ),
+    }),
+    [eventEntries, eventTypesQuery.data, metricsQuery.data],
+  )
+}
+
 function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
+  // Controlled so the scope-name lookups below can be gated on it: a closed
+  // bell must not make every route pay for name catalogs (tripl-9tyr).
+  const [bellOpen, setBellOpen] = useState(false)
   // Stream-aware fallback: the SSE invalidation map refreshes these on
   // signals.updated / activity.created, so poll only when the stream is down.
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
@@ -142,6 +218,8 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
   // Sorted biggest-effect-first, so the four rows previewed below are the four
   // worst rather than an arbitrary slice.
   const signals = selectSignificantSignals(signalsQuery.data)
+  const previewSignals = signals.slice(0, SIGNAL_PREVIEW_LIMIT)
+  const scopeNames = useBellScopeNames(projectSlug, previewSignals, bellOpen)
   const deliveries = deliveriesQuery.data?.items ?? []
   // "Active" semantics belong to currently-firing signals only. Deliveries are
   // history (see Recent Alert Deliveries below) and must never be folded in.
@@ -151,7 +229,7 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
   const isError = signalsQuery.isError || deliveriesQuery.isError
 
   return (
-    <Popover>
+    <Popover open={bellOpen} onOpenChange={setBellOpen}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -200,8 +278,13 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
               {signals.length === 0 ? (
                 <EmptySectionText>No active monitoring signals.</EmptySectionText>
               ) : (
-                signals.slice(0, 4).map(signal => (
-                  <SignalNotification key={`${signal.scope_type}:${signal.scope_ref}`} slug={projectSlug} signal={signal} />
+                previewSignals.map(signal => (
+                  <SignalNotification
+                    key={`${signal.scope_type}:${signal.scope_ref}`}
+                    slug={projectSlug}
+                    signal={signal}
+                    scopeNames={scopeNames}
+                  />
                 ))
               )}
             </NotificationSection>
@@ -289,9 +372,15 @@ function NotificationSection({
 function SignalNotification({
   slug,
   signal,
+  scopeNames,
 }: {
   slug: string
   signal: MonitoringSignal
+  scopeNames: {
+    eventNames: NameMap
+    eventTypeNames: NameMap
+    metricNames: NameMap
+  }
 }) {
   const tone = signal.state === 'latest_scan' ? 'danger' : 'warning'
   return (
@@ -305,7 +394,8 @@ function SignalNotification({
       </div>
       <div className="min-w-0 flex-1">
         <div className="truncate text-[12px] font-medium">
-          {signal.direction === 'drop' ? 'Drop' : 'Spike'} on {signalScopeLabel(signal)}
+          {signal.direction === 'drop' ? 'Drop' : 'Spike'} on{' '}
+          {signalScopeLabel(signal, scopeNames)}
         </div>
         <div className="mono mt-0.5 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
           {signal.actual_count.toLocaleString()} actual vs{' '}

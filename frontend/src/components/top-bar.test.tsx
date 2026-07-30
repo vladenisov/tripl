@@ -110,16 +110,30 @@ function mockDelivery(overrides: DeliveryOverrides = {}) {
 const SIGNALS_URL = '/api/v1/projects/demo/anomalies/signals?expanded=true'
 
 function mockNotificationsFetch(signals: unknown[], deliveries: unknown[]) {
+  const calls: string[] = []
   vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
     const url = String(input)
+    calls.push(url)
     if (url.endsWith(SIGNALS_URL)) {
       return mockJsonResponse(signals)
     }
     if (url.endsWith('/api/v1/projects/demo/alert-deliveries?limit=5')) {
       return mockJsonResponse({ items: deliveries, total: deliveries.length })
     }
+    // Name lookups the open bell makes so its rows read as names, not uuids
+    // (tripl-9tyr). Keyed the same way EventsPage / Overview key theirs.
+    if (/\/api\/v1\/projects\/demo\/event-types(\?|$)/.test(url)) {
+      return mockJsonResponse([{ id: 'type-123', display_name: 'Page View' }])
+    }
+    if (/\/api\/v1\/projects\/demo\/events\/[^/?]+/.test(url)) {
+      return mockJsonResponse({ id: 'event-9', name: 'checkout_started' })
+    }
+    if (url.includes('/metrics-catalog')) {
+      return mockJsonResponse({ items: [{ id: 'metric-7', display_name: 'Checkout conversion' }] })
+    }
     throw new Error(`Unhandled fetch: ${url}`)
   })
+  return calls
 }
 
 describe('TopBar notifications', () => {
@@ -315,5 +329,46 @@ describe('TopBar notifications', () => {
         expect.objectContaining({ method: 'POST' }),
       )
     })
+  })
+})
+
+describe('TopBar notifications — scope names (tripl-9tyr)', () => {
+  it('shows the display name instead of a uuid once the bell is open', async () => {
+    // The bell used to read "Spike on Event type type-123" while the Overview
+    // panel below it read "Event type · Page View" for the very same signal.
+    mockNotificationsFetch([{ ...mockSignal(), scope_ref: 'type-123' }], [])
+
+    renderTopBar()
+    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
+
+    expect(await screen.findByText('Spike on Event type · Page View')).toBeInTheDocument()
+    expect(screen.queryByText(/Spike on Event type type-123/)).toBeNull()
+  })
+
+  it('falls back to the short ref when the name never arrives', async () => {
+    // A deleted entity, or a lookup still in flight: the row must still render.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith(SIGNALS_URL)) return mockJsonResponse([{ ...mockSignal(), scope_ref: 'type-123' }])
+      if (url.includes('/alert-deliveries')) return mockJsonResponse({ items: [], total: 0 })
+      return mockJsonResponse([])
+    })
+
+    renderTopBar()
+    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
+
+    expect(await screen.findByText('Spike on Event type type-123')).toBeInTheDocument()
+  })
+
+  it('fetches no name catalogs while the bell is closed', async () => {
+    const calls = mockNotificationsFetch([{ ...mockSignal(), scope_ref: 'type-123' }], [])
+
+    renderTopBar()
+    await screen.findByRole('button', { name: /Notifications/ })
+    await new Promise(r => setTimeout(r, 50))
+
+    // A closed bell must not make every route in the app pay for the name
+    // catalogs — that trade is why it showed uuids in the first place.
+    expect(calls.filter(u => /\/event-types|\/metrics-catalog/.test(u))).toEqual([])
   })
 })

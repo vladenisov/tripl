@@ -31,10 +31,15 @@ jobs:
       # skipped with --no-verify, CI cannot. Its absence here is exactly why the
       # tree drifted out of format, even though `make lint-be` and CONTRIBUTING
       # both already listed `ruff format --check` as a required check.
+      # No path argument on purpose: scope comes from pyproject.toml, the same
+      # way `make lint-be` resolves it. A hand-written `src/` here is how CI and
+      # the Makefile drifted apart — CI passed while alembic/versions sat
+      # unformatted, until someone formatted it explicitly and 12 migrations
+      # rewrote in one PR (tripl-ln1k).
       - name: Ruff
         run: |
-          uv run ruff check src/
-          uv run ruff format --check src/
+          uv run ruff check
+          uv run ruff format --check
 
       - name: Mypy
         run: uv run mypy

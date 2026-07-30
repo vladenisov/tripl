@@ -52,10 +52,11 @@ def downgrade() -> None:
         return
     # Intentional precision loss: fractional values round back to whole counts.
     for table, (columns, int_type) in _COLUMNS.items():
+        cast_to = "bigint" if int_type is sa.BigInteger else "integer"
         for column in columns:
             op.alter_column(
                 table,
                 column,
                 type_=int_type(),
-                postgresql_using=f"round({column})::{'bigint' if int_type is sa.BigInteger else 'integer'}",
+                postgresql_using=f"round({column})::{cast_to}",
             )
