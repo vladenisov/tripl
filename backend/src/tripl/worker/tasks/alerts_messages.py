@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -31,7 +31,7 @@ from tripl.alerting_matching import (
     SCOPE_VARIABLE_VALUE_DRIFT,
 )
 from tripl.anomaly_context import build_alert_item_context
-from tripl.models.alert_delivery import AlertDelivery
+from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
@@ -53,6 +53,16 @@ DEAD_EVENT_DAYS = 30
 
 _AI_EXPLANATION_MAX_ITEMS = 10
 _AI_EXPLANATION_MAX_TOKENS = 250
+
+# How much of what this rule already said about these same scopes goes into the
+# prompt. The explanation used to be a pure function of the current bucket, so
+# an event drifting for the third day running produced the same paragraph three
+# times and the reader learned nothing from the repeat (tripl-ikee).
+_AI_HISTORY_MAX_DELIVERIES = 3
+_AI_HISTORY_WINDOW = timedelta(days=7)
+# Prior explanations are 2-4 sentences; keep a readable head of each so three of
+# them cannot crowd out the current items.
+_AI_HISTORY_EXPLANATION_CHARS = 320
 
 
 def _resolve_metric_units(
@@ -301,12 +311,97 @@ def _render_delivery_message(
     return render_alert_template(template, context).rstrip(), context.message_format
 
 
+def _describe_age(delta: timedelta) -> str:
+    minutes = int(delta.total_seconds() // 60)
+    if minutes < 60:
+        return f"{max(minutes, 1)}m ago"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours}h ago"
+    return f"{hours // 24}d ago"
+
+
+def _recent_alert_history(
+    session: Session,
+    delivery: AlertDelivery,
+    *,
+    now: datetime,
+) -> list[str]:
+    """What this rule already told the reader about these same scopes.
+
+    Matching is by ``scope_ref`` rather than the whole rule: a rule covering a
+    hundred events would otherwise drag in unrelated history and the model would
+    "recall" something the reader never saw about this event. Only ``sent``
+    deliveries count — a failed one was never read, so claiming to have reported
+    it would be a lie.
+
+    Returns newest-first prose lines; an empty list simply leaves the prompt as
+    it was, which is the correct behaviour for a genuinely first-time alert.
+    """
+    scope_refs = {item.scope_ref for item in delivery.items if item.scope_ref}
+    if not scope_refs:
+        return []
+
+    matching_items = (
+        select(AlertDeliveryItem.delivery_id)
+        .where(
+            AlertDeliveryItem.delivery_id == AlertDelivery.id,
+            AlertDeliveryItem.scope_ref.in_(scope_refs),
+        )
+        .exists()
+    )
+    previous = (
+        session.execute(
+            select(AlertDelivery)
+            .where(
+                AlertDelivery.rule_id == delivery.rule_id,
+                AlertDelivery.id != delivery.id,
+                AlertDelivery.status == AlertDeliveryStatus.sent.value,
+                AlertDelivery.sent_at.is_not(None),
+                AlertDelivery.sent_at >= now - _AI_HISTORY_WINDOW,
+                matching_items,
+            )
+            .order_by(AlertDelivery.sent_at.desc())
+            .limit(_AI_HISTORY_MAX_DELIVERIES)
+        )
+        .scalars()
+        .all()
+    )
+
+    lines: list[str] = []
+    for past in previous:
+        sent_at = past.sent_at
+        if sent_at is None:
+            continue
+        # SQLite hands back naive datetimes where PostgreSQL is tz-aware; the
+        # subtraction below would raise on the mix.
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=UTC)
+        snapshot = past.payload_snapshot if isinstance(past.payload_snapshot, dict) else {}
+        said = str(snapshot.get("ai_explanation") or "").strip()
+        scopes = ", ".join(sorted({item.scope_name for item in past.items if item.scope_name})[:4])
+        line = f"- {_describe_age(now - sent_at)} ({sent_at:%Y-%m-%d %H:%M} UTC)"
+        if scopes:
+            line += f", about {scopes}"
+        if said:
+            head = said[:_AI_HISTORY_EXPLANATION_CHARS]
+            if len(said) > _AI_HISTORY_EXPLANATION_CHARS:
+                head += "…"
+            line += f'. You already told them: "{head}"'
+        else:
+            line += ". (no AI note was attached that time)"
+        lines.append(line)
+    return lines
+
+
 def _build_ai_explanation(
     delivery: AlertDelivery,
     *,
     scan_name: str,
     project_name: str,
     item_context_cache: dict[uuid.UUID, tuple[str, str]],
+    session: Session | None = None,
+    now: datetime | None = None,
 ) -> str | None:
     """LLM summary of the delivery's items, or None when AI is off or fails.
 
@@ -361,6 +456,22 @@ def _build_ai_explanation(
         if group_sizes.get(item.correlation_group_id, 0) > 1:
             line += " [co-fired with other items]"
         lines.append(line)
+    # What was already said about these scopes, so a recurring drift reads as
+    # "still going, now worse" instead of the same paragraph again (tripl-ikee).
+    # Best-effort: a history lookup must never cost the reader their alert.
+    if session is not None:
+        try:
+            history = _recent_alert_history(session, delivery, now=now or datetime.now(UTC))
+        except Exception:  # noqa: BLE001
+            logger.warning("Alert history lookup for the AI explanation failed", exc_info=True)
+            history = []
+        if history:
+            lines.append("")
+            lines.append(
+                "Previously sent by this rule for these same scopes (most recent first). "
+                "Say what has CHANGED since; do not repeat what the reader already read:"
+            )
+            lines.extend(history)
     try:
         raw = llm_service.complete(
             ai_config.alert_explanation_system_prompt,

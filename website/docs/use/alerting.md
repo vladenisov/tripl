@@ -69,6 +69,19 @@ There is no separate destination-test endpoint. Use rule replay to validate
 matching, then confirm the first real delivery in **Audit**; a failing webhook
 or an unverified bot token is the most common transport failure.
 
+### The AI note remembers what it already told you
+
+When **AI explanation** is on for a rule, the note is written with the last
+week's sent alerts for the *same scopes* in front of it — up to three, and only
+ones that actually went out. So a second alert about the same event opens with
+what changed ("still falling, now 90% below expected") instead of repeating the
+first note word for word. A genuinely first-time alert has no history to carry
+and reads exactly as before.
+
+Matching is by scope, not by rule: a rule watching a hundred events will not
+recall an unrelated event's history as if it were this one's. Failed deliveries
+are never recalled — nobody read them.
+
 :::note
 **Email is all-or-nothing.** If the SMTP server refuses *some* recipients, the
 whole delivery is recorded as **failed** and the error names the addresses that
