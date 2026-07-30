@@ -22,6 +22,7 @@ import { SCENARIO_SEEDED } from "@/demo/scenarioModel"
 import { VariablesBulkBar } from "./VariablesBulkBar"
 import { VariablesTableRow } from "./VariablesTableRow"
 import { getErrorMessage } from '@/lib/utils'
+import { variablesKey, variablesPageKey } from '@/lib/queryKeys'
 
 // Warehouse column or dotted JSON path, e.g. "variant" or "page_data.extra.variant".
 const BINDING_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$/
@@ -146,7 +147,10 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   // rows while the branch id resolves and changes the key, instead of dropping
   // back to an empty list (tripl-jfm3.52).
   const { data: variablePage, isPending: variablesPending } = useQuery({
-    queryKey: ['variables', slug, branchId],
+    // The PAGE key, not the items key: this is the one caller that needs
+    // `total`, and caching the envelope under the shared key is what fed the
+    // events rows an object instead of an array (tripl-lqxb).
+    queryKey: variablesPageKey(slug, branchId),
     queryFn: () => variablesApi.listPage(slug, branchId),
     placeholderData: keepPreviousData,
   })
@@ -156,7 +160,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const createMut = useMutation({
     mutationFn: () => variablesApi.create(slug, { name, variable_type: varType, description, allowed_values: allowedValues, bindings }, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['variables', slug, branchId] })
+      qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
       setShowForm(false); setName(''); setVarType('string'); setDescription('')
       setAllowedValues([]); setBindings([])
     },
@@ -165,7 +169,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const updateMut = useMutation({
     mutationFn: (id: string) => variablesApi.update(slug, id, { name: editVarName, variable_type: editVarType, description: editDescription, allowed_values: editAllowedValues, bindings: editBindings }, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['variables', slug, branchId] })
+      qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
       setEditingVar(null)
     },
   })
@@ -214,7 +218,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     }) => variableDriftsApi.action(slug, driftId, { action, scope, snoozed_until: snoozedUntil }, branchId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['variable-drifts', slug, branchId, editingVar?.id] })
-      qc.invalidateQueries({ queryKey: ['variables', slug, branchId] })
+      qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
       qc.invalidateQueries({ queryKey: ['variable-overrides', slug, branchId, editingVar?.id] })
       // Any drift action is reviewing the drift — inert outside the demo's
       // variables chapter (the reducer drops every other step).
@@ -230,13 +234,13 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const bulkUpdateMut = useMutation({
     mutationFn: (patch: { variable_type?: VariableType; description?: string; allowed_values_add?: string[] }) =>
       variablesApi.bulkUpdate(slug, { variable_ids: [...selectedIds], ...patch }, branchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['variables', slug, branchId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) }),
   })
 
   const bulkDeleteMut = useMutation({
     mutationFn: () => variablesApi.bulkDelete(slug, [...selectedIds], branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['variables', slug, branchId] })
+      qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
       setSelectedIds(new Set())
     },
   })
@@ -262,7 +266,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
 
   const deleteMut = useMutation({
     mutationFn: (id: string) => variablesApi.del(slug, id, branchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['variables', slug, branchId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) }),
   })
 
   const handleDelete = useStableCallback(async (v: Variable) => {
@@ -281,7 +285,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const excludeMut = useMutation({
     mutationFn: ({ id, excluded }: { id: string; excluded: boolean }) =>
       variablesApi.update(slug, id, { excluded_from_scans: excluded }, branchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['variables', slug, branchId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) }),
   })
 
   const handleExclude = useStableCallback(async (v: Variable) => {

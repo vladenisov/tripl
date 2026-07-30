@@ -43,6 +43,7 @@ import { eventsEmptyCopy, type EventsEmptyContext } from './emptyState'
 import { EventRow, type RowAction } from './EventRow'
 import { groupEventNames, type EventNameGroup } from './eventNameGroups'
 import { EMPTY_WINDOW_POINTS, ROW_METRICS_LABEL } from './utils'
+import { variablesKey } from '@/lib/queryKeys'
 
 /** Cap the cluster list so the summary header stays compact; the rest fold into a count. */
 const MAX_VISIBLE_CLUSTERS = 6
@@ -155,10 +156,13 @@ export function EventsTable({
   const emptyCopy = eventsEmptyCopy(
     emptyContext ?? { activeTab: 'all', hasActiveFilters: false, search: '' },
   )
-  // Same cache key as the Variables settings page/EventEditPage — one fetch
-  // powers unknown-token tinting across every row.
+  // Shared with EventEditPage and useEventsPageData — one fetch powers
+  // unknown-token tinting across every row. NOT shared with the Variables
+  // settings tab: that one needs `total` and so caches the page envelope under
+  // variablesPageKey. They used to share this key, which handed these rows an
+  // object instead of an array and crashed the page (tripl-lqxb).
   const { data: projectVariables } = useQuery({
-    queryKey: ['variables', slug, branchId],
+    queryKey: variablesKey(slug, branchId),
     queryFn: () => variablesApi.list(slug, branchId),
   })
 

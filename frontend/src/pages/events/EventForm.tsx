@@ -27,6 +27,7 @@ import { JsonEditor } from './JsonEditor'
 import { VariableInput, type VariableSuggestion } from './VariableInput'
 import { applyEventNameFormat, resolveTemplateTokens } from './utils'
 import { ChevronDown, ChevronLeft, Loader2, Plus, Save, Sparkles, X } from 'lucide-react'
+import { variablesKey } from '@/lib/queryKeys'
 
 const EMPTY_EVENT_TYPES: EventType[] = []
 const EMPTY_META_FIELDS: MetaFieldDefinition[] = []
@@ -771,7 +772,7 @@ export default function EventEditPage() {
     enabled: !!slug,
   })
   const variablesQuery = useQuery({
-    queryKey: ['variables', slug, branchId],
+    queryKey: variablesKey(slug, branchId),
     queryFn: () => variablesApi.list(slug!, branchId),
     enabled: !!slug,
   })
