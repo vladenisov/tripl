@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from cryptography.fernet import Fernet
+from fastapi import HTTPException
 from httpx import AsyncClient
 from sqlalchemy import select
 
@@ -147,6 +148,68 @@ def test_apply_startup_service_overrides_is_noop_on_db_error(
     # Must swallow the error and apply nothing, so importing the app never fails
     # just because overrides can't be read.
     assert app_settings_service.apply_startup_service_overrides(session=object()) == []  # type: ignore[arg-type]
+
+
+def test_startup_ignores_an_override_that_would_prevent_boot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored setting must never be the reason the process cannot start.
+
+    session_cookie_secure is applied at startup and assert_production_ready
+    refuses a non-debug boot without it, so unticking "Secure cookie" in the
+    admin UI used to brick the instance on the next restart — with the only
+    recovery being hand-edited SQL, because the UI lives in the process that no
+    longer starts (tripl-jfm3.93).
+    """
+    monkeypatch.setattr(
+        app_settings_service,
+        "get_service_overrides_sync",
+        lambda _session: {"session_cookie_secure": False, "hsts_enabled": True},
+    )
+    monkeypatch.setattr(settings, "debug", False)
+    monkeypatch.setattr(settings, "session_cookie_secure", True)
+    monkeypatch.setattr(settings, "hsts_enabled", False)
+
+    applied = app_settings_service.apply_startup_service_overrides(session=object())  # type: ignore[arg-type]
+
+    # Nothing is applied, and — the point of the fix — the env value survives so
+    # the app boots and the operator can undo the change where they made it.
+    assert applied == []
+    assert settings.session_cookie_secure is True
+    assert settings.hsts_enabled is False
+
+
+def test_saving_an_override_that_would_prevent_boot_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dropping it silently at boot is safe but dishonest — say so at save time."""
+    monkeypatch.setattr(settings, "debug", False)
+    # The env must be healthy on this axis, or the override introduces nothing new.
+    monkeypatch.setattr(settings, "session_cookie_secure", True)
+
+    with pytest.raises(HTTPException) as excinfo:
+        app_settings_service._reject_startup_breaking_overrides({"session_cookie_secure": False})
+
+    assert excinfo.value.status_code == 422
+    assert "stop the app from starting" in str(excinfo.value.detail)
+
+    # A harmless override still passes.
+    app_settings_service._reject_startup_breaking_overrides({"hsts_enabled": True})
+
+
+def test_saving_is_not_blocked_by_problems_the_environment_already_has(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only what THIS change breaks.
+
+    A deployment already missing SECRET_KEY must not have every unrelated
+    settings save rejected on top of it — the check diffs against the current
+    settings rather than judging the candidate in isolation.
+    """
+    monkeypatch.setattr(settings, "debug", False)
+    monkeypatch.setattr(settings, "secret_key", "")
+
+    app_settings_service._reject_startup_breaking_overrides({"hsts_enabled": True})
 
 
 def test_registration_mode_is_resolved_live_not_at_startup() -> None:

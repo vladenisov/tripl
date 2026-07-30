@@ -203,7 +203,11 @@ A handful of conditions are surfaced **verbatim** because they're actionable:
   increase scan_row_limit to avoid partial generation."* The default cap is
   50,000 rows for scans (100,000 for metrics). Narrow the base query, set a
   time column + lookback so less data is scanned, or raise the per-config row
-  limit.
+  limit. Catalog-metric collection reports the same condition as *"… reached the
+  metric query row limit (100000) for chunk …"* and **fails the chunk on
+  purpose**: collection replaces a window by deleting it and re-inserting, so
+  writing a capped result would erase the tail of the window rather than leave
+  it as it was. Narrow the metric's breakdown or replay in shorter chunks.
 - **Misconfigured event typing.** *"Either event_type_id or event_type_column
   must be specified."* Pick a single event type for the config, or set the
   column that splits rows into event types.
@@ -212,7 +216,7 @@ A handful of conditions are surfaced **verbatim** because they're actionable:
 
 | Adapter | Common cause | Fix |
 | --- | --- | --- |
-| **PostgreSQL** | TLS negotiation or unreachable host; non-local hosts default to `sslmode=prefer`, local hosts to no SSL. | Confirm host/port reachable from the worker container; check the server's TLS settings. |
+| **PostgreSQL** | TLS negotiation or unreachable host. Non-local hosts default to **`sslmode=require`**, so a remote server with no TLS fails loudly rather than silently falling back to plaintext; localhost defaults to `prefer`. | Confirm host/port reachable from the worker container; check the server's TLS settings. A remote server that genuinely has no TLS needs `sslmode` set explicitly to `prefer`/`disable` on the data source. |
 | **ClickHouse** | Wrong host/port/secure flag, or a probe query that returns no rows. | Verify connection params; *"Connection probe returned no rows"* means it connected but the probe was empty — check the query/permissions. |
 | **BigQuery** | Missing project id or invalid service-account JSON: *"BigQuery: host (project_id) is required"* / *"BigQuery: service-account JSON credentials are required"* / *"BigQuery: invalid service-account JSON"*. | Set the project id in the host field and paste valid service-account JSON. |
 

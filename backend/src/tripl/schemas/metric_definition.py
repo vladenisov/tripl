@@ -820,6 +820,9 @@ class MetricDefinitionListItem(BaseModel):
 class MetricDefinitionListResponse(BaseModel):
     items: list[MetricDefinitionListItem]
     total: int
+    # Server-side, so the catalog KPI strip does not pair a project-wide total
+    # with a count taken off the loaded page (tripl-jfm3.109).
+    active_total: int = 0
 
 
 class MetricPreviewRequest(BaseModel):

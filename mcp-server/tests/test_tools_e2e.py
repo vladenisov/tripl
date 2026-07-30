@@ -284,3 +284,107 @@ async def test_403_surfaces_scope_guidance_through_mcp(stdio_runtime: Runtime) -
 
     assert is_error
     assert "scoped to a single project" in text
+
+
+@respx.mock
+async def test_list_event_types_is_branch_scoped_and_trimmed(stdio_runtime: Runtime) -> None:
+    """Plan reads follow the branch, and do not ship the whole field catalogue.
+
+    Without ``branch`` the API resolves main, so an agent working on a branch was
+    quietly answered with main's event types. The response also came back
+    verbatim — every event type carrying all of its field definitions
+    (tripl-jfm3.126).
+    """
+    route = respx.get(f"{API_BASE}/projects/demo/event-types").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "t1",
+                    "project_id": "p1",
+                    "name": "pageview",
+                    "display_name": "Page view",
+                    "description": "",
+                    "color": "#fff",
+                    "order": 0,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                    "field_definitions": [{"id": "f1"}, {"id": "f2"}],
+                }
+            ],
+        )
+    )
+
+    is_error, text = await call_tool("list_event_types", {"slug": "demo", "branch_id": "br-7"})
+
+    assert not is_error
+    assert "branch=br-7" in str(route.calls.last.request.url)
+    # FastMCP emits one content block per list element, so a single-item list
+    # arrives as that item's JSON.
+    event_type = json.loads(text)
+    assert event_type["field_count"] == 2
+    # Bulk dropped: the embedded definitions and the row bookkeeping.
+    assert "field_definitions" not in event_type
+    assert "created_at" not in event_type
+    assert "project_id" not in event_type
+
+
+@respx.mock
+async def test_get_event_type_fields_forwards_branch_and_trims_fields(
+    stdio_runtime: Runtime,
+) -> None:
+    type_route = respx.get(f"{API_BASE}/projects/demo/event-types/t1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "t1",
+                "project_id": "p1",
+                "name": "pageview",
+                "display_name": "Page view",
+                "description": "",
+                "color": "#fff",
+                "order": 0,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+        )
+    )
+    fields_route = respx.get(f"{API_BASE}/projects/demo/event-types/t1/fields").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "f1",
+                    "event_type_id": "t1",
+                    "name": "url",
+                    "display_name": "URL",
+                    "field_type": "string",
+                    "is_required": True,
+                    "enum_options": None,
+                    "description": "",
+                    "order": 0,
+                    "sensitivity": "none",
+                    "contract_max_bad_rate": 0.1,
+                    "contract_regex": None,
+                },
+            ],
+        )
+    )
+
+    is_error, text = await call_tool(
+        "get_event_type_fields",
+        {"slug": "demo", "event_type_id": "t1", "branch_id": "br-7"},
+    )
+
+    assert not is_error
+    assert "branch=br-7" in str(type_route.calls.last.request.url)
+    assert "branch=br-7" in str(fields_route.calls.last.request.url)
+    payload = json.loads(text)
+    field = payload["fields"][0]
+    # Everything needed to compose a valid value survives...
+    assert field["name"] == "url"
+    assert field["is_required"] is True
+    assert field["field_type"] == "string"
+    # ...and the scanner-side contract thresholds do not.
+    assert "contract_max_bad_rate" not in field
+    assert "event_type_id" not in field

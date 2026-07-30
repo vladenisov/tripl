@@ -69,6 +69,27 @@ There is no separate destination-test endpoint. Use rule replay to validate
 matching, then confirm the first real delivery in **Audit**; a failing webhook
 or an unverified bot token is the most common transport failure.
 
+### The AI note remembers what it already told you
+
+When **AI explanation** is on for a rule, the note is written with the last
+week's sent alerts for the *same scopes* in front of it — up to three, and only
+ones that actually went out. So a second alert about the same event opens with
+what changed ("still falling, now 90% below expected") instead of repeating the
+first note word for word. A genuinely first-time alert has no history to carry
+and reads exactly as before.
+
+Matching is by scope, not by rule: a rule watching a hundred events will not
+recall an unrelated event's history as if it were this one's. Failed deliveries
+are never recalled — nobody read them.
+
+:::note
+**Email is all-or-nothing.** If the SMTP server refuses *some* recipients, the
+whole delivery is recorded as **failed** and the error names the addresses that
+bounced. Retrying re-sends to everyone on the list, including anyone who already
+received it — a duplicate is preferable to believing an alert was delivered when
+it was not.
+:::
+
 Enabled **Slack** and **Email** destinations also receive the scheduled weekly
 plan digest. The digest is destination-level and independent of routing rules;
 disable the destination if it should receive neither alerts nor the digest.
@@ -91,8 +112,8 @@ the drift/regression signals are opt-in:
 | Release regression | off |
 | Metric anomaly | off |
 
-**Metric anomalies** are opt-in via a rule's **`include_metrics`** API field
-(off by default; the visual rule editor does not expose this switch yet). Unlike
+**Metric anomalies** are opt-in via a rule's **`include_metrics`** field — the
+**Metrics** box in the rule editor, off by default. Unlike
 the drift and regression signals they behave like a volume anomaly — they carry
 a real spike/drop direction and **do** honor the count thresholds below.
 
@@ -117,6 +138,10 @@ fire regardless of the count thresholds.
 **Filters** narrow further by `event_type`, `event`, or `direction`, with
 operators `eq` / `ne` / `in` / `not_in`. Multiple filters are ANDed; a signal
 that doesn't carry the filtered field passes through.
+
+The `event` value picker searches the catalog server-side and shows one page of
+matches at a time, so type to reach an event that isn't in the first page — the
+footer tells you how many matches are still hidden.
 
 Variable-value drift carries its affected `event_id`, so event filters apply;
 its alert item uses the variable name as `drift_field` and a bounded novel-value
@@ -175,10 +200,20 @@ Each match creates a **delivery** that moves through `pending → sent` or
 deliveries that get stuck (roughly every 5 minutes, up to a few attempts). You can
 **retry** failed deliveries manually from the UI.
 
-The **Inbox** groups alerts that fired **together** — two or more items in the same
-bucket and direction — over the last 30 days; isolated single-scope firings aren't
-shown there. From the Inbox you can **acknowledge**, **resolve**, **mute**,
-**reopen**, or mark a group as a **false positive**.
+The **Inbox** is one row per **incident** — a rule firing in one direction on a
+scan — over the last 30 days. An incident stays the same row for as long as it
+keeps firing, however many buckets and scopes it spans, so a decision you make
+about it holds. From the Inbox you can **acknowledge**, **resolve**, **mute**,
+**reopen**, or mark it a **false positive**, and attach a **note** saying why.
+
+**Acknowledge, resolve and mute all stop further deliveries** for that incident.
+The suppression lasts until the incident is over — once no scope of the rule is
+firing any more, the row returns to `open` on its own, so the next occurrence
+alerts normally and an old decision can never silence a new problem. **Reopen**
+lifts the suppression by hand.
+
+The note is attached to the incident, survives later actions, and is only
+replaced when you write a new one.
 
 :::note
 Marking a group **false positive** doesn't just hide it — it nudges the detector

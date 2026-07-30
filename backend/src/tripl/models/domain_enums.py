@@ -166,6 +166,11 @@ class AlertDriftType(enum.StrEnum):
     distribution_shift = "distribution_shift"
     missing = "missing"
     volume_drop = "volume_drop"
+    # Written by the variable-value-drift candidate builder. The scope shipped
+    # in d1c2b3a4f5e6 without this member, so the delivery INSERT failed on the
+    # Postgres enum and took the whole collection transaction with it
+    # (tripl-jfm3.97). Added to the type by e2f3a4b5c6d7.
+    value_drift = "value_drift"
 
 
 class ReleaseRegressionKind(enum.StrEnum):

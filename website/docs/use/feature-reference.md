@@ -1,6 +1,6 @@
 ---
 title: Feature Reference
-sidebar_position: 3
+sidebar_position: 7
 ---
 
 # Feature Reference
@@ -390,8 +390,7 @@ variable value drift** opt-in alongside schema, distribution, and release drift;
 and message and items templates with variables such as `${channel}`,
 `${destination_name}`, `${rule_name}`, `${scan_name}`, `${scope_label}`,
 `${matched_count}`, and `${items_text}`. Metric-scope anomalies are also safe-off
-and can currently be enabled through the API's `include_metrics` field (the
-visual rule editor does not expose that switch yet). A rule can be
+and are enabled by the rule editor's **Metrics** box (`include_metrics`). A rule can be
 **simulated/replayed** over the last N days (default 7), optionally overriding
 the saved cooldown. The **Inbox** groups correlated deliveries; the **Audit**
 view lists deliveries filterable by status (pending / sent / failed) with retry
@@ -458,14 +457,22 @@ scalar breakdown/drift fields.
 Running a scan creates a job. From a config you can run a scan, apply event
 groups, jump directly to **Review events**, or replay metrics over historical
 chunks (replay requires a time column and an interval). Jobs expose status,
-progress, and curated failure detail. Repeated identical failures collapse into
+progress, and curated failure detail. A job's **details** list flags warehouse
+columns that carried data but had no matching field in the plan — a real
+coverage gap worth fixing. It stays quiet about columns that were empty for
+those rows, and about reserved role columns (event type, time, version,
+platform, and any column an event-group rule matches on), which are collected as
+metric dimensions or identity and are never expected to have a plan field. Repeated identical failures collapse into
 a streak with an expander, and **Run again** retries the config without losing
 its history.
 
 ### Audit log
 
-**Where:** Govern › Audit log. A record of mutating actions, filterable by
-action, user, and time range.
+**Where:** Govern › Audit log — **owners only**; the nav item is hidden from
+everyone else. A record of mutating actions across the whole instance,
+filterable by action, user, project, and time range. Each entry keeps the
+request payload, which is why it is owner-gated: see
+[Security](../run/security.md#roles-and-access-control-rbac).
 
 ---
 

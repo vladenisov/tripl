@@ -33,5 +33,21 @@ DEFAULT_ALERT_EXPLANATION_SYSTEM_PROMPT = (
     "and whether the items look related (e.g. same release, same platform, "
     "shared root cause). 2-4 plain sentences, no markdown, no preamble. "
     "Be concrete; if the data is insufficient for a hypothesis, say what "
-    "to check next instead of speculating."
+    "to check next instead of speculating. "
+    # Without this the explanation is a pure function of the current bucket, so
+    # a scope that drifts for days gets the same paragraph every time and the
+    # repeat teaches the reader nothing (tripl-ikee). The prompt only carries a
+    # history block when this rule has actually sent something about these same
+    # scopes in the last week.
+    "If the input includes what you previously sent for these scopes, treat it "
+    "as already read: open with what CHANGED since (deeper, recovering, spread "
+    "to another scope, still unresolved after N hours) and do not restate the "
+    "earlier explanation. If nothing has changed, say so in one sentence rather "
+    "than rephrasing it. "
+    # Unlike the "ask" prompt there is no user question whose language to
+    # mirror, so without this the model picked one per call and alerts arrived
+    # in whatever it felt like. The rest of the product and its docs are
+    # English. Override this whole prompt under Settings -> Instance -> AI to
+    # get a different language (tripl-jfm3.92).
+    "Reply in English."
 )

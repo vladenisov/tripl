@@ -14,6 +14,7 @@ import { formatDateTime } from '@/lib/datetime'
 import { factColumnValueKind } from '@/lib/factColumnValueKind'
 import { METRIC_KIND_LABEL } from '@/types'
 import type { MetricDefinitionDetailResponse } from '@/types'
+import { dataSourcesKey } from '@/lib/queryKeys'
 
 /** Names are best-effort; when a lookup misses we fall back to a short id. */
 const SHORT_ID_LENGTH = 8
@@ -231,7 +232,7 @@ export function MetricDefinitionCard({ slug, definition }: MetricDefinitionCardP
     staleTime: LOOKUP_STALE_TIME_MS,
   })
   const dataSourcesQuery = useQuery({
-    queryKey: ['data-sources'],
+    queryKey: dataSourcesKey(),
     queryFn: () => dataSourcesApi.list(),
     enabled: !!definition.data_source_id,
     staleTime: LOOKUP_STALE_TIME_MS,

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import json
-import re
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -37,7 +36,23 @@ class SendSlackMessage(Protocol):
     def __call__(self, webhook_url: str, text: str, *, message_format: str) -> None: ...
 
 
-_TELEGRAM_BOT_URL_TOKEN_RE = re.compile(r"(/bot)([^/]+)(/)")
+def _safe_url_for_error(url: str) -> str:
+    """Scheme and host only — the rest of a destination URL is often the secret.
+
+    This used to mask the Telegram bot token with a Telegram-shaped regex, which
+    left every other channel untouched: a failed Slack delivery put the full
+    incoming-webhook URL into ``alert_deliveries.error_message``, which the API
+    returns and the UI renders. That URL IS the credential — anyone who can read
+    it can post to the channel (tripl-jfm3.94). Generic webhooks and tracker URLs
+    carry tokens in the path or query just as often.
+
+    The status code and the response body already carry the diagnostic value;
+    the host is enough to say which destination failed.
+    """
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return "the destination URL"
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def _decrypt_secret(encrypted: str | None) -> str:
@@ -100,7 +115,7 @@ def _post_json(
                 if isinstance(description, str) and description.strip():
                     detail = description.strip()
 
-        safe_url = _TELEGRAM_BOT_URL_TOKEN_RE.sub(r"\1***\3", url)
+        safe_url = _safe_url_for_error(url)
         message = f"HTTP {exc.code} from {safe_url}"
         if detail:
             message = f"{message}: {detail}"
@@ -148,7 +163,7 @@ def _get_json(
                 if isinstance(description, str) and description.strip():
                     detail = description.strip()
 
-        safe_url = _TELEGRAM_BOT_URL_TOKEN_RE.sub(r"\1***\3", url)
+        safe_url = _safe_url_for_error(url)
         message = f"HTTP {exc.code} from {safe_url}"
         if detail:
             message = f"{message}: {detail}"
@@ -230,7 +245,23 @@ def _send_email_message(
             conn.starttls()
         if smtp_username:
             conn.login(smtp_username, smtp_password)
-        conn.send_message(msg)
+        refused = conn.send_message(msg)
+    # smtplib raises ONLY when every recipient is refused (SMTPRecipientsRefused);
+    # a partial refusal is returned quietly as {address: (code, reason)}. That
+    # return used to be discarded, so an alert that reached two of five people was
+    # stored and displayed as "sent" (tripl-jfm3.117).
+    #
+    # Failing the whole delivery is deliberate: a manual retry may duplicate the
+    # mail for the recipients who did get it, but the alternative — the operator
+    # believing an alert was delivered when it silently was not — is worse for the
+    # one job alerting has. The refused addresses go in the message so the Audit
+    # view names them rather than just saying "failed".
+    if refused:
+        detail = (
+            f"SMTP refused {len(refused)} of {len(recipients)} recipients: "
+            f"{', '.join(sorted(refused))}"
+        )
+        raise ValueError(detail)
 
 
 def _send_digest_to_destination(

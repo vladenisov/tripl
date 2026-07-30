@@ -229,6 +229,85 @@ async def test_alert_inbox_false_positive_updates_state_and_thresholds(
         assert config.sigma_threshold == 3.5
         assert config.min_expected_count == 15
 
+    # A second action carrying no note must not erase the first one's. The
+    # assignment was unconditional, so every follow-up action silently wiped the
+    # note written with the previous one (tripl-jfm3.91).
+    await client.post(
+        f"/api/v1/projects/inbox-workflow/alert-inbox/{group_id}/actions",
+        json={"action": "acknowledge"},
+    )
+    async with TestSessionLocal() as session:
+        state = await session.scalar(
+            select(AlertCorrelationState).where(
+                AlertCorrelationState.correlation_group_id == group_id
+            )
+        )
+        assert state is not None
+        assert state.status == "acknowledged"
+        assert state.note == "Noisy deploy window"
+
+    # An explicit new note still replaces it.
+    await client.post(
+        f"/api/v1/projects/inbox-workflow/alert-inbox/{group_id}/actions",
+        json={"action": "resolve", "note": "Rolled back"},
+    )
+    async with TestSessionLocal() as session:
+        state = await session.scalar(
+            select(AlertCorrelationState).where(
+                AlertCorrelationState.correlation_group_id == group_id
+            )
+        )
+        assert state is not None
+        assert state.note == "Rolled back"
+
+
+def test_every_drift_type_the_pipeline_writes_exists_in_the_enum() -> None:
+    """alert_delivery_items.drift_type is a NATIVE Postgres enum.
+
+    A value the candidate builders write but the type does not contain fails the
+    INSERT, and since dispatch runs inside collect_metrics the whole collection
+    transaction dies with it. That is exactly what 'value_drift' did: the scope
+    shipped in d1c2b3a4f5e6, which extended metric_scope_type and forgot
+    alert_drift_type (tripl-jfm3.97).
+
+    SQLite stores enums as unvalidated text, so no behavioural test on this
+    suite can catch it — hence checking the literals against the enum directly.
+    """
+    import re
+    from pathlib import Path
+
+    from tripl.models.domain_enums import AlertDriftType
+
+    source = Path(__file__).resolve().parents[1] / "worker" / "tasks" / "metrics" / "signals.py"
+    written = set(re.findall(r'drift_type=["\']([a-z_]+)["\']', source.read_text()))
+    assert written, "expected to find literal drift_type assignments to check"
+
+    known = {member.value for member in AlertDriftType}
+    assert written <= known, f"drift_type values with no enum member: {sorted(written - known)}"
+
+
+def test_delivery_errors_never_carry_the_destination_secret() -> None:
+    """A failed delivery's error text reaches the API and the UI verbatim.
+
+    Masking used to be a Telegram-shaped regex, so a Slack incoming-webhook URL
+    — which IS the credential — was written to alert_deliveries.error_message in
+    full and readable by any project member (tripl-jfm3.94).
+    """
+    from tripl.worker.tasks.alerts_channels import _safe_url_for_error
+
+    slack = "https://hooks.slack.com/services/T00000000/B00000000/abcdef123456SECRET"
+    assert _safe_url_for_error(slack) == "https://hooks.slack.com"
+
+    telegram = "https://api.telegram.org/bot123456:AAH-TOKEN/sendMessage"
+    assert _safe_url_for_error(telegram) == "https://api.telegram.org"
+
+    # Tokens hide in the query string just as often as in the path.
+    webhook = "https://hooks.example.com/ingest?signature=deadbeef"
+    assert _safe_url_for_error(webhook) == "https://hooks.example.com"
+
+    # Nothing parseable: say so rather than echoing whatever was passed.
+    assert _safe_url_for_error("not-a-url") == "the destination URL"
+
 
 @pytest.mark.asyncio
 async def test_alerting_destination_rule_crud_and_secret_masking(client: AsyncClient) -> None:
@@ -2420,6 +2499,74 @@ async def test_alerting_email_destination_crud_and_validation(client: AsyncClien
     body = good_update.json()
     assert body["name"] == "Renamed Email"
     assert body["email_recipients"] == "carol@example.com"
+
+
+def _email_sender_with(refused: object):
+    """``_send_email_message`` bound to a fake SMTP returning ``refused``."""
+    from tripl.worker.tasks.alerts_channels import _send_email_message
+
+    class FakeSMTP:
+        def __init__(self, host: str, port: int, timeout: int = 10) -> None:
+            pass
+
+        def __enter__(self) -> FakeSMTP:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def starttls(self) -> None:
+            pass
+
+        def login(self, username: str, password: str) -> None:
+            pass
+
+        def send_message(self, msg) -> object:  # type: ignore[no-untyped-def]
+            return refused
+
+    def send() -> None:
+        _send_email_message(
+            smtp_cls=FakeSMTP,
+            smtp_host="smtp.example.com",
+            smtp_port=587,
+            smtp_username="",
+            smtp_password="",
+            smtp_use_tls=False,
+            from_address="alerts@example.com",
+            recipients=["alice@example.com", "bob@example.com", "carol@example.com"],
+            subject="Subject",
+            body="Body",
+        )
+
+    return send
+
+
+def test_email_partial_recipient_refusal_is_not_a_successful_send() -> None:
+    """smtplib only raises when EVERY recipient is refused (tripl-jfm3.117).
+
+    The partial-refusal dict used to be discarded, so a mail that reached one of
+    three people was stored and shown as "sent".
+    """
+    send = _email_sender_with(
+        {
+            "bob@example.com": (550, b"No such user"),
+            "carol@example.com": (552, b"Mailbox full"),
+        }
+    )
+
+    with pytest.raises(ValueError, match="refused 2 of 3") as error:
+        send()
+
+    # The Audit view shows this string, so it has to name who missed out.
+    assert "bob@example.com" in str(error.value)
+    assert "carol@example.com" in str(error.value)
+    assert "alice@example.com" not in str(error.value)
+
+
+@pytest.mark.parametrize("refused", [{}, None])
+def test_email_send_succeeds_when_nothing_is_refused(refused: object) -> None:
+    # ``None`` covers SMTP stand-ins whose send_message returns nothing.
+    _email_sender_with(refused)()
 
 
 def test_send_alert_delivery_sends_email(monkeypatch, tmp_path) -> None:

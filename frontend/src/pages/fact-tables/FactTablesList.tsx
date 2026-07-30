@@ -11,6 +11,7 @@ import { Panel } from '@/components/settings/kit'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { formatRelativeTime } from '@/lib/datetime'
 import type { FactTableListItem } from '@/types'
+import { dataSourcesKey } from '@/lib/queryKeys'
 
 const FACT_TABLE_GRID = 'grid grid-cols-[1.7fr_1fr_1fr_84px] items-center gap-3 px-4'
 
@@ -33,7 +34,7 @@ export function FactTablesList({ slug }: { slug?: string }) {
   // returns ids only; data sources are workspace-scoped and small, so a single
   // cached query is cheaper than denormalising names server-side.
   const dataSourcesQuery = useQuery({
-    queryKey: ['data-sources'],
+    queryKey: dataSourcesKey(),
     queryFn: () => dataSourcesApi.list(),
   })
 

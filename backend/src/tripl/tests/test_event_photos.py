@@ -22,6 +22,65 @@ async def _setup_event(client: AsyncClient, slug: str = "ph-proj") -> tuple[str,
     return slug, event_resp.json()["id"]
 
 
+class _StubBlob:
+    def __init__(self, error: Exception | None) -> None:
+        self._error = error
+        self.deleted = False
+
+    def delete(self) -> None:
+        if self._error is not None:
+            raise self._error
+        self.deleted = True
+
+
+class _StubBucket:
+    def __init__(self, blob: _StubBlob) -> None:
+        self._blob = blob
+
+    def blob(self, key: str) -> _StubBlob:
+        del key
+        return self._blob
+
+
+def _gcs_backend_with(blob: _StubBlob) -> object:
+    """A GCSPhotoStorage with only the bucket wired — no google client needed."""
+    from tripl.storage.photo_storage import GCSPhotoStorage
+
+    backend = object.__new__(GCSPhotoStorage)
+    backend._bucket = _StubBucket(blob)  # type: ignore[attr-defined]
+    return backend
+
+
+def test_gcs_delete_treats_a_missing_object_as_done() -> None:
+    from google.api_core import exceptions as gcs_exceptions
+
+    blob = _StubBlob(gcs_exceptions.NotFound("gone"))
+    backend = _gcs_backend_with(blob)
+
+    backend._delete("photos/abc.png")  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        PermissionError("no delete permission"),
+        ConnectionError("network down"),
+        RuntimeError("quota exceeded"),
+    ],
+)
+def test_gcs_delete_reports_a_real_failure(error: Exception) -> None:
+    """A delete that did not happen must not be reported as success (tripl-jfm3.118).
+
+    This was ``suppress(Exception)``, so a permission, network or quota failure
+    left the object fetchable at a stable key while the API answered 204 and the
+    row was removed — the one state where the UI and the bucket disagree.
+    """
+    backend = _gcs_backend_with(_StubBlob(error))
+
+    with pytest.raises(type(error)):
+        backend._delete("photos/abc.png")  # type: ignore[attr-defined]
+
+
 @pytest.mark.asyncio
 async def test_attach_figma_creates_kind_figma_row(client: AsyncClient) -> None:
     slug, event_id = await _setup_event(client)

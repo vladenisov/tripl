@@ -16,12 +16,21 @@ mounted into the FastAPI app.
 
 ## stdio (Claude Code / Claude Desktop)
 
+> **Not on PyPI.** There is no `tripl-mcp` package on the index yet, so a bare
+> `uvx tripl-mcp` will not resolve. Install from git or from a checkout.
+
+From git — no clone needed:
+
 ```json
 {
   "mcpServers": {
     "tripl": {
       "command": "uvx",
-      "args": ["tripl-mcp"],
+      "args": [
+        "--from",
+        "git+https://github.com/vladenisov/tripl.git#subdirectory=mcp-server",
+        "tripl-mcp"
+      ],
       "env": {
         "TRIPL_BASE_URL": "https://tripl.example.com",
         "TRIPL_API_KEY": "tk_r_..."
@@ -31,7 +40,7 @@ mounted into the FastAPI app.
 }
 ```
 
-From a checkout instead of a published package:
+From a local checkout:
 
 ```json
 {

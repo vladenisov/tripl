@@ -22,6 +22,35 @@ EVENT_LIST_FIELDS = (
     "owner_id",
 )
 
+# An event type's own attributes, WITHOUT the embedded field_definitions: a
+# project with 40 event types × 25 fields returns the entire field catalogue on
+# every list call, which is the bulk of the payload and almost never what the
+# caller is after at that point. get_event_type_fields fetches one type's fields
+# on demand (tripl-jfm3.126).
+EVENT_TYPE_LIST_FIELDS = (
+    "id",
+    "name",
+    "display_name",
+    "description",
+    "color",
+    "order",
+)
+
+# What an agent needs to write a valid field value. The contract_* thresholds are
+# a data-quality concern for the scanner, not for composing a payload, and
+# event_type_id repeats the parent.
+FIELD_DEFINITION_FIELDS = (
+    "id",
+    "name",
+    "display_name",
+    "field_type",
+    "is_required",
+    "enum_options",
+    "description",
+    "order",
+    "sensitivity",
+)
+
 SEARCH_RESULT_FIELDS = (
     "entity_type",
     "entity_id",

@@ -658,6 +658,62 @@ async def test_merge_requires_approved_status(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_second_merge_of_the_same_branch_is_rejected(client: AsyncClient) -> None:
+    """Applying an approved branch twice would duplicate every add (tripl-jfm3.113)."""
+    await _seed_plan(client, "merge-twice")
+    branch_id = await _create_branch(client, "merge-twice")
+
+    first = await _approve_and_merge(client, "merge-twice", branch_id)
+    assert first.status_code == 200
+
+    second = await client.post(f"/api/v1/projects/merge-twice/branches/{branch_id}/merge")
+    assert second.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_merge_lock_rereads_status_instead_of_trusting_the_identity_map(
+    client: AsyncClient,
+) -> None:
+    """The status gate must read the ROW, not a cached instance (tripl-jfm3.113).
+
+    This is the half of the double-merge race that a row lock alone does not
+    fix: the loser wakes up holding a `PlanBranch` it loaded before the winner
+    committed. Without ``populate_existing`` the re-check reads the stale
+    ``approved`` off the identity map and applies the branch a second time.
+    """
+    from sqlalchemy import update
+
+    from tripl.models.plan_branch import BranchStatus, PlanBranch
+    from tripl.services.plan_branch_merge_service import _lock_branch_for_merge
+    from tripl.tests.conftest import TestSessionLocal
+
+    await _seed_plan(client, "merge-stale")
+    branch_id = await _create_branch(client, "merge-stale")
+
+    async with TestSessionLocal() as session:
+        cached = await session.get(PlanBranch, uuid.UUID(branch_id))
+        assert cached is not None
+        project_id = cached.project_id
+        assert cached.status != BranchStatus.merged.value
+
+        # Someone else's merge lands. `synchronize_session=False` is what makes
+        # this a faithful stand-in for a concurrent request: the row changes
+        # while THIS session's identity map keeps the value it already read,
+        # exactly as it would if the write came from another connection.
+        await session.execute(
+            update(PlanBranch)
+            .where(PlanBranch.id == uuid.UUID(branch_id))
+            .values(status=BranchStatus.merged.value)
+            .execution_options(synchronize_session=False)
+        )
+        assert cached.status != BranchStatus.merged.value
+
+        locked = await _lock_branch_for_merge(session, project_id, uuid.UUID(branch_id))
+
+        assert locked.status == BranchStatus.merged.value
+
+
+@pytest.mark.asyncio
 async def test_merge_rejects_main_branch(client: AsyncClient) -> None:
     await _seed_plan(client, "merge-main")
     branches = await client.get("/api/v1/projects/merge-main/branches")

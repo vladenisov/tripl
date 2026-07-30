@@ -358,3 +358,163 @@ def test_append_ai_explanation_escapes_for_format():
     text = alerts_task._append_ai_explanation("body", "a<b & c", "telegram_html")
     assert text.startswith("body\n\nAI: ")
     assert "<b" not in text.split("AI: ", 1)[1]
+
+
+# --- alert explanation remembers what it already sent (tripl-ikee) ---
+
+
+def _sync_alert_session(tmp_path):
+    """File-backed SQLite session with just the alerting tables created."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from tripl.models import Base
+
+    engine = create_engine(f"sqlite:///{tmp_path}/alerts.db")
+    Base.metadata.create_all(engine)
+    return sessionmaker(engine, expire_on_commit=False)
+
+
+def _past_delivery(rule_id, scope_ref, *, status, sent_at, said, scope_name="Home Page View"):
+    delivery = AlertDelivery(
+        id=uuid.uuid4(),
+        project_id=uuid.uuid4(),
+        scan_config_id=uuid.uuid4(),
+        destination_id=uuid.uuid4(),
+        rule_id=rule_id,
+        matched_count=1,
+        status=status,
+        channel="slack",
+        sent_at=sent_at,
+        payload_snapshot={"ai_explanation": said} if said else {},
+    )
+    delivery.items = [
+        AlertDeliveryItem(
+            id=uuid.uuid4(),
+            scope_type="event",
+            scope_ref=scope_ref,
+            scope_name=scope_name,
+            bucket=datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
+            direction="drop",
+            actual_count=20,
+            expected_count=100,
+            absolute_delta=-80,
+            percent_delta=-80.0,
+        )
+    ]
+    return delivery
+
+
+def test_recent_alert_history_recalls_only_what_was_really_sent(tmp_path):
+    """The prompt must not claim to have told the reader something it never sent."""
+    from tripl.worker.tasks import alerts_messages
+
+    factory = _sync_alert_session(tmp_path)
+    current = _delivery_with_item()
+    scope_ref = current.items[0].scope_ref
+    now = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
+
+    with factory() as session:
+        session.add_all(
+            [
+                _past_delivery(
+                    current.rule_id,
+                    scope_ref,
+                    status="sent",
+                    sent_at=datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
+                    said="Checkout dropped after the 4.2 rollout.",
+                ),
+                # Never reached anyone, so recalling it would be a lie.
+                _past_delivery(
+                    current.rule_id,
+                    scope_ref,
+                    status="failed",
+                    sent_at=datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
+                    said="This one never went out.",
+                ),
+                # A different event under the same rule is not this event's history.
+                _past_delivery(
+                    current.rule_id,
+                    str(uuid.uuid4()),
+                    status="sent",
+                    sent_at=datetime(2026, 6, 10, 11, 0, tzinfo=UTC),
+                    said="Unrelated scope.",
+                    scope_name="Other Event",
+                ),
+                # Older than the window.
+                _past_delivery(
+                    current.rule_id,
+                    scope_ref,
+                    status="sent",
+                    sent_at=datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+                    said="Ancient history.",
+                ),
+            ]
+        )
+        session.commit()
+
+        lines = alerts_messages._recent_alert_history(session, current, now=now)
+
+    joined = "\n".join(lines)
+    assert len(lines) == 1, joined
+    assert "Checkout dropped after the 4.2 rollout." in joined
+    assert "3h ago" in joined
+    assert "This one never went out." not in joined
+    assert "Unrelated scope." not in joined
+    assert "Ancient history." not in joined
+
+
+def test_build_ai_explanation_tells_the_model_what_it_already_said(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Same signal, second alert: the prompt carries the earlier note (tripl-ikee)."""
+    from tripl.worker.tasks import alerts_messages
+
+    delivery = _delivery_with_item()
+    captured: dict[str, str] = {}
+
+    def fake_complete(system_prompt: str, user_prompt: str, **kwargs: object) -> str:
+        captured["user_prompt"] = user_prompt
+        return "Still falling, now 90% below expected."
+
+    monkeypatch.setattr("tripl.services.llm_service.is_enabled", lambda: True)
+    monkeypatch.setattr("tripl.services.llm_service.complete", fake_complete)
+    monkeypatch.setattr(
+        alerts_messages,
+        "_recent_alert_history",
+        lambda session, d, *, now: ['- 3h ago. You already told them: "Dropped after 4.2."'],
+    )
+
+    result = alerts_task._build_ai_explanation(
+        delivery,
+        scan_name="main",
+        project_name="AI",
+        item_context_cache={},
+        session=object(),
+    )
+
+    assert result == "Still falling, now 90% below expected."
+    prompt = captured["user_prompt"]
+    assert "Dropped after 4.2." in prompt
+    assert "do not repeat what the reader already read" in prompt
+
+
+def test_build_ai_explanation_without_a_session_is_unchanged(monkeypatch: pytest.MonkeyPatch):
+    """A first-ever alert has no history block to carry."""
+    delivery = _delivery_with_item()
+    captured: dict[str, str] = {}
+
+    def fake_complete(system_prompt: str, user_prompt: str, **kwargs: object) -> str:
+        captured["user_prompt"] = user_prompt
+        return "First time."
+
+    monkeypatch.setattr("tripl.services.llm_service.is_enabled", lambda: True)
+    monkeypatch.setattr("tripl.services.llm_service.complete", fake_complete)
+
+    assert (
+        alerts_task._build_ai_explanation(
+            delivery, scan_name="main", project_name="AI", item_context_cache={}
+        )
+        == "First time."
+    )
+    assert "Previously sent" not in captured["user_prompt"]

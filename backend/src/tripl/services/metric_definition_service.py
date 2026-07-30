@@ -438,6 +438,41 @@ async def _verify_fact_metric(
     )
 
 
+async def count_active_metric_definitions(
+    session: AsyncSession,
+    slug: str,
+    *,
+    kind: MetricKind | None = None,
+    search: str | None = None,
+) -> int:
+    """How many metrics in this project are active, server-side.
+
+    The catalog KPI strip pairs it with the server-side total. "Active" used to
+    be counted off the LOADED page, so past the page limit the two stats sat on
+    different bases and the strip contradicted itself (tripl-jfm3.109).
+
+    Deliberately ignores the ``status`` filter — the stat answers "how many of my
+    metrics are active", which must not change when you filter the list BY
+    status — while honouring kind/search so it matches the population on screen.
+    """
+    project_id = await get_project_id_by_slug(session, slug)
+    query = select(func.count(MetricDefinition.id)).where(
+        MetricDefinition.project_id == project_id,
+        MetricDefinition.status == MetricStatus.active,
+    )
+    if kind:
+        query = query.where(MetricDefinition.kind == kind)
+    if search:
+        pattern = f"%{search.strip()}%"
+        query = query.where(
+            or_(
+                MetricDefinition.name.ilike(pattern),
+                MetricDefinition.display_name.ilike(pattern),
+            )
+        )
+    return int((await session.execute(query)).scalar() or 0)
+
+
 async def list_metric_definitions(
     session: AsyncSession,
     slug: str,

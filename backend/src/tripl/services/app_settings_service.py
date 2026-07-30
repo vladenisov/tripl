@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass, fields
 from typing import Any, Literal
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
@@ -445,15 +446,81 @@ def apply_startup_service_overrides(session: Session | None = None) -> list[str]
         return []
 
     applied: list[str] = []
+    previous: dict[str, Any] = {}
     for field in STARTUP_APPLIED_FIELDS:
         value = overrides.get(field)
         if value is None or not hasattr(settings, field):
             continue
+        previous[field] = getattr(settings, field)
         setattr(settings, field, value)
         applied.append(field)
+
+    # A stored override must never be the reason the process cannot boot.
+    #
+    # These fields land on ``settings`` here and ``assert_production_ready`` runs
+    # a few lines later in main.py. Unticking "Secure cookie" (or setting CORS to
+    # "*") under Settings -> Instance -> Security therefore bricked the instance
+    # on the NEXT restart — and because the UI that set it lives in the process
+    # that now refuses to start, the only way out was hand-editing app_settings
+    # in Postgres (tripl-jfm3.93). Falling back to env-only config keeps the
+    # instance reachable so the operator can undo the change where they made it.
+    if applied and not settings.debug:
+        with_overrides = settings.production_problems()
+        if with_overrides:
+            # Compare against env-only config: a deployment that was already
+            # unready must still fail on its own merits, with the operator's
+            # intended settings in place. Only roll back what the OVERRIDES break.
+            for field, value in previous.items():
+                setattr(settings, field, value)
+            introduced = [p for p in with_overrides if p not in settings.production_problems()]
+            if not introduced:
+                for field in applied:
+                    setattr(settings, field, overrides[field])
+            else:
+                logger.error(
+                    "Ignoring %d stored service override(s) — applying them would stop "
+                    "this process from starting. Falling back to environment "
+                    "configuration; correct or clear them under Settings -> Instance. "
+                    "Fields: %s. Problems: %s",
+                    len(applied),
+                    ", ".join(sorted(applied)),
+                    "; ".join(introduced),
+                )
+                return []
+
     if applied:
         logger.info("Applied %d service override(s) onto settings at startup", len(applied))
     return applied
+
+
+def _reject_startup_breaking_overrides(overrides: dict[str, Any]) -> None:
+    """Refuse a security override that would stop the next boot (tripl-jfm3.93).
+
+    ``apply_startup_service_overrides`` now ignores such a value rather than
+    letting it brick the instance, but silently dropping what the operator just
+    saved is its own kind of lie. Rejecting at save time is the honest half:
+    they find out while they are still looking at the form.
+    """
+    if settings.debug:
+        return
+    candidate = settings.model_copy(
+        update={
+            field: overrides[field]
+            for field in STARTUP_APPLIED_FIELDS
+            if overrides.get(field) is not None
+        }
+    )
+    # Only what THIS change breaks. A deployment that is already missing, say,
+    # SECRET_KEY must not have every unrelated settings save rejected on top.
+    introduced = [
+        p for p in candidate.production_problems() if p not in settings.production_problems()
+    ]
+    if introduced:
+        raise HTTPException(
+            status_code=422,
+            detail="These settings would stop the app from starting:\n  - "
+            + "\n  - ".join(introduced),
+        )
 
 
 async def update_service_overrides(
@@ -472,6 +539,8 @@ async def update_service_overrides(
             overrides.pop(key, None)
             continue
         overrides[key] = crypto.encrypt_value(str(value)) if key in SECRET_FIELDS else value
+
+    _reject_startup_breaking_overrides(overrides)
 
     if row is None:
         row = AppSetting(key=SERVICE_SETTINGS_KEY, value=overrides)

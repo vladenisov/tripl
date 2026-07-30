@@ -4,6 +4,7 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+from tripl.core.adapters.measure_validator import SqlDialect
 from tripl.models.fact_table import FactTable
 from tripl.schemas.fact_table import FactTableRowFilter, FactTableUpdate
 from tripl.schemas.metric_definition import FactCondition, FactMetricDefinition, FactOperand
@@ -18,6 +19,7 @@ from tripl.services.metric_preview_service import (
     _ensure_generated_sql_query_capacity,
     _ensure_saved_fact_filter_input_budget,
 )
+from tripl.worker.tasks.metrics.metric_collect import _resolve_condition_fragment
 
 
 @pytest.mark.parametrize(
@@ -66,6 +68,52 @@ def test_string_condition_keeps_numeric_value_as_text() -> None:
     condition = FactCondition(column="external_id", operator="eq", value=123)
 
     _validate_fact_condition_type(condition, column_type="string", role="single")
+
+
+@pytest.mark.parametrize(
+    ("dialect", "expected"),
+    [
+        # PostgreSQL leaves backslashes alone in a literal
+        # (standard_conforming_strings), so the escape reaches LIKE as written.
+        (SqlDialect.postgres, "'%100\\%%'"),
+        # ClickHouse and BigQuery consume one backslash level when parsing the
+        # literal, so the quoter doubles it — both engines still see `\%`.
+        (SqlDialect.clickhouse, "'%100\\\\%%'"),
+        (SqlDialect.bigquery, "'%100\\\\%%'"),
+    ],
+)
+def test_contains_escapes_like_wildcards(dialect: SqlDialect, expected: str) -> None:
+    """`contains "100%"` must not match everything starting with 100 (tripl-jfm3.111)."""
+    condition = FactCondition(column="plan", operator="contains", value="100%")
+
+    sql = _resolve_condition_fragment(condition, dialect=dialect)
+
+    assert sql.endswith(f"LIKE {expected}"), sql
+
+
+def test_contains_escapes_single_character_wildcard_and_the_escape_itself() -> None:
+    underscore = _resolve_condition_fragment(
+        FactCondition(column="plan", operator="contains", value="a_b"),
+        dialect=SqlDialect.postgres,
+    )
+    assert underscore.endswith("LIKE '%a\\_b%'"), underscore
+
+    # A literal backslash is doubled FIRST, so it cannot escape the escape.
+    backslash = _resolve_condition_fragment(
+        FactCondition(column="plan", operator="contains", value="a\\b"),
+        dialect=SqlDialect.postgres,
+    )
+    assert backslash.endswith("LIKE '%a\\\\b%'"), backslash
+
+
+@pytest.mark.parametrize("operator", ["like", "not_like"])
+def test_like_keeps_the_users_wildcards(operator: str) -> None:
+    """`like` is the operator where the pattern IS the point — never escaped."""
+    condition = FactCondition(column="plan", operator=operator, value="pro_%")
+
+    sql = _resolve_condition_fragment(condition, dialect=SqlDialect.postgres)
+
+    assert sql.endswith("'pro_%'"), sql
 
 
 @pytest.mark.parametrize(

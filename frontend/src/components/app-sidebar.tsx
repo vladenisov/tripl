@@ -166,8 +166,15 @@ export function AppSidebar() {
   usePersistLastSlug(slug)
 
   const project = slug ? projects.find((p) => p.slug === slug) : undefined
+  // Owner-only items are dropped rather than shown-and-denied: the routes behind
+  // them 403 for everyone else, and a nav entry that always fails reads as a
+  // broken app rather than a permission boundary (tripl-jfm3.110).
+  const isOwner = auth.user?.role === 'owner'
   const navGroups: NavGroup[] = slug
-    ? buildNavGroups(slug, project?.summary)
+    ? buildNavGroups(slug, project?.summary).map((group) => ({
+        ...group,
+        items: group.items.filter((item) => !item.ownerOnly || isOwner),
+      }))
     : [WORKSPACE_NAV_GROUP]
   const eventTypesQuery = useQuery({
     queryKey: ['eventTypes', slug, branchId],

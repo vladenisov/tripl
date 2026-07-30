@@ -302,6 +302,7 @@ function ConfigPanel({ monitor }: { monitor: MonitorDetail }) {
     monitor.include_distribution_drifts ? 'Distribution drifts' : null,
     monitor.include_release_regressions ? 'Release regressions' : null,
     monitor.include_variable_value_drifts ? 'Value drifts' : null,
+    monitor.include_metrics ? 'Metrics' : null,
   ].filter((scope): scope is string => scope !== null)
 
   return (

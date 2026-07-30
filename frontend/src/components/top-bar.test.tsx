@@ -106,17 +106,34 @@ function mockDelivery(overrides: DeliveryOverrides = {}) {
   }
 }
 
+/** The bell asks for the EXPANDED list; a collapsed URL would be the bug. */
+const SIGNALS_URL = '/api/v1/projects/demo/anomalies/signals?expanded=true'
+
 function mockNotificationsFetch(signals: unknown[], deliveries: unknown[]) {
+  const calls: string[] = []
   vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
     const url = String(input)
-    if (url.endsWith('/api/v1/projects/demo/anomalies/signals')) {
+    calls.push(url)
+    if (url.endsWith(SIGNALS_URL)) {
       return mockJsonResponse(signals)
     }
     if (url.endsWith('/api/v1/projects/demo/alert-deliveries?limit=5')) {
       return mockJsonResponse({ items: deliveries, total: deliveries.length })
     }
+    // Name lookups the open bell makes so its rows read as names, not uuids
+    // (tripl-9tyr). Keyed the same way EventsPage / Overview key theirs.
+    if (/\/api\/v1\/projects\/demo\/event-types(\?|$)/.test(url)) {
+      return mockJsonResponse([{ id: 'type-123', display_name: 'Page View' }])
+    }
+    if (/\/api\/v1\/projects\/demo\/events\/[^/?]+/.test(url)) {
+      return mockJsonResponse({ id: 'event-9', name: 'checkout_started' })
+    }
+    if (url.includes('/metrics-catalog')) {
+      return mockJsonResponse({ items: [{ id: 'metric-7', display_name: 'Checkout conversion' }] })
+    }
     throw new Error(`Unhandled fetch: ${url}`)
   })
+  return calls
 }
 
 describe('TopBar notifications', () => {
@@ -128,11 +145,31 @@ describe('TopBar notifications', () => {
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
 
     await waitFor(() => {
-      expect(screen.getByText('Spike on event type type-123')).toBeInTheDocument()
+      expect(screen.getByText('Spike on Event type type-123')).toBeInTheDocument()
     })
     expect(screen.getByText('Active Signals')).toBeInTheDocument()
     expect(screen.getByText('Recent Alert Deliveries')).toBeInTheDocument()
     expect(screen.getByText('Spike alerts')).toBeInTheDocument()
+  })
+
+  it('names non-event scopes for what they are (tripl-jfm3.120)', async () => {
+    // The bell's own label function fell through to `event ${ref}`, so once it
+    // started reading the expanded list (tripl-jfm3.89) every metric and drift
+    // signal was announced as an event.
+    mockNotificationsFetch(
+      [
+        { ...mockSignal(), scope_type: 'metric', scope_ref: 'm1234567-aaaa-bbbb-cccc-dddddddddddd' },
+      ],
+      [],
+    )
+
+    renderTopBar()
+    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Spike on Metric m1234567')).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/on Event m1234567/)).toBeNull()
   })
 
   it('labels a drop-to-zero signal as "dropped to zero" instead of the clamped z-score', async () => {
@@ -146,7 +183,7 @@ describe('TopBar notifications', () => {
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
 
     await waitFor(() => {
-      expect(screen.getByText('Drop on event type type-123')).toBeInTheDocument()
+      expect(screen.getByText('Drop on Event type type-123')).toBeInTheDocument()
     })
     // The zeroed drop reads "dropped to zero"; the repeated clamped z is hidden.
     expect(screen.getByText(/dropped to zero/)).toBeInTheDocument()
@@ -162,7 +199,7 @@ describe('TopBar notifications', () => {
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
 
     await waitFor(() => {
-      expect(screen.getByText('Spike on event type type-123')).toBeInTheDocument()
+      expect(screen.getByText('Spike on Event type type-123')).toBeInTheDocument()
     })
     // Header reads 1 active (signals.length), not 2 (signals + delivery).
     expect(screen.getByText('1 active')).toBeInTheDocument()
@@ -189,6 +226,45 @@ describe('TopBar notifications', () => {
     // No "active" indicator at all — header span and bell badge are both hidden.
     expect(screen.queryByText(/\d+ active/)).toBeNull()
     expect(screen.getByRole('button', { name: 'Notifications' })).toBeInTheDocument()
+  })
+
+  it('counts event-scope signals, which the collapsed endpoint would have dropped', async () => {
+    // tripl-jfm3.89: the bell used the collapsed variant (project_total +
+    // event_type only). On prod windy-ios every open signal was event-scope, so
+    // an incident with no parent to roll into vanished and the bell read clean
+    // while the sidebar and the Anomalies page both showed 30.
+    mockNotificationsFetch(
+      [
+        { ...mockSignal(), scope_type: 'event', scope_ref: 'event-aaaaaaaa', event_id: 'event-aaaaaaaa' },
+        { ...mockSignal(), scope_type: 'event', scope_ref: 'event-bbbbbbbb', event_id: 'event-bbbbbbbb' },
+      ],
+      [],
+    )
+
+    renderTopBar()
+
+    expect(
+      await screen.findByRole('button', { name: 'Notifications — 2 active' }),
+    ).toBeInTheDocument()
+  })
+
+  it('applies the shared Significant gate, so the bell equals the sidebar badge', async () => {
+    // The sidebar's monitoring_signal_count only counts signals whose relative
+    // effect clears 0.5. Counting the raw list here would put a bigger number on
+    // the bell than on every other surface — the same disagreement, inverted.
+    mockNotificationsFetch(
+      [
+        { ...mockSignal(), actual_count: 100, expected_count: 20 }, // rel 4.0 → counts
+        { ...mockSignal(), scope_ref: 'type-87654321', actual_count: 105, expected_count: 100 }, // rel 0.05 → below
+      ],
+      [],
+    )
+
+    renderTopBar()
+
+    expect(
+      await screen.findByRole('button', { name: 'Notifications — 1 active' }),
+    ).toBeInTheDocument()
   })
 
   it('surfaces a failed-delivery count badge distinct from the active count', async () => {
@@ -228,7 +304,7 @@ describe('TopBar notifications', () => {
   it('retries a failed delivery from the notifications menu', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
-      if (url.endsWith('/api/v1/projects/demo/anomalies/signals')) {
+      if (url.endsWith(SIGNALS_URL)) {
         return mockJsonResponse([])
       }
       if (url.endsWith('/api/v1/projects/demo/alert-deliveries?limit=5')) {
@@ -253,5 +329,46 @@ describe('TopBar notifications', () => {
         expect.objectContaining({ method: 'POST' }),
       )
     })
+  })
+})
+
+describe('TopBar notifications — scope names (tripl-9tyr)', () => {
+  it('shows the display name instead of a uuid once the bell is open', async () => {
+    // The bell used to read "Spike on Event type type-123" while the Overview
+    // panel below it read "Event type · Page View" for the very same signal.
+    mockNotificationsFetch([{ ...mockSignal(), scope_ref: 'type-123' }], [])
+
+    renderTopBar()
+    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
+
+    expect(await screen.findByText('Spike on Event type · Page View')).toBeInTheDocument()
+    expect(screen.queryByText(/Spike on Event type type-123/)).toBeNull()
+  })
+
+  it('falls back to the short ref when the name never arrives', async () => {
+    // A deleted entity, or a lookup still in flight: the row must still render.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith(SIGNALS_URL)) return mockJsonResponse([{ ...mockSignal(), scope_ref: 'type-123' }])
+      if (url.includes('/alert-deliveries')) return mockJsonResponse({ items: [], total: 0 })
+      return mockJsonResponse([])
+    })
+
+    renderTopBar()
+    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
+
+    expect(await screen.findByText('Spike on Event type type-123')).toBeInTheDocument()
+  })
+
+  it('fetches no name catalogs while the bell is closed', async () => {
+    const calls = mockNotificationsFetch([{ ...mockSignal(), scope_ref: 'type-123' }], [])
+
+    renderTopBar()
+    await screen.findByRole('button', { name: /Notifications/ })
+    await new Promise(r => setTimeout(r, 50))
+
+    // A closed bell must not make every route in the app pay for the name
+    // catalogs — that trade is why it showed uuids in the first place.
+    expect(calls.filter(u => /\/event-types|\/metrics-catalog/.test(u))).toEqual([])
   })
 })

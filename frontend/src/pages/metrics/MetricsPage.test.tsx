@@ -133,8 +133,13 @@ function makeFactTable(overrides: Partial<FactTableListItem>): FactTableListItem
   }
 }
 
-function mockList(body: MetricDefinitionListResponse) {
-  vi.mocked(metricsCatalogApi.list).mockResolvedValue(body)
+// active_total is server-side (tripl-jfm3.109); default it so every existing
+// fixture keeps expressing only what its own assertion is about.
+function mockList(body: Omit<MetricDefinitionListResponse, 'active_total'> & { active_total?: number }) {
+  vi.mocked(metricsCatalogApi.list).mockResolvedValue({
+    active_total: body.items.filter(m => m.status === 'active').length,
+    ...body,
+  })
 }
 
 function mockFactTables(body: FactTableListResponse) {
@@ -603,6 +608,7 @@ describe('MetricsPage', () => {
           makeItem({ id: 'm-quiet', name: 'quiet', display_name: 'Quiet metric', latest_signal: null }),
         ],
         total: 2,
+        active_total: 2,
       }
     }
 

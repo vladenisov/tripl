@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TypeGuard, cast
@@ -122,7 +122,43 @@ MANUAL_COLLECT_MAX_WINDOW = timedelta(days=30)
 
 # Per-query row ceiling; one row per bucket (no breakdown) or per
 # (bucket, breakdown_value), so this comfortably bounds a normal window.
+#
+# Every call site asks for ``METRIC_QUERY_ROW_LIMIT + 1`` and runs the result
+# through ``_reject_truncated_rows``. Asking for exactly the limit cannot tell a
+# window that happens to have 100,000 rows from one the warehouse cut short, and
+# the difference is not cosmetic here: collection WINDOW-DELETEs the chunk before
+# UPSERTing, so a truncated read deletes rows it will never write back. The tail
+# of the window is silently erased and the metric reads as a clean series with a
+# hole in it (tripl-jfm3.112).
 METRIC_QUERY_ROW_LIMIT = 100_000
+
+
+def _reject_truncated_rows[RowT](
+    rows: Sequence[RowT],
+    *,
+    what: str,
+    chunk_from: datetime | None = None,
+    chunk_to: datetime | None = None,
+) -> list[RowT]:
+    """Fail the chunk rather than write a partial one, and trim the probe row.
+
+    Mirrors the event-metrics path (``chunk_processing.py``): the caller asked
+    for one row more than the ceiling, so ``> limit`` means the warehouse had
+    more to give. Raising is the point — the alternative is a window-delete
+    followed by a short re-insert, which loses the tail with no error anywhere.
+    """
+    if len(rows) > METRIC_QUERY_ROW_LIMIT:
+        window = ""
+        if chunk_from is not None and chunk_to is not None:
+            window = f" for chunk {chunk_from.isoformat()}..{chunk_to.isoformat()}"
+        msg = (
+            f"{what} reached the metric query row limit ({METRIC_QUERY_ROW_LIMIT})"
+            f"{window}; narrow the metric's breakdown or use a shorter replay chunk "
+            "interval — collecting it would overwrite the window with partial data"
+        )
+        raise ValueError(msg)
+    return list(rows)
+
 
 # Default value column a ``sql`` metric must project (alias the measure
 # ``AS value``); override per metric with config ``value_column``. The time
@@ -560,6 +596,27 @@ def _condition_text(value: object, dialect: SqlDialect) -> str:
     return text
 
 
+def _escape_like_wildcards(text: str) -> str:
+    """Neutralise ``%`` and ``_`` so ``contains`` means *contains* (tripl-jfm3.111).
+
+    ``contains`` is a substring test in the UI, but it compiled to a bare
+    ``LIKE '%value%'``, so a value holding a wildcard silently widened the match:
+    ``contains "100%"`` matched every row starting ``100``, and ``contains "a_b"``
+    matched ``axb``. Nothing raised — the metric was simply computed over the
+    wrong rows. ``like`` / ``not_like`` deliberately do NOT come through here:
+    there the pattern is the point.
+
+    The escape character is a backslash and no ``ESCAPE`` clause is emitted,
+    because all three dialects converge on it once their own literal quoting has
+    run: ``quote_sql_string_literal`` doubles backslashes for ClickHouse and
+    BigQuery and leaves them alone for PostgreSQL (``standard_conforming_strings``),
+    so a pattern of ``\\%`` here reaches every engine as the value ``\\%`` — an
+    escaped percent, which is LIKE's default reading in all three. Backslash is
+    doubled FIRST so a value containing one cannot escape the escape.
+    """
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _condition_list_literals(
     value: object,
     *,
@@ -673,7 +730,11 @@ def _resolve_condition_fragment(
             msg = f"fact operand condition {operator!r} requires a value"
             raise ScanError(msg)
         text = _condition_text(value, dialect)
-        pattern = f"%{text}%" if operator in {"contains", "not_contains"} else text
+        pattern = (
+            f"%{_escape_like_wildcards(text)}%"
+            if operator in {"contains", "not_contains"}
+            else text
+        )
         keyword = "NOT LIKE" if operator in {"not_like", "not_contains"} else "LIKE"
         try:
             literal = quote_sql_string_literal(pattern, dialect)
@@ -845,7 +906,13 @@ def _aggregate_fact_window(
         None,
         chunk_from,
         chunk_to,
-        limit=METRIC_QUERY_ROW_LIMIT,
+        limit=METRIC_QUERY_ROW_LIMIT + 1,
+    )
+    rows = _reject_truncated_rows(
+        rows,
+        what="Fact metric aggregate",
+        chunk_from=chunk_from,
+        chunk_to=chunk_to,
     )
     values = {_coerce_bucket(row[0], interval_code): _coerce_value(row[-1]) for row in rows}
     return values, base_query, measure
@@ -952,7 +1019,13 @@ def _collect_fact_breakdown_rows(
             chunk_from,
             chunk_to,
             values_limit=definition.breakdown_values_limit,
-            limit=METRIC_QUERY_ROW_LIMIT,
+            limit=METRIC_QUERY_ROW_LIMIT + 1,
+        )
+        rows = _reject_truncated_rows(
+            rows,
+            what=f"Fact metric breakdown {column!r}",
+            chunk_from=chunk_from,
+            chunk_to=chunk_to,
         )
         for row in rows:
             rows_out.append(
@@ -1032,7 +1105,13 @@ def _collect_fact_ratio_breakdown_rows(
             chunk_from,
             chunk_to,
             values_limit=definition.breakdown_values_limit,
-            limit=METRIC_QUERY_ROW_LIMIT,
+            limit=METRIC_QUERY_ROW_LIMIT + 1,
+        )
+        rows = _reject_truncated_rows(
+            rows,
+            what=f"Ratio metric breakdown {column!r}",
+            chunk_from=chunk_from,
+            chunk_to=chunk_to,
         )
         index_by_name = {name: index for index, name in enumerate(col_names)}
         _append_ratio_breakdown_rows(
@@ -2087,7 +2166,13 @@ def _run_fact_interval_group(
                         registry.specs,
                         chunk_from,
                         chunk_to,
-                        limit=METRIC_QUERY_ROW_LIMIT,
+                        limit=METRIC_QUERY_ROW_LIMIT + 1,
+                    )
+                    rows = _reject_truncated_rows(
+                        rows,
+                        what=f"Batched fact aggregate for fact table {fact_table_id}",
+                        chunk_from=chunk_from,
+                        chunk_to=chunk_to,
                     )
                     _merge_multi_aggregate(
                         results.setdefault(fact_table_id, {}),
@@ -2116,7 +2201,13 @@ def _run_fact_interval_group(
                         chunk_from,
                         chunk_to,
                         values_limit=values_limit,
-                        limit=METRIC_QUERY_ROW_LIMIT,
+                        limit=METRIC_QUERY_ROW_LIMIT + 1,
+                    )
+                    rows = _reject_truncated_rows(
+                        rows,
+                        what=f"Batched fact breakdown {column!r}",
+                        chunk_from=chunk_from,
+                        chunk_to=chunk_to,
                     )
                     index_by_name = {name: index for index, name in enumerate(col_names)}
                     existing = breakdown_results.get(scan_key)
@@ -2259,10 +2350,16 @@ def _collect_sql(
         for chunk_from, chunk_to in chunks:
             column_names, rows = adapter.get_preview_rows(
                 safe_sql,
-                limit=METRIC_QUERY_ROW_LIMIT,
+                limit=METRIC_QUERY_ROW_LIMIT + 1,
                 time_column=time_column,
                 time_from=chunk_from,
                 time_to=chunk_to,
+            )
+            rows = _reject_truncated_rows(
+                rows,
+                what="SQL metric query",
+                chunk_from=chunk_from,
+                chunk_to=chunk_to,
             )
             index_by_name = {name: i for i, name in enumerate(column_names)}
             if value_column not in index_by_name or time_column not in index_by_name:
@@ -2343,10 +2440,16 @@ def _collect_distinct_user_series(
             None,
             time_from,
             time_to,
-            limit=METRIC_QUERY_ROW_LIMIT,
+            limit=METRIC_QUERY_ROW_LIMIT + 1,
         )
     finally:
         adapter.close()
+    rows = _reject_truncated_rows(
+        rows,
+        what="Distinct-user denominator query",
+        chunk_from=time_from,
+        chunk_to=time_to,
+    )
     # Launder the bucket cell exactly like every sibling collection path does
     # (_aggregate_fact_window, _index_multi_aggregate). A bare cast() was a lie: the
     # adapters disagree on tz-awareness — ClickHouse hands back a NAIVE datetime while

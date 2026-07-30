@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol
@@ -90,6 +90,7 @@ class _GenerateEventsFn(Protocol):
         time_column: str | None = None,
         event_name_format: str | None = None,
         event_group_rules: Sequence[Mapping[str, object]] | None = None,
+        reserved_columns: Collection[str] | None = None,
         max_events: int = 10000,
     ) -> GenerationResult: ...
 
@@ -225,6 +226,10 @@ def sync_catalog(
                 time_column=config.time_column,
                 event_name_format=config.event_name_format,
                 event_group_rules=config.event_group_rules,
+                # The same set that kept these columns from getting a
+                # FieldDefinition above, so the generator does not then report
+                # their absence as a plan gap (tripl-jfm3.90).
+                reserved_columns=skip_cols,
             )
             out.gen_results[et_name] = result
             logger.info(
@@ -289,6 +294,7 @@ def sync_catalog(
             time_column=config.time_column,
             event_name_format=config.event_name_format,
             event_group_rules=config.event_group_rules,
+            reserved_columns=skip_cols,
         )
         logger.info(
             f"Single scan: {out.single_result.events_created} created, "

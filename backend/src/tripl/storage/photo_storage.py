@@ -138,11 +138,22 @@ class GCSPhotoStorage(PhotoStorage):
         await asyncio.to_thread(self._delete, key)
 
     def _delete(self, key: str) -> None:
+        # Local import for the same reason as the client above: google-* is only
+        # installed when this backend is active.
+        from google.api_core import exceptions as gcs_exceptions
+
         blob = self._bucket.blob(key)
-        # ``ignore`` is not available on every client version — swallow the
-        # NotFound explicitly so deleting an already-missing object is a no-op.
-        with contextlib.suppress(Exception):
+        try:
             blob.delete()
+        except gcs_exceptions.NotFound:
+            # Already gone is the end state the caller wanted, so this is a no-op
+            # (``ignore=`` is not available on every client version). Everything
+            # else — permission, network, quota — must propagate: this used to
+            # be ``suppress(Exception)``, so a delete that failed still reported
+            # success while the object stayed fetchable at a stable key
+            # (tripl-jfm3.118). The local backend narrows to FileNotFoundError
+            # for the same reason.
+            return
 
     async def read(self, key: str) -> bytes:
         # The GCS backend does not stream through our API by default — the

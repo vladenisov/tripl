@@ -1,17 +1,17 @@
 import { useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQueries, useQuery } from '@tanstack/react-query'
 
 import { metricsApi } from '@/api/metrics'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { EventListItem } from '@/types'
 
-import { EMPTY_SIGNALS, mapLatestSignals, pickLatestSignal } from './utils'
+import { EMPTY_SIGNALS, chunkEventIds, mapLatestSignals, pickLatestSignal } from './utils'
 
 /**
  * Fetches monitoring signals for the project tabs and per-row events, and
- * derives the lookup maps the host page needs. Two queries instead of one
- * because the per-row query is keyed by the *currently visible* event ids
- * (sorted/stringified to keep the cache key stable across refetches).
+ * derives the lookup maps the host page needs. Two shapes instead of one
+ * because the per-row signals are keyed by the event ids they cover, bucketed
+ * so an infinite-scroll append does not re-key (and re-send) the whole list.
  */
 export function useEventsSignals({
   slug,
@@ -24,12 +24,6 @@ export function useEventsSignals({
     () => rawEvents.map(event => event.id),
     [rawEvents],
   )
-  // queryKey wants a stable scalar — a fresh array reference on every refetch
-  // would mint a new cache entry per refetch and refetch in a loop.
-  const eventIdsForSignalsKey = useMemo(
-    () => [...eventIdsForSignals].sort().join(','),
-    [eventIdsForSignals],
-  )
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   const tabSignalsQuery = useQuery({
@@ -40,13 +34,27 @@ export function useEventsSignals({
   })
   const tabSignals = tabSignalsQuery.data ?? EMPTY_SIGNALS
 
-  const rowSignalsQuery = useQuery({
-    queryKey: ['activeSignals', slug, 'rows', eventIdsForSignalsKey],
-    queryFn: () => metricsApi.getActiveSignals(slug!, eventIdsForSignals),
-    enabled: !!slug && eventIdsForSignals.length > 0,
-    refetchInterval,
+  // Bucketed for the same reason the window-metrics query next door is
+  // (tripl-jfm3.51): keying on the whole accumulated id list minted a fresh
+  // cache entry on every infinite-scroll append and re-sent every id already
+  // loaded, so page 12 posted 2,400 ids to learn about the 200 that were new
+  // (tripl-jfm3.121). Index-aligned buckets keep each loaded bucket's key
+  // stable, so an append fetches one bucket.
+  const eventIdBuckets = useMemo(
+    () => chunkEventIds(eventIdsForSignals),
+    [eventIdsForSignals],
+  )
+  const rowSignals = useQueries({
+    queries: eventIdBuckets.map(bucketIds => ({
+      queryKey: ['activeSignals', slug, 'rows', bucketIds.join(',')],
+      queryFn: () => metricsApi.getActiveSignals(slug!, bucketIds),
+      enabled: !!slug && bucketIds.length > 0,
+      refetchInterval,
+    })),
+    // Structural sharing keeps this array stable while the data is unchanged,
+    // so the downstream map memo does not rebuild on every render.
+    combine: results => results.flatMap(result => result.data ?? EMPTY_SIGNALS),
   })
-  const rowSignals = rowSignalsQuery.data ?? EMPTY_SIGNALS
 
   const projectTotalSignal = useMemo(
     () => pickLatestSignal(tabSignals, 'project_total'),

@@ -34,6 +34,10 @@ export type NavItem = {
   match: (path: string) => boolean
   count?: string
   tone?: NavTone
+  // Hidden from non-owners by the sidebar. This mirrors a real 403 on the
+  // route behind it — it is a "don't walk them into a wall" affordance, never
+  // the gate itself (see settings/nav.ts for the same flag on that side).
+  ownerOnly?: boolean
 }
 
 export type NavGroup = { label: string; items: NavItem[] }
@@ -221,6 +225,9 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           icon: ScrollText,
           href: `${base}/settings/audit`,
           match: (p) => p.startsWith(`${base}/settings/audit`),
+          // The feed behind this is instance-wide, not project-scoped
+          // (tripl-jfm3.110).
+          ownerOnly: true,
         },
       ],
     },

@@ -7,6 +7,18 @@ sidebar_position: 5
 
 This page explains *why* a particular time bucket gets flagged as anomalous, and how to make the detector more or less sensitive. It is written for analysts and admins who want to understand and tune the behaviour — not for people changing the code.
 
+## If you only read one section
+
+tripl watches each event's own history and learns its rhythm — busy at lunchtime, quiet at 3am, slower on Sundays. When a period comes in far enough outside what *that* event normally does at *that* time of week, it raises a signal.
+
+Three things follow from that, and they explain most of what people find surprising:
+
+- **A predictable dip is not an anomaly.** Every night's trough is compared against other nights' troughs, not against the afternoon peak. That is deliberate, and it is why you are not paged every evening.
+- **New or very quiet events flag less.** There has to be enough history to know what normal looks like, and on a low-volume event a swing of a few counts is genuinely just noise.
+- **Signals arrive a little after the fact.** The newest period is charted immediately but not *judged* until your warehouse has had time to finish delivering rows for it — otherwise every scan would flag a half-full bucket as a drop.
+
+If a signal looks wrong to you, the usual fix is not "turn detection off" but one of the sensitivity dials in **Project settings → Monitoring**, described further down. The rest of this page is the *why* behind them.
+
 ## The pipeline in one paragraph
 
 Every scan reads your warehouse and rolls the raw events up into **time-bucketed counts** — one count per event (and per event type, and for the project as a whole) for each time bucket (15 minutes, hourly, 6-hourly, or daily, depending on the scan's interval). The detector then compares the **most recent bucket(s)** against a **baseline** built from the history of that same series. For each bucket it produces three numbers: an **expected** value (where the baseline thought the count should land), a **spread** (how much that series normally wobbles), and a **z-score** that says how many "normal wobbles" away from expected the actual count fell. When the z-score is large enough and the expected count is high enough, the bucket is recorded as a detected anomaly with a direction of **spike** (too high) or **drop** (too low). That record is the raw material every alert rule later consumes.
@@ -217,10 +229,10 @@ User-defined **metrics** are watched by the very same detector, at a dedicated *
   traffic drop.
 - **Fractional** metrics drop both. A gap means "no data for this bucket" rather than zero — a ratio whose denominator was zero produces *no value at all* — and the minimum-count gate is lifted, so a ratio that naturally sits below 1, or a sparse average, is neither silenced nor constantly flagged as "too low".
 
-Per project, **`detect_metrics`** turns the metric scope on or off; per alert
-rule, the API's **`include_metrics`** field decides whether metric anomalies are
-actually delivered (the visual rule editor does not expose this switch yet; see
-[Alerting](./alerting.md)). Everything else — the seasonal baseline, the robust
+Per project, **`detect_metrics`** turns the metric scope on or off (the
+**Metrics** box in monitoring settings); per alert rule, **`include_metrics`**
+decides whether metric anomalies are actually delivered — the **Metrics** box in
+the rule editor, off by default (see [Alerting](./alerting.md)). Everything else — the seasonal baseline, the robust
 spread and its floor, the z-score, and false-positive self-tuning — works exactly
 as it does for events.
 

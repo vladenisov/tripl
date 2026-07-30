@@ -1165,6 +1165,73 @@ class TestEventGeneration:
         # the summary that tells you the scan produced nothing.
         assert result.details == ["No columns matched field definitions"]
 
+    def test_does_not_warn_about_a_reserved_column_that_carries_data(
+        self, sync_session: Session, project_and_type
+    ):
+        """A reserved column has no FieldDefinition BY DESIGN, so saying so is wrong.
+
+        app_version / platform / event-group-rule columns are metric dimensions
+        or identity inputs, and ``reserved_catalog_columns`` is exactly what keeps
+        them out of the catalog. Reporting their absence as a plan gap left a
+        fresh demo's first scan claiming six missing fields when one was missing
+        (tripl-jfm3.90). Unlike the count==0 case above, these columns DO carry
+        data — the emptiness rule cannot cover them.
+        """
+        project, et, fds = project_and_type
+        cardinality = {
+            "app_version": CardinalityResult(
+                column=ColumnInfo("app_version", "String"),
+                count=12,
+                is_low=True,
+                sample_values=["7.1.0", "7.2.0"],
+            ),
+            "event_name": CardinalityResult(
+                column=ColumnInfo("event_name", "String"),
+                count=9,
+                is_low=True,
+                sample_values=["Home Screen View"],
+            ),
+            "screen_name": CardinalityResult(
+                column=ColumnInfo("screen_name", "String"),
+                count=7,
+                is_low=True,
+                sample_values=["home"],
+            ),
+        }
+        analysis = _make_analysis(cardinality)
+        result = generate_events(
+            sync_session,
+            project.id,
+            et.id,
+            analysis,
+            fds,
+            reserved_columns={"app_version", "event_name"},
+        )
+
+        # 'screen_name' is genuinely undeclared and must still be reported — the
+        # message stays useful precisely because the reserved ones stopped firing.
+        assert [d for d in result.details if "no matching field definition" in d.lower()] == [
+            "Skipped column 'screen_name': no matching field definition"
+        ]
+
+    def test_an_undeclared_column_still_reports_without_a_reserved_set(
+        self, sync_session: Session, project_and_type
+    ):
+        """The default (no reserved_columns) must not silence anything."""
+        project, et, fds = project_and_type
+        cardinality = {
+            "app_version": CardinalityResult(
+                column=ColumnInfo("app_version", "String"),
+                count=12,
+                is_low=True,
+                sample_values=["7.1.0"],
+            ),
+        }
+        analysis = _make_analysis(cardinality)
+        result = generate_events(sync_session, project.id, et.id, analysis, fds)
+
+        assert any("no matching field definition" in d.lower() for d in result.details)
+
     def test_event_type_column_excluded(self, sync_session: Session, project_and_type):
         project, et, fds = project_and_type
         cardinality = {
