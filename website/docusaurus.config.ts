@@ -61,7 +61,7 @@ const config: Config = {
     footer: {
       style: 'dark',
       links: [],
-      copyright: `Copyright © ${new Date().getFullYear()} tripl. Licensed under Apache-2.0.`,
+      copyright: `Copyright © ${new Date().getFullYear()} tripl. Licensed under AGPL-3.0-or-later.`,
     },
     prism: {theme: prismThemes.github, darkTheme: prismThemes.dracula},
     colorMode: {respectPrefersColorScheme: true},

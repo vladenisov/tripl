@@ -1,0 +1,123 @@
+name: Publish tripl-mcp
+
+# Publishes the standalone MCP client package to PyPI.
+#
+# Separate from release.yml on purpose: that one ships the SERVICE as a
+# container image on `v*` tags, and the two version independently (service
+# 0.2.x, tripl-mcp 0.1.x). Tag this one `mcp-v0.1.0`.
+#
+# Authentication is Trusted Publishing (OIDC) — there is no API token stored
+# anywhere. PyPI verifies the workflow identity (repo + workflow file +
+# environment) against a publisher configured on the project, and mints a
+# short-lived credential for that upload only. A leaked repo secret cannot
+# publish, because there is no secret.
+on:
+  push:
+    tags:
+      - "mcp-v*"
+  # Rehearsal path: run against TestPyPI without cutting a tag.
+  workflow_dispatch:
+    inputs:
+      index:
+        description: "Which index to publish to"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+        required: true
+
+# Least privilege: only what each job actually needs. `contents: read` is the
+# documented minimum for actions/checkout — it is redundant on a public repo,
+# where the clone succeeds anonymously, but it is what keeps this workflow
+# working if the repo is ever made private, and it matches docs.yml.
+#
+# Deliberately NOT `actions: write` (Copilot review, PR #75): upload-artifact@v4
+# writes through the Actions artifact service using ACTIONS_RUNTIME_TOKEN, which
+# the runner injects independently of GITHUB_TOKEN, so no artifact scope is
+# involved. Granting a write scope nothing uses is the opposite of the point.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+
+      # The package's own tests do not run in ci.yml, so they run here — a
+      # release must never be the first time they are executed.
+      - name: Lint, type-check and test
+        working-directory: mcp-server
+        run: |
+          uv run --group dev ruff check
+          uv run --group dev ruff format --check
+          uv run --group dev mypy src
+          uv run --group dev pytest -q
+
+      # A tag that disagrees with pyproject silently publishes the wrong
+      # version and the number can never be reused on PyPI. Fail instead.
+      - name: Tag must match the packaged version
+        if: startsWith(github.ref, 'refs/tags/mcp-v')
+        working-directory: mcp-server
+        run: |
+          packaged=$(uv version --short)
+          tagged=${GITHUB_REF_NAME#mcp-v}
+          echo "packaged=$packaged tagged=$tagged"
+          if [ "$packaged" != "$tagged" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match pyproject version $packaged"
+            exit 1
+          fi
+
+      - name: Build sdist and wheel
+        working-directory: mcp-server
+        run: uv build
+
+      # Installing the built wheel into a clean environment is the check that
+      # catches what a lockfile hides: uv.lock pins a working dependency set,
+      # but consumers get only the declared constraints. An unbounded `mcp`
+      # floor once resolved to 2.0, where mcp.server.fastmcp no longer exists,
+      # and the console script died on import.
+      - name: Smoke-test the wheel in a clean environment
+        working-directory: mcp-server
+        run: |
+          uv venv /tmp/smoke --python 3.12
+          uv pip install --python /tmp/smoke/bin/python dist/*.whl
+          /tmp/smoke/bin/tripl-mcp --help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: mcp-server/dist/
+
+  publish:
+    name: Publish to ${{ inputs.index || 'pypi' }}
+    needs: build
+    runs-on: ubuntu-latest
+    # The environment name is part of what PyPI verifies for a trusted
+    # publisher, and it is where a manual approval gate can be added later.
+    environment: ${{ inputs.index || 'pypi' }}
+    permissions:
+      # Job-level permissions REPLACE the workflow-level block rather than
+      # extending it, so contents is restated here even though this job only
+      # downloads an artifact.
+      contents: read
+      id-token: write # mint the OIDC token PyPI exchanges for upload rights
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Both branches name a URL explicitly. Leaving the false branch as ""
+          # would hand the action an empty repository-url rather than letting it
+          # fall back to its default, which is a needless thing to gamble a
+          # first publish on.
+          repository-url: ${{ inputs.index == 'testpypi' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
