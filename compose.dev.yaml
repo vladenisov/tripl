@@ -250,8 +250,12 @@ services:
   # website/docs/integrate/mcp-server.md. Enable with:
   #   docker compose -f compose.dev.yaml --profile mcp up
   mcp:
+    # Context is the repo root, not ./mcp-server: tripl-mcp builds against the
+    # sibling `tripl` package in ./cli, which a mcp-server/ context cannot see
+    # (tripl-ey6j.1).
     build:
-      context: ./mcp-server
+      context: .
+      dockerfile: mcp-server/Dockerfile
     # The image ENTRYPOINT is already `tripl-mcp`, so command holds flags only.
     # --host 0.0.0.0 is required for the published port to be reachable.
     command: ["--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8765"]

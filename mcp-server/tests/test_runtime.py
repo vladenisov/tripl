@@ -13,10 +13,11 @@ from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.shared.context import RequestContext
 from starlette.requests import Request
+from tripl_cli.client import TriplClient
 
 from tests.conftest import API_BASE, BASE_URL, STDIO_KEY
+from tripl_mcp import __version__
 from tripl_mcp import runtime as runtime_module
-from tripl_mcp.client import TriplClient
 from tripl_mcp.runtime import (
     ALLOW_MAIN_ENV,
     TRANSPORT_STREAMABLE_HTTP,
@@ -146,6 +147,12 @@ class TestClientFor:
         assert first is not second
         assert first._http_client is None
         assert second._http_client is None
+        # Covers the STREAMABLE-HTTP transport's User-Agent. http mode leaves
+        # http_client=None, so TriplClient builds the transport itself from this
+        # attribute — the path that would silently regress to the CLI's default
+        # `tripl/...` if client_for stopped passing it (tripl-ey6j.1). The stdio
+        # lifespan's UA is covered in test_tools_e2e.
+        assert first._user_agent == f"tripl-mcp/{__version__}"
 
     def test_stdio_mode_requires_lifespan_client(self, stdio_runtime: Runtime) -> None:
         with pytest.raises(ToolError, match="server lifespan"):

@@ -49,15 +49,19 @@ jobs:
         with:
           enable-cache: true
 
-      # The package's own tests do not run in ci.yml, so they run here — a
-      # release must never be the first time they are executed.
+      # Repeated from ci.yml's `mcp` job on purpose: a release must never be the
+      # first time these run, and this workflow can be dispatched manually
+      # without a PR having gone through CI. --locked matches ci.yml: it FAILS when
+      # uv.lock no longer describes pyproject.toml, whereas --frozen would
+      # quietly use the stale lock and gate on a dependency set the wheel
+      # below does not describe.
       - name: Lint, type-check and test
         working-directory: mcp-server
         run: |
-          uv run --group dev ruff check
-          uv run --group dev ruff format --check
-          uv run --group dev mypy src
-          uv run --group dev pytest -q
+          uv run --locked --group dev ruff check
+          uv run --locked --group dev ruff format --check
+          uv run --locked --group dev mypy src
+          uv run --locked --group dev pytest -q
 
       # A tag that disagrees with pyproject silently publishes the wrong
       # version and the number can never be reused on PyPI. Fail instead.
@@ -86,6 +90,17 @@ jobs:
         working-directory: mcp-server
         run: |
           uv venv /tmp/smoke --python 3.12
+          # Deliberately NO --find-links: this must install exactly what a user
+          # gets from the index, dependencies included. Pointing it at the local
+          # cli/dist would let `tripl` resolve from a directory no consumer has,
+          # turning the one gate that catches what a lockfile hides into a gate
+          # that hides it too.
+          #
+          # Consequence, and it is the correct one: while `tripl` is unpublished
+          # (tripl-ey6j.6) this step FAILS, because tripl-mcp now declares
+          # `tripl>=0.1,<0.2` and a released wheel with an unresolvable
+          # dependency is broken for everyone who installs it. Publish `tripl`
+          # first; do not silence this by re-adding a local link.
           uv pip install --python /tmp/smoke/bin/python dist/*.whl
           /tmp/smoke/bin/tripl-mcp --help
 

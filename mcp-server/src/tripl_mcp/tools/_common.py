@@ -83,3 +83,32 @@ def summarize_collection(data: Any, sample_size: int = 10) -> dict[str, Any]:
     if isinstance(data, list):
         return {"total": len(data), "sample": data[:sample_size]}
     return {"data": data}
+
+
+def with_mutation_warnings(data: Any) -> Any:
+    """Hoist ``EventMutationResponse.warnings`` to the front of the payload.
+
+    The server may rename an event to its scan-derived canonical name or flag
+    unknown ``${variable}`` tokens; the agent must read these and adopt the
+    returned name/id instead of its proposed ones.
+
+    Lives beside ``trim`` rather than in the HTTP client, where it used to sit:
+    it never touches HTTP (the signature is ``(Any) -> Any`` over an already
+    decoded body), its output is a PROMPT rather than data — "do not assume
+    *your* proposed values were kept" is second-person address to a model — and
+    it is the machinery implementing a rule written in prose three files away
+    (server.INSTRUCTIONS, and the create_event/update_event descriptions). The
+    shared `tripl` client is consumed by a CLI too, which would print a warning
+    line and exit 0, never an ``IMPORTANT_warnings`` dict key (tripl-ey6j.1).
+    """
+    if isinstance(data, dict) and data.get("warnings"):
+        return {
+            "IMPORTANT_warnings": data["warnings"],
+            "note": (
+                "The mutation succeeded WITH warnings. Adopt the server-canonical "
+                "name/id from 'result' below; do not assume your proposed values "
+                "were kept."
+            ),
+            "result": {k: v for k, v in data.items() if k != "warnings"},
+        }
+    return data

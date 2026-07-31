@@ -1,10 +1,15 @@
-# Build context for the root Dockerfile (`docker build .`). Keep this tight:
-# the multi-arch release build sends the context to the builder, so excluding
-# VCS, deps, caches, and secrets makes builds faster and avoids leaking .env.
+# Build context for BOTH root-context images: the service (`docker build .`)
+# and tripl-mcp (`docker build -f mcp-server/Dockerfile .`, which moved to the
+# root context so it can reach ./cli — tripl-ey6j.1). Keep this tight: the
+# multi-arch release builds send the context to the builder, so excluding VCS,
+# deps, caches, and secrets makes builds faster and avoids leaking .env.
 #
-# NOTE: the Dockerfile copies backend/src, backend/alembic*, and the whole
-# frontend/ tree — do NOT ignore those. We only drop deps, caches, and outputs
-# that the image rebuilds itself (node_modules, .venv, dist).
+# NOTE: the Dockerfiles copy backend/src, backend/alembic*, the whole frontend/
+# tree, and cli/ + mcp-server/src — do NOT ignore those. We only drop deps,
+# caches, and outputs that the images rebuild themselves (node_modules, .venv,
+# dist). In particular `*.md` below is a ROOT-LEVEL pattern (`*` does not match
+# `/`), so cli/README.md and mcp-server/README.md still ship — both are declared
+# as `readme` in their pyproject and `uv sync` fails without them.
 
 # VCS
 .git/
@@ -17,6 +22,10 @@
 **/.mypy_cache/
 **/.pytest_cache/
 **/.ruff_cache/
+
+# Built Python artifacts (`uv build` output, never installed from in-image)
+cli/dist/
+mcp-server/dist/
 
 # Node (image runs `pnpm install` + `pnpm build` itself)
 **/node_modules/

@@ -882,12 +882,33 @@ wheels = [
 ]
 
 [[package]]
+name = "tripl"
+version = "0.1.0"
+source = { directory = "../cli" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.27.0,<1" }]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.10" },
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-asyncio", specifier = ">=0.26" },
+    { name = "respx", specifier = ">=0.22" },
+    { name = "ruff", specifier = ">=0.4" },
+]
+
+[[package]]
 name = "tripl-mcp"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
     { name = "mcp" },
+    { name = "tripl" },
 ]
 
 [package.dev-dependencies]
@@ -901,8 +922,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "httpx", specifier = ">=0.27.0,<1" },
     { name = "mcp", specifier = ">=1.9.0,<2" },
+    { name = "tripl", directory = "../cli" },
 ]
 
 [package.metadata.requires-dev]

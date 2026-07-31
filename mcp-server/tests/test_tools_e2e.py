@@ -32,10 +32,12 @@ async def test_stdio_lifespan_reuses_one_http_client(
     """One stdio server session owns one pool and closes it on shutdown."""
     clients: list[httpx.AsyncClient] = []
 
-    def create_tracking_client(base_url: str, api_key: str, timeout: float) -> httpx.AsyncClient:
+    def create_tracking_client(
+        base_url: str, api_key: str, timeout: float, user_agent: str
+    ) -> httpx.AsyncClient:
         client = httpx.AsyncClient(
             base_url=f"{base_url.rstrip('/')}/api/v1",
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers={"Authorization": f"Bearer {api_key}", "User-Agent": user_agent},
             timeout=timeout,
             follow_redirects=True,
         )
@@ -108,6 +110,10 @@ async def test_read_tool_search_plan_end_to_end(stdio_runtime: Runtime) -> None:
     assert "q=purchase" in url
     assert "limit=5" in url
     assert route.calls.last.request.headers["Authorization"].startswith("Bearer tk_w_")
+    # Covers the STDIO lifespan's User-Agent: server.py builds that pool, and it
+    # is the second of the two places the header is set (tripl-ey6j.1). The
+    # streamable-http path is covered in test_runtime.
+    assert route.calls.last.request.headers["User-Agent"].startswith("tripl-mcp/")
 
 
 @respx.mock
@@ -284,6 +290,40 @@ async def test_403_surfaces_scope_guidance_through_mcp(stdio_runtime: Runtime) -
 
     assert is_error
     assert "scoped to a single project" in text
+
+
+@respx.mock
+async def test_401_regains_mcp_credential_guidance_through_mcp(stdio_runtime: Runtime) -> None:
+    """The shared client's neutral 401 gets tripl-mcp's wording put back on.
+
+    ``tripl_cli.client`` cannot name TRIPL_API_KEY or a Bearer header — the same
+    module serves the CLI, which reads --api-key and a config file — so
+    ``runtime._McpTriplClient`` re-attaches the hint via ``errors.to_tool_error``
+    (tripl-ey6j.1). This asserts the agent still gets both, i.e. that the
+    extraction cost nothing an agent reads.
+    """
+    respx.get(f"{API_BASE}/projects").mock(
+        return_value=httpx.Response(401, json={"detail": "Invalid or expired API key"})
+    )
+
+    is_error, text = await call_tool("list_projects", {})
+
+    assert is_error
+    assert "Invalid or expired API key (401)" in text
+    assert "TRIPL_API_KEY" in text
+    assert "Bearer token sent to this server" in text
+
+
+@respx.mock
+async def test_unreachable_instance_regains_mcp_base_url_guidance(stdio_runtime: Runtime) -> None:
+    """Same seam, connection side: TRIPL_BASE_URL is this server's variable."""
+    respx.get(f"{API_BASE}/projects").mock(side_effect=httpx.ConnectError("refused"))
+
+    is_error, text = await call_tool("list_projects", {})
+
+    assert is_error
+    assert "Could not reach the tripl API" in text
+    assert "Check TRIPL_BASE_URL" in text
 
 
 @respx.mock

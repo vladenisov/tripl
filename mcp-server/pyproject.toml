@@ -37,7 +37,24 @@ dependencies = [
     # on import with ModuleNotFoundError. Caught by installing the built wheel
     # into a clean venv before the first PyPI upload.
     "mcp>=1.9.0,<2",
-    "httpx>=0.27.0",
+    # Upper bound for the same reason `mcp<2` carries one: a published wheel
+    # ships constraints, not the lockfile, so an unbounded floor lets a
+    # consumer resolve a future major that moved the API out from under us.
+    "httpx>=0.27.0,<1",
+    # The HTTP client lives in the `tripl` distribution and is IMPORTED from
+    # there, not copied (tripl-ey6j.1). Copying 179 lines would have been the
+    # fourth instance of this repo's recurring drift defect — query keys drifted
+    # four ways, the event-name regex three, plus security headers and the
+    # signal significance gate.
+    #
+    # `tripl` is not on PyPI yet, so this constraint cannot resolve from an
+    # index today; [tool.uv.sources] below points development and CI at the
+    # sibling checkout. uv strips that table from PUBLISHED metadata, so the
+    # wheel carries this plain constraint alone (verified against the built
+    # artifact, not assumed). Until tripl-ey6j.6 publishes `tripl`, a bare
+    # `uvx tripl-mcp` or a git install of this subdirectory cannot resolve it —
+    # see README.
+    "tripl>=0.1,<0.2",
 ]
 
 [project.urls]
@@ -57,6 +74,12 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+
+[tool.uv.sources]
+# Development and CI only: resolve `tripl` from the sibling checkout rather than
+# an index it is not on yet. uv strips this table from published metadata, so
+# the wheel keeps the plain ">=0.1,<0.2" constraint declared above.
+tripl = { path = "../cli" }
 
 [build-system]
 requires = ["hatchling"]
