@@ -55,7 +55,7 @@ Per-project results are findings *inside* a check, so a consumer selects by
 `id` and gets one row.
 
 ```text
-tripl doctor — https://tripl.example.com (from $TRIPL_BASE_URL)
+tripl doctor - https://tripl.example.com (from $TRIPL_BASE_URL)
 
 PASS  connectivity  Reached https://tripl.example.com (from $TRIPL_BASE_URL); the API and its database are up.
 PASS  auth          The API key authenticates as an instance-wide key (role: owner).
@@ -65,7 +65,7 @@ FAIL  data_sources  1 referenced data source(s); see below.
         Data source 'warehouse-prod' (used by scan config 'prod events', 'checkout funnel') last failed its connection test at 2026-07-29T19:08:09Z: 'FATAL: password authentication failed for user "tripl"'.
 FAIL  scans         1 of 2 scheduled scan configs is not collecting.
       - fail: scan_config_failing [prod] 'prod events'
-        Scan config 'prod events' (1h) has failed 5 consecutive scheduled runs since 2026-07-31T14:08:09Z. Last error: 'Scan failed due to an internal error.' — that is the backend's generic fallback, not the real cause, so the cause is in the worker log for job job-0.
+        Scan config 'prod events' (1h) has failed 5 consecutive scheduled runs since 2026-07-31T14:08:09Z. Last error: 'Scan failed due to an internal error.' - that is the backend's generic fallback, not the real cause, so the cause is in the worker log for job job-0.
       - warn: scan_backoff_active [prod] 'prod events'
         The scheduler has deliberately deferred the next attempt to not before 2026-07-31T22:08:09Z (about 4h after the last failure): 3 or more consecutive failures trigger a backoff, so the worker is not stuck.
 WARN  drifts        1 event type(s) examined; see below.

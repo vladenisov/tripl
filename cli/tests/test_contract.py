@@ -13,6 +13,7 @@ repository checked out.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -21,14 +22,30 @@ from typing import Any
 import pytest
 
 from tripl_cli.client import API_PREFIX
-from tripl_cli.diagnostics import collect
+from tripl_cli.diagnostics import checks, collect, scan_checks
 from tripl_cli.diagnostics.endpoints import DOCTOR_ENDPOINTS, STATUS_ENDPOINTS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OPENAPI_PATH = REPO_ROOT / "backend" / "openapi.json"
+DOCS_PATH = REPO_ROOT / "website" / "docs" / "run" / "cli.md"
 COLLECT_SOURCE = Path(collect.__file__)
+RULE_SOURCES = (Path(checks.__file__), Path(scan_checks.__file__))
 
 DECLARED = {**DOCTOR_ENDPOINTS, **STATUS_ENDPOINTS}
+
+
+def _raised_finding_codes() -> set[str]:
+    """Every literal ``code=`` on a ``Finding(...)`` in the rule modules."""
+    found: set[str] = set()
+    for path in RULE_SOURCES:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Finding"):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg == "code" and isinstance(keyword.value, ast.Constant):
+                    found.add(keyword.value.value)
+    return found
 
 
 @pytest.fixture(scope="module")
@@ -87,3 +104,37 @@ def test_health_is_deliberately_absent_from_the_spec(openapi_paths: dict[str, An
     """
     assert "/health" not in openapi_paths
     assert f"{API_PREFIX}/health" not in openapi_paths
+
+
+def test_every_finding_code_is_documented() -> None:
+    """The finding codes are published as a stability contract; hold the docs to it.
+
+    website/docs/run/cli.md carries a table of every code with its evidence keys,
+    and an operator writing a cron check selects on those codes. A code that
+    ships undocumented is a contract the user cannot rely on, and this is the
+    repo's most-repeated review finding (AGENTS.md:467) - so it is a test rather
+    than a habit.
+    """
+    assert DOCS_PATH.exists(), f"the CLI docs page is missing at {DOCS_PATH}"
+    documented = set(re.findall(r"`([a-z_]+)`", DOCS_PATH.read_text(encoding="utf-8")))
+    raised = _raised_finding_codes()
+    assert raised, "the AST scan found no Finding(code=...) at all; the scan itself is broken"
+    undocumented = raised - documented
+    assert not undocumented, (
+        "tripl doctor raises finding codes that website/docs/run/cli.md never mentions: "
+        f"{sorted(undocumented)}"
+    )
+
+
+def test_the_documented_job_window_is_the_one_actually_requested() -> None:
+    """The docs stated 40 while the code asked for 200, for exactly one review cycle.
+
+    That number is not decoration: it is how far back "how long has this been
+    broken" can see, and an operator reading 40 would misjudge every long streak.
+    """
+    from tripl_cli.diagnostics.model import JOBS_WINDOW
+
+    text = DOCS_PATH.read_text(encoding="utf-8")
+    assert f"**{JOBS_WINDOW}** jobs" in text, (
+        f"cli.md does not state the real job window of {JOBS_WINDOW}"
+    )

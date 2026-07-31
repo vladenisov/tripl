@@ -164,7 +164,7 @@ usage: tripl doctor [-h] [--url URL] [--api-key KEY] [--config PATH]
 A healthy instance:
 
 ```text
-tripl doctor — https://tripl.example.com (from $TRIPL_BASE_URL)
+tripl doctor - https://tripl.example.com (from $TRIPL_BASE_URL)
 
 PASS  connectivity  Reached https://tripl.example.com (from $TRIPL_BASE_URL); the API and its database are up.
 PASS  auth          The API key authenticates as an instance-wide key (role: owner).
@@ -179,7 +179,7 @@ PASS  drifts        1 event type(s) examined; no untriaged schema drift.
 An instance with the incident on it:
 
 ```text
-tripl doctor — https://tripl.example.com (from $TRIPL_BASE_URL)
+tripl doctor - https://tripl.example.com (from $TRIPL_BASE_URL)
 
 PASS  connectivity  Reached https://tripl.example.com (from $TRIPL_BASE_URL); the API and its database are up.
 PASS  auth          The API key authenticates as an instance-wide key (role: owner).
@@ -189,7 +189,7 @@ FAIL  data_sources  1 referenced data source(s); see below.
         Data source 'warehouse-prod' (used by scan config 'prod events', 'checkout funnel') last failed its connection test at 2026-07-29T19:08:09Z: 'FATAL: password authentication failed for user "tripl"'.
 FAIL  scans         1 of 2 scheduled scan configs is not collecting.
       - fail: scan_config_failing [prod] 'prod events'
-        Scan config 'prod events' (1h) has failed 5 consecutive scheduled runs since 2026-07-31T14:08:09Z. Last error: 'Scan failed due to an internal error.' — that is the backend's generic fallback, not the real cause, so the cause is in the worker log for job job-0.
+        Scan config 'prod events' (1h) has failed 5 consecutive scheduled runs since 2026-07-31T14:08:09Z. Last error: 'Scan failed due to an internal error.' - that is the backend's generic fallback, not the real cause, so the cause is in the worker log for job job-0.
       - warn: scan_backoff_active [prod] 'prod events'
         The scheduler has deliberately deferred the next attempt to not before 2026-07-31T22:08:09Z (about 4h after the last failure): 3 or more consecutive failures trigger a backoff, so the worker is not stuck.
 WARN  drifts        1 event type(s) examined; see below.
@@ -280,8 +280,17 @@ to say.
 
 The centre of gravity of the whole command, and the check the incident needed.
 For every scan config that has a collection interval, doctor reads the newest
-40 jobs — the same window the dispatcher itself walks — and counts the run of
-consecutive **failed dispatcher jobs** at the head of the history.
+**200** jobs — the API's maximum — and counts the run of consecutive **failed
+dispatcher jobs** at the head of the history.
+
+That is deliberately *not* the 40-row window the dispatcher itself walks. The
+scheduler only needs the backoff delay, which stops growing at six consecutive
+failures, so 40 rows are ample for it. doctor answers a different question —
+*how long has this been broken* — and at 40 rows a 15m config failing for four
+days would report 40 failures since this morning instead of 384 since Monday.
+When every job in the window is a failure the run started even earlier, so the
+finding says "at least N, at least since T" and sets
+`evidence.consecutive_failures_truncated`.
 
 Dispatcher jobs are identified *positively*, by `result_summary.mode ==
 "metrics_collection"`. Manual catalog scans, metrics replays, event-group
@@ -368,7 +377,7 @@ tripl doctor --project prod
 ```
 
 ```text
-tripl doctor — https://tripl.example.com (from $TRIPL_BASE_URL)
+tripl doctor - https://tripl.example.com (from $TRIPL_BASE_URL)
 
 PASS  connectivity  Reached https://tripl.example.com (from $TRIPL_BASE_URL); the API and its database are up.
 PASS  auth          The API key authenticates and is scoped to a single project, so instance-wide endpoints are refused by design.
@@ -449,7 +458,7 @@ the numbers are — a daily digest that returns non-zero is a cron job somebody
 disables. Use `tripl doctor` when you want an exit contract.
 
 ```text
-tripl status — https://tripl.example.com (from $TRIPL_BASE_URL)
+tripl status - https://tripl.example.com (from $TRIPL_BASE_URL)
 
 prod (Prod)
   events     412 total, 388 active, 17 event types
@@ -682,7 +691,7 @@ findings and all:
       "severity": "fail",
       "project": "prod",
       "target": { "kind": "scan_config", "id": "scan-1", "name": "prod events" },
-      "message": "Scan config 'prod events' (1h) has failed 5 consecutive scheduled runs since 2026-07-31T14:12:51Z. Last error: 'Scan failed due to an internal error.' — that is the backend's generic fallback, not the real cause, so the cause is in the worker log for job job-0.",
+      "message": "Scan config 'prod events' (1h) has failed 5 consecutive scheduled runs since 2026-07-31T14:12:51Z. Last error: 'Scan failed due to an internal error.' - that is the backend's generic fallback, not the real cause, so the cause is in the worker log for job job-0.",
       "evidence": {
         "consecutive_failures": 5,
         "last_error": "Scan failed due to an internal error.",
@@ -739,7 +748,7 @@ and `evidence`.
 | `scans` | `scan_history_window_full` | warn | `interval`, `jobs_window` |
 | `scans` | `scan_backoff_active` | warn | `consecutive_failures`, `backoff_after`, `interval_seconds`, `deferred_by_seconds_estimate`, `next_attempt_not_before_estimate` |
 | `scans` | `scan_watermark_stale` | warn | `interval`, `time_to`, `behind_seconds` |
-| `scans` | `scan_never_collected` | fail | `interval`, `created_at`, `age_seconds` |
+| `scans` | `scan_never_collected` | fail | `interval`, `created_at`, `age_seconds`, `jobs_seen` |
 | `scans` | `scan_not_dispatched` | fail | `interval`, `last_dispatched_at`, `idle_seconds` |
 | `scans` | `scan_interval_unknown` | warn | `interval` |
 | `drifts` | `schema_field_deleted_by_accept` | warn | `field_name`, `event_type_id`, `drift_id`, `resolved_at`, `resolved_by` |
