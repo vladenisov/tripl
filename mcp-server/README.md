@@ -61,7 +61,7 @@ From a local checkout:
 }
 ```
 
-Create API keys in the tripl app under **Account → API keys**. Use a
+Create API keys in the tripl app under **Settings → API keys**. Use a
 project-scoped `tk_r_` key for read-only agents; reserve `tk_w_` keys for
 agents explicitly allowed to edit the plan.
 

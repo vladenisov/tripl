@@ -138,6 +138,12 @@ Top level:
 - [compose.yaml](compose.yaml): production stack (published image); [compose.dev.yaml](compose.dev.yaml): local dev topology.
 - [backend](backend): Python service.
 - [frontend](frontend): React app.
+- [cli](cli): the `tripl` operator CLI (import package `tripl_cli`) — read-only
+  `doctor` / `status` diagnostics, plus the **shared async REST client** that
+  `mcp-server` imports. Apache-2.0, `httpx` only, no backend imports.
+- [mcp-server](mcp-server): the `tripl-mcp` MCP server (import package
+  `tripl_mcp`). Depends on the `tripl` distribution in `cli/` for its HTTP
+  client; there is exactly one `TriplClient` in the repo.
 
 Backend entrypoints:
 - [backend/src/tripl/main.py](backend/src/tripl/main.py): FastAPI app, middleware stack, lifespan, and `/health`.
@@ -164,6 +170,20 @@ Frontend layers:
 - `frontend/src/components`: layout and shared UI.
 - `frontend/src/types/index.ts`: frontend domain types.
 - `frontend/src/**/*.test.*`: Vitest coverage.
+
+CLI layers (`cli/src/tripl_cli`):
+- `client.py`: the shared async `TriplClient`. **Also imported by `mcp-server`** —
+  every change here needs both test suites green.
+- `config.py`: per-field flag > env > file resolution with provenance.
+- `cli.py` / `commands/`: argparse entry point; one module per subcommand.
+- `runner.py`: the only `asyncio.run`, one connection pool per invocation.
+- `diagnostics/`: `collect.py` is async/impure and the only thing that speaks
+  HTTP (every failure becomes a `Fetched`, never an exception); `checks.py` and
+  `scan_checks.py` are pure, synchronous, total functions of a `Snapshot`;
+  `report.py` is the `--json` contract; `render.py` is the ASCII output.
+- User-facing reference: [website/docs/run/cli.md](website/docs/run/cli.md).
+  `scan_checks.py` mirrors the backoff constants in
+  `backend/src/tripl/worker/tasks/metrics/schedule.py` — change one, change both.
 
 ## Domain Model Cheat Sheet
 

@@ -161,7 +161,23 @@ class TriplClient:
         raise_for_status(response)
         if response.status_code == 204 or not response.content:
             return {"status": "ok"}
-        return response.json()
+        try:
+            return response.json()
+        except ValueError as exc:
+            # A 2xx whose body is not JSON. Reachable in the field: an SSO gateway
+            # or captive portal that intercepts the request answers 200 with an
+            # HTML login page. json.JSONDecodeError subclasses ValueError, NOT
+            # httpx.HTTPError, so without this it escapes every consumer's error
+            # handling — `tripl doctor` died with a traceback instead of emitting
+            # the report it promises always to emit, and tripl-mcp would have
+            # surfaced it as an unhandled tool crash.
+            raise TriplAPIError(
+                response.status_code,
+                None,
+                f"tripl API returned {response.status_code} but the body is not JSON "
+                f"({exc}). Is {self._base_url} really a tripl instance, or is a proxy "
+                "or login page answering for it?",
+            ) from exc
 
     async def get(self, path: str, *, params: dict[str, Any] | None = None) -> Any:
         return await self.request("GET", path, params=params)

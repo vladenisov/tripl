@@ -59,7 +59,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://vladenisov.github.io/tripl/"
-Documentation = "https://vladenisov.github.io/tripl/docs/integrate/mcp-server"
+Documentation = "https://vladenisov.github.io/tripl/integrate/mcp-server"
 Repository = "https://github.com/vladenisov/tripl"
 Issues = "https://github.com/vladenisov/tripl/issues"
 

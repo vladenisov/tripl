@@ -46,7 +46,11 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://vladenisov.github.io/tripl/"
-Documentation = "https://vladenisov.github.io/tripl/docs/run/cli"
+# The docs site sets `routeBasePath: '/'` under baseUrl `/tripl/`, so a page at
+# website/docs/run/cli.md is served at /tripl/run/cli — there is no /docs/
+# segment. mcp-server/pyproject.toml carried the /docs/ form and 404ed; both are
+# corrected now, so check this shape when adding a third package.
+Documentation = "https://vladenisov.github.io/tripl/run/cli"
 Repository = "https://github.com/vladenisov/tripl"
 Issues = "https://github.com/vladenisov/tripl/issues"
 
@@ -82,6 +86,11 @@ packages = ["src/tripl_cli"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# An un-awaited coroutine is a RuntimeWarning printed at garbage-collection time,
+# which in a fan-out test reads as unrelated noise long after the bug. doctor
+# builds its fan-outs from comprehensions over targets precisely so a coroutine
+# is never reused or dropped; this makes the failure mode loud (tripl-ey6j.2).
+filterwarnings = ["error::RuntimeWarning"]
 
 [tool.ruff]
 line-length = 100

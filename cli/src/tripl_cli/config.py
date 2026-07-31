@@ -296,5 +296,5 @@ def require_api_key(config: Config) -> str:
     raise TriplConfigError(
         f"no tripl API key configured. Pass {FLAG_API_KEY}, set {ENV_API_KEY}, or "
         f"add api_key to {config.path}. Create keys in the tripl app under "
-        f"Account -> API keys (tk_r_ for read-only, tk_w_ for write)."
+        f"Settings -> API keys (tk_r_ for read-only, tk_w_ for write)."
     )

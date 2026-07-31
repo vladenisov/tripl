@@ -32,6 +32,15 @@ The server is configured through environment variables:
 Give a discovery-only agent a `tk_r_` key and prefer project-scoped keys, the
 same [safe defaults](./agent-api-guide.md#safe-agent-defaults) as for raw REST.
 
+:::tip Same two variables as the CLI
+`TRIPL_BASE_URL` and `TRIPL_API_KEY` are read identically by the
+[operator CLI](../run/cli.md), and the two tools share one HTTP client (the MCP
+server imports it from the `tripl` distribution in `cli/`). A shell configured
+for one is configured for the other, so `tripl doctor` is the quickest way to
+prove the URL and key an MCP client is about to use actually work — including
+whether the key is fenced to a single project.
+:::
+
 ## Running over stdio
 
 Stdio is the default transport: the MCP client launches `tripl-mcp` as a child
