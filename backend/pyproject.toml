@@ -3,6 +3,15 @@ name = "tripl"
 version = "0.2.1"
 description = "Analytics tracking plan service"
 requires-python = ">=3.14"
+# The service itself is copyleft: running a modified tripl as a network service
+# obliges you to publish those modifications. The client packages (mcp-server)
+# stay permissive so integrating with tripl never pulls this into your code.
+license = "AGPL-3.0-or-later"
+authors = [{ name = "Vladislav Denisov" }]
+# Not published to PyPI — tripl ships as a container image (see bin/release.sh).
+# The marker makes an accidental `uv publish` from this directory fail loudly
+# instead of pushing a 400 MB server stack under a name meant for the service.
+classifiers = ["Private :: Do Not Upload"]
 dependencies = [
     "fastapi>=0.140.0",
     "uvicorn[standard]>=0.51.0",
