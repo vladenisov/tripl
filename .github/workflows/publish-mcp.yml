@@ -103,4 +103,8 @@ jobs:
       - name: Publish
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          repository-url: ${{ (inputs.index == 'testpypi') && 'https://test.pypi.org/legacy/' || '' }}
+          # Both branches name a URL explicitly. Leaving the false branch as ""
+          # would hand the action an empty repository-url rather than letting it
+          # fall back to its default, which is a needless thing to gamble a
+          # first publish on.
+          repository-url: ${{ inputs.index == 'testpypi' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
