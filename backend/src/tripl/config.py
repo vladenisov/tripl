@@ -188,7 +188,18 @@ class Settings(BaseSettings):
     ai_timeout_seconds: int = 30
     ai_max_output_tokens: int = 700
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    # env_ignore_empty is load-bearing, not tidiness. compose.yaml passes ~25
+    # optional settings as `VAR: ${VAR:-}`, and Compose's map syntax materialises
+    # an undefined variable as the empty STRING inside the container rather than
+    # leaving it unset. Without this flag pydantic then tries to parse "" as a
+    # bool/int/enum and `Settings()` — constructed at import, at the bottom of
+    # this module — raises on every fresh deploy, so the app container exits
+    # before it serves a byte. With it, an empty value means "unset" and falls
+    # through to the default below, which is exactly what that compose comment
+    # always claimed. Deleting the `${VAR:-}` lines instead would reintroduce
+    # tripl-2su6.16 / tripl-jfm3.101, where a documented switch silently did
+    # nothing (tripl-ey6j.3).
+    model_config = {"env_file": ".env", "extra": "ignore", "env_ignore_empty": True}
 
     @field_validator("debug", mode="before")
     @classmethod
