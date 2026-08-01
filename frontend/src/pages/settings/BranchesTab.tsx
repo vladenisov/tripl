@@ -41,6 +41,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { formatRelativeTime } from '@/lib/datetime'
 import { getErrorMessage } from '@/lib/utils'
 import type {
+  ImplementationTicket,
   PlanBranchConflictEntity,
   PlanBranchConflictField,
   PlanBranchDiffSummary,
@@ -473,6 +474,11 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
     qc.invalidateQueries({ queryKey: planBranchesKey(slug) })
     qc.invalidateQueries({ queryKey: ['planBranchDiff', slug, branch.id] })
     qc.invalidateQueries({ queryKey: ['planBranchDetail', slug, branch.id] })
+    // The merge is what CREATES the tracker ticket, so the panel's first fetch
+    // races the worker that writes it and then caches the empty answer. Without
+    // this line the link never appears in the session that merged the branch —
+    // the one session in which somebody is looking for it.
+    qc.invalidateQueries({ queryKey: ['planBranchImplementationTickets', slug, branch.id] })
   }
 
   // One mutation for transitions AND merge: each new action replaces the
@@ -654,6 +660,8 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
         ) : null}
       </Panel>
 
+      <ImplementationTicketsPanel slug={slug} branch={branch} />
+
       <Panel title="Changes" subtitle={`${entries.length} changes`}>
         {entries.length === 0 ? (
           <p className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
@@ -685,6 +693,88 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
 
       <ConflictsPanel slug={slug} branchId={branch.id} />
       <CommentsPanel slug={slug} branchId={branch.id} usersById={usersById} />
+    </div>
+  )
+}
+
+/**
+ * The tracker ticket a merge opened for this branch (tripl-2ayb).
+ *
+ * The mapping had been persisted since tripl-hgez but was unreachable from the
+ * UI, so a merge that opened a Jira issue left no way back to it. The panel is
+ * hidden — not empty — when there is no ticket: only a merge with the project's
+ * implementation tracker enabled creates one, so "no ticket" is the normal
+ * state of every other branch. The request is skipped before the merge for the
+ * same reason: the list is provably empty until then.
+ */
+function ImplementationTicketsPanel({
+  slug,
+  branch,
+}: {
+  slug: string
+  branch: PlanBranchSummary
+}) {
+  const { data: tickets } = useQuery({
+    queryKey: ['planBranchImplementationTickets', slug, branch.id],
+    queryFn: () => planBranchesApi.listImplementationTickets(slug, branch.id),
+    enabled: branch.status === 'merged',
+  })
+
+  if (!tickets || tickets.length === 0) return null
+
+  return (
+    <Panel
+      title={tickets.length === 1 ? 'Implementation ticket' : 'Implementation tickets'}
+      subtitle="opened in the tracker when this branch merged"
+    >
+      {tickets.map((ticket) => (
+        <ImplementationTicketRow key={ticket.id} ticket={ticket} />
+      ))}
+    </Panel>
+  )
+}
+
+function ImplementationTicketRow({ ticket }: { ticket: ImplementationTicket }) {
+  // Sync flips the ticket closed once the tracker reports the issue done, which
+  // is also what promotes the covered events to `implemented`.
+  const done = ticket.status === 'closed'
+  // The tracker can answer without an issue key (and then without a URL); show
+  // what we have as plain text rather than a link that goes nowhere.
+  const label = ticket.external_key || 'Ticket'
+
+  return (
+    <div
+      className="flex items-center gap-2 border-t px-4 py-2.5 first:border-t-0"
+      style={{ borderColor: 'var(--border-subtle)' }}
+    >
+      <Ticket
+        className="size-3.5 shrink-0"
+        style={{ color: 'var(--fg-subtle)' }}
+        aria-hidden="true"
+      />
+      {ticket.external_url ? (
+        <a
+          href={ticket.external_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="shrink-0 text-[12.5px] font-medium underline"
+          style={{ color: 'var(--accent)' }}
+        >
+          {label}
+          <ArrowUpRight className="ml-0.5 inline size-3" aria-hidden="true" />
+        </a>
+      ) : (
+        <span className="shrink-0 text-[12.5px] font-medium" style={{ color: 'var(--fg)' }}>
+          {label}
+        </span>
+      )}
+      <span className="truncate text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+        {ticket.summary}
+      </span>
+      <div className="flex-1" />
+      <Chip tone={done ? 'success' : 'neutral'} size="xs">
+        {done ? 'Done' : 'Open'}
+      </Chip>
     </div>
   )
 }

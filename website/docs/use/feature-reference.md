@@ -244,6 +244,17 @@ ticket for the added/changed events; a scheduled sync promotes covered events to
 automation, distinct from the Jira **alert destination** that creates incident
 tickets from monitoring signals.
 
+The merged branch's detail then carries an **Implementation ticket** panel: the
+ticket key links straight to the issue in the tracker, next to the ticket
+summary and a status chip that reads `Open` until the sync sees the issue done.
+The panel is hidden — not shown empty — on branches that opened no ticket, which
+is every branch until it merges with the tracker enabled. API clients read the
+same list from
+`GET /api/v1/projects/{slug}/branches/{branch_id}/implementation-tickets`; it is
+read-only (tickets are written by the merge and sync workers) and open to any
+authenticated user, and answers `404` for a branch that belongs to another
+project.
+
 ### Plan rules
 
 **Where:** Workspace settings › Project › **Plan rules** (in the full-takeover

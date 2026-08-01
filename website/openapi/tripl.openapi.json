@@ -11156,6 +11156,63 @@
         }
       }
     },
+    "/api/v1/projects/{slug}/branches/{branch_id}/implementation-tickets": {
+      "get": {
+        "tags": [
+          "implementation-tickets"
+        ],
+        "summary": "List Branch Implementation Tickets",
+        "description": "Read-only: tickets are opened by the merge worker, never by a client.\n\nAuth matches the other branch reads \u2014 any authenticated project reader, via\nthe router-level ``get_current_user`` dependency; no editor gate, because\nnothing here mutates.",
+        "operationId": "list_branch_implementation_tickets_api_v1_projects__slug__branches__branch_id__implementation_tickets_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "branch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Branch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ImplementationTicketResponse"
+                  },
+                  "title": "Response List Branch Implementation Tickets Api V1 Projects  Slug  Branches  Branch Id  Implementation Tickets Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{slug}/revisions": {
       "post": {
         "tags": [
@@ -21174,6 +21231,110 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "ImplementationTicketResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Project Id"
+          },
+          "branch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Branch Id"
+          },
+          "tracker_type": {
+            "type": "string",
+            "title": "Tracker Type"
+          },
+          "external_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Id"
+          },
+          "external_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Key"
+          },
+          "external_url": {
+            "type": "string",
+            "title": "External Url"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "event_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Event Ids"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "branch_id",
+          "tracker_type",
+          "external_id",
+          "external_key",
+          "external_url",
+          "status",
+          "summary",
+          "event_ids",
+          "created_at",
+          "updated_at",
+          "closed_at"
+        ],
+        "title": "ImplementationTicketResponse",
+        "description": "One tracker ticket opened for a merged plan branch (read-only surface).\n\nEverything here is written by the merge/poll worker; the API never accepts\na ticket from a client. ``external_url`` is ``\"\"`` when the tracker replied\nwithout an issue key, so the UI must fall back to plain text rather than\nrender a link to nowhere."
       },
       "InvitationAcceptRequest": {
         "properties": {

@@ -945,6 +945,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/branches/{branch_id}/implementation-tickets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Branch Implementation Tickets
+         * @description Read-only: tickets are opened by the merge worker, never by a client.
+         *
+         *     Auth matches the other branch reads — any authenticated project reader, via
+         *     the router-level ``get_current_user`` dependency; no editor gate, because
+         *     nothing here mutates.
+         */
+        get: operations["list_branch_implementation_tickets_api_v1_projects__slug__branches__branch_id__implementation_tickets_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/branches/{branch_id}/merge": {
         parameters: {
             query?: never;
@@ -6251,6 +6275,58 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * ImplementationTicketResponse
+         * @description One tracker ticket opened for a merged plan branch (read-only surface).
+         *
+         *     Everything here is written by the merge/poll worker; the API never accepts
+         *     a ticket from a client. ``external_url`` is ``""`` when the tracker replied
+         *     without an issue key, so the UI must fall back to plain text rather than
+         *     render a link to nowhere.
+         */
+        ImplementationTicketResponse: {
+            /**
+             * Branch Id
+             * Format: uuid
+             */
+            branch_id: string;
+            /** Closed At */
+            closed_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Event Ids */
+            event_ids: string[];
+            /** External Id */
+            external_id: string | null;
+            /** External Key */
+            external_key: string | null;
+            /** External Url */
+            external_url: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Status */
+            status: string;
+            /** Summary */
+            summary: string;
+            /** Tracker Type */
+            tracker_type: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /**
          * InvitationAcceptRequest
@@ -11646,6 +11722,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlanBranchDiff"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_branch_implementation_tickets_api_v1_projects__slug__branches__branch_id__implementation_tickets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                branch_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImplementationTicketResponse"][];
                 };
             };
             /** @description Validation Error */
