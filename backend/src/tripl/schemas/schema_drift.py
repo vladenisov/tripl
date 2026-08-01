@@ -54,6 +54,13 @@ class SchemaDriftActionRequest(BaseModel):
     def validate_action(self) -> SchemaDriftActionRequest:
         if self.action == "snooze" and self.snoozed_until is None:
             raise ValueError("snoozed_until is required when action is snooze")
+        if self.force and self.action != "accept":
+            # `force` overrides exactly one guard, and that guard only fires on
+            # the accept path. Accepting it elsewhere would make the contract
+            # looser than the thing it overrides, and would silently swallow a
+            # client that sent it by mistake — on a field whose whole purpose is
+            # to be hard to reach by accident.
+            raise ValueError("force is only meaningful when action is accept")
         if self.force and not (self.note or "").strip():
             raise ValueError("note is required when force is set")
         return self

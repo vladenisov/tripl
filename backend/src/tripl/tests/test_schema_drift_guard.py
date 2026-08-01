@@ -428,6 +428,51 @@ async def test_force_without_a_note_is_rejected(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["snooze", "false_positive", "reopen"])
+async def test_force_is_rejected_on_every_action_but_accept(
+    client: AsyncClient, action: str
+) -> None:
+    """`force` overrides one guard, and that guard only fires on accept.
+
+    Accepting it elsewhere would make the contract looser than the thing it
+    overrides, and would silently swallow a client that sent it by mistake - on
+    a field whose whole purpose is to be hard to reach by accident.
+    """
+    project_id, event_type_id = await _project_and_event_type(client)
+    drift_id = await _seed(
+        project_id=project_id, event_type_id=event_type_id, name_format="{action}"
+    )
+
+    body: dict[str, object] = {"action": action, "force": True, "note": "why not"}
+    if action == "snooze":
+        body["snoozed_until"] = "2099-01-01T00:00:00Z"
+
+    resp = await client.post(f"{ACTIONS_URL}/{drift_id}/actions", json=body)
+
+    assert resp.status_code == 422, resp.text
+    assert "force is only meaningful when action is accept" in resp.text
+    assert await _field(event_type_id, "action") is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["snooze", "false_positive", "reopen"])
+async def test_those_same_actions_work_without_force(client: AsyncClient, action: str) -> None:
+    """The positive control: the rejection above is about `force`, not the action."""
+    project_id, event_type_id = await _project_and_event_type(client)
+    drift_id = await _seed(
+        project_id=project_id, event_type_id=event_type_id, name_format="{action}"
+    )
+
+    body: dict[str, object] = {"action": action}
+    if action == "snooze":
+        body["snoozed_until"] = "2099-01-01T00:00:00Z"
+
+    resp = await client.post(f"{ACTIONS_URL}/{drift_id}/actions", json=body)
+
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
 async def test_other_drift_types_on_a_name_format_column_still_accept(
     client: AsyncClient,
 ) -> None:

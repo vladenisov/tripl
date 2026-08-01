@@ -55,7 +55,7 @@ from tripl.services.plan_revision_service import (
 from tripl.services.project_branch_settings_service import read_branch_merge_policy
 from tripl.services.scan_config_lookup import (
     name_format_conflict_detail,
-    scan_configs_blocking_field_removal,
+    scan_configs_blocking_field_removals,
 )
 
 logger = logging.getLogger(__name__)
@@ -166,14 +166,18 @@ async def _reject_removals_a_scan_names_events_by(
     stale base, an unresolved field conflict). The repair is one edit to the
     scan's Event name format, and then the merge goes through untouched.
     """
+    # One query per DISTINCT event type rather than one per removed field: a
+    # merge deleting twenty fields would otherwise issue twenty SELECTs with the
+    # transaction already open. The batching lives in scan_config_lookup so this
+    # door still does not assemble the predicate itself.
+    naming = await scan_configs_blocking_field_removals(
+        session,
+        project_id=project_id,
+        removals=[(event_type_id, field.name) for event_type_id, _, field in removals],
+    )
     blocked: list[str] = []
     for main_event_type_id, event_type_name, field in removals:
-        configs = await scan_configs_blocking_field_removal(
-            session,
-            project_id=project_id,
-            event_type_id=main_event_type_id,
-            field_name=field.name,
-        )
+        configs = naming.get((main_event_type_id, field.name))
         if configs:
             blocked.append(
                 name_format_conflict_detail(

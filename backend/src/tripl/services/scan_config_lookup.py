@@ -31,6 +31,7 @@ __all__ = [
     "name_format_base_columns",
     "name_format_conflict_detail",
     "scan_configs_blocking_field_removal",
+    "scan_configs_blocking_field_removals",
 ]
 
 
@@ -109,6 +110,45 @@ async def scan_configs_blocking_field_removal(
         session, project_id=project_id, event_type_id=event_type_id
     )
     return configs_naming_column(configs, field_name)
+
+
+async def scan_configs_blocking_field_removals(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    removals: Sequence[tuple[uuid.UUID, str]],
+) -> dict[tuple[uuid.UUID, str], list[ScanConfig]]:
+    """The same rule as above, for many fields at once, in one query per event type.
+
+    A branch merge deletes a whole SET of fields, and calling the single-field
+    helper per field issues one SELECT each — twenty removed fields, twenty
+    round trips, charged at merge time with the transaction already open.
+    Grouping by event type collapses that to one query per DISTINCT event type,
+    which is at most a handful.
+
+    Deliberately here rather than in the merge service: the point of this module
+    is that no caller assembles the predicate itself, and "batch it at the call
+    site" is exactly how a second assembly gets written.
+
+    Keyed by ``(event_type_id, field_name)``; a key is present only when
+    something blocks that removal, so an empty mapping means the merge is clear.
+    """
+    by_event_type: dict[uuid.UUID, list[str]] = {}
+    for event_type_id, field_name in removals:
+        by_event_type.setdefault(event_type_id, []).append(field_name)
+
+    blocked: dict[tuple[uuid.UUID, str], list[ScanConfig]] = {}
+    for event_type_id, field_names in by_event_type.items():
+        configs = await load_governing_scan_configs(
+            session, project_id=project_id, event_type_id=event_type_id
+        )
+        if not configs:
+            continue
+        for field_name in field_names:
+            naming = configs_naming_column(configs, field_name)
+            if naming:
+                blocked[(event_type_id, field_name)] = naming
+    return blocked
 
 
 def name_format_conflict_detail(
