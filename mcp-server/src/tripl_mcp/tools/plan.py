@@ -36,12 +36,20 @@ async def list_event_types(
 
 
 def _event_type_summary(item: Any) -> Any:
-    """Trim one event type, passing anything unexpected through untouched."""
+    """Trim one event type, passing anything unexpected through untouched.
+
+    The TRIM is this consumer's context budget and stays here; the COUNT is a
+    derived fact about ``EventTypeResponse`` that ``tripl plan types`` puts in
+    its table too, so it is asked of the shared layer rather than spelled again
+    (tripl-i1dt). Two spellings of "how many fields does this type have" is how
+    the two surfaces come to disagree about a type whose ``field_definitions``
+    arrives null.
+    """
     if not isinstance(item, dict):
         return item
     return {
         **trim(item, EVENT_TYPE_LIST_FIELDS),
-        "field_count": len(item.get("field_definitions") or []),
+        "field_count": event_types.field_count(item),
     }
 
 
@@ -51,6 +59,16 @@ async def get_event_type_fields(
     ctx: Context,  # type: ignore[type-arg]
     branch_id: str | None = None,
 ) -> dict[str, Any]:
+    """DETAIL + FIELDS, merged into one object with the fields under ``fields``.
+
+    Stays here rather than moving to ``tripl_cli.api`` (tripl-i1dt). ``tripl plan
+    fields`` looks like a counterpart and is not: it reads the LIST route, to
+    resolve a name the operator typed into an id, then the fields — and emits the
+    fields alone under ``items``, the key its six sibling verbs use. Different
+    second request, different result shape, so this merge still has exactly one
+    caller. Moving it would freeze an agent-shaped envelope in a package whose
+    tests cannot see it, which is the trade tripl-ey6j.5 declined.
+    """
     client = client_for(ctx)
     event_type = await send(
         client, event_types.get_event_type(slug, event_type_id, branch=branch_id)
@@ -94,6 +112,13 @@ async def get_variable_values(
     ctx: Context,  # type: ignore[type-arg]
     branch_id: str | None = None,
 ) -> dict[str, Any]:
+    """VALUES + EVENT_OVERRIDES, because an override REPLACES the global list.
+
+    Stays here (tripl-i1dt). ``tripl plan variables`` lists the catalog and stops
+    there — no CLI verb reads one variable's observed values — so this merge has
+    the one caller it had when tripl-ey6j.5 left it behind. It moves the day a
+    ``tripl plan values <variable>`` exists, not before.
+    """
     client = client_for(ctx)
     values = await send(client, variables.get_values(slug, variable_id, branch=branch_id))
     overrides = await send(

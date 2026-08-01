@@ -1,6 +1,6 @@
 """Human output for ``install`` and ``upgrade``. ASCII only, TTY-identical.
 
-Same rules as ``diagnostics/render.py`` — no colour, no spinners, no unicode —
+Same rules as ``tripl_cli/render.py`` — no colour, no spinners, no unicode —
 and the same reason: ``tripl install | tee provision.log`` and the terminal view
 must be the same artifact. The column padder is imported from there rather than
 re-implemented so the two families' tables cannot drift apart by a space.
@@ -15,8 +15,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tripl_cli.diagnostics.model import JsonDict
-from tripl_cli.diagnostics.render import columns
 from tripl_cli.install.files import ENV_NAME
 from tripl_cli.install.health import HealthOutcome
 from tripl_cli.install.plan import (
@@ -32,6 +30,8 @@ from tripl_cli.install.plan import (
 )
 from tripl_cli.install.secrets import REQUIRED_SECRETS
 from tripl_cli.install.shell import describe
+from tripl_cli.model import JsonDict
+from tripl_cli.render import columns
 
 # What each action is called in the human table. Deliberately the same tokens
 # the --json document carries, so a support conversation and a `jq` filter use

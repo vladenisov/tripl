@@ -3,8 +3,13 @@
 Kept small and greppable on purpose: if a key is not built here it does not
 exist, so "what does tripl emit" is answerable by reading one file. That promise
 is why the ``scans``/``drifts`` documents live here too rather than beside their
-command modules, even though this package is called ``diagnostics`` and they
-reach no verdict (tripl-ey6j.5 filed the rename as a follow-up).
+command modules — and it is also why this module sits at the package root rather
+than inside ``diagnostics``: every command emits from it and only ``doctor``
+reaches a verdict, so the package name was a claim about eight of the nine
+builders below that was simply false (tripl-azhh). ``test_contract.py`` now pins
+the promise instead of leaving it to a docstring: ``"schema_version"`` may be
+minted in this module and nowhere else, so "split the builders per command" is
+answered mechanically rather than by whoever reads this paragraph next.
 
 STABILITY, within one ``schema_version``:
 
@@ -32,13 +37,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from tripl_cli import __version__
-from tripl_cli.diagnostics.model import (
+from tripl_cli.model import (
     Check,
     DriftsSnapshot,
     Finding,
     Instance,
     JsonDict,
     MutationOutcome,
+    PlanRead,
     Report,
     Run,
     ScanJobsSnapshot,
@@ -50,10 +56,10 @@ from tripl_cli.diagnostics.model import (
 )
 
 if TYPE_CHECKING:
-    # Type-only, so the runtime import graph keeps its one direction: watch and
-    # install import diagnostics, never the reverse. The builders still live here
-    # because this module is the answer to "what does tripl emit" — a second
-    # place to build a document is a second place for it to drift.
+    # Type-only, so the runtime import graph keeps its one direction: ``watch``
+    # and ``install`` import this module, never the reverse. The builders still
+    # live here because this module is the answer to "what does tripl emit" — a
+    # second place to build a document is a second place for it to drift.
     from collections.abc import Sequence
     from pathlib import Path
 
@@ -305,6 +311,48 @@ def drifts_document(snapshot: DriftsSnapshot) -> JsonDict:
         }
         for project in snapshot.projects
     ]
+    return document
+
+
+def plan_read_document(read: PlanRead) -> JsonDict:
+    """``tripl events <verb>`` and ``tripl plan <verb>`` — ONE shape for all seven.
+
+    The rows land under ``items`` whichever verb produced them, including the
+    single-row detail reads, so ``.items[]`` is one selector for the whole family
+    rather than seven key names to look up. ``kind`` says what one item is;
+    branch on that, never on ``command``'s wording.
+
+    Rows are the API's own objects VERBATIM — no projection. A CLI writes to a
+    pipe, where a trimmed row is a field the operator has to go and fetch again;
+    the MCP's ``EVENT_LIST_FIELDS`` and friends exist because a model pays for
+    every token, which is a different cost and stays with its consumer
+    (tripl-i1dt). The one exception in this file remains ``scans list``, whose
+    ``base_query`` is kilobytes of free-text SQL.
+
+    ``total``/``offset``/``limit`` are null on the routes that answer a bare
+    array, and that null is the statement: nothing was paged, so the rows are
+    the whole answer. Where they are non-null, read ``truncated`` rather than
+    comparing them yourself.
+    """
+    document = _run_envelope(read.command, read.run)
+    document["project"] = read.project
+    # Null means main, on every one of these documents. There is no id for main
+    # to carry: `?branch=` is omitted to mean it (see api/branches.py).
+    document["branch"] = (
+        None if read.branch_id is None else {"id": read.branch_id, "name": read.branch_name}
+    )
+    document["kind"] = read.kind
+    document["total"] = read.total
+    document["offset"] = read.offset
+    document["limit"] = read.limit
+    # Derived here rather than left to the consumer: "the page filled up" and
+    # "the resource ended" look identical from `items | length` alone, and the
+    # second reading is the one that loses rows silently.
+    document["truncated"] = read.truncated
+    # Route-level facts, `{}` on the six verbs whose route reports none. Present
+    # on all seven so a consumer never tests for the key.
+    document["meta"] = dict(read.meta)
+    document["items"] = [dict(item) for item in read.items]
     return document
 
 

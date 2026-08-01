@@ -1,7 +1,7 @@
 """Human output for watch. ASCII only, and never redrawn.
 
 No colour, no cursor control, no spinner, no progress bar, no unicode glyph - the
-same rule as ``diagnostics/render.py`` and for the same reason, sharpened: a
+same rule as ``tripl_cli/render.py`` and for the same reason, sharpened: a
 follow mode is the command whose output actually gets piped. `tripl watch | tee
 incident.log` has to produce the artifact the operator saw, and a redrawn
 dashboard would need cursor control and produce neither.
@@ -26,8 +26,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from tripl_cli.diagnostics.model import format_duration, parse_time, to_rfc3339
-from tripl_cli.diagnostics.render import plural as _plural
+from tripl_cli.model import format_duration, parse_time, to_rfc3339
+from tripl_cli.render import plural as _plural
 from tripl_cli.watch.model import (
     EVENT_COLUMN_WIDTH,
     JobRow,
@@ -233,7 +233,7 @@ def _secs(value: float) -> str:
 
 
 def plural(count: int, noun: str) -> str:
-    """Re-exported from ``diagnostics.render``, which is where it lives now.
+    """Re-exported from ``tripl_cli.render``, which is where it lives now.
 
     Kept importable from here because half of ``watch`` reads it from this
     module; the definition moved when the ``scans``/``drifts`` footers needed the

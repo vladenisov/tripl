@@ -189,12 +189,19 @@ CLI layers (`cli/src/tripl_cli`):
   `commands/_write.py` holds the write-safety rules the mutating verbs share
   (`--dry-run`, the confirmation, "never prompt in a pipeline").
 - `runner.py`: the only `asyncio.run`, one connection pool per invocation.
-- `diagnostics/`: `collect.py` is async/impure and the only thing that speaks
-  HTTP (every failure becomes a `Fetched`, never an exception — except
-  `raise_selection_failure` / `read_or_raise`, which the verdict-free commands
-  use to opt back out); `checks.py` and
-  `scan_checks.py` are pure, synchronous, total functions of a `Snapshot`;
-  `report.py` is the `--json` contract; `render.py` is the ASCII output.
+- `api/`: the shared request layer — every REST path and request body lives
+  here and nowhere else, as frozen `ApiRequest` values. `tripl-mcp` imports it
+  too, which is why it holds facts about the API and never a consumer's policy.
+- `model.py`, `report.py`, `render.py`: the snapshot dataclasses, the `--json`
+  contract ("if a key is not built here it does not exist"), and the ASCII
+  output. At the package root rather than under `diagnostics/` because they
+  serve every command, including the verdict-free ones (tripl-azhh).
+- `diagnostics/`: the verdict layers only. `collect.py` is async/impure and the
+  only thing that speaks HTTP (every failure becomes a `Fetched`, never an
+  exception — except `raise_selection_failure` / `read_or_raise`, which the
+  verdict-free commands use to opt back out); `checks.py` and `scan_checks.py`
+  are pure, synchronous, total functions of a `Snapshot`; `endpoints.py`
+  declares which paths each command reads. A contract test pins that closed set.
 - `watch/`: the follow loop — `collect.py` polls, `diff.py` is the pure
   snapshot-to-events function, `render.py` is its JSON Lines and ASCII output.
 - User-facing reference: [website/docs/run/cli.md](website/docs/run/cli.md).

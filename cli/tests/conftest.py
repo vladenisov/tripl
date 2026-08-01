@@ -363,6 +363,171 @@ def make_event_type(type_id: str = "et-1", name: str = "app.screen_view") -> dic
     }
 
 
+def make_event(
+    event_id: str = "evt-1",
+    *,
+    name: str = "app.screen_view.viewed",
+    status: str = "live",
+    last_seen_at: datetime | None = None,
+    drift_count: int = 0,
+    field_values: list[dict[str, Any]] | None = None,
+    meta_values: list[dict[str, Any]] | None = None,
+    tags: list[str] | None = None,
+) -> dict[str, Any]:
+    """One ``EventListItemResponse`` / ``EventResponse`` row.
+
+    The two schemas differ only in that the detail one embeds ``event_type``
+    (an ``EventTypeBrief``) where the list one carries ``monitored``. One
+    builder covers both because every key ``tripl events`` reads is in the
+    intersection, and a second fixture would be a second place for the catalog's
+    shape to drift.
+    """
+    return {
+        "id": event_id,
+        "project_id": "pid-prod",
+        "event_type_id": "et-1",
+        "event_type": {
+            "id": "et-1",
+            "name": "app.screen_view",
+            "display_name": "Screen View",
+            "color": "#000000",
+        },
+        "name": name,
+        "description": "",
+        "status": status,
+        "reviewed": True,
+        "order": 0,
+        "owner_id": None,
+        "sunset_at": None,
+        "last_seen_at": api_time(last_seen_at) if last_seen_at else None,
+        "drift_count": drift_count,
+        "tags": [{"id": f"tag-{tag}", "name": tag} for tag in tags or []],
+        "field_values": field_values or [],
+        "meta_values": meta_values or [],
+        "metric_breakdown_columns": [],
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
+
+
+def make_field(
+    field_id: str = "fd-1",
+    *,
+    name: str = "screen_name",
+    field_type: str = "string",
+    is_required: bool = True,
+    sensitivity: str = "none",
+    enum_options: list[Any] | None = None,
+    order: int = 0,
+) -> dict[str, Any]:
+    """One ``FieldDefinitionResponse``. ``enum_options`` is ``array[Any] | null``."""
+    return {
+        "id": field_id,
+        "event_type_id": "et-1",
+        "name": name,
+        "display_name": name.replace("_", " ").title(),
+        "description": "",
+        "field_type": field_type,
+        "is_required": is_required,
+        "enum_options": enum_options,
+        "order": order,
+        "sensitivity": sensitivity,
+        "contract_regex": None,
+        "contract_min_value": None,
+        "contract_max_value": None,
+        "contract_max_bad_rate": 0.0,
+        "contract_required_max_null_rate": None,
+    }
+
+
+def make_variable(
+    variable_id: str = "var-1",
+    *,
+    name: str = "cart_value",
+    variable_type: str = "number",
+    event_count: int = 12,
+    open_drift_count: int = 0,
+) -> dict[str, Any]:
+    """One ``VariableResponse``."""
+    return {
+        "id": variable_id,
+        "project_id": "pid-prod",
+        "name": name,
+        "description": "",
+        "variable_type": variable_type,
+        "allowed_values": [],
+        "bindings": [],
+        "sample_values": [],
+        "event_names": [],
+        "event_count": event_count,
+        "context_count": 0,
+        "high_context_count": 0,
+        "low_context_count": 0,
+        "open_drift_count": open_drift_count,
+        "excluded_from_scans": False,
+        "source_name": None,
+    }
+
+
+def make_branch(
+    branch_id: str = "b-9f21",
+    *,
+    name: str = "checkout-redesign",
+    kind: str = "working",
+    status: str = "draft",
+    ahead: int | None = 3,
+    behind_base: bool | None = False,
+) -> dict[str, Any]:
+    """One ``PlanBranchResponse``. ``ahead``/``behind_base`` are nullable on the wire."""
+    return {
+        "id": branch_id,
+        "project_id": "pid-prod",
+        "name": name,
+        "description": "",
+        "kind": kind,
+        "status": status,
+        "base_revision_id": None,
+        "created_by": None,
+        "merged_by": None,
+        "merged_at": None,
+        "ahead": ahead,
+        "behind_base": behind_base,
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
+
+
+def make_search_result(
+    entity_type: str = "event",
+    *,
+    entity_id: str = "evt-1",
+    title: str = "app.screen_view.viewed",
+    subtitle: str = "Screen View",
+    confidence: float = 0.92,
+    score: float = 12.5,
+) -> dict[str, Any]:
+    """One ``SearchResult``."""
+    return {
+        "id": entity_id,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "title": title,
+        "subtitle": subtitle,
+        "description": "",
+        "snippet": "",
+        "route_path": f"/projects/prod/events/{entity_id}",
+        "score": score,
+        "confidence": confidence,
+        "highlights": [],
+        "event_id": entity_id if entity_type == "event" else None,
+        "parent_event_id": None,
+        "name": title,
+        "implemented": None,
+        "semantic_used": False,
+        "variable_values": [],
+    }
+
+
 def make_drift(
     *,
     drift_id: str = "drift-1",
@@ -419,6 +584,12 @@ class FakeInstance:
         self.jobs("prod", "scan-1", [make_job(at=moment, time_to=moment)])
         self.event_types("prod", [make_event_type()])
         self.drifts("prod", "et-1", [])
+        self.events("prod", [make_event(last_seen_at=moment)])
+        self.event("prod", "evt-1", make_event(last_seen_at=moment))
+        self.fields("prod", "et-1", [make_field()])
+        self.variables("prod", [make_variable()])
+        self.branches("prod", [make_branch("b-0001", name="main", kind="main", ahead=None)])
+        self.search("prod", [make_search_result()])
         self.coverage("prod")
         self.signals("prod", [])
         self.deliveries("prod", [])
@@ -493,6 +664,30 @@ class FakeInstance:
     @staticmethod
     def cancel_url(slug: str, scan_id: str, job_id: str) -> str:
         return f"{API_BASE}/projects/{slug}/scans/{scan_id}/jobs/{job_id}/cancel"
+
+    @staticmethod
+    def events_url(slug: str) -> str:
+        return f"{API_BASE}/projects/{slug}/events"
+
+    @staticmethod
+    def event_url(slug: str, event_id: str) -> str:
+        return f"{API_BASE}/projects/{slug}/events/{event_id}"
+
+    @staticmethod
+    def fields_url(slug: str, type_id: str) -> str:
+        return f"{API_BASE}/projects/{slug}/event-types/{type_id}/fields"
+
+    @staticmethod
+    def variables_url(slug: str) -> str:
+        return f"{API_BASE}/projects/{slug}/variables"
+
+    @staticmethod
+    def branches_url(slug: str) -> str:
+        return f"{API_BASE}/projects/{slug}/branches"
+
+    @staticmethod
+    def search_url(slug: str) -> str:
+        return f"{API_BASE}/projects/{slug}/search"
 
     @staticmethod
     def drifts_url(slug: str, type_id: str) -> str:
@@ -597,6 +792,81 @@ class FakeInstance:
         """``AlertDeliveryListResponse``: {items, total}, not a bare list."""
         body = {"items": items, "total": len(items or [])} if isinstance(items, list) else items
         return self._respond(self.deliveries_url(slug), status, body)
+
+    # --- the plan and catalog reads, for the `events` / `plan` tests ----------
+    def events(
+        self,
+        slug: str,
+        items: Any,
+        total: int | None = None,
+        status: int = 200,
+        payload: Any = _UNSET,
+    ) -> respx.Route:
+        """``EventListResponse``: ``{items, total}``, not a bare list.
+
+        ``total`` defaults to ``len(items)`` and is settable independently on
+        purpose: a page smaller than the total is exactly the condition
+        `truncated` exists for, and a fixture that could not express it could
+        not test the one line that says rows were left behind.
+
+        ``payload`` overrides the envelope entirely, which is how an error body
+        is registered — the same escape hatch ``drifts`` carries.
+        """
+        rows = items or []
+        body = (
+            payload
+            if payload is not _UNSET
+            else {"items": rows, "total": len(rows) if total is None else total}
+        )
+        return self._respond(self.events_url(slug), status, body)
+
+    def event(self, slug: str, event_id: str, payload: Any, status: int = 200) -> respx.Route:
+        return self._respond(self.event_url(slug, event_id), status, payload)
+
+    def fields(self, slug: str, type_id: str, payload: Any, status: int = 200) -> respx.Route:
+        """``GET .../fields`` -> a bare array of FieldDefinitionResponse."""
+        return self._respond(self.fields_url(slug, type_id), status, payload)
+
+    def variables(
+        self,
+        slug: str,
+        items: Any,
+        total: int | None = None,
+        status: int = 200,
+        payload: Any = _UNSET,
+    ) -> respx.Route:
+        rows = items or []
+        body = (
+            payload
+            if payload is not _UNSET
+            else {"items": rows, "total": len(rows) if total is None else total}
+        )
+        return self._respond(self.variables_url(slug), status, body)
+
+    def branches(self, slug: str, items: Any, status: int = 200) -> respx.Route:
+        """``PlanBranchList``: ``{items, total}``."""
+        rows = items or []
+        return self._respond(self.branches_url(slug), status, {"items": rows, "total": len(rows)})
+
+    def search(
+        self,
+        slug: str,
+        items: Any,
+        semantic_used: bool = False,
+        status: int = 200,
+    ) -> respx.Route:
+        """``SearchResponse``: ``{items, total, semantic_used}``.
+
+        No ``total`` parameter, deliberately. ``search_service`` answers
+        ``total=len(items)`` AFTER trimming to the limit — it never reports a
+        pre-paging count — so a double that could be told otherwise let the CLI
+        grow a truncation line no real response could trigger, and let two tests
+        assert that line's wording while proving only that the fake could lie
+        (found reviewing tripl-3ixs).
+        """
+        rows = items or []
+        body = {"items": rows, "total": len(rows), "semantic_used": semantic_used}
+        return self._respond(self.search_url(slug), status, body)
 
     def coverage(self, slug: str, payload: Any = _UNSET, status: int = 200) -> respx.Route:
         body = (

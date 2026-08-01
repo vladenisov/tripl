@@ -25,6 +25,11 @@ OPENAPI_PATH = Path(__file__).resolve().parents[2] / "backend" / "openapi.json"
 MCP_PACKAGE = Path(tripl_mcp.__file__).parent
 PATH_LITERAL = re.compile(r'f?"(/(?:projects|auth|data-sources)[^"]*)"')
 
+# Wire keys whose meaning ``tripl_cli.api`` owns: the paged envelope, search's
+# semantic flag, and the array ``event_types.field_count`` exists to replace.
+# Kept identical to the CLI suite's own list on purpose - the two are one rule.
+SHARED_RESPONSE_KEYS = frozenset({"items", "total", "semantic_used", "field_definitions"})
+
 
 @pytest.fixture(scope="module")
 def openapi_paths() -> dict[str, Any]:
@@ -106,6 +111,64 @@ def test_no_tool_constructs_an_api_request_of_its_own() -> None:
         if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "ApiRequest"
     ]
     assert not offenders, f"tripl_mcp constructs ApiRequest directly: {offenders}"
+
+
+def _read_key(node: ast.Call | ast.Subscript) -> str | None:
+    """The wire key this node READS, or ``None``.
+
+    ``data.get("items")`` and ``data["items"]`` only. Minting a key in a response
+    envelope is the opposite act and every tool here does it deliberately, and so
+    is testing for PRESENCE - ``"items" in data`` is how ``summarize_collection``
+    tells a page from an object to pass through, a question the shared layer
+    cannot answer because an absent envelope and an empty one unwrap the same.
+    """
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    ):
+        return node.args[0].value
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.ctx, ast.Load)
+        and isinstance(node.slice, ast.Constant)
+        and isinstance(node.slice.value, str)
+    ):
+        return node.slice.value
+    return None
+
+
+def test_no_tool_re_derives_a_shared_response_fact() -> None:
+    """A tool asks ``tripl_cli.api`` what a response MEANS, not just where to send.
+
+    tripl-ey6j.5 shared request building and left response reading behind, so
+    three tool bodies unwrapped ``{items, total}`` themselves while the CLI
+    unwrapped it through ``model.page_items`` - two readings of one wire format,
+    on the routes both surfaces call. The CLI's own test_contract.py scans this
+    package too; kept here as well so the mcp-server job fails on its own rather
+    than only in the sibling's CI, exactly like the path-literal rule above.
+
+    This does NOT cover the field projections. ``EVENT_LIST_FIELDS`` and friends
+    are context-budget policy for a model that pays per token, they have one
+    caller, and tripl-i1dt left all four here deliberately.
+    """
+    offenders: list[str] = []
+    for source in sorted(MCP_PACKAGE.rglob("*.py")):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call | ast.Subscript):
+                continue
+            key = _read_key(node)
+            if key in SHARED_RESPONSE_KEYS:
+                offenders.append(f"{source.name}:{node.lineno} reads {key!r}")
+    assert not offenders, (
+        "tripl_mcp reads a response key tripl_cli.api already answers - call "
+        "page_items/page_total, search.semantic_used or event_types.field_count "
+        f"instead of a second `.get`: {sorted(offenders)}"
+    )
 
 
 def test_write_tools_are_not_marked_read_only() -> None:

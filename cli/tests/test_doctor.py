@@ -23,7 +23,7 @@ from tests.conftest import (
     make_scan_config,
 )
 from tripl_cli.cli import main
-from tripl_cli.diagnostics.model import CHECK_IDS
+from tripl_cli.model import CHECK_IDS
 
 pytestmark = pytest.mark.usefixtures("configured_env")
 

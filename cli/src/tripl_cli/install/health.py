@@ -21,7 +21,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from tripl_cli.diagnostics.collect import probe_auth_status, probe_health
-from tripl_cli.diagnostics.model import Fetched, JsonDict
+from tripl_cli.model import Fetched, JsonDict
 from tripl_cli.runner import REQUEST_TIMEOUT_SECONDS, run_unauthenticated
 
 # How long between polls. Short enough that a fast start feels immediate, long

@@ -30,7 +30,8 @@ from typing import Any, Protocol
 from tripl_cli.api.scans import config_names, resolve_selectors
 from tripl_cli.diagnostics.collect import Reader, raise_selection_failure, select_projects
 from tripl_cli.diagnostics.endpoints import WATCH_ENDPOINTS
-from tripl_cli.diagnostics.model import (
+from tripl_cli.errors import TriplAPIError, TriplConfigError, TriplError
+from tripl_cli.model import (
     Fetched,
     JsonDict,
     JsonList,
@@ -39,7 +40,6 @@ from tripl_cli.diagnostics.model import (
     int_of,
     text_of,
 )
-from tripl_cli.errors import TriplAPIError, TriplConfigError, TriplError
 from tripl_cli.watch.collect import (
     TickReads,
     deliveries_of,

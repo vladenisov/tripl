@@ -37,9 +37,12 @@ from tripl.worker.tasks.metrics.tasks import METRICS_COLLECTION_MODE
 
 # tests -> tripl -> src -> backend -> repository root.
 _REPO_ROOT = Path(__file__).resolve().parents[4]
-_DIAGNOSTICS = _REPO_ROOT / "cli" / "src" / "tripl_cli" / "diagnostics"
+_PACKAGE = _REPO_ROOT / "cli" / "src" / "tripl_cli"
+_DIAGNOSTICS = _PACKAGE / "diagnostics"
 _SCAN_CHECKS = _DIAGNOSTICS / "scan_checks.py"
-_MODEL = _DIAGNOSTICS / "model.py"
+# At the package root, not under diagnostics/: the snapshot dataclasses serve
+# every command including the verdict-free ones, so tripl-azhh moved them out.
+_MODEL = _PACKAGE / "model.py"
 
 _SCHEDULE = "backend/src/tripl/worker/tasks/metrics/schedule.py"
 _TASKS = "backend/src/tripl/worker/tasks/metrics/tasks.py"
@@ -122,6 +125,13 @@ def _assignments(path: Path) -> dict[str, ast.expr]:
     this test's business.
     """
     found: dict[str, ast.expr] = {}
+    if not path.is_file():
+        # A moved mirror is exactly what this test exists to catch, so it must
+        # arrive as the message below rather than as a pathlib traceback. It did
+        # arrive as a traceback once (tripl-azhh moved model.py to the package
+        # root), and "FileNotFoundError in _assignments" says nothing about
+        # which constant stopped being checked.
+        return found
     for node in ast.parse(path.read_text(encoding="utf-8")).body:
         if isinstance(node, ast.Assign):
             names = [target.id for target in node.targets if isinstance(target, ast.Name)]

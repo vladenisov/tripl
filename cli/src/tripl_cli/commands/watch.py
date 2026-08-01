@@ -25,14 +25,14 @@ from datetime import datetime
 
 import httpx
 
-from tripl_cli.commands import bounded_float
+from tripl_cli.commands import add_timeout, bounded_float
 from tripl_cli.config import Config, require_base_url
 from tripl_cli.diagnostics.collect import Reader, instance_of
-from tripl_cli.diagnostics.model import JsonDict
-from tripl_cli.diagnostics.render import render_header
-from tripl_cli.diagnostics.report import watch_line
 from tripl_cli.errors import EXIT_OK
-from tripl_cli.runner import REQUEST_TIMEOUT_SECONDS, run_async
+from tripl_cli.model import JsonDict
+from tripl_cli.render import render_header
+from tripl_cli.report import watch_line
+from tripl_cli.runner import run_async
 from tripl_cli.watch.loop import EventSink, default_clock, follow, prepare
 from tripl_cli.watch.model import (
     MAX_DURATION_SECONDS,
@@ -125,14 +125,7 @@ def register(
         action="store_true",
         help="print JSON Lines on stdout, one object per event, and every human line on stderr",
     )
-    parser.add_argument(
-        "--timeout",
-        dest="timeout",
-        metavar="SECONDS",
-        type=bounded_float("--timeout", 0.1, 600.0),
-        default=REQUEST_TIMEOUT_SECONDS,
-        help=f"per-request timeout in seconds (default: {REQUEST_TIMEOUT_SECONDS})",
-    )
+    add_timeout(parser)
     parser.set_defaults(handler=run)
 
 

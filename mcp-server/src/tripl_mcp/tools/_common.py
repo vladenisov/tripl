@@ -1,10 +1,27 @@
-"""Shared helpers for tool implementations."""
+"""Shared helpers for tool implementations.
+
+Everything here is a statement about THIS consumer: what a model should be made
+to pay for, and what it should be told. That is why the four field projections
+below stayed when tripl-i1dt revisited them — ``tripl events list``, ``plan
+types``, ``plan fields`` and ``plan search`` all emit their rows VERBATIM, on
+purpose (see ``tripl_cli.report.plan_read_document``), because a CLI writes to a
+pipe and a trimmed row there is a field the operator has to fetch again. A
+projection with one caller is a context-budget policy, not a fact about the API,
+and moving one into ``tripl_cli`` would put agent payload policy in a
+distribution with nothing to apply it to.
+
+What DID move is the half of these bodies that was never about the consumer: the
+``{items, total}`` envelope and ``semantic_used`` are what the routes answer, so
+they are read through ``tripl_cli.api``. ``mcp-server/tests/test_contract.py``
+pins that nothing here re-derives them.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
 from mcp.types import ToolAnnotations
+from tripl_cli.api import page_items, page_total
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False)
@@ -75,11 +92,24 @@ def trim(item: Any, fields: tuple[str, ...]) -> Any:
 
 
 def summarize_collection(data: Any, sample_size: int = 10) -> dict[str, Any]:
-    """Reduce a possibly-huge list / {items,total} payload to count + sample."""
+    """Reduce a possibly-huge list / {items,total} payload to count + sample.
+
+    Count-plus-sample is an agent budget and stays here; WHERE the rows live is
+    the route's business, so the unwrapping is ``tripl_cli.api``'s (tripl-i1dt).
+    This was the third hand-written copy of it in this package.
+
+    The membership test is deliberately still spelled here: it asks whether the
+    payload IS a page, which ``page_items`` cannot answer — an absent envelope
+    and an empty one both unwrap to no rows, and the difference decides between
+    a ``{total, sample}`` summary and passing an unrecognised object through.
+    """
     if isinstance(data, dict) and "items" in data:
-        items = data.get("items") or []
-        total = data.get("total", len(items))
-        return {"total": total, "sample": items[:sample_size]}
+        items = page_items(data)
+        total = page_total(data)
+        # ``total`` is required on every list envelope this API serves, so the
+        # fallback covers a malformed body only — and there the row count is the
+        # one number that is certainly true.
+        return {"total": len(items) if total is None else total, "sample": items[:sample_size]}
     if isinstance(data, list):
         return {"total": len(data), "sample": data[:sample_size]}
     return {"data": data}
@@ -100,6 +130,12 @@ def with_mutation_warnings(data: Any) -> Any:
     (server.INSTRUCTIONS, and the create_event/update_event descriptions). The
     shared `tripl` client is consumed by a CLI too, which would print a warning
     line and exit 0, never an ``IMPORTANT_warnings`` dict key (tripl-ey6j.1).
+
+    Re-checked when the CLI's read verbs landed and still has one caller
+    (tripl-i1dt): ``tripl events`` is read-only BY DECISION — a catalog write has
+    to land on a plan branch, and reproducing that gate from a shell is a command
+    surface of its own (see ``tripl_cli.commands.events``). There is no second
+    caller to share with until the CLI can write.
     """
     if isinstance(data, dict) and data.get("warnings"):
         return {

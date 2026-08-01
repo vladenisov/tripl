@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from tripl_cli.api import scans as scans_api
-from tripl_cli.diagnostics.model import (
+from tripl_cli.model import (
     INTERVAL_SECONDS,
     JOBS_WINDOW,
     Check,

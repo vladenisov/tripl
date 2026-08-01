@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 
 import httpx
 
-from tripl_cli.commands import bounded_float, bounded_int
+from tripl_cli.commands import add_json, add_timeout, bounded_int
 from tripl_cli.config import Config, require_base_url
 from tripl_cli.diagnostics.checks import run_checks
 from tripl_cli.diagnostics.collect import (
@@ -26,10 +26,10 @@ from tripl_cli.diagnostics.collect import (
     collect_doctor,
     instance_of,
 )
-from tripl_cli.diagnostics.model import Report, Snapshot, exit_code_for
-from tripl_cli.diagnostics.render import render_check, render_footer, render_header
-from tripl_cli.diagnostics.report import doctor_document
-from tripl_cli.runner import REQUEST_TIMEOUT_SECONDS, run_async
+from tripl_cli.model import Report, Snapshot, exit_code_for
+from tripl_cli.render import render_check, render_footer, render_header
+from tripl_cli.report import doctor_document
+from tripl_cli.runner import run_async
 
 
 def register(
@@ -63,26 +63,14 @@ def register(
         action="store_true",
         help="also check demo projects, which are excluded by default",
     )
-    parser.add_argument(
-        "--json",
-        dest="as_json",
-        action="store_true",
-        help="print one JSON document on stdout and every human line on stderr",
-    )
+    add_json(parser)
     parser.add_argument(
         "--strict",
         dest="strict",
         action="store_true",
         help="exit 3 on warnings too (never on skipped checks)",
     )
-    parser.add_argument(
-        "--timeout",
-        dest="timeout",
-        metavar="SECONDS",
-        type=bounded_float("--timeout", 0.1, 600.0),
-        default=REQUEST_TIMEOUT_SECONDS,
-        help=f"per-request timeout in seconds (default: {REQUEST_TIMEOUT_SECONDS})",
-    )
+    add_timeout(parser)
     parser.add_argument(
         "--max-event-types",
         dest="max_event_types",

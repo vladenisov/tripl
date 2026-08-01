@@ -130,6 +130,31 @@ def test_drift_items_reads_the_items_envelope() -> None:
     assert event_types.drift_items(None) == []
 
 
+def test_field_count_reads_a_null_field_definitions_as_zero() -> None:
+    """The one derived fact both surfaces put in a table (tripl-i1dt).
+
+    ``field_definitions`` is nullable on the wire, and the two spellings of this
+    count - the CLI's table and the MCP's ``list_event_types`` - each had to
+    remember the ``or []``. Now one does.
+    """
+    assert event_types.field_count({"field_definitions": [{"id": "f1"}, {"id": "f2"}]}) == 2
+    assert event_types.field_count({"field_definitions": None}) == 0
+    assert event_types.field_count({}) == 0
+
+
+def test_semantic_used_reads_an_absent_flag_as_false_rather_than_unknown() -> None:
+    """``SearchResponse.semantic_used`` is declared ``bool = False`` server-side.
+
+    So a body without the key is the route SAYING the index did not answer, not
+    the route declining to say. An agent handed ``null`` there would have no way
+    to read the confidences it was also handed.
+    """
+    assert search_api.semantic_used({"items": [], "total": 0, "semantic_used": True}) is True
+    assert search_api.semantic_used({"items": [], "total": 0, "semantic_used": False}) is False
+    assert search_api.semantic_used({"items": [], "total": 0}) is False
+    assert search_api.semantic_used(None) is False
+
+
 def test_is_untriaged_matrix() -> None:
     now = datetime(2026, 8, 1, tzinfo=UTC)
     later = (now + timedelta(days=3)).isoformat()
@@ -228,7 +253,7 @@ def test_scan_config_summary_drops_base_query_and_adds_dispatchable() -> None:
 
 def test_the_jobs_limit_ceiling_is_the_constant_doctor_already_shares() -> None:
     """One 200 in the repository, not two."""
-    from tripl_cli.diagnostics.model import JOBS_WINDOW
+    from tripl_cli.model import JOBS_WINDOW
 
     assert scans.JOBS_LIMIT_MAX is JOBS_WINDOW
 

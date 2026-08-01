@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from tripl_cli.api.request import ApiRequest
-from tripl_cli.diagnostics.model import JOBS_WINDOW, JsonDict, JsonList, text_of
+from tripl_cli.model import JOBS_WINDOW, JsonDict, JsonList, names_by_id
 
 CONFIGS = "/projects/{slug}/scans"
 CONFIG = "/projects/{slug}/scans/{scan_id}"
@@ -139,13 +139,12 @@ def config_names(scans: JsonList) -> dict[str, str]:
     config with no interval has no dispatch history worth reading. Watch — and
     ``tripl scans run`` — ask "what is running right now", and a manual replay on
     an unscheduled config is exactly what tripl-ey6j.4 was filed for.
+
+    Kept as a name of its own because that exclusion is the fact worth writing
+    down; the extraction itself is ``model.names_by_id``, which the event-type
+    and branch selectors read through too.
     """
-    named: dict[str, str] = {}
-    for scan in scans:
-        config_id = text_of(scan, "id")
-        if config_id:
-            named[config_id] = text_of(scan, "name") or config_id
-    return named
+    return names_by_id(scans)
 
 
 def resolve_selectors(

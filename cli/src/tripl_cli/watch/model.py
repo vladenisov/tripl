@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from tripl_cli.diagnostics.model import (
+from tripl_cli.model import (
     JsonDict,
     Target,
     as_dict,
@@ -25,7 +25,7 @@ from tripl_cli.diagnostics.model import (
     parse_time,
     text_of,
 )
-from tripl_cli.diagnostics.report import (
+from tripl_cli.report import (
     WATCH_STREAM_DIAGNOSTIC,
     WATCH_STREAM_EVENT,
     WATCH_STREAM_META,
@@ -42,7 +42,7 @@ WATCH_INTERVAL_SECONDS = 10.0
 MIN_INTERVAL_SECONDS = 2.0
 MAX_INTERVAL_SECONDS = 3600.0
 
-# How many jobs one poll asks for. Deliberately NOT diagnostics' JOBS_LIMIT=200:
+# How many jobs one poll asks for. Deliberately NOT doctor's JOBS_WINDOW=200:
 # doctor asks "how long has this been broken" and needs history, watch asks "what
 # appeared since the last poll" and needs recency. 20x the payload on a loop that
 # repeats every 10 seconds is tripl-jfm3.107 rebuilt - production configs hold
