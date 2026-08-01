@@ -1541,7 +1541,7 @@ def test_reserved_catalog_columns_never_reserves_the_event_name_source() -> None
     Reserving it makes catalog_sync skip its FieldDefinition, and generate_events
     assembles format arguments only from columns that have one — so the name
     format is evaluated with its placeholder missing and collection dies with
-    "event_name_format references unknown keys".
+    "the event name format references unknown keys".
 
     This is production's 'Old events (iOS)' config: group rules keyed on
     ``action`` plus ``event_name_format='{action}'``. tripl-jfm3.90 reserved
@@ -1579,6 +1579,36 @@ def test_reserved_catalog_columns_never_reserves_the_event_name_source() -> None
         ],
     )
     assert reserved_catalog_columns(multi) == {"event_type", "time", "app_version", "screen_name"}
+
+
+def test_reserved_catalog_columns_never_reserves_a_dotted_placeholders_base_column() -> None:
+    """tripl-lpin reached from the other direction, through a DOTTED placeholder.
+
+    ``{event.category}`` is walked out of the ``event`` column's JSON, and
+    ``generate_events`` assembles ``col.path`` keys only for columns that reached
+    ``col_meta`` — i.e. that have a FieldDefinition. Subtracting the full key
+    ``event.category`` from a set of TOP-LEVEL column names removes nothing, so
+    ``event`` stayed reserved, catalog_sync skipped its FieldDefinition, and the
+    scan died on the very message this function's docstring exists to prevent.
+    Reverting to ``event_name_format_columns`` here turns this red.
+    """
+    from tripl.worker.tasks.metrics.tasks import reserved_catalog_columns
+
+    config = ScanConfig(
+        time_column="time",
+        platform_column="event",
+        event_name_format="{event.category}",
+    )
+    assert reserved_catalog_columns(config) == {"time"}
+
+    # The base column, never a path segment: a group-rule column that merely
+    # shares a name with a path SEGMENT stays reserved.
+    segment = ScanConfig(
+        time_column="time",
+        event_name_format="{event.category}",
+        event_group_rules=[{"conditions": [{"field": "category", "pattern": "^x"}]}],
+    )
+    assert reserved_catalog_columns(segment) == {"time", "category"}
 
 
 def test_reserved_catalog_columns_survives_malformed_group_rules() -> None:

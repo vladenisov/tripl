@@ -8540,6 +8540,12 @@ export interface components {
              * @enum {string}
              */
             action: "accept" | "snooze" | "false_positive" | "reopen";
+            /**
+             * Force
+             * @description Override the guard that refuses to accept a missing_field drift for a column a scan config's event name format builds event names from (tripl-3mmh). API-only escape hatch for a project-wide config that names the column but never scans this event type; requires a note explaining why, which lands in the audit record. The UI does not offer it — a warning next to an Accept button is a thing operators click past, and clicking past it is what caused the outage.
+             * @default false
+             */
+            force: boolean;
             /** Note */
             note?: string | null;
             /** Snoozed Until */

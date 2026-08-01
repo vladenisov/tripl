@@ -66,7 +66,7 @@ from tripl.core.analyzers.variable_detector import (
     DetectedPattern,
     detect_variables,
 )
-from tripl.core.name_template import NAME_FORMAT_PATTERN, format_keys
+from tripl.core.name_template import NAME_FORMAT_PATTERN, NameFormatError, format_keys
 from tripl.json_paths import (
     build_json_value,
     decode_json_path_value,
@@ -81,6 +81,22 @@ logger = logging.getLogger(__name__)
 
 VARIABLE_VALUE_SAMPLE_LIMIT = 20
 
+# How many available column names a NameFormatError lists before summarising.
+# ``user_facing_error`` truncates a curated message at 500 chars from the RIGHT,
+# so an uncapped list on a wide table pushes the missing key — the only
+# actionable part — out of the persisted message (tripl-3mmh).
+_AVAILABLE_KEYS_IN_ERROR = 10
+
+# The same 500 chars, as a character budget rather than a name count. A count
+# alone is not enough: ten 60-character column names still overrun the cap, and
+# the truncation lands mid-token and eats the "… and N more" tail that tells the
+# operator the list was summarised at all.
+#
+# Declared here rather than imported: this is ``core``, which must never import
+# ``worker`` (``test_core_does_not_import_worker``). The mirror is pinned by
+# ``test_name_format_errors.test_error_budget_mirrors_the_curated_cap``.
+_NAME_FORMAT_ERROR_BUDGET = 500
+
 # Re-export public names that callers import directly from this module.
 __all__ = [
     "EventGroupMatch",
@@ -92,6 +108,7 @@ __all__ = [
     "event_name_format_columns",
     "generate_events",
     "merge_existing_events_for_group_rules",
+    "name_format_base_columns",
 ]
 
 # The ``{key}`` grammar has exactly one definition, in ``core.name_template``.
@@ -112,6 +129,31 @@ def event_name_format_columns(event_name_format: str | None) -> set[str]:
     and the name format is then evaluated without it (tripl-lpin).
     """
     return set(format_keys(event_name_format)) if event_name_format else set()
+
+
+def name_format_base_columns(event_name_format: str | None) -> set[str]:
+    """Warehouse columns a name format needs a FieldDefinition for.
+
+    Placeholders come from ``event_name_format_columns`` — the one ``{key}``
+    grammar — and are then reduced to their BASE column. A dotted placeholder
+    like ``{event.category}`` is resolved by walking JSON out of the ``event``
+    column, and the ``col.path`` keys below are assembled only from ``col_meta``
+    entries, which every column enters through ``field_definitions.get(col_name)``.
+    So deleting the FieldDefinition for ``event`` kills ``{event.category}``
+    exactly as it kills ``{action}`` (tripl-3mmh), and reserving ``event`` away
+    from ``catalog_sync`` does the same thing by another route (tripl-lpin).
+
+    The base column is also the only thing a ``missing_field`` drift can name:
+    the detector builds those from ``{fd.name for fd in field_definitions}``,
+    which are always top-level column names, never dotted paths.
+
+    Lives beside ``event_name_format_columns`` because both consumers already
+    import from here — ``services.scan_config_lookup`` (which guards field
+    deletion) and ``worker.utils.reserved_columns`` (which guards reservation).
+    Putting it in ``services`` would make the sync worker import an async-session
+    module for one pure string helper.
+    """
+    return {key.split(".", 1)[0] for key in event_name_format_columns(event_name_format)}
 
 
 @dataclass
@@ -608,8 +650,43 @@ def _raw_values_from_row(
     return values
 
 
+def _summarize_keys(kwargs: dict[str, str], budget: int) -> str:
+    """The available keys, capped so the missing key AND the tail survive truncation.
+
+    Two caps, both load-bearing. ``_AVAILABLE_KEYS_IN_ERROR`` keeps the list
+    readable; ``budget`` keeps it inside what ``user_facing_error`` will persist.
+    A count alone is not enough — ten long column names still overrun 500 chars,
+    and because that truncation cuts from the RIGHT it lands mid-name and takes
+    the "… and N more" tail with it, so the operator cannot tell the list was
+    summarised (tripl-3mmh).
+    """
+    names = sorted(kwargs)
+    if not names:
+        # "Available keys: " with nothing after it reads like a formatting bug.
+        return "(none)"
+
+    def rendered(shown: list[str]) -> str:
+        remaining = len(names) - len(shown)
+        tail = f" … and {remaining} more" if remaining else ""
+        return f"{', '.join(shown)}{tail}"
+
+    shown: list[str] = []
+    for name in names[:_AVAILABLE_KEYS_IN_ERROR]:
+        # A single name wider than the budget is kept anyway: a truncated first
+        # name still beats "Available keys: " with nothing after it.
+        if shown and len(rendered([*shown, name])) > budget:
+            break
+        shown.append(name)
+    return rendered(shown)
+
+
 def _apply_name_format(fmt: str, kwargs: dict[str, str]) -> str:
-    """Replace {key} placeholders, supporting keys with dots like {event.category}."""
+    """Replace {key} placeholders, supporting keys with dots like {event.category}.
+
+    Raises :class:`NameFormatError` when the row cannot supply a placeholder;
+    ``worker.tasks._errors.user_facing_error`` surfaces that message verbatim,
+    so no caller needs a wrapper (tripl-3mmh).
+    """
     missing: list[str] = []
 
     def _replacer(m: re.Match[str]) -> str:
@@ -621,10 +698,20 @@ def _apply_name_format(fmt: str, kwargs: dict[str, str]) -> str:
 
     result = _FMT_PATTERN.sub(_replacer, fmt)
     if missing:
-        available = ", ".join(sorted(kwargs))
-        msg = (
-            f"event_name_format references unknown keys: {', '.join(missing)}. "
-            f"Available keys: {available}"
+        # The message MUST start with "Scan failed" — frontend/src/lib/scanError.ts
+        # only passes a backend message through verbatim when it does, and without
+        # the prefix this self-diagnosing line degrades to a bare "Scan failed."
+        # in the UI, which is the outage this fixes (tripl-3mmh). Missing keys come
+        # first and the available list is capped because ``user_facing_error``
+        # truncates from the right at 500 chars, and a wide warehouse table can
+        # supply hundreds of column names.
+        #
+        # De-duplicated in first-seen order: "{action} / {action}" is one broken
+        # column, and naming it twice reads as two separate problems.
+        unique_missing = list(dict.fromkeys(missing))
+        head = (
+            f"Scan failed: the event name format references unknown keys: "
+            f"{', '.join(unique_missing)}. Available keys: "
         )
-        raise ValueError(msg)
+        raise NameFormatError(head + _summarize_keys(kwargs, _NAME_FORMAT_ERROR_BUDGET - len(head)))
     return result

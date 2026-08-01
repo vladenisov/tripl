@@ -173,6 +173,37 @@ describe('FieldsEditor fields table', () => {
     expect(within(table).getByRole('columnheader', { name: 'Required' })).toBeInTheDocument()
     expect(within(table).queryByRole('columnheader', { name: 'Req' })).not.toBeInTheDocument()
   })
+
+  it('shows the backend 409 when a scan names events by the field being deleted', async () => {
+    // services/field_service._reject_if_a_scan_names_events_by refuses this
+    // deletion; without an alert the row simply stays and nothing explains why,
+    // which is how the guard would be invisible from the plan UI (tripl-3mmh).
+    const detail =
+      "Cannot delete this field. The field 'order_id' is used by the event name " +
+      "format of 1 scan config(s): 'Old events (iOS)' ({order_id}). Edit the scan's " +
+      'Event name format so it no longer references this column, then delete the field.'
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ detail }), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <FieldsEditor slug="demo" eventType={CHECKOUT} branchId={null} />
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(screen.getAllByTitle('Delete field')[0])
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'is used by the event name format',
+    )
+  })
 })
 
 describe('EventTypeDetail tabbed page', () => {

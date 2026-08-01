@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
+from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.schemas.field_definition import (
     FieldDefinitionBulkCreate,
@@ -13,6 +14,10 @@ from tripl.schemas.field_definition import (
     FieldReorder,
 )
 from tripl.services.event_type_service import get_event_type
+from tripl.services.scan_config_lookup import (
+    name_format_conflict_detail,
+    scan_configs_blocking_field_removal,
+)
 from tripl.services.search_service import reindex_project_branch
 
 
@@ -152,6 +157,56 @@ async def update_field(
     return field
 
 
+async def _reject_if_a_scan_names_events_by(
+    session: AsyncSession,
+    *,
+    event_type: EventType,
+    field_name: str,
+) -> None:
+    """409 when deleting this field would leave a scan unable to name its events.
+
+    The SECOND door to the tripl-lpin outage. Accepting a ``missing_field`` drift
+    is guarded in ``schema_drift_service``; this is the same deletion reached from
+    the plan UI in one click, with the same consequence — ``generate_events``
+    assembles its format arguments only from columns that still have a
+    FieldDefinition, so removing the one ``{action}`` names kills every collection
+    with "the event name format references unknown keys" (tripl-3mmh).
+
+    **409, deliberately**, the status the drift door already returns: this is not a
+    malformed request (422) and not a permission problem (403) — the field is in a
+    state that conflicts with the deletion, exactly like the 409 this module
+    already returns for a duplicate field name. Two doors, one status, one message
+    body from ``name_format_conflict_detail``, so an operator meets one rule.
+
+    **No ``force`` escape hatch**, unlike the drift door, for two reasons. The
+    drift override is non-reflexive only because it requires a ``note`` that lands
+    in the drift's audit record; a deleted FieldDefinition leaves no record for a
+    note to land in, so ``force`` here would be the bare click-through the drift
+    door refused to build. And nobody is cornered: an open drift row nags until
+    it is resolved one way or another, whereas a field an operator merely wanted
+    to tidy can stay. The genuine over-fire (a project-wide grouped config that
+    names the column but never scans this event type) still has its release valve
+    on the drift door, which is where the note can be recorded.
+    """
+    blocking = await scan_configs_blocking_field_removal(
+        session,
+        project_id=event_type.project_id,
+        event_type_id=event_type.id,
+        field_name=field_name,
+    )
+    if not blocking:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail=name_format_conflict_detail(
+            field_name=field_name,
+            configs=blocking,
+            lead="Cannot delete this field.",
+            then="delete the field",
+        ),
+    )
+
+
 async def delete_field(
     session: AsyncSession,
     slug: str,
@@ -169,6 +224,14 @@ async def delete_field(
     field = result.scalar_one_or_none()
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
+    # Main only. A branch is where you PLAN a removal, and deleting a field there
+    # changes no live collection — no scan reads a branch's plan. Guarding it
+    # would make the branch useless for staging "drop the column and rewrite the
+    # scan's name format", which is the repair this guard tells operators to do.
+    # The branch's deletion becomes real when it merges, and the merge has its
+    # own guard (``plan_branch_merge_service``) — the third door.
+    if is_main:
+        await _reject_if_a_scan_names_events_by(session, event_type=et, field_name=field.name)
     await session.delete(field)
     await session.commit()
     await reindex_project_branch(

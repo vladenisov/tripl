@@ -70,6 +70,47 @@ describe('friendlyScanError', () => {
     expectSanitised(result.message)
   })
 
+  it('passes the event-name-format failure through verbatim', () => {
+    // The real string from core/analyzers/event_generator._apply_name_format.
+    // It only survives because it starts with "Scan failed" — this test fails if
+    // anyone drops that prefix, which would silently return the operator to the
+    // bare "Scan failed." that hid a four-day outage (tripl-3mmh).
+    const raw =
+      'Scan failed: the event name format references unknown keys: action. ' +
+      'Available keys: platform, screen_name, time'
+    const result = friendlyScanError(raw)
+    expect(result.message).toBe(raw)
+    expect(result.technical).toBeUndefined()
+  })
+
+  it('passes it through even when a warehouse column name embeds a raw-internals marker', () => {
+    // The curated message enumerates the warehouse's OWN column names, and real
+    // tables have columns like `client_errno` and `error_traceback_id`. As bare
+    // substrings those read as a raw exception, the verbatim pass-through was
+    // skipped, and `connection_id` two columns later then mapped the whole thing
+    // to an actively WRONG connection error (tripl-3mmh).
+    const raw =
+      'Scan failed: the event name format references unknown keys: action. ' +
+      'Available keys: client_errno, connection_id, error_traceback_id, sqlalchemy_version'
+    const result = friendlyScanError(raw)
+    expect(result.message).toBe(raw)
+    expect(result.technical).toBeUndefined()
+  })
+
+  it('still catches the markers when they stand alone in raw exception text', () => {
+    // The other half of the bargain: token boundaries must not blunt the guard.
+    for (const raw of [
+      'Scan failed: ConnectionRefusedError: [Errno 111] Connection refused',
+      'Scan failed: Traceback (most recent call last):',
+      'Scan failed: SQLAlchemy could not complete the statement',
+      'Scan failed: use a session.no_autoflush block',
+      'Scan failed: <Engine object at 0x7f3d10a2b4c0> died',
+    ]) {
+      expect(friendlyScanError(raw).message).not.toBe(raw)
+      expect(friendlyScanError(raw).technical).toBe(raw)
+    }
+  })
+
   it('falls back to a bare "Scan failed." for unknown errors but still keeps the technical detail', () => {
     const raw = 'KeyError: tracking_plan_id'
     const result = friendlyScanError(raw)

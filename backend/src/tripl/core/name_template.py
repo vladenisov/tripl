@@ -22,6 +22,28 @@ from typing import Any
 NAME_FORMAT_PATTERN = re.compile(r"\{([^}]+)\}")
 
 
+class NameFormatError(ValueError):
+    """An ``event_name_format`` names a key the row cannot supply.
+
+    Authored by tripl, never a driver string: it carries the format's own
+    placeholder names and the columns that were available, no host, port or
+    library text. ``worker.tasks._errors.user_facing_error`` therefore surfaces
+    it verbatim, the same bargain ``core.adapters.errors.WarehouseCapabilityError``
+    strikes with the data-source sanitiser.
+
+    It exists because raising a bare ``ValueError`` collapsed the one
+    self-diagnosing line ("references unknown keys: action") into "Scan failed
+    due to an internal error." for four days of production collection failures
+    (tripl-3mmh, root cause of tripl-lpin). It lives in ``core`` because ``core``
+    must never import ``worker`` — admitting it to the curated set in
+    ``_errors`` keeps the import direction worker → core and means every caller
+    of the name-format code gets the behaviour without opting in.
+
+    A ``ValueError`` subclass so existing ``except ValueError`` handlers keep
+    working.
+    """
+
+
 def format_keys(fmt: str) -> list[str]:
     return NAME_FORMAT_PATTERN.findall(fmt)
 

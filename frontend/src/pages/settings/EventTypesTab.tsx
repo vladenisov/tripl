@@ -447,6 +447,9 @@ export function FieldsEditor({
   })
 
   const handleDelete = async (f: FieldDefinition) => {
+    // Drop the previous failure first: a stale 409 next to a different field's
+    // confirmation reads as if THAT delete had failed.
+    deleteMut.reset()
     const ok = await confirm({
       title: 'Delete field',
       message: `Delete "${f.display_name}" from ${eventType.display_name}?`,
@@ -499,6 +502,17 @@ export function FieldsEditor({
       }
     >
       {dialog}
+      {/* Without this the backend's 409 (deleting a field a scan's event name
+          format builds event names from) is invisible: the row simply stays and
+          the operator has no idea why (tripl-3mmh). The backend sends a plain
+          string detail, which api/client.ts puts straight into ApiError.message,
+          so it renders verbatim — it already names the scan config and the one
+          edit that unblocks the delete. */}
+      {deleteMut.isError && (
+        <div role="alert" className="px-[18px] py-2 text-[12.5px] text-destructive">
+          {getErrorMessage(deleteMut.error)}
+        </div>
+      )}
       {sortedFields.length === 0 ? (
         <p className="px-[18px] py-3.5 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
           No fields defined yet.

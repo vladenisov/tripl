@@ -1005,6 +1005,14 @@ Two operations exist in the REST API and will not be added to this CLI.
   reopening) stay in the tripl app. `dismiss` sends `false_positive` or `snooze`
   and there is no flag that reaches `accept`.
 
+  The API refuses one slice of that damage on its own: accepting a
+  `missing_field` drift for a column a scan config's **event name format** builds
+  event names from answers `409`, because the delete would fail every subsequent
+  collection. It carries a `force` override for the case where that guard
+  over-fires, and `force` has no flag here either — it is reachable only from a
+  request body you write yourself, which is the point. See
+  [Schema drift](../use/feature-reference.md#schema-drift).
+
 ## `tripl scans`
 
 `doctor` tells you a scan config is failing and `watch` follows one while it
@@ -1336,7 +1344,7 @@ usage: tripl drifts dismiss [-h] [--url URL] [--api-key KEY] [--config PATH]
 | `<drift-id>` | The drift to dismiss. Take it from the first column of `drifts list`. |
 | `--project SLUG` | **Required**, exactly once — the action route carries a slug that a drift id cannot supply. |
 | `--snooze-until TS` | RFC 3339. Its **presence selects `snooze`**; its absence selects `false_positive`. |
-| `--note TEXT` | Resolution note stored with the drift. The server caps it at 2000 characters. **Omitting it clears any note already stored** — see below. |
+| `--note TEXT` | Resolution note stored with the drift. The server caps it at 2000 characters. **Replaces** the stored note; omitting it leaves the stored note untouched — see below. |
 | `--dry-run` | Resolve everything, print the request, send nothing. Never prompts. |
 | `--yes` | Skip the confirmation. **Required when stdin is not a terminal.** |
 | `--json` | One JSON document on stdout, every human line on stderr. |
@@ -1372,18 +1380,25 @@ which one you get is decided by whether you passed a timestamp. `accept` and
 `reopen` have no spelling here at all — see
 [what is deliberately not here](#what-is-deliberately-not-here).
 
-:::warning Dismissing without `--note` erases the note already on the drift
-The action route **replaces** `resolution_note` on every call, from the request
-body, and an absent `note` and an explicit `null` are indistinguishable to it —
-the CLI already omits the key rather than sending null, and it makes no
-difference. So a drift dismissed last week with
-`--note 'waiting on the mobile release'`, then snoozed again today without
-`--note`, comes back with `resolution_note: null` and the reason is gone.
+:::note `--note` overwrites; omitting it keeps the note already on the drift
+The action route writes `resolution_note` **only when the request carries a
+note**, so a drift dismissed last week with
+`--note 'waiting on the mobile release'` and snoozed again today without
+`--note` keeps last week's sentence. This has not always been true: the route
+used to assign the note on every call, so an action without one erased the
+reason. A runbook that tells you to re-pass `--note` on every dismiss to avoid
+losing it is describing the old defect and no longer buys anything.
 
-This is a property of the action route, not of this CLI: any client that omits
-the note replaces it. **Pass `--note` every time you dismiss the same drift
-twice**, and read the current one out of `tripl drifts list --json` first if you
-do not remember it — `resolution_note` is carried there verbatim.
+What remains true is that `--note TEXT` **replaces** whatever was stored — there
+is no append, and the drift keeps exactly one note. Read the current one out of
+`tripl drifts list --json` before you overwrite a note you did not write;
+`resolution_note` is carried there verbatim. The only way to blank a note from
+here is `--note ''`, which stores an **empty** note rather than removing it.
+
+This CLI omits `note` from the request body entirely rather than sending `null`
+— `--dry-run` prints the exact body — so the paragraph above holds however a raw
+client's explicit `null` is read. The one action that clears a note
+unconditionally is `reopen`, which has no spelling here.
 :::
 
 :::warning A naive `--snooze-until` is read as **UTC**, not as your local time

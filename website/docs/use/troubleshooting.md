@@ -211,6 +211,14 @@ A handful of conditions are surfaced **verbatim** because they're actionable:
 - **Misconfigured event typing.** *"Either event_type_id or event_type_column
   must be specified."* Pick a single event type for the config, or set the
   column that splits rows into event types.
+- **Event name format references a column that is gone.** *"Scan failed: the
+  event name format references unknown keys: `action`. Available keys: …"* The
+  scan's **Event name format** names a column the query no longer supplies —
+  usually because the column's field was deleted from the event type, often by
+  accepting a `missing_field` schema drift. Fix it by editing the Event name
+  format so it only references columns the query returns, or by re-declaring the
+  field on the event type. tripl now refuses the drift accept that causes this
+  (see [Schema drift](./feature-reference.md#schema-drift)).
 
 **Likely causes & fixes for connection failures.**
 

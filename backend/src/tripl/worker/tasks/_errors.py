@@ -12,9 +12,18 @@ that is safe to persist verbatim, while the caller logs the full exception
 separately. ``ScanError`` opts a message *into* verbatim surfacing for
 controlled, user-actionable conditions (a configuration problem, a row-limit
 hit, ...).
+
+A second exception is admitted to that curated set: ``core.name_template
+.NameFormatError``. It is raised in ``core``, which must never import ``worker``,
+so it cannot subclass ``ScanError``; admitting it by type here rather than
+wrapping it at each call site means every caller of the name-format code — there
+are two today and a third will come — surfaces the real reason without opting in
+(tripl-3mmh).
 """
 
 from __future__ import annotations
+
+from tripl.core.name_template import NameFormatError
 
 
 class ScanError(Exception):
@@ -29,7 +38,13 @@ class ScanError(Exception):
     """
 
 
-# A curated ``ScanError`` message is surfaced verbatim; cap its length so an
+# Exceptions whose message tripl authored and is therefore safe verbatim.
+# ``ScanError`` is the worker's own; ``NameFormatError`` is raised in ``core``
+# (see the module docstring) and carries only the format's placeholder names and
+# the columns that were available — no host, port, driver or ORM text.
+_CURATED_ERRORS = (ScanError, NameFormatError)
+
+# A curated message is surfaced verbatim; cap its length so an
 # accidental novel-length message can't blow up a UI row (mirrors how a data
 # source's ``last_test_message`` stays short and displayable).
 _MAX_CURATED_LEN = 500
@@ -63,12 +78,12 @@ _CONNECTION_HINTS = (
 def user_facing_error(exc: Exception) -> str:
     """Map an exception to a message safe to persist on a user-facing field.
 
-    ``ScanError`` messages are author-curated and surfaced verbatim. For every
-    other exception the raw text is dropped (it carries hostnames, ports, driver
-    names, or ORM autoflush hints — log the full exception separately) and
+    ``_CURATED_ERRORS`` messages are author-curated and surfaced verbatim. For
+    every other exception the raw text is dropped (it carries hostnames, ports,
+    driver names, or ORM autoflush hints — log the full exception separately) and
     replaced with a generic, categorized summary.
     """
-    if isinstance(exc, ScanError):
+    if isinstance(exc, _CURATED_ERRORS):
         return str(exc)[:_MAX_CURATED_LEN]
     text = str(exc).lower()
     if any(hint in text for hint in _TIMEOUT_HINTS):

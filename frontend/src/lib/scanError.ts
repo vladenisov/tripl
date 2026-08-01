@@ -52,11 +52,31 @@ const SCAN_ERROR_RULES: ReadonlyArray<{ patterns: readonly string[]; message: st
  * of these markers, it is safe to show verbatim. This guard makes the
  * pass-through below leak-proof even if some path prefixes raw text with
  * "Scan failed:".
+ *
+ * Anchored to token boundaries, not matched as bare substrings. One of those
+ * curated messages enumerates the warehouse's own column names ("Available keys:
+ * …"), so `client_errno` or `error_traceback_id` used to read as a raw exception
+ * — the pass-through was then skipped, the text fell through to SCAN_ERROR_RULES
+ * below, and a sibling column called `connection_id` mapped it to an actively
+ * WRONG "could not connect to the data source" (tripl-3mmh). The `host=` / `port=`
+ * / ` object at 0x` markers carry characters no SQL identifier has, so they stay
+ * plain substrings. A column named EXACTLY `errno` still trips the guard: that is
+ * the leak-proof side of the bargain, and it costs one generic message, never a
+ * wrong one.
  */
-const RAW_INTERNAL_MARKERS = [
-  'httpsconnectionpool', 'sqlalchemy', 'autoflush', 'getaddrinfo',
-  'host=', 'port=', 'errno', 'traceback', ' object at 0x',
-] as const
+const RAW_INTERNAL_MARKERS: readonly RegExp[] = [
+  /(?<![a-z0-9_])httpsconnectionpool(?![a-z0-9_])/,
+  /(?<![a-z0-9_])sqlalchemy(?![a-z0-9_])/,
+  // `no_autoflush` is the SQLAlchemy hint's own spelling, so it is part of the
+  // marker rather than something a left boundary should exclude.
+  /(?<![a-z0-9_])(?:no_)?autoflush(?![a-z0-9_])/,
+  /(?<![a-z0-9_])getaddrinfo(?![a-z0-9_])/,
+  /(?<![a-z0-9_])errno(?![a-z0-9_])/,
+  /(?<![a-z0-9_])traceback(?![a-z0-9_])/,
+  /host=/,
+  /port=/,
+  / object at 0x/,
+]
 
 export function friendlyScanError(raw: string | null | undefined): FriendlyScanError {
   if (!raw || raw.trim() === '') {
@@ -71,7 +91,7 @@ export function friendlyScanError(raw: string | null | undefined): FriendlyScanE
   // show it verbatim so users keep the specific reason instead of the generic
   // fallback. Pre-sanitisation records and genuinely raw strings fall through to
   // the mapping rules below.
-  const hasRawInternals = RAW_INTERNAL_MARKERS.some((marker) => haystack.includes(marker))
+  const hasRawInternals = RAW_INTERNAL_MARKERS.some((marker) => marker.test(haystack))
   if (!hasRawInternals && haystack.startsWith('scan failed')) {
     return { message: trimmed }
   }

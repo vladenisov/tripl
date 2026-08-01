@@ -21,7 +21,6 @@ from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_tag import EventTag
 from tripl.models.field_definition import FieldDefinition
-from tripl.models.scan_config import ScanConfig
 from tripl.models.user import User
 from tripl.models.variable import Variable
 from tripl.schemas.event import (
@@ -35,6 +34,7 @@ from tripl.schemas.event import (
 )
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
+from tripl.services.scan_config_lookup import load_governing_scan_configs
 from tripl.services.schema_drift_service import get_drift_counts_by_event_type
 from tripl.services.search_service import (
     _queue_embedding_refresh,
@@ -417,26 +417,15 @@ async def _resolve_event_name_format(
 ) -> str | None:
     """The scan rule governing names for this event type, if any.
 
-    A config bound to the exact event type wins over project-wide (NULL
-    event_type_id) configs; ties break on the most recently updated config.
+    Which configs are in scope is ``scan_config_lookup.load_governing_scan_configs``
+    — shared with the schema-drift guard so the two cannot disagree about
+    reachability (tripl-3mmh). The tie-break below is this function's own policy:
+    a config bound to the exact event type wins over project-wide (NULL
+    event_type_id) configs, and ties break on the most recently updated config.
     """
-    rows = (
-        (
-            await session.execute(
-                select(ScanConfig).where(
-                    ScanConfig.project_id == project_id,
-                    ScanConfig.event_name_format.is_not(None),
-                    or_(
-                        ScanConfig.event_type_id == event_type_id,
-                        ScanConfig.event_type_id.is_(None),
-                    ),
-                )
-            )
-        )
-        .scalars()
-        .all()
+    rows = await load_governing_scan_configs(
+        session, project_id=project_id, event_type_id=event_type_id
     )
-    rows = [row for row in rows if (row.event_name_format or "").strip()]
     if not rows:
         return None
     exact = [row for row in rows if row.event_type_id == event_type_id]
