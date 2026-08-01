@@ -300,6 +300,11 @@ polls it in the background; when Jira reports Done, those events advance to
 is separate from a Jira alert destination, which opens incident tickets from
 monitoring signals.
 
+Select the merged branch to reach its ticket: the **Implementation ticket**
+panel on the branch detail shows the ticket key as a link that opens the issue
+in Jira, and a chip that flips from `Open` to `Done` once the background poll
+sees it closed. Branches that opened no ticket show no panel.
+
 ### Undo one change on a branch
 
 A branch is not all-or-nothing. Expand any row in the diff and press **Revert**
