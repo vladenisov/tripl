@@ -37,10 +37,17 @@ same [safe defaults](./agent-api-guide.md#safe-agent-defaults) as for raw REST.
 Stdio is the default transport: the MCP client launches `tripl-mcp` as a child
 process and the key comes from the environment.
 
-:::note Not published to PyPI (yet)
-`tripl-mcp` is not on the package index, so a bare `uvx tripl-mcp` will not
-resolve. Install it straight from git with `uvx --from` as shown below, or run
-it from a checkout. The **container** image *is* published —
+:::note Which install paths work
+`uvx tripl-mcp` works — version 0.1.0 is on PyPI and needs only `mcp` and
+`httpx`.
+
+The copy in the repository is ahead of that release: it takes its HTTP client
+from the `tripl` distribution, which is not published yet, so a checkout
+resolves `tripl` from the sibling `cli/` directory. If you install from git with
+`uvx --from` as shown below and it cannot find `tripl`, use a local checkout
+instead — that form is not verified to reach the sibling directory.
+
+The **container** image is published either way —
 `ghcr.io/vladenisov/tripl-mcp`, built alongside the app image on every release —
 and is what `docker compose --profile mcp up` pulls.
 :::

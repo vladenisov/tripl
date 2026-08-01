@@ -13,11 +13,23 @@ mounted into the FastAPI app.
   main plan by accident. Operators can override with `TRIPL_MCP_ALLOW_MAIN=1`.
 - Branch merge/revert/transition, SSE streams, and photo upload are
   intentionally not exposed in v1.
+- The HTTP client is **not in this package**. It lives in the `tripl`
+  distribution (`../cli`) and is imported from there, so the CLI and this server
+  share one implementation rather than two that drift (tripl-ey6j.1).
 
 ## stdio (Claude Code / Claude Desktop)
 
-> **Not on PyPI.** There is no `tripl-mcp` package on the index yet, so a bare
-> `uvx tripl-mcp` will not resolve. Install from git or from a checkout.
+> **`uvx tripl-mcp` works today.** The published 0.1.0 predates the client
+> extraction and depends only on `mcp` and `httpx`.
+>
+> The version *in this repository* is not the published one: it takes its HTTP
+> client from `tripl`, which is not on the index yet (tripl-ey6j.6). A checkout
+> therefore resolves `tripl` from the sibling `cli/` directory via
+> `[tool.uv.sources]`, and the next release of `tripl-mcp` has to wait for
+> `tripl` to be published — otherwise the wheel would carry a dependency nobody
+> can install. Whether the `git+…#subdirectory=mcp-server` form below also
+> reaches that sibling directory is **untested**; use a local checkout if it
+> fails.
 
 From git — no clone needed:
 
@@ -76,8 +88,22 @@ the tripl API and never stored. Requests without it get a clear tool error.
 ```bash
 cd mcp-server
 uv sync
-uv run pytest -q
-uv run ruff check .
+uv run --group dev pytest -q
+uv run --group dev ruff check
+uv run --group dev ruff format --check
+uv run --group dev mypy src
+```
+
+`uv` resolves `tripl` from `../cli` via `[tool.uv.sources]`, so an edit there is
+picked up with no install step — and must be, because `tripl_cli.client` is this
+server's transport. **Run both suites after touching it**, which is what
+`ci.yml`'s `cli` and `mcp` jobs do.
+
+The container image builds from the **repository root**, not this directory,
+for the same reason:
+
+```bash
+docker build -f mcp-server/Dockerfile .   # `docker build ./mcp-server` no longer works
 ```
 
 ## Docs

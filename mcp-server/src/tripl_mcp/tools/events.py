@@ -6,9 +6,15 @@ from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from tripl_mcp.client import with_mutation_warnings
 from tripl_mcp.runtime import client_for, ensure_branch_not_main, require_branch_id
-from tripl_mcp.tools._common import EVENT_LIST_FIELDS, READ_ONLY, WRITE, WRITE_UPDATE, trim
+from tripl_mcp.tools._common import (
+    EVENT_LIST_FIELDS,
+    READ_ONLY,
+    WRITE,
+    WRITE_UPDATE,
+    trim,
+    with_mutation_warnings,
+)
 
 
 async def list_events(

@@ -123,7 +123,10 @@ jobs:
       - name: Build & push (linux/amd64, linux/arm64)
         uses: docker/build-push-action@v7
         with:
-          context: ./mcp-server
+          # Repo root, not ./mcp-server: the image builds the sibling `tripl`
+          # package from ./cli, which a mcp-server/ context cannot reach
+          # (tripl-ey6j.1).
+          context: .
           file: ./mcp-server/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true

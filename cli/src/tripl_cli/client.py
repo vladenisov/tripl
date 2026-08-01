@@ -1,8 +1,13 @@
 """Thin async HTTP client for the tripl REST API (`/api/v1`).
 
-Maps tripl's auth/validation failures to agent-readable MCP tool errors and
-surfaces mutation warnings prominently. Pure pass-through otherwise — no
-re-modeling of API responses.
+Maps tripl's auth/validation failures to typed exceptions the caller can render
+however it needs. Pure pass-through otherwise — no re-modeling of API responses.
+
+Shared by two distributions: the ``tripl`` CLI it ships in, and ``tripl-mcp``,
+which imports it from here rather than carrying a copy (tripl-ey6j.1). Nothing
+consumer-specific belongs in this module — no MCP vocabulary, no CLI flag names,
+no ``print``. Errors carry structure (``status_code``, ``base_url``) and each
+consumer words its own guidance around them.
 """
 
 from __future__ import annotations
@@ -11,30 +16,36 @@ import json
 from typing import Any
 
 import httpx
-from mcp.server.fastmcp.exceptions import ToolError
 
-from tripl_mcp import __version__
+from tripl_cli import __version__
+from tripl_cli.errors import TriplAPIError, TriplConnectionError
 
 API_PREFIX = "/api/v1"
 DEFAULT_TIMEOUT_SECONDS = 30.0
-USER_AGENT = f"tripl-mcp/{__version__}"
+# What this distribution calls itself on the wire. The backend does not read
+# User-Agent, but it is the only thing an operator reading access logs has to
+# tell CLI traffic from agent traffic — so it is a PARAMETER, not a constant,
+# and tripl-mcp passes its own (tripl-ey6j.1).
+DEFAULT_USER_AGENT = f"tripl/{__version__}"
 
 
 def create_http_client(
     base_url: str,
     api_key: str,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    user_agent: str = DEFAULT_USER_AGENT,
 ) -> httpx.AsyncClient:
     """Create one configured transport client.
 
-    Stdio owns this client for the FastMCP server lifespan. Streamable HTTP and
-    direct ``TriplClient`` callers create it for one invocation instead.
+    The caller may own one client for a whole session (a CLI command that fires
+    many requests, an MCP server lifespan) or let ``TriplClient`` create one per
+    request.
     """
     return httpx.AsyncClient(
         base_url=base_url.rstrip("/") + API_PREFIX,
         headers={
             "Authorization": f"Bearer {api_key}",
-            "User-Agent": USER_AGENT,
+            "User-Agent": user_agent,
         },
         timeout=timeout,
         follow_redirects=True,
@@ -59,52 +70,42 @@ def _as_text(detail: Any) -> str:
 
 
 def raise_for_status(response: httpx.Response) -> None:
-    """Translate tripl API error responses into MCP tool errors."""
+    """Translate tripl API error responses into ``TriplAPIError``."""
     status = response.status_code
     if status < 400:
         return
     detail = _detail_of(response)
     if status == 401:
-        raise ToolError(
-            "Invalid or expired API key (401). Check TRIPL_API_KEY / the Bearer "
-            f"token sent to this server. API detail: {_as_text(detail)}"
+        # No "check TRIPL_API_KEY" here, unlike the pre-extraction version: stdio
+        # tripl-mcp reads that env var, streamable-http tripl-mcp forwards a
+        # per-request Bearer header, and the CLI also takes --api-key. Only the
+        # consumer knows which applies, so only the consumer names it.
+        raise TriplAPIError(
+            status,
+            detail,
+            f"Invalid or expired API key (401). API detail: {_as_text(detail)}",
         )
     if status == 403:
-        raise ToolError(
+        raise TriplAPIError(
+            status,
+            detail,
             "Forbidden (403): the API key lacks the required scope (tk_r_ keys "
             "cannot write), is scoped to a different project, or the backing user "
-            f"role is insufficient. API detail: {_as_text(detail)}"
+            f"role is insufficient. API detail: {_as_text(detail)}",
         )
     if status == 404:
-        raise ToolError(f"Not found (404): {_as_text(detail)}")
+        raise TriplAPIError(status, detail, f"Not found (404): {_as_text(detail)}")
     if status in (409, 422):
-        # Carry the API's JSON detail verbatim so the agent can self-correct.
-        raise ToolError(f"tripl API rejected the request ({status}): {_as_text(detail)}")
-    raise ToolError(f"tripl API error ({status}): {_as_text(detail)}")
-
-
-def with_mutation_warnings(data: Any) -> Any:
-    """Hoist ``EventMutationResponse.warnings`` to the front of the payload.
-
-    The server may rename an event to its scan-derived canonical name or flag
-    unknown ``${variable}`` tokens; the agent must read these and adopt the
-    returned name/id instead of its proposed ones.
-    """
-    if isinstance(data, dict) and data.get("warnings"):
-        return {
-            "IMPORTANT_warnings": data["warnings"],
-            "note": (
-                "The mutation succeeded WITH warnings. Adopt the server-canonical "
-                "name/id from 'result' below; do not assume your proposed values "
-                "were kept."
-            ),
-            "result": {k: v for k, v in data.items() if k != "warnings"},
-        }
-    return data
+        # Carry the API's JSON detail verbatim so the caller sees the API's own
+        # validation output instead of a paraphrase of it.
+        raise TriplAPIError(
+            status, detail, f"tripl API rejected the request ({status}): {_as_text(detail)}"
+        )
+    raise TriplAPIError(status, detail, f"tripl API error ({status}): {_as_text(detail)}")
 
 
 class TriplClient:
-    """REST wrapper that can borrow a lifespan-owned HTTP connection pool."""
+    """REST wrapper that can borrow a caller-owned HTTP connection pool."""
 
     def __init__(
         self,
@@ -112,12 +113,14 @@ class TriplClient:
         api_key: str,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         http_client: httpx.AsyncClient | None = None,
+        user_agent: str = DEFAULT_USER_AGENT,
     ) -> None:
         self._root_url = base_url.rstrip("/")
         self._base_url = self._root_url + API_PREFIX
         self._api_key = api_key
         self._timeout = timeout
         self._http_client = http_client
+        self._user_agent = user_agent
 
     async def _send(
         self,
@@ -133,6 +136,12 @@ class TriplClient:
             base_url=self._root_url,
             api_key=self._api_key,
             timeout=self._timeout,
+            # Drift trap: this is the SECOND place a transport gets built (the
+            # first being the caller's own create_http_client). tripl-mcp's
+            # streamable-http mode always lands here with http_client=None, so
+            # not forwarding the UA would make half its traffic report the CLI's
+            # default in the operator's access logs.
+            user_agent=self._user_agent,
         ) as client:
             return await client.request(method, path, params=params, json=json_body)
 
@@ -148,10 +157,7 @@ class TriplClient:
         try:
             response = await self._send(method, path, params=clean_params, json_body=json_body)
         except httpx.HTTPError as exc:
-            raise ToolError(
-                f"Could not reach the tripl API at {self._base_url}: {exc!r}. "
-                "Check TRIPL_BASE_URL and that the tripl instance is running."
-            ) from exc
+            raise TriplConnectionError(self._base_url, exc) from exc
         raise_for_status(response)
         if response.status_code == 204 or not response.content:
             return {"status": "ok"}
