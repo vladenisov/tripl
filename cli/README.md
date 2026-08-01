@@ -39,14 +39,16 @@ uvx --from "git+https://github.com/vladenisov/tripl.git#subdirectory=cli" tripl 
 
 ## Commands
 
-Both commands are **read-only** — a `tk_r_` key is enough — and both take
-`--json`, `--project SLUG` (repeatable) and `--include-demo`.
+All three commands are **read-only** — a `tk_r_` key is enough — and all three
+take `--json`, `--project SLUG` (repeatable) and `--include-demo`.
 
 ```bash
 tripl doctor              # check the instance and report what is broken
 tripl doctor --json       # one JSON document on stdout, human lines on stderr
 tripl doctor --strict     # exit 3 on warnings too (never on skipped checks)
 tripl status              # projects, events, scans, signals, coverage
+tripl watch               # follow jobs, signals and delivery failures live
+tripl watch --json        # JSON Lines on stdout, one object per event
 ```
 
 `doctor` runs six checks, always in this order and always exactly once each:
@@ -86,25 +88,49 @@ treated as an empty list** (it becomes `endpoint_unexpected_status`, because a
 the scheduler's **retry backoff is reported as expected behaviour** rather than
 as a hang.
 
+`watch` answers the other question: not *what is broken* at one instant, but
+*what is happening right now*. It polls (there is no daemon and no subscription)
+and prints one line per change — a replay advancing a chunk, a job finishing, a
+signal opening, an alert delivery failing to page anyone. It **reaches no
+verdict**: a completed run exits 0 whatever it saw, and it never exits 3. The
+same ASCII-only, pipe-identical rule applies, so `tripl watch | tee
+incident.log` is the artifact you actually saw.
+
+```text
+2026-07-31T19:10:41Z  watch.started    1 project, 1 scan config, poll 10s.
+2026-07-31T19:10:51Z  job.progress     [prod] 'nightly replay' job job-91c2 chunk 4 of 18 (22.2%) collecting 2026-07-05T00:00:00Z..2026-07-06T00:00:00Z, 2m elapsed.
+2026-07-31T19:11:11Z  delivery.failed  [prod] 'Checkout drop' -> slack 'oncall' failed: 'channel_not_found'. Nobody was paged; delivery del-4f21.
+2026-07-31T19:11:21Z  watch.stopped    stopped (interrupted) after 40s, 5 ticks, 12 requests.
+```
+
+Useful flags beyond the shared three: `--scan NAME_OR_ID` (repeatable, exact
+match, narrows the job lines only), `--interval SECONDS` (default 10),
+`--duration SECONDS` (stop and exit 0; the default is to run until `Ctrl-C`) and
+`--stall-after SECONDS` (default 120, report a running job whose progress has
+not moved).
+
 | Exit | Meaning |
 |------|---------|
-| 0 | Every check passed, or only warned and `--strict` was not given. `status`, whenever it completed. |
-| 1 | The tool itself broke (doctor turns every API failure into a finding), or `status` could not complete a request — unreachable, or the API refused it. |
-| 2 | Usage or configuration error. Resolved before any socket opens, so **no JSON is emitted**. |
-| 3 | `doctor` only: at least one check failed, or `--strict` and at least one warning. |
-| 130 | Interrupted (SIGINT). |
+| 0 | Every check passed, or only warned and `--strict` was not given. `status`, whenever it completed. `watch`, whenever the run completed — a failed job or a new signal is still 0. |
+| 1 | The tool itself broke (doctor turns every API failure into a finding), or `status` / `watch` could not complete a request — unreachable, or the API refused it. For `watch` this includes a key revoked mid-run. |
+| 2 | Usage or configuration error. For `doctor` and `status` that is resolved before any socket opens; `watch` also refuses after reading the listings, when `--scan` matches nothing or more than 24 scan configs are selected. Either way **no JSON is emitted**. |
+| 3 | `doctor` only: at least one check failed, or `--strict` and at least one warning. `watch` never exits 3. |
+| 130 | Interrupted (SIGINT). For `watch` this is the **normal** ending — a run without `--duration` has no other way to stop. |
 
 An unreachable instance therefore exits **3**, not 1 — that is what makes exit 1
 a meaningful bug signal.
 
-Within one `schema_version`, key names are never removed or retyped, and check
-`id`s, finding `code`s and `status`/`severity` values are never renamed or
-repurposed. New keys, ids and codes may appear in any release. `title`,
-`summary` and `message` are prose. **Assert on `code` and `evidence`, never on
-prose.**
+`doctor` and `status` put exactly one JSON document on stdout; `watch --json`
+puts **JSON Lines**, one object per event, flushed as produced. Within one
+`schema_version`, key names are never removed or retyped, and check `id`s,
+finding `code`s, `status`/`severity` values and `watch` event tokens are never
+renamed or repurposed. New keys, ids, codes and tokens may appear in any
+release. `title`, `summary` and `message` are prose. **Assert on `code` and
+`evidence` — or, for `watch`, on `event` and `data` — never on prose.**
 
-Full reference — every check, every finding code with its `evidence` keys, and
-what an operator should actually do about each one:
+Full reference — every check, every finding code with its `evidence` keys, every
+`watch` event token and the JSON Lines envelope, and what an operator should
+actually do about each one:
 <https://vladenisov.github.io/tripl/run/cli> (source:
 [`website/docs/run/cli.md`](../website/docs/run/cli.md)).
 

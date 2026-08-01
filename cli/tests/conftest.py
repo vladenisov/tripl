@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -15,6 +15,8 @@ API_KEY = "tk_r_test-key"
 
 # backend/src/tripl/worker/tasks/metrics/tasks.py::METRICS_COLLECTION_MODE.
 DISPATCHER_MODE = "metrics_collection"
+# ...and METRICS_REPLAY_MODE, the one that carries chunk progress.
+REPLAY_MODE = "metrics_replay"
 
 _UNSET = object()
 
@@ -163,6 +165,141 @@ def make_job(
     }
 
 
+def replay_summary(
+    *,
+    chunks_total: int = 18,
+    chunks_completed: int = 3,
+    phase: str = "collecting",
+    current_chunk_index: int | None = None,
+    chunk_from: datetime | None = None,
+    chunk_to: datetime | None = None,
+    chunk_interval: str | None = "1d",
+    time_from: datetime | None = None,
+    time_to: datetime | None = None,
+) -> dict[str, Any]:
+    """``_build_replay_progress_summary``'s payload, key for key.
+
+    Reproduced rather than approximated - including the clamping and the
+    100.0-when-total-is-zero rule - because the whole point of the progress lines
+    is that they carry the worker's own numbers under the worker's own names.
+    """
+    safe_total = max(chunks_total, 0)
+    safe_completed = min(max(chunks_completed, 0), safe_total)
+    start = time_from if time_from is not None else datetime(2026, 7, 1, tzinfo=UTC)
+    end = time_to if time_to is not None else datetime(2026, 7, 31, tzinfo=UTC)
+    return {
+        "mode": REPLAY_MODE,
+        "time_from": start.isoformat(),
+        "time_to": end.isoformat(),
+        "catalog_sync_skipped": True,
+        "replay_chunk_interval": chunk_interval or "whole-window",
+        "replay_chunks_total": safe_total,
+        "replay_chunks_completed": safe_completed,
+        "replay_progress_percent": (
+            round((safe_completed / safe_total) * 100, 1) if safe_total else 100.0
+        ),
+        "replay_progress_phase": phase,
+        "replay_current_chunk_index": current_chunk_index,
+        "replay_current_chunk_from": chunk_from.isoformat() if chunk_from else None,
+        "replay_current_chunk_to": chunk_to.isoformat() if chunk_to else None,
+    }
+
+
+def make_replay_job(
+    *,
+    job_id: str = "job-91c2",
+    status: str = "running",
+    at: datetime | None = None,
+    updated_at: datetime | None = None,
+    error_message: str | None = None,
+    **summary_overrides: Any,
+) -> dict[str, Any]:
+    """A ScanJobResponse carrying a real replay progress block."""
+    stamp = at if at is not None else datetime.now(UTC)
+    touched = updated_at if updated_at is not None else stamp
+    return {
+        "id": job_id,
+        "scan_config_id": "scan-1",
+        "status": status,
+        "error_message": error_message,
+        "result_summary": replay_summary(**summary_overrides),
+        "created_at": stamp.isoformat(),
+        "started_at": stamp.isoformat(),
+        "completed_at": touched.isoformat() if status in ("completed", "failed") else None,
+        "updated_at": touched.isoformat(),
+    }
+
+
+def make_signal(
+    *,
+    scope_type: str = "project_total",
+    scope_ref: str = "prod",
+    state: str = "open",
+    bucket: datetime | None = None,
+    actual_count: float = 412.0,
+    expected_count: float = 1180.0,
+    stddev: float = 120.0,
+    z_score: float = -6.1,
+    direction: str = "drop",
+    event_id: str | None = None,
+    event_type_id: str | None = None,
+    scan_config_id: str | None = "scan-1",
+    incident_child: bool = False,
+) -> dict[str, Any]:
+    """One MetricSignalResponse. Note: no id, and no detection timestamp."""
+    at = bucket if bucket is not None else datetime(2026, 7, 31, 19, 0, tzinfo=UTC)
+    return {
+        "scope_type": scope_type,
+        "scope_ref": scope_ref,
+        "state": state,
+        "bucket": at.isoformat(),
+        "actual_count": actual_count,
+        "expected_count": expected_count,
+        "stddev": stddev,
+        "z_score": z_score,
+        "direction": direction,
+        "event_id": event_id,
+        "event_type_id": event_type_id,
+        "scan_config_id": scan_config_id,
+        "incident_child": incident_child,
+    }
+
+
+def make_delivery(
+    *,
+    delivery_id: str = "del-4f21",
+    status: str = "failed",
+    channel: str = "slack",
+    destination_name: str = "oncall",
+    rule_name: str = "Checkout drop",
+    scan_name: str = "prod events",
+    error_message: str | None = "channel_not_found",
+    at: datetime | None = None,
+) -> dict[str, Any]:
+    stamp = at if at is not None else datetime.now(UTC)
+    return {
+        "id": delivery_id,
+        "project_id": "pid-prod",
+        "scan_config_id": "scan-1",
+        "scan_job_id": "job-91c2",
+        "destination_id": "dest-1",
+        "rule_id": "rule-1",
+        "destination_name": destination_name,
+        "rule_name": rule_name,
+        "scan_name": scan_name,
+        "status": status,
+        "channel": channel,
+        "matched_count": 3,
+        "payload_snapshot": None,
+        "error_message": error_message,
+        "is_local": False,
+        "is_simulated": False,
+        "created_at": stamp.isoformat(),
+        "updated_at": stamp.isoformat(),
+        "sent_at": stamp.isoformat() if status == "sent" else None,
+    }
+
+
 def make_data_source(
     source_id: str = "ds-1",
     *,
@@ -261,6 +398,8 @@ class FakeInstance:
         self.event_types("prod", [make_event_type()])
         self.drifts("prod", "et-1", [])
         self.coverage("prod")
+        self.signals("prod", [])
+        self.deliveries("prod", [])
 
     def _route(self, url: str) -> respx.Route:
         if url not in self._routes:
@@ -271,6 +410,47 @@ class FakeInstance:
         route = self._route(url)
         route.mock(return_value=httpx.Response(status, json=payload))
         return route
+
+    # --- evolving answers, for the follow-mode tests ----------------------
+    def handler(self, url: str, respond: Callable[[httpx.Request], httpx.Response]) -> respx.Route:
+        """Answer this URL from a callable, so a test can vary it per request."""
+        route = self._route(url)
+        route.mock(side_effect=respond)
+        return route
+
+    def each(self, url: str, entries: Sequence[tuple[int, Any]]) -> respx.Route:
+        """Answer with each (status, payload) in turn; the LAST one then repeats.
+
+        Repeating rather than raising StopIteration is what lets a test script
+        three interesting polls and then let the loop run to its --duration
+        without also having to script the boring remainder.
+        """
+        state = {"index": 0}
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            index = min(state["index"], len(entries) - 1)
+            state["index"] += 1
+            status, payload = entries[index]
+            return httpx.Response(status, json=payload)
+
+        return self.handler(url, respond)
+
+    # --- URLs, so a test can point `each`/`handler` at one --------------------
+    @staticmethod
+    def jobs_url(slug: str, scan_id: str) -> str:
+        return f"{API_BASE}/projects/{slug}/scans/{scan_id}/jobs"
+
+    @staticmethod
+    def signals_url(slug: str) -> str:
+        return f"{API_BASE}/projects/{slug}/anomalies/signals"
+
+    @staticmethod
+    def deliveries_url(slug: str) -> str:
+        return f"{API_BASE}/projects/{slug}/alert-deliveries"
+
+    @staticmethod
+    def scans_url(slug: str) -> str:
+        return f"{API_BASE}/projects/{slug}/scans"
 
     # --- endpoints -------------------------------------------------------
     def health(self, status: int = 200, payload: Any = _UNSET) -> respx.Route:
@@ -323,6 +503,14 @@ class FakeInstance:
             f"{API_BASE}/projects/{slug}/event-types/{type_id}/drifts", status, body
         )
 
+    def signals(self, slug: str, payload: Any, status: int = 200) -> respx.Route:
+        return self._respond(self.signals_url(slug), status, payload)
+
+    def deliveries(self, slug: str, items: Any, status: int = 200) -> respx.Route:
+        """``AlertDeliveryListResponse``: {items, total}, not a bare list."""
+        body = {"items": items, "total": len(items or [])} if isinstance(items, list) else items
+        return self._respond(self.deliveries_url(slug), status, body)
+
     def coverage(self, slug: str, payload: Any = _UNSET, status: int = 200) -> respx.Route:
         body = (
             {
@@ -340,6 +528,57 @@ class FakeInstance:
 def tripl_api(now: datetime) -> Iterator[FakeInstance]:
     with respx.mock(assert_all_called=False) as router:
         yield FakeInstance(router, now)
+
+
+class FakeClock:
+    """Virtual time. ``sleep`` returns instantly and advances the clock instead.
+
+    This is what lets a 20-tick follow-mode test run in zero wall-clock time on a
+    box where the suite may only be invoked once, and it is why no test in this
+    repository ever calls ``time.sleep``.
+    """
+
+    def __init__(self, start: datetime) -> None:
+        self._now = start
+        self._monotonic = 0.0
+        self.sleeps: list[float] = []
+        # One entry per sleep, consumed in order. A non-None entry is raised
+        # INSTEAD of sleeping, which is how a test delivers a Ctrl-C to the Nth
+        # tick without a real signal.
+        self.script: list[BaseException | None] = []
+
+    def now(self) -> datetime:
+        return self._now
+
+    def monotonic(self) -> float:
+        return self._monotonic
+
+    def advance(self, seconds: float) -> None:
+        self._now = self._now + timedelta(seconds=seconds)
+        self._monotonic += seconds
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        if self.script:
+            failure = self.script.pop(0)
+            if failure is not None:
+                raise failure
+        self.advance(seconds)
+
+
+@pytest.fixture
+def fake_clock(now: datetime, monkeypatch: pytest.MonkeyPatch) -> FakeClock:
+    """Inject virtual time into ``tripl watch``.
+
+    Patches the binding in the command module rather than the loop's, the same
+    way ``tracking_pool`` patches ``runner.create_http_client`` — the command is
+    the only place a clock is constructed.
+    """
+    clock = FakeClock(now)
+    from tripl_cli.commands import watch
+
+    monkeypatch.setattr(watch, "default_clock", lambda: clock)
+    return clock
 
 
 @pytest.fixture

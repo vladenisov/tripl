@@ -38,10 +38,11 @@ def register_all(
     # Imported here rather than at module scope: the command modules import
     # `Handler` and the validators from this one, so a top-level import would
     # close the cycle.
-    from tripl_cli.commands import doctor, status
+    from tripl_cli.commands import doctor, status, watch
 
     doctor.register(subparsers, parent)
     status.register(subparsers, parent)
+    watch.register(subparsers, parent)
 
 
 def bounded_int(flag: str, low: int, high: int) -> Callable[[str], int]:

@@ -6,12 +6,15 @@ sidebar_position: 5
 # Operator CLI
 
 `tripl` is a small command-line client for a **running tripl instance**. It has
-two commands, both **read-only**:
+three commands, all **read-only**:
 
 - **`tripl doctor`** — runs six diagnostic checks and tells you what is broken,
   why, and what to do about it. Exits non-zero when something is wrong.
 - **`tripl status`** — a quick live view of every project: events, scan configs,
   open signals, firing monitors, reconciliation coverage. Always exits 0.
+- **`tripl watch`** — follow mode. Prints what changes while you watch: replay
+  chunk progress, jobs starting and finishing, signals opening, alert deliveries
+  failing. Runs until you stop it. Never reports a verdict.
 
 Like the [MCP server](../integrate/mcp-server.md), it is a pure HTTP client of
 the [`/api/v1`](../integrate/agent-api-guide.md) surface — it imports no backend
@@ -130,8 +133,8 @@ shell history. Prefer the environment variable or the config file.
 
 ### Which key to use
 
-**Use a read-only `tk_r_` key. It is enough for both commands and it should be
-your default.** Neither command issues anything but `GET`, so a write key buys
+**Use a read-only `tk_r_` key. It is enough for all three commands and it should
+be your default.** No command issues anything but `GET`, so a write key buys
 nothing and risks everything.
 
 Create keys in the app at **Settings → API keys** (see
@@ -392,8 +395,10 @@ PASS  drifts        1 event type(s) examined; no untriaged schema drift.
 `--strict` deliberately does **not** promote skips: a project-scoped key would
 otherwise fail every strict run forever, for a reason the operator cannot fix.
 
-`tripl status` also needs `--project` with such a key, but it has no verdict
-contract and simply fails with the API's own 403 message. Pass `--project`.
+`tripl status` and `tripl watch` also need `--project` with such a key, but
+neither has a verdict contract, so both simply fail with the API's own 403
+message — extended with the hint *"If this key is scoped to a single project,
+that 403 is expected"* and the flag to type. Pass `--project`.
 
 ### Request cost
 
@@ -498,31 +503,346 @@ If they ever disagree in the field, `doctor`'s number is the one with the
 evidence attached — read the `scans` findings.
 :::
 
+## `tripl watch`
+
+```
+usage: tripl watch [-h] [--url URL] [--api-key KEY] [--config PATH]
+                   [--project SLUG] [--include-demo] [--scan NAME_OR_ID]
+                   [--interval SECONDS] [--duration SECONDS]
+                   [--stall-after SECONDS] [--json] [--timeout SECONDS]
+```
+
+`doctor` answers **"what is broken"** at one instant and then exits. `watch`
+answers **"what is happening right now"**: it stays attached and prints one line
+every time something moves — a replay advancing from chunk 4 to chunk 5, a job
+finishing, a signal opening, an alert delivery failing to page anyone. It is the
+command for the half hour *after* the page, when the question is no longer "is
+something wrong" but *"is this scan hung, or just slow?"* — the exact question an
+operator answered by hand over ssh for four days during the 2026-07-28..31
+incident.
+
+It reaches **no verdict**. Whatever it observes, a completed run exits 0 and it
+never exits 3. A green `watch` run proves strictly *less* than a green `doctor`
+run — watch only ever saw what fell inside its polls — so building a CI gate on
+it would be a slower, flakier `doctor --strict`. Use `doctor` when you want an
+exit contract.
+
+:::note It polls. There is no daemon and no subscription.
+tripl does have a Server-Sent Events stream, and `watch` deliberately does not
+use it. The replay chunk counter — this command's headline — is written straight
+into the scan job's `result_summary` by the worker's progress heartbeat, with no
+realtime event published alongside it, so it is **invisible on that bus**. The
+bus also degrades to silence when Redis is absent while the socket still looks
+healthy. Polling the REST API is more transport for strictly more information.
+:::
+
+| Flag | Meaning |
+|------|---------|
+| `--project SLUG` | Follow only this project. Repeatable. Required for a project-scoped key. |
+| `--include-demo` | Also follow demo projects, which are excluded by default. |
+| `--scan NAME_OR_ID` | Follow only these scan configs, matched **exactly** on name and then on id. Repeatable. Narrows the **job** lines only. |
+| `--interval SECONDS` | Seconds between polls, default `10`, range 2–3600. |
+| `--duration SECONDS` | Stop after this many seconds and exit 0, range 1–86400. Default: run until `Ctrl-C`. |
+| `--stall-after SECONDS` | Report a running job whose progress has not moved for this long, default `120`, range 10–86400. |
+| `--json` | JSON Lines on stdout, one object per event; every human line on stderr. |
+| `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
+
+`--scan` never filters signals or deliveries. A `metric`-scope signal carries no
+scan config at all, so filtering the whole feed by scan config would make exactly
+the anomalies an incident is built from disappear.
+
+A session: a replay is already running when you attach, it advances, a signal
+opens, an alert delivery fails, the replay finishes, and you press `Ctrl-C`.
+
+```text
+tripl watch - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+Following 1 project, 1 scan config. Polling every 10s; signals,
+deliveries and the scan listing at most every 30s. 1 request per tick,
+4 per slow tick. Ctrl-C to stop.
+
+prod (Prod)
+  running    'nightly replay' job job-91c2 (metrics_replay) chunk 3 of 18 (16.7%) collecting, started 2m ago
+  pending    none
+  signals    0 open across all scopes (baseline); the project summary counts 0 as significant
+  deliveries 0 failed in the newest 20 (baseline)
+
+2026-07-31T19:10:41Z  watch.started    1 project, 1 scan config, poll 10s.
+2026-07-31T19:10:51Z  job.progress     [prod] 'nightly replay' job job-91c2 chunk 4 of 18 (22.2%) collecting 2026-07-05T00:00:00Z..2026-07-06T00:00:00Z, 2m elapsed.
+2026-07-31T19:11:01Z  job.progress     [prod] 'nightly replay' job job-91c2 chunk 5 of 18 (27.8%) collecting 2026-07-06T00:00:00Z..2026-07-07T00:00:00Z, 2m elapsed.
+2026-07-31T19:11:11Z  job.progress     [prod] 'nightly replay' job job-91c2 chunk 6 of 18 (33.3%) collecting 2026-07-07T00:00:00Z..2026-07-08T00:00:00Z, 2m elapsed.
+2026-07-31T19:11:11Z  signal.opened    [prod] 'nightly replay' project_total drop at 2026-07-31T19:00:00Z: actual 412 vs expected 1180 (z=-6.1).
+2026-07-31T19:11:11Z  delivery.failed  [prod] 'Checkout drop' -> slack 'oncall' failed: 'channel_not_found'. Nobody was paged; delivery del-4f21.
+2026-07-31T19:11:21Z  job.finished     [prod] 'nightly replay' job job-91c2 completed after 3m (18 of 18 chunks).
+2026-07-31T19:11:21Z  watch.stopped    stopped (interrupted) after 40s, 5 ticks, 12 requests.
+```
+
+The layout is fixed: RFC 3339 timestamp, event token, `[project]`, message, with
+the message always starting at column 39. Like `doctor`, output is **ASCII only
+and byte-identical whether stdout is a terminal or a pipe** — no colour, no
+spinner, no redraw, no cursor control. That is not decoration for a follow mode;
+it is the point. `tripl watch | tee incident.log` has to produce the artifact you
+actually saw, and a live-updating dashboard would produce neither. The preamble
+holds one more invariant worth knowing: **no preamble line starts with a
+timestamp and every stream line does**, so
+
+```bash
+tripl watch | grep -E '^[0-9]{4}-'
+```
+
+is the event stream on its own.
+
+### The first screen
+
+A follow mode that only reported transitions it personally observed would tell
+an operator who started it thirty seconds late that nothing is happening. So the
+first successful read of every stream **seeds** the state — and then the preamble
+prints what that seed found, before a single event line:
+
+- the **cadence and the request budget**, so the load this command adds to an
+  already-unwell instance is stated rather than guessed at;
+- every **running** and **pending** job, with its mode and, for a replay, its
+  current chunk, percentage, phase and age. This is the "is it hung?" answer at
+  attach time;
+- the **open signal count across all scopes**, marked `(baseline)`, printed
+  beside the project summary's own significance-filtered count. Two different
+  populations, both labelled — never one silently standing in for the other;
+- the count of **failed deliveries in the newest 20**, also `(baseline)`.
+
+Signals are **counted, not listed**. A 200-signal incident would bury the stream
+before it began; `tripl status` is the command for the list.
+
+Everything in the preamble is therefore *already known* and is never re-emitted
+as an event. Subsequent silence means "no new ones", not "nothing wrong".
+
+### What counts as new
+
+Each tick builds a fresh snapshot and diffs it against the previous one. There is
+no growing "everything I have printed" set, so memory is flat over an eight-hour
+run.
+
+| Stream | Identity | Reported when |
+|--------|----------|---------------|
+| Jobs | The job id, within the newest **10** jobs of each followed scan config | `status`, `replay_progress_phase`, `replay_chunks_completed` or `replay_current_chunk_index` changed |
+| Signals | `(scan_config_id, scope_type, scope_ref)` — the backend's own key | The identity is new, or its `bucket`, `direction` or `state` changed |
+| Deliveries | The delivery id, within the newest 20 **failed** deliveries | The row is `failed` and was not already reported as failed |
+
+Three consequences are worth stating outright:
+
+- **`updated_at` is deliberately not part of a job's identity of change.** The
+  worker's progress heartbeat bumps it even on the ticks where no counter moves.
+  Including it would print a line every heartbeat and, far worse, would make
+  `job.stalled` unreachable — a heartbeating-but-wedged job would look alive,
+  which is precisely backwards. `updated_at` still ships in the JSON `data`.
+- **A signal's bucket is not part of its identity.** If it were, a signal
+  advancing to a later bucket would produce a `signal.cleared` followed by a
+  `signal.opened` — a fabricated resolution in the middle of a live incident.
+- **A job disappearing is not an event.** The job list is a window ordered newest
+  first, so a row leaving it is an artifact of the window, not a thing that
+  happened. A *signal* disappearing **is** reported, because the signals endpoint
+  returns the complete active set with no window.
+
+A scan config created mid-run is discovered on the slow clock and then seeds
+silently, exactly like the ones present at startup. A **project** created mid-run
+is not picked up — restart `watch` for that.
+
+### Event tokens
+
+`event` is a stability contract; the message beside it is prose and may be
+reworded in any release.
+
+| Token | Stream | Emitted when |
+|-------|--------|--------------|
+| `watch.started` | `meta` | Once, right after the first screen. Carries the resolved options and the baseline counts. |
+| `watch.stopped` | `meta` | Once, last. `data.reason` is `interrupted`, `duration_elapsed` or `authentication_failed`. |
+| `job.queued` | `event` | A job is `pending` — newly seen, or moved back into it. |
+| `job.started` | `event` | A job is `running`. Also fires for a job first seen already running. |
+| `job.progress` | `event` | A **running `metrics_replay`** job's chunk counter or phase moved. The line the incident needed. |
+| `job.stalled` | `event` | A **`metrics_replay`** job's published progress has not moved for `--stall-after` seconds. |
+| `job.unchanged` | `event` | A job with **no progress channel** has not changed status for `--stall-after` seconds — a `pending` job no worker has picked up, or a long-running `metrics_collection`. |
+| `job.finished` | `event` | `completed`. For a replay, the message carries the final chunk count. |
+| `job.failed` | `event` | `failed`. Carries `error_message`, or says there was none. |
+| `job.cancelled` | `event` | `cancelled`. |
+| `signal.opened` | `event` | A signal identity that was not in the previous active set. |
+| `signal.updated` | `event` | An already-open signal whose bucket, direction or state moved. |
+| `signal.cleared` | `event` | A signal left the active set. |
+| `delivery.failed` | `event` | An alert delivery is in status `failed`. Nobody was paged. |
+| `poll.degraded` | `diagnostic` | A read did not return 200, or a full window may have hidden rows. |
+| `poll.recovered` | `diagnostic` | A stream that had been failing answered again. |
+
+A scheduled collection job — `result_summary.mode == "metrics_collection"` — has
+no chunk counters, so it produces `job.queued` / `job.started` / `job.finished` /
+`job.failed` and never `job.progress`. That is not a gap in `watch`: the backend
+publishes no progress for those jobs, and `watch` does not invent progress it was
+not given. `job.progress` is a **`metrics_replay` line**.
+
+:::tip `signal.cleared` says "cleared", not "resolved"
+A signal leaving the active set may only mean its freshness window closed. The
+line claims exactly what was observed and nothing more, and it prints how many
+signals are still open in that project so a disappearance never reads as an
+all-clear.
+:::
+
+#### `job.stalled` is a statement about observation
+
+It says *watch has seen no progress since T* — never *this job is broken*. A
+replay chunk over a large window legitimately takes minutes.
+
+Which is also why there are **two** tokens rather than one. Only a
+`metrics_replay` job publishes a progress counter; a scheduled
+`metrics_collection` job and a job still sitting in `pending` publish nothing
+that *could* move short of their status. Reporting those as `job.stalled` would
+claim an observation watch was never in a position to make — and, because such a
+job's state cannot change while it runs, it would fire on *every* long
+collection, which is a false alarm with a schedule. So they get
+`job.unchanged`, whose message says what was actually seen: *still in status
+`pending` after 4m of watching (no worker has picked it up)*. That sentence is
+the one you want when the queue is not draining, which is the most common way a
+scan appears to hang.
+
+Both tokens carry the same `unchanged_since` and `unchanged_seconds` evidence
+and share the re-report schedule described next.
+
+The threshold is counted in **seconds, not polls**, so `--interval 60` does not
+silently turn a 120-second threshold into a two-hour one. A condition that
+persists re-reports on a **power-of-two schedule** — at 1x, 2x, 4x, 8x the
+threshold — which is roughly a dozen lines over four hours instead of one every
+tick, while still telling you it is still going. Any observed progress restarts
+the clock, so there is no "unstalled" line to keep track of.
+
+The schedule is easiest to see at a threshold far below the default, which is
+what produced the three lines below — 30s, then 60s, then 2m, at 1x, 2x and 4x:
+
+```bash
+tripl watch --stall-after 30
+```
+
+```text
+2026-07-31T19:11:11Z  job.stalled      [prod] 'nightly replay' job job-91c2 unchanged for 30s at chunk 5 of 18 (27.8%) collecting; watch has seen no progress since 2026-07-31T19:10:41Z.
+2026-07-31T19:11:41Z  job.stalled      [prod] 'nightly replay' job job-91c2 unchanged for 60s at chunk 5 of 18 (27.8%) collecting; watch has seen no progress since 2026-07-31T19:10:41Z.
+2026-07-31T19:12:41Z  job.stalled      [prod] 'nightly replay' job job-91c2 unchanged for 2m at chunk 5 of 18 (27.8%) collecting; watch has seen no progress since 2026-07-31T19:10:41Z.
+```
+
+### When a poll fails
+
+**The run continues.** A follow tool that exits when the thing it follows goes
+down is exactly backwards — an operator watching an instance through a rolling
+restart wants `watch` still there when it comes back, and exiting would truncate
+a `| tee incident.log` capture at the worst possible moment.
+
+A failed read **does not update its stream's snapshot**. Diffing against an empty
+list would print `signal.cleared` for every open signal and then reprint them all
+as `signal.opened` on recovery — lying twice, during the incident. Holding the
+last good snapshot turns an outage into a reporting **delay**: the next good poll
+fires every transition that happened while `watch` was blind, late but complete.
+
+```text
+2026-07-31T19:11:11Z  poll.degraded    [prod] signals read failed: HTTP 500 on /projects/{slug}/anomalies/signals. Signal lines are suspended until it recovers - no signal lines does NOT mean no signals.
+2026-07-31T19:11:21Z  poll.degraded    [prod] signals read failed: HTTP 500 on /projects/{slug}/anomalies/signals. Signal lines are suspended until it recovers - no signal lines does NOT mean no signals.
+2026-07-31T19:11:41Z  poll.recovered   [prod] signals read recovered after 30s (3 failed polls); 1 events reported from the gap.
+```
+
+Note the arithmetic: three polls failed, two lines were printed. `poll.degraded`
+follows the same power-of-two schedule as `job.stalled` — the 1st, 2nd, 4th, 8th
+consecutive failure of a stream gets a line and the rest are quiet.
+`poll.recovered` is never throttled, and it carries the number that matters:
+**how many events came out of the gap**, which is how you learn that a quiet
+stretch was `watch` being blind rather than the instance being calm.
+
+Two more shapes of degradation:
+
+- **A 403 is only ever a line.** It is legitimately per-project and per-role, and
+  the other projects are still reporting usefully. If every project 403s you get
+  a wall of lines naming the 403, and you can stop the run.
+- **A full window in which every row is new** also raises `poll.degraded`, with
+  `window_full: true`. It means older rows may have been pushed out between
+  polls; lower `--interval` or narrow the run. Merely hitting the limit is *not*
+  reported — a healthy config with ten jobs of history does that every poll and
+  it means nothing.
+
+**A 401 is the one failure that ends the run.** The key is gone and waiting
+cannot fix it, and continuing would hammer an auth path that is logged and rate
+limited. `watch` prints the `poll.degraded` line, then `watch.stopped` with
+`reason: "authentication_failed"`, then the usual `tripl: ...` error, and exits
+1.
+
+The run can also be **refused before it prints anything**: `watch` needs the scan
+listing to know what to follow, so if `GET /projects/{slug}/scans` fails during
+startup the command fails there rather than half way through a feed.
+
+:::warning A degraded slow stream is retried at the fast interval
+Signals, deliveries and the scan listing are normally polled at most every 30
+seconds. That clock only advances on a **successful** read, so while one of them
+is failing it is retried on every tick — three times the usual rate against an
+instance that is, by assumption, already unwell. Raise `--interval` if you are
+watching an instance through a sustained outage.
+:::
+
+### Request cost
+
+Per tick: **one request per followed scan config**, asking for the newest
+**10** jobs. That window is deliberately far smaller than `doctor`'s 200 —
+`doctor` asks *how long has this been broken* and needs history, `watch` asks
+*what appeared since the last poll* and needs recency, and 20x the payload on a
+loop that repeats every ten seconds is a load problem this repository has already
+paid for once.
+
+On a **slow tick** — at most once every 30 seconds per project — three more
+requests are added per project: the scan listing, the open signals
+(`expanded=true`, so event-scope anomalies are not dropped), and the newest 20
+**failed** alert deliveries. The 30 seconds is not invented: the backend caches
+the unfiltered active-signals query for exactly that long, so polling faster is
+provably wasted work.
+
+At most **6 requests are in flight at once**, and only one tick is ever in
+flight: the interval is measured *after* the previous tick finished, never on a
+fixed wall clock and never with catch-up. An instance that answers slowly is
+therefore automatically polled less, and a 40-second stall can never be followed
+by a burst of queued ticks.
+
+`watch` **refuses to start** above **24** selected scan configs rather than
+truncating, and says so with the flags to narrow it. A one-shot command can
+report what its budget could not reach; a command that repeats would have to
+reprint that warning every tick, or print it once at the top where it scrolls
+away and leaves you reading a feed silently missing the config the incident is
+in.
+
+:::note A config deleted mid-run keeps being polled
+It produces `poll.degraded` lines with a 404, on the power-of-two schedule, until
+you restart. This is deliberate: silently dropping a target is the exact failure
+mode `watch` exists to avoid.
+:::
+
 ## Exit codes
+
+One table for all three commands. Every code means the same thing whichever one
+produced it, but not every code is reachable from every command — `doctor` owns
+3, and `watch` never reaches it.
 
 | Code | Meaning |
 |------|---------|
-| **0** | `doctor`: every check passed, or only warned and `--strict` was not given. `status`: it completed. |
-| **1** | The tool itself broke, or `status` could not complete a request — unreachable, or the API refused it (a project-scoped key with no `--project` gets a 403 here, on a perfectly healthy instance). **`doctor` should never exit 1** — it turns every API failure into a finding, so an exit 1 out of doctor is a bug report, not a diagnosis. |
-| **2** | Usage or configuration error: a bad flag, an out-of-range value, no URL, no API key, an unreadable config file. Resolved before any socket opens, so **no JSON is emitted**. |
-| **3** | `doctor` only: at least one check failed — or, with `--strict`, at least one warned. |
-| **130** | Interrupted (`Ctrl-C`). |
+| **0** | `doctor`: every check passed, or only warned and `--strict` was not given. `status`: it completed. `watch`: the run completed — `--duration` elapsed. A failed job, a new signal and a failed delivery all still exit 0, because `watch` reaches no verdict. |
+| **1** | The tool itself broke, or `status` or `watch` could not complete a request — unreachable, or the API refused it (a project-scoped key with no `--project` gets a 403 here, on a perfectly healthy instance). `watch` reaches it two ways: a startup read it cannot proceed without (the project listing, or a project's scan listing), and a key revoked mid-run, which ends the run after a `watch.stopped` line carrying `reason: "authentication_failed"`. Every *other* failed read during a run is a `poll.degraded` line, not an exit. **`doctor` should never exit 1** — it turns every API failure into a finding, so an exit 1 out of doctor is a bug report, not a diagnosis. |
+| **2** | Usage or configuration error: a bad flag, an out-of-range value, no URL, no API key, an unreadable config file. For `doctor` and `status` that is always resolved before any socket opens. `watch` adds two refusals it can only reach *after* reading the project and scan listings — `--scan` matching nothing, and more than 24 selected scan configs — so for it the resolution is two rounds of HTTP in, not zero. Either way **no JSON is emitted**: both refusals happen before the first event line. |
+| **3** | `doctor` only: at least one check failed — or, with `--strict`, at least one warned. `watch` never exits 3, whatever it observes, and `status` never exits 3 at all. |
+| **130** | Interrupted (`Ctrl-C`). For `doctor` and `status` that is an abandoned run. For `watch` **it is the normal ending**: a run without `--duration` has no other way to stop, so 130 out of `watch` means "you pressed Ctrl-C", not "something went wrong". A wrapper that treats non-zero as failure needs to know this before it pages somebody. |
 
 An unreachable instance therefore exits **3**, not 1. That is precisely what
 makes exit 1 a meaningful signal.
 
 :::warning Credentials are required even for the connectivity check
-`doctor` demands both the URL and the API key **before** it opens a connection,
-so a missing key is exit 2 even though `/health` itself needs no key. That keeps
-"you have not configured a key" cleanly apart from "the instance rejected your
-key" — two failures that produced the same shrug during the incident.
+Every command demands both the URL and the API key **before** it opens a
+connection, so a missing key is exit 2 — for `doctor` that holds even though
+`/health` itself needs no key. That keeps "you have not configured a key"
+cleanly apart from "the instance rejected your key" — two failures that produced
+the same shrug during the incident.
 :::
 
 ### In cron
 
 ```sh
 #!/bin/sh
-# /etc/cron.hourly/tripl-doctor — mails only when something is actually wrong.
+# /etc/cron.hourly/tripl-doctor - mails only when something is actually wrong.
 set -u
 
 export TRIPL_BASE_URL="https://tripl.example.com"
@@ -561,31 +881,56 @@ Use `--strict` in a gate you watch every run, and plain `doctor` in an
 unattended cron: a job that goes red over a handful of untriaged schema drifts
 gets muted, and then nobody sees the failing scan either.
 
+`watch` belongs in neither. It reaches no verdict, so there is no exit code for
+a gate to read, and it only ever saw what fell inside its polls. It is the
+command you run *by hand*, next to the incident.
+
 ## `--json`
 
-Both commands accept `--json`. It puts **exactly one JSON document, newline
-terminated, on stdout and nothing else**; the human-readable report still
-happens, on stderr. `tripl doctor --json | jq` is a promise, not a habit.
+All three commands accept `--json`, and in every case the human-readable report
+still happens — on **stderr**, so stdout carries machine-readable output and
+nothing else.
+
+What lands on stdout differs by command, because a one-shot report and a follow
+mode are not the same shape:
+
+- **`doctor` and `status`** put **exactly one JSON document, newline terminated,
+  on stdout and nothing else**. `tripl doctor --json | jq` is a promise, not a
+  habit.
+- **`watch`** puts **JSON Lines**: **one object per event**, each on its own
+  line, flushed the moment it is produced. There is no enclosing array, no
+  trailing summary document, and no way to know in advance how many lines there
+  will be — the stream ends when the run does. Per-line flushing is a
+  correctness requirement rather than polish: a follow mode that block-buffers
+  into `jq` shows nothing for minutes, which reads as a hang in the exact
+  situation the command exists for. Use `jq -c` or any JSON Lines reader, never
+  a whole-stdin parse.
 
 ### Stability contract
 
-Within one `schema_version`:
+Within one `schema_version`, for all three commands:
 
 - Key names are **never removed or retyped**.
-- `status` / `severity` values, check `id`s and finding `code`s are **never
-  renamed or repurposed**.
-- New keys, new check ids and new finding codes **may appear in any release**.
-  Select by `id`, never by array index.
+- `status` / `severity` values, check `id`s, finding `code`s and `watch` event
+  tokens are **never renamed or repurposed**.
+- New keys, new check ids, new finding codes and new event tokens **may appear
+  in any release**. Select by `id` — or, in `watch`, by `event` — never by array
+  index and never by position in the stream.
 - `title`, `summary` and `message` are **prose** and may be reworded at any
   time. `generated_at`, `duration_ms`, `requests` and `tool_version` vary per
   run.
 
-**Assert on `code` and `evidence`. Never assert on prose.**
+**Assert on `code` and `evidence` — or, in `watch`, on `event` and `data`. Never
+assert on prose.**
 
-The document is written ASCII-escaped: a non-ASCII character inside a `message`
-reaches stdout as a `\uXXXX` sequence, which every JSON parser (`jq` included)
-decodes back. The examples below show the decoded form — only a raw `grep` over
-stdout would see the difference.
+`schema_version` is **shared** by all three commands: it is one number for the
+whole tool, so a consumer branches on `command` and never on a per-command
+version.
+
+Output is written ASCII-escaped, documents and lines alike: a non-ASCII
+character inside a `message` reaches stdout as a `\uXXXX` sequence, which every
+JSON parser (`jq` included) decodes back. The examples below show the decoded
+form — only a raw `grep` over stdout would see the difference.
 
 ### `doctor` document
 
@@ -800,6 +1145,198 @@ that project's `errors` array as `{"section", "status_code", "message"}`. A
 failed section never blanks the row — the counts that did arrive are still the
 answer.
 
+### `watch` lines
+
+`watch --json` shares the first four keys with the documents above and then
+diverges. There is no `generated_at` / `duration_ms` / `requests` block, because
+those three describe a run that has already ended, and `instance` moves down into
+`watch.started`'s `data`. **Every line carries every key**, without exception —
+a consumer never has to test for presence at the top level.
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `schema_version` | int | The same number the `doctor` and `status` documents carry. |
+| `tool` | string | Always `"tripl"`. |
+| `tool_version` | string | The CLI version. Varies per release. |
+| `command` | string | Always `"watch"`. |
+| `stream` | string | `"meta"`, `"event"` or `"diagnostic"` — see below. Derived from `event`, so the two can never disagree. |
+| `seq` | int | Monotonic from 1 within one run, never reused. A gap means the stream was truncated, and sorting by it undoes whatever a log shipper did to the order. |
+| `time` | string | When `watch` **observed** the change — RFC 3339, UTC, second precision, literal `Z`. Not when it happened: every domain timestamp is a separately named field inside `data`. |
+| `event` | string | The token. This is the contract — see [Event tokens](#event-tokens) for the vocabulary. |
+| `project` | string or null | Project slug. `null` on the `meta` lines, which are about the run rather than about a project. |
+| `target` | object or null | `{"kind", "id", "name"}`, the same shape a `doctor` finding uses. `null` when the line is not about one object. |
+| `message` | string | **Prose**: the human line without its timestamp and token. May be reworded in any release. |
+| `data` | object | The payload, under the **backend's own field names**. A key the API did not return at all is **absent**; a key it returned as null is `null`. The distinction is deliberate — a `metrics_collection` job has no replay counters and `watch` does not invent them, so `replay_chunks_total` is missing rather than 0. |
+
+`stream` exists so that a consumer can count the right things. Three values, and
+the split is load-bearing: an incident count must not include the CLI's own
+transport trouble, and "how much of the window was `watch` blind for" has to
+stay answerable.
+
+| `stream` | Tokens | What it is |
+|----------|--------|------------|
+| `meta` | `watch.started`, `watch.stopped` | The run's own frame: what was followed, and how it ended. |
+| `event` | every `job.*`, `signal.*` and `delivery.*` token | What happened on the instance. |
+| `diagnostic` | `poll.degraded`, `poll.recovered` | What `watch` could not see. Never an instance event. |
+
+One real line of each class, pretty-printed here; on the wire each is a single
+line.
+
+**`meta`** — the first line of every run, and the one that records what the run
+was actually configured to do:
+
+```json
+{
+  "schema_version": 1,
+  "tool": "tripl",
+  "tool_version": "0.1.0",
+  "command": "watch",
+  "stream": "meta",
+  "seq": 1,
+  "time": "2026-07-31T19:10:41Z",
+  "event": "watch.started",
+  "project": null,
+  "target": null,
+  "message": "1 project, 1 scan config, poll 10s.",
+  "data": {
+    "instance": {
+      "base_url": "https://tripl.example.com",
+      "base_url_source": "$TRIPL_BASE_URL",
+      "api_key_source": "$TRIPL_API_KEY",
+      "api_key_scope": "unknown"
+    },
+    "projects": ["prod"],
+    "interval_seconds": 10.0,
+    "duration_seconds": null,
+    "stall_after_seconds": 120.0,
+    "jobs_limit": 10,
+    "deliveries_limit": 20,
+    "slow_stream_min_seconds": 30.0,
+    "requests_per_fast_tick": 1,
+    "requests_per_slow_tick": 4,
+    "baseline": {
+      "running_jobs": 1,
+      "pending_jobs": 0,
+      "open_signals": 0,
+      "significant_open_signals": 0,
+      "failed_deliveries": 0
+    }
+  }
+}
+```
+
+`api_key_scope` is `"unknown"` here for the same reason it is in the `status`
+document: `watch` does not read `/auth/me`, and saying "unknown" is cheaper and
+more honest than a guess. `baseline` is the preamble's counts — the state that
+was already true at attach time and is therefore **never re-emitted as events**.
+
+The last line of every run is `watch.stopped`, also `meta`. Its `data` carries
+`reason` (`"interrupted"`, `"duration_elapsed"` or `"authentication_failed"`),
+`elapsed_seconds`, `ticks`, `requests`, and `counts` — a tally of every token
+emitted during the run, which never counts the stopped line itself.
+
+**`event`** — the line the incident needed, a replay advancing one chunk:
+
+```json
+{
+  "schema_version": 1,
+  "tool": "tripl",
+  "tool_version": "0.1.0",
+  "command": "watch",
+  "stream": "event",
+  "seq": 2,
+  "time": "2026-07-31T19:10:51Z",
+  "event": "job.progress",
+  "project": "prod",
+  "target": { "kind": "scan_job", "id": "job-91c2", "name": "nightly replay" },
+  "message": "'nightly replay' job job-91c2 chunk 4 of 18 (22.2%) collecting 2026-07-05T00:00:00Z..2026-07-06T00:00:00Z, 2m elapsed.",
+  "data": {
+    "scan_config_id": "scan-1",
+    "scan_name": "nightly replay",
+    "status": "running",
+    "error_message": null,
+    "mode": "metrics_replay",
+    "replay_progress_phase": "collecting",
+    "replay_chunks_total": 18,
+    "replay_chunks_completed": 4,
+    "replay_progress_percent": 22.2,
+    "replay_current_chunk_index": 4,
+    "replay_current_chunk_from": "2026-07-05T00:00:00+00:00",
+    "replay_current_chunk_to": "2026-07-06T00:00:00+00:00",
+    "replay_chunk_interval": "1d",
+    "time_from": "2026-07-01T00:00:00+00:00",
+    "time_to": "2026-07-31T00:00:00+00:00",
+    "created_at": "2026-07-31T19:08:41Z",
+    "started_at": "2026-07-31T19:08:41Z",
+    "completed_at": null,
+    "updated_at": "2026-07-31T19:10:51Z",
+    "elapsed_seconds": 130
+  }
+}
+```
+
+`replay_chunks_completed`, `replay_progress_phase` and the rest are the worker's
+own key names, unrenamed on purpose: the same string is greppable in the
+backend's replay task and in this output, so there is no second spelling to
+drift. Two fields are `watch`'s own rather than the job response's:
+`elapsed_seconds`, the age of the job at `time`, and `scan_name`, resolved from
+the scan listing so a consumer does not need a second lookup to name the config.
+`target.name` carries the same name.
+
+:::note Timestamps inside `data` are verbatim, and not all of them match `time`
+The envelope's `time` is normalized by the CLI. Everything inside `data` is
+copied **exactly as the API returned it** and is never reformatted, which is why
+the job's own `started_at` ends in `Z` (it comes from the response model) while
+the replay block's `replay_current_chunk_from` ends in `+00:00` (it comes from
+the worker's `result_summary`). Parse these values; do not string-compare them,
+and do not assume one spelling.
+:::
+
+**`diagnostic`** — a read that did not come back. This line is why a non-200 can
+never be mistaken for an empty result:
+
+```json
+{
+  "schema_version": 1,
+  "tool": "tripl",
+  "tool_version": "0.1.0",
+  "command": "watch",
+  "stream": "diagnostic",
+  "seq": 7,
+  "time": "2026-07-31T19:10:51Z",
+  "event": "poll.degraded",
+  "project": "prod",
+  "target": null,
+  "message": "signals read failed: HTTP 500 on /projects/{slug}/anomalies/signals. Signal lines are suspended until it recovers - no signal lines does NOT mean no signals.",
+  "data": {
+    "section": "signals",
+    "path": "/projects/{slug}/anomalies/signals",
+    "status_code": 500,
+    "error": "HTTP 500",
+    "consecutive_failures": 1,
+    "target": "prod"
+  }
+}
+```
+
+`section`, `path`, `status_code` and `error` are deliberately the key names
+`doctor` uses for `endpoint_unexpected_status`, so an extractor written for one
+works on the other unchanged. Note that `data.target` on this line is the
+**stream's** reference — a project slug, or `slug/scan_config_id` for the `jobs`
+section — and is unrelated to the envelope's `target`, which stays `null` on
+every diagnostic line.
+
+`poll.degraded` has a second shape, for a full window in which every row was
+new: the same keys, with `status_code` and `error` `null` and
+`consecutive_failures` `0`, plus `"window_full": true` and `"window"` holding
+the limit that was hit. Nothing failed in that case — older rows may simply have
+been pushed out between polls.
+
+`poll.recovered` closes a `poll.degraded` run, and its `data` is
+`section`, `path`, `failed_polls`, `gap_seconds` and `events_during_gap` — the
+last being the number that tells you whether the quiet stretch was `watch` being
+blind or the instance being calm.
+
 Useful one-liners:
 
 ```bash
@@ -814,6 +1351,20 @@ tripl doctor --json \
 
 # Projects with open significant signals.
 tripl status --json | jq -r '.projects[] | select(.signals.significant_open > 0) | .slug'
+
+# Live chunk progress of every running replay, one line per advance.
+# jq reads JSON Lines by default; --unbuffered is what keeps it live.
+tripl watch --json \
+  | jq --unbuffered -r 'select(.event=="job.progress")
+         | "\(.time)\t\(.data.scan_name)\t\(.data.replay_chunks_completed)/\(.data.replay_chunks_total)"'
+
+# The instance events only, with the CLI's own transport trouble excluded.
+tripl watch --json | jq -c --unbuffered 'select(.stream=="event")'
+
+# How blind was the run: every gap, with the events that came out of it.
+tripl watch --json --duration 3600 \
+  | jq -r 'select(.event=="poll.recovered")
+           | "\(.data.section)\t\(.data.gap_seconds)s\t\(.data.events_during_gap) events"'
 ```
 
 ## See also

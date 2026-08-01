@@ -1,4 +1,4 @@
-"""Every REST endpoint the diagnostics read, in one place.
+"""Every REST endpoint the commands read, in one place.
 
 Single source of truth for the contract test: every (method, path) here must
 exist in ``backend/openapi.json``. Paths are relative to the ``/api/v1`` prefix
@@ -36,4 +36,26 @@ STATUS_ENDPOINTS: dict[str, tuple[tuple[str, str], ...]] = {
         ("get", "/projects/{slug}"),
     ),
     "coverage": (("get", "/projects/{slug}/reconciliation/coverage"),),
+}
+
+# `tripl watch` polls these on a loop. Note what is NOT here: the Server-Sent
+# Events stream at /projects/{slug}/events/stream. It is declared
+# `include_in_schema=False` and is therefore absent from the OpenAPI document, so
+# adding it would fail the contract test rather than protect it - and watch does
+# not open it anyway, because the replay chunk progress that is this command's
+# headline is written to ScanJob.result_summary with no publish_project_event
+# call and is invisible on that bus (tripl-ey6j.4).
+#
+# /auth/me is deliberately absent too: raise_selection_failure already turns a
+# listing 403 into the "name the project with --project <slug>" advice, so
+# probing the key's reach would buy nothing status does not already get free.
+WATCH_ENDPOINTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "selection": (
+        ("get", "/projects"),
+        ("get", "/projects/{slug}"),
+    ),
+    "scans": (("get", "/projects/{slug}/scans"),),
+    "jobs": (("get", "/projects/{slug}/scans/{scan_id}/jobs"),),
+    "signals": (("get", "/projects/{slug}/anomalies/signals"),),
+    "deliveries": (("get", "/projects/{slug}/alert-deliveries"),),
 }

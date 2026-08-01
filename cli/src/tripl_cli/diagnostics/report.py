@@ -12,11 +12,21 @@ STABILITY, within one ``schema_version``:
     and ``message`` are prose and may change in any release. ``generated_at``,
     ``duration_ms``, ``requests`` and ``tool_version`` vary per run. Assert on
     ``code`` and ``evidence``. Never assert on prose.
+
+``tripl watch --json`` is JSON LINES rather than one document: one object per
+line, flushed as it is produced, because a follow mode that block-buffers into
+`jq` shows nothing for minutes and reads as a hang. Every line repeats the whole
+envelope. The same stability rule applies to it: within one ``schema_version``
+key names are never removed or retyped and event tokens are never renamed or
+repurposed; new keys and new tokens may appear in any release. Select by
+``event``, never by position. ``message`` is prose — assert on ``event`` and
+``data``. ``schema_version`` is SHARED with the doctor and status documents; a
+consumer branches on ``command``, never on a per-command version.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tripl_cli import __version__
 from tripl_cli.diagnostics.model import (
@@ -30,8 +40,22 @@ from tripl_cli.diagnostics.model import (
     to_rfc3339,
 )
 
+if TYPE_CHECKING:
+    # Type-only, so the runtime import graph keeps its one direction: watch
+    # imports diagnostics, never the reverse. The JSONL builder still lives here
+    # because this module is the answer to "what does tripl emit" — a second
+    # place to build a document is a second place for it to drift.
+    from tripl_cli.watch.model import WatchEvent
+
 SCHEMA_VERSION = 1
 TOOL_NAME = "tripl"
+
+# The three JSONL line classes. Load-bearing: a consumer counting incidents must
+# not count the CLI's own transport trouble, and a consumer measuring how much of
+# the window watch was blind for needs `diagnostic` isolated and countable.
+WATCH_STREAM_META = "meta"
+WATCH_STREAM_EVENT = "event"
+WATCH_STREAM_DIAGNOSTIC = "diagnostic"
 
 
 def _instance_document(instance: Instance) -> JsonDict:
@@ -109,6 +133,30 @@ def doctor_document(report: Report, *, exit_code: int) -> JsonDict:
     document["summary"] = report.counts
     document["checks"] = [_check_document(check) for check in report.checks]
     return document
+
+
+def watch_line(event: WatchEvent, *, seq: int) -> JsonDict:
+    """One JSON Lines record. Every key present on every line, without exception.
+
+    ``seq`` is monotonic from 1 within a run and never reused, so a consumer can
+    detect truncation and undo a log shipper's reordering. ``time`` is when watch
+    OBSERVED the change, not when it happened — every domain timestamp is a
+    separately named field inside ``data``.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "tool": TOOL_NAME,
+        "tool_version": __version__,
+        "command": "watch",
+        "stream": event.stream,
+        "seq": seq,
+        "time": to_rfc3339(event.time),
+        "event": event.event,
+        "project": event.project,
+        "target": _target_document(event.target),
+        "message": event.message,
+        "data": dict(event.data),
+    }
 
 
 def status_document(snapshot: StatusSnapshot) -> JsonDict:

@@ -110,7 +110,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         # --debug that re-raises for the traceback goes here.
         print(f"tripl: {exc}", file=sys.stderr)
         return exc.exit_code
-    except KeyboardInterrupt:  # pragma: no cover - requires a real SIGINT
+    except KeyboardInterrupt:
+        # Reached without a real SIGINT by `tripl watch`, whose loop catches the
+        # interrupt only long enough to print its footer and then RE-RAISES so
+        # this stays the only place 130 is decided (tripl-ey6j.4).
         print(file=sys.stderr)
         return EXIT_INTERRUPTED
 

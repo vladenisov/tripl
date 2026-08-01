@@ -98,9 +98,17 @@ class Fetched[T]:
 
 @dataclass(frozen=True)
 class Target:
-    """The object a finding is about, and the handle to look it up again."""
+    """The object a finding - or a watch event - is about, and how to find it.
+
+    The ``kind`` enumeration below is canonical: it is the complete set a
+    consumer can switch on, so anything that builds a Target has to appear in it.
+    ``scan_job`` and ``alert_delivery`` are watch's, and exist because a follow
+    mode points at the individual RUN and the individual DELIVERY, where doctor
+    points at the config that owns them.
+    """
 
     kind: str  # "scan_config" | "event_type" | "data_source" | "project"
+    #        | "scan_job" | "alert_delivery"
     id: str | None = None
     name: str | None = None
 
