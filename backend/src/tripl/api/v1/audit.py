@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query
 
 from tripl.api.deps import SessionDep, get_owner_user
 from tripl.schemas.audit import AuditListResponse
+from tripl.schemas.text_filters import FreeTextFilter
 from tripl.services import audit_service
 
 # Owner-only: this feed was the back door around two other owner-only gates.
@@ -31,10 +32,12 @@ router = APIRouter(prefix="/audit", tags=["audit"], dependencies=[Depends(get_ow
 @router.get("", response_model=AuditListResponse)
 async def list_audit(
     session: SessionDep,
-    project_slug: Annotated[str | None, Query()] = None,
-    action: Annotated[str | None, Query()] = None,
+    project_slug: Annotated[FreeTextFilter | None, Query()] = None,
+    action: Annotated[FreeTextFilter | None, Query()] = None,
     user_id: Annotated[uuid.UUID | None, Query()] = None,
-    user_email: Annotated[str | None, Query()] = None,
+    # FreeTextFilter: binds into a LIKE, so a NUL aborts inside asyncpg before
+    # SQL runs (tripl-8wez).
+    user_email: Annotated[FreeTextFilter | None, Query()] = None,
     since: Annotated[datetime | None, Query()] = None,
     until: Annotated[datetime | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,

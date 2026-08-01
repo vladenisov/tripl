@@ -28,6 +28,7 @@ from tripl.schemas.metric_series import (
     MetricSeriesResponse,
     MetricVersionSeriesResponse,
 )
+from tripl.schemas.text_filters import FreeTextFilter
 from tripl.services import (
     audit_service,
     metric_definition_service,
@@ -48,7 +49,9 @@ async def list_metric_definitions(
     slug: str,
     status: Annotated[list[MetricStatus] | None, Query()] = None,
     kind: MetricKind | None = None,
-    search: str | None = None,
+    # FreeTextFilter: binds into an ILIKE, so a NUL aborts inside asyncpg
+    # before SQL runs (tripl-8wez).
+    search: FreeTextFilter | None = None,
     offset: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=1000),
 ) -> MetricDefinitionListResponse:
@@ -210,7 +213,7 @@ async def get_metric_breakdowns(
     session: SessionDep,
     slug: str,
     metric_id: uuid.UUID,
-    column: str | None = None,
+    column: FreeTextFilter | None = None,
     time_from: TimeFrom = None,
     time_to: TimeTo = None,
 ) -> MetricBreakdownsResponse:

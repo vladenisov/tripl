@@ -11,6 +11,7 @@ from fastapi import APIRouter, Query
 from tripl.api.deps import EditorUserDep, SessionDep
 from tripl.models.domain_enums import ChartAnnotationScopeType
 from tripl.schemas.chart_annotation import ChartAnnotationCreate, ChartAnnotationResponse
+from tripl.schemas.text_filters import FreeTextFilter
 from tripl.services import chart_annotation_service
 
 router = APIRouter(
@@ -33,7 +34,10 @@ async def list_chart_annotations(
     # into Annotated[] because ruff's B008 only exempts call-defaults whose
     # annotation it can prove immutable, and an enum class isn't on that list.
     scope_type: Annotated[ChartAnnotationScopeType | None, Query()] = None,
-    scope_ref: str | None = Query(default=None),
+    # Into Annotated[] for the same reason scope_type above is: ruff's B008
+    # exempts a call-default only when it can prove the annotation immutable,
+    # and FreeTextFilter is not on that list.
+    scope_ref: Annotated[FreeTextFilter | None, Query()] = None,
     time_from: OptionalDateTimeQuery = None,
     time_to: OptionalDateTimeQuery = None,
 ) -> list[ChartAnnotationResponse]:

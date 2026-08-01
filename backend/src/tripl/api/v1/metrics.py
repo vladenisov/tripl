@@ -24,6 +24,7 @@ from tripl.schemas.event_metric import (
     TopEventResponse,
     TopMoverItem,
 )
+from tripl.schemas.text_filters import FreeTextFilter
 from tripl.services import metrics_insights_service, metrics_service
 
 router = APIRouter(tags=["metrics"])
@@ -48,8 +49,10 @@ async def get_events_metrics(
     session: SessionDep,
     slug: str,
     event_type_id: uuid.UUID | None = None,
-    search: str | None = None,
-    tag: str | None = None,
+    # FreeTextFilter: binds into an ILIKE, so a NUL aborts inside asyncpg
+    # before SQL runs (tripl-8wez).
+    search: FreeTextFilter | None = None,
+    tag: FreeTextFilter | None = None,
     # list[EventStatus] (not list[str]): the filter lands in Event.status.in_(),
     # a native Postgres enum, so one bad member 500'd the whole request. Mirrors
     # GET /events?status= — same filter, same enum, now the same 422 (tripl-57g0).
@@ -159,7 +162,7 @@ async def get_event_metric_breakdowns(
     session: SessionDep,
     slug: str,
     event_id: uuid.UUID,
-    column: str | None = None,
+    column: FreeTextFilter | None = None,
     time_from: TimeFrom = None,
     time_to: TimeTo = None,
 ) -> EventMetricBreakdownsResponse:
@@ -234,7 +237,7 @@ async def get_top_movers(
     slug: str,
     scan_config_id: uuid.UUID,
     scope_type: MetricScopeType,
-    scope_ref: str,
+    scope_ref: FreeTextFilter,
     bucket: datetime,
     limit: int = Query(10, ge=1, le=100),
 ) -> list[TopMoverItem]:
@@ -259,7 +262,7 @@ async def get_seasonality_heatmap(
     slug: str,
     scan_config_id: uuid.UUID,
     scope_type: MetricScopeType,
-    scope_ref: str,
+    scope_ref: FreeTextFilter,
     time_from: TimeFrom = None,
     time_to: TimeTo = None,
 ) -> SeasonalityHeatmapResponse:
@@ -284,9 +287,9 @@ async def get_breakdown_timeline(
     slug: str,
     scan_config_id: uuid.UUID,
     scope_type: MetricScopeType,
-    scope_ref: str,
-    breakdown_column: str,
-    breakdown_value: str,
+    scope_ref: FreeTextFilter,
+    breakdown_column: FreeTextFilter,
+    breakdown_value: FreeTextFilter,
     is_other: bool = False,
     time_from: TimeFrom = None,
     time_to: TimeTo = None,
@@ -315,7 +318,7 @@ async def get_app_version_series(
     slug: str,
     scan_config_id: uuid.UUID,
     scope_type: MetricScopeType = MetricScopeType.project_total,
-    scope_ref: str | None = None,
+    scope_ref: FreeTextFilter | None = None,
     time_from: TimeFrom = None,
     time_to: TimeTo = None,
 ) -> AppVersionSeriesResponse:
@@ -376,7 +379,7 @@ async def get_distribution_drifts(
     session: SessionDep,
     slug: str,
     scope_type: MetricScopeType,
-    scope_ref: str,
+    scope_ref: FreeTextFilter,
     scan_config_id: uuid.UUID | None = None,
     time_from: TimeFrom = None,
     time_to: TimeTo = None,
