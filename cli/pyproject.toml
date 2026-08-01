@@ -81,6 +81,12 @@ build-backend = "hatchling.build"
 # is backend/src/tripl/, and a distribution installing an importable `tripl`
 # would shadow it in any environment holding both — a contributor's backend
 # venv, for one (tripl-ey6j).
+#
+# No `artifacts` entry is needed for src/tripl_cli/install/files/*: hatchling
+# copies a listed package wholesale, so compose.yaml and rabbitmq.conf ship as
+# package data already. Verified against a built wheel rather than assumed —
+# `uv build --wheel` then unzip, and both files are there (tripl-ey6j.3). They
+# are read through importlib.resources, which is why this matters at all.
 packages = ["src/tripl_cli"]
 
 [tool.pytest.ini_options]

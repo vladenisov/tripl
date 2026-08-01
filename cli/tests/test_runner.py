@@ -72,6 +72,35 @@ def test_run_async_requires_credentials_before_opening_a_socket(
 
 
 @respx.mock
+def test_run_unauthenticated_needs_no_credentials_and_sends_no_authorization() -> None:
+    """The second bridge, and the reason it exists.
+
+    ``tripl install`` polls an instance that BY DEFINITION has no credentials
+    yet - the first account has not been created, so no API key can exist. It
+    must therefore reach the wire with no Config at all, and it must never put
+    an Authorization header on an endpoint the backend deliberately leaves
+    unauthenticated (tripl-ey6j.3).
+    """
+    route = respx.get(f"{BASE_URL}/health").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+
+    async def body(timeout: float) -> Any:
+        # The per-request timeout is handed IN rather than applied around the
+        # body: install's five-minute poll deadline and its ten-second request
+        # deadline are different numbers.
+        assert timeout == 3.5
+        from tripl_cli.diagnostics.collect import probe_health
+
+        return await probe_health(BASE_URL, timeout)
+
+    fetched = runner.run_unauthenticated(body, timeout=3.5)
+
+    assert fetched.ok
+    assert "authorization" not in route.calls[0].request.headers
+
+
+@respx.mock
 def test_tripl_api_error_crosses_asyncio_run_with_its_status_code_intact() -> None:
     """The bridge adds an event loop, not a new error regime."""
     respx.get(f"{API_BASE}/projects").mock(

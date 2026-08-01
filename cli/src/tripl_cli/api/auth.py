@@ -11,8 +11,20 @@ from tripl_cli.api.request import ApiRequest
 
 ME = "/auth/me"
 
-ENDPOINTS: tuple[tuple[str, str], ...] = (("get", ME),)
+# The UNAUTHENTICATED bootstrap signal: {has_users, registration_enabled}. It is
+# what lets `tripl install` end with next steps that are true statements about
+# the instance it just started instead of a static blurb — "create the first
+# account, it becomes the owner" versus "this instance already has accounts"
+# versus "registration is closed, ask an owner for an invitation". The auth
+# screen reads it for the same reason (tripl-ey6j.3).
+STATUS = "/auth/status"
+
+ENDPOINTS: tuple[tuple[str, str], ...] = (("get", ME), ("get", STATUS))
 
 
 def get_me() -> ApiRequest:
     return ApiRequest("GET", ME)
+
+
+def get_status() -> ApiRequest:
+    return ApiRequest("GET", STATUS)

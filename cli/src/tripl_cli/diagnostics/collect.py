@@ -5,9 +5,12 @@ arrive at the check layer as data. That is what makes doctor total: an
 unreachable instance still produces a complete, parseable document instead of a
 traceback (tripl-ey6j.2).
 
-The one exception is ``raise_selection_failure``, which ``status`` calls
-deliberately — status has no verdict contract, so "could not reach the instance"
-is an ordinary CLI failure there rather than a finding.
+The exceptions are ``raise_selection_failure`` and ``read_or_raise``, which the
+commands with no verdict contract call deliberately — ``status`` and the
+``scans`` / ``drifts`` verbs either print the instance or fail like any other
+command, so "could not reach the instance" is an ordinary CLI failure there
+rather than a finding. Both opt back OUT of the ``Fetched`` regime; neither
+throws the failure away.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ from tripl_cli.api import monitoring as monitoring_api
 from tripl_cli.api import projects as projects_api
 from tripl_cli.api import scans as scans_api
 from tripl_cli.api.request import ApiRequest, send
-from tripl_cli.client import DEFAULT_USER_AGENT, TriplClient
+from tripl_cli.client import API_PREFIX, DEFAULT_USER_AGENT, TriplClient
 from tripl_cli.config import Config
 from tripl_cli.diagnostics.model import (
     HEALTH_PATH,
@@ -192,6 +195,43 @@ async def probe_health(base_url: str, timeout: float) -> Fetched[JsonDict]:
     )
 
 
+async def probe_auth_status(base_url: str, timeout: float) -> Fetched[JsonDict]:
+    """Read ``/auth/status`` with NO Authorization header. Same regime as ``probe_health``.
+
+    Unauthenticated by NECESSITY here rather than by choice: ``tripl install``
+    calls this against an instance it has just started, where the first account
+    does not exist yet and therefore no API key can (tripl-ey6j.3). The endpoint
+    is unauthenticated on the backend for the same reason — the sign-in screen
+    reads it before anybody is signed in.
+
+    The path and method come from ``api.auth.get_status()`` so there is no second
+    spelling of the route anywhere; only the transport differs, because the
+    shared ``TriplClient`` pool always carries a credential and this must not.
+    """
+    request = auth_api.get_status()
+    url = f"{base_url.rstrip('/')}{API_PREFIX}{request.path}"
+    try:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            headers={"User-Agent": DEFAULT_USER_AGENT},
+        ) as client:
+            response = await client.request(request.method, url)
+    except httpx.HTTPError as exc:
+        return Fetched(value=None, status_code=None, error=repr(exc))
+    try:
+        parsed = response.json()
+    except ValueError:
+        parsed = None
+    if response.status_code == 200 and isinstance(parsed, dict):
+        return Fetched(value=as_dict(parsed), status_code=200)
+    return Fetched(
+        value=None,
+        status_code=response.status_code,
+        error=f"HTTP {response.status_code}, body: {response.text[:120]!r}",
+    )
+
+
 def filter_projects(
     projects: Sequence[JsonDict], *, include_demo: bool
 ) -> tuple[tuple[JsonDict, ...], int]:
@@ -277,6 +317,30 @@ def raise_selection_failure(selection: ProjectSelection) -> None:
         if failure.status_code is not None:
             raise TriplAPIError(failure.status_code, None, message)
         raise TriplError(message)
+
+
+def read_or_raise[T](fetched: Fetched[T]) -> T:
+    """The payload, or the failure that stopped it arriving. Never a stand-in.
+
+    ``try_read_list`` / ``try_read_dict`` already treat a payload of the WRONG
+    SHAPE as a failure, exactly as they treat a non-200 (TRAP 3). This is how a
+    command with no verdict contract consumes that verdict: a 200 carrying an
+    object where an array belongs becomes a printed message and exit 1, never a
+    rendered empty table.
+
+    Only the exception TYPE is reconstructed, and only far enough to carry the
+    right exit code — the message is the client's own, verbatim. A wrong-shaped
+    200 is deliberately NOT a ``TriplAPIError``: that class means "the instance
+    answered 4xx/5xx", and a consumer branching on its ``status_code`` would be
+    told the opposite of what happened.
+    """
+    if fetched.ok and fetched.value is not None:
+        return fetched.value
+    message = fetched.error or "the tripl API did not answer"
+    status = fetched.status_code
+    if status is not None and status >= 400:
+        raise TriplAPIError(status, None, message)
+    raise TriplError(message)
 
 
 def instance_of(config: Config, base_url: str, scope: str) -> Instance:

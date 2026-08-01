@@ -39,11 +39,15 @@ def render_header(command: str, base_url: str, source: str) -> str:
     return f"tripl {command} - {base_url} (from {source})"
 
 
-def _columns(rows: Sequence[Sequence[str]]) -> list[str]:
+def columns(rows: Sequence[Sequence[str]]) -> list[str]:
     """Pad every column to its widest cell; never pad the last one.
 
     Deterministic from the input alone — no terminal width read, no isatty
     branch — so the piped bytes and the terminal bytes are the same artifact.
+
+    Public rather than module-private since tripl-ey6j.3: ``install.render``
+    lays out its own tables and a second padder would let the two command
+    families' output drift apart by a space.
     """
     if not rows:
         return []
@@ -126,6 +130,17 @@ def _unavailable(label: str, message: str) -> str:
     return f"  {label}: unavailable ({message})"
 
 
+def _incomplete(error_count: int) -> str:
+    """The one spelling of "this list is short because a read failed", counted.
+
+    ``scans list`` and ``drifts list`` reach the identical condition, so they say
+    the identical sentence: two wordings is how a ``grep`` over an incident log
+    finds one of them and misses the other, and a footer that did not COUNT the
+    failures left the operator unable to tell one 403 from twenty.
+    """
+    return f"{plural(error_count, 'read')} failed; the list above is incomplete."
+
+
 def _schedule_of(scan: dict[str, object]) -> str:
     """Why the dispatcher would or would not select this config."""
     if scan.get("dispatchable"):
@@ -152,7 +167,7 @@ def render_scan_configs(snapshot: ScansSnapshot) -> str:
             ]
             for scan in project.scans
         ]
-        lines.extend(f"  {line}" for line in _columns(rows))
+        lines.extend(f"  {line}" for line in columns(rows))
         if not project.scans and not project.errors:
             lines.append("  (no scan configs)")
         for error in project.errors:
@@ -163,7 +178,9 @@ def render_scan_configs(snapshot: ScansSnapshot) -> str:
         f"{plural(len(snapshot.projects), 'project')}."
     )
     if snapshot.failed:
-        lines.append("Some scan listings could not be read; the list above is incomplete.")
+        # Counted and named, because a shorter list at exit 0 is exactly the
+        # failure this command was written to stop reproducing.
+        lines.append(_incomplete(snapshot.error_count))
     return "\n".join(lines).rstrip()
 
 
@@ -182,7 +199,7 @@ def render_scan_jobs(snapshot: ScanJobsSnapshot) -> str:
         ]
         for job in snapshot.jobs
     ]
-    lines.extend(f"  {line}" for line in _columns(rows))
+    lines.extend(f"  {line}" for line in columns(rows))
     if not snapshot.jobs:
         lines.append("  (no jobs)")
     lines.append("")
@@ -221,7 +238,7 @@ def render_drifts(snapshot: DriftsSnapshot) -> str:
             ]
             for row in project.drifts
         ]
-        lines.extend(f"  {line}" for line in _columns(rows))
+        lines.extend(f"  {line}" for line in columns(rows))
         if not project.drifts and not project.errors:
             lines.append("  (no drifts)")
         for error in project.errors:
@@ -239,11 +256,7 @@ def render_drifts(snapshot: DriftsSnapshot) -> str:
         f"{snapshot.untriaged_count} untriaged."
     )
     if snapshot.failed:
-        # Counted and named, because a shorter list at exit 0 is exactly the
-        # failure this command was written to stop reproducing.
-        lines.append(
-            f"{plural(snapshot.error_count, 'read')} failed; the list above is incomplete."
-        )
+        lines.append(_incomplete(snapshot.error_count))
     return "\n".join(lines).rstrip()
 
 

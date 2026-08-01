@@ -4,15 +4,16 @@ Mirrors ``tripl_mcp.tools.register_all`` deliberately, so a contributor moving
 between the two packages reads the same shape: one module per command, each
 exposing ``register(subparsers, parent)``, and one place that lists them.
 
-It also holds the two argparse validators the commands share. They live here
-rather than in a module of their own because there are two of them and they
-exist purely so a bad ``--days`` or ``--timeout`` fails at parse time with
-``EXIT_USAGE``, before a socket is opened.
+It also holds the argparse validators the commands share. They live here rather
+than in a module of their own because they exist for one purpose only: a bad
+``--days``, ``--timeout``, ``--until`` or ``--to`` fails at parse time with
+``EXIT_USAGE``, before a socket is opened or a container is pulled.
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -41,7 +42,7 @@ def register_all(
     # Imported here rather than at module scope: the command modules import
     # `Handler` and the validators from this one, so a top-level import would
     # close the cycle.
-    from tripl_cli.commands import doctor, drifts, scans, status, watch
+    from tripl_cli.commands import doctor, drifts, install, scans, status, upgrade, watch
 
     doctor.register(subparsers, parent)
     status.register(subparsers, parent)
@@ -50,6 +51,10 @@ def register_all(
     # word; a command acting on a CLASS OF OBJECTS is `<plural-noun> <verb>`.
     scans.register(subparsers, parent)
     drifts.register(subparsers, parent)
+    # One word each, by the same rule: they act on an instance as a whole — one
+    # that does not exist yet, or one being moved to a new tag (tripl-ey6j.3).
+    install.register(subparsers, parent)
+    upgrade.register(subparsers, parent)
 
 
 def group_help(parser: argparse.ArgumentParser) -> Handler:
@@ -102,6 +107,30 @@ def bounded_float(flag: str, low: float, high: float) -> Callable[[str], float]:
         return value
 
     return _parse
+
+
+def image_tag(flag: str) -> Callable[[str], str]:
+    """A Docker image tag, validated at parse time so a typo costs no network call.
+
+    OCI's own grammar: ``[A-Za-z0-9_][A-Za-z0-9._-]{0,127}``. Checked here rather
+    than left to the registry because ``docker compose pull`` with a malformed
+    tag fails after opening a connection and printing a manifest error, which
+    reads as "the release is missing" rather than "you typed a space".
+    """
+
+    def _parse(raw: str) -> str:
+        value = raw.strip()
+        if not _IMAGE_TAG.fullmatch(value):
+            raise argparse.ArgumentTypeError(
+                f"{flag} must be a docker image tag - a letter, digit or underscore "
+                f"followed by up to 127 of [A-Za-z0-9._-] - got {raw!r}"
+            )
+        return value
+
+    return _parse
+
+
+_IMAGE_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
 
 
 def bounded_datetime(flag: str) -> Callable[[str], datetime]:

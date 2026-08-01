@@ -63,7 +63,14 @@ tripl scans run <scan> --project SLUG       # trigger a run now (WRITE)
 tripl scans cancel <scan> <job-id> --project SLUG   # cancel an active job (WRITE)
 tripl drifts list         # schema drifts; untriaged by default
 tripl drifts dismiss <drift-id> --project SLUG      # false_positive or snooze (WRITE)
+tripl install --app-url https://tripl.example.com --version 1.5.0   # provision a stack and start it (HOST)
+tripl install --app-url https://tripl.example.com --dry-run   # print the plan, write nothing
+tripl upgrade --to 1.6.0  # move an installed stack to a new image tag (HOST)
 ```
+
+`--version` defaults to `latest`; pin a released tag in production so a re-run
+cannot move you onto an image you have not read the notes for. The command says
+so on stderr when you leave it at the default.
 
 `doctor`, `status`, `watch`, `scans list`, `scans jobs` and `drifts list` are
 **read-only** — a `tk_r_` key is enough. The three marked WRITE need a `tk_w_`
@@ -78,6 +85,48 @@ prompt and has no `--yes` at all — passing one is exit 2, because a no-op flag
 here is a flag a script author will assume works on the next command too. All
 three writes take `--dry-run`, which resolves everything, prints the exact
 request (method, path, params, body — never a credential) and sends nothing.
+
+`install` and `upgrade` are the two marked HOST: they act on a **directory and
+the local Docker daemon**, not on a running instance, so they take neither
+`--url` nor `--api-key` — passing either explicitly is exit 2 rather than a
+silently ignored flag. Both take `--dir` (default `./tripl`, always reported
+absolute), `--wait SECONDS` (default 300, `0` skips), `--dry-run`, `--yes` and
+`--json`, and both are idempotent: `install` re-run converges, and `upgrade` to
+the tag already pinned prints `already at X; nothing to do.` and exits 0.
+
+`install` writes `compose.yaml`, `infra/rabbitmq/rabbitmq.conf` and a generated
+**0600** `.env` into `--dir`, then runs `docker compose pull` and
+`docker compose up -d` in it and polls `<--app-url>/health`. It **never
+overwrites an existing `.env`**: that file is created, or appended to with your
+confirmation, or left alone. `--force` reaches `compose.yaml` and
+`rabbitmq.conf` only, and there is no flag that reaches `.env`, because losing
+`ENCRYPTION_KEY` permanently destroys every stored warehouse credential.
+`--no-start` writes the files and runs nothing (and skips the Docker probe
+entirely). Note that the health poll targets the **public** `--app-url`, so on a
+host whose TLS terminator is not up yet, use `--wait 0` and curl
+`http://127.0.0.1:8000/health` from the box.
+
+`upgrade --to` is required and a **downgrade is refused outright** with no
+override flag; an unorderable pair (`latest`, `sha-abc1234`, `1.4`) says so and
+demands `--yes`. It pulls, *then* moves the `TRIPL_VERSION` pin in `.env`
+keeping a 0600 `.env.bak.<UTC>` copy, *then* restarts — the pull is first so a
+bad tag leaves `.env` untouched. The `pg_dump` backup command is printed for
+**you** to run and always prompts: a dump this tool invoked and then called
+"your backup" would be a promise it cannot keep, not least because the dump does
+not contain `ENCRYPTION_KEY`. Your database lives in the named volume
+`pgdata18`, not in `--dir`.
+
+Neither creates the owner account, connects a warehouse or runs the first scan.
+The first two are unreachable with an API key of any scope — they need an
+interactive owner session — so `install` finishes by reading the instance's real
+bootstrap state from the unauthenticated `/auth/status` and printing the URL to
+open in a browser.
+
+`docker compose pull` and `up -d` write straight to your terminal and are never
+captured, so their progress and their errors are live; the exact invocation is
+printed first and is safe to paste. That is why `--json` carries the `argv`, the
+`cwd` and the `returncode` of each command rather than its output. No generated
+secret is ever printed — the document lists `secrets_generated` by **name**.
 
 Two operations are deliberately **not** offered here. A bounded metrics replay
 is owner-**session**-only server-side (`deps.get_owner_user` rejects every
@@ -152,10 +201,16 @@ not moved).
 | 3 | `doctor` only: at least one check failed, or `--strict` and at least one warning. Nothing else ever exits 3. |
 | 130 | Interrupted (SIGINT). For `watch` this is the **normal** ending — a run without `--duration` has no other way to stop. |
 
-An unreachable instance therefore exits **3**, not 1 — that is what makes exit 1
-a meaningful bug signal.
+An unreachable instance therefore exits **3** out of `doctor`, not 1 — it
+becomes a finding like everything else doctor reads, which is what makes an exit
+1 out of `doctor` a meaningful bug signal. **Every other command exits 1** on an
+unreachable instance, because none of them turns a failed read into a verdict.
 
-`doctor` and `status` put exactly one JSON document on stdout; `watch --json`
+`doctor` and `status` put exactly one JSON document on stdout, and so do the
+`scans` / `drifts` verbs — but only when the command completes: a write the API
+refused, a read that failed outright and a declined prompt all leave stdout
+**empty** and put the reason on stderr, so a consumer checks the exit code
+before it parses. `watch --json`
 puts **JSON Lines**, one object per event, flushed as produced. Within one
 `schema_version`, key names are never removed or retyped, and check `id`s,
 finding `code`s, `status`/`severity` values and `watch` event tokens are never

@@ -99,6 +99,33 @@ def test_scans_list_reports_a_failed_listing_and_exits_one(
     assert failed["errors"][0]["endpoint"] == "/projects/staging/scans"
 
 
+def test_both_list_commands_report_a_failed_read_in_the_same_words(
+    tripl_api: FakeInstance,
+    configured_env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """One idea, one spelling — and both of them COUNT.
+
+    ``scans list`` used to end on "Some scan listings could not be read" while
+    ``drifts list`` ended on "1 read failed": two sentences for the identical
+    condition, only one of which told the operator how much was missing. An
+    incident log is grepped for that line, so there has to be exactly one of it.
+    """
+    tripl_api.projects([make_project("prod"), make_project("staging")])
+    tripl_api.scans("staging", {"detail": "nope"}, status=403)
+    assert main(["scans", "list"]) == 1
+    scans_out = capsys.readouterr().out
+
+    tripl_api.event_types("prod", {"detail": "nope"}, status=403)
+    tripl_api.event_types("staging", [])
+    assert main(["drifts", "list"]) == 1
+    drifts_out = capsys.readouterr().out
+
+    sentence = "1 read failed; the list above is incomplete."
+    assert sentence in scans_out
+    assert sentence in drifts_out
+
+
 def test_scans_list_opens_exactly_one_connection_pool(
     tripl_api: FakeInstance,
     configured_env: None,
@@ -155,6 +182,28 @@ def test_scans_jobs_without_project_exits_usage(
 ) -> None:
     assert main(["scans", "jobs", "scan-1"]) == 2
     assert not tripl_api.router.calls
+
+
+def test_scans_jobs_refuses_a_200_that_is_not_an_array(
+    tripl_api: FakeInstance,
+    configured_env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A non-list read is a failure, never "(no jobs)" at exit 0.
+
+    The route answers ``list[ScanJobResponse]``; an object arriving instead means
+    a proxy, an error envelope or a future paginated shape - and coercing it to
+    an empty list would print "0 jobs" about a config that may be mid-incident.
+    That is TRAP 3 with a 200 status code, which is why the shape check lives in
+    ``Reader.try_read_list`` and not in each caller's head.
+    """
+    tripl_api.jobs("prod", "scan-1", {"items": [], "total": 0})
+    assert main(["scans", "jobs", "scan-1", "--project", "prod"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "(no jobs)" not in captured.out
+    assert "expected a JSON array" in captured.err
+    assert "/projects/prod/scans/scan-1/jobs" in captured.err
 
 
 # --- scans run ------------------------------------------------------------
@@ -341,6 +390,90 @@ def test_scans_cancel_of_a_finished_job_surfaces_the_409(
     )
     assert main(["scans", "cancel", "scan-1", "job-9", "--project", "prod", "--yes"]) == 1
     assert "Scan job is not active (status: completed)" in capsys.readouterr().err
+
+
+def test_scans_cancel_with_a_read_only_key_surfaces_the_403_guidance(
+    tripl_api: FakeInstance,
+    configured_env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The refusal an operator is most likely to hit on a write, on the verb that
+    stops work in flight.
+
+    ``run`` has this test and ``cancel`` did not, although it is the one reached
+    under pressure and with the wrong key exported. No local tk_r_/tk_w_ gate:
+    the server is the authority and its message names all three possibilities.
+    """
+    tripl_api.job_cancel("prod", "scan-1", "job-9", {"detail": "Write scope required"}, status=403)
+    assert main(["scans", "cancel", "scan-1", "job-9", "--project", "prod", "--yes"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "tk_r_ keys cannot write" in captured.err
+    assert "Write scope required" in captured.err
+
+
+def test_scans_cancel_of_a_malformed_job_id_surfaces_the_apis_own_validation_detail(
+    tripl_api: FakeInstance,
+    configured_env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """422, the other refusal a write actually meets.
+
+    ``<job-id>`` is a free string here and ``uuid.UUID`` on the route, so a job
+    id copied with a stray character never reaches the service - FastAPI answers
+    422 with its own validation body. The CLI must pass that body through: "the
+    tripl API rejected the request" alone would leave an operator re-reading
+    their own command line for a fault the server already located.
+    """
+    detail = [
+        {
+            "type": "uuid_parsing",
+            "loc": ["path", "job_id"],
+            "msg": "Input should be a valid UUID, invalid character: found `n` at 1",
+            "input": "not-a-uuid",
+        }
+    ]
+    tripl_api.job_cancel("prod", "scan-1", "not-a-uuid", {"detail": detail}, status=422)
+    assert main(["scans", "cancel", "scan-1", "not-a-uuid", "--project", "prod", "--yes"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    err = captured.err
+    assert "(422)" in err
+    # The API's own words, not a paraphrase: the field it blamed, the reason, and
+    # the value it was given.
+    assert "uuid_parsing" in err
+    assert "Input should be a valid UUID" in err
+    assert "job_id" in err
+    assert "not-a-uuid" in err
+
+
+def test_a_command_that_could_not_complete_writes_nothing_to_stdout(
+    tripl_api: FakeInstance,
+    configured_env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Pins the `--json` contract on the path that has no document to emit.
+
+    ``scans list`` and ``drifts list`` report a failed read INSIDE their
+    document; these three raise on the first refusal, so stdout stays EMPTY and
+    the reason goes to stderr. A consumer that parses before it reads the exit
+    code gets an empty string rather than an error object, and
+    website/docs/run/cli.md says so - this is the test that keeps the page true.
+    """
+    tripl_api.jobs("prod", "scan-1", {"detail": "nope"}, status=403)
+    tripl_api.scan_run("prod", "scan-1", {"detail": "Write scope required"}, status=403)
+    tripl_api.job_cancel(
+        "prod", "scan-1", "job-9", {"detail": "Scan job is not active"}, status=409
+    )
+    for argv in (
+        ["scans", "jobs", "scan-1", "--project", "prod", "--json"],
+        ["scans", "run", "scan-1", "--project", "prod", "--json"],
+        ["scans", "cancel", "scan-1", "job-9", "--project", "prod", "--yes", "--json"],
+    ):
+        assert main(argv) == 1, argv
+        captured = capsys.readouterr()
+        assert captured.out == "", f"{argv} put a partial document on stdout"
+        assert captured.err.strip(), f"{argv} failed without saying why"
 
 
 def test_scans_cancel_prompt_goes_to_stderr_not_stdout(

@@ -50,10 +50,16 @@ from tripl_cli.diagnostics.model import (
 )
 
 if TYPE_CHECKING:
-    # Type-only, so the runtime import graph keeps its one direction: watch
-    # imports diagnostics, never the reverse. The JSONL builder still lives here
+    # Type-only, so the runtime import graph keeps its one direction: watch and
+    # install import diagnostics, never the reverse. The builders still live here
     # because this module is the answer to "what does tripl emit" — a second
     # place to build a document is a second place for it to drift.
+    from collections.abc import Sequence
+    from pathlib import Path
+
+    from tripl_cli.install.health import HealthOutcome
+    from tripl_cli.install.plan import FileWrite, InstallPlan, UpgradePlan
+    from tripl_cli.install.shell import Command
     from tripl_cli.watch.model import WatchEvent
 
 SCHEMA_VERSION = 1
@@ -299,6 +305,166 @@ def drifts_document(snapshot: DriftsSnapshot) -> JsonDict:
         }
         for project in snapshot.projects
     ]
+    return document
+
+
+def _local_envelope(command: str, generated_at: str, duration_ms: int) -> JsonDict:
+    """The envelope for the two commands that act on a DIRECTORY, not an instance.
+
+    No ``instance`` block and no ``requests`` count, deliberately: ``install``
+    and ``upgrade`` have no configured base URL and no API key — at install time
+    the first account does not exist, so no key can (tripl-ey6j.3). Inventing an
+    empty instance block would let a consumer believe those fields were merely
+    unset. ``schema_version`` is shared with every other document; a consumer
+    branches on ``command``.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "tool": TOOL_NAME,
+        "tool_version": __version__,
+        "command": command,
+        "generated_at": generated_at,
+        "duration_ms": duration_ms,
+    }
+
+
+def _file_document(write: FileWrite, root: Path) -> JsonDict:
+    try:
+        relative = str(write.path.relative_to(root))
+    except ValueError:  # pragma: no cover - every planned write is under root
+        relative = str(write.path)
+    return {
+        "path": relative,
+        "action": write.action,
+        # The mode we ASKED for on the two actions that OPEN THE FILE with one,
+        # as a string because 0o600 as an integer is 384 in JSON and nobody
+        # reads that as a file mode. NULL on append/kept/unchanged: there the
+        # command never set a mode and never read one, and `"mode": "0600"` was
+        # a machine-readable claim about the permissions of the secrets file
+        # that nothing in this process had checked (tripl-jfm3). The human table
+        # has always left that column blank for exactly these actions.
+        "mode": f"{write.mode:04o}" if write.sets_mode else None,
+        "note": write.note,
+        # NAMES only. See install/render.render_generated_names.
+        "keys": list(write.keys),
+        # Where the replaced file was copied first; null unless one was taken.
+        "backup": None if write.backup is None else write.backup.name,
+    }
+
+
+def _command_document(command: Command, returncode: int | None) -> JsonDict:
+    """What was run. NOT what it printed.
+
+    ``docker compose pull``/``up -d`` inherit stdout and stderr rather than being
+    captured, because a wrapper that swallows compose's progress is worse than
+    useless — so their output cannot appear here by construction. The argv, the
+    cwd and the exit status can, and do.
+    """
+    return {
+        "argv": list(command.argv),
+        "cwd": str(command.cwd) if command.cwd is not None else None,
+        "env": dict(command.env),
+        "returncode": returncode,
+    }
+
+
+def _commands_document(
+    commands: Sequence[Command], results: Sequence[int | None]
+) -> list[JsonDict]:
+    """Every PLANNED command, with the exit status of the ones that ran.
+
+    A command that was never reached carries ``returncode: null`` rather than
+    being omitted: "the pull failed so `up -d` never ran" is exactly the fact a
+    consumer needs, and an absent entry would read as "it ran and we lost the
+    code".
+    """
+    codes = [*results, *([None] * max(0, len(commands) - len(results)))]
+    return [
+        _command_document(command, code) for command, code in zip(commands, codes, strict=False)
+    ]
+
+
+def _health_document(outcome: HealthOutcome | None) -> JsonDict | None:
+    if outcome is None:
+        return None
+    return {
+        "status": outcome.status,
+        # WHY nothing was polled, null unless status is "skipped". Lets a
+        # consumer tell "--wait 0, I opted out" from "there was no origin to
+        # poll, so nothing verified this upgrade" - which used to be the same
+        # exit 0 with the same sentence (tripl-jfm3).
+        "skipped_reason": outcome.skipped_reason or None,
+        "waited_seconds": round(outcome.waited_seconds, 1),
+        "attempts": outcome.attempts,
+        # The last probe's own message, null when it succeeded or was skipped.
+        # "HTTP 502" and "ConnectError" send an operator to different logs.
+        "last_error": None if outcome.last is None else outcome.last.error,
+    }
+
+
+def install_document(
+    plan: InstallPlan,
+    *,
+    generated_at: str,
+    duration_ms: int,
+    results: Sequence[int | None],
+    health: HealthOutcome | None,
+    bootstrap: JsonDict | None,
+    exit_code: int,
+) -> JsonDict:
+    """``tripl install``. One document, on stdout, every human line on stderr."""
+    document = _local_envelope("install", generated_at, duration_ms)
+    document["directory"] = str(plan.directory)
+    # EFFECTIVE, not requested: an existing .env is never overwritten, so on a
+    # re-run these are that file's values. `settings` below carries both, and is
+    # the field to read when what you want to know is whether a flag took.
+    document["app_base_url"] = plan.app_base_url
+    document["image"] = plan.image
+    document["version"] = plan.version
+    document["settings"] = [
+        {
+            "name": setting.name,
+            "requested": setting.requested,
+            "effective": setting.effective,
+            "kept": setting.kept,
+            "applied": setting.applied,
+        }
+        for setting in plan.settings
+    ]
+    document["dry_run"] = plan.dry_run
+    document["files"] = [_file_document(write, plan.directory) for write in plan.writes]
+    # NAMES of the secrets generated this run. There is a test asserting no
+    # generated VALUE appears anywhere in this document.
+    document["secrets_generated"] = list(plan.secrets_generated)
+    document["commands"] = _commands_document(plan.commands, results)
+    document["health"] = _health_document(health)
+    document["bootstrap"] = bootstrap
+    document["exit_code"] = exit_code
+    return document
+
+
+def upgrade_document(
+    plan: UpgradePlan,
+    *,
+    generated_at: str,
+    duration_ms: int,
+    results: Sequence[int | None],
+    health: HealthOutcome | None,
+    exit_code: int,
+) -> JsonDict:
+    """``tripl upgrade``. ``ordering`` is how the two tags compared, or ``unknown``."""
+    document = _local_envelope("upgrade", generated_at, duration_ms)
+    document["directory"] = str(plan.directory)
+    document["current_version"] = plan.current
+    document["target_version"] = plan.target
+    document["ordering"] = plan.ordering
+    document["dry_run"] = plan.dry_run
+    document["backup_command"] = plan.backup_command
+    # Non-null once .env has been rewritten, which is the fact a rollback needs.
+    document["env_backup"] = None if plan.env_backup is None else plan.env_backup.name
+    document["commands"] = _commands_document(plan.commands, results)
+    document["health"] = _health_document(health)
+    document["exit_code"] = exit_code
     return document
 
 

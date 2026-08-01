@@ -303,6 +303,94 @@ def test_drifts_dismiss_has_no_accept_option(
     assert not _posts(tripl_api)
 
 
+def test_no_reachable_dismiss_invocation_can_send_accept(
+    tripl_api: FakeInstance,
+    configured_env: None,
+) -> None:
+    """The exclusion, asserted on what goes ON THE WIRE.
+
+    ``CLI_ALLOWED_DRIFT_ACTIONS`` has no production consumer - the command picks
+    its action from two literals - so asserting on the constant's own contents
+    would pin a decoration. This drives every flag combination that reaches the
+    action route and reads the action back off the POST body, so the constant is
+    an expectation about behaviour: nothing outside it is ever sent, and
+    everything in it is reachable (the second half is what would catch a
+    "safety" change that quietly made `snooze` unreachable too).
+    """
+    from tripl_cli.api.event_types import CLI_ALLOWED_DRIFT_ACTIONS
+
+    tripl_api.drift_action("prod", "drift-1")
+    for extra in (
+        [],
+        ["--note", "known"],
+        ["--snooze-until", "2026-08-04T00:00:00Z"],
+        ["--snooze-until", "2026-08-04T00:00:00Z", "--note", "known"],
+        ["--dry-run"],
+    ):
+        assert main(["drifts", "dismiss", "drift-1", "--project", "prod", "--yes", *extra]) == 0
+
+    sent = [json.loads(request.content)["action"] for request in _posts(tripl_api)]
+    assert sent, "no POST was captured; the test proves nothing"
+    assert "accept" not in sent
+    assert set(sent) == set(CLI_ALLOWED_DRIFT_ACTIONS)
+
+
+def test_drifts_dismiss_note_too_long_surfaces_the_apis_own_validation_detail(
+    tripl_api: FakeInstance,
+    configured_env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """422 on a write, with the server's validation output passed through.
+
+    The 2000-character cap is the API's, and the CLI deliberately does not carry
+    a fourth copy of it - so the refusal has to arrive legible. A paraphrase
+    would leave an operator guessing which of `note` and `snoozed_until` the
+    server rejected.
+    """
+    detail = [
+        {
+            "type": "string_too_long",
+            "loc": ["body", "note"],
+            "msg": "String should have at most 2000 characters",
+            "ctx": {"max_length": 2000},
+        }
+    ]
+    tripl_api.drift_action("prod", "drift-1", {"detail": detail}, status=422)
+    argv = ["drifts", "dismiss", "drift-1", "--project", "prod", "--note", "x" * 2001, "--yes"]
+    assert main(argv) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "(422)" in captured.err
+    assert "string_too_long" in captured.err
+    assert "String should have at most 2000 characters" in captured.err
+    assert "note" in captured.err
+
+
+def test_a_refused_dismiss_writes_nothing_to_stdout(
+    tripl_api: FakeInstance,
+    configured_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The `--json` contract on the write path: no document, ever, on a refusal.
+
+    Both routes into exit 1 are covered - the server said no, and the operator
+    said no - because a consumer parsing stdout before reading the exit code sees
+    the same empty string for both (website/docs/run/cli.md).
+    """
+    tripl_api.drift_action("prod", "drift-1", {"detail": "Write scope required"}, status=403)
+    assert main(["drifts", "dismiss", "drift-1", "--project", "prod", "--yes", "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.strip()
+
+    monkeypatch.setattr("sys.stdin", _Stdin("n\n", isatty=True))
+    assert main(["drifts", "dismiss", "drift-1", "--project", "prod", "--json"]) == 1
+    declined = capsys.readouterr()
+    assert declined.out == ""
+    assert "aborted" in declined.err
+
+
 def test_drifts_dismiss_bad_snooze_timestamp_exits_usage_without_a_socket(
     tripl_api: FakeInstance,
     configured_env: None,

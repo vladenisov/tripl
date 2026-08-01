@@ -35,7 +35,12 @@ from tripl_cli.commands._write import (
     require_single_project,
 )
 from tripl_cli.config import Config, require_base_url
-from tripl_cli.diagnostics.collect import Reader, instance_of, raise_selection_failure
+from tripl_cli.diagnostics.collect import (
+    Reader,
+    instance_of,
+    raise_selection_failure,
+    read_or_raise,
+)
 from tripl_cli.diagnostics.collect import select_projects as select
 from tripl_cli.diagnostics.model import (
     JsonDict,
@@ -340,8 +345,12 @@ def run_jobs(args: argparse.Namespace, config: Config) -> int:
     async def body(client: httpx.AsyncClient) -> tuple[Reader, str, str, list[JsonDict]]:
         reader = Reader(client, base_url)
         scan_id, scan_name = await _resolve_scan(reader, slug, selector)
-        jobs = await reader.send(scans_api.list_jobs(slug, scan_id, limit=limit))
-        return reader, scan_id, scan_name, as_list(jobs)
+        # try_read_list + read_or_raise, not send + as_list: `as_list` coerces a
+        # 200 carrying an object to [], which this command would then render as
+        # "(no jobs)" at exit 0 - a non-list read printed as empty, which is the
+        # one thing the Fetched guard exists to stop (TRAP 3).
+        fetched = await reader.try_read_list(scans_api.list_jobs(slug, scan_id, limit=limit))
+        return reader, scan_id, scan_name, read_or_raise(fetched)
 
     reader, scan_id, scan_name, jobs = run_async(config, body, timeout=float(args.timeout))
     snapshot = ScanJobsSnapshot(

@@ -548,7 +548,8 @@ def test_a_signal_that_advances_bucket_emits_updated_not_cleared_plus_opened() -
     result = run(before, after)
 
     assert tokens(result) == ["signal.updated"]
-    assert result.events[0].data["bucket"] == "2026-07-31T19:30:00+00:00"
+    # Verbatim from MetricSignalResponse, which pydantic spells with a `Z`.
+    assert result.events[0].data["bucket"] == "2026-07-31T19:30:00Z"
     assert "moved to bucket 2026-07-31T19:30:00Z" in result.events[0].message
 
 

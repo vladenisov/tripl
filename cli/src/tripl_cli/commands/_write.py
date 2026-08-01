@@ -70,14 +70,27 @@ def require_single_project(args: argparse.Namespace) -> str:
     )
 
 
-def confirm(question: str, *, assume_yes: bool) -> None:
+# What a refusal says did NOT happen. The default is the HTTP wording, true of
+# the three verbs this module was written for; `install` and `upgrade` share the
+# prompt and send no request at all, so they pass their own - the stakes there
+# are what would have been written to disk, and a line reading "Nothing was
+# sent." on a command that never opens a socket teaches an operator to discount
+# the sentence everywhere else too.
+NOTHING_SENT = "Nothing was sent."
+# `install`, which has already probed Docker by the time it asks.
+NOTHING_WRITTEN = "Nothing was written."
+# `upgrade`, which asks before the pull, the pin rewrite and the restart.
+NOTHING_WRITTEN_OR_RUN = "Nothing was written and nothing was run."
+
+
+def confirm(question: str, *, assume_yes: bool, consequence: str = NOTHING_SENT) -> None:
     """Ask, or refuse to ask. Returns only when the mutation may proceed."""
     if assume_yes:
         return
     if not sys.stdin.isatty():
         raise TriplConfigError(
             f"{question} Refusing to prompt because stdin is not a terminal. "
-            "Re-run with --yes to confirm non-interactively. Nothing was sent."
+            f"Re-run with --yes to confirm non-interactively. {consequence}"
         )
     # stderr, and no `input()`: its prompt goes to stdout, where --json puts the
     # one document a consumer parses.
@@ -86,7 +99,7 @@ def confirm(question: str, *, assume_yes: bool) -> None:
     answer = sys.stdin.readline()
     if answer.strip().lower() not in ("y", "yes"):
         # EOF included. Exit 1, never 0: "declined" is not "done".
-        raise TriplError("aborted. Nothing was sent.")
+        raise TriplError(f"aborted. {consequence}")
 
 
 def request_document(request: ApiRequest) -> JsonDict:

@@ -37,6 +37,19 @@ from tripl_cli.watch import collect as watch_collect
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OPENAPI_PATH = REPO_ROOT / "backend" / "openapi.json"
 DOCS_PATH = REPO_ROOT / "website" / "docs" / "run" / "cli.md"
+DEPLOYMENT_DOCS_PATH = REPO_ROOT / "website" / "docs" / "run" / "deployment.md"
+
+# The only difference between the repository's compose.yaml and the copy
+# `tripl install` ships. A literal, so editing compose.yaml fails this test
+# loudly instead of silently changing what a fresh install gets. See
+# test_the_packaged_compose_matches_the_repo_compose for why it is removed.
+MCP_BUILD_BLOCK = """    # Context is the repo root, not ./mcp-server: tripl-mcp builds against the
+    # sibling `tripl` package in ./cli, which a mcp-server/ context cannot see
+    # (tripl-ey6j.1).
+    build:
+      context: .
+      dockerfile: mcp-server/Dockerfile
+"""
 COLLECT_SOURCES = (Path(collect.__file__), Path(watch_collect.__file__))
 RULE_SOURCES = (Path(checks.__file__), Path(scan_checks.__file__))
 
@@ -57,6 +70,32 @@ DECLARED = {
 
 # Path literals as they appear in the calls: "/x" or f"/x/{slug}/y".
 PATH_LITERAL = re.compile(r'f?"(/(?:projects|auth|data-sources)[^"]*)"')
+
+# Every method that puts bytes on the wire, on an httpx client or on the shared
+# TriplClient. Not a hand-picked three: `request` is what `api.request.send`
+# itself calls, and `put`/`delete` exist on the API this CLI writes to.
+CLIENT_METHODS = frozenset(
+    {"request", "send", "stream", "get", "post", "put", "patch", "delete", "head", "options"}
+)
+
+# The only places allowed to touch a client outside tripl_cli/api, as
+# (package-relative path, enclosing function). ``None`` means the whole module.
+# Both are deliberate and both are documented at the call site; adding a third
+# entry here is a design decision, not a fix for a failing test.
+TRANSPORT_EXEMPTIONS: frozenset[tuple[str, str | None]] = frozenset(
+    {
+        # It IS the transport: the one TriplClient both distributions share.
+        ("client.py", None),
+        # The unauthenticated /health probe, which is outside /api/v1 and
+        # deliberately carries no Authorization header (see its docstring).
+        ("diagnostics/collect.py", "probe_health"),
+        # The unauthenticated /auth/status probe. Same regime, and unauthenticated
+        # by NECESSITY rather than by choice: `tripl install` reads it on an
+        # instance that has no accounts yet, so no API key can exist to send
+        # (tripl-ey6j.3). Its path still comes from api.auth.
+        ("diagnostics/collect.py", "probe_auth_status"),
+    }
+)
 # The f-string placeholder names some call sites use, mapped to the backend's
 # own, which is what the declaration and the OpenAPI document both use.
 PLACEHOLDER_RENAMES = {"{type_id}": "{event_type_id}", "{config_id}": "{scan_id}"}
@@ -72,6 +111,43 @@ def _path_literals(root: Path) -> dict[str, list[str]]:
                 path = path.replace(actual, declared)
             found.setdefault(path, []).append(str(source.relative_to(root)))
     return found
+
+
+def _is_client_receiver(node: ast.expr) -> bool:
+    """Is ``x`` in ``x.get(...)`` a client? Name or attribute, either package.
+
+    Anything spelled ``*client`` (``client``, ``http_client``,
+    ``self._http_client``) plus ``api`` / ``_api``, which is what ``Reader``
+    calls the ``TriplClient`` it holds.
+    """
+    if isinstance(node, ast.Name):
+        name = node.id
+    elif isinstance(node, ast.Attribute):
+        name = node.attr
+    else:
+        return False
+    return name.lower().endswith("client") or name.lstrip("_") == "api"
+
+
+def _enclosing_function(tree: ast.AST, lineno: int) -> str | None:
+    """The innermost function containing ``lineno``, so an exemption can be
+    scoped to one function rather than to a whole module."""
+    best: ast.FunctionDef | ast.AsyncFunctionDef | None = None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        if node.lineno <= lineno <= (node.end_lineno or node.lineno) and (
+            best is None or node.lineno > best.lineno
+        ):
+            best = node
+    return best.name if best is not None else None
+
+
+def _matching_exemption(relative: str, function: str | None) -> tuple[str, str | None] | None:
+    for exemption in ((relative, None), (relative, function)):
+        if exemption in TRANSPORT_EXEMPTIONS:
+            return exemption
+    return None
 
 
 def _raised_finding_codes() -> set[str]:
@@ -189,25 +265,48 @@ def test_api_request_is_constructed_only_in_the_shared_layer() -> None:
     )
 
 
-def test_the_shared_layer_is_the_only_thing_both_packages_import_for_requests() -> None:
-    """tripl_mcp reaches the API through tripl_cli.api and nothing else.
+def test_nothing_outside_the_shared_layer_calls_a_client_directly() -> None:
+    """The remaining door, closed on every method rather than three of them.
 
-    A direct ``client.get(...)`` in a tool would slip past both tests above (no
-    literal if the path came from a variable, no ApiRequest either), so the
-    remaining door is closed here.
+    A direct client call slips past both tests above - no path literal if the
+    path came from a variable, and no ``ApiRequest`` either - so it has to be
+    caught by the call itself. The predecessor of this test checked only
+    ``get``/``post``/``patch`` on a receiver literally named ``client``, which
+    missed ``request``: the very method ``api.request.send`` calls, and the one
+    a copy-paste of it would use. ``delete`` and ``put`` were missing too, and
+    the CLI reaches an editor-gated API where both exist.
+
+    Scanned in BOTH packages, because the request layer is shared and a rule
+    enforced on only one of them is not a rule.
     """
     offenders: list[str] = []
-    for source in sorted(MCP_PACKAGE.rglob("*.py")):
-        tree = ast.parse(source.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-                continue
-            if node.func.attr in ("get", "post", "patch") and (
-                getattr(node.func.value, "id", "") == "client"
-            ):
-                offenders.append(f"{source.name}:{node.lineno} client.{node.func.attr}(...)")
+    honoured: set[tuple[str, str | None]] = set()
+    for package, root in (("tripl_cli", CLI_PACKAGE), ("tripl_mcp", MCP_PACKAGE)):
+        for source in sorted(root.rglob("*.py")):
+            if source.parent == SHARED_LAYER:
+                continue  # the shared layer is the one thing allowed to send
+            relative = source.relative_to(root).as_posix()
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                    continue
+                if node.func.attr not in CLIENT_METHODS:
+                    continue
+                if not _is_client_receiver(node.func.value):
+                    continue
+                exemption = _matching_exemption(relative, _enclosing_function(tree, node.lineno))
+                if exemption is not None:
+                    honoured.add(exemption)
+                    continue
+                offenders.append(f"{package}: {relative}:{node.lineno} .{node.func.attr}(...)")
     assert not offenders, (
-        f"an MCP tool calls the client directly instead of sending a shared ApiRequest: {offenders}"
+        "a module outside tripl_cli/api calls a client directly instead of sending a shared "
+        f"ApiRequest: {sorted(offenders)}"
+    )
+    # An exemption nobody needs is a hole nobody is watching.
+    assert honoured == TRANSPORT_EXEMPTIONS, (
+        "a transport exemption in this test no longer matches any call; delete it: "
+        f"{sorted(TRANSPORT_EXEMPTIONS - honoured)}"
     )
 
 
@@ -287,6 +386,142 @@ def test_every_watch_event_token_is_documented() -> None:
     undocumented = [token for token in EVENT_TOKENS if f"`{token}`" not in text]
     assert not undocumented, (
         f"tripl watch emits event tokens website/docs/run/cli.md never mentions: {undocumented}"
+    )
+
+
+def test_the_documented_scans_and_drifts_numbers_are_the_ones_in_the_code() -> None:
+    """The 40-vs-200 trap, applied to the four numbers the new verbs publish.
+
+    Each is a promise an operator plans around: how much history ``scans jobs``
+    can show, how far ``--limit`` may be raised, how much of a drift fan-out one
+    run covers, and how long any of them waits. The repo already holds the docs
+    to the doctor and watch windows for exactly this reason; the same rule now
+    covers the command surface that shipped with tripl-ey6j.5.
+    """
+    from tripl_cli.api.scans import JOBS_LIMIT_MAX
+    from tripl_cli.commands.scans import DEFAULT_JOBS_LIMIT
+    from tripl_cli.diagnostics.collect import DEFAULT_MAX_EVENT_TYPES
+    from tripl_cli.runner import REQUEST_TIMEOUT_SECONDS
+
+    text = DOCS_PATH.read_text(encoding="utf-8")
+    missing = [
+        phrase
+        for phrase in (
+            f"How many jobs to ask for, `1`–`{JOBS_LIMIT_MAX}`, default `{DEFAULT_JOBS_LIMIT}`.",
+            f"The default of **{DEFAULT_JOBS_LIMIT}** is the API's own default",
+            f"Read budget for the fan-out, default `{DEFAULT_MAX_EVENT_TYPES}`",
+        )
+        if phrase not in text
+    ]
+    assert not missing, f"cli.md states numbers the code does not: {missing}"
+
+    # Every --timeout row, not just one: six verbs carry it, and a row that
+    # drifted would be the one the reader happened to open.
+    timeout_rows = [line for line in text.splitlines() if line.startswith("| `--timeout SECONDS`")]
+    assert timeout_rows, "cli.md documents no --timeout row at all"
+    stale = [row for row in timeout_rows if f"default `{REQUEST_TIMEOUT_SECONDS}`" not in row]
+    assert not stale, (
+        f"cli.md rows state a --timeout default that is not {REQUEST_TIMEOUT_SECONDS}: {stale}"
+    )
+
+
+def test_the_documented_status_choices_are_exactly_the_ones_the_parser_accepts() -> None:
+    """Both directions, because either drift misleads.
+
+    A choice the parser accepts and the page omits is a capability nobody finds;
+    a choice the page lists and the parser rejects is an exit 2 in somebody's
+    cron. ``untriaged`` and ``all`` are this CLI's own additions to the API's
+    four statuses, which is precisely the kind of thing that gets added to a
+    parser and not to a page.
+    """
+    from tripl_cli.commands.drifts import STATUS_CHOICES
+
+    rows = [
+        line
+        for line in DOCS_PATH.read_text(encoding="utf-8").splitlines()
+        if line.startswith("| `--status STATUS`")
+    ]
+    assert len(rows) == 1, f"expected exactly one --status row in cli.md, found {len(rows)}"
+    documented = set(re.findall(r"`([a-z_]+)`", rows[0]))
+    assert documented == set(STATUS_CHOICES), (
+        "cli.md's --status row and drifts.STATUS_CHOICES disagree: "
+        f"only documented {sorted(documented - set(STATUS_CHOICES))}, "
+        f"only in the code {sorted(set(STATUS_CHOICES) - documented)}"
+    )
+
+
+def test_the_packaged_compose_matches_the_repo_compose() -> None:
+    """The generated stack IS the production stack, minus one documented block.
+
+    `tripl install` copies a packaged asset rather than templating YAML, so the
+    only way that asset can drift from the stack this repository actually
+    deploys is if somebody edits one and not the other. This is that check, and
+    the fix when it fails is to re-copy - which is exactly the review
+    conversation we want (tripl-ey6j.3).
+
+    The one transform: the `mcp` service's `build:` block is removed. A fresh
+    machine has no source tree, so `context: .` would point at the install
+    directory, and modern compose BUILDS when an image is absent locally - an
+    operator enabling `--profile mcp` would get an incomprehensible build
+    failure instead of a pull.
+    """
+    from tripl_cli.install.files import packaged
+
+    expected = (REPO_ROOT / "compose.yaml").read_text(encoding="utf-8")
+    assert MCP_BUILD_BLOCK in expected, (
+        "the mcp build block this test strips is no longer in compose.yaml verbatim; "
+        "update MCP_BUILD_BLOCK and re-copy the packaged asset"
+    )
+    assert packaged("compose.yaml") == expected.replace(MCP_BUILD_BLOCK, "")
+
+
+def test_the_packaged_rabbitmq_conf_matches_the_repo_one() -> None:
+    """No transform at all here - and it is not optional.
+
+    compose.yaml bind-mounts `./infra/rabbitmq/rabbitmq.conf`. Docker's response
+    to a missing bind-mount source is to create a DIRECTORY at that path, after
+    which RabbitMQ fails to start with an error naming neither tripl nor the
+    mount. Its `consumer_timeout` is also what stops a long metrics replay from
+    being force-requeued mid-run.
+    """
+    from tripl_cli.install.files import packaged
+
+    source = REPO_ROOT / "infra" / "rabbitmq" / "rabbitmq.conf"
+    assert packaged("rabbitmq.conf") == source.read_text(encoding="utf-8")
+
+
+def test_every_generated_variable_name_is_documented() -> None:
+    """The .env `tripl install` writes is a published interface; pin the NAMES.
+
+    A test cannot parse a shell snippet, so anti-drift for the secret RECIPES
+    comes from having one executable definition (install/secrets.py) plus the
+    property tests in test_install_files.py. What a test CAN pin is that every
+    name that definition emits is documented in both places an operator looks -
+    the CLI reference and the deployment guide - and that the deployment guide
+    points at the command rather than republishing a third `openssl` recipe
+    (tripl-ey6j.3).
+    """
+    from tripl_cli.install.secrets import REQUIRED_SECRETS, REQUIRED_SETTINGS
+
+    pages = {
+        "run/cli.md": DOCS_PATH.read_text(encoding="utf-8"),
+        "run/deployment.md": DEPLOYMENT_DOCS_PATH.read_text(encoding="utf-8"),
+    }
+    undocumented = [
+        f"{page}: {name}"
+        for page, text in pages.items()
+        for name in (*REQUIRED_SECRETS, *REQUIRED_SETTINGS)
+        if name not in text
+    ]
+    assert not undocumented, (
+        "`tripl install` generates variables the docs never name (the docs half of "
+        "tripl-ey6j.3 lands the `## tripl install` / `## tripl upgrade` sections in "
+        "run/cli.md and rewrites run/deployment.md's three hand-run procedures into a "
+        "pointer): " + ", ".join(undocumented)
+    )
+    assert "tripl install" in pages["run/deployment.md"], (
+        "website/docs/run/deployment.md never mentions `tripl install`, so an operator "
+        "reading it will still hand-generate secrets from a recipe nothing tests"
     )
 
 

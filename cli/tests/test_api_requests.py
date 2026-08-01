@@ -43,6 +43,7 @@ def _every_builder() -> list[ApiRequest]:
         projects.list_projects(),
         projects.get_project("prod"),
         auth_api.get_me(),
+        auth_api.get_status(),
         data_sources.list_data_sources(),
         scans.list_configs("prod"),
         scans.get_config("prod", "scan-1"),
@@ -232,15 +233,23 @@ def test_the_jobs_limit_ceiling_is_the_constant_doctor_already_shares() -> None:
     assert scans.JOBS_LIMIT_MAX is JOBS_WINDOW
 
 
-def test_accept_is_a_real_api_action_that_the_cli_deliberately_cannot_send() -> None:
-    """Pins the exclusion as a decision rather than an oversight.
+def test_the_shared_layer_will_build_accept_so_the_restriction_is_the_cli_s_own() -> None:
+    """Half of the exclusion: ``accept`` is real, and THIS layer will build it.
+
+    That is deliberate - the layer is shared with tripl-mcp and describes the API
+    rather than one consumer's policy - and it is exactly why "the CLI cannot
+    send accept" has to be enforced where the CLI CHOOSES the action. Asserting
+    here that ``accept`` is absent from ``CLI_ALLOWED_DRIFT_ACTIONS`` would pin
+    the constant's own contents, which no production code reads; the guarantee is
+    asserted on the wire in
+    ``test_drifts_cmd.py::test_no_reachable_dismiss_invocation_can_send_accept``.
 
     ``accept`` on a missing_field drift deletes the FieldDefinition - the damage
     doctor's schema_field_deleted_by_accept finding exists to report.
     """
     assert "accept" in event_types.DRIFT_ACTIONS
-    assert "accept" not in event_types.CLI_ALLOWED_DRIFT_ACTIONS
-    assert set(event_types.CLI_ALLOWED_DRIFT_ACTIONS) < set(event_types.DRIFT_ACTIONS)
+    built = event_types.apply_drift_action("prod", "drift-1", action="accept")
+    assert built.json_body == {"action": "accept"}
 
 
 def test_the_api_package_imports_nothing_consumer_specific() -> None:

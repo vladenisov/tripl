@@ -5,8 +5,12 @@ sidebar_position: 5
 
 # Operator CLI
 
-`tripl` is a small command-line client for a **running tripl instance**. Three
-commands ask a question about the instance as a whole and change nothing:
+`tripl` is a small command-line client for a tripl instance. Most of it talks to
+a **running instance** over HTTP; two commands instead act on a **directory and
+the local Docker daemon**, and those are the ones that bring an instance into
+existence in the first place.
+
+Three commands ask a question about the instance as a whole and change nothing:
 
 - **`tripl doctor`** — runs six diagnostic checks and tells you what is broken,
   why, and what to do about it. Exits non-zero when something is wrong.
@@ -23,16 +27,29 @@ Two more act on a **class of objects** and are spelled `<plural-noun> <verb>`:
 - **`tripl drifts`** — `list` schema drifts, and `dismiss` one.
 
 `scans run`, `scans cancel` and `drifts dismiss` are the CLI's **first mutating
-commands**. Read [Write safety](#write-safety) before you use one. Everything
-else on this page is read-only, and a `tk_r_` key is enough for all of it.
+commands**. Read [Write safety](#write-safety) before you use one. Every other
+command that talks to an instance is read-only, and a `tk_r_` key is enough for
+all of them.
 
-Like the [MCP server](../integrate/mcp-server.md), it is a pure HTTP client of
-the [`/api/v1`](../integrate/agent-api-guide.md) surface — it imports no backend
-code and never touches the database. Since the two tools now
+Two act on a **host**, not on an instance — no URL, no API key, no HTTP except a
+`/health` poll at the end:
+
+- **`tripl install`** — writes `compose.yaml`, `infra/rabbitmq/rabbitmq.conf` and
+  a generated `0600` `.env` into a directory, runs `docker compose pull` and
+  `docker compose up -d` in it, and waits until the instance answers. This is the
+  executable form of [Self-hosting & Deployment](./deployment.md).
+- **`tripl upgrade`** — moves an installed stack to a new image tag: pull, move
+  the `TRIPL_VERSION` pin, restart, wait.
+
+Everything that talks to an instance is a pure HTTP client of the
+[`/api/v1`](../integrate/agent-api-guide.md) surface, exactly like the
+[MCP server](../integrate/mcp-server.md) — it imports no backend code and never
+touches the database. Since the two tools now
 [share one request layer](#one-request-layer-shared-with-the-mcp-server), a path
 or a response projection is defined in exactly one place for both. They also
 read **the same two environment variables**, so a shell configured for one is
-configured for the other.
+configured for the other. `install` and `upgrade` are the exception in both
+directions: they run a subprocess (`docker`), and they read neither variable.
 
 :::note What this page is for
 `tripl doctor` exists because of a four-day incident in which a scan config had
@@ -70,6 +87,14 @@ uvx --from 'git+https://github.com/vladenisov/tripl.git#subdirectory=cli' tripl 
 
 pip install 'git+https://github.com/vladenisov/tripl.git#subdirectory=cli'
 ```
+
+:::note "Install the CLI" and "`tripl install`" are different things
+This section is about getting the `tripl` **command** onto your machine.
+[`tripl install`](#tripl-install) is a *subcommand* of it that provisions a
+**tripl server** on a host. You need the first before you can run the second —
+and since the distribution is not on PyPI yet, that currently means the git or
+checkout forms above, on the deploy host.
+:::
 
 :::tip Distribution name vs import name
 The distribution and the console script are both `tripl`; the *import* package
@@ -158,6 +183,12 @@ Three verbs mutate the instance and need a **`tk_w_` key backed by a user with
 the editor or owner role**: `scans run`, `scans cancel` and `drifts dismiss`.
 Give them a key of their own rather than promoting the one in your cron job —
 see [Write safety](#write-safety).
+
+**`tripl install` and `tripl upgrade` need no key and no URL at all.** They act
+on a directory and the local Docker daemon, so passing `--url` or `--api-key`
+*explicitly* is **exit 2** rather than a silently ignored flag. An ambient
+`TRIPL_BASE_URL` exported for `tripl doctor` does not trip that — only a flag you
+typed does.
 
 Create keys in the app at **Settings → API keys** (see
 [API keys & governance](../administer/admin-guide.md#api-keys--governance)). The
@@ -1046,13 +1077,16 @@ mobile (Mobile)
   /projects/mobile/scans: unavailable (Forbidden (403): the API key lacks the required scope (tk_r_ keys cannot write), is scoped to a different project, or the backing user role is insufficient. API detail: Not authorized for project)
 
 4 scan configs in 2 projects.
-Some scan listings could not be read; the list above is incomplete.
+1 read failed; the list above is incomplete.
 ```
 
 Note what the footer says: *4 configs in 2 projects*, because the project that
 403'd is still one of the two selected. The count is of what arrived, the
 denominator is of what was asked for, and the line underneath is the one that
-tells you they are not the same number.
+tells you they are not the same number — and it **counts** the failures, so one
+403 out of six projects reads differently from six. It is the same sentence
+`drifts list` prints for the same condition, deliberately: one grep over an
+incident log finds both.
 :::
 
 **Cost:** one request for the project listing (or one per named `--project`
@@ -1302,7 +1336,7 @@ usage: tripl drifts dismiss [-h] [--url URL] [--api-key KEY] [--config PATH]
 | `<drift-id>` | The drift to dismiss. Take it from the first column of `drifts list`. |
 | `--project SLUG` | **Required**, exactly once — the action route carries a slug that a drift id cannot supply. |
 | `--snooze-until TS` | RFC 3339. Its **presence selects `snooze`**; its absence selects `false_positive`. |
-| `--note TEXT` | Resolution note stored with the drift. The server caps it at 2000 characters. |
+| `--note TEXT` | Resolution note stored with the drift. The server caps it at 2000 characters. **Omitting it clears any note already stored** — see below. |
 | `--dry-run` | Resolve everything, print the request, send nothing. Never prompts. |
 | `--yes` | Skip the confirmation. **Required when stdin is not a terminal.** |
 | `--json` | One JSON document on stdout, every human line on stderr. |
@@ -1338,6 +1372,20 @@ which one you get is decided by whether you passed a timestamp. `accept` and
 `reopen` have no spelling here at all — see
 [what is deliberately not here](#what-is-deliberately-not-here).
 
+:::warning Dismissing without `--note` erases the note already on the drift
+The action route **replaces** `resolution_note` on every call, from the request
+body, and an absent `note` and an explicit `null` are indistinguishable to it —
+the CLI already omits the key rather than sending null, and it makes no
+difference. So a drift dismissed last week with
+`--note 'waiting on the mobile release'`, then snoozed again today without
+`--note`, comes back with `resolution_note: null` and the reason is gone.
+
+This is a property of the action route, not of this CLI: any client that omits
+the note replaces it. **Pass `--note` every time you dismiss the same drift
+twice**, and read the current one out of `tripl drifts list --json` first if you
+do not remember it — `resolution_note` is carried there verbatim.
+:::
+
 :::warning A naive `--snooze-until` is read as **UTC**, not as your local time
 `--snooze-until '2026-08-04T00:00:00'` means midnight UTC. A snooze silently
 shifted by your machine's offset is a drift that reappears at the wrong hour, so
@@ -1355,6 +1403,467 @@ is back in `drifts list` and in doctor's count immediately. Check the timestamp.
 straight from your arguments, so there is nothing to resolve first. The
 corollary is that a wrong `<drift-id>` is discovered by the server, as a 404 and
 exit 1, not by the CLI.
+
+## `tripl install`
+
+Every command above needs an instance to talk to. This is the one that **makes
+one**. It is the executable form of
+[Self-hosting & Deployment](./deployment.md#install-with-the-cli) — same compose
+file, same variables, same `pull` and `up -d` — with the secret generation and
+the file permissions done for you instead of copied out of a code block.
+
+```
+usage: tripl install [-h] [--url URL] [--api-key KEY] [--config PATH]
+                     --app-url URL [--dir PATH] [--version TAG]
+                     [--wait SECONDS] [--no-start] [--force] [--dry-run]
+                     [--yes] [--json]
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--app-url URL` | **Required, no default.** The public origin of the instance you are creating, e.g. `https://tripl.example.com`. Becomes `APP_BASE_URL`, which drives CORS and cookies. A trailing `/` or a pasted `/api/v1` is trimmed. |
+| `--dir PATH` | Where the stack lives. Default `./tripl`; always **reported absolute**, whatever you typed. |
+| `--version TAG` | Image tag to pin in `.env`. Default `latest`. Must look like a Docker tag — a letter, digit or underscore followed by up to 127 of `[A-Za-z0-9._-]`. |
+| `--wait SECONDS` | How long to poll `/health` before giving up. Default `300`, range `0`–`3600`. **`0` skips waiting entirely** — it does not mean "probe once". |
+| `--no-start` | Write the files and run nothing. Also skips the Docker probe, so it works on a machine with no Docker at all. |
+| `--force` | Replace a `compose.yaml` or `rabbitmq.conf` that differs from the packaged one. **Never reaches `.env`.** |
+| `--dry-run` | Print the plan; write nothing, run nothing. |
+| `--yes` | Skip the confirmation prompt. Required when stdin is not a terminal *and* a prompt would be asked — see [when it asks](#install-only-asks-in-one-case). |
+| `--json` | One JSON document on stdout, every human line on stderr. |
+
+:::note `--url` and `--api-key` are inherited, and refused
+Both appear in the usage line because every subcommand shares one parent parser.
+Passing either **explicitly** to `install` or `upgrade` is **exit 2**, with a
+message naming `--app-url` instead. These commands act on a directory; a
+connection flag that was silently ignored is how an operator provisions the wrong
+box and finds out later.
+:::
+
+```bash
+tripl install --app-url https://tripl.example.com --version 1.5.0 --dir /srv/tripl
+```
+
+`--dry-run` prints exactly what a real run would do, and is worth typing first.
+Here without `--version`, so the plan shows the `latest` default:
+
+```bash
+tripl install --app-url https://tripl.example.com --dir /srv/tripl --dry-run
+```
+
+```text
+tripl install - /srv/tripl
+
+app url  https://tripl.example.com
+image    ghcr.io/vladenisov/tripl:latest
+
+files
+  compose.yaml                  create  0644
+  infra/rabbitmq/rabbitmq.conf  create  0644
+  .env                          create  0600
+  generated into .env, values never printed: ENCRYPTION_KEY, SECRET_KEY, POSTGRES_PASSWORD, RABBITMQ_PASSWORD
+
+commands
+  + cd /srv/tripl && docker compose pull
+  + cd /srv/tripl && docker compose up -d
+  then poll https://tripl.example.com/health for up to 300s
+
+dry run: nothing was written and nothing was run.
+```
+
+That is stdout in full. Two more lines can land on **stderr**, and both are
+warnings rather than refusals, because only you know whether they apply:
+
+- Leaving `--version` at `latest` prints a reminder to pin a released tag in
+  production, since `latest` follows every release and a re-run would move you.
+- An `http://` `--app-url` prints a warning that the stack forces
+  `SESSION_COOKIE_SECURE=true`, so a browser will not store the session cookie
+  over plain HTTP — Safari refuses it even on `localhost` — and nobody will stay
+  signed in. Legitimate if you terminate TLS elsewhere; otherwise re-run with an
+  `https` URL.
+
+The two `+ cd ... && docker compose ...` lines are printed before each command
+runs, in a real run too. They are shell-quoted, so they are safe to paste — that
+is the point of printing them.
+
+### What it writes
+
+Three files, and only three.
+
+| Path (under `--dir`) | Mode | Contents |
+|----------------------|------|----------|
+| `compose.yaml` | `0644` | A **verbatim copy** of the production compose file this repository deploys, minus one block — see below. |
+| `infra/rabbitmq/rabbitmq.conf` | `0644` | A verbatim copy. Not optional: `compose.yaml` bind-mounts it, and Docker's answer to a missing bind-mount source is to create a *directory* there, after which RabbitMQ fails to start with an error naming neither tripl nor the mount. |
+| `.env` | `0600` | Generated. The only file that holds secrets. |
+
+There is deliberately **no data directory**. PostgreSQL lives in the named volume
+`pgdata18`, so backing up `--dir` backs up your configuration and **none of your
+data**.
+
+Each file gets one of five actions, and the same five words appear in the human
+table and in the `--json` document:
+
+| Action | Meaning |
+|--------|---------|
+| `create` | It did not exist. Created with the mode above. |
+| `unchanged` | It exists and is byte-identical to the packaged copy. Nothing is opened. |
+| `kept` | It exists and **differs**. Yours is kept; the table says so. `--force` turns this into `replace` — for `compose.yaml` and `rabbitmq.conf` only. |
+| `replace` | Written beside the target and renamed over it, so a reader never sees a half-written file. |
+| `append` | `.env` only. New keys are appended under a dated comment; **nothing already in the file is changed**. |
+
+The packaged `compose.yaml` differs from the repository's in exactly one way: the
+`mcp` service's `build:` block is removed, because a fresh host has no source
+tree and modern compose *builds* when an image is absent locally. `--profile mcp`
+therefore pulls the published `tripl-mcp` image rather than trying to build it. A
+contract test asserts the rest is byte-identical, so the file you get is the file
+this project deploys.
+
+### The generated `.env`
+
+```text
+# tripl instance configuration, generated by `tripl install` on 2026-08-01T09:00:00Z.
+#
+# Docker Compose reads this file to INTERPOLATE compose.yaml. The containers receive
+# only the variables compose.yaml lists in its environment map, so a variable added
+# here that compose.yaml does not mention reaches nothing. Every tunable is listed at
+# https://vladenisov.github.io/tripl/run/configuration
+#
+# This file holds live secrets: mode 600, and it must stay out of version control.
+# Back up ENCRYPTION_KEY separately from the database - warehouse and alert-
+# destination credentials are encrypted with it and cannot be recovered without it.
+
+# Public origin of this instance. Drives CORS, and must be the exact origin a browser
+# reaches. The stack forces SESSION_COOKIE_SECURE=true, so this should be https.
+APP_BASE_URL=https://tripl.example.com
+
+# Released image and tag. `tripl upgrade --to X.Y.Z` moves the tag.
+TRIPL_IMAGE=ghcr.io/vladenisov/tripl
+TRIPL_VERSION=1.5.0
+
+# Generated secrets - do not edit by hand.
+# ENCRYPTION_KEY is a Fernet key: 32 random bytes, url-safe base64.
+ENCRYPTION_KEY=...
+SECRET_KEY=...
+POSTGRES_PASSWORD=...
+RABBITMQ_PASSWORD=...
+```
+
+Seven variables, and that is the whole file. It is **not** a copy of
+`.env.example`, which is the backend *development* template and is full of
+`localhost` URLs and keys `compose.yaml` never reads.
+
+| Variable | How it is produced |
+|----------|--------------------|
+| `APP_BASE_URL` | Your `--app-url`, normalised. |
+| `TRIPL_IMAGE` | `ghcr.io/vladenisov/tripl`. |
+| `TRIPL_VERSION` | Your `--version`, default `latest`. |
+| `ENCRYPTION_KEY` | 32 random bytes, url-safe base64 — 44 characters. This is exactly what a **Fernet** key is, which is what the backend builds from it at startup. |
+| `SECRET_KEY` | `secrets.token_urlsafe(48)` — 64 url-safe characters. |
+| `POSTGRES_PASSWORD` | `secrets.token_hex(24)` — 48 hex characters. |
+| `RABBITMQ_PASSWORD` | `secrets.token_hex(24)` — 48 hex characters. |
+
+The two passwords are **hex on purpose**, not for looks. `compose.yaml` builds
+`postgresql+asyncpg://tripl:${POSTGRES_PASSWORD}@postgres:5432/tripl` by plain
+string interpolation, so a base64 password containing `/`, `+`, `@` or `:`
+corrupts the URL into something that fails to connect with an error naming
+neither the password nor the encoding. Hex has no such character. Neither
+password can come out as `tripl` or `guest`, the dev defaults the backend's
+`assert_production_ready()` refuses outright.
+
+:::danger No generated value is ever printed, and you should keep it that way
+The plan, the human output and the `--json` document name the **keys**
+(`secrets_generated`) and never the values. A secret printed to a terminal is a
+secret in a scrollback buffer, in a `tee` log, and in whatever gets pasted into a
+ticket. If you need to read one, read the `0600` file.
+
+`ENCRYPTION_KEY` is the irreplaceable one, and backing it up is a deployment
+step rather than a CLI one:
+[treat ENCRYPTION_KEY as irreplaceable](./deployment.md#the-variables-the-stack-needs).
+:::
+
+### Four rules about writing
+
+1. **`.env` is never overwritten.** It is created, or appended to with your
+   confirmation, or left alone. `--force` does not reach it and there is no flag
+   that does.
+2. **`.env` and `.env.bak.*` are created at `0600` by the `open` call itself**,
+   never opened and then `chmod`-ed — that would leave a window, however short,
+   in which the database password and `SECRET_KEY` were world-readable. If an
+   *existing* `.env` is readable by other users, you get a warning on stderr and
+   a `chmod 600` to run; the CLI will not change the mode of a file it did not
+   create.
+3. **A `compose.yaml` that differs from ours is yours.** It is reported and kept.
+4. **The version pin is rewritten by copy-then-replace**, preserving every other
+   byte: comments, blank lines, key order and the trailing newline.
+
+`install` also **refuses to run against a tripl source checkout** — a directory
+containing `.git` or `backend/src/tripl` — because it writes its own
+`compose.yaml` and would land next to the real one. That is exit 2, and the fix
+is one `--dir`.
+
+### `install` only asks in one case
+
+A fresh install **does not prompt**. The single confirmation is for an existing
+`.env` that is missing some required keys: it names them, says nothing already in
+the file will change, and appends under a dated comment. That is where `--yes`
+matters — and where a non-TTY without `--yes` is exit 2, as everywhere else in
+this CLI.
+
+Consequence worth knowing for a provisioning script: `tripl install` in a
+pipeline needs `--yes` **only** if it might meet a half-written `.env`. Pass it
+anyway; the alternative is a job that works until the day it does not.
+
+### Re-running is the supported way to converge
+
+`install` is idempotent, not one-shot. A second run against the same directory
+reports `unchanged` / `kept` for the files, leaves `.env` alone, and **still runs
+`pull` and `up -d`**, because "make the running stack match what is on disk" is
+the useful meaning of a re-run.
+
+### What actually runs, and where its output goes
+
+```text
++ cd /srv/tripl && docker compose pull
++ cd /srv/tripl && docker compose up -d
+```
+
+No `-f compose.yaml` and no `--project-directory`, on purpose: that is compose
+invoked exactly the way you would [by hand](./deployment.md#bring-it-up), and
+that page gives the reasons.
+
+Before writing anything, `install` checks for `docker` on `PATH`, then for
+`docker compose version`, then for a reachable daemon, and stops at the first
+failure with the daemon's **own stderr** echoed under a `docker:` prefix. A
+legacy `docker-compose` v1 binary is *detected and named* in the error but never
+used: the compose file relies on `depends_on.condition`, which v1 ignores, so the
+schema migration would race the app instead of gating it. All three checks are
+skipped under `--no-start`.
+
+:::warning compose's output is inherited, never captured
+`pull` and `up -d` write straight to your terminal — layer progress, and the one
+line that names a failing service. Nothing wraps them. The cost is that their
+output **cannot** appear in the `--json` document, which carries the `argv`, the
+`cwd`, the env overlay and the `returncode` of each command instead. If you need
+the text, it is in your terminal or in the `docker compose logs` the failure
+message points you at.
+:::
+
+### Waiting for `/health`
+
+`docker compose up -d` returns as soon as the containers are *created*, which on
+a first run is a minute or more before the app answers: the `migrate` one-shot
+still has to apply every Alembic revision. So `install` polls
+`<--app-url>/health` **every 5 seconds** until it answers or `--wait` runs out.
+
+:::warning It polls the public URL, so TLS has to be there already
+The poll goes to the origin you passed as `--app-url` — not to
+`http://localhost:8000`. If your reverse proxy is not in front of port `8000`
+yet, `https://tripl.example.com/health` will not answer no matter how healthy the
+stack is, and `install` reports a timeout and exits **1** after `--wait`
+seconds.
+
+That is a sequencing problem, not a failed install. Either put TLS up first, or
+run `tripl install --wait 0`, bring the proxy up, and check by hand:
+
+```bash
+curl -fsS http://127.0.0.1:8000/health     # from the deploy host
+```
+:::
+
+A timeout prints where to look, and does not roll anything back — the stack **is**
+started:
+
+```text
+The stack was started; it just has not answered yet. A first run applies every
+Alembic revision before the app boots, which on a slow disk can outlast the
+default wait. Look here, in this order:
+  cd /srv/tripl && docker compose ps
+  cd /srv/tripl && docker compose logs migrate
+  cd /srv/tripl && docker compose logs app
+  tripl doctor --url https://tripl.example.com
+```
+
+:::note That last line needs an API key you do not have yet
+`tripl doctor` demands both a URL **and** a key before it opens a socket, even
+though `/health` itself needs neither. On a brand-new instance there is no
+account, so there is no key. Come back to that line after you have created the
+owner account and a `tk_r_` key — the three `docker compose` lines above it are
+the ones that work right now.
+:::
+
+### What `install` deliberately does not do
+
+It brings up a **running, empty instance**. It does not create the owner account,
+it does not connect a warehouse, and it does not run the first scan. Two of those
+three are unreachable over the API at all, and the third depends on them:
+
+- **A data source cannot be created with an API key, of any scope, held by any
+  role.** `POST /data-sources` requires an interactive **owner session**; a
+  request carrying an API key scope is `403` by construction. Same wall that
+  keeps [`tripl scans replay`](#what-is-deliberately-not-here) out of this CLI.
+- **An owner account could be registered over the API, and should not be.** It
+  would mean accepting a password on an argv — visible through `ps(1)`, kept in
+  shell history — and the session cookie the reply sets is `Secure`, so over a
+  plain-HTTP first run the cookie is discarded and the "automated" flow breaks
+  silently.
+
+So the last thing `install` prints is the truth about **your** instance, read
+from the unauthenticated `/auth/status`:
+
+```text
+This instance has no accounts yet. Open https://tripl.example.com and create the
+first one - it becomes the owner.
+Then, signed in as that owner:
+  Settings -> Data sources   connect ClickHouse, BigQuery or PostgreSQL. Owner-only,
+                             and only from a browser session: an API key cannot reach
+                             this endpoint whatever its scope.
+  Settings -> API keys       create a tk_r_ key for the CLI.
+Then: tripl doctor --url https://tripl.example.com
+```
+
+If the instance already has accounts it says so instead, and if registration is
+closed it points at **Settings → Members → Invite a member**. If `/auth/status`
+could not be read it says *that*, and falls back to the general wording — it never
+guesses. See [Members](../administer/admin-guide.md#members) for what happens on
+that first sign-in, and
+[Connecting a warehouse](./deployment.md#connecting-a-warehouse) for the step
+after it.
+
+## `tripl upgrade`
+
+The most dangerous thing this CLI does, and it is built like it. Moving to a new
+tag applies Alembic migrations, and those are **not reversible here**.
+
+```
+usage: tripl upgrade [-h] [--url URL] [--api-key KEY] [--config PATH] --to TAG
+                     [--dir PATH] [--wait SECONDS] [--dry-run] [--yes]
+                     [--json]
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--to TAG` | **Required.** The tag to move to, e.g. `1.5.0`. There is no default and no "upgrade to latest" convenience. |
+| `--dir PATH` | Where the stack lives. Default `./tripl`. Must already contain `compose.yaml` **and** `.env`, or it is exit 2 naming `tripl install`. |
+| `--wait SECONDS` | As for `install`: default `300`, range `0`–`3600`, `0` skips. |
+| `--dry-run` | Print the plan; write nothing, run nothing. |
+| `--yes` | Skip the confirmation. **`upgrade` always confirms**, so a non-interactive run always needs this. |
+| `--json` | One JSON document on stdout, every human line on stderr. |
+
+```bash
+tripl upgrade --to 1.5.0 --dir /srv/tripl --dry-run
+```
+
+```text
+tripl upgrade - /srv/tripl
+
+from  1.4.0
+to    1.5.0
+
+commands
+  + cd /srv/tripl && TRIPL_VERSION=1.5.0 docker compose pull
+  + cd /srv/tripl && docker compose up -d
+  the 1.5.0 pin is written to .env between the two, after the pull succeeds
+  then poll /health for up to 300s
+
+dry run: nothing was written and nothing was run.
+```
+
+The current tag is read out of `.env`, and so is the origin to poll — you set
+`APP_BASE_URL` at install time and being asked for it again is one more chance to
+type a different one, which is how a CORS mismatch gets introduced during an
+upgrade. If `.env` carries no `APP_BASE_URL`, the health wait is reported as
+skipped rather than run against a guess.
+
+### How the two tags are compared
+
+| `ordering` | When | What happens |
+|------------|------|--------------|
+| `same` | The pin already equals `--to`. | `already at X; nothing to do.` **Exit 0**, nothing run, `.env` untouched — a converging provisioning script must not be a failing one. |
+| `upgrade` | Both are strict `X.Y.Z` and the target is higher. | Proceeds to the backup gate. |
+| `downgrade` | Both are strict `X.Y.Z` and the target is lower. | **Refused outright, exit 2, no override flag.** |
+| `unknown` | Either side is not a strict `X.Y.Z` — `latest`, `1.4`, `sha-abc1234`. | Prints the plan, then **refuses without `--yes`**, exit 2. With `--yes` it proceeds and warns that this may be a downgrade. |
+
+```text
+tripl: downgrade refused: 1.4.0 -> 1.3.0. Alembic migrations are not reversible here, so the older image cannot read the schema the newer one wrote. Restore your backup instead. There is no override flag.
+```
+
+There is no override because there is no safe one. Once `alembic upgrade head`
+has run, the old image does not know how to read the new schema, and the honest
+instruction is *restore your backup*.
+
+### The backup gate
+
+`upgrade` **prints** the `pg_dump` command and refuses to continue without an
+acknowledgement. It never runs it:
+
+```text
+backup   cd /srv/tripl && docker compose exec -T postgres \
+           pg_dump -U tripl tripl | gzip > tripl-1.4.0.sql.gz
+         Take it now. This applies Alembic migrations, which are not reversible.
+         ENCRYPTION_KEY lives in .env, not in that dump - back it up separately.
+```
+
+A dump this tool invoked and then called "your backup" would be a promise it
+cannot keep: it cannot know there is disk space, it cannot verify the dump, and
+**the dump does not contain `ENCRYPTION_KEY`** — without which every encrypted
+column in it is unreadable.
+
+The prompt names the directory's basename, which is also the compose project
+name:
+
+```text
+Have you taken that backup of tripl? This upgrades 1.4.0 -> 1.5.0 and applies migrations that cannot be undone. [y/N]
+```
+
+Anything but `y`/`yes` aborts with exit 1, and on a non-TTY without `--yes` it is
+exit 2 — the same rule as every other prompt on this page.
+
+### Order of operations, and why
+
+```text
+pull  ->  write the pin  ->  up -d
+```
+
+The **pull comes first** so a bad tag or an unreachable registry leaves `.env`
+untouched; the failure message says so explicitly. The pin is written to `.env`
+**before** `up -d` rather than passed inline, because an inline
+`TRIPL_VERSION=x docker compose pull` applies to the pull only and the following
+`up` would start `${TRIPL_VERSION:-latest}` — the exact trap this ordering
+exists to avoid. That is why the printed pull line carries the assignment inside
+the `cd`, and the `up -d` line does not.
+
+Rewriting `.env` first copies it to `.env.bak.<UTC>` at `0600` and only then
+moves the pin, preserving every other byte. That backup is created exclusively:
+a second upgrade in the same second **refuses** rather than clobbering the only
+copy of the pin you are moving away from.
+
+`upgrade` does **not** run `alembic` and does **not** run
+`docker compose run --rm migrate`. The `migrate` one-shot with
+`condition: service_completed_successfully` is already the race-free mechanism;
+a second CLI-owned migration path would be a second thing to keep in sync.
+
+### When it fails
+
+**The pull failed.** `.env` was never touched. You are still on the old tag and
+the stack is still running the old image. Fix the tag or the registry access and
+re-run.
+
+**`up -d` failed.** The pin is left at the **new** tag, on purpose:
+
+```text
+The `migrate` one-shot runs `alembic upgrade head` before app and workers start,
+so this most likely means the schema upgrade failed. Read it:
+  cd /srv/tripl && docker compose logs migrate
+
+TRIPL_VERSION is left at 1.5.0 on purpose. Alembic applies revisions one at a
+time, so the schema may be partly upgraded; starting the old image against a
+partly-new schema would be worse than leaving the stack stopped. Fix the cause and
+re-run `tripl upgrade --to 1.5.0`, or restore the backup you took above.
+The previous .env is at .env.bak.20260801T090000Z.
+```
+
+**`/health` never answered.** Same as for `install`, including the public-URL
+trap: exit 1, nothing rolled back, and the `docker compose logs migrate` /
+`logs app` lines to read.
 
 ## One request layer, shared with the MCP server
 
@@ -1391,9 +1900,9 @@ produced it, but not every code is reachable from every command — `doctor` own
 
 | Code | Meaning |
 |------|---------|
-| **0** | `doctor`: every check passed, or only warned and `--strict` was not given. `status`: it completed. `watch`: the run completed — `--duration` elapsed. A failed job, a new signal and a failed delivery all still exit 0, because `watch` reaches no verdict. `scans list` / `drifts list`: every read arrived, including a run that legitimately found nothing. `scans jobs`: the history was read. `scans run` / `scans cancel` / `drifts dismiss`: the API accepted the write — or `--dry-run` resolved everything and sent nothing. |
-| **1** | The tool itself broke, or a command other than `doctor` could not complete a request — unreachable, or the API refused it (a project-scoped key with no `--project` gets a 403 here, on a perfectly healthy instance). `watch` reaches it two ways: a startup read it cannot proceed without (the project listing, or a project's scan listing), and a key revoked mid-run, which ends the run after a `watch.stopped` line carrying `reason: "authentication_failed"`. Every *other* failed read during a run is a `poll.degraded` line, not an exit. Three more routes into 1 belong to the new commands: **any** failed read in a `scans list` or `drifts list` fan-out, a `scans run` whose job came back already `failed`, and a `scans cancel` or `drifts dismiss` you **declined at the prompt** — "the operator said no" must never be readable as "the mutation happened". **`doctor` should never exit 1** — it turns every API failure into a finding, so an exit 1 out of doctor is a bug report, not a diagnosis. |
-| **2** | Usage or configuration error: a bad flag, an out-of-range value, no URL, no API key, an unreadable config file. For `doctor` and `status` that is always resolved before any socket opens. `watch` adds two refusals it can only reach *after* reading the project and scan listings — `--scan` matching nothing, and more than 24 selected scan configs — so for it the resolution is two rounds of HTTP in, not zero. The `scans` and `drifts` verbs add: a bare group with no verb, a missing or repeated `--project` on a command that acts on one object, a `<scan>` selector matching nothing or matching two configs, a `--snooze-until` that is not RFC 3339, a `--limit` outside 1–200, a `--status` that is not one of the six, and **`scans cancel` / `drifts dismiss` on a non-TTY without `--yes`**. Either way **no JSON is emitted**, and no write is ever sent. |
+| **0** | `doctor`: every check passed, or only warned and `--strict` was not given. `status`: it completed. `watch`: the run completed — `--duration` elapsed. A failed job, a new signal and a failed delivery all still exit 0, because `watch` reaches no verdict. `scans list` / `drifts list`: every read arrived, including a run that legitimately found nothing. `scans jobs`: the history was read. `scans run` / `scans cancel` / `drifts dismiss`: the API accepted the write — or `--dry-run` resolved everything and sent nothing. `install`: the files are on disk and, unless `--no-start`, `pull` and `up -d` both succeeded and `/health` answered (or `--wait 0` skipped the wait). `upgrade`: the new tag is pinned and running — **or the pin already equalled `--to`**, which runs nothing and is deliberately 0 so a converging provisioning script is not a failing one. |
+| **1** | The tool itself broke, or a command other than `doctor` could not complete a request — unreachable, or the API refused it (a project-scoped key with no `--project` gets a 403 here, on a perfectly healthy instance). `watch` reaches it two ways: a startup read it cannot proceed without (the project listing, or a project's scan listing), and a key revoked mid-run, which ends the run after a `watch.stopped` line carrying `reason: "authentication_failed"`. Every *other* failed read during a run is a `poll.degraded` line, not an exit. Three more routes into 1 belong to the object commands: **any** failed read in a `scans list` or `drifts list` fan-out, a `scans run` whose job came back already `failed`, and a `scans cancel` or `drifts dismiss` you **declined at the prompt** — "the operator said no" must never be readable as "the mutation happened". `install` and `upgrade` reach 1 three ways of their own: `docker compose pull` or `up -d` exited non-zero, `/health` did not answer within `--wait`, or a file could not be written (a read-only directory, or a race with a second `tripl install`). **In none of those is anything rolled back** — for `install` the stack is started, and for a failed `up -d` the new pin is left in place on purpose. Declining the backup gate is also 1. **`doctor` should never exit 1** — it turns every API failure into a finding, so an exit 1 out of doctor is a bug report, not a diagnosis. |
+| **2** | Usage or configuration error: a bad flag, an out-of-range value, no URL, no API key, an unreadable config file. For `doctor` and `status` that is always resolved before any socket opens. `watch` adds two refusals it can only reach *after* reading the project and scan listings — `--scan` matching nothing, and more than 24 selected scan configs — so for it the resolution is two rounds of HTTP in, not zero. The `scans` and `drifts` verbs add: a bare group with no verb, a missing or repeated `--project` on a command that acts on one object, a `<scan>` selector matching nothing or matching two configs, a `--snooze-until` that is not RFC 3339, a `--limit` outside 1–200, a `--status` that is not one of the six, and **`scans cancel` / `drifts dismiss` on a non-TTY without `--yes`**. `install` and `upgrade` add: an explicit `--url` or `--api-key`, an `--app-url` that is not a URL, a `--version`/`--to` that is not a valid image tag, a `--wait` outside 0–3600, a `--dir` that looks like a tripl source checkout, no `docker` on `PATH` / no Compose v2 plugin / a daemon that will not answer, a `--dir` with no stack in it, a refused **downgrade**, an unorderable tag pair without `--yes`, and any prompt met on a non-TTY without `--yes`. Either way **no JSON is emitted**, no write is ever sent, and no file is written. |
 | **3** | `doctor` only: at least one check failed — or, with `--strict`, at least one warned. No other command reaches 3, whatever it observes. |
 | **130** | Interrupted (`Ctrl-C`). For `doctor` and `status` that is an abandoned run. For `watch` **it is the normal ending**: a run without `--duration` has no other way to stop, so 130 out of `watch` means "you pressed Ctrl-C", not "something went wrong". A wrapper that treats non-zero as failure needs to know this before it pages somebody. |
 
@@ -1411,11 +1920,25 @@ finding, like everything else doctor reads. That is precisely what makes an exit
 unreachable instance, because none of them turns a failed read into a verdict.
 
 :::warning Credentials are required even for the connectivity check
-Every command demands both the URL and the API key **before** it opens a
-connection, so a missing key is exit 2 — for `doctor` that holds even though
-`/health` itself needs no key. That keeps "you have not configured a key"
-cleanly apart from "the instance rejected your key" — two failures that produced
-the same shrug during the incident.
+Every command **that talks to an instance** demands both the URL and the API key
+before it opens a connection, so a missing key is exit 2 — for `doctor` that
+holds even though `/health` itself needs no key. That keeps "you have not
+configured a key" cleanly apart from "the instance rejected your key" — two
+failures that produced the same shrug during the incident.
+
+`install` and `upgrade` are outside this rule in both directions: they need
+neither value, and passing one explicitly is itself exit 2. Their `/health` poll
+and their `/auth/status` read go out **unauthenticated**, with no `Authorization`
+header, because at install time no account exists and therefore no key can.
+:::
+
+:::note Exit 1 out of `install` or `upgrade` never means "nothing happened"
+It means the opposite of a declined write. By the time either reaches 1, the
+files are on disk and — unless the failure was the `pull` — the containers have
+been asked to start. A `/health` timeout in particular is often just a slow first
+migration or a proxy that is not up yet. Read the message: it names which step
+failed and which `docker compose logs` to open. Re-running is safe; that is what
+idempotence is for.
 :::
 
 ### In cron
@@ -1485,9 +2008,31 @@ precisely so it can never land inside the document.
 What lands on stdout differs by command, because a one-shot report and a follow
 mode are not the same shape:
 
-- **Every command except `watch`** puts **exactly one JSON document, newline
-  terminated, on stdout and nothing else**. `tripl doctor --json | jq` is a
-  promise, not a habit.
+- **Every command except `watch`** puts **at most one JSON document, newline
+  terminated, on stdout and nothing else** — exactly one whenever the command
+  *completed*. `tripl doctor --json | jq` is a promise, not a habit: doctor
+  turns every API failure into a finding, so it emits its document at exit 0 and
+  at exit 3 alike. `scans list` and `drifts list` do the same at exit 1 when a
+  read inside their *fan-out* failed — that is reported in the document, in
+  `errors[]`. They emit nothing if the run never got that far, which for them
+  means the project selection itself failed.
+- **A command that could not complete writes NOTHING to stdout.** Every exit 2,
+  and every exit 1 that comes from a request the API refused (403, 404, 409,
+  422), an instance that could not be reached, a payload of the wrong shape, or
+  a confirmation you declined. That covers **every documented failure of `scans
+  jobs`, `scans run`, `scans cancel` and `drifts dismiss`**: they raise on the
+  first refusal, so there is no document to emit and the reason is on stderr.
+  `tripl scans run --json` against a read-only key prints zero bytes on stdout
+  and exits 1. **Check the exit code before you parse**, and never treat empty
+  stdout as a transient parse error worth retrying — a retried write is not the
+  same thing as a retried read.
+- **`install` and `upgrade`** follow the first rule with one useful difference:
+  they emit their document at exit **1** as well as at exit 0, for the three
+  failures that happen *after* the files are written — a failed `pull`, a failed
+  `up -d`, and a `/health` timeout. Every exit 2 emits nothing, as everywhere
+  else, and so does a file that could not be written, because at that point there
+  is no plan outcome to report. The `exit_code` is *in* the document, so a
+  provisioning script reads the reason out of the same object it already parsed.
 - **`watch`** puts **JSON Lines**: **one object per event**, each on its own
   line, flushed the moment it is produced. There is no enclosing array, no
   trailing summary document, and no way to know in advance how many lines there
@@ -1517,13 +2062,23 @@ assert on prose.**
 `schema_version` is **shared** by every command: it is one number for the whole
 tool, so a consumer branches on `command` and never on a per-command version.
 The `command` values are `"doctor"`, `"status"`, `"watch"`, `"scans list"`,
-`"scans jobs"`, `"scans run"`, `"scans cancel"`, `"drifts list"` and
-`"drifts dismiss"` — the invocation with its space, so `command` and what you
-typed are the same string.
+`"scans jobs"`, `"scans run"`, `"scans cancel"`, `"drifts list"`,
+`"drifts dismiss"`, `"install"` and `"upgrade"` — the invocation with its space,
+so `command` and what you typed are the same string.
 
-Every document shares the same first eight keys: `schema_version`, `tool`,
-`tool_version`, `command`, `generated_at`, `duration_ms`, `requests` and
-`instance`. Only what comes after them differs.
+Every document shares the same first six keys: `schema_version`, `tool`,
+`tool_version`, `command`, `generated_at` and `duration_ms`.
+
+Every document **of a command that talks to an instance** carries two more before
+its own payload: `requests` (how many HTTP requests the run made) and `instance`
+(the resolved base URL, where each value came from, and the key scope).
+
+:::warning `install` and `upgrade` carry neither `requests` nor `instance`
+Not as `null` — the keys are **absent**. There is no configured base URL and no
+API key for a command that provisions a host, and an empty `instance` block would
+let a consumer believe those fields were merely unset rather than inapplicable.
+Branch on `command` before you read either key.
+:::
 
 Output is written ASCII-escaped, documents and lines alike: a non-ASCII
 character inside a `message` reaches stdout as a `\uXXXX` sequence, which every
@@ -2197,6 +2752,156 @@ created `ScanJobResponse`. **Read `result.status` before you call it a
 success**: a `201` with `"status": "failed"` is what a broker outage looks like,
 and it is the reason that case exits 1.
 
+### `install` document
+
+A completed first run. Note the two absent keys — no `requests`, no `instance`.
+
+```json
+{
+  "schema_version": 1,
+  "tool": "tripl",
+  "tool_version": "0.1.0",
+  "command": "install",
+  "generated_at": "2026-08-01T09:00:00Z",
+  "duration_ms": 74210,
+  "directory": "/srv/tripl",
+  "app_base_url": "https://tripl.example.com",
+  "image": "ghcr.io/vladenisov/tripl",
+  "version": "1.5.0",
+  "dry_run": false,
+  "files": [
+    {
+      "path": "compose.yaml",
+      "action": "create",
+      "mode": "0644",
+      "note": "",
+      "keys": []
+    },
+    {
+      "path": "infra/rabbitmq/rabbitmq.conf",
+      "action": "create",
+      "mode": "0644",
+      "note": "",
+      "keys": []
+    },
+    {
+      "path": ".env",
+      "action": "create",
+      "mode": "0600",
+      "note": "",
+      "keys": [
+        "APP_BASE_URL",
+        "TRIPL_IMAGE",
+        "TRIPL_VERSION",
+        "ENCRYPTION_KEY",
+        "SECRET_KEY",
+        "POSTGRES_PASSWORD",
+        "RABBITMQ_PASSWORD"
+      ]
+    }
+  ],
+  "secrets_generated": [
+    "ENCRYPTION_KEY",
+    "SECRET_KEY",
+    "POSTGRES_PASSWORD",
+    "RABBITMQ_PASSWORD"
+  ],
+  "commands": [
+    {
+      "argv": ["docker", "compose", "pull"],
+      "cwd": "/srv/tripl",
+      "env": {},
+      "returncode": 0
+    },
+    {
+      "argv": ["docker", "compose", "up", "-d"],
+      "cwd": "/srv/tripl",
+      "env": {},
+      "returncode": 0
+    }
+  ],
+  "health": {
+    "status": "ok",
+    "waited_seconds": 68.4,
+    "attempts": 14,
+    "last_error": null
+  },
+  "bootstrap": {
+    "has_users": false,
+    "registration_enabled": true
+  },
+  "exit_code": 0
+}
+```
+
+| Key | Meaning |
+|-----|---------|
+| `directory` | Always absolute, whatever `--dir` you typed. |
+| `app_base_url` | The normalised `--app-url`. Also the origin `health` was polled at. |
+| `image` / `version` | What was pinned in `.env`. |
+| `dry_run` | `true` when nothing was written and nothing was run. |
+| `files[]` | One entry per planned file, in the order they are applied. `path` is relative to `directory`; `action` is one of `create`, `replace`, `append`, `unchanged`, `kept`; `mode` is the mode **asked for**, as a string (`"0600"` — an integer `384` is not a file mode anybody reads); `note` explains a `kept` (`"differs from the version this CLI ships"`, or `"complete"` for a `.env` that already had every key); `keys` holds variable **names** and never values. |
+| `secrets_generated` | The **names** of the secrets this run produced. Empty on a re-run that left `.env` alone. There is a test asserting no generated value appears anywhere in this document. |
+| `commands[]` | Every **planned** command with `argv`, `cwd`, the env overlay, and `returncode`. A command that was never reached carries `"returncode": null` rather than being omitted — "the pull failed so `up -d` never ran" is exactly the fact you need, and an absent entry would read as "it ran and we lost the code". Empty under `--no-start`. Compose's own output is not here by construction; see [above](#what-actually-runs-and-where-its-output-goes). |
+| `health` | `null` when the run never got there (including `--dry-run`). Otherwise `status` is `ok`, `timeout` or `skipped`; `last_error` carries the last probe's own message (`"HTTP 502"`, `"ConnectError"`) and is `null` when it succeeded or was skipped. |
+| `bootstrap` | The `/auth/status` body verbatim — `has_users`, `registration_enabled` — or `null` if it could not be read. That failure never changes the exit code; it only changes the wording of the next steps. |
+| `exit_code` | The process exit code, in the document. |
+
+### `upgrade` document
+
+```json
+{
+  "schema_version": 1,
+  "tool": "tripl",
+  "tool_version": "0.1.0",
+  "command": "upgrade",
+  "generated_at": "2026-08-01T09:00:00Z",
+  "duration_ms": 51880,
+  "directory": "/srv/tripl",
+  "current_version": "1.4.0",
+  "target_version": "1.5.0",
+  "ordering": "upgrade",
+  "dry_run": false,
+  "backup_command": "backup   cd /srv/tripl && docker compose exec -T postgres \\\n           pg_dump -U tripl tripl | gzip > tripl-1.4.0.sql.gz\n         Take it now. This applies Alembic migrations, which are not reversible.\n         ENCRYPTION_KEY lives in .env, not in that dump - back it up separately.",
+  "env_backup": ".env.bak.20260801T090000Z",
+  "commands": [
+    {
+      "argv": ["docker", "compose", "pull"],
+      "cwd": "/srv/tripl",
+      "env": {"TRIPL_VERSION": "1.5.0"},
+      "returncode": 0
+    },
+    {
+      "argv": ["docker", "compose", "up", "-d"],
+      "cwd": "/srv/tripl",
+      "env": {},
+      "returncode": 0
+    }
+  ],
+  "health": {
+    "status": "ok",
+    "waited_seconds": 47.1,
+    "attempts": 10,
+    "last_error": null
+  },
+  "exit_code": 0
+}
+```
+
+`commands`, `health`, `dry_run`, `directory` and `exit_code` mean exactly what
+they mean for `install`. The rest:
+
+| Key | Meaning |
+|-----|---------|
+| `current_version` | The `TRIPL_VERSION` read out of `.env` before anything ran. |
+| `target_version` | Your `--to`. |
+| `ordering` | `same`, `upgrade`, `downgrade` or `unknown` — the comparison [above](#how-the-two-tags-are-compared). A `downgrade` never reaches a document; it is exit 2. |
+| `backup_command` | The multi-line `pg_dump` block that was printed, verbatim, so a wrapper can show or log the same text. It was **not** run. |
+| `env_backup` | The **basename** of the `.env` copy taken before the pin was moved, or `null` if `.env` was never rewritten. Non-null is the fact a rollback needs; it sits next to `.env` in `directory`. |
+
+Note the env overlay on the pull and not on the `up`: that asymmetry is the whole
+[ordering rule](#order-of-operations-and-why), and it is visible in the document.
+
 Useful one-liners:
 
 ```bash
@@ -2253,10 +2958,31 @@ tripl drifts list --json \
 
 # What a write WOULD send, as real JSON rather than the human line's repr.
 tripl drifts dismiss drift-1 --project prod --dry-run --json | jq '.request'
+
+# Which files an install would touch, before it touches them.
+tripl install --app-url https://tripl.example.com --dry-run --json \
+  | jq -r '.files[] | "\(.action)\t\(.mode)\t\(.path)"'
+
+# Did the stack come up, and how long did it take to answer?
+tripl install --app-url https://tripl.example.com --yes --json \
+  | jq -r '"\(.health.status) after \(.health.waited_seconds)s in \(.health.attempts) attempts"'
+
+# Which compose command failed, if one did. null means it was never reached.
+tripl upgrade --to 1.5.0 --yes --json \
+  | jq -r '.commands[] | select(.returncode != 0) | "\(.argv|join(" ")) -> \(.returncode)"'
+
+# The .env backup to restore from, empty if the pin was never moved.
+tripl upgrade --to 1.5.0 --yes --json | jq -r '.env_backup // empty'
 ```
 
 ## See also
 
+- [Self-hosting & Deployment](./deployment.md) — the reference behind
+  [`tripl install`](#tripl-install): what each service is, how CORS and TLS have
+  to be arranged around it, and the by-hand path for a host that cannot run this
+  CLI.
+- [Configuration reference](./configuration.md) — every environment variable, of
+  which the generated `.env` sets seven.
 - [Operations Runbook](./runbook.md) — health checks, backups, scaling, rollback.
 - [Troubleshooting](../use/troubleshooting.md) — symptom-driven debugging for the
   problems doctor names.

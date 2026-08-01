@@ -176,6 +176,47 @@ class TestNormalizeBaseUrl:
 
         assert "https://ftp://" not in str(excinfo.value)
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "https://tripl.example.com\nEVIL=1",
+            "https://tripl.example.com\r\nEVIL=1",
+            "https://tripl.example\tcom",
+            "https://tripl.example.com\x7f",
+        ],
+    )
+    def test_a_control_character_is_rejected(self, raw: str) -> None:
+        """urlsplit DELETES tab, CR and LF before parsing, so it says these are fine.
+
+        They are not. This value becomes the `APP_BASE_URL=` line of the 0600
+        `.env` Docker Compose interpolates, where a newline does not corrupt the
+        file - it ADDS settings to it. One pasted `--app-url` would otherwise
+        write arbitrary environment into every container in the stack.
+        """
+        with pytest.raises(TriplConfigError) as excinfo:
+            normalize_base_url(raw, "--app-url")
+
+        message = str(excinfo.value)
+        assert "control character" in message
+        assert "--app-url" in message
+        # The refusal must not itself smuggle the raw bytes into a terminal.
+        assert "\n" not in message
+        assert "\t" not in message
+
+    def test_urlsplit_really_does_accept_those(self) -> None:
+        """Guards the test above: a check on a value nothing accepts proves nothing.
+
+        urlsplit DELETES the newline and splices the halves together, so the
+        payload parses as a perfectly ordinary https netloc. Nothing downstream
+        of it would have objected.
+        """
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit("https://tripl.example.com\nEVIL=1")
+        assert parsed.scheme == "https"
+        assert parsed.netloc == "tripl.example.comEVIL=1"
+        assert "\n" not in parsed.netloc
+
     def test_applies_to_every_source(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(ENV_BASE_URL, "https://tripl.example.com/api/v1/")
         assert resolve().base_url == "https://tripl.example.com"

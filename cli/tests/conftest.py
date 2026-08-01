@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -8,6 +9,8 @@ from typing import Any
 import httpx
 import pytest
 import respx
+
+from tripl_cli.install.shell import Command, CommandResult
 
 BASE_URL = "http://tripl.test"
 API_BASE = f"{BASE_URL}/api/v1"
@@ -19,6 +22,23 @@ DISPATCHER_MODE = "metrics_collection"
 REPLAY_MODE = "metrics_replay"
 
 _UNSET = object()
+
+
+def api_time(moment: datetime) -> str:
+    """Spell a timestamp the way the API spells it: aware UTC, ``Z``.
+
+    Pydantic v2 serialises an aware UTC datetime as ``...T00:00:00Z``, so a
+    fixture built with ``.isoformat()`` pins ``+00:00`` — bytes no tripl instance
+    ever sends. That makes the golden samples, the documented samples and real
+    output disagree three ways, on the exact field an operator string-compares.
+
+    Deliberately NOT used inside ``replay_summary``: that block is
+    ``ScanJob.result_summary``, a JSON blob the worker writes with
+    ``datetime.isoformat()`` and no response model in between, so ``+00:00`` is
+    what really arrives there. The two spellings coexisting is a documented fact
+    about the API (website/docs/run/cli.md), not a defect to normalise away.
+    """
+    return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 @pytest.fixture(autouse=True)
@@ -128,8 +148,8 @@ def make_scan_config(
         "time_column": time_column,
         "data_source_id": data_source_id,
         "base_query": "select 1",
-        "created_at": created.isoformat(),
-        "updated_at": created.isoformat(),
+        "created_at": api_time(created),
+        "updated_at": api_time(created),
     }
     config.update(overrides)
     return config
@@ -149,6 +169,7 @@ def make_job(
     if result_summary is _UNSET:
         summary: Any = {"mode": DISPATCHER_MODE}
         if time_to is not None:
+            # The worker's own spelling inside result_summary. See api_time.
             summary["time_to"] = time_to.isoformat()
     else:
         summary = result_summary
@@ -158,10 +179,10 @@ def make_job(
         "status": status,
         "error_message": error_message,
         "result_summary": summary,
-        "created_at": stamp.isoformat(),
-        "started_at": stamp.isoformat(),
-        "completed_at": stamp.isoformat() if status in ("completed", "failed") else None,
-        "updated_at": stamp.isoformat(),
+        "created_at": api_time(stamp),
+        "started_at": api_time(stamp),
+        "completed_at": api_time(stamp) if status in ("completed", "failed") else None,
+        "updated_at": api_time(stamp),
     }
 
 
@@ -223,10 +244,10 @@ def make_replay_job(
         "status": status,
         "error_message": error_message,
         "result_summary": replay_summary(**summary_overrides),
-        "created_at": stamp.isoformat(),
-        "started_at": stamp.isoformat(),
-        "completed_at": touched.isoformat() if status in ("completed", "failed") else None,
-        "updated_at": touched.isoformat(),
+        "created_at": api_time(stamp),
+        "started_at": api_time(stamp),
+        "completed_at": api_time(touched) if status in ("completed", "failed") else None,
+        "updated_at": api_time(touched),
     }
 
 
@@ -252,7 +273,7 @@ def make_signal(
         "scope_type": scope_type,
         "scope_ref": scope_ref,
         "state": state,
-        "bucket": at.isoformat(),
+        "bucket": api_time(at),
         "actual_count": actual_count,
         "expected_count": expected_count,
         "stddev": stddev,
@@ -294,9 +315,9 @@ def make_delivery(
         "error_message": error_message,
         "is_local": False,
         "is_simulated": False,
-        "created_at": stamp.isoformat(),
-        "updated_at": stamp.isoformat(),
-        "sent_at": stamp.isoformat() if status == "sent" else None,
+        "created_at": api_time(stamp),
+        "updated_at": api_time(stamp),
+        "sent_at": api_time(stamp) if status == "sent" else None,
     }
 
 
@@ -320,7 +341,7 @@ def make_data_source(
         "password_set": True,
         "is_synthetic": False,
         "last_test_status": last_test_status,
-        "last_test_at": tested.isoformat() if last_test_status is not None else None,
+        "last_test_at": api_time(tested) if last_test_status is not None else None,
         "last_test_message": last_test_message,
         "created_at": "2026-01-01T00:00:00Z",
         "updated_at": "2026-01-01T00:00:00Z",
@@ -360,10 +381,10 @@ def make_drift(
         "field_name": field_name,
         "drift_type": drift_type,
         "status": status,
-        "detected_at": detected.isoformat(),
-        "resolved_at": resolved_at.isoformat() if resolved_at else None,
+        "detected_at": api_time(detected),
+        "resolved_at": api_time(resolved_at) if resolved_at else None,
         "resolved_by": resolved_by,
-        "snoozed_until": snoozed_until.isoformat() if snoozed_until else None,
+        "snoozed_until": api_time(snoozed_until) if snoozed_until else None,
         "declared_type": None,
         "observed_type": None,
         "sample_value": None,
@@ -390,6 +411,7 @@ class FakeInstance:
         self._routes: dict[str, respx.Route] = {}
         self.health()
         self.auth()
+        self.auth_status()
         self.projects([make_project()])
         self.project("prod", make_project())
         self.data_sources([make_data_source(last_test_at=moment)])
@@ -490,6 +512,16 @@ class FakeInstance:
         route = self._route(f"{BASE_URL}/health")
         route.mock(side_effect=exc)
         return route
+
+    def auth_status(self, status: int = 200, payload: Any = _UNSET) -> respx.Route:
+        """``GET /auth/status`` — UNAUTHENTICATED, like ``/health``.
+
+        A brand-new instance by default: no accounts, registration open, which
+        is the state ``tripl install`` finds and the one whose next steps say
+        "the first account you create becomes the owner".
+        """
+        body = {"has_users": False, "registration_enabled": True} if payload is _UNSET else payload
+        return self._respond(f"{API_BASE}/auth/status", status, body)
 
     def auth(self, status: int = 200, payload: Any = _UNSET) -> respx.Route:
         body = (
@@ -634,6 +666,89 @@ def fake_clock(now: datetime, monkeypatch: pytest.MonkeyPatch) -> FakeClock:
 
     monkeypatch.setattr(watch, "default_clock", lambda: clock)
     return clock
+
+
+class FakeRunner:
+    """Every subprocess ``tripl install``/``upgrade`` would run, recorded not run.
+
+    THIS BOX NEVER STARTS A CONTAINER. Not "the tests avoid docker" — there is no
+    code path from the test suite to ``subprocess`` at all, because the command
+    modules resolve their runner through ``default_runner()`` and the fixture
+    below replaces that binding (tripl-ey6j.3).
+
+    Exit codes are scripted by a short key (``version``, ``info``, ``pull``,
+    ``up``) rather than by call index: a test about a failing ``up -d`` should
+    not have to know how many probes ran before it.
+    """
+
+    def __init__(self, **codes: int) -> None:
+        self.calls: list[Command] = []
+        self.captured: list[bool] = []
+        self.codes = codes
+        # Plausible defaults, so the happy path needs no scripting at all.
+        self.stdout: dict[str, str] = {"version": "v2.29.1\n", "info": "27.1.1\n"}
+        self.stderr: dict[str, str] = {}
+
+    @staticmethod
+    def key(command: Command) -> str:
+        argv = command.argv
+        if argv[:3] == ("docker", "compose", "version"):
+            return "version"
+        if argv[:2] == ("docker", "info"):
+            return "info"
+        if argv[:3] == ("docker", "compose", "pull"):
+            return "pull"
+        if argv[:3] == ("docker", "compose", "up"):
+            return "up"
+        return " ".join(argv)
+
+    def __call__(self, command: Command, capture: bool) -> CommandResult:
+        self.calls.append(command)
+        self.captured.append(capture)
+        key = self.key(command)
+        code = self.codes.get(key, 0)
+        return CommandResult(
+            argv=command.argv,
+            returncode=code,
+            stdout=self.stdout.get(key, "") if capture else "",
+            stderr=self.stderr.get(key, "") if capture else "",
+        )
+
+    @property
+    def argvs(self) -> list[tuple[str, ...]]:
+        return [call.argv for call in self.calls]
+
+
+@pytest.fixture
+def fake_runner(monkeypatch: pytest.MonkeyPatch) -> FakeRunner:
+    """Replace the subprocess seam in BOTH command modules.
+
+    Both, because ``monkeypatch.setattr`` replaces an attribute on one module
+    object: patching only ``install`` would leave ``upgrade`` shelling out for
+    real, which on this box is exactly the accident that must be impossible.
+    """
+    from tripl_cli.commands import install, upgrade
+
+    runner = FakeRunner()
+    for module in (install, upgrade):
+        monkeypatch.setattr(module, "default_runner", lambda: runner)
+    return runner
+
+
+@pytest.fixture
+def install_dir(tmp_path: Path) -> Iterator[Path]:
+    """An empty target directory, with a KNOWN umask.
+
+    ``os.open`` masks the mode it is given, so ``0644`` under a umask of ``077``
+    lands as ``0600``. Pinning the umask here is what lets the mode assertions be
+    exact numbers instead of bit tests, without the production code ever calling
+    ``chmod`` — which it must not, for ``.env`` (see install/files.py).
+    """
+    previous = os.umask(0o022)
+    try:
+        yield tmp_path / "stack"
+    finally:
+        os.umask(previous)
 
 
 @pytest.fixture

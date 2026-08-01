@@ -50,6 +50,18 @@ How roles are assigned:
   last remaining owner** (`400 Cannot demote the last remaining owner`), so you
   cannot lock yourself out of the instance.
 
+:::note Claiming a brand-new instance
+[`tripl install`](../run/cli.md#tripl-install) provisions and starts a stack, but
+it stops at a **running, empty instance** — it does not create this first
+account, and no tool can. Registering over the API would mean putting a password
+on a command line, and the session cookie the reply sets is `Secure`, so it would
+be discarded on a plain-HTTP first run. So the last thing `install` prints is the
+instruction to open the URL in a browser and sign up; that first sign-up is the
+owner, and everything on this page assumes it has already happened. The
+provisioning side is
+[Self-hosting & Deployment](../run/deployment.md#install-with-the-cli).
+:::
+
 :::warning Role changes sign the user out
 When an owner changes a member's role, every active session for that user is
 deleted in the same transaction, so the new permissions take effect on their
@@ -221,6 +233,17 @@ persisted, so a database dump cannot replay tokens.
 For how clients present these tokens (the `Authorization: Bearer <token>`
 header) and the endpoints they unlock, see the
 [Agent API guide](../integrate/agent-api-guide.md).
+
+:::note What a key cannot reach, whatever its scope
+Owner-only endpoints require an **interactive owner session**, so an API key is
+`403` on them even when its owner is an owner. In practice that means
+**connecting a data source and inviting a member are browser-only steps** — no
+CLI, script or agent can do them for you, which is why
+[`tripl install`](../run/cli.md#tripl-install) hands you a URL at the end instead
+of finishing the job. The [Operator CLI](../run/cli.md) documents which of its
+commands need a key at all: `install` and `upgrade` need none, the diagnostics
+need `tk_r_`, and three verbs need `tk_w_` behind an editor or owner.
+:::
 
 ## Instance settings (owner only)
 
@@ -418,6 +441,8 @@ process's environment so you can confirm the instance is wired correctly.
 - [Security](../run/security.md) — hardening the instance (secrets, HTTPS, CORS).
 - [Deployment](../run/deployment.md) — running the instance (compose / GHCR
   image) and what a restart picks up.
+- [Operator CLI](../run/cli.md) — `tripl install` / `tripl upgrade` for the host,
+  and `tripl doctor` for checking the instance once it is up.
 - [Agent API guide](../integrate/agent-api-guide.md) — using API keys from
   agents and scripts.
 - [Troubleshooting](../use/troubleshooting.md) — common operational issues.

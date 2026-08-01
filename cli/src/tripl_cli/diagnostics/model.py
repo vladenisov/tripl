@@ -342,6 +342,12 @@ class ScansSnapshot:
         return sum(len(project.scans) for project in self.projects)
 
     @property
+    def error_count(self) -> int:
+        """How many reads did not arrive. Same property name as ``DriftsSnapshot``
+        because the two footers say the same sentence, from the same helper."""
+        return sum(len(project.errors) for project in self.projects)
+
+    @property
     def failed(self) -> bool:
         """Any project whose scan listing did not arrive.
 
@@ -349,7 +355,7 @@ class ScansSnapshot:
         close: "3 scan configs" when a fourth project 403'd is a lie the operator
         cannot see (TRAP 3).
         """
-        return any(project.errors for project in self.projects)
+        return self.error_count > 0
 
 
 @dataclass(frozen=True)

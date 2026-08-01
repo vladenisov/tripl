@@ -4,18 +4,33 @@
 to hand an exit code back to it; ``TriplClient`` is asynchronous because it is
 shared with tripl-mcp, which needs it that way (tripl-ey6j.1). This module is
 the only place the two meet, so a command body reads as a straight line and
-there is exactly one ``asyncio.run`` in the process.
+exactly one ``asyncio.run`` executes per invocation.
 
-Credentials are demanded BEFORE the event loop opens. That keeps "you have not
-configured a key" (``EXIT_USAGE``, no socket touched, nothing to report) cleanly
-separated from "the instance rejected your key" — two failures that produced the
-same shrug during the 2026-07-28..31 incident.
+The invariant is ONE ``asyncio.run`` PER INVOCATION, reached through one of two
+NAMED bridges — not one ``asyncio.run`` in this file. There are two because
+there are two kinds of caller:
+
+``run_async``
+    Everything that talks to a configured instance. Credentials are demanded
+    BEFORE the event loop opens, which keeps "you have not configured a key"
+    (``EXIT_USAGE``, no socket touched, nothing to report) cleanly separated
+    from "the instance rejected your key" — two failures that produced the same
+    shrug during the 2026-07-28..31 incident.
+
+``run_unauthenticated``
+    ``tripl install`` and ``tripl upgrade``, which poll ``/health`` and read
+    ``/auth/status`` on an instance that BY DEFINITION has no credentials yet:
+    the first account has not been created, so no API key can exist. Routing
+    them through ``run_async`` would demand a key the operator cannot possibly
+    have, and inventing one is not an option either (tripl-ey6j.3). It sends no
+    ``Authorization`` header, ever, and ``tests/test_runner.py`` pins that.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
+from typing import Any
 
 import httpx
 
@@ -60,6 +75,28 @@ def run_async[T](
             return await body(client)
 
     return asyncio.run(_main())
+
+
+def run_unauthenticated[T](
+    body: Callable[[float], Coroutine[Any, Any, T]],
+    *,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+) -> T:
+    """Run one credential-free async body, and hand it the per-request timeout.
+
+    No ``Config``, no ``require_api_key``, and NO CONNECTION POOL: the two probes
+    this serves (``collect.probe_health`` and ``collect.probe_auth_status``) each
+    open and close their own unauthenticated ``httpx.AsyncClient``, for the
+    reason written on ``probe_health`` — an unauthenticated probe is what tells
+    "the instance is down" apart from "your key is bad", and a shared pool here
+    would be a pool with an Authorization header on it.
+
+    The timeout is passed to the body rather than applied around it because the
+    caller's deadline and the per-request deadline are different numbers:
+    ``install`` polls ``/health`` for up to five minutes using a ten-second
+    request timeout.
+    """
+    return asyncio.run(body(timeout))
 
 
 async def gather_bounded[T](
