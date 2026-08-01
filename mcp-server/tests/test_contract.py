@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tripl_cli.client import API_PREFIX
 
-from tripl_mcp.client import API_PREFIX
 from tripl_mcp.contract import TOOL_ENDPOINTS
 from tripl_mcp.server import build_server
 

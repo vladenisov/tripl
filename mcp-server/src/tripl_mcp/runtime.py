@@ -18,8 +18,11 @@ from typing import Any
 
 import httpx
 from mcp.server.fastmcp.exceptions import ToolError
+from tripl_cli.client import TriplClient
+from tripl_cli.errors import TriplError
 
-from tripl_mcp.client import TriplClient
+from tripl_mcp import USER_AGENT
+from tripl_mcp.errors import to_tool_error
 
 ALLOW_MAIN_ENV = "TRIPL_MCP_ALLOW_MAIN"
 
@@ -97,6 +100,29 @@ def resolve_api_key(ctx: Any) -> str:
     return runtime.api_key
 
 
+class _McpTriplClient(TriplClient):
+    """TriplClient whose failures reach the agent as ToolError, MCP-worded.
+
+    The one place the shared client's neutral errors are translated. ``get``,
+    ``post`` and ``patch`` all funnel through ``request``, so overriding it
+    covers every call — including ``ensure_branch_not_main``'s own lookup below,
+    which is not routed through any tools/ module (tripl-ey6j.1).
+    """
+
+    async def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: Any | None = None,
+    ) -> Any:
+        try:
+            return await super().request(method, path, params=params, json_body=json_body)
+        except TriplError as exc:
+            raise to_tool_error(exc) from exc
+
+
 def client_for(ctx: Any) -> TriplClient:
     """Build a REST wrapper around the transport-appropriate HTTP client."""
     runtime = get_runtime()
@@ -112,10 +138,13 @@ def client_for(ctx: Any) -> TriplClient:
         http_client = getattr(lifespan, "stdio_http_client", None)
         if not isinstance(http_client, httpx.AsyncClient):
             raise ToolError("The stdio HTTP client was not initialized by the server lifespan.")
-    return TriplClient(
+    return _McpTriplClient(
         base_url=runtime.base_url,
         api_key=api_key,
         http_client=http_client,
+        # http mode leaves http_client=None, so this is the value TriplClient
+        # puts on the per-request transport it builds itself.
+        user_agent=USER_AGENT,
     )
 
 

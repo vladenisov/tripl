@@ -192,7 +192,12 @@ services:
   mcp:
     restart: unless-stopped
     image: "${TRIPL_MCP_IMAGE:-ghcr.io/vladenisov/tripl-mcp}:${TRIPL_VERSION:-latest}"
-    build: ./mcp-server
+    # Context is the repo root, not ./mcp-server: tripl-mcp builds against the
+    # sibling `tripl` package in ./cli, which a mcp-server/ context cannot see
+    # (tripl-ey6j.1).
+    build:
+      context: .
+      dockerfile: mcp-server/Dockerfile
     # The image ENTRYPOINT is already `tripl-mcp`, so command holds flags only.
     # --host 0.0.0.0 is required for the published port to be reachable.
     command: ["--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8765"]

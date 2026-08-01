@@ -49,6 +49,84 @@ jobs:
       - name: Pytest
         run: uv run pytest -q -m "not conformance"
 
+  # The two client packages. NEITHER ran in PR CI before tripl-ey6j.1 —
+  # mcp-server's suite executed only in publish-mcp.yml, at tag time, and cli/
+  # did not exist. That was survivable while tripl-mcp was self-contained; it is
+  # not now, because tripl-mcp imports its HTTP client FROM cli/, so a change
+  # under cli/ can break the MCP server with nothing in PR CI to catch it.
+  # Hence two jobs, not one: they must fail independently and name which side
+  # broke. Same four commands as publish-mcp.yml's gate, deliberately.
+  #
+  # --locked, NOT --frozen. They are not synonyms: --frozen uses the lockfile
+  # as-is and skips the consistency check entirely, so a pyproject that has moved
+  # ahead of uv.lock sails through. --locked is the one that verifies the lock
+  # still describes the pyproject and fails when it does not — which is the whole
+  # point of running this in CI, and for mcp-server means catching a `tripl`
+  # constraint that the lock has not caught up with.
+  cli:
+    name: CLI (ruff + mypy + pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Ruff
+        run: |
+          uv run --locked --group dev ruff check
+          uv run --locked --group dev ruff format --check
+
+      - name: Mypy
+        run: uv run --locked --group dev mypy src
+
+      - name: Pytest
+        run: uv run --locked --group dev pytest -q
+
+      # The console script IS the deliverable, so prove it survives packaging —
+      # running it out of the source tree proves nothing about the wheel. This
+      # mirrors publish-mcp.yml's smoke test, and it is where a missing entry
+      # point, an unbundled py.typed or a wrong module layout shows up.
+      - name: Smoke-test the built wheel
+        run: |
+          uv build
+          uv venv /tmp/cli-smoke --python 3.12
+          uv pip install --python /tmp/cli-smoke/bin/python dist/*.whl
+          /tmp/cli-smoke/bin/tripl --version
+
+  mcp:
+    name: MCP server (ruff + mypy + pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # Needs the whole repo checked out, not just this directory: uv resolves
+        # `tripl` from ../cli via [tool.uv.sources], and test_contract.py reads
+        # backend/openapi.json.
+        working-directory: mcp-server
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Ruff
+        run: |
+          uv run --locked --group dev ruff check
+          uv run --locked --group dev ruff format --check
+
+      - name: Mypy
+        run: uv run --locked --group dev mypy src
+
+      - name: Pytest
+        run: uv run --locked --group dev pytest -q
+
   conformance:
     # Executable warehouse gates. Every other adapter test asserts generated SQL
     # STRINGS against FAKE clients, and a fake client accepts any string — which is

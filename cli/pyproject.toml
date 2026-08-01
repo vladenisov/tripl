@@ -1,0 +1,98 @@
+[project]
+name = "tripl"
+version = "0.1.0"
+description = "Operator CLI for a tripl tracking-plan instance: diagnostics, health and live monitoring"
+readme = "README.md"
+requires-python = ">=3.12"
+# Apache-2.0 while the SERVICE is AGPL-3.0-or-later, for the same reason
+# tripl-mcp is: this distribution is a standalone httpx client of the REST API
+# and imports nothing from the backend's `tripl` package, so a permissive
+# licence keeps the service's copyleft out of anything embedding it. It is also
+# load-bearing downstream — tripl-mcp DEPENDS on this distribution, so anything
+# stricter here would reach straight through tripl-mcp's own Apache-2.0 promise.
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Vladislav Denisov" }]
+keywords = ["tripl", "cli", "analytics", "tracking-plan", "observability", "devops"]
+# Trove classifiers are what PyPI's sidebar and search filters read. No
+# "Private :: Do Not Upload" here on purpose — this package IS meant to be
+# installed by users (uvx tripl), unlike the service itself, which ships as a
+# container image.
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Systems Administration",
+    "Typing :: Typed",
+]
+dependencies = [
+    # httpx alone, and that is a BUDGET rather than a starting point: tripl-mcp
+    # imports its HTTP client from this distribution (tripl-ey6j.1), so every
+    # dependency added here is forced onto every MCP-server install too. Config
+    # parsing uses stdlib tomllib and argument parsing stdlib argparse for
+    # exactly that reason — no click, no rich, no tomli.
+    # Upper bound for the same reason `mcp<2` carries one: a published wheel
+    # ships constraints, not the lockfile, so an unbounded floor lets a
+    # consumer resolve a future major that moved the API out from under us.
+    "httpx>=0.27.0,<1",
+]
+
+[project.urls]
+Homepage = "https://vladenisov.github.io/tripl/"
+Documentation = "https://vladenisov.github.io/tripl/docs/run/cli"
+Repository = "https://github.com/vladenisov/tripl"
+Issues = "https://github.com/vladenisov/tripl/issues"
+
+[project.scripts]
+# `main` returns an int rather than calling sys.exit itself: the generated
+# console-script wrapper is `sys.exit(main())`, so the exit code still lands,
+# and tests can assert on the return value without catching SystemExit.
+tripl = "tripl_cli.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    # The client is async (it is shared with tripl-mcp, which needs it async),
+    # so the moved client tests are coroutines even though the CLI surface is
+    # synchronous.
+    "pytest-asyncio>=0.26",
+    "respx>=0.22",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# The import package is tripl_cli, NOT tripl: the service's own source package
+# is backend/src/tripl/, and a distribution installing an importable `tripl`
+# would shadow it in any environment holding both — a contributor's backend
+# venv, for one (tripl-ey6j).
+packages = ["src/tripl_cli"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+# No ignore_missing_imports, unlike mcp-server: every runtime import here is
+# stdlib or httpx, both of which ship type information. Keeping the flag would
+# silently accept the first untyped dependency someone adds.

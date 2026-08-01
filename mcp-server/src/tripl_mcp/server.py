@@ -13,9 +13,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
+from tripl_cli.client import DEFAULT_TIMEOUT_SECONDS, create_http_client
 
-from tripl_mcp import __version__
-from tripl_mcp.client import DEFAULT_TIMEOUT_SECONDS, create_http_client
+from tripl_mcp import USER_AGENT, __version__
 from tripl_mcp.runtime import (
     TRANSPORT_STDIO,
     TRANSPORT_STREAMABLE_HTTP,
@@ -47,8 +47,11 @@ async def server_lifespan(
         return
     if runtime.api_key is None:
         raise RuntimeError("TRIPL_API_KEY is required for the stdio server lifespan")
+    # Imported by name rather than called as `client_mod.create_http_client`:
+    # tests/test_tools_e2e.py monkeypatches THIS module-level binding to count
+    # pool creations, and an attribute call would silently defeat that.
     async with create_http_client(
-        runtime.base_url, runtime.api_key, DEFAULT_TIMEOUT_SECONDS
+        runtime.base_url, runtime.api_key, DEFAULT_TIMEOUT_SECONDS, USER_AGENT
     ) as http_client:
         yield RuntimeLifespan(stdio_http_client=http_client)
 
