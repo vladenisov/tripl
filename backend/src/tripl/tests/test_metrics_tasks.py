@@ -4810,8 +4810,12 @@ def test_collect_metrics_fails_when_query_exceeds_row_limit(
     with pytest.raises(ScanError, match="Metrics query reached configured row limit") as excinfo:
         metrics.collect_metrics.run(config_id, job_id)
 
-    # The curated message survives the sanitiser instead of being genericised...
-    assert user_facing_error(excinfo.value) == str(excinfo.value)
+    # The curated message survives the sanitiser instead of being genericised —
+    # carrying the prefix the UI matches on, which the sanitiser adds so this
+    # raise site does not have to remember it (tripl-7bol). Without the prefix
+    # the text reached the browser intact and was discarded there instead, which
+    # is the same outcome tripl-embs fixed one layer further down.
+    assert user_facing_error(excinfo.value) == f"Scan failed: {excinfo.value}"
 
     # ...and that is exactly what the user reads off the failed job.
     with sync_session_factory() as session:

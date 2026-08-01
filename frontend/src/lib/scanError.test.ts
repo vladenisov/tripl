@@ -134,6 +134,28 @@ describe('friendlyScanError', () => {
     }
   })
 
+  it('passes the backend CURATED messages through, not just the generic three', () => {
+    // The test above uses the three generic summaries, and every one of them
+    // happens to carry the prefix — which is precisely how tripl-7bol survived
+    // a green suite. The curated messages are the ones the mechanism exists
+    // for, and not one of them carried it: each arrived here intact and was
+    // collapsed into the bare 'Scan failed.' it had been written to replace.
+    //
+    // These read as `user_facing_error` now emits them
+    // (backend/src/tripl/worker/tasks/_errors.py), which prefixes every curated
+    // message so no raise site has to remember to.
+    for (const msg of [
+      'Scan failed: The scan query reached the configured row limit (50000); increase scan_row_limit to avoid partial generation',
+      'Scan failed: Either event_type_id or event_type_column must be specified',
+      'Scan failed: The scan config has no event group rules',
+      'Scan failed: Fact metric aggregate reached the metric query row limit (100000) for chunk 2026-08-01T00:00:00..2026-08-01T01:00:00; narrow the metric breakdown',
+    ]) {
+      const result = friendlyScanError(msg)
+      expect(result.message).toBe(msg)
+      expect(result.technical).toBeUndefined()
+    }
+  })
+
   it('does NOT pass through a "Scan failed:" string that still carries raw internals', () => {
     // Defensive: even if a path prefixes raw text, the raw-internals guard forces
     // it back through the mapping rules so host/port never leak.

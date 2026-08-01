@@ -197,10 +197,13 @@ logs**, so always check there first:
 docker compose logs --tail=200 celery-worker | grep -iE "scan failed|connection"
 ```
 
-A handful of conditions are surfaced **verbatim** because they're actionable:
+A handful of conditions are surfaced **verbatim** because they're actionable.
+They all begin `Scan failed:` — that prefix is what tells the UI a message was
+authored by tripl and is safe to show as-is, so the backend adds it to every
+curated message rather than leaving each raise site to remember it:
 
-- **Row limit reached.** *"Scan query reached configured row limit (50000);
-  increase scan_row_limit to avoid partial generation."* The default cap is
+- **Row limit reached.** *"Scan failed: The scan query reached the configured row
+  limit (50000); increase scan_row_limit to avoid partial generation."* The default cap is
   50,000 rows for scans (100,000 for metrics). Narrow the base query, set a
   time column + lookback so less data is scanned, or raise the per-config row
   limit. Catalog-metric collection reports the same condition as *"… reached the
@@ -208,9 +211,9 @@ A handful of conditions are surfaced **verbatim** because they're actionable:
   purpose**: collection replaces a window by deleting it and re-inserting, so
   writing a capped result would erase the tail of the window rather than leave
   it as it was. Narrow the metric's breakdown or replay in shorter chunks.
-- **Misconfigured event typing.** *"Either event_type_id or event_type_column
-  must be specified."* Pick a single event type for the config, or set the
-  column that splits rows into event types.
+- **Misconfigured event typing.** *"Scan failed: Either event_type_id or
+  event_type_column must be specified."* Pick a single event type for the
+  config, or set the column that splits rows into event types.
 - **Event name format references a column that is gone.** *"Scan failed: the
   event name format references unknown keys: `action`. Available keys: …"* The
   scan's **Event name format** names a column the query no longer supplies —

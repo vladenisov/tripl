@@ -91,6 +91,14 @@ export function friendlyScanError(raw: string | null | undefined): FriendlyScanE
   // show it verbatim so users keep the specific reason instead of the generic
   // fallback. Pre-sanitisation records and genuinely raw strings fall through to
   // the mapping rules below.
+  //
+  // The prefix is an invariant of the sender rather than a hope about it:
+  // `user_facing_error` (backend/src/tripl/worker/tasks/_errors.py) prefixes
+  // every curated message it returns, so this test asks "did this come from that
+  // function", not "does this happen to be worded a certain way". Until
+  // tripl-7bol it WAS a hope, and it was wrong for every curated message in the
+  // backend: all ~60 arrived without the prefix and were collapsed right here
+  // into the generic line they had been written to replace.
   const hasRawInternals = RAW_INTERNAL_MARKERS.some((marker) => marker.test(haystack))
   if (!hasRawInternals && haystack.startsWith('scan failed')) {
     return { message: trimmed }

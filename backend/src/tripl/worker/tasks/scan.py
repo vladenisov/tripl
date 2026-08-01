@@ -213,7 +213,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             )
             if analysis.row_limit_reached:
                 msg = (
-                    "Scan query reached configured row limit "
+                    "The scan query reached the configured row limit "
                     f"({scan_row_limit}); increase scan_row_limit to avoid partial generation"
                 )
                 raise ScanError(msg)
@@ -416,7 +416,7 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             msg = f"ScanConfig {scan_config_id} not found"
             raise ValueError(msg)
         if not config.event_group_rules:
-            msg = "Scan config has no event group rules"
+            msg = "The scan config has no event group rules"
             raise ScanError(msg)
 
         job.status = ScanJobStatus.running.value
