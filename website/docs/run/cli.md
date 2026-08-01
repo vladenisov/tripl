@@ -5,8 +5,8 @@ sidebar_position: 5
 
 # Operator CLI
 
-`tripl` is a small command-line client for a **running tripl instance**. It has
-three commands, all **read-only**:
+`tripl` is a small command-line client for a **running tripl instance**. Three
+commands ask a question about the instance as a whole and change nothing:
 
 - **`tripl doctor`** — runs six diagnostic checks and tells you what is broken,
   why, and what to do about it. Exits non-zero when something is wrong.
@@ -16,11 +16,23 @@ three commands, all **read-only**:
   chunk progress, jobs starting and finishing, signals opening, alert deliveries
   failing. Runs until you stop it. Never reports a verdict.
 
+Two more act on a **class of objects** and are spelled `<plural-noun> <verb>`:
+
+- **`tripl scans`** — `list` the scan configurations, print one's `jobs`, `run`
+  one now, `cancel` an active job.
+- **`tripl drifts`** — `list` schema drifts, and `dismiss` one.
+
+`scans run`, `scans cancel` and `drifts dismiss` are the CLI's **first mutating
+commands**. Read [Write safety](#write-safety) before you use one. Everything
+else on this page is read-only, and a `tk_r_` key is enough for all of it.
+
 Like the [MCP server](../integrate/mcp-server.md), it is a pure HTTP client of
 the [`/api/v1`](../integrate/agent-api-guide.md) surface — it imports no backend
-code, never touches the database, and issues nothing but `GET` requests. The two
-tools read **the same two environment variables**, so a shell configured for one
-is configured for the other.
+code and never touches the database. Since the two tools now
+[share one request layer](#one-request-layer-shared-with-the-mcp-server), a path
+or a response projection is defined in exactly one place for both. They also
+read **the same two environment variables**, so a shell configured for one is
+configured for the other.
 
 :::note What this page is for
 `tripl doctor` exists because of a four-day incident in which a scan config had
@@ -137,9 +149,15 @@ shell history. Prefer the environment variable or the config file.
 
 ### Which key to use
 
-**Use a read-only `tk_r_` key. It is enough for all three commands and it should
-be your default.** No command issues anything but `GET`, so a write key buys
-nothing and risks everything.
+**A read-only `tk_r_` key is enough for `doctor`, `status`, `watch`, `scans
+list`, `scans jobs` and `drifts list`, and it should be your default.** Those
+six issue nothing but `GET`, so a write key buys them nothing and risks
+everything.
+
+Three verbs mutate the instance and need a **`tk_w_` key backed by a user with
+the editor or owner role**: `scans run`, `scans cancel` and `drifts dismiss`.
+Give them a key of their own rather than promoting the one in your cron job —
+see [Write safety](#write-safety).
 
 Create keys in the app at **Settings → API keys** (see
 [API keys & governance](../administer/admin-guide.md#api-keys--governance)). The
@@ -403,10 +421,16 @@ PASS  drifts        1 event type(s) examined; no untriaged schema drift.
 `--strict` deliberately does **not** promote skips: a project-scoped key would
 otherwise fail every strict run forever, for a reason the operator cannot fix.
 
-`tripl status` and `tripl watch` also need `--project` with such a key, but
-neither has a verdict contract, so both simply fail with the API's own 403
-message — extended with the hint *"If this key is scoped to a single project,
-that 403 is expected"* and the flag to type. Pass `--project`.
+`tripl status`, `tripl watch`, `tripl scans list` and `tripl drifts list` also
+need `--project` with such a key. None of them has a verdict contract, so they
+simply fail with the API's own 403 message — extended with the hint *"If this
+key is scoped to a single project, that 403 is expected"* and the flag to type.
+Pass `--project`.
+
+The commands that act on **one** object — `scans jobs`, `scans run`,
+`scans cancel`, `drifts dismiss` — require `--project` exactly once from
+everybody, project-scoped key or not, so they never reach the instance listing
+and never produce that 403.
 
 ### Request cost
 
@@ -821,22 +845,570 @@ you restart. This is deliberate: silently dropping a target is the exact failure
 mode `watch` exists to avoid.
 :::
 
+## Write safety
+
+`doctor`, `status` and `watch` only ever read. **Three verbs do not**, and this
+is the one table to read before you run any of them:
+
+| Command | What it changes on the instance | Key | Backing role | Asks first |
+|---------|---------------------------------|-----|--------------|------------|
+| `tripl scans run` | Queues a scan job, which executes the config's stored SQL against your warehouse. | `tk_w_` | editor or owner | **No** |
+| `tripl scans cancel` | Stops a `pending` or `running` job. A running job is not killed: it stops at the next chunk boundary and metrics already written are kept. | `tk_w_` | editor or owner | **Yes** |
+| `tripl drifts dismiss` | Moves one schema drift to `false_positive` or `snoozed`, which takes it out of `doctor`'s untriaged count. | `tk_w_` | editor or owner | **Yes** |
+
+Everything else on this page — `doctor`, `status`, `watch`, `scans list`,
+`scans jobs`, `drifts list` — is `GET`-only and needs nothing but `tk_r_`.
+
+### The CLI does not judge your key
+
+There is **no local `tk_r_` / `tk_w_` check**. The prefix is derived server-side
+from the scope's first letter and says nothing at all about the backing user's
+role, so a client-side gate would be a fourth copy of a backend rule *and* still
+wrong for a `tk_w_` key held by a viewer. The request goes out and the API's own
+403 is printed, naming all three possibilities at once:
+
+```text
+tripl: Forbidden (403): the API key lacks the required scope (tk_r_ keys cannot write), is scoped to a different project, or the backing user role is insufficient. API detail: API key has read-only scope
+```
+
+Read `API detail:` — it is the server's own sentence and it says which of the
+three actually applied.
+
+### `--dry-run` is on all three
+
+It resolves everything a real invocation would resolve — including turning a
+`<scan>` name into a config id, which is where a typo becomes exit 2 — prints
+the exact request, and **sends nothing**:
+
+```bash
+tripl scans run 'prod events' --project prod --dry-run
+```
+
+```text
+tripl scans run - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+dry run: would send POST /projects/prod/scans/scan-1/run with body None
+Nothing was sent.
+```
+
+The printed request is **method, path, params and body, and nothing else** — no
+headers, no `Authorization`, no API key. A credential that can be printed
+eventually is, so it is excluded at the one place the request is projected for
+printing. `--dry-run` also short-circuits the confirmation prompt, because there
+is nothing to confirm.
+
+:::warning The dry-run body is Python's spelling, not JSON
+`with body {'action': 'false_positive'}` and `with body None` are the *repr* of
+the body, so quotes are single and null is `None`. Do not paste that into
+`curl`. The `--json` document carries the same body as real JSON — use
+`tripl drifts dismiss ... --dry-run --json | jq .request` if you want something
+a machine can consume.
+:::
+
+### The confirmation rule
+
+`scans cancel` and `drifts dismiss` prompt. `scans run` does not, and it has no
+`--yes` at all — passing one is exit 2, because a flag that does nothing here is
+a flag a script author will assume does something on the next command too. The
+reasoning is that `run` executes SQL an owner already authored, on a schedule
+that already runs it; `cancel` throws away work in flight, and `dismiss` hides a
+finding from `doctor`.
+
+```bash
+tripl scans cancel 'prod events' job-91c2 --project prod
+```
+
+```text
+Cancel job job-91c2 of prod 'prod events'? It stops at the next chunk boundary; metrics already written are kept. [y/N] y
+tripl scans cancel - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+prod 'prod events' (scan-1): job job-91c2 is now cancelled.
+```
+
+The question goes to **stderr**, not stdout — `input()` would have put prose
+inside the one document `--json` promises. Anything but `y` or `yes` — including
+an empty line and end-of-file — aborts with `tripl: aborted. Nothing was sent.`
+and **exit 1**, never 0: a script must never be able to read "the operator said
+no" as "the mutation happened".
+
+:::warning In a pipeline, `--yes` is mandatory, not optional
+When stdin is not a terminal and `--yes` was not given, `scans cancel` and
+`drifts dismiss` **refuse**: they print the question, name `--yes`, exit **2**
+and send nothing.
+
+```text
+tripl: Mark drift drift-1 of prod as false_positive? It stops appearing in `tripl doctor`'s untriaged count. Refusing to prompt because stdin is not a terminal. Re-run with --yes to confirm non-interactively. Nothing was sent.
+```
+
+Both halves of that rule are deliberate. Prompting would hang the cron job that
+invoked it, forever; proceeding silently would make a piped invocation more
+dangerous than a typed one, and would make `--yes` meaningless.
+:::
+
+### A `201` is not proof the scan started
+
+`scans run` reads the job it gets back. The backend catches a broker failure
+inside the trigger and still answers `201`, with the job already in status
+`failed` and an `error_message` on it — so a script that checked only the status
+code would report a scan that never started as started. The CLI prints the
+message and exits **1**:
+
+```text
+tripl: the job was created but is already failed: broker unavailable
+```
+
+### What is deliberately not here
+
+Two operations exist in the REST API and will not be added to this CLI.
+
+- **A bounded metrics replay.** `POST /projects/{slug}/scans/{scan_id}/metrics/replay`
+  is guarded by `get_owner_user`, which rejects **any** request carrying an API
+  key scope — read or write, editor or owner. It is owner-*session*-only, so a
+  Bearer-token client cannot reach it at all and a `tripl scans replay` would
+  `403` every time. `scans cancel` ships in its place. Whether an owner-role
+  `tk_w_` key should be let through is an open backend question.
+- **Accepting a schema drift.** On a `missing_field` drift, accepting *deletes
+  the field definition* from the event type — the exact damage doctor's
+  `schema_field_deleted_by_accept` finding exists to report. The tool that
+  reports that damage must not be the easiest way to cause it, so accepting (and
+  reopening) stay in the tripl app. `dismiss` sends `false_positive` or `snooze`
+  and there is no flag that reaches `accept`.
+
+## `tripl scans`
+
+`doctor` tells you a scan config is failing and `watch` follows one while it
+runs. `tripl scans` is what you type **in between**: which configs exist and
+would the scheduler ever pick them up, what has this one been doing, start it
+now, stop the one that is stuck.
+
+```
+usage: tripl scans [-h] [--url URL] [--api-key KEY] [--config PATH] <verb> ...
+```
+
+Four verbs: `list`, `jobs`, `run`, `cancel`. A bare `tripl scans` with no verb
+prints this group's help **on stderr** and exits **2** — the same rule a bare
+`tripl` follows, for the same reason: a script that invoked a group with no verb
+has a bug, and exiting 0 would let it look successful.
+
+:::note Why `scans list` and not `list-scans`
+A command acting on the instance as a whole is one word (`doctor`, `status`,
+`watch`); a command acting on a class of objects is `<plural-noun> <verb>`. The
+flat spelling was rejected because it adds a top-level entry per verb and has no
+answer for the sixth.
+:::
+
+### `tripl scans list`
+
+```
+usage: tripl scans list [-h] [--url URL] [--api-key KEY] [--config PATH]
+                        [--project SLUG] [--include-demo] [--json]
+                        [--timeout SECONDS]
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--project SLUG` | List only this project. Repeatable. Required for a project-scoped key. |
+| `--include-demo` | Also list demo projects, which are excluded by default. |
+| `--json` | One JSON document on stdout, every human line on stderr. |
+| `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
+
+```text
+tripl scans list - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+prod (Prod)
+  scan-1  prod events       1h   event_time  scheduled
+  scan-2  checkout funnel   15m  event_time  scheduled
+  scan-3  ad-hoc backfill   -    event_time  not scheduled (no interval)
+  scan-4  legacy pageviews  1d   -           not scheduled (no time column)
+
+4 scan configs in 1 project.
+```
+
+The columns are id, name, collection interval, time column, and **why the
+dispatcher would or would not select this config**. That last one is the reason
+the command is worth having: the scheduler's query needs an interval *and* a
+time column, both set, so `not scheduled (no time column)` names a config that
+is not failing — it is invisible, and nothing will ever collect for it. That is
+the same condition doctor reports as `scan_config_not_dispatchable`, evaluated
+by the predicate doctor itself uses to decide whose job history is even worth
+reading.
+
+`base_query` and roughly twenty tuning knobs are **omitted**. Free-text SQL runs
+to kilobytes and answers no operational question; read the full configuration in
+the app.
+
+:::warning A project whose listing failed still counts in the footer
+A failed read is a printed `unavailable` line, an `errors[]` entry in the JSON,
+and **exit 1** — never a shorter table at exit 0.
+
+```text
+mobile (Mobile)
+  /projects/mobile/scans: unavailable (Forbidden (403): the API key lacks the required scope (tk_r_ keys cannot write), is scoped to a different project, or the backing user role is insufficient. API detail: Not authorized for project)
+
+4 scan configs in 2 projects.
+Some scan listings could not be read; the list above is incomplete.
+```
+
+Note what the footer says: *4 configs in 2 projects*, because the project that
+403'd is still one of the two selected. The count is of what arrived, the
+denominator is of what was asked for, and the line underneath is the one that
+tells you they are not the same number.
+:::
+
+**Cost:** one request for the project listing (or one per named `--project`
+slug), plus one per project.
+
+### `tripl scans jobs`
+
+```
+usage: tripl scans jobs [-h] [--url URL] [--api-key KEY] [--config PATH]
+                        [--project SLUG] [--limit N] [--json]
+                        [--timeout SECONDS]
+                        <scan>
+```
+
+| Flag | Meaning |
+|------|---------|
+| `<scan>` | Scan config **name or id**, matched exactly — name first, then id. |
+| `--project SLUG` | **Required**, exactly once. |
+| `--limit N` | How many jobs to ask for, `1`–`200`, default `50`. |
+| `--json` | One JSON document on stdout, every human line on stderr. |
+| `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
+
+This is the command that hands you a job id for `tripl scans cancel`.
+
+```bash
+tripl scans jobs 'prod events' --project prod --limit 3
+```
+
+```text
+tripl scans jobs - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+prod 'prod events' (scan-1), newest 3 jobs requested:
+  job-91c2  running    created 2026-07-31T19:08:41Z  finished -
+  job-70ab  failed     created 2026-07-31T18:08:41Z  finished 2026-07-31T18:09:02Z  Scan failed due to an internal error.
+  job-4d19  completed  created 2026-07-31T17:08:41Z  finished 2026-07-31T17:08:58Z
+
+3 jobs.
+```
+
+The header says *requested*, not *returned*: the footer counts what came back,
+and the two differ whenever the config has less history than you asked for.
+
+The default of **50** is the API's own default, deliberately not doctor's 200.
+`scans jobs` answers *what has this config been doing lately*, which a screenful
+covers; doctor asks *how long has this been broken* and needs the maximum. It is
+one flag away — `--limit 200`.
+
+**Cost:** two requests — the project's scan listing, to resolve `<scan>`, then
+the job history.
+
+:::note `<scan>` is matched exactly, and refuses to guess
+Exact on the name first, then on the id. Never a substring, never
+case-insensitive: a `scans run` that triggered the wrong SQL because two names
+share a prefix is worse than one that refuses to start. A selector matching
+nothing exits 2 and lists the candidates; a name shared by two configs exits 2
+and names both ids so you can pass one. It is literally `watch`'s `--scan`
+matcher, so `tripl scans run 'prod events'` and
+`tripl watch --scan 'prod events'` cannot mean different configs.
+:::
+
+### `tripl scans run`
+
+```
+usage: tripl scans run [-h] [--url URL] [--api-key KEY] [--config PATH]
+                       [--project SLUG] [--dry-run] [--json]
+                       [--timeout SECONDS]
+                       <scan>
+```
+
+| Flag | Meaning |
+|------|---------|
+| `<scan>` | Scan config name or id, matched exactly. |
+| `--project SLUG` | **Required**, exactly once. |
+| `--dry-run` | Resolve everything, print the request, send nothing. |
+| `--json` | One JSON document on stdout, every human line on stderr. |
+| `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
+
+**Write. Needs a `tk_w_` key backed by an editor or owner. Does not prompt, and
+has no `--yes`.**
+
+```bash
+tripl scans run 'prod events' --project prod
+```
+
+```text
+tripl scans run - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+prod 'prod events' (scan-1): started job job-91c2 (pending).
+Follow it with: tripl watch --project prod --scan 'prod events'
+```
+
+The second line is the point of the pairing: `run` starts the job and returns
+immediately, and `watch` is the command that tells you whether it is progressing
+or wedged.
+
+This is the same route the app's **Run now** button posts to, so the rule
+described under [`scans`](#5-scans--scheduled-metrics-collection) applies
+unchanged: doctor identifies dispatcher jobs positively, so a manual run neither
+counts toward the consecutive-failure streak nor clears it. It is a safe probe
+while you are debugging a failing config.
+
+**Cost:** two requests, or one with `--dry-run`.
+
+### `tripl scans cancel`
+
+```
+usage: tripl scans cancel [-h] [--url URL] [--api-key KEY] [--config PATH]
+                          [--project SLUG] [--dry-run] [--yes] [--json]
+                          [--timeout SECONDS]
+                          <scan> <job-id>
+```
+
+| Flag | Meaning |
+|------|---------|
+| `<scan>` `<job-id>` | The config (name or id) and the job to cancel. |
+| `--project SLUG` | **Required**, exactly once. |
+| `--dry-run` | Resolve everything, print the request, send nothing. Never prompts. |
+| `--yes` | Skip the confirmation. **Required when stdin is not a terminal.** |
+| `--json` | One JSON document on stdout, every human line on stderr. |
+| `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
+
+**Write. Needs a `tk_w_` key backed by an editor or owner. Prompts.** See
+[the confirmation rule](#the-confirmation-rule).
+
+```text
+tripl scans cancel - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+prod 'prod events' (scan-1): job job-91c2 is now cancelled.
+```
+
+A job that is neither `pending` nor `running` answers **409**, which surfaces as
+exit 1 with the API's own sentence:
+
+```text
+tripl: tripl API rejected the request (409): Scan job is not active (status: completed)
+```
+
+**Cost:** two requests, or one with `--dry-run`.
+
+## `tripl drifts`
+
+Schema drift is the gap between the tracking plan and what the warehouse
+actually carries. doctor reports it as a count and up to three examples;
+`tripl drifts list` is the full list, and `tripl drifts dismiss` is how you take
+one row out of the untriaged pile without opening the app.
+
+```
+usage: tripl drifts [-h] [--url URL] [--api-key KEY] [--config PATH] <verb> ...
+```
+
+Two verbs: `list` and `dismiss`. A bare `tripl drifts` prints this group's help
+on stderr and exits 2.
+
+### `tripl drifts list`
+
+```
+usage: tripl drifts list [-h] [--url URL] [--api-key KEY] [--config PATH]
+                         [--project SLUG] [--include-demo] [--status STATUS]
+                         [--max-event-types N] [--json] [--timeout SECONDS]
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--project SLUG` | List only this project. Repeatable. Required for a project-scoped key. |
+| `--include-demo` | Also list demo projects, which are excluded by default. |
+| `--status STATUS` | `open`, `accepted`, `snoozed`, `false_positive`, `untriaged` or `all`. Default `untriaged`. |
+| `--max-event-types N` | Read budget for the fan-out, default `200`, range 1–10000. |
+| `--json` | One JSON document on stdout, every human line on stderr. |
+| `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
+
+```text
+tripl drifts list - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+prod (Prod)
+  drift-1  app.screen_view.cart_value  type_changed  open  detected 2026-07-28T04:10:00Z
+  drift-3  app.purchase.coupon_code    new_field     open  detected 2026-07-30T22:41:00Z
+
+mobile (Mobile)
+  (no drifts)
+
+2 drifts in 2 projects, 2 untriaged.
+```
+
+The columns are the drift id, `<event type>.<field>`, the drift type, the
+status, and the timestamp that matters for *that* status — when a snooze
+**lapses** for a `snoozed` row, when it was **detected** for everything else.
+The date an operator acts on is the one that gets printed.
+
+:::warning There is no project-level drift endpoint
+The API answers drifts **per event type**, so "this project's drifts" is a
+fan-out — one request each — which is why there is a budget at all, and why
+"could not read one event type" is a case that has to exist. It is reported as a
+line, an `errors[]` entry and **exit 1**, never as a shorter list at exit 0:
+
+```text
+prod (Prod)
+  /projects/prod/event-types: unavailable (Forbidden (403): the API key lacks the required scope)
+
+0 drifts in 1 project, 0 untriaged.
+1 read failed; the list above is incomplete.
+```
+
+`0 drifts` and `1 read failed` on the same screen is the whole design. Never
+read the first line without the second.
+:::
+
+`--max-event-types` is spent **round-robin across the selected projects**, not
+in project order, so one large project cannot consume the whole budget and leave
+another at zero reads with nothing said about it. What the budget did not reach
+is reported per project:
+
+```text
+  183 of 240 event types examined; raise --max-event-types to look at the rest.
+```
+
+This is the same planner doctor's `drifts` check uses, from the same function —
+two implementations of a budgeted fan-out is how *"we did not look there"* starts
+printing as *"nothing there"*.
+
+:::note `--status` is filtered by this CLI, not by the API
+The drifts endpoint has no status parameter, so every status is fetched and the
+filter is applied locally. Two consequences. The request cost does not change
+with `--status`. And `untriaged` is a **rule, not a status**: `open`, or
+`snoozed` with a `snoozed_until` that has already passed. A snooze that has
+lapsed is untriaged again, which is exactly what makes a snooze safe.
+
+The footer's `N untriaged` counts the rows **on screen**. Under the default it
+therefore always equals the drift count; under `--status false_positive` it is
+always 0. It tells you something only under `--status all`.
+:::
+
+**Cost:** one request for the project listing (or one per named `--project`
+slug), one per project for its event types, then one per event type actually
+examined.
+
+### `tripl drifts dismiss`
+
+```
+usage: tripl drifts dismiss [-h] [--url URL] [--api-key KEY] [--config PATH]
+                            [--project SLUG] [--snooze-until TS] [--note TEXT]
+                            [--dry-run] [--yes] [--json] [--timeout SECONDS]
+                            <drift-id>
+```
+
+| Flag | Meaning |
+|------|---------|
+| `<drift-id>` | The drift to dismiss. Take it from the first column of `drifts list`. |
+| `--project SLUG` | **Required**, exactly once — the action route carries a slug that a drift id cannot supply. |
+| `--snooze-until TS` | RFC 3339. Its **presence selects `snooze`**; its absence selects `false_positive`. |
+| `--note TEXT` | Resolution note stored with the drift. The server caps it at 2000 characters. |
+| `--dry-run` | Resolve everything, print the request, send nothing. Never prompts. |
+| `--yes` | Skip the confirmation. **Required when stdin is not a terminal.** |
+| `--json` | One JSON document on stdout, every human line on stderr. |
+| `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
+
+**Write. Needs a `tk_w_` key backed by an editor or owner. Prompts.**
+
+```bash
+tripl drifts dismiss drift-1 --project prod --yes
+```
+
+```text
+tripl drifts dismiss - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+prod: drift drift-1 (cart_value, type_changed) is now false_positive.
+```
+
+```bash
+tripl drifts dismiss drift-1 --project prod \
+  --snooze-until 2026-08-04T00:00:00Z \
+  --note 'waiting on the mobile release' --yes
+```
+
+```text
+tripl drifts dismiss - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+prod: drift drift-1 (cart_value, type_changed) is now snoozed.
+```
+
+There is **no `--action` flag**, and that is the safety design rather than an
+omission: the only two actions reachable are `false_positive` and `snooze`, and
+which one you get is decided by whether you passed a timestamp. `accept` and
+`reopen` have no spelling here at all — see
+[what is deliberately not here](#what-is-deliberately-not-here).
+
+:::warning A naive `--snooze-until` is read as **UTC**, not as your local time
+`--snooze-until '2026-08-04T00:00:00'` means midnight UTC. A snooze silently
+shifted by your machine's offset is a drift that reappears at the wrong hour, so
+the CLI picks the unambiguous reading and the API stores an aware datetime
+either way. Pass the offset explicitly (`...T00:00:00Z`, `...+02:00`) if you
+care. A value that is not RFC 3339 fails at parse time, exit 2, before a socket
+opens.
+
+A `--snooze-until` in the **past** is accepted by the server and the CLI will
+report `is now snoozed` — but a lapsed snooze counts as untriaged, so the drift
+is back in `drifts list` and in doctor's count immediately. Check the timestamp.
+:::
+
+**Cost:** one request, or zero with `--dry-run` — the drift id and the slug come
+straight from your arguments, so there is nothing to resolve first. The
+corollary is that a wrong `<drift-id>` is discovered by the server, as a 404 and
+exit 1, not by the CLI.
+
+## One request layer, shared with the MCP server
+
+`tripl` and the [MCP server](../integrate/mcp-server.md) are two front ends over
+one instance, and they now share more than an HTTP client. **Every REST path,
+query parameter and response projection either surface uses is defined once**,
+in `tripl_cli.api`, which `tripl-mcp` imports. Contract tests in both packages
+fail the build if a path literal appears anywhere else.
+
+That has consequences you can rely on:
+
+- `tripl scans list` and the MCP `list_scans` tool return **the same trimmed
+  scan-config shape**, including the derived `dispatchable` flag, computed by
+  one function rather than two.
+- `tripl scans run` and the MCP `trigger_scan` tool post to the same route, and
+  cannot drift apart.
+- `tripl drifts list` and doctor's `drifts` check spend the same budget with the
+  same round-robin planner, and share one definition of *untriaged*.
+- The job-history read is **one builder with four deliberate answers**: doctor
+  asks for the maximum, 200, because it is measuring how long a streak has run;
+  `watch` for 10, because it repeats every ten seconds; `scans jobs` for 50; and
+  the MCP `get_scan_status` tool sends no limit at all and takes whatever the
+  server's default is. Four different windows, one place they are spelled.
+
+The practical rule for an operator: if `tripl` and an agent disagree about what
+a project contains, it is not a difference in how the two clients ask. Compare
+key scopes and roles first.
+
 ## Exit codes
 
-One table for all three commands. Every code means the same thing whichever one
+One table for every command. Every code means the same thing whichever one
 produced it, but not every code is reachable from every command — `doctor` owns
-3, and `watch` never reaches it.
+3, and nothing else ever reaches it.
 
 | Code | Meaning |
 |------|---------|
-| **0** | `doctor`: every check passed, or only warned and `--strict` was not given. `status`: it completed. `watch`: the run completed — `--duration` elapsed. A failed job, a new signal and a failed delivery all still exit 0, because `watch` reaches no verdict. |
-| **1** | The tool itself broke, or `status` or `watch` could not complete a request — unreachable, or the API refused it (a project-scoped key with no `--project` gets a 403 here, on a perfectly healthy instance). `watch` reaches it two ways: a startup read it cannot proceed without (the project listing, or a project's scan listing), and a key revoked mid-run, which ends the run after a `watch.stopped` line carrying `reason: "authentication_failed"`. Every *other* failed read during a run is a `poll.degraded` line, not an exit. **`doctor` should never exit 1** — it turns every API failure into a finding, so an exit 1 out of doctor is a bug report, not a diagnosis. |
-| **2** | Usage or configuration error: a bad flag, an out-of-range value, no URL, no API key, an unreadable config file. For `doctor` and `status` that is always resolved before any socket opens. `watch` adds two refusals it can only reach *after* reading the project and scan listings — `--scan` matching nothing, and more than 24 selected scan configs — so for it the resolution is two rounds of HTTP in, not zero. Either way **no JSON is emitted**: both refusals happen before the first event line. |
-| **3** | `doctor` only: at least one check failed — or, with `--strict`, at least one warned. `watch` never exits 3, whatever it observes, and `status` never exits 3 at all. |
+| **0** | `doctor`: every check passed, or only warned and `--strict` was not given. `status`: it completed. `watch`: the run completed — `--duration` elapsed. A failed job, a new signal and a failed delivery all still exit 0, because `watch` reaches no verdict. `scans list` / `drifts list`: every read arrived, including a run that legitimately found nothing. `scans jobs`: the history was read. `scans run` / `scans cancel` / `drifts dismiss`: the API accepted the write — or `--dry-run` resolved everything and sent nothing. |
+| **1** | The tool itself broke, or a command other than `doctor` could not complete a request — unreachable, or the API refused it (a project-scoped key with no `--project` gets a 403 here, on a perfectly healthy instance). `watch` reaches it two ways: a startup read it cannot proceed without (the project listing, or a project's scan listing), and a key revoked mid-run, which ends the run after a `watch.stopped` line carrying `reason: "authentication_failed"`. Every *other* failed read during a run is a `poll.degraded` line, not an exit. Three more routes into 1 belong to the new commands: **any** failed read in a `scans list` or `drifts list` fan-out, a `scans run` whose job came back already `failed`, and a `scans cancel` or `drifts dismiss` you **declined at the prompt** — "the operator said no" must never be readable as "the mutation happened". **`doctor` should never exit 1** — it turns every API failure into a finding, so an exit 1 out of doctor is a bug report, not a diagnosis. |
+| **2** | Usage or configuration error: a bad flag, an out-of-range value, no URL, no API key, an unreadable config file. For `doctor` and `status` that is always resolved before any socket opens. `watch` adds two refusals it can only reach *after* reading the project and scan listings — `--scan` matching nothing, and more than 24 selected scan configs — so for it the resolution is two rounds of HTTP in, not zero. The `scans` and `drifts` verbs add: a bare group with no verb, a missing or repeated `--project` on a command that acts on one object, a `<scan>` selector matching nothing or matching two configs, a `--snooze-until` that is not RFC 3339, a `--limit` outside 1–200, a `--status` that is not one of the six, and **`scans cancel` / `drifts dismiss` on a non-TTY without `--yes`**. Either way **no JSON is emitted**, and no write is ever sent. |
+| **3** | `doctor` only: at least one check failed — or, with `--strict`, at least one warned. No other command reaches 3, whatever it observes. |
 | **130** | Interrupted (`Ctrl-C`). For `doctor` and `status` that is an abandoned run. For `watch` **it is the normal ending**: a run without `--duration` has no other way to stop, so 130 out of `watch` means "you pressed Ctrl-C", not "something went wrong". A wrapper that treats non-zero as failure needs to know this before it pages somebody. |
 
-An unreachable instance therefore exits **3**, not 1. That is precisely what
-makes exit 1 a meaningful signal.
+:::note Exit 1 out of a write is not always "it did not happen"
+A declined prompt, a 403 and a 404 all exit 1 without changing anything. But so
+does a `scans run` whose job **was** created and came back `failed`, and so does
+a connection that dropped after the request left. When 1 comes out of a
+mutation, read the message: it names which of the two you got. Re-run
+`tripl scans jobs` before you retry.
+:::
+
+An unreachable instance therefore exits **3** out of `doctor`, not 1 — it is a
+finding, like everything else doctor reads. That is precisely what makes an exit
+1 out of `doctor` a meaningful signal. Every other command exits **1** on an
+unreachable instance, because none of them turns a failed read into a verdict.
 
 :::warning Credentials are required even for the connectivity check
 Every command demands both the URL and the API key **before** it opens a
@@ -893,18 +1465,29 @@ gets muted, and then nobody sees the failing scan either.
 a gate to read, and it only ever saw what fell inside its polls. It is the
 command you run *by hand*, next to the incident.
 
+:::warning An unattended write needs `--yes` and a second key
+`scans cancel` and `drifts dismiss` refuse to prompt when stdin is not a
+terminal, so a cron job or a CI step must pass `--yes` — otherwise it exits 2
+and sends nothing, every time. Such a job also needs a `tk_w_` key backed by an
+editor or owner, which is **not** the read-only key the examples above export.
+Do not promote the diagnostic cron's key to write scope so a second job can
+share it; mint a second key, and treat an exit 2 from the writing job as a
+configuration alarm rather than a flaky run.
+:::
+
 ## `--json`
 
-All three commands accept `--json`, and in every case the human-readable report
+Every command accepts `--json`, and in every case the human-readable report
 still happens — on **stderr**, so stdout carries machine-readable output and
-nothing else.
+nothing else. That includes the confirmation prompt, which is written to stderr
+precisely so it can never land inside the document.
 
 What lands on stdout differs by command, because a one-shot report and a follow
 mode are not the same shape:
 
-- **`doctor` and `status`** put **exactly one JSON document, newline terminated,
-  on stdout and nothing else**. `tripl doctor --json | jq` is a promise, not a
-  habit.
+- **Every command except `watch`** puts **exactly one JSON document, newline
+  terminated, on stdout and nothing else**. `tripl doctor --json | jq` is a
+  promise, not a habit.
 - **`watch`** puts **JSON Lines**: **one object per event**, each on its own
   line, flushed the moment it is produced. There is no enclosing array, no
   trailing summary document, and no way to know in advance how many lines there
@@ -916,7 +1499,7 @@ mode are not the same shape:
 
 ### Stability contract
 
-Within one `schema_version`, for all three commands:
+Within one `schema_version`, for every command:
 
 - Key names are **never removed or retyped**.
 - `status` / `severity` values, check `id`s, finding `code`s and `watch` event
@@ -931,9 +1514,16 @@ Within one `schema_version`, for all three commands:
 **Assert on `code` and `evidence` — or, in `watch`, on `event` and `data`. Never
 assert on prose.**
 
-`schema_version` is **shared** by all three commands: it is one number for the
-whole tool, so a consumer branches on `command` and never on a per-command
-version.
+`schema_version` is **shared** by every command: it is one number for the whole
+tool, so a consumer branches on `command` and never on a per-command version.
+The `command` values are `"doctor"`, `"status"`, `"watch"`, `"scans list"`,
+`"scans jobs"`, `"scans run"`, `"scans cancel"`, `"drifts list"` and
+`"drifts dismiss"` — the invocation with its space, so `command` and what you
+typed are the same string.
+
+Every document shares the same first eight keys: `schema_version`, `tool`,
+`tool_version`, `command`, `generated_at`, `duration_ms`, `requests` and
+`instance`. Only what comes after them differs.
 
 Output is written ASCII-escaped, documents and lines alike: a non-ASCII
 character inside a `message` reaches stdout as a `\uXXXX` sequence, which every
@@ -1345,6 +1935,268 @@ been pushed out between polls.
 last being the number that tells you whether the quiet stretch was `watch` being
 blind or the instance being calm.
 
+### `scans list` document
+
+The shared envelope plus a `projects` array. Each project carries `slug`,
+`name`, `is_demo`, `scans` and `errors`, and **all five are always present** —
+`scans` is `[]` when the listing failed, and the `errors` entry beside it is
+what says so.
+
+```json
+{
+  "schema_version": 1,
+  "tool": "tripl",
+  "tool_version": "0.1.0",
+  "command": "scans list",
+  "generated_at": "2026-07-31T19:12:51Z",
+  "duration_ms": 31,
+  "requests": 3,
+  "instance": {
+    "base_url": "https://tripl.example.com",
+    "base_url_source": "$TRIPL_BASE_URL",
+    "api_key_source": "$TRIPL_API_KEY",
+    "api_key_scope": "unknown"
+  },
+  "projects": [
+    {
+      "slug": "prod",
+      "name": "Prod",
+      "is_demo": false,
+      "scans": [
+        {
+          "id": "scan-1",
+          "name": "prod events",
+          "interval": "1h",
+          "time_column": "event_time",
+          "data_source_id": "ds-1",
+          "event_type_id": "et-1",
+          "event_type_column": "event_name",
+          "event_name_format": "snake_case",
+          "replay_chunk_interval": "1d",
+          "scan_lookback_hours": 24,
+          "created_at": "2026-06-01T09:14:00Z",
+          "updated_at": "2026-07-30T11:02:00Z",
+          "dispatchable": true
+        }
+      ],
+      "errors": []
+    },
+    {
+      "slug": "mobile",
+      "name": "Mobile",
+      "is_demo": false,
+      "scans": [],
+      "errors": [
+        {
+          "section": "scans",
+          "endpoint": "/projects/mobile/scans",
+          "status_code": 403,
+          "message": "Forbidden (403): the API key lacks the required scope (tk_r_ keys cannot write), is scoped to a different project, or the backing user role is insufficient. API detail: Not authorized for project"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Those twelve keys plus `dispatchable` are **the whole projection** — the same
+one the MCP `list_scans` tool returns. A key the API did not return is absent
+rather than null, so test for presence before reading `scan_lookback_hours` on
+an old instance. `dispatchable` is the CLI's own field, not the API's: it is
+`interval` and `time_column` both being set, which is the dispatcher's own
+selection predicate.
+
+`errors[]` entries are `{section, endpoint, status_code, message}`, and
+`endpoint` is the **concrete** path that failed — not its template — because an
+operator listing six projects cannot act on a message that does not say which
+one. `status_code` is `null` when nothing answered at all.
+
+### `scans jobs` document
+
+`project`, `scan` (`{id, name}`), the `limit` that was **requested**, and `jobs`
+— `ScanJobResponse` rows **verbatim, newest first**. Nothing is trimmed here:
+`result_summary` carries the replay chunk counters `watch` reads, and
+`error_message` is the whole answer to *why did it fail*.
+
+```json
+{
+  "schema_version": 1,
+  "tool": "tripl",
+  "tool_version": "0.1.0",
+  "command": "scans jobs",
+  "generated_at": "2026-07-31T19:12:51Z",
+  "duration_ms": 31,
+  "requests": 2,
+  "instance": {
+    "base_url": "https://tripl.example.com",
+    "base_url_source": "$TRIPL_BASE_URL",
+    "api_key_source": "$TRIPL_API_KEY",
+    "api_key_scope": "unknown"
+  },
+  "project": "prod",
+  "scan": { "id": "scan-1", "name": "prod events" },
+  "limit": 3,
+  "jobs": [
+    {
+      "id": "job-91c2",
+      "status": "running",
+      "created_at": "2026-07-31T19:08:41Z",
+      "completed_at": null,
+      "error_message": null
+    }
+  ]
+}
+```
+
+`limit` is what was asked for. Compare it against `jobs | length` before
+concluding a config has no older history.
+
+### `drifts list` document
+
+`status_filter` echoes the `--status` that produced the list, and each project
+reports its **own** budget spend:
+
+```json
+{
+  "schema_version": 1,
+  "tool": "tripl",
+  "tool_version": "0.1.0",
+  "command": "drifts list",
+  "generated_at": "2026-07-31T19:12:51Z",
+  "duration_ms": 31,
+  "requests": 3,
+  "instance": {
+    "base_url": "https://tripl.example.com",
+    "base_url_source": "$TRIPL_BASE_URL",
+    "api_key_source": "$TRIPL_API_KEY",
+    "api_key_scope": "unknown"
+  },
+  "status_filter": "all",
+  "projects": [
+    {
+      "slug": "prod",
+      "name": "Prod",
+      "is_demo": false,
+      "event_types_total": 17,
+      "event_types_examined": 17,
+      "truncated": false,
+      "drifts": [
+        {
+          "id": "drift-1",
+          "field_name": "cart_value",
+          "drift_type": "type_changed",
+          "status": "open",
+          "detected_at": "2026-07-28T04:10:00Z",
+          "event_type_name": "app.screen_view",
+          "untriaged": true
+        }
+      ],
+      "errors": [
+        {
+          "section": "drifts",
+          "endpoint": "/projects/prod/event-types/et-9/drifts",
+          "status_code": 404,
+          "message": "Not found (404): Event type not found"
+        }
+      ]
+    },
+    {
+      "slug": "mobile",
+      "name": "Mobile",
+      "is_demo": false,
+      "event_types_total": 240,
+      "event_types_examined": 183,
+      "truncated": true,
+      "drifts": [],
+      "errors": []
+    }
+  ]
+}
+```
+
+A drift row is the API's `SchemaDriftResponse` **verbatim** — all fourteen
+fields, because `resolved_by` and `resolution_note` are how an accidental field
+deletion gets traced — plus the two facts the API cannot carry:
+`event_type_name`, resolved from the event-type listing so a consumer needs no
+second lookup, and `untriaged`, this run's evaluation of *open, or snoozed past
+its snooze*.
+
+`event_types_examined` and `truncated` are **per project**, deliberately: the
+budget is spent round-robin, so one instance-wide ratio would name no project,
+and *"we did not look there"* is only useful when it says where.
+
+:::warning `"drifts": []` is not "no drifts"
+Not on its own. It means "no drifts **matching `status_filter`** among the
+`event_types_examined` event types whose reads succeeded". Check `errors`,
+compare `event_types_examined` with `event_types_total`, and check the process
+exit code. The human output prints all three on one screen for exactly this
+reason.
+:::
+
+### Mutation documents
+
+`scans run`, `scans cancel` and `drifts dismiss` share one shape. **Every key is
+present on every one of them**, `null` where it does not apply, so a consumer
+never has to test for existence before reading — the same rule the `doctor`
+summary follows.
+
+```json
+{
+  "schema_version": 1,
+  "tool": "tripl",
+  "tool_version": "0.1.0",
+  "command": "drifts dismiss",
+  "generated_at": "2026-07-31T19:12:51Z",
+  "duration_ms": 31,
+  "requests": 1,
+  "instance": {
+    "base_url": "https://tripl.example.com",
+    "base_url_source": "$TRIPL_BASE_URL",
+    "api_key_source": "$TRIPL_API_KEY",
+    "api_key_scope": "unknown"
+  },
+  "dry_run": false,
+  "request": {
+    "method": "POST",
+    "path": "/projects/prod/event-types/drifts/drift-1/actions",
+    "params": {},
+    "body": {
+      "action": "snooze",
+      "note": "waiting on the mobile release",
+      "snoozed_until": "2026-08-04T00:00:00Z"
+    }
+  },
+  "project": "prod",
+  "scan": null,
+  "job_id": null,
+  "drift_id": "drift-1",
+  "action": "snooze",
+  "result": {
+    "id": "drift-1",
+    "field_name": "cart_value",
+    "drift_type": "type_changed",
+    "status": "snoozed"
+  }
+}
+```
+
+| Key | Meaning |
+|-----|---------|
+| `dry_run` | `true` when nothing was sent. |
+| `request` | What **was** sent, or under `--dry-run` what **would** be. Exactly `method`, `path`, `params`, `body` — never headers, never the API key. `params` drops nulls, so it is what would go on the wire. |
+| `project` | The single `--project` slug. |
+| `scan` | `{id, name}` for the two `scans` verbs, `null` for `drifts dismiss`. |
+| `job_id` | `scans cancel` only, else `null`. |
+| `drift_id` | `drifts dismiss` only, else `null`. |
+| `action` | `"false_positive"` or `"snooze"` for `drifts dismiss`, else `null`. |
+| `result` | The API's response object, verbatim. **`null` under `--dry-run`, always** — nothing was sent, so there is no result, and the absence is the statement. |
+
+For `scans run` the same document carries `"command": "scans run"`,
+`"scan": {"id": ..., "name": ...}`, `"action": null`, and `result` is the
+created `ScanJobResponse`. **Read `result.status` before you call it a
+success**: a `201` with `"status": "failed"` is what a broker outage looks like,
+and it is the reason that case exits 1.
+
 Useful one-liners:
 
 ```bash
@@ -1373,6 +2225,34 @@ tripl watch --json | jq -c --unbuffered 'select(.stream=="event")'
 tripl watch --json --duration 3600 \
   | jq -r 'select(.event=="poll.recovered")
            | "\(.data.section)\t\(.data.gap_seconds)s\t\(.data.events_during_gap) events"'
+
+# Every scan config the scheduler will never select, across every project.
+tripl scans list --json \
+  | jq -r '.projects[] as $p | $p.scans[]
+           | select(.dispatchable == false)
+           | "\($p.slug)\t\(.name)\t\(.interval // "no interval")\t\(.time_column // "no time column")"'
+
+# Did any project's scan listing fail? Never read the table without this.
+tripl scans list --json | jq -r '.projects[] | select(.errors | length > 0) | .slug'
+
+# The newest failed job of one config, with its error.
+tripl scans jobs 'prod events' --project prod --json \
+  | jq -r 'first(.jobs[] | select(.status=="failed"))
+           | "\(.id)\t\(.completed_at)\t\(.error_message)"'
+
+# Untriaged drifts, oldest first, as slug/event-type/field.
+tripl drifts list --json \
+  | jq -r '.projects[] as $p | $p.drifts[] | select(.untriaged)
+           | [.detected_at, $p.slug, .event_type_name, .field_name, .drift_type] | @tsv' \
+  | sort
+
+# Projects the drift budget could not finish.
+tripl drifts list --json \
+  | jq -r '.projects[] | select(.truncated)
+           | "\(.slug): \(.event_types_examined) of \(.event_types_total)"'
+
+# What a write WOULD send, as real JSON rather than the human line's repr.
+tripl drifts dismiss drift-1 --project prod --dry-run --json | jq '.request'
 ```
 
 ## See also
@@ -1381,7 +2261,10 @@ tripl watch --json --duration 3600 \
 - [Troubleshooting](../use/troubleshooting.md) — symptom-driven debugging for the
   problems doctor names.
 - [MCP server](../integrate/mcp-server.md) — the other first-party client of the
-  same API, configured with the same `TRIPL_BASE_URL` / `TRIPL_API_KEY`.
+  same API, configured with the same `TRIPL_BASE_URL` / `TRIPL_API_KEY` and
+  built on the [same request layer](#one-request-layer-shared-with-the-mcp-server).
+  Its `list_scans` / `trigger_scan` / `get_scan_status` tools are the agent-side
+  spelling of `tripl scans`.
 - [Agent API guide](../integrate/agent-api-guide.md) — the REST surface both
   clients speak.
 - [API keys & governance](../administer/admin-guide.md#api-keys--governance) —

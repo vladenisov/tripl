@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
+from tripl_cli.api import branches, send
 
 from tripl_mcp.runtime import client_for
 from tripl_mcp.tools._common import READ_ONLY
@@ -15,7 +16,7 @@ async def list_branches(
     ctx: Context,  # type: ignore[type-arg]
 ) -> Any:
     client = client_for(ctx)
-    return await client.get(f"/projects/{slug}/branches")
+    return await send(client, branches.list_branches(slug))
 
 
 async def get_branch_diff(
@@ -24,7 +25,7 @@ async def get_branch_diff(
     ctx: Context,  # type: ignore[type-arg]
 ) -> Any:
     client = client_for(ctx)
-    return await client.get(f"/projects/{slug}/branches/{branch_id}/diff")
+    return await send(client, branches.get_diff(slug, branch_id))
 
 
 def register(mcp: FastMCP) -> None:

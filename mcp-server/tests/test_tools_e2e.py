@@ -428,3 +428,80 @@ async def test_get_event_type_fields_forwards_branch_and_trims_fields(
     # ...and the scanner-side contract thresholds do not.
     assert "contract_max_bad_rate" not in field
     assert "event_type_id" not in field
+
+
+@respx.mock
+async def test_list_scans_is_trimmed(stdio_runtime: Runtime) -> None:
+    """The one field projection the CLI and the MCP share (tripl-ey6j.5).
+
+    ``ScanConfigResponse`` carries ``base_query`` — free-text SQL that can run to
+    kilobytes — plus ~20 tuning knobs. The tool's own description already
+    promised "(id, name, schedule, governed event types)", so trimming aligns the
+    payload with the description rather than changing a contract anybody stated.
+    ``dispatchable`` comes with it, and is computed in exactly one place.
+    """
+    respx.get(f"{API_BASE}/projects/demo/scans").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "s1",
+                    "project_id": "p1",
+                    "name": "prod events",
+                    "interval": "1h",
+                    "time_column": "event_time",
+                    "data_source_id": "ds1",
+                    "base_query": "select * from analytics.events",
+                    "cardinality_threshold": 500,
+                    "json_value_paths": [],
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                }
+            ],
+        )
+    )
+
+    is_error, text = await call_tool("list_scans", {"slug": "demo"})
+
+    assert not is_error
+    scan = json.loads(text)
+    assert scan["name"] == "prod events"
+    assert scan["dispatchable"] is True
+    assert "base_query" not in scan
+    assert "cardinality_threshold" not in scan
+    assert "json_value_paths" not in scan
+
+
+@respx.mock
+async def test_get_scan_status_still_asks_for_the_server_default_job_window(
+    stdio_runtime: Runtime,
+) -> None:
+    """No ``limit`` on the wire.
+
+    doctor asks the same builder for 200 because it measures how long a streak
+    has run; an agent polling status wants the newest few and should keep taking
+    the server's own default. Guards against the shared layer silently adopting
+    doctor's window for both.
+    """
+    route = respx.get(f"{API_BASE}/projects/demo/scans/s1/jobs").mock(
+        return_value=httpx.Response(200, json=[{"id": "j1", "status": "completed"}])
+    )
+
+    is_error, _ = await call_tool("get_scan_status", {"slug": "demo", "scan_id": "s1"})
+
+    assert not is_error
+    assert "limit" not in str(route.calls.last.request.url)
+
+
+@respx.mock
+async def test_trigger_scan_posts_to_the_run_route(stdio_runtime: Runtime) -> None:
+    """Behaviour-preserving through the shared builder: same method, same path."""
+    route = respx.post(f"{API_BASE}/projects/demo/scans/s1/run").mock(
+        return_value=httpx.Response(201, json={"id": "j9", "status": "pending"})
+    )
+
+    is_error, text = await call_tool("trigger_scan", {"slug": "demo", "scan_id": "s1"})
+
+    assert not is_error
+    assert route.calls.last.request.method == "POST"
+    assert json.loads(text)["id"] == "j9"

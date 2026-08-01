@@ -1,7 +1,10 @@
 """The ``--json`` documents. This module IS the machine-readable contract.
 
 Kept small and greppable on purpose: if a key is not built here it does not
-exist, so "what does doctor emit" is answerable by reading one file.
+exist, so "what does tripl emit" is answerable by reading one file. That promise
+is why the ``scans``/``drifts`` documents live here too rather than beside their
+command modules, even though this package is called ``diagnostics`` and they
+reach no verdict (tripl-ey6j.5 filed the rename as a follow-up).
 
 STABILITY, within one ``schema_version``:
 
@@ -31,10 +34,16 @@ from typing import TYPE_CHECKING, Any
 from tripl_cli import __version__
 from tripl_cli.diagnostics.model import (
     Check,
+    DriftsSnapshot,
     Finding,
     Instance,
     JsonDict,
+    MutationOutcome,
     Report,
+    Run,
+    ScanJobsSnapshot,
+    ScansSnapshot,
+    SectionError,
     StatusSnapshot,
     Target,
     to_rfc3339,
@@ -86,6 +95,23 @@ def _envelope(
         "duration_ms": duration_ms,
         "requests": requests,
         "instance": _instance_document(instance),
+    }
+
+
+def _run_envelope(command: str, run: Run) -> JsonDict:
+    return _envelope(
+        command, run.instance, to_rfc3339(run.generated_at), run.duration_ms, run.requests
+    )
+
+
+def _error_document(error: SectionError) -> JsonDict:
+    return {
+        "section": error.section,
+        # The CONCRETE path that failed, not its template: an operator following
+        # six projects cannot act on a message that does not say which one.
+        "endpoint": error.endpoint,
+        "status_code": error.status_code,
+        "message": error.message,
     }
 
 
@@ -206,4 +232,93 @@ def status_document(snapshot: StatusSnapshot) -> JsonDict:
             }
         )
     document["projects"] = projects
+    return document
+
+
+def scans_document(snapshot: ScansSnapshot) -> JsonDict:
+    """``tripl scans list``. One document, never JSON Lines — it terminates."""
+    document = _run_envelope("scans list", snapshot.run)
+    document["projects"] = [
+        {
+            "slug": project.slug,
+            "name": project.name,
+            "is_demo": project.is_demo,
+            # api.scans.scan_config_summary output: the listed fields plus the
+            # derived `dispatchable`. base_query and the tuning knobs are gone.
+            "scans": [dict(scan) for scan in project.scans],
+            "errors": [_error_document(error) for error in project.errors],
+        }
+        for project in snapshot.projects
+    ]
+    return document
+
+
+def scan_jobs_document(snapshot: ScanJobsSnapshot) -> JsonDict:
+    """``tripl scans jobs``. ScanJobResponse rows verbatim, newest first.
+
+    Not trimmed: ``result_summary`` carries the replay chunk progress and
+    ``error_message`` is the whole answer to "why did it fail".
+    """
+    document = _run_envelope("scans jobs", snapshot.run)
+    document["project"] = snapshot.project
+    document["scan"] = {"id": snapshot.scan_id, "name": snapshot.scan_name}
+    document["limit"] = snapshot.limit
+    document["jobs"] = [dict(job) for job in snapshot.jobs]
+    return document
+
+
+def drifts_document(snapshot: DriftsSnapshot) -> JsonDict:
+    """``tripl drifts list``.
+
+    ``event_types_examined`` versus ``event_types_total`` is per project on
+    purpose: the budget is spent round-robin, so one instance-wide ratio would
+    name no project — and "we did not look there" is only useful when it says
+    where (tripl-ey6j.9).
+    """
+    document = _run_envelope("drifts list", snapshot.run)
+    document["status_filter"] = snapshot.status_filter
+    document["projects"] = [
+        {
+            "slug": project.slug,
+            "name": project.name,
+            "is_demo": project.is_demo,
+            "event_types_total": project.event_types_total,
+            "event_types_examined": project.event_types_examined,
+            "truncated": project.truncated,
+            "drifts": [
+                {
+                    # SchemaDriftResponse verbatim — all fourteen fields are
+                    # triage material — plus the two facts it cannot carry.
+                    **dict(row.drift),
+                    "event_type_name": row.event_type_name,
+                    "untriaged": row.untriaged,
+                }
+                for row in project.drifts
+            ],
+            "errors": [_error_document(error) for error in project.errors],
+        }
+        for project in snapshot.projects
+    ]
+    return document
+
+
+def mutation_document(outcome: MutationOutcome) -> JsonDict:
+    """``tripl scans run|cancel`` and ``tripl drifts dismiss``.
+
+    ``request`` is what WOULD be or WAS sent, method/path/params/body only. Every
+    per-command key is present on every mutation, null where it does not apply.
+    """
+    document = _run_envelope(outcome.command, outcome.run)
+    document["dry_run"] = outcome.dry_run
+    document["request"] = dict(outcome.request)
+    document["project"] = outcome.project
+    document["scan"] = (
+        None if outcome.scan_id is None else {"id": outcome.scan_id, "name": outcome.scan_name}
+    )
+    document["job_id"] = outcome.job_id
+    document["drift_id"] = outcome.drift_id
+    document["action"] = outcome.action
+    # Null under --dry-run, always: nothing was sent, so there is no result and
+    # a consumer must not be able to read one.
+    document["result"] = None if outcome.result is None else dict(outcome.result)
     return document

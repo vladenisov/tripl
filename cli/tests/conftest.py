@@ -401,20 +401,32 @@ class FakeInstance:
         self.signals("prod", [])
         self.deliveries("prod", [])
 
-    def _route(self, url: str) -> respx.Route:
-        if url not in self._routes:
-            self._routes[url] = self.router.get(url)
-        return self._routes[url]
+    def _route(self, url: str, method: str = "GET") -> respx.Route:
+        """One route per (method, url).
 
-    def _respond(self, url: str, status: int, payload: Any) -> respx.Route:
-        route = self._route(url)
+        Keyed by both since `tripl scans run` POSTs to a URL nothing GETs and
+        `scans cancel` POSTs to one that does not exist as a GET at all - a
+        method-blind key would have silently answered a POST from a GET mock.
+        """
+        key = f"{method} {url}"
+        if key not in self._routes:
+            self._routes[key] = self.router.request(method, url)
+        return self._routes[key]
+
+    def _respond(self, url: str, status: int, payload: Any, method: str = "GET") -> respx.Route:
+        route = self._route(url, method)
         route.mock(return_value=httpx.Response(status, json=payload))
         return route
 
     # --- evolving answers, for the follow-mode tests ----------------------
-    def handler(self, url: str, respond: Callable[[httpx.Request], httpx.Response]) -> respx.Route:
+    def handler(
+        self,
+        url: str,
+        respond: Callable[[httpx.Request], httpx.Response],
+        method: str = "GET",
+    ) -> respx.Route:
         """Answer this URL from a callable, so a test can vary it per request."""
-        route = self._route(url)
+        route = self._route(url, method)
         route.mock(side_effect=respond)
         return route
 
@@ -451,6 +463,23 @@ class FakeInstance:
     @staticmethod
     def scans_url(slug: str) -> str:
         return f"{API_BASE}/projects/{slug}/scans"
+
+    @staticmethod
+    def run_url(slug: str, scan_id: str) -> str:
+        return f"{API_BASE}/projects/{slug}/scans/{scan_id}/run"
+
+    @staticmethod
+    def cancel_url(slug: str, scan_id: str, job_id: str) -> str:
+        return f"{API_BASE}/projects/{slug}/scans/{scan_id}/jobs/{job_id}/cancel"
+
+    @staticmethod
+    def drifts_url(slug: str, type_id: str) -> str:
+        return f"{API_BASE}/projects/{slug}/event-types/{type_id}/drifts"
+
+    @staticmethod
+    def drift_action_url(slug: str, drift_id: str) -> str:
+        """NOT nested under the event type - the action route takes the drift id alone."""
+        return f"{API_BASE}/projects/{slug}/event-types/drifts/{drift_id}/actions"
 
     # --- endpoints -------------------------------------------------------
     def health(self, status: int = 200, payload: Any = _UNSET) -> respx.Route:
@@ -499,9 +528,35 @@ class FakeInstance:
         self, slug: str, type_id: str, items: Any, status: int = 200, payload: Any = _UNSET
     ) -> respx.Route:
         body = payload if payload is not _UNSET else {"items": items, "total": len(items or [])}
-        return self._respond(
-            f"{API_BASE}/projects/{slug}/event-types/{type_id}/drifts", status, body
+        return self._respond(self.drifts_url(slug, type_id), status, body)
+
+    # --- mutations, for the `scans run|cancel` / `drifts dismiss` tests -------
+    def scan_run(
+        self, slug: str, scan_id: str, payload: Any = _UNSET, status: int = 201
+    ) -> respx.Route:
+        """``POST .../run`` -> 201 ScanJobResponse. Note 201, not 200."""
+        body = make_job(job_id="job-91c2", status="pending") if payload is _UNSET else payload
+        return self._respond(self.run_url(slug, scan_id), status, body, method="POST")
+
+    def job_cancel(
+        self,
+        slug: str,
+        scan_id: str,
+        job_id: str,
+        payload: Any = _UNSET,
+        status: int = 200,
+    ) -> respx.Route:
+        body = make_job(job_id=job_id, status="cancelled") if payload is _UNSET else payload
+        return self._respond(self.cancel_url(slug, scan_id, job_id), status, body, method="POST")
+
+    def drift_action(
+        self, slug: str, drift_id: str, payload: Any = _UNSET, status: int = 200
+    ) -> respx.Route:
+        """``POST .../drifts/{id}/actions`` -> 200 SchemaDriftResponse."""
+        body = (
+            make_drift(drift_id=drift_id, status="false_positive") if payload is _UNSET else payload
         )
+        return self._respond(self.drift_action_url(slug, drift_id), status, body, method="POST")
 
     def signals(self, slug: str, payload: Any, status: int = 200) -> respx.Route:
         return self._respond(self.signals_url(slug), status, payload)

@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from tripl_cli.api import scans as scans_api
 from tripl_cli.diagnostics.model import (
     INTERVAL_SECONDS,
     JOBS_WINDOW,
@@ -315,7 +316,7 @@ def _config_findings(
                     "not healthy."
                 ),
                 evidence={
-                    "path": f"/projects/{slug}/scans/{config_id}/jobs",
+                    "path": scans_api.JOBS.format(slug=slug, scan_id=config_id),
                     "status_code": jobs_status,
                     "error": jobs_error,
                 },
@@ -537,7 +538,7 @@ def check_scans(snapshot: Snapshot, streaks: Mapping[tuple[str, str], FailureStr
                         "scan configuration of this project is unknown, not empty."
                     ),
                     evidence={
-                        "path": f"/projects/{slug}/scans",
+                        "path": scans_api.CONFIGS.format(slug=slug),
                         "status_code": fetched.status_code,
                         "error": fetched.error,
                     },

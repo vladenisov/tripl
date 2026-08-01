@@ -15,11 +15,17 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from itertools import zip_longest
 from typing import Any
 
 import httpx
 
+from tripl_cli.api import auth as auth_api
+from tripl_cli.api import data_sources as data_sources_api
+from tripl_cli.api import event_types as event_types_api
+from tripl_cli.api import monitoring as monitoring_api
+from tripl_cli.api import projects as projects_api
+from tripl_cli.api import scans as scans_api
+from tripl_cli.api.request import ApiRequest, send
 from tripl_cli.client import DEFAULT_USER_AGENT, TriplClient
 from tripl_cli.config import Config
 from tripl_cli.diagnostics.model import (
@@ -94,24 +100,29 @@ class Reader:
         self._api = TriplClient(base_url=base_url, api_key="", http_client=client)
         self.requests = 0
 
-    async def read(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        """Raise on failure. Used by ``status``, which has no verdict contract."""
-        self.requests += 1
-        return await self._api.get(path, params=params)
+    async def send(self, request: ApiRequest) -> Any:
+        """Perform one request and RAISE on failure. The single primitive.
 
-    async def try_read(self, path: str, params: dict[str, Any] | None = None) -> Fetched[Any]:
+        Used directly by ``status`` (no verdict contract, so an unreachable
+        instance is an ordinary command failure) and by the mutating commands,
+        where a refusal must reach the operator as a non-zero exit rather than
+        as a report section (tripl-ey6j.5). Everything doctor and watch read goes
+        through ``try_read*`` instead.
+        """
+        self.requests += 1
+        return await send(self._api, request)
+
+    async def try_read(self, request: ApiRequest) -> Fetched[Any]:
         try:
-            value = await self.read(path, params=params)
+            value = await self.send(request)
         except TriplAPIError as exc:
             return Fetched(value=None, status_code=exc.status_code, error=str(exc))
         except TriplConnectionError as exc:
             return Fetched(value=None, status_code=None, error=str(exc))
         return Fetched(value=value, status_code=200)
 
-    async def try_read_list(
-        self, path: str, params: dict[str, Any] | None = None
-    ) -> Fetched[JsonList]:
-        raw = await self.try_read(path, params)
+    async def try_read_list(self, request: ApiRequest) -> Fetched[JsonList]:
+        raw = await self.try_read(request)
         if not raw.ok:
             return Fetched(value=None, status_code=raw.status_code, error=raw.error)
         if not isinstance(raw.value, list):
@@ -120,21 +131,23 @@ class Reader:
             return Fetched(
                 value=None,
                 status_code=raw.status_code,
-                error=f"expected a JSON array from {path}, got {type(raw.value).__name__}",
+                error=(
+                    f"expected a JSON array from {request.path}, got {type(raw.value).__name__}"
+                ),
             )
         return Fetched(value=as_list(raw.value), status_code=raw.status_code)
 
-    async def try_read_dict(
-        self, path: str, params: dict[str, Any] | None = None
-    ) -> Fetched[JsonDict]:
-        raw = await self.try_read(path, params)
+    async def try_read_dict(self, request: ApiRequest) -> Fetched[JsonDict]:
+        raw = await self.try_read(request)
         if not raw.ok:
             return Fetched(value=None, status_code=raw.status_code, error=raw.error)
         if not isinstance(raw.value, dict):
             return Fetched(
                 value=None,
                 status_code=raw.status_code,
-                error=f"expected a JSON object from {path}, got {type(raw.value).__name__}",
+                error=(
+                    f"expected a JSON object from {request.path}, got {type(raw.value).__name__}"
+                ),
             )
         return Fetched(value=as_dict(raw.value), status_code=raw.status_code)
 
@@ -211,7 +224,7 @@ async def select_projects(
     """
     if slugs:
         fetched = await gather_bounded(
-            [reader.try_read_dict(f"/projects/{slug}") for slug in slugs]
+            [reader.try_read_dict(projects_api.get_project(slug)) for slug in slugs]
         )
         by_slug = dict(zip(slugs, fetched, strict=True))
         found = [item.value for item in fetched if item.value is not None]
@@ -226,7 +239,7 @@ async def select_projects(
         )
     if scope == SCOPE_PROJECT:
         return ProjectSelection(include_demo=include_demo, listing=None)
-    listing = await reader.try_read_list("/projects")
+    listing = await reader.try_read_list(projects_api.list_projects())
     if not listing.ok or listing.value is None:
         return ProjectSelection(include_demo=include_demo, listing=listing)
     kept, excluded = filter_projects(listing.value, include_demo=include_demo)
@@ -275,17 +288,6 @@ def instance_of(config: Config, base_url: str, scope: str) -> Instance:
     )
 
 
-def _is_dispatchable(config: JsonDict) -> bool:
-    """Whether the dispatcher's own query would ever select this config.
-
-    ``schedule.py`` selects on ``ScanConfig.interval.isnot(None)`` AND
-    ``ScanConfig.time_column.isnot(None)``. A config missing the time column is
-    never dispatched, so asking for its job history is a request that can only
-    return the empty list.
-    """
-    return bool(config.get("interval")) and bool(config.get("time_column"))
-
-
 async def collect_doctor(
     client: httpx.AsyncClient,
     config: Config,
@@ -315,7 +317,7 @@ async def collect_doctor(
         )
 
     reader = Reader(client, base_url)
-    auth = await reader.try_read_dict("/auth/me")
+    auth = await reader.try_read_dict(auth_api.get_me())
     scope = scope_from_auth(auth)
     selection = await select_projects(
         reader,
@@ -328,12 +330,12 @@ async def collect_doctor(
 
     data_sources: Fetched[JsonList] | None = None
     if projects and scope != SCOPE_PROJECT:
-        data_sources = await reader.try_read_list("/data-sources")
+        data_sources = await reader.try_read_list(data_sources_api.list_data_sources())
 
     scans: dict[str, Fetched[JsonList]] = {}
     if slugs:
         results = await gather_bounded(
-            [reader.try_read_list(f"/projects/{slug}/scans") for slug in slugs]
+            [reader.try_read_list(scans_api.list_configs(slug)) for slug in slugs]
         )
         scans = dict(zip(slugs, results, strict=True))
 
@@ -341,7 +343,7 @@ async def collect_doctor(
         (slug, config_id)
         for slug in slugs
         for scan_config in (scans[slug].value or [])
-        if _is_dispatchable(scan_config)
+        if scans_api.is_dispatchable(scan_config)
         for config_id in (text_of(scan_config, "id"),)
         if config_id
     ]
@@ -349,9 +351,7 @@ async def collect_doctor(
     if job_targets:
         results = await gather_bounded(
             [
-                reader.try_read_list(
-                    f"/projects/{slug}/scans/{scan_id}/jobs", {"limit": JOBS_LIMIT}
-                )
+                reader.try_read_list(scans_api.list_jobs(slug, scan_id, limit=JOBS_LIMIT))
                 for slug, scan_id in job_targets
             ]
         )
@@ -360,49 +360,24 @@ async def collect_doctor(
     event_types: dict[str, Fetched[JsonList]] = {}
     if slugs:
         results = await gather_bounded(
-            [reader.try_read_list(f"/projects/{slug}/event-types") for slug in slugs]
+            [reader.try_read_list(event_types_api.list_event_types(slug)) for slug in slugs]
         )
         event_types = dict(zip(slugs, results, strict=True))
 
-    # The drift fan-out is the only unbounded thing doctor does - one request per
-    # event type across every selected project. What the budget could not reach is
-    # REPORTED (drift_scan_truncated), never silently omitted.
-    #
-    # Spent ROUND-ROBIN across projects, not in project order. Spending it in
-    # order lets one large project consume the whole budget, and the project that
-    # then receives zero requests appears nowhere in the output - the summary
-    # reads "N of M event types examined" as though coverage were spread evenly.
-    # If the starved project is the one holding an accepted missing_field drift
-    # that deleted a FieldDefinition, the check written to surface exactly that
-    # reports nothing and says nothing about not having looked.
-    #
-    # drift_coverage then records what each project actually got. A split budget
-    # lands unevenly by construction, and one instance-wide ratio names no project:
-    # "we did not look there" is only useful when it says where (tripl-ey6j.9).
-    totals: dict[str, int] = {}
-    per_project: list[list[tuple[str, str]]] = []
-    for slug in slugs:
-        rows = event_types[slug].value or []
-        totals[slug] = len(rows)
-        candidates: list[tuple[str, str]] = []
-        for event_type in rows:
-            event_type_id = text_of(event_type, "id")
-            if event_type_id:
-                candidates.append((slug, event_type_id))
-        per_project.append(candidates)
-    drift_targets: list[tuple[str, str]] = []
-    for row in zip_longest(*per_project):
-        for target in row:
-            if target is not None and len(drift_targets) < options.max_event_types:
-                drift_targets.append(target)
-    examined: dict[str, int] = dict.fromkeys(slugs, 0)
-    for slug, _ in drift_targets:
-        examined[slug] += 1
+    # The budgeted round-robin fan-out lives in api.event_types because
+    # `tripl drifts list` needs exactly the same plan, and two implementations of
+    # it is how "we did not look there" starts printing as "nothing there"
+    # (tripl-ey6j.5). What the budget could not reach is still REPORTED here, as
+    # drift_scan_truncated, and drift_coverage records what each project got.
+    drift_targets, examined, totals = event_types_api.plan_drift_targets(
+        {slug: event_types[slug].value or [] for slug in slugs},
+        budget=options.max_event_types,
+    )
     drifts: dict[tuple[str, str], Fetched[JsonDict]] = {}
     if drift_targets:
         dict_results = await gather_bounded(
             [
-                reader.try_read_dict(f"/projects/{slug}/event-types/{type_id}/drifts")
+                reader.try_read_dict(event_types_api.list_drifts(slug, type_id))
                 for slug, type_id in drift_targets
             ]
         )
@@ -473,9 +448,7 @@ async def collect_status(
     if slugs:
         results = await gather_bounded(
             [
-                reader.try_read_dict(
-                    f"/projects/{slug}/reconciliation/coverage", {"days": options.days}
-                )
+                reader.try_read_dict(monitoring_api.get_coverage(slug, days=options.days))
                 for slug in slugs
             ]
         )

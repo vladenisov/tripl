@@ -12,9 +12,12 @@ importable `tripl` would shadow it in any environment holding both — a
 contributor's backend venv, for one. The service is packaged as the separate
 `tripl-server` distribution (tripl-ey6j.6), so `tripl` names this CLI alone.
 
-This package also owns the **shared async REST client** (`tripl_cli.client`).
-`tripl-mcp` depends on `tripl` and imports it from here rather than carrying a
-copy; there is exactly one `TriplClient` in the repo.
+This package also owns the **shared async REST client** (`tripl_cli.client`) and
+the **shared request layer** above it (`tripl_cli.api`): every REST path, query
+parameter and response projection either surface uses is spelled once, here.
+`tripl-mcp` depends on `tripl` and imports both rather than carrying a copy, and
+a contract test in each package fails the build if a path literal appears
+anywhere else.
 
 ## Install
 
@@ -40,8 +43,12 @@ uvx --from "git+https://github.com/vladenisov/tripl.git#subdirectory=cli" tripl 
 
 ## Commands
 
-All three commands are **read-only** — a `tk_r_` key is enough — and all three
-take `--json`, `--project SLUG` (repeatable) and `--include-demo`.
+A command acting on the instance as a whole is one word; a command acting on a
+class of objects is `<plural-noun> <verb>`. Every verb takes `--json` and
+`--timeout SECONDS`; the ones that report on many projects also take
+`--project SLUG` (repeatable) and `--include-demo`. The ones that name a single
+object require `--project` **exactly once**. A bare `tripl scans` or
+`tripl drifts` prints that group's help on stderr and exits 2.
 
 ```bash
 tripl doctor              # check the instance and report what is broken
@@ -50,7 +57,34 @@ tripl doctor --strict     # exit 3 on warnings too (never on skipped checks)
 tripl status              # projects, events, scans, signals, coverage
 tripl watch               # follow jobs, signals and delivery failures live
 tripl watch --json        # JSON Lines on stdout, one object per event
+tripl scans list          # scan configs, their schedule, and whether they dispatch
+tripl scans jobs <scan> --project SLUG      # recent jobs, newest first
+tripl scans run <scan> --project SLUG       # trigger a run now (WRITE)
+tripl scans cancel <scan> <job-id> --project SLUG   # cancel an active job (WRITE)
+tripl drifts list         # schema drifts; untriaged by default
+tripl drifts dismiss <drift-id> --project SLUG      # false_positive or snooze (WRITE)
 ```
+
+`doctor`, `status`, `watch`, `scans list`, `scans jobs` and `drifts list` are
+**read-only** — a `tk_r_` key is enough. The three marked WRITE need a `tk_w_`
+key backed by an editor or owner, and the CLI does not pre-judge that: the key
+prefix is derived from the scope's first letter server-side and says nothing
+about the user's role, so the request is sent and the API's own 403 is printed.
+
+`scans cancel` and `drifts dismiss` prompt on a terminal and take `--yes`; when
+stdin is **not** a terminal and `--yes` was not given they refuse with exit 2
+rather than hanging a cron job or proceeding silently. `scans run` does not
+prompt and has no `--yes` at all — passing one is exit 2, because a no-op flag
+here is a flag a script author will assume works on the next command too. All
+three writes take `--dry-run`, which resolves everything, prints the exact
+request (method, path, params, body — never a credential) and sends nothing.
+
+Two operations are deliberately **not** offered here. A bounded metrics replay
+is owner-**session**-only server-side (`deps.get_owner_user` rejects every
+request carrying an API key scope), so no `tripl` command could reach it.
+Accepting a schema drift deletes the field definition on a `missing_field`
+drift — the damage `doctor`'s `schema_field_deleted_by_accept` finding exists to
+report — so that decision stays in the tripl UI.
 
 `doctor` runs six checks, always in this order and always exactly once each:
 `connectivity`, `auth`, `projects`, `data_sources`, `scans`, `drifts`.
@@ -112,10 +146,10 @@ not moved).
 
 | Exit | Meaning |
 |------|---------|
-| 0 | Every check passed, or only warned and `--strict` was not given. `status`, whenever it completed. `watch`, whenever the run completed — a failed job or a new signal is still 0. |
-| 1 | The tool itself broke (doctor turns every API failure into a finding), or `status` / `watch` could not complete a request — unreachable, or the API refused it. For `watch` this includes a key revoked mid-run. |
-| 2 | Usage or configuration error. For `doctor` and `status` that is resolved before any socket opens; `watch` also refuses after reading the listings, when `--scan` matches nothing or more than 24 scan configs are selected. Either way **no JSON is emitted**. |
-| 3 | `doctor` only: at least one check failed, or `--strict` and at least one warning. `watch` never exits 3. |
+| 0 | Every check passed, or only warned and `--strict` was not given. `status`, whenever it completed. `watch`, whenever the run completed — a failed job or a new signal is still 0. The `scans` / `drifts` verbs, whenever every read arrived or the write was accepted (`--dry-run` included). |
+| 1 | The tool itself broke (doctor turns every API failure into a finding), or any other command could not complete a request — unreachable, or the API refused it. For `watch` this includes a key revoked mid-run. For `scans list` / `drifts list` it includes **any** failed read in the fan-out; for `scans run`, a job returned already `failed`; for `scans cancel` / `drifts dismiss`, a declined prompt. |
+| 2 | Usage or configuration error. For `doctor` and `status` that is resolved before any socket opens; `watch` also refuses after reading the listings, when `--scan` matches nothing or more than 24 scan configs are selected. The `scans` / `drifts` verbs add a bare group, a missing or repeated `--project`, an unresolved or ambiguous `<scan>`, and a prompting write on a non-TTY without `--yes`. Either way **no JSON is emitted** and no write is sent. |
+| 3 | `doctor` only: at least one check failed, or `--strict` and at least one warning. Nothing else ever exits 3. |
 | 130 | Interrupted (SIGINT). For `watch` this is the **normal** ending — a run without `--duration` has no other way to stop. |
 
 An unreachable instance therefore exits **3**, not 1 — that is what makes exit 1

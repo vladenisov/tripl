@@ -27,6 +27,7 @@ from datetime import datetime
 from typing import Any
 
 from tripl_cli.diagnostics.model import format_duration, parse_time, to_rfc3339
+from tripl_cli.diagnostics.render import plural as _plural
 from tripl_cli.watch.model import (
     EVENT_COLUMN_WIDTH,
     JobRow,
@@ -232,4 +233,10 @@ def _secs(value: float) -> str:
 
 
 def plural(count: int, noun: str) -> str:
-    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+    """Re-exported from ``diagnostics.render``, which is where it lives now.
+
+    Kept importable from here because half of ``watch`` reads it from this
+    module; the definition moved when the ``scans``/``drifts`` footers needed the
+    same rule and a second copy would have been the third of something.
+    """
+    return _plural(count, noun)

@@ -16,8 +16,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from tripl_cli.api import monitoring as monitoring_api
+from tripl_cli.api import scans as scans_api
 from tripl_cli.diagnostics.collect import Reader
-from tripl_cli.diagnostics.model import Fetched, JsonDict, JsonList, text_of
+from tripl_cli.diagnostics.model import Fetched, JsonDict, JsonList
 from tripl_cli.runner import gather_bounded
 from tripl_cli.watch.model import DELIVERY_STATUS_FAILED, JobTarget
 
@@ -48,16 +50,16 @@ async def read_tick(
     correct rather than lucky.
     """
     job_reads = [
-        reader.try_read_list(f"/projects/{slug}/scans/{scan_id}/jobs", {"limit": jobs_limit})
+        reader.try_read_list(scans_api.list_jobs(slug, scan_id, limit=jobs_limit))
         for slug, scan_id in job_targets
     ]
-    scan_reads = [reader.try_read_list(f"/projects/{slug}/scans") for slug in scan_slugs]
+    scan_reads = [reader.try_read_list(scans_api.list_configs(slug)) for slug in scan_slugs]
     # expanded=true is MANDATORY, not a preference: the collapsed list appends
     # SCOPE_EVENT only `if event_ids or expanded`, so an incident made purely of
     # event-scope anomalies would be dropped - precisely the incident watch would
     # be running for (TRAP A).
     signal_reads = [
-        reader.try_read_list(f"/projects/{slug}/anomalies/signals", {"expanded": True})
+        reader.try_read_list(monitoring_api.list_signals(slug, expanded=True))
         for slug in signal_slugs
     ]
     # No date floor. `date_from` filters AlertDelivery.created_at, so a delivery
@@ -65,8 +67,9 @@ async def read_tick(
     # asking for the newest failures instead has no blind spot and one fewer flag.
     delivery_reads = [
         reader.try_read_dict(
-            f"/projects/{slug}/alert-deliveries",
-            {"status": DELIVERY_STATUS_FAILED, "limit": deliveries_limit},
+            monitoring_api.list_alert_deliveries(
+                slug, status=DELIVERY_STATUS_FAILED, limit=deliveries_limit
+            )
         )
         for slug in delivery_slugs
     ]
@@ -82,48 +85,6 @@ async def read_tick(
         signals=dict(zip(signal_slugs, lists[cut_scans:], strict=True)),
         deliveries=dict(zip(delivery_slugs, dicts, strict=True)),
     )
-
-
-def config_names(scans: JsonList) -> dict[str, str]:
-    """``{scan_config_id: name}``, in the order the listing returned them.
-
-    NOT filtered through ``collect._is_dispatchable``. That predicate requires an
-    interval AND a time column because doctor asks "is the scheduler working",
-    and a config with no interval has no dispatch history worth reading. Watch
-    asks "what is running right now", and a manual replay on an unscheduled
-    config is exactly what tripl-ey6j.4 was filed for.
-    """
-    named: dict[str, str] = {}
-    for scan in scans:
-        config_id = text_of(scan, "id")
-        if config_id:
-            named[config_id] = text_of(scan, "name") or config_id
-    return named
-
-
-def match_selectors(
-    named: Mapping[str, str], selectors: Sequence[str]
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Resolve ``--scan`` to config ids. Returns (matched ids, unmatched values).
-
-    Exact match on name first, then on id. Never substring, never
-    case-insensitive: a follow mode that silently followed the wrong config
-    because two names share a prefix is worse than one that refuses to start.
-    """
-    if not selectors:
-        return tuple(named), ()
-    by_name: dict[str, list[str]] = {}
-    for config_id, name in named.items():
-        by_name.setdefault(name, []).append(config_id)
-    matched: list[str] = []
-    unmatched: list[str] = []
-    for selector in selectors:
-        hits = by_name.get(selector) or ([selector] if selector in named else [])
-        if not hits:
-            unmatched.append(selector)
-            continue
-        matched.extend(config_id for config_id in hits if config_id not in matched)
-    return tuple(matched), tuple(unmatched)
 
 
 def deliveries_of(payload: JsonDict) -> JsonList:

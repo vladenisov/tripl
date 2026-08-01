@@ -21,9 +21,17 @@ from typing import Any
 
 import pytest
 
+import tripl_cli
+from tripl_cli.api.endpoints import ALL_TEMPLATES, SHARED_ENDPOINTS
 from tripl_cli.client import API_PREFIX
 from tripl_cli.diagnostics import checks, collect, scan_checks
-from tripl_cli.diagnostics.endpoints import DOCTOR_ENDPOINTS, STATUS_ENDPOINTS, WATCH_ENDPOINTS
+from tripl_cli.diagnostics.endpoints import (
+    DOCTOR_ENDPOINTS,
+    DRIFTS_ENDPOINTS,
+    SCANS_ENDPOINTS,
+    STATUS_ENDPOINTS,
+    WATCH_ENDPOINTS,
+)
 from tripl_cli.watch import collect as watch_collect
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -32,7 +40,38 @@ DOCS_PATH = REPO_ROOT / "website" / "docs" / "run" / "cli.md"
 COLLECT_SOURCES = (Path(collect.__file__), Path(watch_collect.__file__))
 RULE_SOURCES = (Path(checks.__file__), Path(scan_checks.__file__))
 
-DECLARED = {**DOCTOR_ENDPOINTS, **STATUS_ENDPOINTS, **WATCH_ENDPOINTS}
+# Both packages, because the request layer is shared and a rule that applied to
+# only one of them could not be checked mechanically (tripl-ey6j.5). mcp-server
+# keeps its own half of this test too, so its job fails on its own.
+CLI_PACKAGE = Path(tripl_cli.__file__).parent
+MCP_PACKAGE = REPO_ROOT / "mcp-server" / "src" / "tripl_mcp"
+SHARED_LAYER = CLI_PACKAGE / "api"
+
+DECLARED = {
+    **DOCTOR_ENDPOINTS,
+    **STATUS_ENDPOINTS,
+    **WATCH_ENDPOINTS,
+    **SCANS_ENDPOINTS,
+    **DRIFTS_ENDPOINTS,
+}
+
+# Path literals as they appear in the calls: "/x" or f"/x/{slug}/y".
+PATH_LITERAL = re.compile(r'f?"(/(?:projects|auth|data-sources)[^"]*)"')
+# The f-string placeholder names some call sites use, mapped to the backend's
+# own, which is what the declaration and the OpenAPI document both use.
+PLACEHOLDER_RENAMES = {"{type_id}": "{event_type_id}", "{config_id}": "{scan_id}"}
+
+
+def _path_literals(root: Path) -> dict[str, list[str]]:
+    """Every REST path literal under ``root``, normalised, keyed by path."""
+    found: dict[str, list[str]] = {}
+    for source in sorted(root.rglob("*.py")):
+        for raw in PATH_LITERAL.findall(source.read_text(encoding="utf-8")):
+            path = raw
+            for actual, declared in PLACEHOLDER_RENAMES.items():
+                path = path.replace(actual, declared)
+            found.setdefault(path, []).append(str(source.relative_to(root)))
+    return found
 
 
 def _raised_finding_codes() -> set[str]:
@@ -79,14 +118,10 @@ def test_every_path_in_collect_is_declared() -> None:
     deliberately, so a change to the follow loop cannot escape the contract.
     """
     source = "\n".join(path.read_text(encoding="utf-8") for path in COLLECT_SOURCES)
-    # Path literals as they appear in the calls: "/x" or f"/x/{slug}/y".
-    found = set(re.findall(r'f?"(/(?:projects|auth|data-sources)[^"]*)"', source))
-    # Normalise the f-string placeholder names to the backend's own, which is what
-    # the declaration and the OpenAPI document both use.
-    renames = {"{type_id}": "{event_type_id}", "{config_id}": "{scan_id}"}
+    found = set(PATH_LITERAL.findall(source))
     normalised = set()
     for path in found:
-        for actual, declared in renames.items():
+        for actual, declared in PLACEHOLDER_RENAMES.items():
             path = path.replace(actual, declared)
         normalised.add(path)
     declared_paths = {path for endpoints in DECLARED.values() for _, path in endpoints}
@@ -94,6 +129,85 @@ def test_every_path_in_collect_is_declared() -> None:
     assert not undeclared, (
         "a collect module reads paths that endpoints.py does not declare, so the contract "
         f"test cannot see them: {sorted(undeclared)}"
+    )
+
+
+def test_every_shared_endpoint_exists_in_openapi(openapi_paths: dict[str, Any]) -> None:
+    """The shared request layer, checked whole - including the builders no CLI
+    command calls, because tripl-mcp calls them and both packages read this map."""
+    missing: list[str] = []
+    for resource, endpoints in SHARED_ENDPOINTS.items():
+        for method, path in endpoints:
+            operations = openapi_paths.get(f"{API_PREFIX}{path}")
+            if operations is None or method not in operations:
+                missing.append(f"{resource}: {method.upper()} {API_PREFIX}{path}")
+    assert not missing, (
+        "tripl_cli.api declares endpoints that are no longer in backend/openapi.json "
+        "(REST contract drift!):\n  " + "\n  ".join(missing)
+    )
+
+
+def test_no_rest_path_literal_lives_outside_the_shared_layer() -> None:
+    """A module cannot spell a path the shared layer does not declare.
+
+    Scans BOTH packages: this is one half of the acceptance criterion of
+    tripl-ey6j.5 ("no request-building logic is duplicated between the CLI and
+    the MCP tools") turned into something CI can check. Literals in finding
+    messages and evidence keys pass, because they are the same templates - what
+    fails is inventing a second spelling anywhere.
+    """
+    offenders: list[str] = []
+    for package, root in (("tripl_cli", CLI_PACKAGE), ("tripl_mcp", MCP_PACKAGE)):
+        for path, sources in _path_literals(root).items():
+            if path not in ALL_TEMPLATES:
+                offenders.append(f"{package}: {path} (in {', '.join(sorted(set(sources)))})")
+    assert not offenders, (
+        "REST path literals that tripl_cli.api does not declare - add a builder there "
+        "rather than a second spelling here:\n  " + "\n  ".join(sorted(offenders))
+    )
+
+
+def test_api_request_is_constructed_only_in_the_shared_layer() -> None:
+    """The other half of the acceptance criterion, and the load-bearing one.
+
+    A module that can build an ``ApiRequest`` can build a request; if only
+    ``tripl_cli/api`` can, then every request in either distribution came from
+    the one place, by construction rather than by review. Do not relax this.
+    """
+    offenders: list[str] = []
+    for package, root in (("tripl_cli", CLI_PACKAGE), ("tripl_mcp", MCP_PACKAGE)):
+        for source in sorted(root.rglob("*.py")):
+            if source.parent == SHARED_LAYER:
+                continue
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "ApiRequest":
+                    offenders.append(f"{package}: {source.name}:{node.lineno}")
+    assert not offenders, (
+        "ApiRequest is constructed outside tripl_cli/api, so a request can be built "
+        f"without going through the shared layer: {sorted(offenders)}"
+    )
+
+
+def test_the_shared_layer_is_the_only_thing_both_packages_import_for_requests() -> None:
+    """tripl_mcp reaches the API through tripl_cli.api and nothing else.
+
+    A direct ``client.get(...)`` in a tool would slip past both tests above (no
+    literal if the path came from a variable, no ApiRequest either), so the
+    remaining door is closed here.
+    """
+    offenders: list[str] = []
+    for source in sorted(MCP_PACKAGE.rglob("*.py")):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr in ("get", "post", "patch") and (
+                getattr(node.func.value, "id", "") == "client"
+            ):
+                offenders.append(f"{source.name}:{node.lineno} client.{node.func.attr}(...)")
+    assert not offenders, (
+        f"an MCP tool calls the client directly instead of sending a shared ApiRequest: {offenders}"
     )
 
 

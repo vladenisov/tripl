@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from tripl_cli.api.scans import config_names, resolve_selectors
 from tripl_cli.diagnostics.collect import Reader, raise_selection_failure, select_projects
 from tripl_cli.diagnostics.endpoints import WATCH_ENDPOINTS
 from tripl_cli.diagnostics.model import (
@@ -41,10 +42,8 @@ from tripl_cli.diagnostics.model import (
 from tripl_cli.errors import TriplAPIError, TriplConfigError, TriplError
 from tripl_cli.watch.collect import (
     TickReads,
-    config_names,
     deliveries_of,
     describe,
-    match_selectors,
     read_tick,
 )
 from tripl_cli.watch.diff import diff_tick
@@ -223,7 +222,7 @@ async def prepare(reader: Reader, options: WatchOptions) -> Preparation:
             raise _start_failure(fetched, f"could not list the scan configs of {slug!r}")
         named = config_names(fetched.value)
         configs[slug] = named
-        matched, missed = match_selectors(named, options.scan_selectors)
+        matched, missed = resolve_selectors(named, options.scan_selectors)
         unmatched.extend(missed)
         targets.extend((slug, config_id) for config_id in matched)
 
@@ -567,7 +566,7 @@ class _State:
         """
         named = config_names(scans)
         matched = (
-            match_selectors(named, self.options.scan_selectors)[0]
+            resolve_selectors(named, self.options.scan_selectors)[0]
             if self.options.scan_selectors
             else tuple(named)
         )

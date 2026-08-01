@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
+from tripl_cli.api import search, send
 
 from tripl_mcp.runtime import client_for
 from tripl_mcp.tools._common import READ_ONLY, SEARCH_RESULT_FIELDS, trim
@@ -19,9 +20,8 @@ async def search_plan(
     branch_id: str | None = None,
 ) -> dict[str, Any]:
     client = client_for(ctx)
-    data = await client.get(
-        f"/projects/{slug}/search",
-        params={"q": q, "types": types, "limit": limit, "branch": branch_id},
+    data = await send(
+        client, search.search_plan(slug, q, types=types, limit=limit, branch=branch_id)
     )
     items = data.get("items", []) if isinstance(data, dict) else []
     return {

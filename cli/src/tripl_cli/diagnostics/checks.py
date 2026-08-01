@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from tripl_cli.api import event_types as event_types_api
+from tripl_cli.api import projects as projects_api
 from tripl_cli.diagnostics.model import (
     HEALTH_PATH,
     SCOPE_PROJECT,
@@ -25,7 +27,6 @@ from tripl_cli.diagnostics.model import (
     Severity,
     Snapshot,
     Target,
-    as_list,
     format_duration,
     parse_time,
     text_of,
@@ -204,7 +205,9 @@ def check_projects(snapshot: Snapshot) -> Check:
                     )
                 )
             else:
-                findings.append(_endpoint_finding(f"/projects/{slug}", fetched, slug))
+                findings.append(
+                    _endpoint_finding(projects_api.DETAIL.format(slug=slug), fetched, slug)
+                )
     elif snapshot.api_key_scope == SCOPE_PROJECT:
         findings.append(
             Finding(
@@ -232,7 +235,7 @@ def check_projects(snapshot: Snapshot) -> Check:
                 )
             )
         else:
-            findings.append(_endpoint_finding("/projects", selection.listing, None))
+            findings.append(_endpoint_finding(projects_api.LIST, selection.listing, None))
     elif not selection.projects:
         findings.append(
             Finding(
@@ -446,17 +449,6 @@ def check_data_sources(snapshot: Snapshot, streaks: dict[tuple[str, str], Failur
     )
 
 
-def _drift_is_untriaged(drift: JsonDict, now: datetime) -> bool:
-    """Open, or snoozed past its snooze — both mean nobody has looked yet."""
-    status = text_of(drift, "status")
-    if status == "open":
-        return True
-    if status != "snoozed":
-        return False
-    until = parse_time(drift.get("snoozed_until"))
-    return until is None or until <= now
-
-
 def check_drifts(snapshot: Snapshot) -> Check:
     title = "Schema drift"
     if snapshot.selection is None:
@@ -471,7 +463,7 @@ def check_drifts(snapshot: Snapshot) -> Check:
         if types is None:
             continue
         if not types.ok or types.value is None:
-            findings.append(_endpoint_finding(f"/projects/{slug}/event-types", types, slug))
+            findings.append(_endpoint_finding(event_types_api.LIST.format(slug=slug), types, slug))
             continue
         untriaged: list[str] = []
         oldest: datetime | None = None
@@ -485,12 +477,14 @@ def check_drifts(snapshot: Snapshot) -> Check:
             if not fetched.ok or fetched.value is None:
                 findings.append(
                     _endpoint_finding(
-                        f"/projects/{slug}/event-types/{type_id}/drifts", fetched, slug
+                        event_types_api.DRIFTS.format(slug=slug, event_type_id=type_id),
+                        fetched,
+                        slug,
                     )
                 )
                 continue
             type_name = text_of(event_type, "name") or type_id
-            for drift in as_list(fetched.value.get("items")):
+            for drift in event_types_api.drift_items(fetched.value):
                 field_name = text_of(drift, "field_name") or "(unnamed)"
                 drift_type = text_of(drift, "drift_type") or "unknown"
                 if text_of(drift, "status") == "accepted" and drift_type == "missing_field":
@@ -523,7 +517,7 @@ def check_drifts(snapshot: Snapshot) -> Check:
                             },
                         )
                     )
-                elif _drift_is_untriaged(drift, snapshot.now):
+                elif event_types_api.is_untriaged(drift, snapshot.now):
                     untriaged.append(f"{type_name}.{field_name} ({drift_type})")
                     detected = parse_time(drift.get("detected_at"))
                     if detected is not None and (oldest is None or detected < oldest):

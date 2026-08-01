@@ -1,8 +1,15 @@
-"""The vocabulary doctor and status speak: severities, findings, checks.
+"""The vocabulary the commands speak: severities, findings, checks, snapshots.
 
 Pure data plus the handful of total functions over it. No IO, no clock reads,
 no import of ``collect`` — everything here can be built in a test without a
 network, which is what lets the check rules be tested as arithmetic.
+
+It also imports nothing from ``tripl_cli.api``, and must not: the request layer
+imports the JSON helpers below, so a reference back would close the cycle. The
+one consequence is that a snapshot carries an already-projected request DOCUMENT
+rather than an ``ApiRequest`` — which is the right shape anyway, because that
+document is the thing ``--dry-run`` prints and it must never be able to carry a
+header or a credential (tripl-ey6j.5).
 """
 
 from __future__ import annotations
@@ -268,6 +275,11 @@ class SectionError:
     section: str
     status_code: int | None
     message: str
+    # The CONCRETE path that failed. Optional because `status` names its section
+    # and nothing else (one coverage read per project, so the section IS the
+    # address); the scans/drifts fan-outs need it, because "one of this project's
+    # 40 event types could not be read" is unactionable without saying which.
+    endpoint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -293,6 +305,141 @@ class StatusSnapshot:
     duration_ms: int
     requests: int
     projects: tuple[ProjectStatus, ...]
+
+
+@dataclass(frozen=True)
+class Run:
+    """What every ``tripl <group> <verb>`` invocation carries in common.
+
+    Composed into the snapshots below rather than repeated across them, so the
+    envelope ``report._envelope`` builds cannot differ between two commands.
+    """
+
+    instance: Instance
+    generated_at: datetime
+    duration_ms: int = 0
+    requests: int = 0
+
+
+@dataclass(frozen=True)
+class ProjectScans:
+    """One project's scan configs, already trimmed by ``api.scans.scan_config_summary``."""
+
+    slug: str
+    name: str
+    is_demo: bool = False
+    scans: tuple[JsonDict, ...] = ()
+    errors: tuple[SectionError, ...] = ()
+
+
+@dataclass(frozen=True)
+class ScansSnapshot:
+    run: Run
+    projects: tuple[ProjectScans, ...] = ()
+
+    @property
+    def scan_count(self) -> int:
+        return sum(len(project.scans) for project in self.projects)
+
+    @property
+    def failed(self) -> bool:
+        """Any project whose scan listing did not arrive.
+
+        A partial listing that exits 0 is the trap this whole tool exists to
+        close: "3 scan configs" when a fourth project 403'd is a lie the operator
+        cannot see (TRAP 3).
+        """
+        return any(project.errors for project in self.projects)
+
+
+@dataclass(frozen=True)
+class ScanJobsSnapshot:
+    run: Run
+    project: str
+    scan_id: str
+    scan_name: str
+    limit: int
+    # ScanJobResponse rows verbatim, newest first — the order the API returns.
+    jobs: tuple[JsonDict, ...] = ()
+
+
+@dataclass(frozen=True)
+class DriftRow:
+    """One SchemaDriftResponse, verbatim, plus the two facts it cannot carry.
+
+    ``event_type_name`` comes from the event-type listing (a drift knows only its
+    ``event_type_id``) and ``untriaged`` is ``api.event_types.is_untriaged``
+    evaluated against this run's clock.
+    """
+
+    drift: JsonDict
+    event_type_name: str
+    untriaged: bool
+
+
+@dataclass(frozen=True)
+class ProjectDrifts:
+    slug: str
+    name: str
+    is_demo: bool = False
+    event_types_total: int = 0
+    event_types_examined: int = 0
+    drifts: tuple[DriftRow, ...] = ()
+    errors: tuple[SectionError, ...] = ()
+
+    @property
+    def truncated(self) -> bool:
+        return self.event_types_total > self.event_types_examined
+
+
+@dataclass(frozen=True)
+class DriftsSnapshot:
+    run: Run
+    status_filter: str
+    projects: tuple[ProjectDrifts, ...] = ()
+
+    @property
+    def drift_count(self) -> int:
+        return sum(len(project.drifts) for project in self.projects)
+
+    @property
+    def untriaged_count(self) -> int:
+        return sum(1 for project in self.projects for row in project.drifts if row.untriaged)
+
+    @property
+    def error_count(self) -> int:
+        return sum(len(project.errors) for project in self.projects)
+
+    @property
+    def failed(self) -> bool:
+        return self.error_count > 0
+
+
+@dataclass(frozen=True)
+class MutationOutcome:
+    """One write the CLI performed, or would have performed under ``--dry-run``.
+
+    ``request`` is the projected document — method, path, params, body and
+    NOTHING else. No headers, no Authorization value, no API key: this object is
+    printed, and a credential that can be printed eventually is.
+
+    Every optional key is carried on every mutation and serialised even when
+    null. A consumer that has to test for key existence before reading one will
+    eventually forget to, which is the same rule ``Report.counts`` follows.
+    """
+
+    command: str
+    run: Run
+    request: JsonDict
+    project: str
+    dry_run: bool = False
+    scan_id: str | None = None
+    scan_name: str | None = None
+    job_id: str | None = None
+    drift_id: str | None = None
+    action: str | None = None
+    # None under --dry-run, always. The absence IS the statement.
+    result: JsonDict | None = None
 
 
 def overall_status(checks: Iterable[Check]) -> Severity:
