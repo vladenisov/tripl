@@ -32,6 +32,15 @@ The server is configured through environment variables:
 Give a discovery-only agent a `tk_r_` key and prefer project-scoped keys, the
 same [safe defaults](./agent-api-guide.md#safe-agent-defaults) as for raw REST.
 
+:::tip Same two variables as the CLI
+`TRIPL_BASE_URL` and `TRIPL_API_KEY` are read identically by the
+[operator CLI](../run/cli.md), and the two tools share one HTTP client (the MCP
+server imports it from the `tripl` distribution in `cli/`). A shell configured
+for one is configured for the other, so `tripl doctor` is the quickest way to
+prove the URL and key an MCP client is about to use actually work — including
+whether the key is fenced to a single project.
+:::
+
 ## Running over stdio
 
 Stdio is the default transport: the MCP client launches `tripl-mcp` as a child
@@ -154,11 +163,24 @@ treat them as safe to auto-approve.
 | `get_variable_values` | `slug, variable_id, branch_id?` | Variable values + event overrides |
 | `list_branches` | `slug` | `GET /projects/{slug}/branches` |
 | `get_branch_diff` | `slug, branch_id` | `GET /projects/{slug}/branches/{branch_id}/diff` |
-| `list_scans` | `slug` | `GET /projects/{slug}/scans` |
+| `list_scans` | `slug` | `GET /projects/{slug}/scans` — **trimmed**: identity, schedule and a derived `dispatchable` flag, without `base_query` and the tuning knobs |
+| `get_scan` | `slug, scan_id` | `GET /projects/{slug}/scans/{scan_id}` — one config in full, including everything `list_scans` trims |
 | `get_scan_status` | `slug, scan_id, job_id?` | Scan job listing, or one job when `job_id` is given |
 | `monitors_summary` | `slug` | Monitors summary + top anomaly signals, combined |
 | `reconciliation_status` | `slug` | Reconciliation coverage + dead/shadow event counts |
 | `list_projects` | — | `GET /api/v1/projects` |
+
+:::warning `list_scans` changed shape after 0.1.0
+It used to return the whole `ScanConfigResponse` for every config — 30-odd
+fields including the raw `base_query` SQL and every tuning knob — which is a
+large payload to spend an agent's context on when the question is usually "which
+scans exist, and are they scheduled". It now returns a trimmed projection plus a
+derived `dispatchable` flag.
+
+Nothing became unreachable: `get_scan` returns one config in full. If your agent
+read a field off the listing, point it at `get_scan` for the config it actually
+cares about.
+:::
 
 :::note
 `list_projects` is instance-level: with a **project-scoped** key it returns

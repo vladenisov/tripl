@@ -96,6 +96,19 @@ def normalize_base_url(raw: str, origin: str) -> str:
     message points at the thing to edit.
     """
     value = raw.strip().rstrip("/")
+    # BEFORE urlsplit, which SILENTLY DELETES tab, CR and LF from what it parses
+    # (WHATWG-alignment, CVE-2022-0391) and so reports a value with an embedded
+    # newline as a perfectly good URL. This value becomes the `APP_BASE_URL=` line
+    # of the 0600 .env that Docker Compose interpolates, where a newline is not a
+    # cosmetic problem: it ends our line and starts an attacker's, turning one
+    # pasted string into arbitrary extra settings for the whole stack. Nothing
+    # legitimate needs a control character in an origin, so the whole class goes.
+    control = next((ch for ch in value if ch < " " or ch == "\x7f"), None)
+    if control is not None:
+        raise TriplConfigError(
+            f"{origin} contains a control character ({control!r}) and is not a valid tripl "
+            f"URL: {raw!r}. An origin is one line - no newlines, tabs or control bytes."
+        )
     parsed = urlsplit(value)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         # Suggest a corrected value only for the common case — a bare host with
@@ -296,5 +309,5 @@ def require_api_key(config: Config) -> str:
     raise TriplConfigError(
         f"no tripl API key configured. Pass {FLAG_API_KEY}, set {ENV_API_KEY}, or "
         f"add api_key to {config.path}. Create keys in the tripl app under "
-        f"Account -> API keys (tk_r_ for read-only, tk_w_ for write)."
+        f"Settings -> API keys (tk_r_ for read-only, tk_w_ for write)."
     )

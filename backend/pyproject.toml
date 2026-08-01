@@ -1,5 +1,12 @@
 [project]
-name = "tripl"
+# Distribution `tripl-server`, import package `tripl` (src/tripl/) — the two
+# differ ON PURPOSE and this is not a typo to "fix". The reserved PyPI name
+# `tripl` belongs to the operator CLI in cli/, so `pip install tripl` gives a
+# user that tool rather than a 400 MB service stack. Renaming the import package
+# to match would have rewritten every module in the repo to buy nothing: this
+# distribution is never published, so its name is internal and nobody outside
+# the repo ever types it (tripl-ey6j.6).
+name = "tripl-server"
 version = "0.2.1"
 description = "Analytics tracking plan service"
 requires-python = ">=3.14"
@@ -8,9 +15,9 @@ requires-python = ">=3.14"
 # stay permissive so integrating with tripl never pulls this into your code.
 license = "AGPL-3.0-or-later"
 authors = [{ name = "Vladislav Denisov" }]
-# Not published to PyPI — tripl ships as a container image (see bin/release.sh).
-# The marker makes an accidental `uv publish` from this directory fail loudly
-# instead of pushing a 400 MB server stack under a name meant for the service.
+# Not published to PyPI — the service ships as a container image (see
+# bin/release.sh). The marker makes an accidental `uv publish` from this
+# directory fail loudly instead of pushing a 400 MB server stack to the index.
 classifiers = ["Private :: Do Not Upload"]
 dependencies = [
     "fastapi>=0.140.0",

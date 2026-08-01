@@ -22,9 +22,15 @@ EXIT_FAILURE = 1
 # Bad invocation or unusable configuration. 2 because that is argparse's own
 # code for a parse error, and a caller should not have to tell the two apart.
 EXIT_USAGE = 2
-# 3+ is reserved for "the tool worked, the checks did not" — `tripl doctor`
-# needs to distinguish a failed run from a successful run reporting problems
-# (tripl-ey6j.2).
+# "The tool worked, the checks did not": `tripl doctor` ran to completion and at
+# least one check reported `fail` (or, under --strict, `warn`). Distinct from
+# EXIT_FAILURE so a cron can tell "your instance has a problem" from "the tool
+# itself broke" — doctor turns every API failure into a finding, so an exit 1
+# out of doctor is a bug report, not a diagnosis (tripl-ey6j.2).
+EXIT_CHECKS_FAILED = 3
+# 4+ stays unallocated. A per-severity code or a --fail-on=warn|fail was
+# considered and dropped: one code plus --strict covers the cron contract, and
+# every extra code is a promise to every consumer forever.
 
 
 class TriplError(Exception):

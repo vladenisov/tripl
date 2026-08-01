@@ -18,6 +18,7 @@ from typing import Any
 
 import httpx
 from mcp.server.fastmcp.exceptions import ToolError
+from tripl_cli.api import branches, send
 from tripl_cli.client import TriplClient
 from tripl_cli.errors import TriplError
 
@@ -181,7 +182,7 @@ async def ensure_branch_not_main(client: TriplClient, slug: str, branch_id: str 
     """
     if not branch_id or is_main_write_allowed():
         return
-    branch = await client.get(f"/projects/{slug}/branches/{branch_id}")
+    branch = await send(client, branches.get_branch(slug, branch_id))
     if isinstance(branch, dict) and branch.get("kind") == "main":
         raise ToolError(
             "branch_id resolves to the project's MAIN branch: this write would land "

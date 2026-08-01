@@ -26,7 +26,7 @@ direct HTTP integrations.
 
 ## Getting an API key
 
-Create keys in the app under **Account → API keys**. The full token is shown
+Create keys in the app under **Settings → API keys**. The full token is shown
 **once** at creation — copy it then; afterwards only the non-secret prefix is
 visible. Every request authenticates with a bearer token:
 

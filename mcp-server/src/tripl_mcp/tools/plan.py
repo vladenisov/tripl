@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
+from tripl_cli.api import event_types, projects, send, variables
 
 from tripl_mcp.runtime import client_for
 from tripl_mcp.tools._common import (
@@ -28,10 +29,7 @@ async def list_event_types(
     here; call ``get_event_type_fields`` for one type's fields.
     """
     client = client_for(ctx)
-    data = await client.get(
-        f"/projects/{slug}/event-types",
-        params={"branch": branch_id},
-    )
+    data = await send(client, event_types.list_event_types(slug, branch=branch_id))
     if not isinstance(data, list):
         return data
     return [_event_type_summary(item) for item in data]
@@ -54,15 +52,10 @@ async def get_event_type_fields(
     branch_id: str | None = None,
 ) -> dict[str, Any]:
     client = client_for(ctx)
-    params = {"branch": branch_id}
-    event_type = await client.get(
-        f"/projects/{slug}/event-types/{event_type_id}",
-        params=params,
+    event_type = await send(
+        client, event_types.get_event_type(slug, event_type_id, branch=branch_id)
     )
-    fields = await client.get(
-        f"/projects/{slug}/event-types/{event_type_id}/fields",
-        params=params,
-    )
+    fields = await send(client, event_types.get_fields(slug, event_type_id, branch=branch_id))
     merged = (
         dict(trim(event_type, EVENT_TYPE_LIST_FIELDS))
         if isinstance(event_type, dict)
@@ -90,9 +83,8 @@ async def list_variables(
     can carry well over a thousand variables).
     """
     client = client_for(ctx)
-    return await client.get(
-        f"/projects/{slug}/variables",
-        params={"branch": branch_id, "offset": offset, "limit": limit},
+    return await send(
+        client, variables.list_variables(slug, branch=branch_id, offset=offset, limit=limit)
     )
 
 
@@ -103,13 +95,9 @@ async def get_variable_values(
     branch_id: str | None = None,
 ) -> dict[str, Any]:
     client = client_for(ctx)
-    values = await client.get(
-        f"/projects/{slug}/variables/{variable_id}/values",
-        params={"branch": branch_id},
-    )
-    overrides = await client.get(
-        f"/projects/{slug}/variables/{variable_id}/event-overrides",
-        params={"branch": branch_id},
+    values = await send(client, variables.get_values(slug, variable_id, branch=branch_id))
+    overrides = await send(
+        client, variables.get_event_overrides(slug, variable_id, branch=branch_id)
     )
     return {"values": values, "event_overrides": overrides}
 
@@ -118,7 +106,7 @@ async def list_projects(
     ctx: Context,  # type: ignore[type-arg]
 ) -> Any:
     client = client_for(ctx)
-    return await client.get("/projects")
+    return await send(client, projects.list_projects())
 
 
 def register(mcp: FastMCP) -> None:

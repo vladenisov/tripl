@@ -136,8 +136,18 @@ Top level:
 - [website/docs](website/docs): public product, operations, API, and architecture
   documentation.
 - [compose.yaml](compose.yaml): production stack (published image); [compose.dev.yaml](compose.dev.yaml): local dev topology.
-- [backend](backend): Python service.
+- [backend](backend): Python service. Distribution `tripl-server`, import package
+  `tripl` — the names differ so the PyPI name `tripl` can be the operator CLI
+  below; the import package is unchanged and stays `tripl` (tripl-ey6j.6).
 - [frontend](frontend): React app.
+- [cli](cli): the `tripl` operator CLI (import package `tripl_cli`) — the
+  read-only `doctor` / `status` / `watch` diagnostics **and the mutating
+  `scans run|cancel` / `drifts dismiss` verbs**, plus the **shared request
+  layer** (`tripl_cli/api` and the async `TriplClient`) that `mcp-server`
+  imports. Apache-2.0, `httpx` only, no backend imports.
+- [mcp-server](mcp-server): the `tripl-mcp` MCP server (import package
+  `tripl_mcp`). Depends on the `tripl` distribution in `cli/` for its HTTP
+  client; there is exactly one `TriplClient` in the repo.
 
 Backend entrypoints:
 - [backend/src/tripl/main.py](backend/src/tripl/main.py): FastAPI app, middleware stack, lifespan, and `/health`.
@@ -164,6 +174,32 @@ Frontend layers:
 - `frontend/src/components`: layout and shared UI.
 - `frontend/src/types/index.ts`: frontend domain types.
 - `frontend/src/**/*.test.*`: Vitest coverage.
+
+CLI layers (`cli/src/tripl_cli`):
+- `client.py`: the shared async `TriplClient`. **Also imported by `mcp-server`** —
+  every change here needs both test suites green.
+- `api/`: the shared REST **request layer** — `ApiRequest` values, `send()`, and
+  one home per path template. **Both `tripl_cli` and `tripl_mcp` build every
+  request only from here**, and `cli/tests/test_contract.py` enforces it: no
+  REST path literal and no `ApiRequest(...)` may appear outside this package,
+  and nothing outside it may call an HTTP method on a client. Consumer-neutral
+  by rule — no `argparse`, no `mcp`, and it never prints.
+- `config.py`: per-field flag > env > file resolution with provenance.
+- `cli.py` / `commands/`: argparse entry point; one module per subcommand.
+  `commands/_write.py` holds the write-safety rules the mutating verbs share
+  (`--dry-run`, the confirmation, "never prompt in a pipeline").
+- `runner.py`: the only `asyncio.run`, one connection pool per invocation.
+- `diagnostics/`: `collect.py` is async/impure and the only thing that speaks
+  HTTP (every failure becomes a `Fetched`, never an exception — except
+  `raise_selection_failure` / `read_or_raise`, which the verdict-free commands
+  use to opt back out); `checks.py` and
+  `scan_checks.py` are pure, synchronous, total functions of a `Snapshot`;
+  `report.py` is the `--json` contract; `render.py` is the ASCII output.
+- `watch/`: the follow loop — `collect.py` polls, `diff.py` is the pure
+  snapshot-to-events function, `render.py` is its JSON Lines and ASCII output.
+- User-facing reference: [website/docs/run/cli.md](website/docs/run/cli.md).
+  `scan_checks.py` mirrors the backoff constants in
+  `backend/src/tripl/worker/tasks/metrics/schedule.py` — change one, change both.
 
 ## Domain Model Cheat Sheet
 

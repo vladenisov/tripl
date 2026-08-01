@@ -1,44 +1,58 @@
 """The REST endpoints each MCP tool wraps.
 
 Single source of truth for the contract test: every (method, path) here must
-exist in ``backend/openapi.json``. Paths are relative to the ``/api/v1`` prefix
-and use the backend's own placeholder names.
+exist in ``backend/openapi.json``. The path LITERALS live in ``tripl_cli.api``,
+which is where the tool bodies build their requests from too — so this map is a
+statement about which tool touches what, and cannot drift from what the tool
+actually sends (tripl-ey6j.5).
+
+Kept separate from ``tripl_cli.diagnostics.endpoints`` on purpose: that one is
+keyed by snapshot section, and this one's key set must equal the REGISTERED TOOL
+NAMES, which ``test_every_registered_tool_has_a_contract_entry`` asserts. The
+literal is shared; the declaration is not.
 """
 
 from __future__ import annotations
 
+from tripl_cli.api import branches, event_types, events, monitoring, projects, scans, search
+from tripl_cli.api import variables as variables_api
+
 TOOL_ENDPOINTS: dict[str, tuple[tuple[str, str], ...]] = {
-    "search_plan": (("get", "/projects/{slug}/search"),),
-    "list_events": (("get", "/projects/{slug}/events"),),
-    "get_event": (("get", "/projects/{slug}/events/{event_id}"),),
-    "create_event": (("post", "/projects/{slug}/events"),),
-    "update_event": (("patch", "/projects/{slug}/events/{event_id}"),),
-    "list_event_types": (("get", "/projects/{slug}/event-types"),),
+    "search_plan": (("get", search.SEARCH),),
+    "list_events": (("get", events.LIST),),
+    "get_event": (("get", events.DETAIL),),
+    "create_event": (("post", events.LIST),),
+    "update_event": (("patch", events.DETAIL),),
+    "list_event_types": (("get", event_types.LIST),),
     "get_event_type_fields": (
-        ("get", "/projects/{slug}/event-types/{event_type_id}"),
-        ("get", "/projects/{slug}/event-types/{event_type_id}/fields"),
+        ("get", event_types.DETAIL),
+        ("get", event_types.FIELDS),
     ),
-    "list_variables": (("get", "/projects/{slug}/variables"),),
+    "list_variables": (("get", variables_api.LIST),),
     "get_variable_values": (
-        ("get", "/projects/{slug}/variables/{variable_id}/values"),
-        ("get", "/projects/{slug}/variables/{variable_id}/event-overrides"),
+        ("get", variables_api.VALUES),
+        ("get", variables_api.EVENT_OVERRIDES),
     ),
-    "list_branches": (("get", "/projects/{slug}/branches"),),
-    "get_branch_diff": (("get", "/projects/{slug}/branches/{branch_id}/diff"),),
-    "list_scans": (("get", "/projects/{slug}/scans"),),
-    "trigger_scan": (("post", "/projects/{slug}/scans/{scan_id}/run"),),
+    "list_branches": (("get", branches.LIST),),
+    "get_branch_diff": (("get", branches.DIFF),),
+    "list_scans": (("get", scans.CONFIGS),),
+    # Added with tripl-ey6j.5: list_scans became a trimmed projection, so the full
+    # ScanConfigResponse needed a route of its own or the detail an agent used to
+    # get from the listing would simply have been removed from the toolset.
+    "get_scan": (("get", scans.CONFIG),),
+    "trigger_scan": (("post", scans.RUN),),
     "get_scan_status": (
-        ("get", "/projects/{slug}/scans/{scan_id}/jobs"),
-        ("get", "/projects/{slug}/scans/{scan_id}/jobs/{job_id}"),
+        ("get", scans.JOBS),
+        ("get", scans.JOB),
     ),
     "monitors_summary": (
-        ("get", "/projects/{slug}/monitors-summary"),
-        ("get", "/projects/{slug}/anomalies/signals"),
+        ("get", monitoring.MONITORS_SUMMARY),
+        ("get", monitoring.SIGNALS),
     ),
     "reconciliation_status": (
-        ("get", "/projects/{slug}/reconciliation/coverage"),
-        ("get", "/projects/{slug}/reconciliation/dead-events"),
-        ("get", "/projects/{slug}/reconciliation/shadow-events"),
+        ("get", monitoring.COVERAGE),
+        ("get", monitoring.DEAD_EVENTS),
+        ("get", monitoring.SHADOW_EVENTS),
     ),
-    "list_projects": (("get", "/projects"),),
+    "list_projects": (("get", projects.LIST),),
 }

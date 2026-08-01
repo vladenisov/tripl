@@ -2,6 +2,13 @@
 #
 #   docker compose pull && docker compose up -d
 #
+# `tripl install` writes this exact file (minus the `mcp` service's build block,
+# which needs a source tree) into the directory it provisions, alongside
+# infra/rabbitmq/rabbitmq.conf and a generated .env; `tripl upgrade --to X.Y.Z`
+# moves the TRIPL_VERSION pin. The packaged copy lives at
+# cli/src/tripl_cli/install/files/compose.yaml and a contract test asserts it is
+# byte-identical to this one, so edit here and re-copy (tripl-ey6j.3).
+#
 # ONE `app` container serves the JSON API *and* the built SPA on a single port
 # (FastAPI app.frontend()), so there is NO separate frontend/nginx container.
 # The same image runs the API, the one-shot migrate, and the Celery worker/beat
@@ -54,8 +61,14 @@ x-app-environment: &app-environment
   # environment variable, so it has to actually reach the container. The same
   # omission is what made the DEMO_ENABLED switch inert (tripl-2su6.16) and then
   # REGISTRATION_MODE — whose whole purpose is closing self-service signup on a
-  # public instance (tripl-jfm3.101). An unset value falls through to the
-  # application default, so listing them here costs nothing.
+  # public instance (tripl-jfm3.101).
+  #
+  # `${VAR:-}` materialises an UNSET variable as the empty STRING in the
+  # container, not as an absent one. Falling through to the application default
+  # is therefore not free: it works because Settings sets
+  # `env_ignore_empty=True` (backend/src/tripl/config.py). Without that flag the
+  # five typed members of this list ("" parsed as a bool/int/enum) crash
+  # `Settings()` at import and every container exits on boot (tripl-ey6j.3).
   REGISTRATION_MODE: ${REGISTRATION_MODE:-}
   CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-}
   CONTENT_SECURITY_POLICY: ${CONTENT_SECURITY_POLICY:-}
