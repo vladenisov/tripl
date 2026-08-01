@@ -13,6 +13,7 @@ repository checked out.
 
 from __future__ import annotations
 
+import argparse
 import ast
 import json
 import re
@@ -448,6 +449,87 @@ def test_the_documented_status_choices_are_exactly_the_ones_the_parser_accepts()
         f"only documented {sorted(documented - set(STATUS_CHOICES))}, "
         f"only in the code {sorted(set(STATUS_CHOICES) - documented)}"
     )
+
+
+def _command_paths(parser: argparse.ArgumentParser, prefix: str = "tripl") -> list[str]:
+    """Every command line the parser accepts, groups and verbs alike.
+
+    Walks ``_SubParsersAction`` because argparse exposes no public way to ask a
+    parser what it accepts. The module under test already names that class in a
+    type hint (``commands/scans.py``), so the private access is the established
+    idiom here rather than a new liberty.
+    """
+    paths: list[str] = []
+    for action in parser._actions:
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        for name, sub in action.choices.items():
+            paths.append(f"{prefix} {name}")
+            paths.extend(_command_paths(sub, f"{prefix} {name}"))
+    return paths
+
+
+def test_every_command_and_verb_has_its_own_section() -> None:
+    """Derived from the real parser, so a new verb fails until it is written up.
+
+    tripl-ey6j.5 shipped six verbs with no page at all — the docs rule
+    (AGENTS.md:467) is a habit, and a habit does not fail CI. A literal list of
+    expected headings would not help: it would be edited by the same person who
+    forgot the docs. Walking ``build_parser`` means the only way to add a
+    command is to add its section.
+    """
+    from tripl_cli.cli import build_parser
+
+    headings = {
+        line.split("`")[1]
+        for line in DOCS_PATH.read_text(encoding="utf-8").splitlines()
+        if line.startswith(("## `tripl ", "### `tripl "))
+    }
+    expected = _command_paths(build_parser())
+    assert expected, "walked the parser and found no commands — the walk is broken, not the docs"
+    missing = [path for path in expected if path not in headings]
+    assert not missing, f"cli.md has no section for: {missing}"
+
+
+def test_the_page_s_closed_claim_about_dismiss_actions_is_still_true() -> None:
+    """The other half of the drift-action contract, the half that faces a reader.
+
+    ``test_drifts_cmd.py::test_no_reachable_dismiss_invocation_can_send_accept``
+    already pins the constant to what goes on the wire. Nothing pinned it to the
+    page, so widening ``CLI_ALLOWED_DRIFT_ACTIONS`` would have shipped a
+    reachable action nobody could discover — and for a command that writes, an
+    undiscoverable action is the one an operator reaches for by guessing.
+
+    Asserting merely that each allowed action *appears* in the section would be
+    no test at all: the section names ``accept`` and ``reopen`` too, precisely to
+    say they are unavailable, so a substring check passes for an action the page
+    documents as impossible. What the page actually makes is a CLOSED claim —
+    "the only two actions reachable are X and Y" — with the complement named on
+    the other side. Both sentences are rebuilt from the constants here, so
+    moving an action between the tuples breaks whichever sentence went stale.
+    """
+    from tripl_cli.api.event_types import CLI_ALLOWED_DRIFT_ACTIONS, DRIFT_ACTIONS
+
+    text = DOCS_PATH.read_text(encoding="utf-8")
+    start = text.index("### `tripl drifts dismiss`")
+    # Whitespace-flattened: both sentences are prose the page wraps at 80
+    # columns, and one of them already straddles a line break. Matching the raw
+    # text would fail on a rewrap, which is not a change in what the page claims.
+    section = " ".join(text[start : text.index("\n## ", start)].split())
+
+    # Sorted, not tuple order: the constants have no production consumer that
+    # reads them positionally, so reordering one is a null change and must not
+    # fail CI. Membership is the whole contract.
+    counts = {2: "two", 3: "three", 4: "four"}
+    reachable = " and ".join(f"`{action}`" for action in sorted(CLI_ALLOWED_DRIFT_ACTIONS))
+    count = counts.get(len(CLI_ALLOWED_DRIFT_ACTIONS), str(len(CLI_ALLOWED_DRIFT_ACTIONS)))
+    claim = f"the only {count} actions reachable are {reachable}"
+    assert claim in section, f"cli.md's dismiss section does not claim: {claim!r}"
+
+    withheld = sorted(set(DRIFT_ACTIONS) - set(CLI_ALLOWED_DRIFT_ACTIONS))
+    complement = " and ".join(f"`{action}`" for action in withheld)
+    denial = f"{complement} have no spelling here at all"
+    assert denial in section, f"cli.md's dismiss section does not deny: {denial!r}"
 
 
 def test_the_packaged_compose_matches_the_repo_compose() -> None:
