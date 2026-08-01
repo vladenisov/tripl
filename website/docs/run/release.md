@@ -116,6 +116,73 @@ The first push to a brand-new GHCR package creates it as **private**. Make it
 public under *Packages → tripl → Package settings* if you want anonymous pulls.
 :::
 
+## The two Python packages
+
+The service is not the only thing this repository releases. Two Python
+distributions ship to PyPI on **their own tags**, and they version independently
+of the service and of each other — a service release does not imply a CLI
+release, and neither forces a version bump on the other.
+
+| Distribution | Tag | Workflow | What it is |
+|---|---|---|---|
+| `tripl` | `cli-v*` | [`publish-cli.yml`](https://github.com/vladenisov/tripl/blob/main/.github/workflows/publish-cli.yml) | The [operator CLI](./cli.md) — `install`, `upgrade`, `doctor`, `status`, `watch`, `scans`, `drifts` |
+| `tripl-mcp` | `mcp-v*` | [`publish-mcp.yml`](https://github.com/vladenisov/tripl/blob/main/.github/workflows/publish-mcp.yml) | The [MCP server](../integrate/mcp-server.md) for LLM agents |
+
+`bin/release.sh` does **not** touch either: it versions the service. Release a
+package by bumping its own `pyproject.toml` and pushing the matching tag.
+
+```bash
+# after bumping cli/pyproject.toml to 0.1.1
+git tag -a cli-v0.1.1 -m "tripl 0.1.1" && git push origin cli-v0.1.1
+```
+
+Both workflows gate before they publish: lint, type-check and the full test
+suite (repeated from `ci.yml` on purpose, so a release is never the first time
+they run), a check that the **tag matches the packaged version** — a mismatch
+publishes a number that can never be reused on PyPI — and a smoke test that
+installs the built wheel into a clean virtualenv and runs its console script.
+
+:::note Why the smoke test refuses a local link
+The smoke step installs from the index with **no** `--find-links`. That is the
+one gate catching what a lockfile hides: `uv.lock` pins a working dependency
+set, but a consumer gets only the declared constraints. `tripl-mcp` learned this
+expensively — an unbounded `mcp` floor resolved to 2.0, where
+`mcp.server.fastmcp` no longer exists, and the console script died on import.
+Pointing the step at a sibling `dist/` would turn that gate into a gate that
+hides the problem too.
+:::
+
+:::warning `tripl` must be published before the next `tripl-mcp` release
+`tripl-mcp` declares `tripl>=0.1,<0.2` and imports its HTTP client from that
+distribution, so until `tripl` is on the index, `publish-mcp.yml`'s smoke test
+**fails on purpose** — a released wheel with an unresolvable dependency is
+broken for everyone who installs it.
+:::
+
+### Authentication: Trusted Publishing
+
+Neither workflow stores an API token. PyPI verifies the workflow identity
+(repository + workflow filename + environment) against a **publisher configured
+on the project** and mints a short-lived credential for that one upload. A
+leaked repository secret cannot publish, because there is no secret to leak.
+
+The first release of a new distribution therefore needs a **pending publisher**
+created on PyPI before the tag is pushed, under *Your projects → Publishing*:
+
+| Field | Value |
+|---|---|
+| PyPI Project Name | `tripl` |
+| Owner | `vladenisov` |
+| Repository name | `tripl` |
+| Workflow name | `publish-cli.yml` |
+| Environment name | `pypi` |
+
+Rehearse against TestPyPI first: run the workflow manually
+(*Actions → Publish tripl → Run workflow*) with `index: testpypi`, which needs a
+second pending publisher differing only in the environment name (`testpypi`).
+`workflow_dispatch` only appears once the workflow file is on the **default
+branch**.
+
 ## Re-running a build for an existing tag
 
 If a push-triggered build fails transiently (e.g. a flaky network step), you do
