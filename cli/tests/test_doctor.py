@@ -572,3 +572,35 @@ def test_the_drift_budget_is_spread_across_projects_not_spent_in_order(
     assert any("/projects/beta/" in path for path in requested), (
         f"beta received no drift read at all: {sorted(requested)}"
     )
+
+
+def test_truncation_names_the_partly_examined_project_and_spares_the_complete_one(
+    tripl_api: FakeInstance, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An instance-wide "2 of 4 examined" points at no project at all.
+
+    Spreading the budget keeps every project in the output, but it also lands
+    unevenly by construction: here beta's one event type fits and alpha is read a
+    third of the way. If alpha's unread part holds the accepted missing_field
+    drift that deleted a FieldDefinition, "we did not look there" has to name
+    alpha - and must not smear beta, which was read in full (tripl-ey6j.9).
+    """
+    tripl_api.projects([make_project("alpha"), make_project("beta")])
+    for slug, type_ids in (("alpha", ["et-1", "et-2", "et-3"]), ("beta", ["et-9"])):
+        tripl_api.project(slug, make_project(slug=slug))
+        tripl_api.scans(slug, [])
+        tripl_api.event_types(slug, [make_event_type(type_id) for type_id in type_ids])
+        tripl_api.coverage(slug)
+        for type_id in type_ids:
+            tripl_api.drifts(slug, type_id, [])
+
+    _, document = run_doctor(capsys, "--max-event-types", "2")
+
+    truncations = [
+        finding
+        for finding in check_by_id(document, "drifts")["findings"]
+        if finding["code"] == "drift_scan_truncated"
+    ]
+    assert [(finding["project"], finding["evidence"]) for finding in truncations] == [
+        ("alpha", {"project": "alpha", "examined": 1, "total": 3})
+    ]

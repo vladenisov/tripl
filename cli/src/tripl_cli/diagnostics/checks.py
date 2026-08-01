@@ -548,31 +548,40 @@ def check_drifts(snapshot: Snapshot) -> Check:
                     },
                 )
             )
-
-    truncated = snapshot.event_types_seen > snapshot.event_types_examined
-    if truncated:
-        findings.append(
-            Finding(
-                code="drift_scan_truncated",
-                severity=Severity.WARN,
-                message=(
-                    f"Only {snapshot.event_types_examined} of {snapshot.event_types_seen} event "
-                    "types were checked for schema drift (--max-event-types). The remaining "
-                    f"{snapshot.event_types_seen - snapshot.event_types_examined} were not "
-                    "examined."
-                ),
-                evidence={
-                    "examined": snapshot.event_types_examined,
-                    "total": snapshot.event_types_seen,
-                },
+        # One finding PER PROJECT, next to that project's other drift findings.
+        # The budget is spread round-robin, so a run can leave one project fully
+        # examined and another at a third of it; a single instance-wide ratio
+        # reads as even coverage and names nobody, which is the one thing an
+        # operator needs here — "nothing found in X" and "X was barely looked at"
+        # must not print the same (tripl-ey6j.9).
+        coverage = snapshot.drift_coverage.get(slug)
+        if coverage is not None and coverage.truncated:
+            findings.append(
+                Finding(
+                    code="drift_scan_truncated",
+                    severity=Severity.WARN,
+                    project=slug,
+                    message=(
+                        f"Only {coverage.examined} of {coverage.total} event types in project "
+                        f"{slug!r} were checked for schema drift (--max-event-types). The "
+                        f"remaining {coverage.total - coverage.examined} were not examined."
+                    ),
+                    evidence={
+                        "project": slug,
+                        "examined": coverage.examined,
+                        "total": coverage.total,
+                    },
+                )
             )
-        )
 
+    truncated = any(coverage.truncated for coverage in snapshot.drift_coverage.values())
     status = worst(finding.severity for finding in findings)
     if truncated:
+        # The instance-wide ratio still earns its place as a one-line headline;
+        # which project it is short in is the finding's job, not the summary's.
         summary = (
             f"{snapshot.event_types_examined} of {snapshot.event_types_seen} event types were "
-            "examined for schema drift."
+            "examined for schema drift; the partly examined projects are named below."
         )
     elif findings:
         summary = f"{snapshot.event_types_examined} event type(s) examined; see below."

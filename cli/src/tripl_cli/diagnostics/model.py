@@ -166,6 +166,24 @@ class ProjectSelection:
     excluded_demo_count: int = 0
 
 
+@dataclass(frozen=True)
+class DriftCoverage:
+    """How much of ONE project's event-type list the drift budget reached.
+
+    Per project rather than per run: ``--max-event-types`` is spent round-robin
+    across projects (collect), so an instance-wide "40 of 90 examined" cannot say
+    WHICH project was only partly looked at — and naming it is the whole value of
+    reporting truncation at all (tripl-ey6j.9).
+    """
+
+    examined: int = 0
+    total: int = 0
+
+    @property
+    def truncated(self) -> bool:
+        return self.total > self.examined
+
+
 def _healthy() -> Fetched[JsonDict]:
     return Fetched(value={"status": "ok"}, status_code=200)
 
@@ -195,12 +213,22 @@ class Snapshot:
     jobs: Mapping[tuple[str, str], Fetched[JsonList]] = field(default_factory=dict)
     event_types: Mapping[str, Fetched[JsonList]] = field(default_factory=dict)
     drifts: Mapping[tuple[str, str], Fetched[JsonDict]] = field(default_factory=dict)
-    event_types_examined: int = 0
-    event_types_seen: int = 0
+    # Keyed by project slug. The instance-wide totals below are DERIVED from it
+    # rather than carried alongside it, so the per-project and the whole-run
+    # numbers cannot disagree.
+    drift_coverage: Mapping[str, DriftCoverage] = field(default_factory=dict)
 
     @property
     def selected_projects(self) -> tuple[JsonDict, ...]:
         return self.selection.projects if self.selection is not None else ()
+
+    @property
+    def event_types_examined(self) -> int:
+        return sum(coverage.examined for coverage in self.drift_coverage.values())
+
+    @property
+    def event_types_seen(self) -> int:
+        return sum(coverage.total for coverage in self.drift_coverage.values())
 
 
 @dataclass(frozen=True)

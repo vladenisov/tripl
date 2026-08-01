@@ -78,7 +78,9 @@ dev = [
 [tool.uv.sources]
 # Development and CI only: resolve `tripl` from the sibling checkout rather than
 # an index it is not on yet. uv strips this table from published metadata, so
-# the wheel keeps the plain ">=0.1,<0.2" constraint declared above.
+# the wheel keeps the plain ">=0.1,<0.2" constraint declared above. `../cli` is
+# also the only thing named `tripl` in the repo now — backend/ used to declare
+# that distribution name too and is `tripl-server` since tripl-ey6j.6.
 tripl = { path = "../cli" }
 
 [build-system]

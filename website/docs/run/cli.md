@@ -64,6 +64,10 @@ The distribution and the console script are both `tripl`; the *import* package
 is `tripl_cli`. That is deliberate — the service's own source package is
 `backend/src/tripl/`, so a distribution installing an importable `tripl` would
 shadow it in any environment holding both.
+
+The service is packaged as a *separate* distribution, `tripl-server`, and is
+never published to an index — it ships as a container image. So `tripl` on PyPI
+means this CLI and only this CLI.
 :::
 
 ## Configuration
@@ -346,14 +350,18 @@ The evidence is designed to be worked top to bottom:
 
 ### 6. `drifts` — schema drift
 
-One request per event type, bounded by `--max-event-types` (default 200). What
-the budget could not reach is **reported**, never silently omitted.
+One request per event type, bounded by `--max-event-types` (default 200). The
+budget is spread evenly across the selected projects rather than spent in project
+order, so no project is starved to zero reads by a larger one. What the budget
+could not reach is **reported**, never silently omitted — and reported **per
+project**, so "nothing found here" and "this project was barely looked at" never
+print the same.
 
 | Finding | What it means | What to do |
 |---------|---------------|------------|
 | `schema_field_deleted_by_accept` (warn) | A `missing_field` drift was **accepted**, and accepting one *deletes the field definition* from the event type. | Verify this was intended. The deletion is invisible in every other surface and is the mechanism by which a field silently vanished from a tracking plan. `resolved_at` and `resolved_by` (a user id) say when and by whom. Re-add the field if it was a mistake. |
 | `schema_drift_open` (warn) | Untriaged drifts — status `open`, or `snoozed` past its snooze. | Triage them in the app. `evidence.examples` names up to three; `untriaged_count` is the real total. |
-| `drift_scan_truncated` (warn) | More event types exist than the budget allowed. | Raise `--max-event-types`, or narrow the run with `--project`. Until then, treat the drift result as partial. |
+| `drift_scan_truncated` (warn) | This project has more event types than the budget reached. One finding **per affected project**; `evidence.examined` and `evidence.total` are that project's own counts, and a project examined in full raises no finding at all. | Raise `--max-event-types`, or narrow the run with `--project`. Until then, treat the named project's drift result as partial. |
 
 ### `endpoint_unexpected_status`
 
@@ -1098,7 +1106,7 @@ and `evidence`.
 | `scans` | `scan_interval_unknown` | warn | `interval` |
 | `drifts` | `schema_field_deleted_by_accept` | warn | `field_name`, `event_type_id`, `drift_id`, `resolved_at`, `resolved_by` |
 | `drifts` | `schema_drift_open` | warn | `untriaged_count`, `oldest_detected_at`, `examples` |
-| `drifts` | `drift_scan_truncated` | warn | `examined`, `total` |
+| `drifts` | `drift_scan_truncated` | warn | `project`, `examined`, `total` |
 | *several* | `endpoint_unexpected_status` | fail | `path`, `status_code`, `error` |
 
 All timestamps are RFC 3339 in UTC, second precision, with a literal `Z`.

@@ -27,6 +27,7 @@ from tripl_cli.diagnostics.model import (
     JOBS_WINDOW,
     SCOPE_PROJECT,
     CoverageStatus,
+    DriftCoverage,
     Fetched,
     Instance,
     JsonDict,
@@ -374,12 +375,17 @@ async def collect_doctor(
     # If the starved project is the one holding an accepted missing_field drift
     # that deleted a FieldDefinition, the check written to surface exactly that
     # reports nothing and says nothing about not having looked.
-    seen = 0
+    #
+    # drift_coverage then records what each project actually got. A split budget
+    # lands unevenly by construction, and one instance-wide ratio names no project:
+    # "we did not look there" is only useful when it says where (tripl-ey6j.9).
+    totals: dict[str, int] = {}
     per_project: list[list[tuple[str, str]]] = []
     for slug in slugs:
+        rows = event_types[slug].value or []
+        totals[slug] = len(rows)
         candidates: list[tuple[str, str]] = []
-        for event_type in event_types[slug].value or []:
-            seen += 1
+        for event_type in rows:
             event_type_id = text_of(event_type, "id")
             if event_type_id:
                 candidates.append((slug, event_type_id))
@@ -389,6 +395,9 @@ async def collect_doctor(
         for target in row:
             if target is not None and len(drift_targets) < options.max_event_types:
                 drift_targets.append(target)
+    examined: dict[str, int] = dict.fromkeys(slugs, 0)
+    for slug, _ in drift_targets:
+        examined[slug] += 1
     drifts: dict[tuple[str, str], Fetched[JsonDict]] = {}
     if drift_targets:
         dict_results = await gather_bounded(
@@ -414,8 +423,9 @@ async def collect_doctor(
         jobs=jobs,
         event_types=event_types,
         drifts=drifts,
-        event_types_examined=len(drift_targets),
-        event_types_seen=seen,
+        drift_coverage={
+            slug: DriftCoverage(examined=examined[slug], total=totals[slug]) for slug in slugs
+        },
     )
 
 

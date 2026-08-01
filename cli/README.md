@@ -9,7 +9,8 @@ The distribution is **`tripl`**, the console script is **`tripl`**, and the
 import package is **`tripl_cli`**. The last one is deliberate: the service's own
 source package is `backend/src/tripl/`, so a distribution that installed an
 importable `tripl` would shadow it in any environment holding both — a
-contributor's backend venv, for one.
+contributor's backend venv, for one. The service is packaged as the separate
+`tripl-server` distribution (tripl-ey6j.6), so `tripl` names this CLI alone.
 
 This package also owns the **shared async REST client** (`tripl_cli.client`).
 `tripl-mcp` depends on `tripl` and imports it from here rather than carrying a

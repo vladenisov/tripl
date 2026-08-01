@@ -31,6 +31,7 @@ from tripl_cli.diagnostics.model import (
     JOBS_WINDOW,
     SCOPE_PROJECT,
     Check,
+    DriftCoverage,
     Fetched,
     Instance,
     ProjectSelection,
@@ -83,8 +84,10 @@ def build_snapshot(
         data_sources=data_sources,
         event_types={SLUG: Fetched(value=list(event_types), status_code=200)},
         drifts=dict(drifts or {}),
-        event_types_seen=kwargs.pop("event_types_seen", len(event_types)),
-        event_types_examined=kwargs.pop("event_types_examined", len(drifts or {})),
+        drift_coverage=kwargs.pop(
+            "drift_coverage",
+            {SLUG: DriftCoverage(examined=len(drifts or {}), total=len(event_types))},
+        ),
         **kwargs,
     )
 
@@ -455,15 +458,15 @@ def test_a_truncated_drift_scan_can_never_report_pass(now: datetime) -> None:
         now,
         event_types=[make_event_type()],
         drifts={(SLUG, "et-1"): Fetched(value={"items": []}, status_code=200)},
-        event_types_seen=340,
-        event_types_examined=200,
+        drift_coverage={SLUG: DriftCoverage(examined=200, total=340)},
     )
 
     check = check_drifts(snapshot)
 
     assert check.status is Severity.WARN
     finding = finding_for(check, "drift_scan_truncated")
-    assert finding.evidence == {"examined": 200, "total": 340}
+    assert finding.project == SLUG
+    assert finding.evidence == {"project": SLUG, "examined": 200, "total": 340}
 
 
 # --------------------------------------------------------------------------
