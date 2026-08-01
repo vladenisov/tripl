@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
+from tripl_cli.api import events, send
 
 from tripl_mcp.runtime import client_for, ensure_branch_not_main, require_branch_id
 from tripl_mcp.tools._common import (
@@ -31,19 +32,20 @@ async def list_events(
     branch_id: str | None = None,
 ) -> dict[str, Any]:
     client = client_for(ctx)
-    data = await client.get(
-        f"/projects/{slug}/events",
-        params={
-            "search": search,
-            "status": status,
-            "tag": tag,
-            "meta_value": meta_value,
-            "event_type_id": event_type_id,
-            "silent_since_days": silent_since_days,
-            "offset": offset,
-            "limit": limit,
-            "branch": branch_id,
-        },
+    data = await send(
+        client,
+        events.list_events(
+            slug,
+            search=search,
+            status=status,
+            tag=tag,
+            meta_value=meta_value,
+            event_type_id=event_type_id,
+            silent_since_days=silent_since_days,
+            offset=offset,
+            limit=limit,
+            branch=branch_id,
+        ),
     )
     items = data.get("items", []) if isinstance(data, dict) else []
     return {
@@ -60,7 +62,7 @@ async def get_event(
     branch_id: str | None = None,
 ) -> Any:
     client = client_for(ctx)
-    return await client.get(f"/projects/{slug}/events/{event_id}", params={"branch": branch_id})
+    return await send(client, events.get_event(slug, event_id, branch=branch_id))
 
 
 async def create_event(
@@ -88,9 +90,7 @@ async def create_event(
     ):
         if value is not None:
             body[key] = value
-    data = await client.post(
-        f"/projects/{slug}/events", params={"branch": branch_id}, json_body=body
-    )
+    data = await send(client, events.create_event(slug, body, branch=branch_id))
     return with_mutation_warnings(data)
 
 
@@ -104,11 +104,7 @@ async def update_event(
     require_branch_id(branch_id)
     client = client_for(ctx)
     await ensure_branch_not_main(client, slug, branch_id)
-    data = await client.patch(
-        f"/projects/{slug}/events/{event_id}",
-        params={"branch": branch_id},
-        json_body=patch,
-    )
+    data = await send(client, events.update_event(slug, event_id, patch, branch=branch_id))
     return with_mutation_warnings(data)
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
+from tripl_cli.api import monitoring, send
 
 from tripl_mcp.runtime import client_for
 from tripl_mcp.tools._common import READ_ONLY, summarize_collection
@@ -15,8 +16,8 @@ async def monitors_summary(
     ctx: Context,  # type: ignore[type-arg]
 ) -> dict[str, Any]:
     client = client_for(ctx)
-    summary = await client.get(f"/projects/{slug}/monitors-summary")
-    signals = await client.get(f"/projects/{slug}/anomalies/signals")
+    summary = await send(client, monitoring.get_monitors_summary(slug))
+    signals = await send(client, monitoring.list_signals(slug))
     return {
         "summary": summary,
         "top_anomaly_signals": summarize_collection(signals),
@@ -28,9 +29,9 @@ async def reconciliation_status(
     ctx: Context,  # type: ignore[type-arg]
 ) -> dict[str, Any]:
     client = client_for(ctx)
-    coverage = await client.get(f"/projects/{slug}/reconciliation/coverage")
-    dead = await client.get(f"/projects/{slug}/reconciliation/dead-events")
-    shadow = await client.get(f"/projects/{slug}/reconciliation/shadow-events")
+    coverage = await send(client, monitoring.get_coverage(slug))
+    dead = await send(client, monitoring.list_dead_events(slug))
+    shadow = await send(client, monitoring.list_shadow_events(slug))
     return {
         "coverage": coverage,
         "dead_events": summarize_collection(dead),

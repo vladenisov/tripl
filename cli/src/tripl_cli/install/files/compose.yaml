@@ -1,0 +1,224 @@
+# Production / deployment stack — runs the PUBLISHED release image.
+#
+#   docker compose pull && docker compose up -d
+#
+# `tripl install` writes this exact file (minus the `mcp` service's build block,
+# which needs a source tree) into the directory it provisions, alongside
+# infra/rabbitmq/rabbitmq.conf and a generated .env; `tripl upgrade --to X.Y.Z`
+# moves the TRIPL_VERSION pin. The packaged copy lives at
+# cli/src/tripl_cli/install/files/compose.yaml and a contract test asserts it is
+# byte-identical to this one, so edit here and re-copy (tripl-ey6j.3).
+#
+# ONE `app` container serves the JSON API *and* the built SPA on a single port
+# (FastAPI app.frontend()), so there is NO separate frontend/nginx container.
+# The same image runs the API, the one-shot migrate, and the Celery worker/beat
+# — only the command differs.
+#
+# The image and tag are configurable via .env:
+#   TRIPL_IMAGE    (default ghcr.io/vladenisov/tripl)
+#   TRIPL_VERSION  (default latest — pin to a released tag e.g. 1.4.0 in prod)
+#
+# Required secrets in .env (generate them — see website/docs/run/deployment.md):
+#   POSTGRES_PASSWORD, RABBITMQ_PASSWORD, ENCRYPTION_KEY, SECRET_KEY, APP_BASE_URL
+#
+# Build & publish a new image with `bin/release.sh` (see website/docs/run/release.md).
+# For local development with hot-reload, use compose.dev.yaml instead:
+#   docker compose -f compose.dev.yaml up --watch
+#
+# Schema upgrades run once via the `migrate` one-shot before app/workers start,
+# so a multi-worker deploy never races the upgrade (see tripl-u65h.9 / .18).
+x-app-image: &app-image "${TRIPL_IMAGE:-ghcr.io/vladenisov/tripl}:${TRIPL_VERSION:-latest}"
+
+x-app-environment: &app-environment
+  # Credentials come from .env and MUST NOT be the dev defaults: the app's
+  # assert_production_ready() refuses URLs containing tripl:tripl / guest:guest
+  # when DEBUG is off (the prod default). Generate them — see website/docs/run/deployment.md.
+  DATABASE_URL: postgresql+asyncpg://tripl:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/tripl
+  SYNC_DATABASE_URL: postgresql+psycopg://tripl:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/tripl
+  RABBITMQ_URL: amqp://tripl:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD}@rabbitmq:5672//
+  REDIS_URL: redis://redis:6379/0
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY}
+  SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
+  APP_BASE_URL: ${APP_BASE_URL:?set APP_BASE_URL e.g. https://tripl.example.com}
+  # The prod stack assumes TLS in front of :8000, so secure cookies stay on.
+  # To preview over plain HTTP locally, use compose.dev.yaml instead.
+  SESSION_COOKIE_SECURE: "true"
+  SECURITY_HEADERS_ENABLED: "true"
+  HSTS_ENABLED: ${HSTS_ENABLED:-true}
+  RATE_LIMIT_ENABLED: "true"
+  # SERVE_FRONTEND/FRONTEND_DIST_DIR are baked into the image. The app is the
+  # edge here, so rate_limit_trust_forwarded_for stays at its False default —
+  # set it (and uvicorn --forwarded-allow-ips) true only behind a trusted proxy.
+  LOG_JSON: ${LOG_JSON:-true}
+  # Demo kill switches. Without these two lines a value set in .env never reaches
+  # the container, so the documented rollback switch does nothing (tripl-2su6.16).
+  # DEMO_ENABLED gates demo provisioning (create + reset); DEMO_RUNTIME_ENABLED
+  # gates the background tick that keeps a demo fresh. Neither touches real
+  # projects.
+  DEMO_ENABLED: ${DEMO_ENABLED:-true}
+  DEMO_RUNTIME_ENABLED: ${DEMO_RUNTIME_ENABLED:-true}
+  # Everything below is documented in website/docs/run/configuration.md as an
+  # environment variable, so it has to actually reach the container. The same
+  # omission is what made the DEMO_ENABLED switch inert (tripl-2su6.16) and then
+  # REGISTRATION_MODE — whose whole purpose is closing self-service signup on a
+  # public instance (tripl-jfm3.101).
+  #
+  # `${VAR:-}` materialises an UNSET variable as the empty STRING in the
+  # container, not as an absent one. Falling through to the application default
+  # is therefore not free: it works because Settings sets
+  # `env_ignore_empty=True` (backend/src/tripl/config.py). Without that flag the
+  # five typed members of this list ("" parsed as a bool/int/enum) crash
+  # `Settings()` at import and every container exits on boot (tripl-ey6j.3).
+  REGISTRATION_MODE: ${REGISTRATION_MODE:-}
+  CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-}
+  CONTENT_SECURITY_POLICY: ${CONTENT_SECURITY_POLICY:-}
+  SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-}
+  SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-}
+  HSTS_MAX_AGE_SECONDS: ${HSTS_MAX_AGE_SECONDS:-}
+  RATE_LIMIT_LOGIN_PER_MINUTE: ${RATE_LIMIT_LOGIN_PER_MINUTE:-}
+  RATE_LIMIT_REGISTER_PER_HOUR: ${RATE_LIMIT_REGISTER_PER_HOUR:-}
+  # Only meaningful behind a trusted proxy — see the note above about the app
+  # being the edge by default.
+  RATE_LIMIT_TRUST_FORWARDED_FOR: ${RATE_LIMIT_TRUST_FORWARDED_FOR:-}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_USE_TLS: ${SMTP_USE_TLS:-}
+  SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-}
+  PROMETHEUS_METRICS_ENABLED: ${PROMETHEUS_METRICS_ENABLED:-}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-}
+  LOG_LEVEL: ${LOG_LEVEL:-}
+  REQUEST_ID_HEADER: ${REQUEST_ID_HEADER:-}
+  AI_ENABLED: ${AI_ENABLED:-}
+  AI_BASE_URL: ${AI_BASE_URL:-}
+  AI_MODEL: ${AI_MODEL:-}
+  AI_API_KEY: ${AI_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  SEARCH_EMBEDDINGS_ENABLED: ${SEARCH_EMBEDDINGS_ENABLED:-}
+  SEARCH_EMBEDDING_API_KEY: ${SEARCH_EMBEDDING_API_KEY:-}
+
+services:
+  postgres:
+    restart: unless-stopped
+    image: pgvector/pgvector:0.8.2-pg18-trixie
+    environment:
+      POSTGRES_USER: tripl
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: tripl
+      PGDATA: /var/lib/postgresql/18/docker
+    volumes:
+      - pgdata18:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tripl"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    restart: unless-stopped
+    image: rabbitmq:3.13-management
+    environment:
+      RABBITMQ_DEFAULT_USER: tripl
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD}
+    volumes:
+      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    restart: unless-stopped
+    image: redis:8.6.2-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # One-shot schema upgrade; app + workers wait for it to complete.
+  migrate:
+    image: *app-image
+    command: ["alembic", "upgrade", "head"]
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # The ONE app container: JSON API + built SPA on a single port.
+  app:
+    restart: unless-stopped
+    image: *app-image
+    environment: *app-environment
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  celery-worker:
+    restart: unless-stopped
+    image: *app-image
+    command: ["celery", "-A", "tripl.worker.celery_app", "worker", "--loglevel=info"]
+    environment: *app-environment
+    healthcheck:
+      disable: true
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  celery-beat:
+    restart: unless-stopped
+    image: *app-image
+    command: ["celery", "-A", "tripl.worker.celery_app", "beat", "--loglevel=info", "--schedule", "/tmp/celerybeat-schedule"]
+    environment: *app-environment
+    healthcheck:
+      disable: true
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # OPTIONAL MCP server for agent runtimes — profile-gated, never starts by
+  # default. Streamable-HTTP transport with per-request Authorization
+  # pass-through (keys are never stored server-side); see
+  # website/docs/integrate/mcp-server.md. Enable with:
+  #   docker compose --profile mcp up -d
+  # Uses the published MCP image when available (TRIPL_MCP_IMAGE); from a source
+  # checkout, `docker compose --profile mcp build mcp` builds mcp-server/.
+  mcp:
+    restart: unless-stopped
+    image: "${TRIPL_MCP_IMAGE:-ghcr.io/vladenisov/tripl-mcp}:${TRIPL_VERSION:-latest}"
+    # The image ENTRYPOINT is already `tripl-mcp`, so command holds flags only.
+    # --host 0.0.0.0 is required for the published port to be reachable.
+    command: ["--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8765"]
+    profiles: [mcp]
+    ports:
+      # Bound to the host loopback on purpose: this proxy forwards write-capable
+      # tk_w_ keys verbatim and has no auth of its own. Put it behind the same
+      # reverse proxy / trusted network as the app before widening this bind.
+      - "127.0.0.1:8765:8765"
+    environment:
+      TRIPL_BASE_URL: http://app:8000
+    depends_on:
+      app:
+        condition: service_started
+
+volumes:
+  pgdata18:

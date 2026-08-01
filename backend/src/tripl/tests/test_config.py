@@ -184,3 +184,39 @@ def test_registration_mode_is_case_and_whitespace_insensitive() -> None:
 def test_registration_mode_rejects_unknown_values() -> None:
     with pytest.raises(ValidationError, match="registration_mode must be one of"):
         Settings(registration_mode="invite-only")
+
+
+def test_empty_env_values_fall_back_to_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty environment variable means "unset", not "parse this as a bool".
+
+    This is not hypothetical tidiness. compose.yaml forwards ~25 optional
+    settings as `VAR: ${VAR:-}` so that a value placed in .env actually reaches
+    the container — the omission that made DEMO_ENABLED (tripl-2su6.16) and then
+    REGISTRATION_MODE (tripl-jfm3.101) inert. But Compose's map syntax
+    materialises an undefined variable as the empty STRING, and before
+    `env_ignore_empty` pydantic raised five validation errors on exactly the
+    five typed members of that list. `Settings()` is constructed at module
+    import, so the app, migrate, worker and beat containers all exited on boot
+    of every fresh `docker compose up` — which is precisely the machine
+    `tripl install` promises to take from nothing to running (tripl-ey6j.3).
+
+    The five names below are the five that failed, reproduced from a .env
+    derived from .env.example; the rest of the passthrough list is `str`, where
+    "" and the default coincide.
+    """
+    for name in (
+        "REGISTRATION_MODE",
+        "RATE_LIMIT_TRUST_FORWARDED_FOR",
+        "SMTP_PORT",
+        "SMTP_USE_TLS",
+        "AI_ENABLED",
+    ):
+        monkeypatch.setenv(name, "")
+
+    settings = Settings()
+
+    assert settings.registration_mode == REGISTRATION_OPEN
+    assert settings.rate_limit_trust_forwarded_for is False
+    assert settings.smtp_port == 587
+    assert settings.smtp_use_tls is True
+    assert settings.ai_enabled is False

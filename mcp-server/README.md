@@ -5,7 +5,7 @@ agent-safe toolset over a **running tripl instance**. It is a pure HTTP client
 of the tripl REST API (`/api/v1`) — it imports no backend code and is not
 mounted into the FastAPI app.
 
-- 17 curated tools (14 read, 3 write): plan search, event read/write, event
+- 18 curated tools (15 read, 3 write): plan search, event read/write, event
   types & fields, variables, branches & diffs, scans, monitors, reconciliation,
   projects.
 - Read tools carry `readOnlyHint`; write tools require a `tk_w_` API key.
@@ -61,7 +61,7 @@ From a local checkout:
 }
 ```
 
-Create API keys in the tripl app under **Account → API keys**. Use a
+Create API keys in the tripl app under **Settings → API keys**. Use a
 project-scoped `tk_r_` key for read-only agents; reserve `tk_w_` keys for
 agents explicitly allowed to edit the plan.
 
