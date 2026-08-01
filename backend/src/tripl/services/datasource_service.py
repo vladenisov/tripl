@@ -266,30 +266,43 @@ _UNREACHABLE_HINTS = (
 )
 _AUTH_HINTS = ("auth", "password", "access denied", "credential", "permission")
 
+# Every message below opens with this. A connection probe is not a scan:
+# ``worker.tasks._errors.user_facing_error`` GUARANTEES a "Scan failed" prefix
+# because ``frontend/src/lib/scanError.ts`` keys on it, which reads as nonsense
+# under a data source's Test connection button (tripl-7bol made that prefix a
+# contract rather than an accident, so the mismatch is now written down).
+_TEST_FAILED = "Connection test failed"
+
 
 def _friendly_test_error(exc: Exception) -> str:
     """Map a raw connection-probe exception to a safe, user-facing message.
 
+    THE owner of ``DataSource.last_test_message`` wording. Both probe paths route
+    through here — the in-request one below and the Celery task
+    ``worker.tasks.scan.test_connection`` — so one failed probe persists one
+    string no matter which path ran. They used to sanitise separately, and the
+    worker's copy told the operator their *scan* had failed (tripl-rcn8).
+
     Never echoes host/port/driver/credential internals — those go to logs only.
     """
     # A capability error is a message tripl authored about a configuration the
-    # operator can act on ("PostgreSQL 13 is too old: date_bin() needs 14"). It holds
-    # no host, port or credential, and generalizing it away leaves the operator
-    # re-checking settings that are all, in fact, correct. Surface it verbatim.
+    # operator can act on ("PostgreSQL 13 is too old: date_bin() needs 14",
+    # "BigQuery: host (project_id) is required"). It holds no host, port or
+    # credential, and generalizing it away leaves the operator re-checking
+    # settings that are all, in fact, correct. Surface it verbatim.
     if isinstance(exc, WarehouseCapabilityError):
-        return f"Connection test failed: {exc}"
+        return f"{_TEST_FAILED}: {exc}"
 
     text = str(exc).lower()
     if any(hint in text for hint in _TIMEOUT_HINTS):
-        return "Connection test failed: the data source did not respond in time."
+        return f"{_TEST_FAILED}: the data source did not respond in time."
     if any(hint in text for hint in _UNREACHABLE_HINTS):
         return (
-            "Connection test failed: could not reach the data source — "
-            "check the host, port, and network."
+            f"{_TEST_FAILED}: could not reach the data source — check the host, port, and network."
         )
     if any(hint in text for hint in _AUTH_HINTS):
-        return "Connection test failed: authentication was rejected — check the credentials."
-    return "Connection test failed. Check the connection settings and try again."
+        return f"{_TEST_FAILED}: authentication was rejected — check the credentials."
+    return f"{_TEST_FAILED}. Check the connection settings and try again."
 
 
 def _run_adapter_test(ds: DataSource) -> tuple[bool, str]:

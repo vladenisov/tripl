@@ -172,10 +172,15 @@ async def get_editor_user(request: Request, session: SessionDep, user: CurrentUs
     return user
 
 
-async def get_owner_user(request: Request, user: CurrentUserDep) -> User:
+def _owner_gate(request: Request, user: User, *, key_reachable: bool) -> User:
+    """The whole owner rule, in one place, with exactly one flag to differ on.
+
+    Both owner gates below call this: they must never drift on the role or scope
+    checks, only on whether a Bearer token is admitted at all.
+    """
     require_write_scope(request)
     require_owner(user)
-    if getattr(request.state, "api_key_scope", None) is not None:
+    if not key_reachable and getattr(request.state, "api_key_scope", None) is not None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Owner session required",
@@ -183,9 +188,57 @@ async def get_owner_user(request: Request, user: CurrentUserDep) -> User:
     return user
 
 
+async def get_owner_user(request: Request, user: CurrentUserDep) -> User:
+    """The strict owner gate: owner role **and** an interactive browser session.
+
+    An API key is refused whatever its scope and whoever owns it, because
+    "owner-only" here means security and instance administration — minting users
+    and invitations, warehouse credentials, instance settings, the audit feed,
+    authoring the SQL a scan runs, deleting a project. A leaked ``tk_w_`` must not
+    be able to invite a member or point a warehouse credential at a new query, so
+    those stay browser-only.
+
+    This is the default owner gate; :func:`get_key_reachable_owner_user` is the
+    narrow, enumerated exception. Reach for this one unless the owner has
+    explicitly decided a specific route is agent-safe.
+    """
+    return _owner_gate(request, user, key_reachable=False)
+
+
+async def get_key_reachable_owner_user(request: Request, user: CurrentUserDep) -> User:
+    """The owner gate an agent can pass: owner **role**, ``write`` scope, key OK.
+
+    Same role and scope demands as :func:`get_owner_user` — it only drops the
+    "must be a cookie session" clause, so an editor's key and any ``read`` key are
+    still 403. Added for the bounded metrics replay (tripl-cj5z): no Bearer client
+    could trigger one, which is why tripl-mcp ships no replay tool and the CLI
+    dropped ``tripl scans replay``.
+
+    Which routes take this gate is a security decision per route, not a
+    convenience: ``test_owner_key_gates.py`` enumerates them from the live app and
+    fails the build when a new route picks it up, so the exception list cannot
+    grow by copy-paste.
+    """
+    return _owner_gate(request, user, key_reachable=True)
+
+
 WriteUserDep = Annotated[User, Depends(get_write_user)]
 EditorUserDep = Annotated[User, Depends(get_editor_user)]
 OwnerUserDep = Annotated[User, Depends(get_owner_user)]
+KeyReachableOwnerUserDep = Annotated[User, Depends(get_key_reachable_owner_user)]
+
+# The route audits in tests/ classify every route by the gate it carries. Each
+# audit used to spell its own literal set of gate functions, so adding a gate
+# meant remembering every copy — and a forgotten copy does not fail, it silently
+# reclassifies the new route as ungated. Spelled once here, next to the gates
+# themselves, so a new gate is added in the same edit that defines it.
+WRITE_GATES = frozenset(
+    {get_write_user, get_editor_user, get_owner_user, get_key_reachable_owner_user}
+)
+# Gates that resolve the path's project as well as the caller's role:
+# ``get_editor_user`` runs :func:`require_project_mutation_access`, and the two
+# owner gates demand the instance-owner role, which passes it by definition.
+PROJECT_SCOPED_GATES = frozenset({get_editor_user, get_owner_user, get_key_reachable_owner_user})
 
 
 async def get_branch_id_override(request: Request, session: SessionDep) -> uuid.UUID | None:

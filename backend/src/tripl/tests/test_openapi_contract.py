@@ -58,14 +58,13 @@ def test_live_schema_carries_no_servers_block(monkeypatch: pytest.MonkeyPatch) -
     """``app.openapi()`` must stay independent of the environment.
 
     It is what ``bin/sync-api-types.sh`` and ``bin/dump-openapi.sh`` call, with
-    no database and whatever env the generating machine happens to have. A
+    no database and whatever env the generating machine happens to have, so a
     ``servers`` entry baked in here would make the committed artifact above
-    differ between contributors purely by APP_BASE_URL, and would sit stale
-    underneath the per-request block the route adds (tripl-mfqm).
+    differ between contributors purely by APP_BASE_URL.
 
     ``app_base_url`` is set for the duration of the assertion on purpose. It is
     empty in the test environment, so asserting against the ambient value would
-    pass just as happily against the pre-fix code that baked
+    pass just as happily against the code that baked
     ``[{"url": settings.app_base_url}]`` in at import — the test has to prove the
     schema IGNORES the setting, not that the setting happens to be blank.
     """
@@ -78,32 +77,39 @@ def test_live_schema_carries_no_servers_block(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.asyncio
-async def test_openapi_route_resolves_servers_from_the_runtime_override(
+async def test_served_document_never_advertises_app_base_url(
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Settings -> Runtime promises "applies immediately", and the published
-    spec is part of that.
+    """The document clients fetch is the document we commit — no ``servers``.
 
-    ``app_base_url`` used to be read once at import, so an owner correcting a
-    wrong base URL fixed reset links and alert links while generated clients and
-    the Swagger "Try it out" panel kept pointing at the old origin until the API
-    restarted (tripl-mfqm). Pinning the env value to "" also covers the other
-    half of the contract: no ``servers`` key at all when nothing is configured.
+    With no ``servers`` block a client resolves the API against the URL it
+    fetched the spec from, which is right for every origin the instance answers
+    on. Advertising ``app_base_url`` instead was one origin guessed in advance,
+    and production proved the guess wrong: a spec served over https advertised
+    the deployment's plaintext internal address, so "Try it out" became a
+    cross-origin call the browser blocked as mixed content — and one CORS
+    would have refused too, since ``cors_origins()`` derives from the same
+    value (tripl-ouxw). Resolving it per request from the runtime override
+    (tripl-mfqm) only made the wrong answer editable, not right.
+
+    Both sources of ``app_base_url`` are set to non-empty values here, because
+    an assertion against the ambient (blank) config would pass against either
+    implementation.
     """
-    monkeypatch.setattr(settings, "app_base_url", "")
-
-    before = await client.get("/openapi.json")
-    assert before.status_code == 200
-    assert "servers" not in before.json()
-
+    monkeypatch.setattr(settings, "app_base_url", "https://from-env.example")
     patched = await client.patch(
         "/api/v1/settings",
-        json={"runtime": {"app_base_url": "https://tripl.example.com"}},
+        json={"runtime": {"app_base_url": "https://from-override.example"}},
     )
     assert patched.status_code == 200
 
-    # Same process, same app object — no restart in between.
-    after = await client.get("/openapi.json")
-    assert after.status_code == 200
-    assert after.json()["servers"] == [{"url": "https://tripl.example.com"}]
+    served = await client.get("/openapi.json")
+    assert served.status_code == 200
+    assert "servers" not in served.json()
+    # Whole-document compare, not just the ``servers`` key: it pins that the HTTP
+    # response is not a second, near-differing spelling of the spec at all. With
+    # the snapshot test above (snapshot == app.openapi()) this transitively pins
+    # served == the committed artifact, while each test still fails for its own
+    # reason — a stale snapshot does not also indict the route.
+    assert _canonical(served.json()) == _canonical(app.openapi())

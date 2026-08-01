@@ -14,7 +14,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
-from tripl.api.deps import get_editor_user, get_owner_user
+from tripl.api.deps import PROJECT_SCOPED_GATES
 from tripl.main import app
 from tripl.models.project import Project
 from tripl.tests.conftest import TestSessionLocal
@@ -125,14 +125,19 @@ async def _call(client: AsyncClient, method: str, slug: str, suffix: str, body: 
 def test_every_project_scoped_mutation_carries_a_project_gate() -> None:
     """A new ``/projects/{slug}/...`` mutation must not ship with an unscoped gate.
 
-    ``get_editor_user`` and ``get_owner_user`` are the only two dependencies that
-    resolve the path's project: the first runs
-    :func:`require_project_mutation_access`, the second is instance-owner-only and
-    therefore passes it by definition. A slug-scoped mutation wired to bare
-    ``get_write_user`` (or to no gate at all) would reopen tripl-jfm3.19, so fail
-    the build instead of waiting for the next audit.
+    ``PROJECT_SCOPED_GATES`` holds every dependency that resolves the path's
+    project: ``get_editor_user`` runs :func:`require_project_mutation_access`,
+    and the two owner gates are instance-owner-only and therefore pass it by
+    definition. A slug-scoped mutation wired to bare ``get_write_user`` (or to no
+    gate at all) would reopen tripl-jfm3.19, so fail the build instead of waiting
+    for the next audit.
+
+    Read from ``deps`` rather than spelled here: this audit went stale the moment
+    tripl-cj5z added a third gate, and a literal set means the audit silently
+    reclassifies the new gate's routes as ungated — an audit that fails open is
+    worse than none.
     """
-    project_gates = {get_editor_user, get_owner_user}
+    project_gates = PROJECT_SCOPED_GATES
     offenders: list[str] = []
 
     for path, route in iter_api_routes():

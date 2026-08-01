@@ -4,7 +4,6 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Final
 
 from brotli_asgi import BrotliMiddleware
 from fastapi import FastAPI, Request
@@ -13,7 +12,6 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
 
 from tripl.config import settings
-from tripl.services import app_settings_service
 from tripl.services.app_settings_service import apply_startup_service_overrides
 
 # Apply persisted Security/Storage/Observability overrides onto `settings` before
@@ -23,7 +21,6 @@ from tripl.services.app_settings_service import apply_startup_service_overrides
 # those overrides "take effect on the next deploy", as the settings UI states.
 apply_startup_service_overrides()
 
-from tripl.api.deps import SessionDep  # noqa: E402
 from tripl.api.v1.router import router as v1_router  # noqa: E402
 from tripl.database import engine  # noqa: E402
 from tripl.logging_config import configure_logging  # noqa: E402
@@ -93,12 +90,29 @@ _OPENAPI_TAGS = [
     {"name": "settings", "description": "Instance-level application settings."},
 ]
 
-# No `servers=` here on purpose. The block that advertises the deployed base URL
-# belongs in the spec, but `app.openapi()` is also what bin/sync-api-types.sh and
-# bin/dump-openapi.sh call to write the committed artifacts, and those have to be
-# reproducible from a checkout alone — baking APP_BASE_URL in would make the
-# generated file depend on whichever env the generating machine happened to have.
-# It is injected per request by the /openapi.json route below instead (tripl-mfqm).
+# No `servers=` here, and none injected per request either — this instance never
+# tells a client where it lives. An OpenAPI document with no `servers` defaults to
+# `[{"url": "/"}]` resolved against the URL the document was fetched from (OpenAPI
+# 3.1, OpenAPI Object), so generated clients and the /docs "Try it out" panel use the
+# origin they already reached this instance on. That is right for every origin the
+# instance answers on — public hostname, internal address, localhost in dev — and
+# needs no configuration to stay right.
+#
+# The alternative, advertising `app_base_url`, shipped and then failed in
+# production: the spec was served over https and advertised the plaintext internal
+# address the deployment happened to have in APP_BASE_URL, so "Try it out" issued a
+# cross-origin request the browser blocked as mixed content and CORS would have
+# refused anyway — `Settings.cors_origins()` derives the allow-list from that same
+# value, so a wrong `app_base_url` breaks both halves in the same direction
+# (tripl-ouxw). Resolving it per request from the Settings -> Runtime override only
+# made the wrong value correctable without a restart (tripl-mfqm); no single
+# absolute URL is right for an instance reachable at several origins.
+#
+# It also keeps the served document identical to the committed backend/openapi.json
+# that bin/dump-openapi.sh writes and test_openapi_contract pins, instead of a
+# second, near-identical spelling of the same spec that only exists over HTTP.
+# FastAPI's own /openapi.json handler adds the --root-path prefix and nothing else,
+# and only when the app is mounted under one.
 app = FastAPI(
     title="tripl",
     version="0.1.0",
@@ -152,59 +166,6 @@ app.add_middleware(
 )
 
 app.include_router(v1_router)
-
-
-# FastAPI already registered a handler for this path in ``FastAPI.__init__``, and
-# route matching is first-wins, so the replacement below only takes effect once
-# the original is dropped. Read the path off the app rather than hardcoding it so
-# the two stay pinned together.
-#
-# ``openapi_url`` is Optional because passing None is the documented way to turn
-# the schema off entirely. Registration is therefore conditional rather than
-# falling back to a literal "/openapi.json": an ``or`` default would silently
-# RE-PUBLISH the spec on a deployment that had deliberately disabled it.
-_OPENAPI_URL: Final[str | None] = app.openapi_url
-
-
-async def openapi_spec(request: Request, session: SessionDep) -> JSONResponse:
-    """Serve the OpenAPI document with a `servers` block resolved at request time.
-
-    `app_base_url` is editable in Settings -> Runtime, and every other consumer
-    (auth reset links, alert URL builders) reads it through
-    ``build_runtime_config`` — which is what makes the admin UI's "Runtime
-    applies immediately" promise true. Baking it into ``app.openapi()`` at import
-    meant an owner who corrected a wrong base URL fixed their links but kept
-    publishing the stale origin to generated clients and the Swagger "Try it out"
-    panel until the API restarted, with nothing on screen explaining why
-    (tripl-mfqm).
-    """
-    try:
-        overrides = await app_settings_service.get_service_overrides(session)
-        app_base_url = app_settings_service.build_runtime_config(overrides).app_base_url
-    except Exception:  # noqa: BLE001  — a stale servers block beats a broken /docs
-        logger.warning(
-            "Falling back to env app_base_url for the OpenAPI servers block",
-            exc_info=True,
-        )
-        app_base_url = app_settings_service.env_runtime_config().app_base_url
-
-    servers: list[dict[str, str]] = [{"url": app_base_url}] if app_base_url else []
-    # Mirrors FastAPI's own /openapi.json handler: a deployment mounted under
-    # --root-path needs that prefix advertised first, or "Try it out" posts to a
-    # path the proxy never routes.
-    root_path = request.scope.get("root_path", "").rstrip("/")
-    if root_path and app.root_path_in_servers and root_path not in {s["url"] for s in servers}:
-        servers.insert(0, {"url": root_path})
-
-    schema = app.openapi()
-    # Shallow copy rather than mutation: ``app.openapi()`` hands back the cached
-    # dict every caller shares, including the contract test's snapshot compare.
-    return JSONResponse({**schema, "servers": servers} if servers else schema)
-
-
-if _OPENAPI_URL:
-    app.router.routes = [r for r in app.router.routes if getattr(r, "path", None) != _OPENAPI_URL]
-    app.add_api_route(_OPENAPI_URL, openapi_spec, methods=["GET"], include_in_schema=False)
 
 
 # Serve the built SPA from this same process when enabled — a single-container

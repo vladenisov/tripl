@@ -8,6 +8,7 @@ from tripl.api.deps import (
     OwnerUserDep,
     SessionDep,
     get_editor_user,
+    get_key_reachable_owner_user,
     get_owner_user,
 )
 from tripl.models.scan_config import ScanConfig
@@ -42,6 +43,13 @@ router = APIRouter(
 # the right to run a config an owner already authored (see ``run_scan``).
 _owner_required = [Depends(get_owner_user)]
 _editor_required = [Depends(get_editor_user)]
+# Replaying an existing config over an explicit window is the one owner-only scan
+# action an owner's ``tk_w_`` key may take (tripl-cj5z). It re-runs SQL an owner
+# already authored through the session-only routes above, over a window the caller
+# names, and writes nothing but metric values for that config — so the credential
+# reach a leaked key gains is bounded by what an owner already approved, unlike
+# authoring or editing ``base_query``, which stays browser-only.
+_owner_or_owner_key_required = [Depends(get_key_reachable_owner_user)]
 
 
 @router.get("", response_model=list[ScanConfigResponse])
@@ -202,7 +210,7 @@ async def apply_scan_event_groups(
     "/{scan_id}/metrics/replay",
     response_model=ScanJobResponse,
     status_code=201,
-    dependencies=_owner_required,
+    dependencies=_owner_or_owner_key_required,
 )
 async def replay_scan_metrics(
     session: SessionDep,

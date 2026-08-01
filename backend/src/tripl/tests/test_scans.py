@@ -1425,17 +1425,28 @@ class TestScanConfigsCRUD:
             result = scan_tasks.test_connection.run(str(data_source_id))
 
             # The returned error is sanitized too — no raw driver text escapes.
+            # Worded as a CONNECTION TEST, not a scan: the probe now shares the
+            # data-source sanitiser with the sync path, so one field cannot carry
+            # two different strings depending on which path wrote it (tripl-rcn8).
+            # It used to say "Scan failed: …" on a source that may never have been
+            # scanned, because it borrowed the scan sanitiser — whose prefix is a
+            # guarantee the frontend keys on (tripl-7bol).
             assert result["success"] is False
-            assert result["error"] == "Scan failed: could not connect to the data source."
+            assert result["error"] == (
+                "Connection test failed: could not reach the data source "
+                "— check the host, port, and network."
+            )
             assert "warehouse.internal" not in str(result["error"])
 
             with sync_session_factory() as session:
                 ds = session.get(DataSource, data_source_id)
                 assert ds.last_test_status == "failed"
                 assert ds.last_test_at is not None
-                # User-facing probe message carries no host/port/driver detail.
+                # User-facing probe message carries no host/port/driver detail,
+                # and is byte-identical to what the sync path would have written.
                 assert ds.last_test_message == (
-                    "Scan failed: could not connect to the data source."
+                    "Connection test failed: could not reach the data source "
+                    "— check the host, port, and network."
                 )
                 assert "warehouse.internal" not in ds.last_test_message
                 assert "8123" not in ds.last_test_message

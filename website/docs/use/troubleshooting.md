@@ -72,11 +72,14 @@ monitoring charts stay empty and no anomalies or alerts ever show up.
 2. **`celery-beat` is not running.** Metric collection is triggered by the
    beat schedule entry `check-metrics-due`, which fires every 300 seconds. With
    no beat container, `collect_metrics` is never dispatched.
-3. **The first complete bucket hasn't closed yet.** On the very first run (no
-   prior metric bucket) the dispatcher collects immediately; after that it only
-   fires once a *new complete* interval bucket exists — the latest complete
+3. **The first complete bucket hasn't closed yet.** On the very first run
+   (nothing collected yet) the dispatcher collects immediately; after that it
+   only fires once a *new complete* interval bucket exists — the latest complete
    bucket is `floor(now) - interval`. For a 6h interval you may wait up to 6
-   hours for the next point to appear.
+   hours for the next point to appear. A collection that ran and found **no
+   rows** counts as collected for that window, so a config whose warehouse
+   window is still empty retries once per interval rather than every five
+   minutes; it is not stuck.
 4. **The time column doesn't actually constrain the window.** Metrics are
    bucketed on `time_column`. If the column isn't a usable timestamp in the
    warehouse, the windowed query returns nothing to bucket.
@@ -182,13 +185,25 @@ data source returns an error.
 
 **How errors are surfaced.** Raw driver/ORM exceptions embed hostnames, ports,
 and library names, so tripl never shows them verbatim. User-facing fields get a
-sanitized summary instead:
+sanitized summary instead. A failed **scan job** reads:
 
 - *"Scan failed: the data source did not respond in time."* — a timeout.
 - *"Scan failed: could not connect to the data source."* — connection refused,
   DNS failure, network unreachable, reset, etc.
 - *"Scan failed due to an internal error."*
   — anything else.
+
+A failed **connection test** is sanitized the same way but worded for what it
+is: it always begins *"Connection test failed"* and never *"Scan failed"* — a
+source you have never scanned cannot report a failed scan.
+
+- *"Connection test failed: the data source did not respond in time."*
+- *"Connection test failed: could not reach the data source — check the host,
+  port, and network."*
+- *"Connection test failed: authentication was rejected — check the
+  credentials."*
+- *"Connection test failed. Check the connection settings and try again."* —
+  anything else.
 
 The full exception (with host/port/driver detail) is only in the **worker
 logs**, so always check there first:
@@ -197,10 +212,10 @@ logs**, so always check there first:
 docker compose logs --tail=200 celery-worker | grep -iE "scan failed|connection"
 ```
 
-A handful of conditions are surfaced **verbatim** because they're actionable.
-They all begin `Scan failed:` — that prefix is what tells the UI a message was
-authored by tripl and is safe to show as-is, so the backend adds it to every
-curated message rather than leaving each raise site to remember it:
+A handful of **scan** conditions are surfaced **verbatim** because they're
+actionable. They all begin `Scan failed:` — that prefix is what tells the UI a
+message was authored by tripl and is safe to show as-is, so the backend adds it
+to every curated message rather than leaving each raise site to remember it:
 
 - **Row limit reached.** *"Scan failed: The scan query reached the configured row
   limit (50000); increase scan_row_limit to avoid partial generation."* The default cap is
@@ -229,11 +244,29 @@ curated message rather than leaving each raise site to remember it:
 | --- | --- | --- |
 | **PostgreSQL** | TLS negotiation or unreachable host. Non-local hosts default to **`sslmode=require`**, so a remote server with no TLS fails loudly rather than silently falling back to plaintext; localhost defaults to `prefer`. | Confirm host/port reachable from the worker container; check the server's TLS settings. A remote server that genuinely has no TLS needs `sslmode` set explicitly to `prefer`/`disable` on the data source. |
 | **ClickHouse** | Wrong host/port/secure flag, or a probe query that returns no rows. | Verify connection params; *"Connection probe returned no rows"* means it connected but the probe was empty — check the query/permissions. |
-| **BigQuery** | Missing project id or invalid service-account JSON: *"BigQuery: host (project_id) is required"* / *"BigQuery: service-account JSON credentials are required"* / *"BigQuery: invalid service-account JSON"*. | Set the project id in the host field and paste valid service-account JSON. |
+| **BigQuery** | Missing project id or invalid service-account JSON. The probe names which of the two it is — see the verbatim messages below. | Set the project id in the host field and paste valid service-account JSON. |
 
-The async **Test connection** persists `last_test_status` and a sanitized
+**A configuration problem tripl can name is shown in full.** Those messages hold
+no host, port or credential, and generalizing them away would send you to
+re-check settings that are all correct, so they follow the prefix unchanged:
+
+- *"Connection test failed: BigQuery: host (project_id) is required"*
+- *"Connection test failed: BigQuery: service-account JSON credentials are
+  required"*
+- *"Connection test failed: BigQuery: invalid service-account JSON: …"* (with
+  the position of the syntax error, never the contents of the key)
+- *"Connection test failed: PostgreSQL 13.23 is too old for tripl: every
+  time-bucket query uses date_bin(), which was added in PostgreSQL 14. Upgrade
+  the server to 14 or newer."*
+
+Everything else collapses to one of the four categories above, because the raw
+driver text carries host, port and credential detail.
+
+**Test connection** persists `last_test_status` and the sanitized
 `last_test_message` on the data source and invalidates the cached list, so the
-result you see in the UI is the worker's actual probe — not a stale value.
+result you see in the UI is the actual probe — not a stale value. The button and
+the background probe write that field through the same rule, so the same failure
+reads the same way whichever one ran.
 
 The scan detail shows this curated error beside the failed run. Identical recent
 failures collapse into a **failed last N runs** streak; expand it when you need
@@ -252,6 +285,15 @@ Two consequences worth knowing: a fixed config can take up to that wait before i
 retries by itself — press **Run again** if you don't want to wait — and the
 backoff only counts *scheduled* runs, so your manual runs neither trigger it nor
 clear it.
+
+The same floor applies to two quieter versions of the loop. A run that
+**succeeds but collects nothing** — an empty warehouse window, or events that
+match nothing — writes no bucket either; it now counts as having covered that
+window, so the config is tried again at its own interval instead of every five
+minutes. And a **catalog metric** whose last collection errored waits one
+interval before the scheduler retries it (an hour for an event-composition
+metric, which has no interval of its own). **Collect now** on the metric ignores
+the wait.
 :::
 
 :::note

@@ -19,6 +19,7 @@ from tripl.core.adapters.base import (
     SchemaColumn,
     SchemaTable,
 )
+from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.core.adapters.measure_validator import (
     build_aggregate_sql,
     coerce_aggregation,
@@ -232,14 +233,29 @@ class BigQueryAdapter(BaseAdapter):
         **kwargs: object,
     ) -> None:
         del port, username, kwargs  # not applicable to BigQuery / forward-compatible
+        # These three are ``WarehouseCapabilityError`` (a ValueError subclass, so
+        # every ``except ValueError`` still catches them) because the connection
+        # probe surfaces that type VERBATIM and genericises everything else. As
+        # bare ValueErrors they hit the sanitiser's substring hints — "host" and
+        # "credentials" — and came out as "could not reach the data source" /
+        # "authentication was rejected", sending the operator to look at a network
+        # and a password when the real problem is an empty field. They are also
+        # quoted verbatim in website/docs/use/troubleshooting.md, which was
+        # therefore describing a message the UI never showed (tripl-rcn8).
         if not host:
-            raise ValueError("BigQuery: host (project_id) is required")
+            raise WarehouseCapabilityError("BigQuery: host (project_id) is required")
         if not password:
-            raise ValueError("BigQuery: service-account JSON credentials are required")
+            raise WarehouseCapabilityError(
+                "BigQuery: service-account JSON credentials are required"
+            )
         try:
             info = cast(dict[str, object], json.loads(password))
         except json.JSONDecodeError as exc:
-            raise ValueError(f"BigQuery: invalid service-account JSON: {exc}") from exc
+            # The decoder's text is safe to carry: it reports the syntax position
+            # ("line 3 column 5 (char 42)"), never the document's contents, so no
+            # part of the pasted key can ride out on it.
+            msg = f"BigQuery: invalid service-account JSON: {exc}"
+            raise WarehouseCapabilityError(msg) from exc
         creds = cast(
             service_account.Credentials,
             service_account.Credentials.from_service_account_info(info),  # type: ignore[no-untyped-call]
