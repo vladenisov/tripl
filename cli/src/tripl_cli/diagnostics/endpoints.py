@@ -95,7 +95,12 @@ DRIFTS_ENDPOINTS: dict[str, tuple[tuple[str, str], ...]] = {
     "selection": _SELECTION,
     "event_types": (("get", event_types.LIST),),
     "drifts": (("get", event_types.DRIFTS),),
+    # Both writes post to the SAME route with a different `action`, so this pair
+    # is one path spelled twice on purpose: the key names the verb whose contract
+    # check would go blind, and a `reopen` with no entry of its own would be
+    # protected only by the coincidence that dismiss shares its route (tripl-k8j9).
     "dismiss": (("post", event_types.DRIFT_ACTIONS_PATH),),
+    "reopen": (("post", event_types.DRIFT_ACTIONS_PATH),),
 }
 
 # `tripl events <verb>`. Both verbs are READS: the POST and PATCH on
