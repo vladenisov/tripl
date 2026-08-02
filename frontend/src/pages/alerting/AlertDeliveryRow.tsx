@@ -152,7 +152,7 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
                   </Badge>
                 )}
                 {correlationLabels.size > 0 && (
-                  <Badge variant="outline" className="border-amber-500/60 bg-amber-400/15 text-amber-800 text-[10px]">
+                  <Badge variant="outline" className="border-amber-500/60 bg-amber-400/15 text-amber-800 dark:text-amber-400 text-[10px]">
                     {correlationLabels.size} correlated group{correlationLabels.size > 1 ? 's' : ''}
                   </Badge>
                 )}
@@ -192,7 +192,7 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
                               {groupLabel && (
                                 <Badge
                                   variant="outline"
-                                  className="border-amber-500/60 bg-amber-400/15 text-amber-800 text-[10px]"
+                                  className="border-amber-500/60 bg-amber-400/15 text-amber-800 dark:text-amber-400 text-[10px]"
                                   title="Co-fired with other rows in this group"
                                 >
                                   {groupLabel}

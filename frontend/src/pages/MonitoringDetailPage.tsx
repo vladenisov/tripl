@@ -38,6 +38,7 @@ import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
+import { readableTextOn } from '@/lib/contrast'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
 import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/metricFormat'
 import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, defaultGranularityForRange, type MetricsGranularity } from '@/lib/metrics'
@@ -800,7 +801,7 @@ export default function MonitoringDetailPage() {
   })()
   const latestSignal = metrics?.latest_signal
   const latestSignalBadgeClassName = latestSignal?.state === 'recent'
-    ? 'gap-1 border-amber-500/60 bg-amber-400/15 text-amber-800'
+    ? 'gap-1 border-amber-500/60 bg-amber-400/15 text-amber-800 dark:text-amber-400'
     : 'gap-1'
   const latestSignalLabel = latestSignal
     ? `${latestSignal.state === 'recent' ? 'Recent' : 'Latest scan'} ${latestSignal.direction === 'drop' ? 'drop' : 'spike'} anomaly`
@@ -948,8 +949,15 @@ export default function MonitoringDetailPage() {
           <div className="space-y-3">
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-[22px] font-semibold tracking-[-0.01em]">{headerTitle}</h1>
+              {/* The colour is operator-chosen, so the label cannot be a fixed
+                  white — it measured 2.14:1 on amber and 2.27:1 on green. */}
               {eventType && (
-                <Badge style={{ backgroundColor: eventType.color, color: '#fff' }}>
+                <Badge
+                  style={{
+                    backgroundColor: eventType.color,
+                    color: readableTextOn(eventType.color),
+                  }}
+                >
                   {eventType.display_name}
                 </Badge>
               )}
@@ -1473,7 +1481,7 @@ export default function MonitoringDetailPage() {
                             variant="outline"
                             className={anomaly.direction === 'drop'
                               ? 'border-destructive/50 text-destructive'
-                              : 'border-amber-500/60 text-amber-800'}
+                              : 'border-amber-500/60 text-amber-800 dark:text-amber-400'}
                           >
                             {series.is_other ? 'Other' : (series.breakdown_value || '(empty)')}
                             {' share '}{anomaly.direction}:{' '}
@@ -1737,8 +1745,8 @@ function formatPercent(value: number) {
 
 function driftBandClassName(band: DistributionDriftBand) {
   if (band === 'significant') return 'border-destructive/60 bg-destructive/10 text-destructive'
-  if (band === 'minor') return 'border-amber-500/60 bg-amber-400/15 text-amber-800'
-  return 'border-emerald-500/50 bg-emerald-400/10 text-emerald-800'
+  if (band === 'minor') return 'border-amber-500/60 bg-amber-400/15 text-amber-800 dark:text-amber-400'
+  return 'border-emerald-500/50 bg-emerald-400/10 text-emerald-800 dark:text-emerald-400'
 }
 
 function DistributionShareBar({

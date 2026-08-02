@@ -16,7 +16,6 @@ import { describe, expect, it } from 'vitest'
  */
 
 const AA_BODY = 4.5
-const AA_LARGE = 3
 
 // Surfaces that body copy is actually painted on. `--surface-active` is a
 // momentary pressed state that never hosts small text, so it is excluded.
@@ -74,6 +73,30 @@ function oklchToSrgb(lightness: number, chroma: number, hueDeg: number): Rgb {
   return [channels[0]!, channels[1]!, channels[2]!] as const
 }
 
+/** Read `--token: oklch(L C H / A)` — the translucent tint fills. */
+function softToken(body: string, token: string): { rgb: Rgb; alpha: number } {
+  const match = new RegExp(
+    `${token}:\\s*oklch\\(([\\d.]+)\\s+([\\d.]+)\\s+([\\d.]+)\\s*/\\s*([\\d.]+)\\)`,
+  ).exec(body)
+  if (!match) throw new Error(`token ${token} is not an oklch() quadruple with alpha`)
+  return {
+    rgb: oklchToSrgb(Number(match[1]), Number(match[2]), Number(match[3])),
+    alpha: Number(match[4]),
+  }
+}
+
+/**
+ * Blend a translucent fill over a base the way a browser does — in gamma-encoded
+ * sRGB, NOT in linear light. Getting this wrong is not academic: compositing in
+ * linear space reports a fill lighter than the one that actually paints, which
+ * hands back a contrast ratio comfortably above the truth (4.59:1 where the
+ * browser measures 4.26:1) and lets a failing tint ship as passing.
+ */
+function composite(fg: Rgb, alpha: number, bg: Rgb): Rgb {
+  const mix = (i: number) => Math.round(fg[i]! * alpha + bg[i]! * (1 - alpha))
+  return [mix(0), mix(1), mix(2)] as const
+}
+
 function relativeLuminance([r, g, b]: Rgb): number {
   const linear = (channel: number) => {
     const c = channel / 255
@@ -126,8 +149,83 @@ describe('identity chip', () => {
 })
 
 describe('accent', () => {
-  it.each(THEMES)('$name --accent clears AA-large on --bg', ({ body }) => {
+  // AA_BODY, not AA_LARGE: --accent paints 12px inline links, not just large
+  // headings. The looser floor is why axe caught a 4.07:1 link while this file
+  // stayed green.
+  it.each(THEMES)('$name --accent clears AA on --bg', ({ body }) => {
     const ratio = contrastRatio(oklchToken(body, '--accent'), oklchToken(body, '--bg'))
-    expect(ratio).toBeGreaterThanOrEqual(AA_LARGE)
+    expect(ratio, `--accent on --bg measured ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(AA_BODY)
+  })
+})
+
+/**
+ * The tinted-fill floor (the gap that let a whole class of failures through).
+ *
+ * Everything above models opaque surfaces, but `Chip`, status badges and the
+ * demo banners all paint `--<tone>-soft` — a translucent wash — and then put
+ * text on top. Those composited fills are where the real failures lived: 16
+ * nodes in dark and 33 in light, none of which this file could see.
+ */
+const TONES = ['--accent', '--success', '--warning', '--danger', '--info'] as const
+// Chips sit on plain page background and on cards alike.
+const TINT_BASES = ['--bg', '--bg-elevated'] as const
+
+describe.each(THEMES)('$name theme tinted fills', ({ body }) => {
+  it.each(TONES)('%s text clears AA on its own soft fill', (tone) => {
+    const fg = oklchToken(body, tone)
+    const soft = softToken(body, `${tone}-soft`)
+    for (const base of TINT_BASES) {
+      const fill = composite(soft.rgb, soft.alpha, oklchToken(body, base))
+      const ratio = contrastRatio(fg, fill)
+      expect(
+        ratio,
+        `${tone} on ${tone}-soft over ${base} measured ${ratio.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(AA_BODY)
+    }
+  })
+
+  // A tone chip inside a tone-tinted container (a Chip in the demo banner)
+  // composites the same wash twice, which is materially darker than one pass.
+  it.each(TONES)('%s text survives a doubled tint', (tone) => {
+    const fg = oklchToken(body, tone)
+    const soft = softToken(body, `${tone}-soft`)
+    const once = composite(soft.rgb, soft.alpha, oklchToken(body, '--bg'))
+    const twice = composite(soft.rgb, soft.alpha, once)
+    const ratio = contrastRatio(fg, twice)
+    expect(
+      ratio,
+      `${tone} on a doubled ${tone}-soft tint measured ${ratio.toFixed(2)}:1`,
+    ).toBeGreaterThanOrEqual(AA_BODY)
+  })
+
+  it.each(TONES)('--fg-muted stays readable on a %s-soft fill', (tone) => {
+    const fg = oklchToken(body, '--fg-muted')
+    const soft = softToken(body, `${tone}-soft`)
+    for (const base of TINT_BASES) {
+      const fill = composite(soft.rgb, soft.alpha, oklchToken(body, base))
+      const ratio = contrastRatio(fg, fill)
+      expect(
+        ratio,
+        `--fg-muted on ${tone}-soft over ${base} measured ${ratio.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(AA_BODY)
+    }
+  })
+})
+
+/**
+ * Solid tone buttons. `--danger` and `--accent` flip lightness between themes,
+ * so a single fixed foreground cannot clear AA on both — each carries a paired
+ * `-fg` token, and the pairing is what this pins.
+ */
+describe.each(THEMES)('$name theme solid buttons', ({ body }) => {
+  it.each([
+    ['--accent', '--accent-fg'],
+    ['--danger', '--danger-fg'],
+  ] as const)('%s carries %s at AA', (surface, foreground) => {
+    const ratio = contrastRatio(oklchToken(body, foreground), oklchToken(body, surface))
+    expect(
+      ratio,
+      `${foreground} on ${surface} measured ${ratio.toFixed(2)}:1`,
+    ).toBeGreaterThanOrEqual(AA_BODY)
   })
 })

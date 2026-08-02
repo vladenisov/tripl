@@ -140,7 +140,7 @@ export function getSignalTone(signal: MonitoringSignal) {
     compact: 'text-amber-500',
     regular: 'bg-amber-400 text-amber-950 ring-1 ring-amber-500/70',
     button: 'outline' as const,
-    buttonClassName: 'border-amber-500/60 bg-amber-400/15 text-amber-800 hover:bg-amber-400/20',
+    buttonClassName: 'border-amber-500/60 bg-amber-400/15 text-amber-800 dark:text-amber-400 hover:bg-amber-400/20',
     title: 'Open recent anomaly',
   }
 }

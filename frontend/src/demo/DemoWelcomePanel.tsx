@@ -103,7 +103,7 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
 
       {available && (
         <div className="mt-4 max-w-xl">
-          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-faint)' }}>
+          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-muted)' }}>
             Coached chapters
           </p>
           <ChapterPicker chapters={chapters} onPick={openChapter} compact />
@@ -111,7 +111,7 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
       )}
 
       <div className="mt-4">
-        <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-faint)' }}>
+        <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-muted)' }}>
           Metric building blocks
         </p>
         <div className="flex flex-wrap gap-1.5">

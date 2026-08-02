@@ -575,7 +575,10 @@ function AttentionStat({
             </span>
           )}
           {unit ? (
-            <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+            // --fg-muted, not --fg-faint: this tile paints a tone tint behind the
+            // text, and faint only clears 4.4-4.9:1 on those composited fills
+            // (worse in light). Muted measures 6.1-7.9:1 and matches the hint <dd>.
+            <span className="text-[11px]" style={{ color: 'var(--fg-muted)' }}>
               {unit}
             </span>
           ) : null}

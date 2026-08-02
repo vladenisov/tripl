@@ -35,19 +35,23 @@
   --border-strong: oklch(0.82 0.008 250);
   --border-subtle: oklch(0.94 0.004 250);
 
-  --accent: oklch(0.56 0.14 192);
-  --accent-hover: oklch(0.52 0.15 192);
-  --accent-soft: oklch(0.56 0.14 192 / 0.12);
+  --accent: oklch(0.44 0.14 192);
+  --accent-hover: oklch(0.4 0.15 192);
+  --accent-soft: oklch(0.44 0.14 192 / 0.12);
   --accent-fg: oklch(1 0 0);
 
-  --success: oklch(0.56 0.15 152);
-  --success-soft: oklch(0.56 0.15 152 / 0.12);
-  --warning: oklch(0.65 0.17 65);
-  --warning-soft: oklch(0.65 0.17 65 / 0.14);
-  --danger: oklch(0.58 0.22 22);
-  --danger-soft: oklch(0.58 0.22 22 / 0.12);
-  --info: oklch(0.55 0.16 240);
-  --info-soft: oklch(0.55 0.16 240 / 0.12);
+  --success: oklch(0.455 0.15 152);
+  --success-soft: oklch(0.455 0.15 152 / 0.12);
+  --warning: oklch(0.47 0.17 65);
+  --warning-soft: oklch(0.47 0.17 65 / 0.14);
+  --danger: oklch(0.455 0.22 22);
+  --danger-soft: oklch(0.455 0.22 22 / 0.12);
+  /* Paired with --danger exactly as --accent-fg is with --accent: --danger is
+     dark in light theme and light in dark theme, so one fixed foreground cannot
+     clear AA on both. White on this --danger measures 7.29:1. */
+  --danger-fg: oklch(1 0 0);
+  --info: oklch(0.46 0.16 240);
+  --info-soft: oklch(0.46 0.16 240 / 0.12);
 
   /* Identity chip (user initials). Always carries white text in both themes,
      so its lightness is fixed by the AA floor for white-on-blue rather than
@@ -76,7 +80,7 @@
   --muted-foreground: var(--fg-subtle);
   --accent-foreground: var(--accent-fg);
   --destructive: var(--danger);
-  --destructive-foreground: oklch(0.985 0 0);
+  --destructive-foreground: var(--danger-fg);
   --input: var(--border);
   --ring: var(--accent);
   --chart-1: var(--accent);
@@ -126,8 +130,11 @@
   --success-soft: oklch(0.74 0.16 152 / 0.14);
   --warning: oklch(0.78 0.15 75);
   --warning-soft: oklch(0.78 0.15 75 / 0.14);
-  --danger: oklch(0.68 0.22 22);
-  --danger-soft: oklch(0.68 0.22 22 / 0.14);
+  --danger: oklch(0.69 0.22 22);
+  --danger-soft: oklch(0.69 0.22 22 / 0.14);
+  /* Near-black, mirroring --accent-fg above: the dark-theme --danger is light
+     enough that white only reaches 3.15:1, while this measures 6.19:1. */
+  --danger-fg: oklch(0.14 0.01 250);
   --info: oklch(0.72 0.14 240);
   --info-soft: oklch(0.72 0.14 240 / 0.14);
 
@@ -137,19 +144,19 @@
 }
 
 /* accent variants (applied to <html>) */
-.accent-teal { --accent: oklch(0.56 0.14 192); --accent-hover: oklch(0.52 0.15 192); --accent-soft: oklch(0.56 0.14 192 / 0.12); --accent-fg: oklch(1 0 0); }
+.accent-teal { --accent: oklch(0.44 0.14 192); --accent-hover: oklch(0.4 0.15 192); --accent-soft: oklch(0.44 0.14 192 / 0.12); --accent-fg: oklch(1 0 0); }
 .dark.accent-teal { --accent: oklch(0.72 0.14 192); --accent-hover: oklch(0.76 0.14 192); --accent-soft: oklch(0.72 0.14 192 / 0.14); --accent-fg: oklch(0.14 0.01 250); }
 
-.accent-violet { --accent: oklch(0.55 0.18 290); --accent-hover: oklch(0.50 0.19 290); --accent-soft: oklch(0.55 0.18 290 / 0.12); --accent-fg: oklch(1 0 0); }
+.accent-violet { --accent: oklch(0.495 0.18 290); --accent-hover: oklch(0.445 0.19 290); --accent-soft: oklch(0.495 0.18 290 / 0.12); --accent-fg: oklch(1 0 0); }
 .dark.accent-violet { --accent: oklch(0.72 0.16 290); --accent-hover: oklch(0.76 0.16 290); --accent-soft: oklch(0.72 0.16 290 / 0.14); --accent-fg: oklch(0.14 0.01 250); }
 
-.accent-lime { --accent: oklch(0.62 0.18 130); --accent-hover: oklch(0.58 0.18 130); --accent-soft: oklch(0.62 0.18 130 / 0.14); --accent-fg: oklch(1 0 0); }
+.accent-lime { --accent: oklch(0.45 0.18 130); --accent-hover: oklch(0.41 0.18 130); --accent-soft: oklch(0.45 0.18 130 / 0.14); --accent-fg: oklch(1 0 0); }
 .dark.accent-lime { --accent: oklch(0.82 0.18 130); --accent-hover: oklch(0.85 0.18 130); --accent-soft: oklch(0.82 0.18 130 / 0.16); --accent-fg: oklch(0.14 0.01 250); }
 
-.accent-amber { --accent: oklch(0.64 0.17 65); --accent-hover: oklch(0.60 0.18 65); --accent-soft: oklch(0.64 0.17 65 / 0.14); --accent-fg: oklch(1 0 0); }
+.accent-amber { --accent: oklch(0.47 0.17 65); --accent-hover: oklch(0.43 0.18 65); --accent-soft: oklch(0.47 0.17 65 / 0.14); --accent-fg: oklch(1 0 0); }
 .dark.accent-amber { --accent: oklch(0.78 0.15 75); --accent-hover: oklch(0.82 0.15 75); --accent-soft: oklch(0.78 0.15 75 / 0.16); --accent-fg: oklch(0.14 0.01 250); }
 
-.accent-rose { --accent: oklch(0.60 0.19 15); --accent-hover: oklch(0.55 0.20 15); --accent-soft: oklch(0.60 0.19 15 / 0.12); --accent-fg: oklch(1 0 0); }
+.accent-rose { --accent: oklch(0.485 0.19 15); --accent-hover: oklch(0.435 0.20 15); --accent-soft: oklch(0.485 0.19 15 / 0.12); --accent-fg: oklch(1 0 0); }
 .dark.accent-rose { --accent: oklch(0.74 0.17 15); --accent-hover: oklch(0.78 0.17 15); --accent-soft: oklch(0.74 0.17 15 / 0.16); --accent-fg: oklch(0.14 0.01 250); }
 
 /* density */

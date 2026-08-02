@@ -10,10 +10,14 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { formatTimestamp } from '@/lib/datetime'
 
+// Both themes are spelled out: the -500/15 fill sits on very different bases in
+// light and dark, and a single foreground cannot clear 4.5:1 on both. Measured on
+// that fill over --bg/--bg-elevated: -700 gives 2.83-3.20 in dark (fails), -800
+// gives 6.14-6.60 in light and -400 gives 5.96-9.35 in dark.
 const ACTION_TONE: Record<string, string> = {
-  create: 'bg-emerald-500/15 text-emerald-700',
-  update: 'bg-amber-500/15 text-amber-700',
-  delete: 'bg-rose-500/15 text-rose-700',
+  create: 'bg-emerald-500/15 text-emerald-800 dark:text-emerald-400',
+  update: 'bg-amber-500/15 text-amber-800 dark:text-amber-400',
+  delete: 'bg-rose-500/15 text-rose-800 dark:text-rose-400',
 }
 
 /**
