@@ -1,3 +1,5 @@
+import { humanizeValidationMessage } from '@/lib/validationMessage'
+
 const BASE = '/api/v1'
 const BACKEND_UNAVAILABLE_MESSAGE = 'Backend is unavailable. Check that the API server is running and try again.'
 export const AUTH_UNAUTHORIZED_EVENT = 'tripl:unauthorized'
@@ -36,13 +38,18 @@ function emitUnauthorized(path: string, status: number) {
   window.dispatchEvent(new Event(AUTH_UNAUTHORIZED_EVENT))
 }
 
-/** Build a readable message from a FastAPI 422 `detail` array. */
+/**
+ * Build a readable message from a FastAPI 422 `detail` array. Each `msg` is
+ * humanized so library phrasing (pydantic/email-validator) never surfaces
+ * verbatim; the raw entries stay on `ApiError.fields` for machine consumers.
+ */
 function formatValidationDetail(detail: ApiFieldError[]): string {
   return detail
     .map((item) => {
       // Drop the leading "body"/"query" segment for a tidier path.
       const path = item.loc.filter((seg) => seg !== 'body' && seg !== 'query').join('.')
-      return path ? `${path}: ${item.msg}` : item.msg
+      const msg = humanizeValidationMessage(item)
+      return path ? `${path}: ${msg}` : msg
     })
     .join('; ')
 }

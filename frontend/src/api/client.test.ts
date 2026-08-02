@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  EMAIL_DOMAIN_UNUSABLE_MESSAGE,
+  EMAIL_INVALID_MESSAGE,
+} from '@/lib/validationMessage'
 import { api, ApiError, AUTH_UNAUTHORIZED_EVENT } from './client'
 
 // Exercise the REAL client (no vi.mock of './client'); only global fetch is
@@ -61,11 +65,47 @@ describe('422 validation mapping', () => {
     expect(err).toBeInstanceOf(ApiError)
     const apiErr = err as ApiError
     expect(apiErr.status).toBe(422)
-    // "body" segment is dropped; entries joined with "; ".
+    // "body" segment is dropped; entries joined with "; ". The email entry is
+    // humanized; the name entry keeps its detail.
     expect(apiErr.message).toBe(
-      'email: value is not a valid email address; name: field required',
+      `email: ${EMAIL_INVALID_MESSAGE}; name: field required`,
     )
     expect(apiErr.fields).toEqual(detail)
+  })
+
+  it('never surfaces the email-validator reason, and keeps the raw detail on fields', async () => {
+    const detail = [
+      {
+        loc: ['body', 'email'],
+        msg:
+          'value is not a valid email address: The part after the @-sign is a ' +
+          'special-use or reserved name that cannot be used with email.',
+        type: 'value_error',
+      },
+    ]
+    mockFetchOnce({ status: 422, body: { detail } })
+
+    const err = (await api.post('/auth/register', {}).catch((e: unknown) => e)) as ApiError
+    expect(err.message).not.toContain('special-use')
+    expect(err.message).toBe(`email: ${EMAIL_DOMAIN_UNUSABLE_MESSAGE}`)
+    // Humanizing the message must never mutate the structured payload.
+    expect(err.fields).toEqual(detail)
+  })
+
+  it("strips pydantic's wrapper from the backend's own password-policy message", async () => {
+    const detail = [
+      {
+        loc: ['body', 'password'],
+        msg: 'Value error, Password must be at least 12 characters and include a number and a symbol.',
+        type: 'value_error',
+      },
+    ]
+    mockFetchOnce({ status: 422, body: { detail } })
+
+    const err = (await api.post('/auth/register', {}).catch((e: unknown) => e)) as ApiError
+    expect(err.message).toBe(
+      'password: Password must be at least 12 characters and include a number and a symbol.',
+    )
   })
 
   it('drops body/query segments and keeps msg when path is empty', async () => {
