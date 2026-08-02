@@ -43,6 +43,7 @@ from tripl.worker.tasks.metrics.metric_collect import (
     COLLECTION_STATUS_RUNNING,
     collect_fact_metrics_batch,
     collect_metric_definitions,
+    mark_collection_error,
 )
 from tripl.worker.tasks.metrics.tasks import METRICS_COLLECTION_MODE, collect_metrics
 
@@ -625,19 +626,44 @@ def _metric_definition_error_backoff(
     delay = _failure_backoff_delay(FAILURE_BACKOFF_AFTER, delta)
     if delay is None:  # pragma: no cover - the curve is None only below the threshold
         return None
-    # ``updated_at`` is the closest thing to "when that error was stamped" this
-    # table has — the collector dirties the row on each cycle, so it cannot LAG
-    # the newest failure. It can LEAD it, though: ``TimestampMixin`` declares
-    # ``onupdate=func.now()``, so any write to the row moves it, and an operator
-    # editing a broken metric in order to fix it restarts the whole cooldown.
-    # That errs toward waiting longer and never toward retrying sooner, so it
-    # cannot produce the storm this backoff exists to stop — but it is not what
-    # an operator would predict. A dedicated ``last_collection_failed_at`` is
-    # the real fix and needs a migration; tracked as tripl-os3v.
-    waited = now - _normalize_job_timestamp(definition.updated_at)
+    # ``last_collection_failed_at`` is written ONLY by the collection cycle, so
+    # it means exactly what this reads it as. ``updated_at`` did not: it carries
+    # ``onupdate=func.now()``, so any write moved it, and an operator editing a
+    # broken metric in order to fix it restarted the cooldown they were waiting
+    # out (tripl-os3v).
+    #
+    # The fallback is for rows that failed BEFORE the column existed and carry
+    # NULL. Treating those as "never failed" would release every one of them on
+    # the first tick after deploy — the retry storm this backoff exists to stop,
+    # produced by the fix for it. They keep the old reading until their next
+    # real failure stamps the column.
+    failed_at = definition.last_collection_failed_at or definition.updated_at
+    waited = now - _normalize_job_timestamp(failed_at)
     if waited >= delay:
         return None
     return waited, delay
+
+
+def metric_definition_cooldown_until(
+    definition: MetricDefinition, *, now: datetime
+) -> datetime | None:
+    """When a metric sitting out a post-error cooldown becomes dispatchable, else None.
+
+    Exists so the metric drilldown can answer "when does this collect next" with
+    the SAME rule the dispatcher applies. Without it the API computed due-ness
+    from the watermark alone and told the operator a collection was due now
+    while this scheduler would skip it for up to a full interval — two answers
+    to one question, which is the divergence this repository keeps paying for
+    (tripl-os3v).
+
+    Derived from ``_metric_definition_error_backoff`` rather than recomputing
+    the curve, so the two cannot drift even if the curve changes.
+    """
+    backoff = _metric_definition_error_backoff(definition, now=now)
+    if backoff is None:
+        return None
+    waited, delay = backoff
+    return now + (delay - waited)
 
 
 @celery_app.task(name="tripl.worker.tasks.metrics.check_metric_definitions_due")  # type: ignore[untyped-decorator]
@@ -723,9 +749,8 @@ def check_metric_definitions_due() -> dict[str, int]:
             try:
                 collect_metric_definitions.delay(str(definition.id))
             except Exception as exc:
-                definition.last_collection_status = COLLECTION_STATUS_ERROR
-                definition.last_collection_error = (
-                    f"Failed to dispatch collect_metric_definitions: {exc}"
+                mark_collection_error(
+                    definition, f"Failed to dispatch collect_metric_definitions: {exc}"
                 )
                 session.commit()
                 raise
@@ -748,9 +773,8 @@ def check_metric_definitions_due() -> dict[str, int]:
                 collect_fact_metrics_batch.delay(metric_ids)
             except Exception as exc:
                 for definition in group:
-                    definition.last_collection_status = COLLECTION_STATUS_ERROR
-                    definition.last_collection_error = (
-                        f"Failed to dispatch collect_fact_metrics_batch: {exc}"
+                    mark_collection_error(
+                        definition, f"Failed to dispatch collect_fact_metrics_batch: {exc}"
                     )
                 session.commit()
                 raise

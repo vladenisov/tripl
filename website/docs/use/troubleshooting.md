@@ -294,6 +294,12 @@ minutes. And a **catalog metric** whose last collection errored waits one
 interval before the scheduler retries it (an hour for an event-composition
 metric, which has no interval of its own). **Collect now** on the metric ignores
 the wait.
+
+That wait is measured from the failure itself, so **editing the metric does not
+restart it** — you can fix the SQL, save, and still be collected at the moment
+you would have been anyway. The metric's own page shows when: while it is
+waiting, **Next collection** is that moment rather than "due now", which is the
+same answer the scheduler is working from.
 :::
 
 :::note

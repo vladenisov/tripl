@@ -6074,8 +6074,14 @@ def _create_active_sql_metric(
     *,
     last_collection_status: str | None = None,
     updated_ago: timedelta = timedelta(minutes=10),
+    stamp_failed_at: bool = True,
 ) -> uuid.UUID:
-    """An active ``sql`` metric on a 1h interval that has never stored a value."""
+    """An active ``sql`` metric on a 1h interval that has never stored a value.
+
+    ``stamp_failed_at=False`` produces a row that failed BEFORE
+    ``last_collection_failed_at`` existed — the state every erroring metric is in
+    the moment the migration lands, and what the cooldown's fallback is for.
+    """
     from tripl.models.domain_enums import MetricKind, MetricStatus, ScanInterval
     from tripl.models.metric_definition import MetricDefinition
 
@@ -6095,8 +6101,14 @@ def _create_active_sql_metric(
     if last_collection_status is not None:
         definition.last_collection_status = last_collection_status
         # Explicit, so the cooldown is measured from a known point rather than
-        # from whenever this fixture happened to commit.
-        definition.updated_at = datetime.now(UTC) - updated_ago
+        # from whenever this fixture happened to commit. Both fields, because
+        # the cooldown reads last_collection_failed_at and falls back to
+        # updated_at — set only the latter and every test here would pass
+        # through the fallback and prove nothing about the real path.
+        stamped = datetime.now(UTC) - updated_ago
+        definition.updated_at = stamped
+        if stamp_failed_at:
+            definition.last_collection_failed_at = stamped
         session.commit()
     return definition.id
 
@@ -6245,6 +6257,135 @@ def test_errored_event_composition_metric_uses_the_no_interval_floor(
 
     assert result == {"checked": 1, "dispatched": 1}
     assert dispatched == [str(metric_id)]
+
+
+def test_the_cooldown_survives_an_unrelated_write_to_the_metric(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Editing a broken metric must not restart the cooldown you are waiting out.
+
+    The cooldown used to measure from ``updated_at``, and ``TimestampMixin``
+    carries ``onupdate=func.now()``, so ANY write moved it — including
+    ``update_metric_definition``, which is what an operator runs to FIX the
+    metric. Half an hour into a one-hour cooldown, changing the display name
+    bought them another full hour (tripl-os3v).
+    """
+    from tripl.models.metric_definition import MetricDefinition
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        metric_id = _create_active_sql_metric(
+            session,
+            config,
+            last_collection_status=metrics_schedule.COLLECTION_STATUS_ERROR,
+            updated_ago=timedelta(minutes=30),
+        )
+
+        definition = session.get(MetricDefinition, metric_id)
+        assert definition is not None
+        before = metrics_schedule._metric_definition_error_backoff(
+            definition, now=datetime.now(UTC)
+        )
+        assert before is not None
+
+        # The edit: any field, committed the ordinary way, which is what bumps
+        # updated_at. Nothing here touches the collection state.
+        definition.display_name = "Renamed while broken"
+        session.commit()
+
+        after = metrics_schedule._metric_definition_error_backoff(definition, now=datetime.now(UTC))
+
+    assert after is not None
+    waited_before, _ = before
+    waited_after, _ = after
+    # Same elapsed time either side of the edit, to the second. Under the old
+    # reading waited_after collapsed to ~0 and the metric sat out a second hour.
+    assert abs(waited_after - waited_before) < timedelta(seconds=5)
+    assert waited_after >= timedelta(minutes=29)
+
+
+def test_a_metric_that_failed_before_the_column_existed_still_cools_down(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The migration lands on rows already in the error state, carrying NULL.
+
+    Reading NULL as "never failed" would release every one of them on the first
+    tick after deploy — the retry storm this backoff exists to prevent, produced
+    by the fix for it. They fall back to ``updated_at`` until their next real
+    failure stamps the column.
+    """
+    from tripl.models.metric_definition import MetricDefinition
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        metric_id = _create_active_sql_metric(
+            session,
+            config,
+            last_collection_status=metrics_schedule.COLLECTION_STATUS_ERROR,
+            updated_ago=timedelta(minutes=5),
+            stamp_failed_at=False,
+        )
+        definition = session.get(MetricDefinition, metric_id)
+        assert definition is not None
+        assert definition.last_collection_failed_at is None
+        backoff = metrics_schedule._metric_definition_error_backoff(
+            definition, now=datetime.now(UTC)
+        )
+
+    assert backoff is not None, "a legacy error row must still be held back"
+    waited, delay = backoff
+    assert waited < delay
+
+
+def test_no_error_path_can_set_the_status_without_the_timestamp() -> None:
+    """The seventh call site, pinned before it is written.
+
+    Six sites across two modules put a metric into the error state, and the
+    cooldown is only correct if every one of them stamps the time too. This
+    walks the source rather than trusting a convention: an assignment of
+    ``COLLECTION_STATUS_ERROR`` anywhere but inside ``mark_collection_error`` is
+    the bug (tripl-os3v).
+    """
+    import ast
+    from pathlib import Path
+
+    from tripl.worker.tasks.metrics import metric_collect as collect_module
+    from tripl.worker.tasks.metrics import schedule as schedule_module
+
+    offenders: list[str] = []
+    for module in (collect_module, schedule_module):
+        path = Path(str(module.__file__))
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        # By line range, not by skipping the FunctionDef node: ``ast.walk``
+        # yields every descendant independently, so passing over the definition
+        # does not pass over the assignment inside it — which is how the first
+        # version of this test flagged the one function allowed to do this.
+        allowed: set[int] = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.FunctionDef)
+                and node.name == "mark_collection_error"
+                and node.end_lineno is not None
+            ):
+                allowed |= set(range(node.lineno, node.end_lineno + 1))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign) or node.lineno in allowed:
+                continue
+            value = node.value
+            if not (isinstance(value, ast.Name) and value.id == "COLLECTION_STATUS_ERROR"):
+                continue
+            targets = [
+                target
+                for target in node.targets
+                if isinstance(target, ast.Attribute) and target.attr == "last_collection_status"
+            ]
+            if targets:
+                offenders.append(f"{path.name}:{node.lineno}")
+
+    assert not offenders, (
+        "these set the error status directly instead of calling "
+        f"mark_collection_error, so they leave the cooldown unstamped: {offenders}"
+    )
 
 
 def test_metric_error_cooldown_is_the_shared_backoff_curves_first_step(
