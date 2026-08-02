@@ -1,4 +1,14 @@
-"""Monitoring tools: monitors summary, anomaly signals, reconciliation health."""
+"""Monitoring tools: monitors summary, anomaly signals, reconciliation health.
+
+Both bodies here are two- and three-call merges, and both stay (tripl-i1dt).
+The CLI reaches three of these five routes and asks a different question of each:
+``doctor`` reads ``coverage`` and ``signals`` to reach a VERDICT, through the
+``Fetched`` regime where a 403 is data rather than an exception, and ``watch``
+polls ``signals`` expanded because a collapsed list drops the event-scope
+anomalies a follow mode exists for. Neither wants a count-plus-sample digest,
+and no CLI command touches ``dead-events`` or ``shadow-events`` at all. These
+shapes have one consumer, and it is the one that pays for every token.
+"""
 
 from __future__ import annotations
 

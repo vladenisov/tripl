@@ -256,7 +256,7 @@ def sync_catalog(
         )
         if getattr(analysis, "row_limit_reached", False):
             msg = (
-                "Scan query reached configured row limit "
+                "The scan query reached the configured row limit "
                 f"({scan_row_limit}); increase scan_row_limit to avoid partial generation"
             )
             raise ScanError(msg)  # curated wording, see the grouped guard above

@@ -34,3 +34,31 @@ export interface ProjectTrackerConfigUpdate {
   api_token?: string
   issue_type?: string
 }
+
+/**
+ * One tracker ticket opened when a plan branch merged, as returned by
+ * `GET /projects/{slug}/branches/{branch_id}/implementation-tickets`.
+ *
+ * Written only by the backend (merge worker + poll sync), so every field here
+ * is read-only. `status` is `open` until the tracker reports the issue done, at
+ * which point sync flips it to `closed` and stamps `closed_at`; it is a plain
+ * string because the backend column is one too. `external_url` is `''` when the
+ * tracker answered without an issue key — render the key as text, not a link.
+ */
+export interface ImplementationTicket {
+  id: string
+  project_id: string
+  branch_id: string
+  tracker_type: string
+  external_id: string | null
+  external_key: string | null
+  external_url: string
+  status: string
+  summary: string
+  /** Main-branch event ids the ticket covers; they advance to `implemented`
+   * when the ticket closes. */
+  event_ids: string[]
+  created_at: string
+  updated_at: string
+  closed_at: string | null
+}

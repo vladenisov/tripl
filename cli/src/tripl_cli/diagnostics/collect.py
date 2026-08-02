@@ -31,7 +31,8 @@ from tripl_cli.api import scans as scans_api
 from tripl_cli.api.request import ApiRequest, send
 from tripl_cli.client import API_PREFIX, DEFAULT_USER_AGENT, TriplClient
 from tripl_cli.config import Config
-from tripl_cli.diagnostics.model import (
+from tripl_cli.errors import TriplAPIError, TriplConnectionError, TriplError
+from tripl_cli.model import (
     HEALTH_PATH,
     JOBS_WINDOW,
     SCOPE_PROJECT,
@@ -48,11 +49,11 @@ from tripl_cli.diagnostics.model import (
     StatusSnapshot,
     as_dict,
     as_list,
+    float_of,
     int_of,
     scope_from_auth,
     text_of,
 )
-from tripl_cli.errors import TriplAPIError, TriplConnectionError, TriplError
 from tripl_cli.runner import REQUEST_TIMEOUT_SECONDS, gather_bounded
 
 # The API's maximum (schema: minimum 1, default 50, maximum 200).
@@ -470,10 +471,9 @@ async def collect_doctor(
 
 def _coverage_of(payload: JsonDict) -> CoverageStatus:
     summary = as_dict(payload.get("summary"))
-    pct = summary.get("coverage_pct")
     return CoverageStatus(
         days=int_of(payload, "days"),
-        pct=float(pct) if isinstance(pct, int | float) and not isinstance(pct, bool) else 0.0,
+        pct=float_of(summary, "coverage_pct"),
         matched=int_of(summary, "matched_count"),
         total=int_of(summary, "total_count"),
     )

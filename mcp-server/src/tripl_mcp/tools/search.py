@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
-from tripl_cli.api import search, send
+from tripl_cli.api import page_items, page_total, search, send
 
 from tripl_mcp.runtime import client_for
 from tripl_mcp.tools._common import READ_ONLY, SEARCH_RESULT_FIELDS, trim
@@ -23,11 +23,15 @@ async def search_plan(
     data = await send(
         client, search.search_plan(slug, q, types=types, limit=limit, branch=branch_id)
     )
-    items = data.get("items", []) if isinstance(data, dict) else []
+    # Same split as list_events: the trim is an agent context budget and stays,
+    # the envelope belongs to the route. `semantic_used` moved with it — both
+    # surfaces publish it and both had their own `.get` for it, and it now reads
+    # False rather than null on a body that omits the key, which is what the
+    # backend's `bool = False` default actually means (tripl-i1dt).
     return {
-        "items": [trim(item, SEARCH_RESULT_FIELDS) for item in items],
-        "total": data.get("total") if isinstance(data, dict) else None,
-        "semantic_used": data.get("semantic_used") if isinstance(data, dict) else None,
+        "items": [trim(item, SEARCH_RESULT_FIELDS) for item in page_items(data)],
+        "total": page_total(data),
+        "semantic_used": search.semantic_used(data),
     }
 
 

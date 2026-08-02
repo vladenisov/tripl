@@ -17,6 +17,7 @@ from tripl.schemas.event import (
     EventResponse,
     EventUpdate,
 )
+from tripl.schemas.text_filters import FreeTextFilter
 from tripl.services import event_service
 
 router = APIRouter(prefix="/projects/{slug}/events", tags=["events"])
@@ -29,15 +30,18 @@ async def list_events(
     slug: str,
     branch_id: BranchIdDep,
     event_type_id: uuid.UUID | None = None,
-    search: str | None = None,
+    # FreeTextFilter (not str): these four bind straight into a Postgres
+    # parameter — three ILIKEs, an equality — and a NUL in any of them aborts
+    # inside asyncpg before SQL runs, so ?search=%00 was a 500 (tripl-8wez).
+    search: FreeTextFilter | None = None,
     # EventStatus (not list[str]): the column is a native Postgres enum, so an
     # out-of-enum value used to reach the driver and surface as a 500. FastAPI
     # now 422s it up front, like the order_by Literal below already did.
     status: Annotated[list[EventStatus] | None, Query()] = None,
-    tag: str | None = None,
+    tag: FreeTextFilter | None = None,
     silent_since_days: int | None = Query(None, ge=0, le=3650),
-    field_value: str | None = None,
-    meta_value: str | None = None,
+    field_value: FreeTextFilter | None = None,
+    meta_value: FreeTextFilter | None = None,
     offset: int = Query(0, ge=0),
     # NOTE: ceiling kept at 10000 (not lowered to 1000) because the frontend
     # ProjectAlertingTab.tsx fetches the full event roster with limit=10000;

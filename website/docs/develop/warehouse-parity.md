@@ -377,10 +377,12 @@ front** with a message naming the version and the required upgrade — verified
 against a real `postgres:13` container — rather than letting it fail deep inside a
 scan as an opaque "function date_bin(…) does not exist". Two things to know:
 
-- That precise message is currently **generalized away in the UI**:
-  `_friendly_test_error` maps it to "Connection test failed. Check the connection
-  settings and try again." The real reason survives only in the logs.
-  → [tripl-64n8.12]
+- That precise message **reaches the UI verbatim**, under a
+  `Connection test failed:` prefix — `_friendly_test_error` surfaces
+  `WarehouseCapabilityError` as authored, because tripl wrote it and it carries
+  no host, port or driver text. It used to be generalized away, which sent
+  operators to the logs for the one sentence that named their problem
+  (tripl-64n8.12, closed by tripl-rcn8).
 - `classify_time` marks `time`/`timetz` as unsupported, but only BigQuery is wired
   to *act* on that. A PostgreSQL (or ClickHouse) source configured with a
   time-of-day column still fails later, inside a worker, instead of at
@@ -654,14 +656,14 @@ Both are deliberate configuration-time rejections. `TIME` carries no date and
 cannot be windowed at all; a `DATE` column has no time-of-day and cannot take a
 sub-day interval. Pick a `TIMESTAMP`/`DATETIME` column, or a `1d`/`1w` interval.
 
-### PostgreSQL: the connection test fails with a generic message
+### PostgreSQL: the connection test names a version requirement
 
-Check the API logs. The adapter raises precise, actionable errors — most notably
-**"PostgreSQL 13.x is too old for tripl … `date_bin()` … upgrade to 14 or
-newer"** — but `_friendly_test_error` currently collapses unrecognized exceptions
-into "Connection test failed. Check the connection settings and try again." If
-your server is older than 14, that is very likely what happened.
-→ [tripl-64n8.12]
+The adapter raises precise, actionable errors — most notably **"PostgreSQL 13.x
+is too old for tripl … `date_bin()` … upgrade to 14 or newer"** — and
+`_friendly_test_error` shows them verbatim under a `Connection test failed:`
+prefix. If your server is older than 14, the message says so; no log-diving
+required. Only exceptions tripl did **not** author are generalized, because
+those carry host, port and driver text.
 
 ### PostgreSQL: TLS is not doing what you think
 

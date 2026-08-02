@@ -27,13 +27,16 @@ import httpx
 
 from tripl_cli.api import event_types as event_types_api
 from tripl_cli.api.request import ApiRequest
-from tripl_cli.commands import bounded_datetime, bounded_float, bounded_int, group_help
-from tripl_cli.commands._write import (
-    add_write_flags,
-    confirm,
-    request_document,
+from tripl_cli.commands import (
+    add_json,
+    add_project,
+    add_timeout,
+    bounded_datetime,
+    bounded_int,
+    group_help,
     require_single_project,
 )
+from tripl_cli.commands._write import add_write_flags, confirm, request_document
 from tripl_cli.config import Config, require_base_url
 from tripl_cli.diagnostics.collect import (
     DEFAULT_MAX_EVENT_TYPES,
@@ -42,7 +45,8 @@ from tripl_cli.diagnostics.collect import (
     raise_selection_failure,
 )
 from tripl_cli.diagnostics.collect import select_projects as select
-from tripl_cli.diagnostics.model import (
+from tripl_cli.errors import EXIT_FAILURE, EXIT_OK
+from tripl_cli.model import (
     DriftRow,
     DriftsSnapshot,
     Fetched,
@@ -55,10 +59,9 @@ from tripl_cli.diagnostics.model import (
     as_dict,
     text_of,
 )
-from tripl_cli.diagnostics.render import render_drifts, render_header, render_mutation
-from tripl_cli.diagnostics.report import drifts_document, mutation_document
-from tripl_cli.errors import EXIT_FAILURE, EXIT_OK
-from tripl_cli.runner import REQUEST_TIMEOUT_SECONDS, gather_bounded, run_async
+from tripl_cli.render import render_drifts, render_header, render_mutation
+from tripl_cli.report import drifts_document, mutation_document
+from tripl_cli.runner import gather_bounded, run_async
 
 # The default, and the reason the flag exists: a drift is interesting when
 # nobody has looked at it. `all` is one flag away for an audit.
@@ -92,26 +95,6 @@ def register(
     parser.set_defaults(handler=group_help(parser))
 
 
-def _add_json(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--json",
-        dest="as_json",
-        action="store_true",
-        help="print one JSON document on stdout and every human line on stderr",
-    )
-
-
-def _add_timeout(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--timeout",
-        dest="timeout",
-        metavar="SECONDS",
-        type=bounded_float("--timeout", 0.1, 600.0),
-        default=REQUEST_TIMEOUT_SECONDS,
-        help=f"per-request timeout in seconds (default: {REQUEST_TIMEOUT_SECONDS})",
-    )
-
-
 def _register_list(
     verbs: argparse._SubParsersAction[argparse.ArgumentParser],
     parent: argparse.ArgumentParser,
@@ -127,13 +110,7 @@ def _register_list(
             "rendered as having none."
         ),
     )
-    parser.add_argument(
-        "--project",
-        dest="project",
-        metavar="SLUG",
-        action="append",
-        help="list only this project (repeatable)",
-    )
+    add_project(parser, single=False)
     parser.add_argument(
         "--include-demo",
         dest="include_demo",
@@ -163,8 +140,8 @@ def _register_list(
             f"(default: {DEFAULT_MAX_EVENT_TYPES}); the rest are reported as unexamined"
         ),
     )
-    _add_json(parser)
-    _add_timeout(parser)
+    add_json(parser)
+    add_timeout(parser)
     parser.set_defaults(handler=run_list)
 
 
@@ -185,9 +162,7 @@ def _register_dismiss(
         ),
     )
     parser.add_argument("drift_id", metavar="<drift-id>", help="the drift to dismiss")
-    parser.add_argument(
-        "--project", dest="project", metavar="SLUG", action="append", help="project slug (required)"
-    )
+    add_project(parser, single=True)
     parser.add_argument(
         "--snooze-until",
         dest="snooze_until",
@@ -205,8 +180,8 @@ def _register_dismiss(
         help="resolution note stored with the drift (max 2000 characters)",
     )
     add_write_flags(parser, prompts=True)
-    _add_json(parser)
-    _add_timeout(parser)
+    add_json(parser)
+    add_timeout(parser)
     parser.set_defaults(handler=run_dismiss)
 
 

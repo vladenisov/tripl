@@ -1717,6 +1717,61 @@ class TestMetricCollectionSchedule:
         assert body["collection_due"] is False
         assert datetime.fromisoformat(body["next_collection_at"]) == current_day + timedelta(days=1)
 
+    async def test_a_cooling_metric_is_not_reported_as_due_now(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+    ):
+        """The drilldown and the dispatcher must answer one question one way.
+
+        A metric in the error state sits out a cooldown before it is dispatched
+        again. This endpoint used to compute due-ness from the watermark alone,
+        so it told the operator a collection was due NOW while the scheduler
+        would skip it for up to a full interval — and a "due now" that does not
+        happen is the report that sends somebody digging through worker logs
+        (tripl-os3v).
+        """
+        from tripl.models.metric_definition import MetricDefinition
+        from tripl.worker.tasks.metrics.metric_collect import COLLECTION_STATUS_ERROR
+        from tripl.worker.tasks.metrics.schedule import metric_definition_cooldown_until
+
+        metric = await _create_sql_metric(
+            client,
+            project["slug"],
+            data_source["id"],
+            "schedule_cooldown",
+            status="active",
+        )
+
+        # Fresh and never collected, so the watermark alone says "due now".
+        before = await client.get(f"{_metrics_url(project['slug'])}/{metric['id']}")
+        assert before.status_code == 200, before.text
+        assert before.json()["collection_due"] is True
+
+        failed_at = datetime.now(UTC) - timedelta(minutes=1)
+        async with TestSessionLocal() as session:
+            definition = await session.get(MetricDefinition, uuid.UUID(metric["id"]))
+            assert definition is not None
+            definition.last_collection_status = COLLECTION_STATUS_ERROR
+            definition.last_collection_error = "boom"
+            definition.last_collection_failed_at = failed_at
+            await session.commit()
+
+        after = await client.get(f"{_metrics_url(project['slug'])}/{metric['id']}")
+        assert after.status_code == 200, after.text
+        body = after.json()
+        assert body["collection_due"] is False, "a cooling metric is not due"
+
+        # And the moment it reports is the scheduler's own, not a second guess.
+        async with TestSessionLocal() as session:
+            definition = await session.get(MetricDefinition, uuid.UUID(metric["id"]))
+            assert definition is not None
+            expected = metric_definition_cooldown_until(definition, now=datetime.now(UTC))
+        assert expected is not None
+        reported = datetime.fromisoformat(body["next_collection_at"])
+        assert abs(reported - expected) < timedelta(seconds=5)
+
     async def test_zero_row_collection_watermark_advances_schedule(
         self,
         client: AsyncClient,

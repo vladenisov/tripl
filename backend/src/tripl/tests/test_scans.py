@@ -1,5 +1,6 @@
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
@@ -1108,11 +1109,15 @@ class TestScanConfigsCRUD:
     def test_user_facing_error_sanitizes_internals_but_keeps_curated_messages(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Curated ScanError messages are user-actionable and surfaced verbatim.
+        # Curated ScanError messages are user-actionable and surfaced verbatim,
+        # under the "Scan failed" prefix the UI matches on. The sanitiser adds it
+        # so no raise site has to remember to (tripl-7bol) — before that, all
+        # sixty-odd curated messages reached the browser and were thrown away
+        # there, one layer past where tripl-embs had rescued them.
         curated = scan_tasks.ScanError(
-            "Scan query reached configured row limit (60000); increase scan_row_limit"
+            "The scan query reached the configured row limit (60000); increase scan_row_limit"
         )
-        assert scan_tasks._user_facing_error(curated) == str(curated)
+        assert scan_tasks._user_facing_error(curated) == f"Scan failed: {curated}"
 
         # The metrics row-limit guards are the real producers of that shape, and
         # they must raise ScanError — as bare ValueErrors their (already
@@ -1126,7 +1131,7 @@ class TestScanConfigsCRUD:
         with pytest.raises(scan_tasks.ScanError) as excinfo:
             metric_collect._reject_truncated_rows([1, 2, 3], what="Fact metric aggregate")
         row_limit_message = scan_tasks._user_facing_error(excinfo.value)
-        assert row_limit_message == str(excinfo.value)
+        assert row_limit_message == f"Scan failed: {excinfo.value}"
         assert "Fact metric aggregate reached the metric query row limit (2)" in row_limit_message
         assert row_limit_message != "Scan failed due to an internal error."
 
@@ -1172,6 +1177,65 @@ class TestScanConfigsCRUD:
         assert "contact support" not in orm_msg.lower()
         assert "sqlalche" not in orm_msg.lower()
         assert "flush" not in orm_msg.lower()
+
+    def test_every_branch_returns_the_prefix_the_ui_matches_on(self) -> None:
+        """The invariant the entire curated set rests on, checked on every branch.
+
+        ``frontend/src/lib/scanError.ts`` shows a backend message verbatim only
+        when it starts with "scan failed", and collapses everything else into a
+        bare "Scan failed." A curated message without the prefix is therefore not
+        styled differently — it is deleted before anyone reads it. That was true
+        of every ``ScanError`` in this repository until tripl-7bol, which is why
+        this asserts the property rather than four specific strings.
+        """
+        from tripl.core.name_template import NameFormatError
+
+        for exc in (
+            scan_tasks.ScanError("the scan config has no event group rules"),
+            NameFormatError("Scan failed: the event name format references unknown keys: action"),
+            TimeoutError("HTTPConnectionPool(host='wh.internal', port=8123): Read timed out"),
+            ConnectionError("clickhouse-connect: Connection refused to 10.0.0.4:9000"),
+            RuntimeError("sqlalchemy rolled the transaction back"),
+        ):
+            message = scan_tasks._user_facing_error(exc)
+            assert message.startswith(task_errors.SCAN_FAILED_PREFIX), (
+                f"{type(exc).__name__}: {message}"
+            )
+
+    def test_the_prefix_is_added_once_and_the_cap_bounds_the_final_string(self) -> None:
+        """Idempotence and where the 500-char cap lands, which interact.
+
+        ``_apply_name_format`` spells the prefix itself because it budgets its
+        "Available keys" list against that cap and the arithmetic has to include
+        the prefix — it cannot import the constant, since ``core`` must never
+        import ``worker``. Doubling the prefix there would silently spend 13
+        characters of a budget that was computed without them.
+        """
+        already = scan_tasks.ScanError("Scan failed: the event name format references unknown keys")
+        assert scan_tasks._user_facing_error(already) == str(already)
+
+        # Capped AFTER prefixing: the cap bounds what a UI row renders, and that
+        # is the final string rather than the body it was assembled from.
+        assert len(scan_tasks._user_facing_error(scan_tasks.ScanError("x" * 600))) == (
+            task_errors._MAX_CURATED_LEN
+        )
+
+    def test_the_prefix_is_the_one_the_frontend_actually_matches(self) -> None:
+        """A cross-language contract, pinned the only way two languages allow.
+
+        The repo already accepts this shape: ``_NAME_FORMAT_ERROR_BUDGET`` is
+        declared in ``core`` as a mirror of the worker's cap and pinned by
+        ``test_name_format_errors``, because ``core`` cannot import ``worker``.
+        TypeScript cannot import Python at all, so the pin reads the file. Both
+        suites run on every PR, so either side moving alone fails here.
+        """
+        repo_root = Path(__file__).resolve().parents[4]
+        source = (repo_root / "frontend" / "src" / "lib" / "scanError.ts").read_text(
+            encoding="utf-8"
+        )
+        assert f"startsWith('{task_errors.SCAN_FAILED_PREFIX.lower()}')" in source, (
+            "scanError.ts no longer matches the prefix _errors.py guarantees"
+        )
 
     def test_run_scan_persists_friendly_error_and_hides_internals(
         self, tmp_path, monkeypatch
@@ -1361,17 +1425,28 @@ class TestScanConfigsCRUD:
             result = scan_tasks.test_connection.run(str(data_source_id))
 
             # The returned error is sanitized too — no raw driver text escapes.
+            # Worded as a CONNECTION TEST, not a scan: the probe now shares the
+            # data-source sanitiser with the sync path, so one field cannot carry
+            # two different strings depending on which path wrote it (tripl-rcn8).
+            # It used to say "Scan failed: …" on a source that may never have been
+            # scanned, because it borrowed the scan sanitiser — whose prefix is a
+            # guarantee the frontend keys on (tripl-7bol).
             assert result["success"] is False
-            assert result["error"] == "Scan failed: could not connect to the data source."
+            assert result["error"] == (
+                "Connection test failed: could not reach the data source "
+                "— check the host, port, and network."
+            )
             assert "warehouse.internal" not in str(result["error"])
 
             with sync_session_factory() as session:
                 ds = session.get(DataSource, data_source_id)
                 assert ds.last_test_status == "failed"
                 assert ds.last_test_at is not None
-                # User-facing probe message carries no host/port/driver detail.
+                # User-facing probe message carries no host/port/driver detail,
+                # and is byte-identical to what the sync path would have written.
                 assert ds.last_test_message == (
-                    "Scan failed: could not connect to the data source."
+                    "Connection test failed: could not reach the data source "
+                    "— check the host, port, and network."
                 )
                 assert "warehouse.internal" not in ds.last_test_message
                 assert "8123" not in ds.last_test_message

@@ -35,7 +35,6 @@ from datetime import datetime
 from importlib.resources import files as resource_files
 from pathlib import Path
 
-from tripl_cli.diagnostics.model import to_rfc3339
 from tripl_cli.errors import TriplError
 from tripl_cli.install.plan import (
     APPEND,
@@ -47,6 +46,7 @@ from tripl_cli.install.plan import (
     SettingOutcome,
 )
 from tripl_cli.install.secrets import REQUIRED_SECRETS, REQUIRED_SETTINGS
+from tripl_cli.model import to_rfc3339
 
 # The published image, and the tag `tripl upgrade --to` moves. Same defaults
 # compose.yaml carries in its own `${TRIPL_IMAGE:-...}` fallbacks; written out

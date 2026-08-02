@@ -725,6 +725,10 @@ def _collection_schedule(
     the latest complete bucket is present, the next dispatch becomes due at the
     next interval boundary. Celery beat checks every five minutes, so the value
     is the earliest due boundary rather than a promise of second-exact execution.
+
+    A metric in the error state is held back by the dispatcher's cooldown first,
+    whatever its watermark says — see the call below, which asks the scheduler
+    rather than reproducing its rule.
     """
     status = (
         metric.status if isinstance(metric.status, MetricStatus) else MetricStatus(metric.status)
@@ -738,6 +742,20 @@ def _collection_schedule(
     interval_code = str(metric.interval)
     delta = get_interval(interval_code).delta
     moment = to_utc(now)
+
+    # A metric in the error state is not dispatched until its cooldown expires,
+    # however far behind its watermark has fallen. Asking the scheduler rather
+    # than reproducing its rule: this function used to answer from the watermark
+    # alone, so the drilldown said "due now" for a metric the dispatcher would
+    # skip for up to a full interval (tripl-os3v). Imported lazily, like the two
+    # other scheduler reads in this module, to keep the request path out of the
+    # Celery import graph.
+    from tripl.worker.tasks.metrics.schedule import metric_definition_cooldown_until
+
+    cooldown_until = metric_definition_cooldown_until(metric, now=moment)
+    if cooldown_until is not None:
+        return cooldown_until, False
+
     current_boundary = floor_to_bucket(moment, interval_code)
     progress_to = collection_progress_to(
         last_bucket=latest_bucket,
@@ -846,6 +864,10 @@ async def _clear_collected_metric_data(session: AsyncSession, metric: MetricDefi
     metric.last_collection_window_to = None
     metric.last_collection_status = None
     metric.last_collection_error = None
+    # Cleared with the status it belongs to: a reset that left the failure
+    # timestamp behind would leave the metric cooling down from a failure the
+    # reset just erased.
+    metric.last_collection_failed_at = None
 
 
 def _normalise_definition_value(value: object) -> object:

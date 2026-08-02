@@ -76,7 +76,14 @@ export function EventDriftBadge({
   if (count <= 0) return null
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        // Drop the last failure so a stale 409 does not greet the next open.
+        if (!next) actionMut.reset()
+      }}
+    >
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -101,6 +108,16 @@ export function EventDriftBadge({
         )}
         {driftsQuery.data && driftsQuery.data.items.length === 0 && (
           <div className="text-muted-foreground">No drifts in this window.</div>
+        )}
+        {/* Without this the backend's 409 (accepting a drift for a column the
+            scan's event name format needs) is invisible: the button just stops
+            pending and the drift stays open with no explanation (tripl-3mmh).
+            The backend sends a plain string detail, which api/client.ts puts
+            straight into ApiError.message, so it renders verbatim. */}
+        {actionMut.isError && (
+          <div role="alert" className="mb-1 text-destructive">
+            {getErrorMessage(actionMut.error)}
+          </div>
         )}
         {driftsQuery.data && driftsQuery.data.items.length > 0 && (
           <ul className="space-y-1">

@@ -18,7 +18,7 @@ from itertools import zip_longest
 from typing import Any
 
 from tripl_cli.api.request import ApiRequest
-from tripl_cli.diagnostics.model import JsonDict, JsonList, parse_time, text_of, to_rfc3339
+from tripl_cli.model import JsonDict, JsonList, page_items, parse_time, text_of, to_rfc3339
 
 LIST = "/projects/{slug}/event-types"
 DETAIL = "/projects/{slug}/event-types/{event_type_id}"
@@ -117,10 +117,37 @@ def drift_items(payload: Any) -> JsonList:
 
     A caller must have established that the READ succeeded before calling this —
     a 404 body is not an empty list (TRAP 3), and this function cannot tell the
-    difference.
+    difference. Kept as a name of its own because that warning is about drifts
+    specifically; the unwrapping itself is ``model.page_items``, which every
+    other ``{items, total}`` route in this package now reads through.
     """
-    items = payload.get("items") if isinstance(payload, dict) else None
-    return [row for row in items if isinstance(row, dict)] if isinstance(items, list) else []
+    return page_items(payload)
+
+
+def field_count(event_type: JsonDict) -> int:
+    """How many field definitions this event type carries.
+
+    Derived rather than served: ``EventTypeResponse`` embeds the whole
+    ``field_definitions`` array, and both surfaces want the count instead —
+    ``tripl plan types`` for its table, ``tripl-mcp``'s ``list_event_types`` to
+    replace the array it strips. It lives here, beside ``scans.is_dispatchable``
+    and for the same reason: a derived operational fact must not be computed
+    twice. Both call sites read it now — the MCP's ``_event_type_summary`` spelled
+    it inline until tripl-i1dt, which meant two places had to remember that
+    ``field_definitions`` is nullable on the wire.
+    """
+    return len(event_type.get("field_definitions") or [])
+
+
+def enum_options(field: JsonDict) -> tuple[str, ...]:
+    """A field definition's allowed values, as text. Empty when it is not an enum.
+
+    ``enum_options`` is typed ``array[Any] | null`` on the wire — the values are
+    whatever the field's own type is — so a renderer that assumed strings would
+    raise on a numeric enum.
+    """
+    options = field.get("enum_options")
+    return tuple(str(option) for option in options) if isinstance(options, list) else ()
 
 
 def is_untriaged(drift: JsonDict, now: datetime) -> bool:

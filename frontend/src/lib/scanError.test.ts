@@ -70,6 +70,47 @@ describe('friendlyScanError', () => {
     expectSanitised(result.message)
   })
 
+  it('passes the event-name-format failure through verbatim', () => {
+    // The real string from core/analyzers/event_generator._apply_name_format.
+    // It only survives because it starts with "Scan failed" — this test fails if
+    // anyone drops that prefix, which would silently return the operator to the
+    // bare "Scan failed." that hid a four-day outage (tripl-3mmh).
+    const raw =
+      'Scan failed: the event name format references unknown keys: action. ' +
+      'Available keys: platform, screen_name, time'
+    const result = friendlyScanError(raw)
+    expect(result.message).toBe(raw)
+    expect(result.technical).toBeUndefined()
+  })
+
+  it('passes it through even when a warehouse column name embeds a raw-internals marker', () => {
+    // The curated message enumerates the warehouse's OWN column names, and real
+    // tables have columns like `client_errno` and `error_traceback_id`. As bare
+    // substrings those read as a raw exception, the verbatim pass-through was
+    // skipped, and `connection_id` two columns later then mapped the whole thing
+    // to an actively WRONG connection error (tripl-3mmh).
+    const raw =
+      'Scan failed: the event name format references unknown keys: action. ' +
+      'Available keys: client_errno, connection_id, error_traceback_id, sqlalchemy_version'
+    const result = friendlyScanError(raw)
+    expect(result.message).toBe(raw)
+    expect(result.technical).toBeUndefined()
+  })
+
+  it('still catches the markers when they stand alone in raw exception text', () => {
+    // The other half of the bargain: token boundaries must not blunt the guard.
+    for (const raw of [
+      'Scan failed: ConnectionRefusedError: [Errno 111] Connection refused',
+      'Scan failed: Traceback (most recent call last):',
+      'Scan failed: SQLAlchemy could not complete the statement',
+      'Scan failed: use a session.no_autoflush block',
+      'Scan failed: <Engine object at 0x7f3d10a2b4c0> died',
+    ]) {
+      expect(friendlyScanError(raw).message).not.toBe(raw)
+      expect(friendlyScanError(raw).technical).toBe(raw)
+    }
+  })
+
   it('falls back to a bare "Scan failed." for unknown errors but still keeps the technical detail', () => {
     const raw = 'KeyError: tracking_plan_id'
     const result = friendlyScanError(raw)
@@ -86,6 +127,28 @@ describe('friendlyScanError', () => {
       'Scan failed: could not connect to the data source.',
       'Scan failed: the data source did not respond in time.',
       'Scan failed due to an internal error. Please try again or contact support.',
+    ]) {
+      const result = friendlyScanError(msg)
+      expect(result.message).toBe(msg)
+      expect(result.technical).toBeUndefined()
+    }
+  })
+
+  it('passes the backend CURATED messages through, not just the generic three', () => {
+    // The test above uses the three generic summaries, and every one of them
+    // happens to carry the prefix — which is precisely how tripl-7bol survived
+    // a green suite. The curated messages are the ones the mechanism exists
+    // for, and not one of them carried it: each arrived here intact and was
+    // collapsed into the bare 'Scan failed.' it had been written to replace.
+    //
+    // These read as `user_facing_error` now emits them
+    // (backend/src/tripl/worker/tasks/_errors.py), which prefixes every curated
+    // message so no raise site has to remember to.
+    for (const msg of [
+      'Scan failed: The scan query reached the configured row limit (50000); increase scan_row_limit to avoid partial generation',
+      'Scan failed: Either event_type_id or event_type_column must be specified',
+      'Scan failed: The scan config has no event group rules',
+      'Scan failed: Fact metric aggregate reached the metric query row limit (100000) for chunk 2026-08-01T00:00:00..2026-08-01T01:00:00; narrow the metric breakdown',
     ]) {
       const result = friendlyScanError(msg)
       expect(result.message).toBe(msg)

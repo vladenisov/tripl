@@ -31,11 +31,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO
 
-from tripl_cli.commands import bounded_float, image_tag
+from tripl_cli.commands import add_json, bounded_float, image_tag
 from tripl_cli.commands._write import NOTHING_WRITTEN, confirm
 from tripl_cli.config import Config, normalize_base_url
-from tripl_cli.diagnostics.model import JsonDict, to_rfc3339
-from tripl_cli.diagnostics.report import install_document
 from tripl_cli.errors import EXIT_FAILURE, EXIT_OK, TriplConfigError, TriplError
 from tripl_cli.install import docker, files, secrets
 from tripl_cli.install.health import HealthOutcome, read_bootstrap, wait_for_health
@@ -49,6 +47,8 @@ from tripl_cli.install.render import (
     render_next_steps,
 )
 from tripl_cli.install.shell import Command, CommandResult, Runner, describe, subprocess_runner
+from tripl_cli.model import JsonDict, to_rfc3339
+from tripl_cli.report import install_document
 
 # ./tripl, not the current directory (too easy to scribble into a repository),
 # not /opt/tripl (needs root), not an XDG data dir (the operator has to be able
@@ -174,12 +174,7 @@ def add_plan_flags(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="skip the confirmation prompt (required when stdin is not a terminal)",
     )
-    parser.add_argument(
-        "--json",
-        dest="as_json",
-        action="store_true",
-        help="print one JSON document on stdout and every human line on stderr",
-    )
+    add_json(parser)
 
 
 def reject_instance_flags(config: Config, command: str) -> None:

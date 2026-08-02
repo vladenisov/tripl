@@ -213,7 +213,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             )
             if analysis.row_limit_reached:
                 msg = (
-                    "Scan query reached configured row limit "
+                    "The scan query reached the configured row limit "
                     f"({scan_row_limit}); increase scan_row_limit to avoid partial generation"
                 )
                 raise ScanError(msg)
@@ -416,7 +416,7 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             msg = f"ScanConfig {scan_config_id} not found"
             raise ValueError(msg)
         if not config.event_group_rules:
-            msg = "Scan config has no event group rules"
+            msg = "The scan config has no event group rules"
             raise ScanError(msg)
 
         job.status = ScanJobStatus.running.value
@@ -483,7 +483,16 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
     max_retries=0,
 )
 def test_connection(self: object, data_source_id: str) -> dict[str, object]:
-    """Test connectivity to a data source and persist the probe result."""
+    """Test connectivity to a data source and persist the probe result.
+
+    Wording of the persisted message is owned by the data-source sanitiser, not by
+    this module's ``user_facing_error`` — see the except branch below (tripl-rcn8).
+    """
+    # Deferred: ``datasource_service`` is a request-path module (FastAPI, async
+    # session). The probe is the one worker path that needs it, so importing it
+    # here keeps it out of every Celery worker's start-up import graph.
+    from tripl.services.datasource_service import _friendly_test_error
+
     session = _get_sync_session()
     adapter: BaseAdapter | None = None
     try:
@@ -502,8 +511,16 @@ def test_connection(self: object, data_source_id: str) -> dict[str, object]:
             # The raw probe error embeds host/port/driver detail; keep that in
             # the logs only and surface a sanitized summary on every user-facing
             # field (last_test_message and the returned error).
+            #
+            # Sanitised with the DATA-SOURCE rule, not this module's
+            # ``user_facing_error``: that one guarantees a "Scan failed" prefix
+            # (the frontend keys on it) and this is a connection probe, not a
+            # scan. ``last_test_message`` is also written by the in-request path
+            # in ``datasource_service``; two sanitisers on one field meant the
+            # same failure persisted two different strings depending on which
+            # path ran, so the field has exactly one owner now (tripl-rcn8).
             logger.exception("Data source connection test failed for %s", data_source_id)
-            error = user_facing_error(e)
+            error = _friendly_test_error(e)
             message = error
 
         ds.last_test_at = datetime.now(UTC)

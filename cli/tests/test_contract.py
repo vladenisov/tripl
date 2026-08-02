@@ -13,6 +13,7 @@ repository checked out.
 
 from __future__ import annotations
 
+import argparse
 import ast
 import json
 import re
@@ -28,6 +29,8 @@ from tripl_cli.diagnostics import checks, collect, scan_checks
 from tripl_cli.diagnostics.endpoints import (
     DOCTOR_ENDPOINTS,
     DRIFTS_ENDPOINTS,
+    EVENTS_ENDPOINTS,
+    PLAN_ENDPOINTS,
     SCANS_ENDPOINTS,
     STATUS_ENDPOINTS,
     WATCH_ENDPOINTS,
@@ -52,6 +55,23 @@ MCP_BUILD_BLOCK = """    # Context is the repo root, not ./mcp-server: tripl-mcp
 """
 COLLECT_SOURCES = (Path(collect.__file__), Path(watch_collect.__file__))
 RULE_SOURCES = (Path(checks.__file__), Path(scan_checks.__file__))
+DIAGNOSTICS_PACKAGE = Path(collect.__file__).parent
+
+# Everything ``tripl_cli/diagnostics`` is allowed to contain, as a closed set.
+# ``collect`` reads and ``checks``/``scan_checks`` judge; ``endpoints`` is the
+# per-section map this file checks against the OpenAPI document. The `--json`
+# builders, the ASCII renderers and the shared vocabulary sit at the package
+# root instead (tripl-azhh) - only ``doctor`` reaches a verdict, so holding the
+# scans/drifts/status/install documents under this name made the name a false
+# claim about most of what it held. Adding an entry here is a design decision,
+# not a fix for a failing test.
+VERDICT_MODULES = frozenset({"__init__", "collect", "checks", "scan_checks", "endpoints"})
+
+# Every document this CLI emits carries this key - report.py's own stability
+# section says so - which makes minting it the one greppable proof of "how many
+# places build a tripl document". The colon is load-bearing: it matches the dict
+# key and not the many docstrings that discuss the field in prose.
+ENVELOPE_MINT = '"schema_version":'
 
 # Both packages, because the request layer is shared and a rule that applied to
 # only one of them could not be checked mechanically (tripl-ey6j.5). mcp-server
@@ -60,16 +80,43 @@ CLI_PACKAGE = Path(tripl_cli.__file__).parent
 MCP_PACKAGE = REPO_ROOT / "mcp-server" / "src" / "tripl_mcp"
 SHARED_LAYER = CLI_PACKAGE / "api"
 
+# Keyed by "<group>.<section>" rather than by section alone. A flat merge of the
+# seven maps drops every duplicate key silently — "selection" alone appears in
+# five of them, and `events`/`plan` both declare "fields" and "branches" — so a
+# section could stop being checked without anything failing. It also makes the
+# failure message name the COMMAND that would have gone blind, which is the
+# whole reason endpoints.py groups them at all (tripl-3ixs).
 DECLARED = {
-    **DOCTOR_ENDPOINTS,
-    **STATUS_ENDPOINTS,
-    **WATCH_ENDPOINTS,
-    **SCANS_ENDPOINTS,
-    **DRIFTS_ENDPOINTS,
+    f"{group}.{section}": endpoints
+    for group, group_map in (
+        ("doctor", DOCTOR_ENDPOINTS),
+        ("status", STATUS_ENDPOINTS),
+        ("watch", WATCH_ENDPOINTS),
+        ("scans", SCANS_ENDPOINTS),
+        ("drifts", DRIFTS_ENDPOINTS),
+        ("events", EVENTS_ENDPOINTS),
+        ("plan", PLAN_ENDPOINTS),
+    )
+    for section, endpoints in group_map.items()
 }
 
 # Path literals as they appear in the calls: "/x" or f"/x/{slug}/y".
 PATH_LITERAL = re.compile(r'f?"(/(?:projects|auth|data-sources)[^"]*)"')
+
+# Wire keys whose MEANING the shared layer owns, not just their spelling.
+# `items`/`total` are the paged envelope seven routes answer; `semantic_used`
+# says whether search's scores are semantic or substring; `field_definitions` is
+# the array `field_count` exists to replace. Each was read at its own call site
+# in both distributions until tripl-i1dt, and the copies had already diverged -
+# `tripl events list` dropped a non-dict row where the MCP's `list_events` kept
+# it, reading the very same response.
+SHARED_RESPONSE_KEYS = frozenset({"items", "total", "semantic_used", "field_definitions"})
+
+# Where those keys are read, package-relative. `model.py` holds the envelope
+# readers (re-exported through `tripl_cli.api`, see below) and the two `api`
+# modules hold the route-specific ones. Adding a fourth entry here is a decision
+# about where a fact lives, not a fix for a failing test.
+RESPONSE_FACT_SOURCES = frozenset({"model.py", "api/search.py", "api/event_types.py"})
 
 # Every method that puts bytes on the wire, on an httpx client or on the shared
 # TriplClient. Not a hand-picked three: `request` is what `api.request.send`
@@ -150,6 +197,53 @@ def _matching_exemption(relative: str, function: str | None) -> tuple[str, str |
     return None
 
 
+def _read_key(node: ast.Call | ast.Subscript) -> str | None:
+    """The wire key this node READS, or ``None``.
+
+    Reads only: ``payload.get("items")`` and ``payload["items"]``. MINTING a key
+    - ``{"items": rows}``, ``document["items"] = rows`` - is the opposite act and
+    every document builder in both packages does it deliberately. So is asking
+    whether a key is PRESENT (``"items" in data``), which is how
+    ``summarize_collection`` tells a page from an object it should pass through:
+    that question has no shared answer, because an absent envelope and an empty
+    one unwrap identically.
+    """
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    ):
+        return node.args[0].value
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.ctx, ast.Load)
+        and isinstance(node.slice, ast.Constant)
+        and isinstance(node.slice.value, str)
+    ):
+        return node.slice.value
+    return None
+
+
+def _shared_fact_reads(root: Path, allowed: frozenset[str]) -> list[str]:
+    """Every read of a ``SHARED_RESPONSE_KEYS`` key outside its definition site."""
+    offenders: list[str] = []
+    for source in sorted(root.rglob("*.py")):
+        relative = source.relative_to(root).as_posix()
+        if relative in allowed:
+            continue
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call | ast.Subscript):
+                continue
+            key = _read_key(node)
+            if key in SHARED_RESPONSE_KEYS:
+                offenders.append(f"{relative}:{node.lineno} reads {key!r}")
+    return offenders
+
+
 def _raised_finding_codes() -> set[str]:
     """Every literal ``code=`` on a ``Finding(...)`` in the rule modules."""
     found: set[str] = set()
@@ -165,11 +259,36 @@ def _raised_finding_codes() -> set[str]:
 
 
 @pytest.fixture(scope="module")
-def openapi_paths() -> dict[str, Any]:
+def openapi() -> dict[str, Any]:
     assert OPENAPI_PATH.exists(), (
         f"Committed OpenAPI snapshot missing at {OPENAPI_PATH}; the contract test cannot run."
     )
-    return dict(json.loads(OPENAPI_PATH.read_text())["paths"])
+    document: dict[str, Any] = json.loads(OPENAPI_PATH.read_text())
+    return document
+
+
+@pytest.fixture(scope="module")
+def openapi_paths(openapi: dict[str, Any]) -> dict[str, Any]:
+    return dict(openapi["paths"])
+
+
+def _query_schema(operation: dict[str, Any], name: str) -> dict[str, Any]:
+    """One query parameter's schema, reaching through the ``anyOf`` FastAPI emits.
+
+    An optional bounded int is serialised as ``anyOf: [{integer, maximum}, {null}]``
+    rather than as a flat schema, so a naive lookup finds no ``maximum`` and the
+    assertion below would pass by reading nothing.
+    """
+    for parameter in operation.get("parameters", []):
+        if parameter.get("name") != name or parameter.get("in") != "query":
+            continue
+        schema = dict(parameter.get("schema") or {})
+        for branch in schema.get("anyOf", []):
+            if isinstance(branch, dict) and branch.get("type") != "null":
+                merged = {**branch, **{k: v for k, v in schema.items() if k != "anyOf"}}
+                return merged
+        return schema
+    return {}
 
 
 def test_every_endpoint_read_exists_in_openapi(openapi_paths: dict[str, Any]) -> None:
@@ -310,6 +429,148 @@ def test_nothing_outside_the_shared_layer_calls_a_client_directly() -> None:
     )
 
 
+def test_nothing_outside_the_shared_layer_reads_a_shared_response_fact() -> None:
+    """The third door, and the one tripl-ey6j.5 left open.
+
+    Its two tests close request BUILDING: no module outside ``tripl_cli/api``
+    spells a path or constructs an ``ApiRequest``. Nothing covered the other
+    direction - what the response MEANS - so the same envelope was unwrapped by
+    hand at four call sites across the two distributions, and they had already
+    drifted apart on the routes they share.
+
+    Scanned in BOTH packages, for the same reason the transport rule is: the
+    request layer is shared, and "the shared layer answers this" enforced on one
+    side only is not a rule. A projection is NOT covered here and must not be -
+    ``EVENT_LIST_FIELDS`` and friends are statements about a model's context
+    budget, which is a cost a CLI writing to a pipe does not have (tripl-i1dt).
+    """
+    offenders = [
+        f"tripl_cli: {offender}"
+        for offender in _shared_fact_reads(CLI_PACKAGE, RESPONSE_FACT_SOURCES)
+    ] + [f"tripl_mcp: {offender}" for offender in _shared_fact_reads(MCP_PACKAGE, frozenset())]
+    assert not offenders, (
+        "a module reads a response key the shared layer already answers - call "
+        "api.page_items/page_total, api.search.semantic_used or "
+        "api.event_types.field_count instead of a second `.get`:\n  "
+        + "\n  ".join(sorted(offenders))
+    )
+
+
+def test_the_shared_layer_re_exports_the_envelope_readers_rather_than_copying_them() -> None:
+    """Identity, not equality-by-copy - the same rule ``TOOL_ENDPOINTS`` follows.
+
+    ``tripl_cli.api`` is the whole import surface ``tripl_mcp`` has, and the
+    ``{items, total}`` envelope is an envelope shape, so it is reachable from
+    there. A re-export is safe; a second definition under the same name would be
+    this repository's signature defect wearing the fix's clothes.
+    """
+    from tripl_cli import api, model
+
+    assert api.page_items is model.page_items
+    assert api.page_total is model.page_total
+
+
+def test_the_diagnostics_package_holds_only_the_verdict_layers() -> None:
+    """A package name is a claim about its contents; hold it to one.
+
+    ``report.py``, ``render.py`` and ``model.py`` lived here while they built the
+    ``scans``/``drifts``/``status``/``install`` documents, tables and snapshots -
+    none of which reach a verdict - so every reader looking for "where is the
+    JSON contract" was sent through a package saying the answer was about doctor.
+    That was not a hypothetical cost: four other packages, ``tripl_cli.api``
+    among them, had to import out of ``diagnostics`` for untyped-JSON helpers,
+    which reads as the request layer depending on the doctor.
+
+    A closed set rather than a "does it look diagnostic?" heuristic, because the
+    failure mode is accretion one module at a time, and each single step always
+    looks reasonable to whoever is taking it.
+    """
+    found = {source.stem for source in DIAGNOSTICS_PACKAGE.glob("*.py")}
+    assert found == VERDICT_MODULES, (
+        "tripl_cli/diagnostics no longer holds exactly the verdict layers - a module that "
+        "serves a command reaching no verdict belongs at the package root next to report.py "
+        f"(tripl-azhh): unexpected {sorted(found - VERDICT_MODULES)}, "
+        f"missing {sorted(VERDICT_MODULES - found)}"
+    )
+
+
+def test_only_one_module_mints_a_json_envelope() -> None:
+    """``report.py``'s promise, enforced instead of merely written down.
+
+    Its docstring claims "if a key is not built here it does not exist", which
+    is what makes "what does tripl emit" answerable by reading one file - and it
+    is the reason the module was NOT split into a diagnostics half and a
+    commands half when it moved (tripl-azhh). Nothing held anyone to it. Every
+    document carries ``schema_version`` by rule, so a second module minting that
+    key is a second document the one file does not describe, which is this
+    repo's signature defect (one fact, two spellings) applied to the published
+    contract itself.
+    """
+    minting = sorted(
+        source.relative_to(CLI_PACKAGE).as_posix()
+        for source in CLI_PACKAGE.rglob("*.py")
+        if ENVELOPE_MINT in source.read_text(encoding="utf-8")
+    )
+    assert minting == ["report.py"], (
+        "a module other than tripl_cli/report.py mints the schema_version key, so the CLI "
+        f"emits a document that one file does not describe: {minting}"
+    )
+
+
+def test_the_declared_query_bounds_are_the_ones_the_routes_enforce(
+    openapi_paths: dict[str, Any],
+) -> None:
+    """The 40-vs-200 trap, applied to every bound the read verbs check locally.
+
+    ``tripl events list --limit 20000`` fails at parse time, which is right —
+    it costs no request and the message names the ceiling instead of echoing a
+    422. It is only right while the ceiling here IS the route's. A CLI that
+    refuses a value the API accepts is a capability nobody can reach; one that
+    forwards a value the API rejects turns a typo into "the instance rejected
+    me". Both are silent, so the numbers are read out of the document rather
+    than trusted (tripl-3ixs).
+    """
+    from tripl_cli.api import events, search, variables
+
+    expected = {
+        (events.LIST, "limit", "maximum"): events.LIMIT_MAX,
+        (events.LIST, "limit", "default"): events.LIMIT_DEFAULT,
+        (events.LIST, "silent_since_days", "maximum"): events.SILENT_SINCE_DAYS_MAX,
+        (variables.LIST, "limit", "maximum"): variables.LIMIT_MAX,
+        (variables.LIST, "limit", "default"): variables.LIMIT_DEFAULT,
+        (search.SEARCH, "limit", "maximum"): search.LIMIT_MAX,
+        (search.SEARCH, "limit", "default"): search.LIMIT_DEFAULT,
+        (search.SEARCH, "q", "maxLength"): search.QUERY_MAX_LENGTH,
+    }
+    wrong: list[str] = []
+    for (path, parameter, key), declared in expected.items():
+        operation = openapi_paths[f"{API_PREFIX}{path}"]["get"]
+        actual = _query_schema(operation, parameter).get(key)
+        if actual != declared:
+            wrong.append(f"{path}?{parameter} {key}: tripl_cli says {declared}, API says {actual}")
+    assert not wrong, "the CLI's query bounds are not the route's:\n  " + "\n  ".join(wrong)
+
+
+def test_the_declared_enums_are_the_openapi_ones(openapi: dict[str, Any]) -> None:
+    """``--status`` and ``--type`` are ``choices=``; hold the choices to the schema.
+
+    A value the parser rejects is exit 2 on a filter the API supports, and the
+    operator has no way to tell that from a typo. Checked against the components
+    rather than against a copy, for the same reason ``DRIFT_STATUSES`` is a
+    verbatim transcription: the enum is the API's, not this CLI's.
+    """
+    from tripl_cli.api import events, search
+
+    schemas = openapi["components"]["schemas"]
+    assert list(events.STATUSES) == schemas["EventStatus"]["enum"], (
+        "tripl_cli.api.events.STATUSES and the API's EventStatus enum disagree"
+    )
+    entity_type = schemas["SearchResult"]["properties"]["entity_type"]
+    assert list(search.ENTITY_TYPES) == entity_type["enum"], (
+        "tripl_cli.api.search.ENTITY_TYPES and the API's SearchResult.entity_type disagree"
+    )
+
+
 def test_the_sse_stream_is_deliberately_absent_from_the_spec(
     openapi_paths: dict[str, Any],
 ) -> None:
@@ -363,7 +624,7 @@ def test_the_documented_job_window_is_the_one_actually_requested() -> None:
     That number is not decoration: it is how far back "how long has this been
     broken" can see, and an operator reading 40 would misjudge every long streak.
     """
-    from tripl_cli.diagnostics.model import JOBS_WINDOW
+    from tripl_cli.model import JOBS_WINDOW
 
     text = DOCS_PATH.read_text(encoding="utf-8")
     assert f"**{JOBS_WINDOW}** jobs" in text, (
@@ -425,29 +686,266 @@ def test_the_documented_scans_and_drifts_numbers_are_the_ones_in_the_code() -> N
     )
 
 
+def _section(text: str, heading: str) -> str:
+    """One ``### `tripl x y``` section, up to the next heading of any level."""
+    start = text.index(heading)
+    end = text.find("\n## ", start + len(heading))
+    return text[start : end if end != -1 else len(text)]
+
+
 def test_the_documented_status_choices_are_exactly_the_ones_the_parser_accepts() -> None:
     """Both directions, because either drift misleads.
 
     A choice the parser accepts and the page omits is a capability nobody finds;
     a choice the page lists and the parser rejects is an exit 2 in somebody's
-    cron. ``untriaged`` and ``all`` are this CLI's own additions to the API's
-    four statuses, which is precisely the kind of thing that gets added to a
-    parser and not to a page.
+    cron. ``untriaged`` and ``all`` are ``drifts``' own additions to the API's
+    four statuses, and ``events``' seven are the API's ``EventStatus`` verbatim —
+    both precisely the kind of thing that gets added to a parser and not to a
+    page.
+
+    Scoped per SECTION rather than to "the one --status row in the file": two
+    commands carry the flag now, they mean different vocabularies by it, and a
+    whole-file match would have silently started checking whichever one happened
+    to be first (tripl-3ixs).
     """
+    from tripl_cli.api.events import STATUSES
     from tripl_cli.commands.drifts import STATUS_CHOICES
 
-    rows = [
-        line
-        for line in DOCS_PATH.read_text(encoding="utf-8").splitlines()
-        if line.startswith("| `--status STATUS`")
+    text = DOCS_PATH.read_text(encoding="utf-8")
+    for heading, choices, source in (
+        ("### `tripl drifts list`", STATUS_CHOICES, "drifts.STATUS_CHOICES"),
+        ("### `tripl events list`", STATUSES, "api.events.STATUSES"),
+    ):
+        section = _section(text, heading)
+        rows = [line for line in section.splitlines() if line.startswith("| `--status STATUS`")]
+        assert len(rows) == 1, f"expected one --status row under {heading}, found {len(rows)}"
+        # `events list` documents its seven states in prose under the table
+        # rather than crammed into a cell, so the whole section is searched.
+        documented = set(re.findall(r"`([a-z_]+)`", section))
+        assert set(choices) <= documented, (
+            f"cli.md's {heading} section never names: {sorted(set(choices) - documented)} "
+            f"(from {source})"
+        )
+
+
+def test_the_documented_read_limits_are_the_ones_in_the_code() -> None:
+    """The 40-vs-200 trap, on the four ceilings the read verbs publish.
+
+    Each is a promise an operator plans a paging loop around. A page that states
+    a ceiling the parser refuses is an exit 2 somebody debugs against the docs;
+    one that states a smaller ceiling than the parser accepts is throughput
+    nobody reaches. The numbers themselves come from the OpenAPI document (see
+    ``test_the_declared_query_bounds_are_the_ones_the_routes_enforce``), so this
+    completes the chain: route -> tripl_cli.api -> argparse -> page.
+    """
+    from tripl_cli.api import events, search, variables
+
+    text = DOCS_PATH.read_text(encoding="utf-8")
+    missing = [
+        phrase
+        for phrase in (
+            f"How many events to ask for, `1`–`{events.LIMIT_MAX}`, "
+            f"default `{events.LIMIT_DEFAULT}`.",
+            f"`0`–`{events.SILENT_SINCE_DAYS_MAX}`",
+            f"How many variables to ask for, `1`–`{variables.LIMIT_MAX}`, "
+            f"default `{variables.LIMIT_DEFAULT}`.",
+            f"How many hits to ask for, `1`–`{search.LIMIT_MAX}`, "
+            f"default `{search.LIMIT_DEFAULT}`.",
+            f"1–{search.QUERY_MAX_LENGTH} characters",
+        )
+        if phrase not in text
     ]
-    assert len(rows) == 1, f"expected exactly one --status row in cli.md, found {len(rows)}"
-    documented = set(re.findall(r"`([a-z_]+)`", rows[0]))
-    assert documented == set(STATUS_CHOICES), (
-        "cli.md's --status row and drifts.STATUS_CHOICES disagree: "
-        f"only documented {sorted(documented - set(STATUS_CHOICES))}, "
-        f"only in the code {sorted(set(STATUS_CHOICES) - documented)}"
+    assert not missing, f"cli.md states read limits the code does not: {missing}"
+
+
+def test_the_documented_entity_types_are_the_ones_search_accepts() -> None:
+    """``--type`` is ``choices=``; a kind the page omits is one nobody filters on."""
+    from tripl_cli.api.search import ENTITY_TYPES
+
+    section = _section(DOCS_PATH.read_text(encoding="utf-8"), "### `tripl plan search`")
+    documented = set(re.findall(r"`([a-z_]+)`", section))
+    undocumented = set(ENTITY_TYPES) - documented
+    assert not undocumented, (
+        f"cli.md's plan search section never names these entity kinds: {sorted(undocumented)}"
     )
+
+
+def _command_paths(parser: argparse.ArgumentParser, prefix: str = "tripl") -> list[str]:
+    """Every command line the parser accepts, groups and verbs alike.
+
+    Walks ``_SubParsersAction`` because argparse exposes no public way to ask a
+    parser what it accepts. The module under test already names that class in a
+    type hint (``commands/scans.py``), so the private access is the established
+    idiom here rather than a new liberty.
+    """
+    paths: list[str] = []
+    for action in parser._actions:
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        for name, sub in action.choices.items():
+            paths.append(f"{prefix} {name}")
+            paths.extend(_command_paths(sub, f"{prefix} {name}"))
+    return paths
+
+
+def _leaf_parsers(
+    parser: argparse.ArgumentParser, prefix: str = "tripl"
+) -> dict[str, argparse.ArgumentParser]:
+    """Every command line that actually RUNS something, keyed by its spelling.
+
+    A group parser (``tripl scans``) is skipped: it carries no flags of its own
+    and only prints help. What is left is the set a user types.
+    """
+    found: dict[str, argparse.ArgumentParser] = {}
+    for action in parser._actions:
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        for name, sub in action.choices.items():
+            children = _leaf_parsers(sub, f"{prefix} {name}")
+            found.update(children or {f"{prefix} {name}": sub})
+    return found
+
+
+def _option(parser: argparse.ArgumentParser, flag: str) -> argparse.Action | None:
+    return next((action for action in parser._actions if flag in action.option_strings), None)
+
+
+def test_every_timeout_flag_is_the_same_flag() -> None:
+    """One default and one range across every verb that carries ``--timeout``.
+
+    Before tripl-3ixs the flag was written out at five ``add_parser`` calls plus
+    two private ``_add_timeout`` helpers, and nothing held the seven together —
+    a verb added with ``0.1, 60.0`` would have shipped a command that times out
+    at a minute while the page and its six siblings say ten minutes. It is the
+    repository's signature defect in miniature: one fact, spelled once per
+    caller. The flag now has one definition (``commands.add_timeout``) and this
+    walks the REAL parser to prove nobody went around it.
+
+    Also pins the converse: a verb that talks to an instance and forgot the flag
+    at all. There is no such verb, and a new one would be a command whose
+    request deadline the operator cannot reach.
+    """
+    from tripl_cli.cli import build_parser
+    from tripl_cli.commands import MAX_TIMEOUT_SECONDS, MIN_TIMEOUT_SECONDS
+    from tripl_cli.runner import REQUEST_TIMEOUT_SECONDS
+
+    leaves = _leaf_parsers(build_parser())
+    assert leaves, "walked the parser and found no commands — the walk is broken"
+    # `install` and `upgrade` act on a DIRECTORY and poll /health on their own
+    # `--wait` budget; they are the only two with no per-request deadline.
+    local = {"tripl install", "tripl upgrade"}
+    wrong: list[str] = []
+    for path, parser in sorted(leaves.items()):
+        option = _option(parser, "--timeout")
+        if path in local:
+            if option is not None:
+                wrong.append(f"{path}: has --timeout but acts on a directory, not an instance")
+            continue
+        if option is None:
+            wrong.append(f"{path}: talks to an instance but has no --timeout")
+            continue
+        if option.default != REQUEST_TIMEOUT_SECONDS:
+            wrong.append(f"{path}: --timeout defaults to {option.default}")
+        # The bounds live in the validator's closure, so they are checked by
+        # exercising it rather than by reading an attribute that does not exist.
+        parse = option.type
+        assert callable(parse)
+        for value in (MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS):
+            parse(str(value))
+        for value in (MIN_TIMEOUT_SECONDS / 2, MAX_TIMEOUT_SECONDS * 2):
+            with pytest.raises(argparse.ArgumentTypeError):
+                parse(str(value))
+    assert not wrong, "verbs disagree about --timeout:\n  " + "\n  ".join(wrong)
+
+
+def test_every_json_flag_writes_the_document_to_stdout() -> None:
+    """``--json`` means the same thing everywhere, and says so in the same words.
+
+    ``tripl watch`` is the one exception and is exempted BY NAME rather than by
+    a heuristic: it emits JSON Lines, one object per event, so a help string
+    promising "one JSON document" would be wrong there. Every other verb that
+    reaches an instance emits exactly one document, and an operator reading
+    ``tripl <anything> --help`` should not have to check whether this one is the
+    odd one.
+    """
+    from tripl_cli.cli import build_parser
+
+    leaves = _leaf_parsers(build_parser())
+    expected = "print one JSON document on stdout and every human line on stderr"
+    wrong = []
+    for path, parser in sorted(leaves.items()):
+        option = _option(parser, "--json")
+        if option is None:
+            wrong.append(f"{path}: has no --json at all")
+        elif path == "tripl watch":
+            if option.help == expected:
+                wrong.append(f"{path}: emits JSON Lines but claims one document")
+        elif option.help != expected:
+            wrong.append(f"{path}: --json help is {option.help!r}")
+    assert not wrong, "verbs disagree about --json:\n  " + "\n  ".join(wrong)
+
+
+def test_every_command_and_verb_has_its_own_section() -> None:
+    """Derived from the real parser, so a new verb fails until it is written up.
+
+    tripl-ey6j.5 shipped six verbs with no page at all — the docs rule
+    (AGENTS.md:467) is a habit, and a habit does not fail CI. A literal list of
+    expected headings would not help: it would be edited by the same person who
+    forgot the docs. Walking ``build_parser`` means the only way to add a
+    command is to add its section.
+    """
+    from tripl_cli.cli import build_parser
+
+    headings = {
+        line.split("`")[1]
+        for line in DOCS_PATH.read_text(encoding="utf-8").splitlines()
+        if line.startswith(("## `tripl ", "### `tripl "))
+    }
+    expected = _command_paths(build_parser())
+    assert expected, "walked the parser and found no commands — the walk is broken, not the docs"
+    missing = [path for path in expected if path not in headings]
+    assert not missing, f"cli.md has no section for: {missing}"
+
+
+def test_the_page_s_closed_claim_about_dismiss_actions_is_still_true() -> None:
+    """The other half of the drift-action contract, the half that faces a reader.
+
+    ``test_drifts_cmd.py::test_no_reachable_dismiss_invocation_can_send_accept``
+    already pins the constant to what goes on the wire. Nothing pinned it to the
+    page, so widening ``CLI_ALLOWED_DRIFT_ACTIONS`` would have shipped a
+    reachable action nobody could discover — and for a command that writes, an
+    undiscoverable action is the one an operator reaches for by guessing.
+
+    Asserting merely that each allowed action *appears* in the section would be
+    no test at all: the section names ``accept`` and ``reopen`` too, precisely to
+    say they are unavailable, so a substring check passes for an action the page
+    documents as impossible. What the page actually makes is a CLOSED claim —
+    "the only two actions reachable are X and Y" — with the complement named on
+    the other side. Both sentences are rebuilt from the constants here, so
+    moving an action between the tuples breaks whichever sentence went stale.
+    """
+    from tripl_cli.api.event_types import CLI_ALLOWED_DRIFT_ACTIONS, DRIFT_ACTIONS
+
+    text = DOCS_PATH.read_text(encoding="utf-8")
+    start = text.index("### `tripl drifts dismiss`")
+    # Whitespace-flattened: both sentences are prose the page wraps at 80
+    # columns, and one of them already straddles a line break. Matching the raw
+    # text would fail on a rewrap, which is not a change in what the page claims.
+    section = " ".join(text[start : text.index("\n## ", start)].split())
+
+    # Sorted, not tuple order: the constants have no production consumer that
+    # reads them positionally, so reordering one is a null change and must not
+    # fail CI. Membership is the whole contract.
+    counts = {2: "two", 3: "three", 4: "four"}
+    reachable = " and ".join(f"`{action}`" for action in sorted(CLI_ALLOWED_DRIFT_ACTIONS))
+    count = counts.get(len(CLI_ALLOWED_DRIFT_ACTIONS), str(len(CLI_ALLOWED_DRIFT_ACTIONS)))
+    claim = f"the only {count} actions reachable are {reachable}"
+    assert claim in section, f"cli.md's dismiss section does not claim: {claim!r}"
+
+    withheld = sorted(set(DRIFT_ACTIONS) - set(CLI_ALLOWED_DRIFT_ACTIONS))
+    complement = " and ".join(f"`{action}`" for action in withheld)
+    denial = f"{complement} have no spelling here at all"
+    assert denial in section, f"cli.md's dismiss section does not deny: {denial!r}"
 
 
 def test_the_packaged_compose_matches_the_repo_compose() -> None:

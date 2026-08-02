@@ -14,6 +14,7 @@ from tripl.schemas.fact_table import (
     FactTableResponse,
     FactTableUpdate,
 )
+from tripl.schemas.text_filters import FreeTextFilter
 from tripl.services import audit_service, fact_table_service
 from tripl.services.project_lookup import get_project_id_by_slug
 
@@ -25,7 +26,9 @@ _editor_required = [Depends(get_editor_user)]
 async def list_fact_tables(
     session: SessionDep,
     slug: str,
-    search: str | None = None,
+    # FreeTextFilter: binds into an ILIKE, so a NUL aborts inside asyncpg
+    # before SQL runs (tripl-8wez).
+    search: FreeTextFilter | None = None,
     offset: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=1000),
 ) -> FactTableListResponse:

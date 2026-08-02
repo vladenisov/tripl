@@ -28,8 +28,13 @@ import sys
 from typing import Any
 
 from tripl_cli.api.request import ApiRequest
-from tripl_cli.diagnostics.model import JsonDict
 from tripl_cli.errors import TriplConfigError, TriplError
+from tripl_cli.model import JsonDict
+
+# ``require_single_project`` used to live here. It moved to ``commands`` in
+# tripl-3ixs: four read verbs need it now, and "this command acts on one
+# project" is an argument rule rather than a write-safety one — leaving it here
+# would have had `tripl plan fields` importing the write-safety module.
 
 
 def add_write_flags(parser: argparse.ArgumentParser, *, prompts: bool) -> None:
@@ -51,23 +56,6 @@ def add_write_flags(parser: argparse.ArgumentParser, *, prompts: bool) -> None:
             action="store_true",
             help="skip the confirmation prompt (required when stdin is not a terminal)",
         )
-
-
-def require_single_project(args: argparse.Namespace) -> str:
-    """Exactly one ``--project SLUG``, for anything naming a single object.
-
-    Explicit beats clever for a write, and the drift-action route carries a slug
-    the CLI cannot infer from a drift id.
-    """
-    slugs: tuple[str, ...] = tuple(getattr(args, "project", None) or ())
-    if len(slugs) == 1:
-        return slugs[0]
-    if not slugs:
-        raise TriplConfigError("this command acts on one project; name it with --project <slug>.")
-    raise TriplConfigError(
-        "this command acts on one project, but --project was given "
-        f"{len(slugs)} times: {', '.join(repr(slug) for slug in slugs)}."
-    )
 
 
 # What a refusal says did NOT happen. The default is the HTTP wording, true of

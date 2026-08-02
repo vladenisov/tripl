@@ -87,7 +87,10 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
   revocable. See **[agent-api-guide.md](../integrate/agent-api-guide.md)**.
 - **RBAC** with three roles: owner / editor / viewer. Owner-only routes
   (security and instance administration) require an interactive owner session
-  and are never reachable with an API key.
+  and are not reachable with an API key. One enumerated exception carries a
+  separate gate (`deps.get_key_reachable_owner_user`): the
+  [metrics replay](../integrate/agent-api-guide.md#replaying-metrics) accepts an
+  owner's `write`-scoped key, and a test pins the route list so it stays one.
 
 ---
 
@@ -190,6 +193,11 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
   operands and sends the same dependency set through that batch path. Metrics on
   different interval grids remain separate groups. `event_composition` metrics
   read existing event series on the shared scan grid (no warehouse query).
+  A metric whose last collection **errored** is not retried before its own
+  interval has elapsed (an hour for `event_composition`, which has no interval of
+  its own): a failed run advances neither a value nor the completed-window
+  watermark, so without that floor a metric that can never collect would be
+  re-dispatched on every 300 s tick.
 - **Aggregations.** Adapter `_aggregate_value_sql` builds the per-kind SQL for
   ClickHouse / BigQuery / PostgreSQL; `core/adapters/measure_validator` checks the
   measure/distinct column against the source's real columns before it reaches a
@@ -312,7 +320,11 @@ photos, comments) and merge back via a
 ### Metrics flow
 
 1. Beat schedules due-checks.
-2. Due scans dispatch metrics collection.
+2. Due scans dispatch metrics collection. A scan is due when the later of its
+   newest stored bucket and the window its last **completed** collection
+   recorded falls behind the current interval boundary — so a run that found an
+   empty window still counts as progress and waits for the next boundary instead
+   of being re-dispatched on every 300 s tick.
 3. Counts are aggregated into `event_metrics`.
 4. Anomalies are recalculated into `metric_anomalies`.
 5. Matching alert rules enqueue deliveries.

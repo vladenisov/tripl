@@ -78,8 +78,10 @@ The backend gates endpoints with role/scope dependencies, not just UI hiding:
 - **Owner** is required for member role changes and all Instance settings.
   Non-owners receive `403 Owner role required`.
 - Owner-only endpoints additionally require an **interactive owner session** —
-  an API key can never reach them, even a write-scoped key owned by an owner
-  (`403 Owner session required`).
+  an API key does not reach them, even a write-scoped key owned by an owner
+  (`403 Owner session required`). One route is deliberately exempt: the
+  [metrics replay](../integrate/agent-api-guide.md#replaying-metrics), which a
+  write-scoped key backed by an owner may call.
 
 ## Members
 
@@ -236,7 +238,10 @@ header) and the endpoints they unlock, see the
 
 :::note What a key cannot reach, whatever its scope
 Owner-only endpoints require an **interactive owner session**, so an API key is
-`403` on them even when its owner is an owner. In practice that means
+`403` on them even when its owner is an owner. The single exception is the
+[metrics replay](../integrate/agent-api-guide.md#replaying-metrics): it only
+re-runs SQL an owner already authored, so an owner's `tk_w_` key may trigger one.
+In practice that means
 **connecting a data source and inviting a member are browser-only steps** — no
 CLI, script or agent can do them for you, which is why
 [`tripl install`](../run/cli.md#tripl-install) hands you a URL at the end instead
@@ -306,12 +311,14 @@ The sections, with the fields each exposes:
 Core server configuration.
 
 - **App base URL** — used in emails, webhooks and the ingest endpoint
-  (`app_base_url`). It is also the origin advertised in the `servers` block of
-  the published OpenAPI document, so generated API clients and the "Try it out"
-  panel in `/docs` send their requests there. Like the rest of this section it is
-  read per request, so correcting it here fixes those links immediately — but do
-  check it: an internal address left over from setup is invisible in the UI and
-  only shows up as clients failing to reach the API from outside your network.
+  (`app_base_url`). Like the rest of this section it is read per request, so
+  correcting it here fixes those links immediately, with no restart. It does
+  **not** reach API clients: `/openapi.json` publishes no `servers` block, so a
+  generated client and the "Try it out" panel in `/docs` address whichever origin
+  they fetched the spec from — see [Base URL](../integrate/agent-api-guide.md#base-url).
+  Do check the value anyway: an address left over from setup is invisible in the
+  UI and surfaces only as password-reset and alert links that open the wrong host
+  (or nothing at all) for whoever clicks them.
 - **Scan row limit default** — default warehouse row cap for scans
   (`scan_row_limit_default`, default 50,000).
 - **Metrics row limit default** — default row cap for metric queries

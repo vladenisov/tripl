@@ -117,6 +117,61 @@ async def test_read_tool_search_plan_end_to_end(stdio_runtime: Runtime) -> None:
 
 
 @respx.mock
+async def test_search_reports_a_missing_semantic_flag_as_false_rather_than_null(
+    stdio_runtime: Runtime,
+) -> None:
+    """A body without the key IS the route saying the index did not answer.
+
+    The backend declares ``SearchResponse.semantic_used: bool = False``, so null
+    was never a state this route could be in — and an agent handed null there has
+    no way to read the confidences it was handed alongside, which is the whole
+    reason the flag is published. Both surfaces now ask
+    ``tripl_cli.api.search.semantic_used`` instead of keeping a ``.get`` each
+    (tripl-i1dt).
+    """
+    respx.get(f"{API_BASE}/projects/demo/search").mock(
+        return_value=httpx.Response(200, json={"items": [], "total": 0})
+    )
+
+    is_error, text = await call_tool("search_plan", {"slug": "demo", "q": "purchase"})
+
+    assert not is_error
+    assert json.loads(text)["semantic_used"] is False
+
+
+@respx.mock
+async def test_list_events_reads_the_page_through_the_shared_layer(
+    stdio_runtime: Runtime,
+) -> None:
+    """``total`` is the API's pre-paging count and must survive the trim.
+
+    The trim is this consumer's context budget and stays; the envelope around it
+    is what the route answers, and the CLI reads the same one from the same
+    route. A non-object row is dropped rather than passed through to ``trim``,
+    which is what ``tripl events list`` has always done with it (tripl-i1dt).
+    """
+    respx.get(f"{API_BASE}/projects/demo/events").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {"id": "e1", "name": "purchase:success", "status": "live", "field_values": []},
+                    "not an object",
+                ],
+                "total": 137,
+            },
+        )
+    )
+
+    is_error, text = await call_tool("list_events", {"slug": "demo"})
+
+    assert not is_error
+    payload = json.loads(text)
+    assert payload["total"] == 137
+    assert payload["items"] == [{"id": "e1", "name": "purchase:success", "status": "live"}]
+
+
+@respx.mock
 async def test_write_tool_update_event_end_to_end(stdio_runtime: Runtime) -> None:
     # Arrange
     respx.get(f"{API_BASE}/projects/demo/branches/b-42").mock(

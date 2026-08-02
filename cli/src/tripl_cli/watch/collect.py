@@ -19,7 +19,7 @@ from typing import Any
 from tripl_cli.api import monitoring as monitoring_api
 from tripl_cli.api import scans as scans_api
 from tripl_cli.diagnostics.collect import Reader
-from tripl_cli.diagnostics.model import Fetched, JsonDict, JsonList
+from tripl_cli.model import Fetched, JsonDict, JsonList, page_items
 from tripl_cli.runner import gather_bounded
 from tripl_cli.watch.model import DELIVERY_STATUS_FAILED, JobTarget
 
@@ -88,9 +88,14 @@ async def read_tick(
 
 
 def deliveries_of(payload: JsonDict) -> JsonList:
-    """``AlertDeliveryListResponse.items`` — the endpoint returns {items, total}."""
-    items = payload.get("items")
-    return [row for row in items if isinstance(row, dict)] if isinstance(items, list) else []
+    """``AlertDeliveryListResponse.items`` — the endpoint returns {items, total}.
+
+    Kept as a name of its own because WHICH envelope this is, is the fact worth
+    writing down here; the unwrapping itself is ``model.page_items``, which every
+    reader of that envelope in either distribution now goes through. This was the
+    last hand-written copy of it outside that definition (tripl-i1dt).
+    """
+    return page_items(payload)
 
 
 def describe(fetched: Fetched[Any]) -> str:
