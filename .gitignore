@@ -60,6 +60,21 @@ pgdata/
 .beads-credential-key
 .omc/
 
+# The beads JSONL exports are NOT committed. Issues live in the local Dolt DB
+# and sync over `refs/dolt/data` on the git remote, so these files are a passive
+# export rather than a source of truth — nothing breaks by leaving them out.
+# They are excluded because of what they CONTAIN: 590 issues carrying the
+# maintainer's personal email, plus root-cause write-ups naming the private
+# production host, its internal address and its real project slugs. That is
+# internal project management, and this repository is public.
+#
+# `.beads/hooks/` stays tracked on purpose — pre-commit carries this repo's
+# ruff-format gate (see CONTRIBUTING.md and the Makefile) and holds no personal
+# data.
+.beads/issues.jsonl
+.beads/interactions.jsonl
+.beads/events.jsonl
+
 graphify-out
 
 # Design handoff bundle from Claude Design (claude.ai/design).
