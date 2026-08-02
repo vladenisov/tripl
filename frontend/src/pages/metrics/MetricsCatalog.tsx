@@ -673,37 +673,41 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                 No metrics match the current filters.
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <div role="table" aria-label="Metrics" className="min-w-[748px]">
-                  <div role="rowgroup">
-                    <div
-                      role="row"
-                      className={`${METRIC_GRID} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
-                      style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
-                    >
-                      <span role="columnheader" aria-label="Reorder" />
-                      <span role="columnheader">
-                        <Checkbox
-                          aria-label="Select all metrics"
-                          checked={allSelected}
-                          onCheckedChange={toggleAll}
-                        />
-                      </span>
-                      <span role="columnheader">Metric</span>
-                      <span role="columnheader">Latest</span>
-                      <span role="columnheader">
-                        {trendPoints > 0 ? `Trend · ${trendPoints} pts` : 'Trend'}
-                      </span>
-                      <span role="columnheader">Status</span>
-                      <span role="columnheader" className="text-right">Updated</span>
-                      <span role="columnheader" aria-label="Actions" />
+              // DndContext stays OUTSIDE role="table": it renders dnd-kit's
+              // <LiveRegion role="status">, hidden by clip rather than display:none,
+              // so within the table it is a disallowed child and trips axe's
+              // aria-required-children. SortableContext renders no DOM and can stay.
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleDragEnd}
+              >
+                <div className="overflow-x-auto">
+                  <div role="table" aria-label="Metrics" className="min-w-[748px]">
+                    <div role="rowgroup">
+                      <div
+                        role="row"
+                        className={`${METRIC_GRID} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
+                        style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
+                      >
+                        <span role="columnheader" aria-label="Reorder" />
+                        <span role="columnheader">
+                          <Checkbox
+                            aria-label="Select all metrics"
+                            checked={allSelected}
+                            onCheckedChange={toggleAll}
+                          />
+                        </span>
+                        <span role="columnheader">Metric</span>
+                        <span role="columnheader">Latest</span>
+                        <span role="columnheader">
+                          {trendPoints > 0 ? `Trend · ${trendPoints} pts` : 'Trend'}
+                        </span>
+                        <span role="columnheader">Status</span>
+                        <span role="columnheader" className="text-right">Updated</span>
+                        <span role="columnheader" aria-label="Actions" />
+                      </div>
                     </div>
-                  </div>
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleDragEnd}
-                  >
                     <SortableContext
                       items={visibleMetrics.map(m => m.id)}
                       strategy={verticalListSortingStrategy}
@@ -724,9 +728,9 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                         ))}
                       </div>
                     </SortableContext>
-                  </DndContext>
+                  </div>
                 </div>
-              </div>
+              </DndContext>
             )}
           </Panel>
         ))}

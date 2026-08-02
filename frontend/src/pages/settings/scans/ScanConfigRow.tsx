@@ -1,3 +1,5 @@
+import { Link } from 'react-router-dom'
+
 import type { DataSource, ScanConfig } from '@/types'
 import { Chip } from '@/components/primitives/chip'
 import { Ban, CheckCircle2, Clock, Loader2, MinusCircle, Play, XCircle, type LucideIcon } from 'lucide-react'
@@ -74,6 +76,7 @@ export function ScanListRow({
   dataSource,
   runInfo,
   intervalLabel,
+  detailHref,
   onNavigate,
   onRun,
   runPending,
@@ -84,6 +87,9 @@ export function ScanListRow({
   dataSource: DataSource | null
   runInfo: ScanRunInfo
   intervalLabel: Record<string, string>
+  /** Detail route for this scan. The name renders as the row's one focusable
+   *  primary action, so the row itself needs no widget role. */
+  detailHref: string
   onNavigate: () => void
   /** Trigger a manual scan run for this row (POST /scans/{id}/run). */
   onRun?: () => void
@@ -132,14 +138,14 @@ export function ScanListRow({
   ) : null
 
   return (
+    // No role/tabIndex on the row: it owns real controls ("Run now", "Review
+    // events"), and a widget role around them is axe's nested-interactive. The
+    // name below is the single focusable way in; onClick stays as a mouse-only
+    // convenience, which needs no role and traps no keyboard user.
     <tr
-      role="button"
-      tabIndex={0}
-      aria-label={`View scan config ${sc.name}`}
       className="cursor-pointer border-t transition-colors hover:bg-[var(--surface-hover)]"
       style={{ borderColor: 'var(--border-subtle)' }}
       onClick={onNavigate}
-      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onNavigate() } }}
     >
       {/* Lead with a human summary — name over "source · cadence". The raw SQL is
           demoted to a faint secondary line (full query on hover) rather than its
@@ -148,7 +154,14 @@ export function ScanListRow({
         <div className="flex items-center gap-2.5">
           <SrcIcon dbType={dataSource?.db_type ?? null} size={28} />
           <div className="min-w-0">
-            <div className="truncate text-[13px] font-semibold">{sc.name}</div>
+            <Link
+              to={detailHref}
+              onClick={e => e.stopPropagation()}
+              className="block truncate text-[13px] font-semibold no-underline hover:underline"
+              style={{ color: 'inherit' }}
+            >
+              {sc.name}
+            </Link>
             <div className="truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
               {dataSource?.name ?? 'Unknown source'} · {cadenceLabel}
             </div>

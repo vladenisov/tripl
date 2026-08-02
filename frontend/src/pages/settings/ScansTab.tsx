@@ -266,14 +266,19 @@ export function ScansTab({ slug }: { slug: string }) {
               </tr>
             </thead>
             <tbody>
-              {scanConfigs.map((sc: ScanConfig, index: number) => (
+              {scanConfigs.map((sc: ScanConfig, index: number) => {
+                // One expression for the detail route: the row's link and its
+                // click handler must not be able to drift apart.
+                const detailHref = `/p/${slug}/settings/scans/${sc.id}`
+                return (
                 <ScanListRow
                   key={sc.id}
                   sc={sc}
                   dataSource={dsMap.get(sc.data_source_id) ?? null}
                   runInfo={runInfoById.get(sc.id) ?? LOADING_SCAN_RUN_INFO}
                   intervalLabel={INTERVAL_LABEL}
-                  onNavigate={() => navigate(`/p/${slug}/settings/scans/${sc.id}`)}
+                  detailHref={detailHref}
+                  onNavigate={() => navigate(detailHref)}
                   onRun={() => runScan.mutate(sc.id)}
                   runPending={pendingScanId === sc.id}
                   // The step-1 CTA opens this list; point the coach at the first
@@ -281,7 +286,8 @@ export function ScansTab({ slug }: { slug: string }) {
                   runCoachMark={index === 0}
                   onReviewEvents={() => navigate(reviewEventsHref(sc))}
                 />
-              ))}
+                )
+              })}
             </tbody>
           </table>
         )}

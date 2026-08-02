@@ -170,9 +170,13 @@ function setupFetchWithJobs(jobs: unknown[], runCalls?: { method: string; url: s
 
 function renderTab() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // MemoryRouter is load-bearing since each scan name renders as a <Link> — the
+  // row's single focusable primary action. useNavigate is still the stub above.
   return render(
     <QueryClientProvider client={queryClient}>
-      <ScansTab slug="demo" />
+      <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+        <ScansTab slug="demo" />
+      </MemoryRouter>
     </QueryClientProvider>,
   )
 }
@@ -353,8 +357,12 @@ describe('ScansTab', () => {
     setupFetch()
     renderTab()
 
-    fireEvent.click(await screen.findByText('Main events scan'))
-    expect(navigateMock).toHaveBeenCalledWith('/p/demo/settings/scans/scan-1')
+    // The scan name is a real <Link> now — the row's single focusable primary
+    // action — so the destination is the href, not a useNavigate call.
+    expect(await screen.findByRole('link', { name: 'Main events scan' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/scans/scan-1',
+    )
   })
 
   it('opens the create page in place and gates column mapping behind preview', async () => {
