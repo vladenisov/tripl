@@ -43,6 +43,7 @@ x-backend-environment: &backend-environment
 
 services:
   postgres:
+    restart: unless-stopped
     image: pgvector/pgvector:0.8.2-pg18-trixie
     environment:
       POSTGRES_USER: tripl
@@ -62,6 +63,7 @@ services:
     mem_reservation: 512m
 
   rabbitmq:
+    restart: unless-stopped
     image: rabbitmq:3.13-management
     # consumer_timeout raised above the Celery collect_metrics hard limit so long
     # metrics replays aren't force-requeued mid-run. See infra/rabbitmq/rabbitmq.conf.
@@ -80,6 +82,7 @@ services:
     mem_reservation: 256m
 
   redis:
+    restart: unless-stopped
     image: redis:8.6.2-alpine
     command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
     ports:
@@ -93,6 +96,7 @@ services:
     mem_reservation: 128m
 
   api:
+    restart: unless-stopped
     build: *backend-build
     command: ["sh", "-c", "alembic upgrade head && uvicorn tripl.main:app --host 0.0.0.0 --port 8000 --reload"]
     ports:
@@ -134,6 +138,7 @@ services:
           path: ./backend/Dockerfile
 
   celery-worker:
+    restart: unless-stopped
     build: *backend-build
     command: ["celery", "-A", "tripl.worker.celery_app", "worker", "--loglevel=info"]
     environment: *backend-environment
@@ -167,6 +172,7 @@ services:
           path: ./backend/Dockerfile
 
   celery-beat:
+    restart: unless-stopped
     build: *backend-build
     command: ["celery", "-A", "tripl.worker.celery_app", "beat", "--loglevel=info"]
     environment: *backend-environment
@@ -196,6 +202,7 @@ services:
           path: ./backend/Dockerfile
 
   frontend:
+    restart: unless-stopped
     build:
       context: ./frontend
       target: dev
@@ -250,6 +257,7 @@ services:
   # website/docs/integrate/mcp-server.md. Enable with:
   #   docker compose -f compose.dev.yaml --profile mcp up
   mcp:
+    restart: unless-stopped
     # Context is the repo root, not ./mcp-server: tripl-mcp builds against the
     # sibling `tripl` package in ./cli, which a mcp-server/ context cannot see
     # (tripl-ey6j.1).
