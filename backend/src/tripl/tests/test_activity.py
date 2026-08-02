@@ -332,6 +332,151 @@ async def test_activity_feed_collapses_one_incident_into_one_rail_item(client: A
 
 
 @pytest.mark.asyncio
+async def test_activity_feed_links_only_to_main_branch_events(client: AsyncClient):
+    """Opening a working branch must not duplicate or hijack the rail's events.
+
+    ``Event`` is branch-scoped and creating a branch deep-copies every plan
+    entity with fresh ids, so an unscoped feed query surfaced both copies and
+    often linked to the branch-local id — which the monitoring detail page
+    resolves against main and 404s on (tripl-r5ri).
+    """
+    slug = "activity-branch-proj"
+    await client.post("/api/v1/projects", json={"name": "Branch Rail", "slug": slug})
+
+    event_type_resp = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "page_view", "display_name": "Page View"},
+    )
+    event_type_id = event_type_resp.json()["id"]
+
+    event_resp = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": event_type_id,
+            "name": "Profile Screen View",
+            "status": "implemented",
+        },
+    )
+    assert event_resp.status_code == 201
+    main_event_id = event_resp.json()["id"]
+
+    branch_resp = await client.post(f"/api/v1/projects/{slug}/branches", json={"name": "feature"})
+    assert branch_resp.status_code == 201
+
+    resp = await client.get(f"/api/v1/activity/projects/{slug}?limit=20")
+    assert resp.status_code == 200
+    items = resp.json()
+
+    event_items = [item for item in items if item["type"] == "event"]
+    assert len(event_items) == 1, event_items
+    assert event_items[0]["target_path"] == f"/p/{slug}/monitoring/event/{main_event_id}"
+    await _assert_event_links_resolve(client, slug, items)
+
+
+@pytest.mark.asyncio
+async def test_activity_feed_drops_the_link_for_a_deleted_anomaly_event(client: AsyncClient):
+    """A deleted event must not leave a dead drilldown behind on an anomaly.
+
+    ``MetricAnomaly.event_id`` is ``ondelete="SET NULL"`` while ``scope_ref`` is
+    an unconstrained String, so routing off ``scope_ref`` kept emitting
+    /monitoring/event/<deleted-id>. The row must degrade to an unlinked entry
+    (the frontend already renders a plain div for a null target_path).
+    """
+    slug = "activity-dead-anomaly"
+    await client.post("/api/v1/projects", json={"name": "Dead Anomaly", "slug": slug})
+
+    event_type_resp = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "page_view", "display_name": "Page View"},
+    )
+    event_type_id = event_type_resp.json()["id"]
+    event_resp = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": event_type_id, "name": "Buy Button Click"},
+    )
+    event_id = event_resp.json()["id"]
+
+    data_source_resp = await client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "analytics",
+            "username": "default",
+            "password": "",
+        },
+    )
+    scan_resp = await client.post(
+        f"/api/v1/projects/{slug}/scans",
+        json={
+            "data_source_id": data_source_resp.json()["id"],
+            "name": "Production scan",
+            "base_query": "SELECT 1",
+        },
+    )
+    scan_config_id = scan_resp.json()["id"]
+
+    at = datetime.now(UTC) - timedelta(hours=1)
+    async with TestSessionLocal() as session:
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=uuid.UUID(scan_config_id),
+                scope_type="event",
+                scope_ref=event_id,
+                event_id=uuid.UUID(event_id),
+                event_type_id=uuid.UUID(event_type_id),
+                bucket=at,
+                actual_count=42,
+                expected_count=21,
+                stddev=3,
+                z_score=7,
+                direction="spike",
+                created_at=at,
+            )
+        )
+        await session.commit()
+
+    linked = await client.get(f"/api/v1/activity/projects/{slug}?limit=20")
+    anomaly_items = [item for item in linked.json() if item["type"] == "anomaly"]
+    assert len(anomaly_items) == 1, anomaly_items
+    assert anomaly_items[0]["target_path"] == f"/p/{slug}/monitoring/event/{event_id}"
+
+    delete_resp = await client.delete(f"/api/v1/projects/{slug}/events/{event_id}")
+    assert delete_resp.status_code == 204
+
+    resp = await client.get(f"/api/v1/activity/projects/{slug}?limit=20")
+    assert resp.status_code == 200
+    items = resp.json()
+    anomaly_items = [item for item in items if item["type"] == "anomaly"]
+    assert len(anomaly_items) == 1, anomaly_items
+    assert anomaly_items[0]["target_path"] is None
+    await _assert_event_links_resolve(client, slug, items)
+
+
+async def _assert_event_links_resolve(
+    client: AsyncClient,
+    slug: str,
+    items: list[dict],
+) -> None:
+    """Every event route the rail emits must load on the branch the page asks for.
+
+    The monitoring detail page resolves ``/monitoring/event/:id`` against main,
+    so an id the rail emits that main does not hold is a dead link.
+    """
+    prefix = f"/p/{slug}/monitoring/event/"
+    for item in items:
+        path = item["target_path"] or ""
+        if not path.startswith(prefix):
+            continue
+        event_id = path.removeprefix(prefix)
+        detail = await client.get(f"/api/v1/projects/{slug}/events/{event_id}")
+        assert detail.status_code == 200, f"dead activity link: {path}"
+
+
+@pytest.mark.asyncio
 async def test_project_activity_feed_returns_404_for_unknown_project(client: AsyncClient):
     resp = await client.get("/api/v1/activity/projects/missing-project")
     assert resp.status_code == 404

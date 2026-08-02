@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import desc, func, select
@@ -16,6 +17,7 @@ from tripl.models.alert_rule import AlertRule
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob
@@ -70,11 +72,14 @@ async def _anomaly_items(
             Project.name.label("project_name"),
             ScanConfig.name.label("scan_name"),
             Event.name.label("event_name"),
+            Event.id.label("resolved_event_id"),
+            PlanBranch.kind.label("branch_kind"),
             EventType.display_name.label("event_type_name"),
         )
         .join(ScanConfig, ScanConfig.id == MetricAnomaly.scan_config_id)
         .join(Project, Project.id == ScanConfig.project_id)
         .outerjoin(Event, Event.id == MetricAnomaly.event_id)
+        .outerjoin(PlanBranch, PlanBranch.id == Event.branch_id)
         .outerjoin(EventType, EventType.id == MetricAnomaly.event_type_id)
         .where(MetricAnomaly.created_at >= datetime.now(UTC) - ANOMALY_RECENCY_WINDOW)
         .order_by(desc(MetricAnomaly.created_at), desc(MetricAnomaly.id))
@@ -112,6 +117,11 @@ async def _anomaly_items(
         expected = round(float(row.expected_count))
         z_score = float(row.z_score)
         direction = str(row.direction)
+        # Only an event still on the live plan gives a route the monitoring page
+        # can resolve; a deleted or branch-local one leaves the row unlinked.
+        main_branch_event_id = (
+            row.resolved_event_id if row.branch_kind == BranchKind.main.value else None
+        )
         items.append(
             ActivityItemResponse(
                 id=f"anomaly:{row.id}",
@@ -125,7 +135,12 @@ async def _anomaly_items(
                     f"{int(row.actual_count):,} actual vs {expected:,} expected · z={z_score:.1f}"
                 ),
                 occurred_at=row.created_at,
-                target_path=_monitoring_path(row.slug, row.scope_type, row.scope_ref),
+                target_path=_anomaly_target_path(
+                    row.slug,
+                    row.scope_type,
+                    row.scope_ref,
+                    main_branch_event_id=main_branch_event_id,
+                ),
             )
         )
     return items
@@ -256,6 +271,16 @@ async def _event_items(
         )
         .join(Project, Project.id == Event.project_id)
         .join(EventType, EventType.id == Event.event_type_id)
+        # Main branch only. Event is branch-scoped and a working branch
+        # deep-copies every plan entity with fresh ids, so without this the rail
+        # emitted branch-local event ids that /monitoring/event/:id 404s on (it
+        # resolves against main) and listed every event once per open branch,
+        # splitting the window between duplicate copies (tripl-r5ri). Same
+        # cause as metrics_service.get_overview_kpi_series' scoping. The join
+        # keeps off-main rows out of the result set rather than filtering them
+        # in Python, and never writes (ensure_main_branch_id does).
+        .join(PlanBranch, PlanBranch.id == Event.branch_id)
+        .where(PlanBranch.kind == BranchKind.main.value)
         .order_by(desc(Event.updated_at), desc(Event.id))
         .limit(limit)
     )
@@ -283,7 +308,7 @@ async def _event_items(
                 title=title,
                 detail=detail,
                 occurred_at=row.updated_at,
-                target_path=f"/p/{row.slug}/monitoring/event/{row.id}",
+                target_path=_event_detail_path(row.slug, row.id),
             )
         )
     return items
@@ -305,14 +330,46 @@ def _scope_name(
     return "metric"
 
 
+def _event_detail_path(slug: str, event_id: uuid.UUID | str) -> str:
+    """The one place the rail mints an event drilldown route.
+
+    Both the event and the anomaly rail items link to the same page, so the
+    branch scoping that keeps these ids resolvable has a single route to guard.
+    """
+    return f"/p/{slug}/monitoring/event/{event_id}"
+
+
 def _monitoring_path(slug: str, scope_type: str, scope_ref: str) -> str | None:
     if scope_type == SCOPE_PROJECT_TOTAL:
         return f"/p/{slug}/monitoring/project-total/{scope_ref}"
     if scope_type == SCOPE_EVENT_TYPE:
         return f"/p/{slug}/monitoring/event-type/{scope_ref}"
     if scope_type == SCOPE_EVENT:
-        return f"/p/{slug}/monitoring/event/{scope_ref}"
+        return _event_detail_path(slug, scope_ref)
     return None
+
+
+def _anomaly_target_path(
+    slug: str,
+    scope_type: str,
+    scope_ref: str,
+    *,
+    main_branch_event_id: uuid.UUID | None,
+) -> str | None:
+    """Route an anomaly rail item, resolving event scopes through the FK.
+
+    ``MetricAnomaly.scope_ref`` is an unconstrained String while the real FK
+    ``event_id`` is ``ondelete="SET NULL"``, so a deleted event leaves a stale
+    uuid in ``scope_ref`` and routing off it emitted a dead drilldown. Route
+    event scopes from the resolved main-branch ``Event.id`` instead and drop the
+    link when it no longer resolves — both rail consumers render an unlinked row
+    for a null ``target_path``. Other scopes are unaffected.
+    """
+    if scope_type == SCOPE_EVENT:
+        if main_branch_event_id is None:
+            return None
+        return _event_detail_path(slug, main_branch_event_id)
+    return _monitoring_path(slug, scope_type, scope_ref)
 
 
 def _scan_job_severity(status: str) -> str:
