@@ -28,7 +28,9 @@ class ReleaseRegression(UUIDMixin, Base):
     previous-release composition would predict (``kind = "volume_drop"``). One
     row per (scan, scope, new release); recomputed in full on every scan.
 
-    See internal/decisions/app-version-regression-model.md for the model.
+    The model itself — maturity gate, comparison window, composition-share
+    normalization, and the missing/volume_drop split — is stated in
+    ``tripl.core.analyzers.release_regression``, which implements it.
     """
 
     __tablename__ = "release_regressions"

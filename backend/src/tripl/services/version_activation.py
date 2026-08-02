@@ -19,8 +19,13 @@ from datetime import datetime
 
 from tripl.semver import is_prerelease, order_versions
 
-# Defaults from internal/decisions/app-version-regression-model.md. Kept here as
-# the single source of truth for the activation gate.
+# The single source of truth for the activation gate. These began life in a
+# decision note that has since been deleted as stale, so the values here ARE the
+# specification — there is no other document to reconcile them against.
+#
+# A release counts as active once it holds >=5% of total traffic for >=2 buckets
+# on >=200 events. That is what excludes the dev/tester build phase, before a
+# rollout reaches real users, from being compared against a mature release.
 DEFAULT_ACTIVE_SHARE_MIN = 0.05
 DEFAULT_ACTIVATION_MIN_BUCKETS = 2
 DEFAULT_MIN_RELEASE_VOLUME = 200
