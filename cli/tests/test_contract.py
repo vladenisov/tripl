@@ -974,29 +974,56 @@ def test_the_write_safety_section_agrees_with_how_many_mutations_there_are() -> 
     heading = f"### `--dry-run` is on all {word.lower()}"
     assert heading in text, f"cli.md has no heading {heading!r}"
 
-    # The exit-code table names the prompting subset, which is every mutation
-    # carrying `--yes`. `scans run` is deliberately not one of them.
+    # The exit-code table describes the writes in THREE separate clauses, and the
+    # first pass at this test pinned only the one that had already been fixed —
+    # so the other two shipped stale and a reviewer found them (Copilot, PR #79,
+    # second pass). Naming all three is the point: this table is where an
+    # operator checks what a verb's exit code means, and a mutation missing from
+    # a row reads as "that case does not apply to me".
     #
-    # Asserted as a SET read back out of the sentence, not as a rendered string:
-    # the order those verbs are listed in is a null change, and a test that
+    # Each is asserted as a SET read back out of the sentence, not as a rendered
+    # string: the order the verbs are listed in is a null change, and a test that
     # fails on a reordering is a test people learn to edit rather than read.
+    verbs = {path.removeprefix("tripl ") for path in from_maps}
     prompting = {
         path.removeprefix("tripl ")
         for path in from_maps
         if _option(leaves[path], "--yes") is not None
     }
     flat = " ".join(text.split())
-    marker = " you **declined at the prompt**"
-    assert marker in flat, "the exit-code table no longer explains a declined prompt"
-    # Bounded by the clause's own opening, not by a character count: the same
-    # sentence names `scans run` a few words earlier for a different reason, and
-    # a fixed-width lookback swallowed it and read it as a prompting write.
-    head = flat[: flat.index(marker)]
-    named = set(re.findall(r"`([a-z]+ [a-z]+)`", head[head.rindex(", and a ") :]))
-    assert named == prompting, (
-        f"the exit-code table names {sorted(named)} as the prompting writes, "
-        f"but they are {sorted(prompting)}"
-    )
+
+    def named_before(marker: str, opener: str) -> set[str]:
+        """The backticked verbs in the clause ending at ``marker``.
+
+        Bounded by the clause's own opening rather than a character count: the
+        exit-1 sentence names ``scans run`` a few words earlier for an unrelated
+        reason, and a fixed-width lookback swallowed it and read it as a
+        prompting write.
+        """
+        assert marker in flat, f"the exit-code table no longer says {marker!r}"
+        head = flat[: flat.index(marker)]
+        return set(re.findall(r"`([a-z]+ [a-z]+)`", head[head.rindex(opener) :]))
+
+    for label, marker, opener, expected in (
+        ("accepted the write (exit 0)", ": the API accepted the write", ". ", verbs),
+        (
+            "declined at the prompt (exit 1)",
+            " you **declined at the prompt**",
+            ", and a ",
+            prompting,
+        ),
+        (
+            "non-TTY without --yes (exit 2)",
+            " on a non-TTY without `--yes`**",
+            " and **",
+            prompting,
+        ),
+    ):
+        found = named_before(marker, opener)
+        assert found == expected, (
+            f"the exit-code table's {label} clause names {sorted(found)}, "
+            f"but it should name {sorted(expected)}"
+        )
 
 
 def test_the_page_s_closed_claim_about_dismiss_actions_is_still_true() -> None:
