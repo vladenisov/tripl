@@ -19,14 +19,14 @@ from datetime import UTC, datetime
 
 import httpx
 
-from tripl_cli.commands import bounded_float, bounded_int
+from tripl_cli.commands import add_json, add_project, add_timeout, bounded_int
 from tripl_cli.config import Config, require_base_url
 from tripl_cli.diagnostics.collect import DEFAULT_COVERAGE_DAYS, StatusOptions, collect_status
-from tripl_cli.diagnostics.model import StatusSnapshot
-from tripl_cli.diagnostics.render import render_header, render_status
-from tripl_cli.diagnostics.report import status_document
 from tripl_cli.errors import EXIT_OK
-from tripl_cli.runner import REQUEST_TIMEOUT_SECONDS, run_async
+from tripl_cli.model import StatusSnapshot
+from tripl_cli.render import render_header, render_status
+from tripl_cli.report import status_document
+from tripl_cli.runner import run_async
 
 # The API's own default is 14 with a cap of 180. A week is the window an
 # operator actually reasons about on a morning check, and --days covers the rest.
@@ -47,25 +47,14 @@ def register(
             "when it completed - use `tripl doctor` when you want a verdict."
         ),
     )
-    parser.add_argument(
-        "--project",
-        dest="project",
-        metavar="SLUG",
-        action="append",
-        help="report only this project (repeatable)",
-    )
+    add_project(parser, single=False, verb="report")
     parser.add_argument(
         "--include-demo",
         dest="include_demo",
         action="store_true",
         help="also report demo projects, which are excluded by default",
     )
-    parser.add_argument(
-        "--json",
-        dest="as_json",
-        action="store_true",
-        help="print one JSON document on stdout and every human line on stderr",
-    )
+    add_json(parser)
     parser.add_argument(
         "--days",
         dest="days",
@@ -74,14 +63,7 @@ def register(
         default=DEFAULT_COVERAGE_DAYS,
         help=f"reconciliation coverage window in days (default: {DEFAULT_COVERAGE_DAYS})",
     )
-    parser.add_argument(
-        "--timeout",
-        dest="timeout",
-        metavar="SECONDS",
-        type=bounded_float("--timeout", 0.1, 600.0),
-        default=REQUEST_TIMEOUT_SECONDS,
-        help=f"per-request timeout in seconds (default: {REQUEST_TIMEOUT_SECONDS})",
-    )
+    add_timeout(parser)
     parser.set_defaults(handler=run)
 
 

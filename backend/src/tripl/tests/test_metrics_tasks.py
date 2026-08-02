@@ -1541,7 +1541,7 @@ def test_reserved_catalog_columns_never_reserves_the_event_name_source() -> None
     Reserving it makes catalog_sync skip its FieldDefinition, and generate_events
     assembles format arguments only from columns that have one — so the name
     format is evaluated with its placeholder missing and collection dies with
-    "event_name_format references unknown keys".
+    "the event name format references unknown keys".
 
     This is production's 'Old events (iOS)' config: group rules keyed on
     ``action`` plus ``event_name_format='{action}'``. tripl-jfm3.90 reserved
@@ -1579,6 +1579,36 @@ def test_reserved_catalog_columns_never_reserves_the_event_name_source() -> None
         ],
     )
     assert reserved_catalog_columns(multi) == {"event_type", "time", "app_version", "screen_name"}
+
+
+def test_reserved_catalog_columns_never_reserves_a_dotted_placeholders_base_column() -> None:
+    """tripl-lpin reached from the other direction, through a DOTTED placeholder.
+
+    ``{event.category}`` is walked out of the ``event`` column's JSON, and
+    ``generate_events`` assembles ``col.path`` keys only for columns that reached
+    ``col_meta`` — i.e. that have a FieldDefinition. Subtracting the full key
+    ``event.category`` from a set of TOP-LEVEL column names removes nothing, so
+    ``event`` stayed reserved, catalog_sync skipped its FieldDefinition, and the
+    scan died on the very message this function's docstring exists to prevent.
+    Reverting to ``event_name_format_columns`` here turns this red.
+    """
+    from tripl.worker.tasks.metrics.tasks import reserved_catalog_columns
+
+    config = ScanConfig(
+        time_column="time",
+        platform_column="event",
+        event_name_format="{event.category}",
+    )
+    assert reserved_catalog_columns(config) == {"time"}
+
+    # The base column, never a path segment: a group-rule column that merely
+    # shares a name with a path SEGMENT stays reserved.
+    segment = ScanConfig(
+        time_column="time",
+        event_name_format="{event.category}",
+        event_group_rules=[{"conditions": [{"field": "category", "pattern": "^x"}]}],
+    )
+    assert reserved_catalog_columns(segment) == {"time", "category"}
 
 
 def test_reserved_catalog_columns_survives_malformed_group_rules() -> None:
@@ -4780,8 +4810,12 @@ def test_collect_metrics_fails_when_query_exceeds_row_limit(
     with pytest.raises(ScanError, match="Metrics query reached configured row limit") as excinfo:
         metrics.collect_metrics.run(config_id, job_id)
 
-    # The curated message survives the sanitiser instead of being genericised...
-    assert user_facing_error(excinfo.value) == str(excinfo.value)
+    # The curated message survives the sanitiser instead of being genericised —
+    # carrying the prefix the UI matches on, which the sanitiser adds so this
+    # raise site does not have to remember it (tripl-7bol). Without the prefix
+    # the text reached the browser intact and was discarded there instead, which
+    # is the same outcome tripl-embs fixed one layer further down.
+    assert user_facing_error(excinfo.value) == f"Scan failed: {excinfo.value}"
 
     # ...and that is exactly what the user reads off the failed job.
     with sync_session_factory() as session:
@@ -5873,3 +5907,517 @@ def test_breakdown_recalculate_skips_sub_threshold_scopes_but_ages_out_stale_row
             .all()
         )
         assert remaining == []
+
+
+# ── zero-row collection backoff (tripl-wopq) ───────────────────────────────────
+
+
+def _seed_completed_collection(
+    session: Session,
+    scan_config_id: uuid.UUID,
+    *,
+    window_to: datetime,
+    completed_ago: timedelta = timedelta(minutes=1),
+    mode: str = metrics.METRICS_COLLECTION_MODE,
+) -> None:
+    """Write the ScanJob a FINISHED collection leaves behind, and nothing else.
+
+    No EventMetric row is written on purpose: that is the case this fixture
+    exists for — a collection that completed against an empty warehouse window
+    (or a stream that has gone silent) and therefore advanced no bucket.
+    """
+    stamped = datetime.now(UTC) - completed_ago
+    session.add(
+        ScanJob(
+            id=uuid.uuid4(),
+            scan_config_id=scan_config_id,
+            status=ScanJobStatus.completed.value,
+            created_at=stamped,
+            completed_at=stamped,
+            result_summary={
+                "mode": mode,
+                "time_from": (window_to - timedelta(hours=30)).isoformat(),
+                "time_to": window_to.isoformat(),
+                "event_metrics": 0,
+                "type_metrics": 0,
+            },
+        )
+    )
+    session.commit()
+
+
+def _current_hour_boundary() -> datetime:
+    """The boundary the dispatcher will floor to for a 1h config (its own helper)."""
+    return metrics_schedule._floor_to_interval(datetime.now(UTC), timedelta(hours=1))
+
+
+def test_completed_collection_that_wrote_no_rows_is_not_redispatched_next_tick(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A successful but EMPTY collection still costs an interval of quiet.
+
+    Due-ness used to read ``max(EventMetric.bucket)`` alone, so a fresh config
+    whose warehouse window holds no data yet completed, wrote nothing, left that
+    watermark at NULL and was re-dispatched on the very next 300 s tick — forever,
+    without ever registering the failure the tripl-n9ee backoff keys on.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        config_id = config.id
+        _seed_completed_collection(session, config_id, window_to=_current_hour_boundary())
+
+    result, dispatched = _run_dispatcher(sync_session_factory, monkeypatch)
+
+    assert result == {"checked": 1, "dispatched": 0}
+    assert dispatched == []
+    # And no junk pending row: the point is to stop filling scan_jobs, not to
+    # create a row and then not run it.
+    with sync_session_factory() as session:
+        pending = (
+            session.execute(
+                select(ScanJob).where(
+                    ScanJob.scan_config_id == config_id,
+                    ScanJob.status == ScanJobStatus.pending.value,
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert pending == []
+
+
+def test_silent_stream_is_not_recollected_before_its_next_bucket(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The same guard for a config that HAS collected and then went quiet.
+
+    Its newest stored bucket is hours behind the latest complete one, so the
+    bucket check alone says "due" on every tick even though the collection that
+    just ran already covered that grid and found nothing.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        boundary = _current_hour_boundary()
+        session.add(
+            EventMetric(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                event_type_id=config.event_type_id,
+                bucket=boundary - timedelta(hours=5),
+                count=12,
+            )
+        )
+        session.commit()
+        _seed_completed_collection(session, config.id, window_to=boundary)
+
+    result, dispatched = _run_dispatcher(sync_session_factory, monkeypatch)
+
+    assert result == {"checked": 1, "dispatched": 0}
+    assert dispatched == []
+
+
+def test_empty_collection_is_retried_once_its_own_interval_has_passed(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The watermark defers the retry by one interval; it never abandons the config."""
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        _seed_completed_collection(
+            session,
+            config.id,
+            # Collected up to the PREVIOUS boundary: a new complete bucket exists.
+            window_to=_current_hour_boundary() - timedelta(hours=1),
+            completed_ago=timedelta(minutes=61),
+        )
+
+    result, dispatched = _run_dispatcher(sync_session_factory, monkeypatch)
+
+    assert result == {"checked": 1, "dispatched": 1}
+    assert len(dispatched) == 1
+
+
+def test_replay_window_is_not_read_as_scheduled_collection_progress(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Only a metrics_collection job carries the live grid's watermark.
+
+    A replay's window is an explicit historical range the user picked, so its end
+    says nothing about how far the live grid has been collected. Reading it as
+    progress would silence scheduled collection for a whole interval on a config
+    that has never run one. (The other producers of completed jobs on this
+    scan_config_id — the demo tick, a catalog scan — carry no ``mode`` stamp at
+    all and are excluded by the same predicate.)
+    """
+    boundary = _current_hour_boundary()
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        _seed_completed_collection(
+            session, config.id, window_to=boundary, mode=metrics.METRICS_REPLAY_MODE
+        )
+
+    result, dispatched = _run_dispatcher(sync_session_factory, monkeypatch)
+
+    assert result == {"checked": 1, "dispatched": 1}
+    assert len(dispatched) == 1
+
+
+# ── catalog-metric failure backoff (tripl-wopq) ────────────────────────────────
+
+
+def _create_active_sql_metric(
+    session: Session,
+    config: ScanConfig,
+    *,
+    last_collection_status: str | None = None,
+    updated_ago: timedelta = timedelta(minutes=10),
+    stamp_failed_at: bool = True,
+) -> uuid.UUID:
+    """An active ``sql`` metric on a 1h interval that has never stored a value.
+
+    ``stamp_failed_at=False`` produces a row that failed BEFORE
+    ``last_collection_failed_at`` existed — the state every erroring metric is in
+    the moment the migration lands, and what the cooldown's fallback is for.
+    """
+    from tripl.models.domain_enums import MetricKind, MetricStatus, ScanInterval
+    from tripl.models.metric_definition import MetricDefinition
+
+    definition = MetricDefinition(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        name=f"sql-metric-{uuid.uuid4().hex[:8]}",
+        display_name="SQL Metric",
+        kind=MetricKind.sql,
+        data_source_id=config.data_source_id,
+        config={"metric_sql": "SELECT t, 1 AS value FROM events", "time_column": "t"},
+        interval=ScanInterval.h1,
+        status=MetricStatus.active,
+    )
+    session.add(definition)
+    session.commit()
+    if last_collection_status is not None:
+        definition.last_collection_status = last_collection_status
+        # Explicit, so the cooldown is measured from a known point rather than
+        # from whenever this fixture happened to commit. Both fields, because
+        # the cooldown reads last_collection_failed_at and falls back to
+        # updated_at — set only the latter and every test here would pass
+        # through the fallback and prove nothing about the real path.
+        stamped = datetime.now(UTC) - updated_ago
+        definition.updated_at = stamped
+        if stamp_failed_at:
+            definition.last_collection_failed_at = stamped
+        session.commit()
+    return definition.id
+
+
+def _run_definitions_dispatcher(
+    sync_session_factory: sessionmaker[Session], monkeypatch: MonkeyPatch
+) -> tuple[dict[str, int], list[str]]:
+    """Run check_metric_definitions_due against the test DB, capturing dispatches."""
+    dispatched: list[str] = []
+    monkeypatch.setattr(metrics_schedule, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(
+        metrics_schedule.collect_metric_definitions,
+        "delay",
+        lambda metric_definition_id: dispatched.append(metric_definition_id),
+    )
+    return metrics_schedule.check_metric_definitions_due.run(), dispatched
+
+
+def test_errored_catalog_metric_is_not_redispatched_on_the_next_tick(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A catalog metric that cannot collect waits its own interval, like a config.
+
+    ``_metric_definition_due`` reads max(MetricValue.bucket) and the completed
+    window watermark, and a collection that dies writes NEITHER — so before
+    tripl-wopq a permanently broken metric was re-dispatched every 300 s, the same
+    retry storm on the same beat that tripl-n9ee removed from scan configs.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        _create_active_sql_metric(
+            session,
+            config,
+            last_collection_status=metrics_schedule.COLLECTION_STATUS_ERROR,
+            # Well inside the one-interval (1h) cooldown the error earns.
+            updated_ago=timedelta(minutes=10),
+        )
+
+    result, dispatched = _run_definitions_dispatcher(sync_session_factory, monkeypatch)
+
+    assert result == {"checked": 1, "dispatched": 0}
+    assert dispatched == []
+
+
+def test_errored_catalog_metric_retries_once_its_interval_has_elapsed(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The cooldown defers the retry; a fixed metric recovers on its own cadence."""
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        metric_id = _create_active_sql_metric(
+            session,
+            config,
+            last_collection_status=metrics_schedule.COLLECTION_STATUS_ERROR,
+            updated_ago=timedelta(minutes=90),
+        )
+
+    result, dispatched = _run_definitions_dispatcher(sync_session_factory, monkeypatch)
+
+    assert result == {"checked": 1, "dispatched": 1}
+    assert dispatched == [str(metric_id)]
+
+
+def test_successful_catalog_metric_dispatches_without_any_cooldown(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The cooldown keys on the ERROR marker only — a healthy metric is untouched."""
+    from tripl.worker.tasks.metrics.metric_collect import COLLECTION_STATUS_SUCCESS
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        metric_id = _create_active_sql_metric(
+            session,
+            config,
+            last_collection_status=COLLECTION_STATUS_SUCCESS,
+            updated_ago=timedelta(seconds=30),
+        )
+
+    result, dispatched = _run_definitions_dispatcher(sync_session_factory, monkeypatch)
+
+    assert result == {"checked": 1, "dispatched": 1}
+    assert dispatched == [str(metric_id)]
+
+
+def test_errored_event_composition_metric_uses_the_no_interval_floor(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A composition metric has no interval of its own, so it falls back to 1h.
+
+    Its due check compares the composed values against the SOURCE event-metric
+    buckets, neither of which a failed run moves — so it too was re-dispatched on
+    every tick. Nothing is lost by waiting: the collector recomputes the whole
+    stored series, so the deferred run produces exactly what each skipped one
+    would have.
+    """
+    from tripl.models.domain_enums import MetricComposition, MetricKind, MetricStatus
+    from tripl.models.metric_definition import MetricDefinition
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        session.add(
+            EventMetric(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                event_type_id=config.event_type_id,
+                bucket=_current_hour_boundary() - timedelta(hours=1),
+                count=7,
+            )
+        )
+        definition = MetricDefinition(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            name="composition-metric",
+            display_name="Composition Metric",
+            kind=MetricKind.event_composition,
+            composition=MetricComposition.single,
+            config={},
+            interval=None,
+            numerator_event_type_id=config.event_type_id,
+            status=MetricStatus.active,
+        )
+        session.add(definition)
+        session.commit()
+        definition.last_collection_status = metrics_schedule.COLLECTION_STATUS_ERROR
+        definition.updated_at = datetime.now(UTC) - timedelta(minutes=10)
+        session.commit()
+        metric_id = definition.id
+
+    result, dispatched = _run_definitions_dispatcher(sync_session_factory, monkeypatch)
+
+    assert result == {"checked": 1, "dispatched": 0}
+    assert dispatched == []
+
+    # Past the fallback floor it retries, so the metric is deferred, not dropped.
+    with sync_session_factory() as session:
+        reloaded = session.get(MetricDefinition, metric_id)
+        assert reloaded is not None
+        reloaded.updated_at = datetime.now(UTC) - metrics_schedule.NO_INTERVAL_ERROR_BACKOFF
+        session.commit()
+
+    result, dispatched = _run_definitions_dispatcher(sync_session_factory, monkeypatch)
+
+    assert result == {"checked": 1, "dispatched": 1}
+    assert dispatched == [str(metric_id)]
+
+
+def test_the_cooldown_survives_an_unrelated_write_to_the_metric(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Editing a broken metric must not restart the cooldown you are waiting out.
+
+    The cooldown used to measure from ``updated_at``, and ``TimestampMixin``
+    carries ``onupdate=func.now()``, so ANY write moved it — including
+    ``update_metric_definition``, which is what an operator runs to FIX the
+    metric. Half an hour into a one-hour cooldown, changing the display name
+    bought them another full hour (tripl-os3v).
+    """
+    from tripl.models.metric_definition import MetricDefinition
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        metric_id = _create_active_sql_metric(
+            session,
+            config,
+            last_collection_status=metrics_schedule.COLLECTION_STATUS_ERROR,
+            updated_ago=timedelta(minutes=30),
+        )
+
+        definition = session.get(MetricDefinition, metric_id)
+        assert definition is not None
+        before = metrics_schedule._metric_definition_error_backoff(
+            definition, now=datetime.now(UTC)
+        )
+        assert before is not None
+
+        # The edit: any field, committed the ordinary way, which is what bumps
+        # updated_at. Nothing here touches the collection state.
+        definition.display_name = "Renamed while broken"
+        session.commit()
+
+        after = metrics_schedule._metric_definition_error_backoff(definition, now=datetime.now(UTC))
+
+    assert after is not None
+    waited_before, _ = before
+    waited_after, _ = after
+    # Same elapsed time either side of the edit, to the second. Under the old
+    # reading waited_after collapsed to ~0 and the metric sat out a second hour.
+    assert abs(waited_after - waited_before) < timedelta(seconds=5)
+    assert waited_after >= timedelta(minutes=29)
+
+
+def test_a_metric_that_failed_before_the_column_existed_still_cools_down(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The migration lands on rows already in the error state, carrying NULL.
+
+    Reading NULL as "never failed" would release every one of them on the first
+    tick after deploy — the retry storm this backoff exists to prevent, produced
+    by the fix for it. They fall back to ``updated_at`` until their next real
+    failure stamps the column.
+    """
+    from tripl.models.metric_definition import MetricDefinition
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        metric_id = _create_active_sql_metric(
+            session,
+            config,
+            last_collection_status=metrics_schedule.COLLECTION_STATUS_ERROR,
+            updated_ago=timedelta(minutes=5),
+            stamp_failed_at=False,
+        )
+        definition = session.get(MetricDefinition, metric_id)
+        assert definition is not None
+        assert definition.last_collection_failed_at is None
+        backoff = metrics_schedule._metric_definition_error_backoff(
+            definition, now=datetime.now(UTC)
+        )
+
+    assert backoff is not None, "a legacy error row must still be held back"
+    waited, delay = backoff
+    assert waited < delay
+
+
+def test_no_error_path_can_set_the_status_without_the_timestamp() -> None:
+    """The seventh call site, pinned before it is written.
+
+    Six sites across two modules put a metric into the error state, and the
+    cooldown is only correct if every one of them stamps the time too. This
+    walks the source rather than trusting a convention: an assignment of
+    ``COLLECTION_STATUS_ERROR`` anywhere but inside ``mark_collection_error`` is
+    the bug (tripl-os3v).
+    """
+    import ast
+    from pathlib import Path
+
+    from tripl.worker.tasks.metrics import metric_collect as collect_module
+    from tripl.worker.tasks.metrics import schedule as schedule_module
+
+    offenders: list[str] = []
+    for module in (collect_module, schedule_module):
+        path = Path(str(module.__file__))
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        # By line range, not by skipping the FunctionDef node: ``ast.walk``
+        # yields every descendant independently, so passing over the definition
+        # does not pass over the assignment inside it — which is how the first
+        # version of this test flagged the one function allowed to do this.
+        allowed: set[int] = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.FunctionDef)
+                and node.name == "mark_collection_error"
+                and node.end_lineno is not None
+            ):
+                allowed |= set(range(node.lineno, node.end_lineno + 1))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign) or node.lineno in allowed:
+                continue
+            value = node.value
+            if not (isinstance(value, ast.Name) and value.id == "COLLECTION_STATUS_ERROR"):
+                continue
+            targets = [
+                target
+                for target in node.targets
+                if isinstance(target, ast.Attribute) and target.attr == "last_collection_status"
+            ]
+            if targets:
+                offenders.append(f"{path.name}:{node.lineno}")
+
+    assert not offenders, (
+        "these set the error status directly instead of calling "
+        f"mark_collection_error, so they leave the cooldown unstamped: {offenders}"
+    )
+
+
+def test_metric_error_cooldown_is_the_shared_backoff_curves_first_step(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Pins the two dispatchers to ONE curve instead of two drifting constants.
+
+    The catalog path cannot count a failure streak (there is no job table for
+    metrics), so it applies ``_failure_backoff_delay`` at the threshold. If that
+    curve's first step ever changes, this must move with it rather than leaving
+    the catalog metrics retrying on a private schedule.
+    """
+    from tripl.models.metric_definition import MetricDefinition
+
+    hour = timedelta(hours=1)
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        metric_id = _create_active_sql_metric(
+            session,
+            config,
+            last_collection_status=metrics_schedule.COLLECTION_STATUS_ERROR,
+            updated_ago=timedelta(minutes=1),
+        )
+        definition = session.get(MetricDefinition, metric_id)
+        assert definition is not None
+        backoff = metrics_schedule._metric_definition_error_backoff(
+            definition, now=datetime.now(UTC)
+        )
+
+    assert backoff is not None
+    _waited, delay = backoff
+    assert delay == metrics_schedule._failure_backoff_delay(
+        metrics_schedule.FAILURE_BACKOFF_AFTER, hour
+    )
+    assert delay == hour  # the metric's own interval, spelled out

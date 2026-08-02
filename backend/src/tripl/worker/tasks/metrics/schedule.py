@@ -36,12 +36,14 @@ from tripl.worker.tasks.metrics._helpers import (
     _get_active_scan_jobs,
     _get_sync_session,
     _normalize_job_timestamp,
+    _parse_task_datetime,
 )
 from tripl.worker.tasks.metrics.metric_collect import (
     COLLECTION_STATUS_ERROR,
     COLLECTION_STATUS_RUNNING,
     collect_fact_metrics_batch,
     collect_metric_definitions,
+    mark_collection_error,
 )
 from tripl.worker.tasks.metrics.tasks import METRICS_COLLECTION_MODE, collect_metrics
 
@@ -107,10 +109,11 @@ def _hours_since_last_scheduled_collection(
 
 # Consecutive-failure backoff for a config that can never succeed (tripl-n9ee).
 #
-# "Due" is derived purely from how far the WRITTEN metrics have advanced
-# (``max(EventMetric.bucket)``), so a collection that dies before writing its
-# first row leaves that watermark untouched and the config is due again on the
-# very next beat tick — every 300 s, forever, ignoring its own interval. Prod ran
+# "Due" is derived from how far collection has actually got — the written metrics
+# (``max(EventMetric.bucket)``) or the window a COMPLETED job recorded — and a
+# collection that dies before writing its first row advances NEITHER, so the
+# config is due again on the very next beat tick — every 300 s, forever, ignoring
+# its own interval (the zero-row twin of this is tripl-wopq). Prod ran
 # 200 consecutive failed jobs in 17 h for one 1h-interval config, each a ~30 s
 # warehouse query, and the junk rows pushed real scan history out of the API's
 # 200-row window.
@@ -219,6 +222,83 @@ def _failure_backoff_delay(streak: int, interval_delta: timedelta) -> timedelta 
     return min(interval_delta * multiplier, ceiling)
 
 
+def _last_collected_window_to(session: Session, scan_config_id: uuid.UUID) -> datetime | None:
+    """Exclusive end of the source grid the newest COMPLETED collection covered.
+
+    The catalog-metric path stores this as a column
+    (``MetricDefinition.last_collection_window_to``); a scan config has no such
+    column, so the same fact is read back from the window the finished job
+    recorded in ``result_summary["time_to"]`` — which a scheduled collection sets
+    to ``floor(now)``, the grid boundary it collected up to.
+
+    Without it, a collection that COMPLETES but writes no ``EventMetric`` row (a
+    fresh config whose warehouse window is still empty, or a stream that has gone
+    silent) leaves ``max(EventMetric.bucket)`` untouched and is due again on the
+    very next 300 s tick — the same unbounded loop the failure backoff above
+    fixes, minus the failures that would trigger it (tripl-wopq).
+
+    Only ``metrics_collection`` jobs count. A replay carries its own explicit
+    historical window and must not be read as progress on the live grid; a demo
+    runtime tick and a catalog scan never collected metrics at all. Manual
+    collections DO count and should: they resolve the same window and cover the
+    same grid, unlike the failure streak, which is about blame rather than
+    coverage. A row with no parseable ``time_to`` (written before the stamp
+    existed) simply does not count, which can only make a config look due
+    earlier — the safe direction.
+    """
+    summaries = session.execute(
+        select(ScanJob.result_summary)
+        .where(
+            ScanJob.scan_config_id == scan_config_id,
+            ScanJob.status == ScanJobStatus.completed.value,
+        )
+        .order_by(ScanJob.created_at.desc())
+        .limit(_RECENT_JOB_SCAN_LIMIT)
+    ).scalars()
+    for summary in summaries:
+        if summary is None or not _is_dispatcher_collection_job(summary):
+            continue
+        raw_to = summary.get("time_to")
+        if not isinstance(raw_to, str):
+            continue
+        try:
+            return _parse_task_datetime(raw_to)
+        except ValueError:
+            continue
+    return None
+
+
+def _scan_config_collection_due(
+    session: Session,
+    scan_config_id: uuid.UUID,
+    *,
+    last_bucket: datetime | None,
+    delta: timedelta,
+    now: datetime,
+) -> bool:
+    """Whether a config has a complete interval bucket nobody has collected yet.
+
+    Answers it through ``collection_progress_to``, the one definition the
+    catalog-metric scheduler, the collection worker and the API's
+    ``next_collection_at`` already share: progress is the LATER of the newest
+    stored bucket's exclusive end and the last completed collection's window end,
+    never the stored buckets alone.
+    """
+    current_boundary = _floor_to_interval(now, delta)
+
+    def _due(watermark: datetime | None) -> bool:
+        progress_to = collection_progress_to(
+            last_bucket=last_bucket, watermark=watermark, delta=delta
+        )
+        return progress_to is None or progress_to < current_boundary
+
+    # Short-circuited on purpose: the job watermark can only ever push progress
+    # FORWARD, so a config that is already not due by its stored buckets cannot
+    # become due by reading jobs — and skipping that read keeps a healthy config
+    # at one job query per interval instead of one per 300 s beat tick.
+    return _due(None) and _due(_last_collected_window_to(session, scan_config_id))
+
+
 # A single Postgres session-level advisory lock serialises the whole dispatcher
 # across worker processes. With concurrency=N, a backlog of redelivered
 # ``check_metrics_due`` messages (e.g. accumulated while the worker was busy or
@@ -307,17 +387,13 @@ def check_metrics_due() -> dict[str, int]:
                 )
             ).scalar()
 
-            should_run = False
-
-            if last_bucket is None:
-                # Never collected — run now
-                should_run = True
-            else:
-                # Only dispatch when a new complete bucket is available.
-                # The latest complete bucket is floor(now) - delta.
-                latest_complete = _floor_to_interval(now, delta) - delta
-                if last_bucket < latest_complete:
-                    should_run = True
+            should_run = _scan_config_collection_due(
+                session,
+                config.id,
+                last_bucket=last_bucket,
+                delta=delta,
+                now=now,
+            )
 
             if should_run:
                 # Only measured once the bucket check says "due", so a healthy
@@ -508,6 +584,88 @@ def _metric_definition_due(
     return progress_to is None or progress_to < current_boundary
 
 
+# Retry floor for a metric that has no interval of ITS OWN (tripl-wopq).
+#
+# ``event_composition`` re-derives from already-collected event_metrics on the
+# source scan grid, which this dispatcher never loads, so the metric's natural
+# cadence is not available here. An hour is 12x the 300 s beat that produced the
+# storm, and deferring costs nothing: ``_collect_event_composition`` ignores its
+# window and recomputes the FULL stored series on every run, so a skipped attempt
+# loses no bucket — it only delays recovery by up to an hour after a fix.
+NO_INTERVAL_ERROR_BACKOFF = timedelta(hours=1)
+
+
+def _metric_definition_error_backoff(
+    definition: MetricDefinition, *, now: datetime
+) -> tuple[timedelta, timedelta] | None:
+    """``(waited, delay)`` while a metric sits out its post-error cooldown, else None.
+
+    Same pathology and same remedy as the scan-config backoff above: due-ness is
+    derived from how far the WRITTEN values have advanced, and a collection that
+    dies writes neither a value nor the ``last_collection_window_to`` watermark —
+    so a metric that can never succeed is re-dispatched on every 300 s tick,
+    ignoring its own interval, exactly as a broken scan config was before
+    tripl-n9ee.
+
+    It cannot climb the exponential curve, though: the catalog path has no job
+    table — a single ``last_collection_status`` column is the entire history — so
+    the RUN of consecutive failures the curve is indexed on cannot be measured
+    without a schema change. What it does take from ``_failure_backoff_delay`` is
+    that curve's first step, so the one fact both dispatchers must agree on ("a
+    failing collection is never retried more often than a healthy one would run")
+    keeps a single definition, and giving it a real streak later is a change of
+    argument rather than a second curve.
+    """
+    if definition.last_collection_status != COLLECTION_STATUS_ERROR:
+        return None
+    delta = (
+        get_interval(str(definition.interval)).delta
+        if definition.interval is not None
+        else NO_INTERVAL_ERROR_BACKOFF
+    )
+    delay = _failure_backoff_delay(FAILURE_BACKOFF_AFTER, delta)
+    if delay is None:  # pragma: no cover - the curve is None only below the threshold
+        return None
+    # ``last_collection_failed_at`` is written ONLY by the collection cycle, so
+    # it means exactly what this reads it as. ``updated_at`` did not: it carries
+    # ``onupdate=func.now()``, so any write moved it, and an operator editing a
+    # broken metric in order to fix it restarted the cooldown they were waiting
+    # out (tripl-os3v).
+    #
+    # The fallback is for rows that failed BEFORE the column existed and carry
+    # NULL. Treating those as "never failed" would release every one of them on
+    # the first tick after deploy — the retry storm this backoff exists to stop,
+    # produced by the fix for it. They keep the old reading until their next
+    # real failure stamps the column.
+    failed_at = definition.last_collection_failed_at or definition.updated_at
+    waited = now - _normalize_job_timestamp(failed_at)
+    if waited >= delay:
+        return None
+    return waited, delay
+
+
+def metric_definition_cooldown_until(
+    definition: MetricDefinition, *, now: datetime
+) -> datetime | None:
+    """When a metric sitting out a post-error cooldown becomes dispatchable, else None.
+
+    Exists so the metric drilldown can answer "when does this collect next" with
+    the SAME rule the dispatcher applies. Without it the API computed due-ness
+    from the watermark alone and told the operator a collection was due now
+    while this scheduler would skip it for up to a full interval — two answers
+    to one question, which is the divergence this repository keeps paying for
+    (tripl-os3v).
+
+    Derived from ``_metric_definition_error_backoff`` rather than recomputing
+    the curve, so the two cannot drift even if the curve changes.
+    """
+    backoff = _metric_definition_error_backoff(definition, now=now)
+    if backoff is None:
+        return None
+    waited, delay = backoff
+    return now + (delay - waited)
+
+
 @celery_app.task(name="tripl.worker.tasks.metrics.check_metric_definitions_due")  # type: ignore[untyped-decorator]
 def check_metric_definitions_due() -> dict[str, int]:
     """Dispatch ``collect_metric_definitions`` for every active metric that is due.
@@ -554,6 +712,20 @@ def check_metric_definitions_due() -> dict[str, int]:
                 continue
             if not _metric_definition_due(session, definition, now=now):
                 continue
+            # Measured only once the due check has passed, mirroring the
+            # scan-config backoff: a healthy metric never reaches this branch on
+            # the ticks between its own boundaries.
+            error_backoff = _metric_definition_error_backoff(definition, now=now)
+            if error_backoff is not None:
+                waited, delay = error_backoff
+                logger.info(
+                    "Skipping collect_metric_definitions for %r: last collection "
+                    "errored %s ago, backing off %s",
+                    definition.name,
+                    waited,
+                    delay,
+                )
+                continue
 
             kind = (
                 definition.kind
@@ -577,9 +749,8 @@ def check_metric_definitions_due() -> dict[str, int]:
             try:
                 collect_metric_definitions.delay(str(definition.id))
             except Exception as exc:
-                definition.last_collection_status = COLLECTION_STATUS_ERROR
-                definition.last_collection_error = (
-                    f"Failed to dispatch collect_metric_definitions: {exc}"
+                mark_collection_error(
+                    definition, f"Failed to dispatch collect_metric_definitions: {exc}"
                 )
                 session.commit()
                 raise
@@ -602,9 +773,8 @@ def check_metric_definitions_due() -> dict[str, int]:
                 collect_fact_metrics_batch.delay(metric_ids)
             except Exception as exc:
                 for definition in group:
-                    definition.last_collection_status = COLLECTION_STATUS_ERROR
-                    definition.last_collection_error = (
-                        f"Failed to dispatch collect_fact_metrics_batch: {exc}"
+                    mark_collection_error(
+                        definition, f"Failed to dispatch collect_fact_metrics_batch: {exc}"
                     )
                 session.commit()
                 raise

@@ -8956,6 +8956,110 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "ImplementationTicketResponse": {
+        "description": "One tracker ticket opened for a merged plan branch (read-only surface).\n\nEverything here is written by the merge/poll worker; the API never accepts\na ticket from a client. ``external_url`` is ``\"\"`` when the tracker replied\nwithout an issue key, so the UI must fall back to plain text rather than\nrender a link to nowhere.",
+        "properties": {
+          "branch_id": {
+            "format": "uuid",
+            "title": "Branch Id",
+            "type": "string"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "event_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Event Ids",
+            "type": "array"
+          },
+          "external_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Id"
+          },
+          "external_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Key"
+          },
+          "external_url": {
+            "title": "External Url",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "tracker_type": {
+            "title": "Tracker Type",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "branch_id",
+          "tracker_type",
+          "external_id",
+          "external_key",
+          "external_url",
+          "status",
+          "summary",
+          "event_ids",
+          "created_at",
+          "updated_at",
+          "closed_at"
+        ],
+        "title": "ImplementationTicketResponse",
+        "type": "object"
+      },
       "InvitationAcceptRequest": {
         "description": "Redeeming an invitation.\n\nCarries no email: the address comes from the invitation itself, so a link\ncannot be turned into an account for someone else. Password strength is the\nsame policy as registration \u2014 enforced here at the schema boundary, so an\ninvalid password never reaches the service.",
         "properties": {
@@ -15199,6 +15303,12 @@
             "title": "Action",
             "type": "string"
           },
+          "force": {
+            "default": false,
+            "description": "Override the guard that refuses to accept a missing_field drift for a column a scan config's event name format builds event names from (tripl-3mmh). API-only escape hatch for a project-wide config that names the column but never scans this event type; requires a note explaining why, which lands in the audit record. The UI does not offer it \u2014 a warning next to an Accept button is a thing operators click past, and clicking past it is what caused the outage.",
+            "title": "Force",
+            "type": "boolean"
+          },
           "note": {
             "anyOf": [
               {
@@ -21238,6 +21348,63 @@
         "summary": "Diff Branch",
         "tags": [
           "plan-branches"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/branches/{branch_id}/implementation-tickets": {
+      "get": {
+        "description": "Read-only: tickets are opened by the merge worker, never by a client.\n\nAuth matches the other branch reads \u2014 any authenticated project reader, via\nthe router-level ``get_current_user`` dependency; no editor gate, because\nnothing here mutates.",
+        "operationId": "list_branch_implementation_tickets_api_v1_projects__slug__branches__branch_id__implementation_tickets_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "branch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Branch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ImplementationTicketResponse"
+                  },
+                  "title": "Response List Branch Implementation Tickets Api V1 Projects  Slug  Branches  Branch Id  Implementation Tickets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Branch Implementation Tickets",
+        "tags": [
+          "implementation-tickets"
         ]
       }
     },

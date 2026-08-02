@@ -12,6 +12,26 @@ Use the existing FastAPI OpenAPI contract plus this guide as the primary agent i
 
 tripl now ships a first-party MCP server (`tripl-mcp`) that wraps this API in a curated toolset for MCP-capable agent runtimes — see [MCP Server](./mcp-server.md) for setup. This guide remains the raw REST contract underneath it: every MCP tool calls the endpoints described here with the same API-key auth, project fencing, and branch rules. Use the MCP server when the agent runs in an MCP-capable runtime; use raw OpenAPI plus this guide for direct HTTP integrations, scripts, and anything the curated toolset does not cover.
 
+## Base URL
+
+The published document carries no `servers` block, by design. A client therefore
+resolves every path against the URL it fetched the spec from: an instance reached
+at `https://tripl.example.com/openapi.json` is called at
+`https://tripl.example.com/api/v1/...`, and the same build reached at
+`http://localhost:8000` in development is called there. Nothing to configure, and
+no server-side setting can point your client at a different host than the one you
+already reached.
+
+Two consequences worth knowing:
+
+- In `/docs`, **Try it out** calls the origin the page is open on. That is a
+  same-origin request, so it works regardless of the instance's CORS allow-list.
+- Code generators that insist on an absolute base URL substitute their own
+  placeholder (often `http://localhost`) when `servers` is absent. Set your
+  origin on the generated client's configuration instead of expecting the spec to
+  carry it. The same applies to the committed `backend/openapi.json` in the
+  repository, which is the same document with no retrieval URL to resolve against.
+
 ## MCP Server
 
 For agents running in MCP-capable runtimes (Claude Code, Claude Desktop, and other MCP clients), `tripl-mcp` packages a curated read/write toolset on top of this API: stdio and streamable-http transports, `readOnlyHint` annotations on read tools, `tk_w_` key requirements on write tools, a mandatory `branch_id` on plan-mutating tools, and a `TRIPL_MCP_ALLOW_MAIN` gate that keeps agents off the main branch by default. Installation, transport configuration, and the full tool list live in [MCP Server](./mcp-server.md). Everything below documents the underlying REST contract that the MCP tools share.
@@ -47,7 +67,7 @@ Scopes:
   remain available even when an endpoint uses `POST` for a complex query body.
   Use this for retrieval, search, and agent context loading.
 - `write`: allowed on mutation endpoints, subject to the user role behind the key. Editor-only routes still require an editor or owner user.
-- Owner-only security and instance-administration routes require an interactive owner session; API keys do not perform owner-only actions.
+- Owner-only security and instance-administration routes require an interactive owner session; an API key is `403` on them even when its user is an owner. The one exception is the [metrics replay](#replaying-metrics), which a `write` key backed by an owner may call.
 
 Project scope:
 
@@ -253,6 +273,38 @@ POST /api/v1/projects/{slug}/search/reindex?branch=<branch_id>
 ```
 
 Use this after out-of-band maintenance or imports if search results look stale. When embeddings are enabled, the normal embedding refresh flow is scheduled by the backend.
+
+## Replaying Metrics
+
+Recollect an existing scan config's metrics over a window you name:
+
+```http
+POST /api/v1/projects/{slug}/scans/{scan_id}/metrics/replay
+```
+
+```json
+{
+  "time_from": "2026-04-01T00:00:00Z",
+  "time_to": "2026-04-02T00:00:00Z"
+}
+```
+
+It answers `201` with the queued `ScanJob`; poll
+`GET /api/v1/projects/{slug}/scans/{scan_id}/jobs` for its status. Use it to
+backfill a window the scheduler missed or to recompute after a metric definition
+changed. The config must already carry `time_column` and `interval`, otherwise
+the call is `400`.
+
+This is the **only** owner-gated route an API key can reach, and the gate is
+strict about all three of its parts: the key's scope must be `write`, the user
+behind it must have the `owner` role, and a project-bound key still only reaches
+its own project. An editor's `write` key gets `403 Owner role required`; a `read`
+key gets `403 API key has read-only scope`.
+
+It is reachable because a replay only re-runs SQL an owner already authored
+through the browser-only scan routes — it cannot introduce a new query. Creating
+or editing a scan config, like connecting a data source, stays an interactive
+owner session.
 
 ## Safe Agent Defaults
 

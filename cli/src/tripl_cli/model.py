@@ -4,6 +4,16 @@ Pure data plus the handful of total functions over it. No IO, no clock reads,
 no import of ``collect`` — everything here can be built in a test without a
 network, which is what lets the check rules be tested as arithmetic.
 
+At the package ROOT rather than inside ``diagnostics``, because ``api``,
+``install``, ``watch`` and every command group import it while only ``doctor``
+reaches a verdict: the JSON helpers, ``JOBS_WINDOW``, ``Instance``, ``Run``,
+``SectionError`` and the ``scans``/``drifts`` snapshots are facts about the wire
+and about one CLI run, not about doctor's verdict machinery (tripl-azhh).
+Splitting this file in two — a shared half here, a doctor half left in
+``diagnostics`` — was rejected: ``Fetched``, ``Target``, ``Instance`` and
+``SectionError`` are read from both sides, so the split line would fall
+somewhere a contributor has to re-guess for every type added after it.
+
 It also imports nothing from ``tripl_cli.api``, and must not: the request layer
 imports the JSON helpers below, so a reference back would close the cycle. The
 one consequence is that a snapshot carries an already-projected request DOCUMENT
@@ -422,6 +432,90 @@ class DriftsSnapshot:
 
 
 @dataclass(frozen=True)
+class PlanRead:
+    """One read of the plan or the event catalog, from any ``events``/``plan`` verb.
+
+    ONE snapshot for all seven verbs rather than seven near-identical ones, and
+    the same for the document ``report.plan_read_document`` builds from it. Each
+    verb reads a different resource, but every one of them answers the same four
+    questions — which project, which plan revision, how much of the resource
+    came back, and what the rows are — so seven types would be seven places for
+    the envelope to drift and seven ``jq`` idioms for a consumer to learn
+    (tripl-3ixs). The rows themselves stay verbatim; ``kind`` says what one of
+    them IS.
+
+    NO ``errors`` tuple, unlike ``ScansSnapshot`` and ``DriftsSnapshot``. Those
+    two fan out — one request per project, per event type — so a failed read
+    there is one row of many and has to be reported beside the rows that
+    arrived. Every verb here reads ONE resource of ONE project, so a failed read
+    means there is no answer at all: it raises, prints the client's message and
+    exits 1, the way ``scans jobs`` does. A partial-truth path that cannot exist
+    needs no representation.
+    """
+
+    run: Run
+    # "events list", "plan types", ... — the same string the envelope carries.
+    command: str
+    # What ONE item is: "event", "event_type", "field", "variable", "branch",
+    # "search_result". Published in the document so a consumer can tell which
+    # shape `items` holds without parsing `command`.
+    kind: str
+    project: str
+    items: tuple[JsonDict, ...] = ()
+    # None for both means main. The pair rather than an id alone because the id
+    # is a UUID nobody recognises and the operator asked for a name.
+    branch_id: str | None = None
+    branch_name: str | None = None
+    # The API's own total, where the route reports one; None where it answers a
+    # bare array and the rows ARE the whole answer.
+    total: int | None = None
+    offset: int | None = None
+    limit: int | None = None
+    # Facts the ROUTE reported about the answer itself rather than about any
+    # row. Exactly one today — search's ``semantic_used``, which says whether
+    # the hits are semantic or substring matches and therefore how much a low
+    # score means. Deliberately narrow: row data never goes in here, or this
+    # becomes the second document shape the one-shape rule above exists to
+    # prevent. Always present in the JSON, ``{}`` where a route reports none.
+    meta: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def noun(self) -> str:
+        """``kind`` as the footer says it: ``event_type`` -> ``event type``.
+
+        Derived rather than a second field, so a new kind cannot ship with a
+        noun that disagrees with it.
+        """
+        return self.kind.replace("_", " ")
+
+    @property
+    def truncated(self) -> bool:
+        """More rows exist than this page carried.
+
+        Reported rather than left to the reader, and for the same reason
+        ``DriftCoverage.truncated`` is: a list that stops at the limit looks
+        exactly like a list that ended, and the second reading is the dangerous
+        one. ``total`` is what the API counted BEFORE paging, so where a route
+        reports one it is the only number that can tell them apart.
+
+        Where a route reports NO pre-paging count, a full page is the only
+        signal left. ``plan search`` is that case, and it is not a corner: the
+        search route answers ``total = len(items)`` AFTER trimming to the limit,
+        so a count-based test is structurally always false there — the one
+        command whose results are RANKED, where the operator picked the cutoff
+        without knowing how many matched, would have been the only one that
+        never warned.
+
+        Requires ``limit`` and no ``offset``: a verb that pages by offset has a
+        real count and must not fall back to guessing from page fullness, and a
+        verb that sent no limit cannot have filled one.
+        """
+        if self.total is not None:
+            return self.total > (self.offset or 0) + len(self.items)
+        return self.offset is None and self.limit is not None and len(self.items) >= self.limit
+
+
+@dataclass(frozen=True)
 class MutationOutcome:
     """One write the CLI performed, or would have performed under ``--dry-run``.
 
@@ -528,6 +622,59 @@ def as_list(value: Any) -> JsonList:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
+def names_by_id(items: JsonList) -> dict[str, str]:
+    """``{id: name}`` for any listing, in the order the API returned it.
+
+    Every response model in this API carries ``id`` and ``name``, and three
+    arguments resolve a selector against exactly that pair — ``<scan>``,
+    ``<event-type>`` and ``--branch``. One extractor, so a fourth cannot arrive
+    with its own idea of what to do about a row missing a name (tripl-3ixs).
+
+    A row with no usable ``id`` is DROPPED: nothing can select it, and keeping
+    it would put an unaddressable entry in the candidate list a failed match
+    prints. A row with no ``name`` is keyed to its own id, so it stays
+    selectable by id — which is the whole point of matching on both.
+    """
+    named: dict[str, str] = {}
+    for item in items:
+        identifier = text_of(item, "id")
+        if identifier:
+            named[identifier] = text_of(item, "name") or identifier
+    return named
+
+
+def page_items(payload: Any) -> JsonList:
+    """``{"items": [...], "total": n}`` -> the items. Anything else reads as empty.
+
+    Seven routes answer this envelope — events, variables, branches, search,
+    alert deliveries, one event type's drifts, and reconciliation's dead/shadow
+    listings — and each of them used to unwrap it at its own call site or not at
+    all. One definition, so "the API answered an object where a list belongs" is
+    decided in one place.
+
+    Re-exported through ``tripl_cli.api`` for ``tripl_mcp``, which read the same
+    envelope by hand at three tool sites until tripl-i1dt. Both distributions
+    answer the question here now: a CLI that dropped a non-dict row while the
+    MCP kept it, reading the same route, is two readings of one wire format.
+
+    Like ``as_list``, this cannot tell an empty page from a failed read: a caller
+    must have established that the READ succeeded first (TRAP 3).
+    """
+    items = payload.get("items") if isinstance(payload, dict) else None
+    return as_list(items)
+
+
+def page_total(payload: Any) -> int | None:
+    """``{"items": [...], "total": n}`` -> ``n``, or None when there is no total.
+
+    None is load-bearing: it is what says "this route reports no count", which is
+    the only thing that distinguishes "the page is the whole answer" from "there
+    are more rows and nobody said so".
+    """
+    total = payload.get("total") if isinstance(payload, dict) else None
+    return total if isinstance(total, int) and not isinstance(total, bool) else None
+
+
 def text_of(source: Mapping[str, Any], key: str) -> str | None:
     value = source.get(key)
     return value if isinstance(value, str) and value else None
@@ -536,6 +683,20 @@ def text_of(source: Mapping[str, Any], key: str) -> str | None:
 def int_of(source: Mapping[str, Any], key: str, default: int = 0) -> int:
     value = source.get(key)
     return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def float_of(source: Mapping[str, Any], key: str, default: float = 0.0) -> float:
+    """A JSON number as a float. ``True`` is not 1.0 here, exactly as in ``int_of``.
+
+    JSON has one number type, so a percentage can arrive as ``91`` or ``91.4``
+    and both must read the same; ``bool`` is excluded because it is an ``int``
+    subclass in Python and a flag rendered as ``1.00`` is a wrong answer that
+    looks like a right one.
+    """
+    value = source.get(key)
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return float(value)
+    return default
 
 
 def parse_time(raw: Any) -> datetime | None:

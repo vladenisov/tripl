@@ -1,5 +1,6 @@
 import { api } from './client'
 import type {
+  ImplementationTicket,
   PlanBranchComment,
   PlanBranchConflicts,
   PlanBranchDetail,
@@ -117,5 +118,12 @@ export const planBranchesApi = {
   deleteResolution: (slug: string, branchId: string, resolutionId: string) =>
     api.del(
       `/projects/${slug}/branches/${branchId}/resolutions/${resolutionId}`,
+    ),
+
+  /** Tracker tickets opened when this branch merged. Read-only: the backend
+   * writes them from the merge worker, never from a client. */
+  listImplementationTickets: (slug: string, branchId: string) =>
+    api.get<ImplementationTicket[]>(
+      `/projects/${slug}/branches/${branchId}/implementation-tickets`,
     ),
 }

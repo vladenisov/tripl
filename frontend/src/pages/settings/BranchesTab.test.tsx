@@ -6,7 +6,12 @@ import { branchSettingsApi } from '@/api/branchSettings'
 import { ApiError } from '@/api/client'
 import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
-import type { PlanBranchSummary, ProjectBranchSettings, UserListItem } from '@/types'
+import type {
+  ImplementationTicket,
+  PlanBranchSummary,
+  ProjectBranchSettings,
+  UserListItem,
+} from '@/types'
 import { BranchesTab } from './BranchesTab'
 
 vi.mock('@/api/planBranches', () => ({
@@ -23,6 +28,7 @@ vi.mock('@/api/planBranches', () => ({
     createComment: vi.fn(),
     saveResolution: vi.fn(),
     revert: vi.fn(),
+    listImplementationTickets: vi.fn(),
   },
 }))
 
@@ -96,6 +102,47 @@ const FEATURE = makeBranch({
   status: 'approved',
   created_by: 'u-maya',
 })
+const MERGED = makeBranch({
+  id: 'feat-merged',
+  name: 'checkout-v3',
+  kind: 'working',
+  status: 'merged',
+  created_by: 'u-maya',
+  merged_at: '2026-02-01T00:00:00Z',
+  merged_by: 'u-maya',
+})
+
+function makeTicket(overrides: Partial<ImplementationTicket> = {}): ImplementationTicket {
+  return {
+    id: 't-1',
+    project_id: 'p-1',
+    branch_id: 'feat-merged',
+    tracker_type: 'jira',
+    external_id: '10042',
+    external_key: 'ENG-42',
+    external_url: 'https://example.atlassian.net/browse/ENG-42',
+    status: 'open',
+    summary: 'Implement checkout-v3',
+    event_ids: ['e-1'],
+    created_at: '2026-02-01T00:00:00Z',
+    updated_at: '2026-02-01T00:00:00Z',
+    closed_at: null,
+    ...overrides,
+  }
+}
+
+/** The four queries a feature-branch detail always fires; ticket-focused tests
+ * only care about the fifth. */
+function mockBranchDetailQueries(items: PlanBranchSummary[]) {
+  vi.mocked(planBranchesApi.list).mockResolvedValue({ items, total: items.length })
+  vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+  vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+  vi.mocked(planBranchesApi.diff).mockResolvedValue({
+    behind_base: false,
+    summary: { added: 0, removed: 0, changed: 0 },
+    entries: [],
+  })
+}
 
 /** The selected branch comes from the route, so the tab is mounted behind the
  * real `/p/:slug/settings/branches/:branchId` routes — selecting a branch in the
@@ -726,5 +773,59 @@ describe('BranchesTab', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Merge anyway' }))
     await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
+  })
+
+  it('links a merged branch to the tracker ticket the merge opened', async () => {
+    mockBranchDetailQueries([MAIN, MERGED])
+    vi.mocked(planBranchesApi.listImplementationTickets).mockResolvedValue([makeTicket()])
+
+    renderTab('feat-merged')
+
+    // The href is the whole point: without it the merge leaves no way to reach
+    // the Jira issue it created.
+    const link = await screen.findByRole('link', { name: /ENG-42/ })
+    expect(link).toHaveAttribute('href', 'https://example.atlassian.net/browse/ENG-42')
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(screen.getByText('Implementation ticket')).toBeInTheDocument()
+    expect(screen.getByText('Implement checkout-v3')).toBeInTheDocument()
+    expect(screen.getByText('Open')).toBeInTheDocument()
+  })
+
+  it('marks the ticket done once the tracker closed it', async () => {
+    mockBranchDetailQueries([MAIN, MERGED])
+    vi.mocked(planBranchesApi.listImplementationTickets).mockResolvedValue([
+      makeTicket({ status: 'closed', closed_at: '2026-02-09T00:00:00Z' }),
+    ])
+
+    renderTab('feat-merged')
+
+    expect(await screen.findByText('Done')).toBeInTheDocument()
+    expect(screen.queryByText('Open')).not.toBeInTheDocument()
+  })
+
+  it('omits the ticket section entirely when the merge opened none', async () => {
+    mockBranchDetailQueries([MAIN, MERGED])
+    vi.mocked(planBranchesApi.listImplementationTickets).mockResolvedValue([])
+
+    renderTab('feat-merged')
+
+    await waitFor(() =>
+      expect(planBranchesApi.listImplementationTickets).toHaveBeenCalledWith('demo', 'feat-merged'),
+    )
+    // No empty panel: a branch merged with no tracker configured is the norm.
+    expect(screen.queryByText('Implementation ticket')).not.toBeInTheDocument()
+    expect(screen.queryByText('Implementation tickets')).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /ENG-42/ })).not.toBeInTheDocument()
+  })
+
+  it('does not ask for tickets before the branch has merged', async () => {
+    mockBranchDetailQueries([MAIN, FEATURE])
+
+    renderTab('feat-1')
+
+    // A ticket only exists after a merge, so an open branch's list is provably
+    // empty — spending a request on it would be pure waste.
+    await waitFor(() => expect(planBranchesApi.diff).toHaveBeenCalledWith('demo', 'feat-1'))
+    expect(planBranchesApi.listImplementationTickets).not.toHaveBeenCalled()
   })
 })

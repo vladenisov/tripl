@@ -27,7 +27,13 @@ from tripl_cli.diagnostics.checks import (
     check_projects,
     run_checks,
 )
-from tripl_cli.diagnostics.model import (
+from tripl_cli.diagnostics.scan_checks import (
+    GENERIC_SCAN_ERROR,
+    backoff_delay_seconds,
+    check_scans,
+    streaks_by_config,
+)
+from tripl_cli.model import (
     JOBS_WINDOW,
     SCOPE_PROJECT,
     Check,
@@ -39,12 +45,6 @@ from tripl_cli.diagnostics.model import (
     Severity,
     Snapshot,
     exit_code_for,
-)
-from tripl_cli.diagnostics.scan_checks import (
-    GENERIC_SCAN_ERROR,
-    backoff_delay_seconds,
-    check_scans,
-    streaks_by_config,
 )
 
 SLUG = "prod"

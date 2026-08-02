@@ -4,7 +4,7 @@ import pytest
 from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
 
-from tripl.api.deps import get_editor_user, get_owner_user, get_write_user
+from tripl.api.deps import WRITE_GATES
 from tripl.main import app
 
 
@@ -61,10 +61,16 @@ def iter_api_routes() -> list[tuple[str, APIRoute]]:
     return found
 
 
+# Floor for "the walk reached the real API and not just the app-level handlers".
+# Every route audit that filters on a gate is vacuous if the walk stalls, so each
+# one asserts this first — from here, not from its own literal.
+MIN_API_ROUTES = 150
+
+
 def test_route_audit_sees_the_whole_api() -> None:
     """Guard the guard: if the walker silently stops finding routes, say so here."""
     routes = iter_api_routes()
-    assert len(routes) > 150, f"route audit only reached {len(routes)} routes"
+    assert len(routes) > MIN_API_ROUTES, f"route audit only reached {len(routes)} routes"
     paths = {path for path, _ in routes}
     # Paths must be reconstructed in full, or every ``/api/v1`` filter below
     # silently matches nothing.
@@ -100,9 +106,13 @@ READ_LIKE_MUTATING_PATHS = {
 
 def test_mutating_routes_require_write_gate() -> None:
     """Every mutating API route needs a write-scope dependency unless it is
-    intentionally read-like or an auth endpoint."""
+    intentionally read-like or an auth endpoint.
+
+    The gate list comes from ``deps.WRITE_GATES`` rather than a literal here: when
+    this file spelled its own set, adding a gate to deps.py left every route that
+    used it looking ungated to this audit, which passes silently.
+    """
     allowed_without_write_gate = READ_LIKE_MUTATING_PATHS
-    write_gates = {get_write_user, get_editor_user, get_owner_user}
     offenders: list[str] = []
 
     for path, route in iter_api_routes():
@@ -112,7 +122,7 @@ def test_mutating_routes_require_write_gate() -> None:
         if path in allowed_without_write_gate:
             continue
         dependency_calls = {dependency.call for dependency in route.dependant.dependencies}
-        if dependency_calls.isdisjoint(write_gates):
+        if dependency_calls.isdisjoint(WRITE_GATES):
             offenders.append(f"{','.join(sorted(mutating_methods))} {path}")
 
     assert offenders == []

@@ -26,10 +26,23 @@ Two more act on a **class of objects** and are spelled `<plural-noun> <verb>`:
   one now, `cancel` an active job.
 - **`tripl drifts`** — `list` schema drifts, and `dismiss` one.
 
-`scans run`, `scans cancel` and `drifts dismiss` are the CLI's **first mutating
+`scans run`, `scans cancel` and `drifts dismiss` are the CLI's **only mutating
 commands**. Read [Write safety](#write-safety) before you use one. Every other
 command that talks to an instance is read-only, and a `tk_r_` key is enough for
 all of them.
+
+Two more are read-only in full, and answer questions about the **content**
+rather than the machinery:
+
+- **`tripl events`** — `list` the catalog with the API's own filters, `show` one
+  event with its field values resolved to field names.
+- **`tripl plan`** — the shape events are declared to have: `types`, one type's
+  `fields`, the documented `variables`, the plan `branches`, and `search` across
+  all of it.
+
+Both read one project at a time, so both need `--project SLUG` exactly once, and
+every verb but `plan branches` takes `--branch` to read a plan branch instead of
+the live main plan.
 
 Two act on a **host**, not on an instance — no URL, no API key, no HTTP except a
 `/health` poll at the end:
@@ -1005,6 +1018,14 @@ Two operations exist in the REST API and will not be added to this CLI.
   reopening) stay in the tripl app. `dismiss` sends `false_positive` or `snooze`
   and there is no flag that reaches `accept`.
 
+  The API refuses one slice of that damage on its own: accepting a
+  `missing_field` drift for a column a scan config's **event name format** builds
+  event names from answers `409`, because the delete would fail every subsequent
+  collection. It carries a `force` override for the case where that guard
+  over-fires, and `force` has no flag here either — it is reachable only from a
+  request body you write yourself, which is the point. See
+  [Schema drift](../use/feature-reference.md#schema-drift).
+
 ## `tripl scans`
 
 `doctor` tells you a scan config is failing and `watch` follows one while it
@@ -1336,7 +1357,7 @@ usage: tripl drifts dismiss [-h] [--url URL] [--api-key KEY] [--config PATH]
 | `<drift-id>` | The drift to dismiss. Take it from the first column of `drifts list`. |
 | `--project SLUG` | **Required**, exactly once — the action route carries a slug that a drift id cannot supply. |
 | `--snooze-until TS` | RFC 3339. Its **presence selects `snooze`**; its absence selects `false_positive`. |
-| `--note TEXT` | Resolution note stored with the drift. The server caps it at 2000 characters. **Omitting it clears any note already stored** — see below. |
+| `--note TEXT` | Resolution note stored with the drift. The server caps it at 2000 characters. **Replaces** the stored note; omitting it leaves the stored note untouched — see below. |
 | `--dry-run` | Resolve everything, print the request, send nothing. Never prompts. |
 | `--yes` | Skip the confirmation. **Required when stdin is not a terminal.** |
 | `--json` | One JSON document on stdout, every human line on stderr. |
@@ -1372,18 +1393,25 @@ which one you get is decided by whether you passed a timestamp. `accept` and
 `reopen` have no spelling here at all — see
 [what is deliberately not here](#what-is-deliberately-not-here).
 
-:::warning Dismissing without `--note` erases the note already on the drift
-The action route **replaces** `resolution_note` on every call, from the request
-body, and an absent `note` and an explicit `null` are indistinguishable to it —
-the CLI already omits the key rather than sending null, and it makes no
-difference. So a drift dismissed last week with
-`--note 'waiting on the mobile release'`, then snoozed again today without
-`--note`, comes back with `resolution_note: null` and the reason is gone.
+:::note `--note` overwrites; omitting it keeps the note already on the drift
+The action route writes `resolution_note` **only when the request carries a
+note**, so a drift dismissed last week with
+`--note 'waiting on the mobile release'` and snoozed again today without
+`--note` keeps last week's sentence. This has not always been true: the route
+used to assign the note on every call, so an action without one erased the
+reason. A runbook that tells you to re-pass `--note` on every dismiss to avoid
+losing it is describing the old defect and no longer buys anything.
 
-This is a property of the action route, not of this CLI: any client that omits
-the note replaces it. **Pass `--note` every time you dismiss the same drift
-twice**, and read the current one out of `tripl drifts list --json` first if you
-do not remember it — `resolution_note` is carried there verbatim.
+What remains true is that `--note TEXT` **replaces** whatever was stored — there
+is no append, and the drift keeps exactly one note. Read the current one out of
+`tripl drifts list --json` before you overwrite a note you did not write;
+`resolution_note` is carried there verbatim. The only way to blank a note from
+here is `--note ''`, which stores an **empty** note rather than removing it.
+
+This CLI omits `note` from the request body entirely rather than sending `null`
+— `--dry-run` prints the exact body — so the paragraph above holds however a raw
+client's explicit `null` is read. The one action that clears a note
+unconditionally is `reopen`, which has no spelling here.
 :::
 
 :::warning A naive `--snooze-until` is read as **UTC**, not as your local time
@@ -1403,6 +1431,475 @@ is back in `drifts list` and in doctor's count immediately. Check the timestamp.
 straight from your arguments, so there is nothing to resolve first. The
 corollary is that a wrong `<drift-id>` is discovered by the server, as a 404 and
 exit 1, not by the CLI.
+
+## `tripl events`
+
+`doctor`, `status`, `scans` and `drifts` all answer questions about the
+*machinery*. `tripl events` and [`tripl plan`](#tripl-plan) answer questions
+about the **content**: what is in the catalog, what shape is it declared to
+have, and what changed on a branch.
+
+```
+usage: tripl events [-h] [--url URL] [--api-key KEY] [--config PATH] <verb> ...
+```
+
+Two verbs: `list` and `show`. A bare `tripl events` prints this group's help on
+stderr and exits 2.
+
+Both take **exactly one `--project`**. Every route here is per project and there
+is no instance-wide form, so a repeated `--project` would be a fan-out this
+command does not do — unlike `scans list` and `drifts list`, where repeating it
+widens a real fan-out.
+
+:::warning Read only, and staying that way
+`POST /projects/{slug}/events` and `PATCH /projects/{slug}/events/{event_id}`
+exist, and the shared request layer builds both — the MCP server's `create_event`
+and `update_event` tools use them. There is no `tripl events create`.
+
+A catalog write has to land on a **plan branch**: the MCP makes `branch_id`
+required on both write tools precisely so an agent's draft never lands on the
+live main plan by accident. Reproducing that gate from a shell means resolving a
+branch, refusing main, prompting, and then reading the server's
+canonical-name warnings back to you — because when a scan naming rule governs
+the event type, the server derives the name from field values and may ignore the
+one you sent. That is a command surface of its own. Shipping the easy half first
+would leave the CLI with a write that is easier to get wrong than the agent's.
+
+Until then: edit in the tripl app, or through the
+[MCP server](../integrate/mcp-server.md).
+:::
+
+### `tripl events list`
+
+```
+usage: tripl events list [-h] [--url URL] [--api-key KEY] [--config PATH]
+                         [--project SLUG] [--branch REF] [--search TEXT]
+                         [--status STATUS] [--tag TAG] [--meta-value TEXT]
+                         [--event-type ID] [--silent-since-days N]
+                         [--offset N] [--limit N] [--json]
+                         [--timeout SECONDS]
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--project SLUG` | **Required**, exactly once. |
+| `--branch REF` | Read a plan branch instead of the live main plan. Name or id, matched exactly. |
+| `--search TEXT` | Substring match over name and description. |
+| `--status STATUS` | Lifecycle state. Repeatable, and the API keeps an event matching **any** of them. |
+| `--tag TAG` | Exact tag match. |
+| `--meta-value TEXT` | Exact match on any meta value — a ticket key, typically. |
+| `--event-type ID` | Only events of this event type id, from `tripl plan types`. |
+| `--silent-since-days N` | Only events the warehouse has not carried for N days, `0`–`3650`. |
+| `--offset N` | Skip N events, to read the next page. Default `0`. |
+| `--limit N` | How many events to ask for, `1`–`10000`, default `200`. |
+| `--json` | One JSON document on stdout, every human line on stderr. |
+| `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
+
+The lifecycle states are `draft`, `in_review`, `ready_for_dev`, `implemented`,
+`live`, `deprecated` and `archived` — the API's own `EventStatus` enum, checked
+against `backend/openapi.json` by a contract test rather than transcribed and
+hoped over.
+
+```bash
+tripl events list --project prod --limit 2
+```
+
+```text
+tripl events list - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+prod
+  evt-1  app.screen_view.viewed  live   seen 2026-07-31T19:00:00Z  2 drifts
+  evt-2  app.purchase.completed  draft  never seen
+
+2 of 412 events shown; raise --limit or pass --offset to read the rest.
+```
+
+The columns are the event id, its name, its lifecycle state, **when the
+warehouse last carried it**, and an open-drift count when there is one.
+`never seen` is the row worth scanning for: an event that is declared,
+implemented on paper, and has never actually arrived.
+
+:::warning `2 events.` and `2 of 412 events shown.` are different sentences
+A page that filled up and a catalog that ended print the **identical rows**. The
+footer is the only thing that tells them apart, which is why `total` — the
+count the API takes *before* paging — is read and reported rather than inferred
+from the row count. It is the same class of mistake as reading a `404` as an
+empty list, one level up: not "we could not look", but "we stopped looking and
+said nothing".
+
+`--offset 200` walks to the next page; `--limit 10000` asks for the lot in one
+request. The JSON carries `total`, `offset`, `limit` and a derived `truncated`
+so a consumer never has to do that arithmetic itself.
+:::
+
+:::note `--silent-since-days` is the one filter worth a runbook entry
+`tripl events list --project prod --status live --silent-since-days 30` is the
+list of events your plan says are **live** that nothing has sent for a month.
+That is either a tracking regression nobody noticed or a plan entry nobody
+retired, and both are worth knowing before a quarterly review rather than after.
+:::
+
+**Cost:** one request, plus one to resolve `--branch` when you pass it.
+
+### `tripl events show`
+
+```
+usage: tripl events show [-h] [--url URL] [--api-key KEY] [--config PATH]
+                         [--project SLUG] [--branch REF] [--json]
+                         [--timeout SECONDS]
+                         <event-id>
+```
+
+| Flag | Meaning |
+|------|---------|
+| `<event-id>` | The event to read. Take it from the first column of `events list`, or from `plan search`. |
+| `--project SLUG` | **Required**, exactly once. |
+| `--branch REF` | Read a plan branch instead of the live main plan. |
+| `--json` | One JSON document on stdout, every human line on stderr. |
+| `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
+
+```text
+tripl events show - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+prod
+  evt-1  app.screen_view.viewed
+    status       live
+    reviewed     yes
+    event type   app.screen_view (et-1)
+    tags         checkout
+    last seen    2026-07-31T19:00:00Z
+    sunset       -
+    drifts       2
+    description  Fired when the checkout screen becomes visible
+    fields
+      screen_name  checkout
+      cart_value   ${cart_value}
+    meta (by definition id)
+      mf-1  TRIPL-412
+```
+
+There is **no `<event-id>` name matching**, unlike `<scan>` and `<event-type>`.
+Two events of different types may legitimately carry the same name, so there is
+no rule that could refuse to guess without also refusing valid input. A wrong id
+is discovered by the server, as a `404` and exit 1.
+
+:::note Why this costs two requests
+An event's `field_values` carry a `field_definition_id` and **nothing else** —
+no name. So `events show` reads the event type's field definitions as well and
+prints each value under the field name it sets. Without that second read the
+`fields` block is a column of UUIDs, which is the part of this command worth
+having, rendered useless.
+
+The `meta` block does **not** get the same treatment, and says so in its
+heading. Resolving a `meta_field_definition_id` needs the project's meta-field
+catalog, and the shared request layer builds no route for it. A second spelling
+of a REST path outside `tripl_cli.api` is exactly what the contract tests
+forbid, so the ids are printed honestly instead. Read `--json` and join against
+the app if you need the names.
+:::
+
+**Cost:** two requests, plus one to resolve `--branch` when you pass it.
+
+## `tripl plan`
+
+The event catalog says *what is tracked*. The plan says **what shape it is
+declared to have**: which event types exist, what fields they require, which
+`${variable}` placeholders are documented, and which branches carry unreviewed
+changes.
+
+```
+usage: tripl plan [-h] [--url URL] [--api-key KEY] [--config PATH] <verb> ...
+```
+
+Five verbs: `types`, `fields`, `variables`, `branches` and `search`. A bare
+`tripl plan` prints this group's help on stderr and exits 2. Every verb takes
+exactly one `--project`, and every one except `branches` takes `--branch`.
+
+:::note Why `plan types` and not `event-types list`
+The grammar everywhere else is *`<plural-noun> <verb>`* — `scans list`,
+`drifts dismiss`, `events show`. `plan types` bends it: `types` names a kind,
+not an action.
+
+The alternative was one top-level group per REST collection — `event-types
+list`, `variables list`, `branches list`, `search` — which is four more entries
+in `tripl --help` for four reads, and that is the same objection that rejected
+`list-scans`. Nobody arrives at a terminal wanting to query the event-types
+collection; they arrive wanting to know what the plan looks like. This is one
+group per **question**, not one per collection.
+:::
+
+### The `--branch` flag
+
+Every plan read is answered from exactly one revision. Without `--branch` that
+is the live **main** plan; with it, the named branch.
+
+```bash
+tripl plan branches --project prod           # find the name
+tripl plan fields app.purchase --project prod --branch checkout-redesign
+```
+
+`--branch` takes a **name or an id**, matched exactly — name first, then id,
+never a substring and never case-insensitively. It is literally the matcher
+`<scan>` uses, for the same reason: a `--branch` that silently resolved to the
+wrong revision would answer plan questions about a plan you are not looking at,
+and a read that is quietly wrong is worse than one that refuses. A selector
+matching nothing exits 2 and lists the candidates.
+
+:::warning There is no id for `main`, and no way to spell it
+The API resolves main by the `?branch=` parameter being **absent**. Any non-empty
+value must parse as a UUID belonging to the project or the request is refused
+(`400` for a malformed id, `404` for one belonging to another project). So
+`--branch main` does **not** work unless a branch is literally named `main`, and
+omitting the flag is how you ask for the live plan.
+
+The human output reflects that: it prints `prod` with no branch named when you
+read main, and `prod (branch 'checkout-redesign')` when you name one. The
+`--json` document carries `"branch": null` for main.
+
+One consequence worth knowing: `?branch=` is resolved by a FastAPI **dependency**
+that reads the raw query string, so it does not appear in `backend/openapi.json`
+at all. The contract test that checks every path and every bound against that
+document therefore cannot see this parameter. It is pinned by a CLI test
+instead — it is the one parameter these commands send that the schema does not
+describe.
+:::
+
+### `tripl plan types`
+
+```
+usage: tripl plan types [-h] [--url URL] [--api-key KEY] [--config PATH]
+                        [--project SLUG] [--branch REF] [--json]
+                        [--timeout SECONDS]
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--project SLUG` | **Required**, exactly once. |
+| `--branch REF` | Read a plan branch instead of the live main plan. |
+| `--json` | One JSON document on stdout, every human line on stderr. |
+| `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
+
+```text
+tripl plan types - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+prod
+  et-1  app.screen_view  Screen View  17 fields
+  et-2  app.purchase     Purchase     9 fields
+
+2 event types.
+```
+
+The route answers a bare array and pages nothing, so `total`, `offset` and
+`limit` are all `null` in the JSON: there is no next page to miss. It is not
+quite unlimited, though — the service applies a defensive cap of 1,000 event
+types and reports nothing when it bites, so a project past that number sees a
+silently short list here and in the app alike.
+
+The field count is derived rather than served; the API embeds the whole
+`field_definitions` array on every row. `tripl plan fields <event-type>` reads
+one type's definitions.
+
+**Cost:** one request, plus one to resolve `--branch` when you pass it.
+
+### `tripl plan fields`
+
+```
+usage: tripl plan fields [-h] [--url URL] [--api-key KEY] [--config PATH]
+                         [--project SLUG] [--branch REF] [--json]
+                         [--timeout SECONDS]
+                         <event-type>
+```
+
+| Flag | Meaning |
+|------|---------|
+| `<event-type>` | Event type **name or id**, matched exactly — name first, then id. |
+| `--project SLUG` | **Required**, exactly once. |
+| `--branch REF` | Read a plan branch instead of the live main plan. |
+| `--json` | One JSON document on stdout, every human line on stderr. |
+| `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
+
+```text
+tripl plan fields app.screen_view - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+prod (branch 'checkout-redesign')
+  fd-1  screen_name  string  required  pii   enum: checkout|cart
+  fd-2  cart_value   number  optional  none
+
+2 fields.
+```
+
+The columns are the definition id, the field name, its type, whether it is
+required, its sensitivity, and its enum options if it has any. This is what a
+value has to satisfy — read it before writing `field_values` through the app or
+an agent, and read it when a `enum_violation` drift appears and you want to know
+what the declared set actually is.
+
+The enum options go last and unabbreviated. The last column is never padded, so
+a forty-value enum costs the rows around it nothing.
+
+`<event-type>` is resolved **on the branch you named**, not on main: a type that
+exists only on a branch has no id to find on main, and one renamed on a branch
+would otherwise resolve against the wrong name.
+
+**Cost:** two requests — the event-type listing, to resolve `<event-type>`, then
+the fields — plus one to resolve `--branch` when you pass it.
+
+### `tripl plan variables`
+
+```
+usage: tripl plan variables [-h] [--url URL] [--api-key KEY] [--config PATH]
+                            [--project SLUG] [--branch REF] [--offset N]
+                            [--limit N] [--json] [--timeout SECONDS]
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--project SLUG` | **Required**, exactly once. |
+| `--branch REF` | Read a plan branch instead of the live main plan. |
+| `--offset N` | Skip N variables, to read the next page. Default `0`. |
+| `--limit N` | How many variables to ask for, `1`–`5000`, default `200`. |
+| `--json` | One JSON document on stdout, every human line on stderr. |
+| `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
+
+```text
+tripl plan variables - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+prod
+  var-1  cart_value  number  12 events  1 open drift
+  var-2  screen      string  40 events
+
+2 variables.
+```
+
+Variables are the documented `${placeholder}` tokens an event name or field
+value may carry. The columns are the id, the name, the declared type, how many
+events use it, and its open **value drift** count — a variable observed carrying
+a value outside its documented set. A non-zero count there is the same class of
+signal `tripl drifts list` reports for schema, on the other axis.
+
+The ceiling is `5000` rather than the events route's `10000` because that is
+what the route enforces; a real project can carry well over a thousand
+variables, so the default of `200` is a page and not the catalog.
+
+**Cost:** one request, plus one to resolve `--branch` when you pass it.
+
+### `tripl plan branches`
+
+```
+usage: tripl plan branches [-h] [--url URL] [--api-key KEY] [--config PATH]
+                           [--project SLUG] [--json] [--timeout SECONDS]
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--project SLUG` | **Required**, exactly once. |
+| `--json` | One JSON document on stdout, every human line on stderr. |
+| `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
+
+**No `--branch`.** The branch listing is a property of the project, not of a
+revision, so there is no `?branch=` for it to send and a flag that quietly did
+nothing would read as one that did something.
+
+```text
+tripl plan branches - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+prod
+  b-0001  main               main     merged  -
+  b-9f21  checkout-redesign  working  draft   3 ahead  behind base
+
+2 branches.
+```
+
+The columns are the branch id, its name, its kind (`main` or `working`), its
+status (`draft`, `ready_for_review`, `changes_requested`, `approved`, `merged`,
+`closed`), how many changes it is ahead of its base, and whether its **base has
+moved under it**.
+
+`behind base` is the one to act on. A branch whose base has moved has a diff
+that no longer describes what merging it would do — rebase it in the app before
+anyone reviews it.
+
+This command exists mostly to give you the name to pass to `--branch`.
+
+:::note What is deliberately not here
+`tripl plan diff` is **not** shipped, though the route exists and the MCP
+server's `get_branch_diff` tool reads it. The diff answers
+`{behind_base, entries, summary}` — not a list — so it does not fit the one
+document shape the seven read verbs share, and `behind_base` is too load-bearing
+to smuggle into an `items` array. A second document shape for one verb is worse
+than not shipping it yet.
+
+Merging, reverting and branch transitions are not here either, and never will
+be: both surfaces hand that decision back to a human in the tripl app, which is
+where the conflict resolution and the review state live.
+:::
+
+**Cost:** one request.
+
+### `tripl plan search`
+
+```
+usage: tripl plan search [-h] [--url URL] [--api-key KEY] [--config PATH]
+                         [--project SLUG] [--branch REF] [--type TYPE]
+                         [--limit N] [--json] [--timeout SECONDS]
+                         <query>
+```
+
+| Flag | Meaning |
+|------|---------|
+| `<query>` | Phrase or partial name, 1–500 characters. Stripped, and a blank one is exit 2. |
+| `--project SLUG` | **Required**, exactly once. |
+| `--branch REF` | Read a plan branch instead of the live main plan. |
+| `--type TYPE` | Restrict to one entity kind. Repeatable. |
+| `--limit N` | How many hits to ask for, `1`–`100`, default `20`. |
+| `--json` | One JSON document on stdout, every human line on stderr. |
+| `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
+
+The entity kinds are `event`, `event_type`, `field`, `meta_field`, `variable`,
+`relation`, `tag`, `metric` and `fact_table` — the API's own list, pinned to
+`backend/openapi.json` by a contract test.
+
+```bash
+tripl plan search 'checkout funnel' --project prod --type event
+```
+
+```text
+tripl plan search - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+prod
+  event  evt-1  app.purchase.completed  Purchase  0.92
+  event  evt-7  app.checkout.started    Checkout  0.61
+
+2 search results shown — the most this page holds, and more may have matched; raise --limit.
+```
+
+The columns are the entity kind, its **id**, its title, its subtitle and a
+confidence in `[0, 1]`. The id is in the table rather than only in the JSON
+because it is the argument the follow-up takes: search, then read the entity by
+id with `tripl events show` or `tripl plan fields`.
+
+:::warning Search is capped by `--limit` alone
+There is no `--offset`, because the route has no offset parameter — a hit past
+`--limit` is unreachable except by raising it, and the truncation line says
+exactly that rather than advising a flag that cannot exist. The JSON reports
+`"offset": null` for the same reason.
+
+`"total"` is `null` too, and that is not an omission: the route computes its
+total **after** trimming to the limit, so it always equals the page and can
+never say how many matched. Reporting it would have read `2 of 2 search results
+shown` on a search that dropped hits. A full page is the only signal search
+has, which is why the line above warns without a number.
+:::
+
+:::note Read `semantic_used` before you trust a low score
+The `--json` document carries `meta.semantic_used`. When it is `false` the
+instance answered from substring matching rather than the semantic index — the
+scores mean something different, and a phrase that would have matched
+semantically may be missing entirely. A ranking consumer that ignores this will
+silently change behaviour the day the index is rebuilt.
+:::
+
+**Cost:** one request, plus one to resolve `--branch` when you pass it.
 
 ## `tripl install`
 
@@ -1882,6 +2379,15 @@ That has consequences you can rely on:
   cannot drift apart.
 - `tripl drifts list` and doctor's `drifts` check spend the same budget with the
   same round-robin planner, and share one definition of *untriaged*.
+- `tripl events list` and the MCP `list_events` tool send the same filters to
+  the same route, and `tripl plan fields` and `get_event_type_fields` read the
+  same two endpoints. What differs is the **projection**: the MCP trims each row
+  to the handful of keys an agent needs, because a model pays for every token on
+  every turn; the CLI passes rows through whole, because a pipe does not.
+- Both surfaces resolve `--branch` / `branch_id` against the same branch
+  listing, and `<scan>`, `<event-type>` and `--branch` all run through **one
+  matcher** — exact on the name, then on the id — so no two arguments in this
+  CLI can mean two different kinds of match.
 - The job-history read is **one builder with four deliberate answers**: doctor
   asks for the maximum, 200, because it is measuring how long a streak has run;
   `watch` for 10, because it repeats every ten seconds; `scans jobs` for 50; and
@@ -1900,9 +2406,9 @@ produced it, but not every code is reachable from every command — `doctor` own
 
 | Code | Meaning |
 |------|---------|
-| **0** | `doctor`: every check passed, or only warned and `--strict` was not given. `status`: it completed. `watch`: the run completed — `--duration` elapsed. A failed job, a new signal and a failed delivery all still exit 0, because `watch` reaches no verdict. `scans list` / `drifts list`: every read arrived, including a run that legitimately found nothing. `scans jobs`: the history was read. `scans run` / `scans cancel` / `drifts dismiss`: the API accepted the write — or `--dry-run` resolved everything and sent nothing. `install`: the files are on disk and, unless `--no-start`, `pull` and `up -d` both succeeded and `/health` answered (or `--wait 0` skipped the wait). `upgrade`: the new tag is pinned and running — **or the pin already equalled `--to`**, which runs nothing and is deliberately 0 so a converging provisioning script is not a failing one. |
-| **1** | The tool itself broke, or a command other than `doctor` could not complete a request — unreachable, or the API refused it (a project-scoped key with no `--project` gets a 403 here, on a perfectly healthy instance). `watch` reaches it two ways: a startup read it cannot proceed without (the project listing, or a project's scan listing), and a key revoked mid-run, which ends the run after a `watch.stopped` line carrying `reason: "authentication_failed"`. Every *other* failed read during a run is a `poll.degraded` line, not an exit. Three more routes into 1 belong to the object commands: **any** failed read in a `scans list` or `drifts list` fan-out, a `scans run` whose job came back already `failed`, and a `scans cancel` or `drifts dismiss` you **declined at the prompt** — "the operator said no" must never be readable as "the mutation happened". `install` and `upgrade` reach 1 three ways of their own: `docker compose pull` or `up -d` exited non-zero, `/health` did not answer within `--wait`, or a file could not be written (a read-only directory, or a race with a second `tripl install`). **In none of those is anything rolled back** — for `install` the stack is started, and for a failed `up -d` the new pin is left in place on purpose. Declining the backup gate is also 1. **`doctor` should never exit 1** — it turns every API failure into a finding, so an exit 1 out of doctor is a bug report, not a diagnosis. |
-| **2** | Usage or configuration error: a bad flag, an out-of-range value, no URL, no API key, an unreadable config file. For `doctor` and `status` that is always resolved before any socket opens. `watch` adds two refusals it can only reach *after* reading the project and scan listings — `--scan` matching nothing, and more than 24 selected scan configs — so for it the resolution is two rounds of HTTP in, not zero. The `scans` and `drifts` verbs add: a bare group with no verb, a missing or repeated `--project` on a command that acts on one object, a `<scan>` selector matching nothing or matching two configs, a `--snooze-until` that is not RFC 3339, a `--limit` outside 1–200, a `--status` that is not one of the six, and **`scans cancel` / `drifts dismiss` on a non-TTY without `--yes`**. `install` and `upgrade` add: an explicit `--url` or `--api-key`, an `--app-url` that is not a URL, a `--version`/`--to` that is not a valid image tag, a `--wait` outside 0–3600, a `--dir` that looks like a tripl source checkout, no `docker` on `PATH` / no Compose v2 plugin / a daemon that will not answer, a `--dir` with no stack in it, a refused **downgrade**, an unorderable tag pair without `--yes`, and any prompt met on a non-TTY without `--yes`. Either way **no JSON is emitted**, no write is ever sent, and no file is written. |
+| **0** | `doctor`: every check passed, or only warned and `--strict` was not given. `status`: it completed. `watch`: the run completed — `--duration` elapsed. A failed job, a new signal and a failed delivery all still exit 0, because `watch` reaches no verdict. `scans list` / `drifts list`: every read arrived, including a run that legitimately found nothing. `scans jobs`: the history was read. `events list` / `events show` / every `plan` verb: the read arrived — including a page that stopped at `--limit` with more behind it, which is reported in the footer and in `truncated`, not in the exit code. `scans run` / `scans cancel` / `drifts dismiss`: the API accepted the write — or `--dry-run` resolved everything and sent nothing. `install`: the files are on disk and, unless `--no-start`, `pull` and `up -d` both succeeded and `/health` answered (or `--wait 0` skipped the wait). `upgrade`: the new tag is pinned and running — **or the pin already equalled `--to`**, which runs nothing and is deliberately 0 so a converging provisioning script is not a failing one. |
+| **1** | The tool itself broke, or a command other than `doctor` could not complete a request — unreachable, or the API refused it (a project-scoped key with no `--project` gets a 403 here, on a perfectly healthy instance). `watch` reaches it two ways: a startup read it cannot proceed without (the project listing, or a project's scan listing), and a key revoked mid-run, which ends the run after a `watch.stopped` line carrying `reason: "authentication_failed"`. Every *other* failed read during a run is a `poll.degraded` line, not an exit. Three more routes into 1 belong to the object commands: **any** failed read in a `scans list` or `drifts list` fan-out, a `scans run` whose job came back already `failed`, and a `scans cancel` or `drifts dismiss` you **declined at the prompt** — "the operator said no" must never be readable as "the mutation happened". `install` and `upgrade` reach 1 three ways of their own: `docker compose pull` or `up -d` exited non-zero, `/health` did not answer within `--wait`, or a file could not be written (a read-only directory, or a race with a second `tripl install`). The `events` and `plan` verbs reach 1 the ordinary way and only that way: each reads ONE resource of ONE project, so there is no partial answer to report beside a failure — a refused read is the client's message and exit 1, never an empty table at exit 0. **In none of those is anything rolled back** — for `install` the stack is started, and for a failed `up -d` the new pin is left in place on purpose. Declining the backup gate is also 1. **`doctor` should never exit 1** — it turns every API failure into a finding, so an exit 1 out of doctor is a bug report, not a diagnosis. |
+| **2** | Usage or configuration error: a bad flag, an out-of-range value, no URL, no API key, an unreadable config file. For `doctor` and `status` that is always resolved before any socket opens. `watch` adds two refusals it can only reach *after* reading the project and scan listings — `--scan` matching nothing, and more than 24 selected scan configs — so for it the resolution is two rounds of HTTP in, not zero. The `scans` and `drifts` verbs add: a bare group with no verb, a missing or repeated `--project` on a command that acts on one object, a `<scan>` selector matching nothing or matching two configs, a `--snooze-until` that is not RFC 3339, a `--limit` outside 1–200, a `--status` that is not one of the six, and **`scans cancel` / `drifts dismiss` on a non-TTY without `--yes`**. The read groups add: a missing or repeated `--project` (every one of their routes is per project), a `--branch` or `<event-type>` selector matching nothing or matching two, a `--status` or `--type` outside the API's own enum, an `--offset`/`--limit` outside the route's range, a `<query>` that is blank or over 500 characters, and `--branch` on `plan branches`, which has no such flag. `install` and `upgrade` add: an explicit `--url` or `--api-key`, an `--app-url` that is not a URL, a `--version`/`--to` that is not a valid image tag, a `--wait` outside 0–3600, a `--dir` that looks like a tripl source checkout, no `docker` on `PATH` / no Compose v2 plugin / a daemon that will not answer, a `--dir` with no stack in it, a refused **downgrade**, an unorderable tag pair without `--yes`, and any prompt met on a non-TTY without `--yes`. Either way **no JSON is emitted**, no write is ever sent, and no file is written. |
 | **3** | `doctor` only: at least one check failed — or, with `--strict`, at least one warned. No other command reaches 3, whatever it observes. |
 | **130** | Interrupted (`Ctrl-C`). For `doctor` and `status` that is an abandoned run. For `watch` **it is the normal ending**: a run without `--duration` has no other way to stop, so 130 out of `watch` means "you pressed Ctrl-C", not "something went wrong". A wrapper that treats non-zero as failure needs to know this before it pages somebody. |
 
@@ -2688,6 +3194,93 @@ exit code. The human output prints all three on one screen for exactly this
 reason.
 :::
 
+### `events` and `plan` documents
+
+The seven read verbs share **one document shape**. `items` holds the rows
+whichever verb produced them — including `events show`, which puts its single
+event there rather than inventing a second shape for the one command that
+returns exactly one thing. `jq '.items[]'` therefore works across the whole
+group.
+
+```json
+{
+  "schema_version": 1,
+  "tool": "tripl",
+  "tool_version": "0.1.0",
+  "command": "events list",
+  "generated_at": "2026-08-01T09:12:51Z",
+  "duration_ms": 24,
+  "requests": 1,
+  "instance": {
+    "base_url": "https://tripl.example.com",
+    "base_url_source": "$TRIPL_BASE_URL",
+    "api_key_source": "$TRIPL_API_KEY",
+    "api_key_scope": "unknown"
+  },
+  "project": "prod",
+  "branch": null,
+  "kind": "event",
+  "total": 412,
+  "offset": 0,
+  "limit": 2,
+  "truncated": true,
+  "meta": {},
+  "items": [
+    {
+      "id": "evt-1",
+      "name": "app.screen_view.viewed",
+      "status": "live",
+      "event_type_id": "et-1",
+      "last_seen_at": "2026-07-31T19:00:00Z",
+      "drift_count": 2,
+      "tags": [{ "id": "tag-checkout", "name": "checkout" }],
+      "field_values": [
+        { "id": "fv-1", "field_definition_id": "fd-1", "value": "checkout" }
+      ],
+      "meta_values": []
+    }
+  ]
+}
+```
+
+Every key above is present on all seven, so a consumer never tests for one
+before reading it.
+
+| Key | Meaning |
+|-----|---------|
+| `project` | The slug that was read. Always exactly one. |
+| `branch` | `null` for the live main plan, otherwise `{id, name}`. There is no id for main — see [`--branch`](#the---branch-flag). |
+| `kind` | What one member of `items` **is**: `event`, `event_type`, `field`, `variable`, `branch` or `search_result`. Branch on this, never on `command`'s wording. |
+| `total` | The count the API reported **before** paging, or `null` where the route reports none. |
+| `offset` / `limit` | What was requested, or `null` where the route takes no such parameter. `plan search` has no offset; `plan types`, `plan fields` and `plan branches` page nothing at all. |
+| `truncated` | Whether `total` exceeds `offset` plus the number of rows returned. Derived here so nobody has to do that arithmetic twice. |
+| `meta` | Facts the **route** reported about the answer rather than about a row. `{}` on six of the seven; `{"semantic_used": bool}` on `plan search`. |
+| `items` | The API's own objects, **verbatim**. |
+
+:::warning `"truncated": true` is not an error, and `"items": []` is not "none exist"
+Truncation is a full page with more behind it. The exit code stays 0, because
+nothing failed — the CLI asked for a page and got one. A loop that reads
+`items` and stops without checking `truncated` will silently process the first
+`limit` rows of a catalog forever.
+
+`"items": []` means "nothing matched **these filters** on **this branch**". A
+failed read never reaches this document at all: these verbs read one resource of
+one project, so a refusal is exit 1 with the client's message and no JSON.
+:::
+
+:::note Rows are verbatim, and that is a decision
+`scans list` trims its rows because `base_query` is kilobytes of free-text SQL
+that answers no operational question. Nothing here is trimmed, for the opposite
+reason: a CLI writes to a pipe, where a dropped field is one you have to go and
+fetch again with a second command.
+
+The MCP server does trim the same payloads — `list_events` returns nine keys per
+event, not thirty. That is a statement about a *model's* context budget, where
+every token is paid for on every turn, and it stays with that consumer. If these
+documents ever start trimming, it is a contract change and it will be announced
+as one.
+:::
+
 ### Mutation documents
 
 `scans run`, `scans cancel` and `drifts dismiss` share one shape. **Every key is
@@ -2973,6 +3566,35 @@ tripl upgrade --to 1.5.0 --yes --json \
 
 # The .env backup to restore from, empty if the pin was never moved.
 tripl upgrade --to 1.5.0 --yes --json | jq -r '.env_backup // empty'
+
+# Events your plan calls live that nothing has sent for a month.
+tripl events list --project prod --status live --silent-since-days 30 --json \
+  | jq -r '.items[] | .name'
+
+# Did that page carry the whole catalog? Never read `.items` without this.
+tripl events list --project prod --json | jq '{total, truncated}'
+
+# One event's field values, under the names they set.
+tripl events show evt-1 --project prod --json \
+  | jq -r '.items[0].field_values[] | "\(.field_definition_id)=\(.value)"'
+
+# Every required field of every event type, as `<type>.<field>`.
+tripl plan types --project prod --json | jq -r '.items[].name' \
+  | while read -r type; do
+      tripl plan fields "$type" --project prod --json \
+        | jq -r --arg t "$type" '.items[] | select(.is_required) | "\($t).\(.name)"'
+    done
+
+# Variables carrying values outside their documented set.
+tripl plan variables --project prod --json \
+  | jq -r '.items[] | select(.open_drift_count > 0) | "\(.name) \(.open_drift_count)"'
+
+# Working branches whose base has moved under them - rebase before review.
+tripl plan branches --project prod --json \
+  | jq -r '.items[] | select(.behind_base) | .name'
+
+# Did the semantic index answer, or did you get substring matches?
+tripl plan search 'checkout funnel' --project prod --json | jq '.meta.semantic_used'
 ```
 
 ## See also

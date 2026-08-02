@@ -250,6 +250,13 @@ are the candidates the alerting layer evaluates. Schema, distribution, and
 variable-value drift plus release regression feed the same machinery as
 additional candidate types.
 
+Triaging those candidates is not symmetric. Snooze, false-positive and reopen
+only move review state, but **accepting** a schema drift edits the tracking plan
+— on a `missing_field` drift it deletes the declared field, and tripl answers
+`409 Conflict` rather than delete a field a scan config builds its event names
+from. See [Schema drift](./feature-reference.md#schema-drift) before you accept
+one.
+
 A latest-scan signal remains open only while it is fresh in wall-clock time:
 `max(recent_signal_window_hours, 3 × scan interval)` — 24 hours and the scan
 interval by default. This prevents a stopped scan from pinning its

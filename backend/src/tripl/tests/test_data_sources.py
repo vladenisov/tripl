@@ -4,7 +4,8 @@ import uuid
 import pytest
 from cryptography.fernet import Fernet
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
 
 from tripl import config, crypto
 from tripl.core.adapters import bigquery as bigquery_module
@@ -13,6 +14,7 @@ from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.core.adapters.postgres import _resolve_sslmode
 from tripl.core.adapters.registry import build_adapter
 from tripl.crypto import decrypt_value, encrypt_value
+from tripl.models import Base
 from tripl.models.audit_log import AuditLog
 from tripl.models.data_source import DataSource
 from tripl.schemas.data_source import (
@@ -26,6 +28,7 @@ from tripl.schemas.data_source_schema import (
 )
 from tripl.services import datasource_schema_service, datasource_service
 from tripl.tests.conftest import TestSessionLocal
+from tripl.worker.tasks import scan as scan_tasks
 
 
 class TestDataSourcesCRUD:
@@ -797,7 +800,11 @@ class TestAdapterSettingsWiring:
 
 
 class TestConnectionErrorSanitization:
-    """The sync test-connection probe must not leak host/port/credential internals."""
+    """The connection-test sanitiser must not leak host/port/credential internals.
+
+    It is the sole owner of ``last_test_message`` wording; that both probe paths
+    actually route through it is pinned by ``TestConnectionProbeMessageHasOneOwner``.
+    """
 
     @pytest.mark.parametrize(
         "raw",
@@ -851,3 +858,152 @@ class TestConnectionErrorSanitization:
 
         assert "Unsupported sslmode: 'verify'" in msg
         assert "verify-full" in msg
+
+    @pytest.mark.parametrize(
+        ("host", "service_account_json", "quoted_in_docs"),
+        [
+            ("", '{"type": "service_account"}', "BigQuery: host (project_id) is required"),
+            ("gcp-project", "", "BigQuery: service-account JSON credentials are required"),
+            ("gcp-project", "not json", "BigQuery: invalid service-account JSON"),
+        ],
+    )
+    def test_bigquery_configuration_errors_reach_the_user_verbatim(
+        self, host: str, service_account_json: str, quoted_in_docs: str
+    ):
+        """website/docs/use/troubleshooting.md quotes these three strings as what the
+        operator will see, so the probe has to actually produce them.
+
+        As bare ``ValueError`` they did not: the sanitiser's substring hints matched
+        "host" and "credentials" and answered "could not reach the data source" /
+        "authentication was rejected" — a network and a password to go check, when the
+        real fault is an empty field. They are ``WarehouseCapabilityError`` now
+        (tripl-rcn8). Built through the real registry, not a hand-made exception, so
+        the test fails if the adapter stops raising the curated type.
+        """
+        ds = DataSource(
+            id=uuid.uuid4(),
+            name="bq",
+            db_type="bigquery",
+            host=host,
+            port=0,
+            database_name="analytics",
+            username="",
+            password_encrypted=encrypt_value(service_account_json),
+            timeout_seconds=None,
+            json_path_discovery=None,
+            extra_params=None,
+        )
+
+        ok, message = datasource_service._run_adapter_test(ds)
+
+        assert ok is False
+        assert quoted_in_docs in message
+
+
+class TestConnectionProbeMessageHasOneOwner:
+    """``last_test_message`` is written by two probes; both must word it the same.
+
+    The in-request probe (``datasource_service``) and the Celery probe
+    (``worker.tasks.scan.test_connection``) sanitised separately until tripl-rcn8,
+    so one failed connection test persisted two different strings depending on
+    which path ran — and the worker's copy opened with "Scan failed", a prefix
+    ``worker.tasks._errors`` GUARANTEES for the scan path (the frontend keys on it)
+    and which is the wrong sentence under a Test connection button.
+    """
+
+    PROBE_FAILURES = [
+        pytest.param(
+            ConnectionError("clickhouse-connect: Connection refused to warehouse.internal:8123"),
+            id="unreachable",
+        ),
+        pytest.param(
+            TimeoutError("HTTPSConnectionPool(host='ch.internal', port=8443): Read timed out."),
+            id="timeout",
+        ),
+        pytest.param(
+            OSError("OperationalError: password authentication failed for user 'admin'"),
+            id="auth",
+        ),
+        pytest.param(RuntimeError("some unexpected driver explosion"), id="unrecognized"),
+        pytest.param(
+            WarehouseCapabilityError("BigQuery: host (project_id) is required"),
+            id="curated-configuration",
+        ),
+    ]
+
+    def _data_source(self, ds_id: uuid.UUID) -> DataSource:
+        return DataSource(
+            id=ds_id,
+            name="DS",
+            db_type="clickhouse",
+            host="warehouse.internal",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+
+    def _worker_probe(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch, exc: Exception
+    ) -> tuple[str, str]:
+        """Run the Celery probe against a throwaway sqlite DB.
+
+        Returns (returned error, persisted ``last_test_message``) — the task writes
+        the field and hands the caller a copy, and both are user-facing.
+        """
+        engine = create_engine(f"sqlite:///{tmp_path / 'probe.db'}")
+        try:
+            Base.metadata.create_all(engine)
+            session_factory = sessionmaker(engine, expire_on_commit=False)
+            ds_id = uuid.uuid4()
+            with session_factory() as session:
+                session.add(self._data_source(ds_id))
+                session.commit()
+
+            def failing_build(ds: DataSource) -> object:
+                raise exc
+
+            monkeypatch.setitem(
+                scan_tasks.test_connection.run.__globals__, "_get_sync_session", session_factory
+            )
+            monkeypatch.setitem(
+                scan_tasks.test_connection.run.__globals__, "_build_adapter", failing_build
+            )
+            monkeypatch.setattr(scan_tasks.cache, "sync_delete_prefix", lambda prefix: None)
+
+            result = scan_tasks.test_connection.run(str(ds_id))
+
+            with session_factory() as session:
+                ds = session.get(DataSource, ds_id)
+                return str(result["error"]), str(ds.last_test_message)
+        finally:
+            engine.dispose()
+
+    def _http_probe(self, monkeypatch: pytest.MonkeyPatch, exc: Exception) -> str:
+        def failing_build(ds: DataSource) -> object:
+            raise exc
+
+        monkeypatch.setattr("tripl.core.adapters.registry.build_adapter", failing_build)
+        _, message = datasource_service._run_adapter_test(self._data_source(uuid.uuid4()))
+        return message
+
+    @pytest.mark.parametrize("exc", PROBE_FAILURES)
+    def test_both_probes_persist_the_same_message(
+        self, exc: Exception, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ):
+        http_message = self._http_probe(monkeypatch, exc)
+        worker_error, worker_message = self._worker_probe(tmp_path, monkeypatch, exc)
+
+        assert worker_message == http_message
+        assert worker_error == http_message
+
+    @pytest.mark.parametrize("exc", PROBE_FAILURES)
+    def test_neither_probe_calls_a_connection_test_a_scan(
+        self, exc: Exception, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The scan sanitiser's prefix is load-bearing for scans and wrong here: a
+        source that has never been scanned would report that a scan of it failed."""
+        _, worker_message = self._worker_probe(tmp_path, monkeypatch, exc)
+
+        assert worker_message.startswith("Connection test failed")
+        assert "scan" not in worker_message.lower()

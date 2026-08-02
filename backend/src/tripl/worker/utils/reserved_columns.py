@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from tripl.core.analyzers.event_generator import event_name_format_columns
+from tripl.core.analyzers.event_generator import name_format_base_columns
 from tripl.models.scan_config import ScanConfig
 
 
@@ -77,11 +77,21 @@ def reserved_catalog_columns(config: ScanConfig) -> set[str]:
     this set as ``skip_columns``, so the column gets no FieldDefinition, and
     ``generate_events`` builds its format arguments only from columns that have
     one. The name format is then evaluated with the placeholder missing and the
-    whole collection dies on ``event_name_format references unknown keys``. That
+    whole collection dies on ``the event name format references unknown keys``. That
     is what took production's 'Old events (iOS)' scan down for 200 consecutive
     runs (tripl-lpin): its group rules match ``action`` and its name format is
     ``{action}``, so tripl-jfm3.90 reserved away the one column the event's
     identity was built from.
+
+    A DOTTED placeholder is subtracted by its BASE column, which is why this
+    subtracts ``name_format_base_columns`` and not the full placeholder keys.
+    ``{event.category}`` is walked out of the ``event`` column's JSON, and
+    ``generate_events`` assembles ``col.path`` keys only for columns that reached
+    ``col_meta`` — i.e. that have a FieldDefinition. Subtracting the full key
+    ``event.category`` from a set of top-level column names removes nothing, so a
+    config whose ``platform_column`` is ``event`` kept ``event`` reserved and
+    reproduced tripl-lpin from the other direction: same outage, same message,
+    reached through a placeholder shape the subtraction could not see.
     """
     reserved = (
         config.event_type_column,
@@ -90,4 +100,4 @@ def reserved_catalog_columns(config: ScanConfig) -> set[str]:
         config.platform_column,
     )
     named = {column for column in reserved if column} | _event_group_rule_columns(config)
-    return named - event_name_format_columns(config.event_name_format)
+    return named - name_format_base_columns(config.event_name_format)

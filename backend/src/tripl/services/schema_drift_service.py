@@ -21,6 +21,10 @@ from tripl.schemas.schema_drift import (
     SchemaDriftResponse,
 )
 from tripl.services.project_lookup import get_project_id_by_slug
+from tripl.services.scan_config_lookup import (
+    name_format_conflict_detail,
+    scan_configs_blocking_field_removal,
+)
 from tripl.services.search_service import reindex_project_branch
 
 # Drift rows older than this are filtered out at read time. The writer
@@ -55,11 +59,55 @@ def _logical_type_from_observed(observed_type: str | None) -> str:
     return "string"
 
 
+async def _reject_if_name_format_needs(
+    session: AsyncSession,
+    *,
+    event_type: EventType,
+    field_name: str,
+) -> None:
+    """409 when deleting this field would leave a scan unable to name its events.
+
+    Accepting a ``missing_field`` drift deletes the FieldDefinition, and
+    ``generate_events`` assembles its format arguments ONLY from columns that
+    still have one. So accepting a drift on a column a scan's
+    ``event_name_format`` references kills every subsequent collection with
+    "the event name format references unknown keys" — which is what took
+    'Old events (iOS)' down for four days (tripl-3mmh, root cause of tripl-lpin),
+    on a drift that was very likely a false positive.
+
+    Refusing does not strand an operator whose column really did vanish: the
+    scan is already dead in that case, because the query cannot supply a value
+    the format needs whether or not the field exists. The only repair in both
+    worlds is to edit the scan's event name format first, so the 409 is a
+    redirect to the one action that works, not a wall. ``force`` covers the
+    residual over-fire (a project-wide config that names the column but never
+    scans this event type) and requires a note.
+    """
+    blocking = await scan_configs_blocking_field_removal(
+        session,
+        project_id=event_type.project_id,
+        event_type_id=event_type.id,
+        field_name=field_name,
+    )
+    if not blocking:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail=name_format_conflict_detail(
+            field_name=field_name,
+            configs=blocking,
+            lead="Cannot accept this drift: accepting deletes the field.",
+            then="accept the drift",
+        ),
+    )
+
+
 async def _apply_acceptance_to_plan(
     session: AsyncSession,
     *,
     drift: SchemaDrift,
     event_type: EventType,
+    force: bool,
 ) -> bool:
     field = await session.scalar(
         select(FieldDefinition).where(
@@ -91,6 +139,14 @@ async def _apply_acceptance_to_plan(
         field.field_type = _logical_type_from_observed(drift.observed_type)
         return True
     if drift.drift_type == "missing_field" and field is not None:
+        # Guard here, not at the route: this is the exact point where the action
+        # is accept, the drift is missing_field, and a FieldDefinition really
+        # exists to delete. A missing_field drift whose field is already gone
+        # stays a no-op accept rather than becoming a 409 (tripl-3mmh).
+        if not force:
+            await _reject_if_name_format_needs(
+                session, event_type=event_type, field_name=drift.field_name
+            )
         await session.delete(field)
         return True
     return False
@@ -156,6 +212,7 @@ async def apply_drift_action(
             session,
             drift=drift,
             event_type=event_type,
+            force=data.force,
         )
         drift.status = "accepted"
         drift.resolved_at = now
@@ -179,7 +236,19 @@ async def apply_drift_action(
     else:
         raise HTTPException(status_code=422, detail="Unsupported schema drift action")
 
-    drift.resolution_note = data.note
+    # SEPARATE DEFECT (tripl-3mmh, found while reading the accept path): ``note``
+    # is optional on every action, so assigning it unconditionally erased a note
+    # an earlier action had stored — snooze-with-note then reopen-without wiped
+    # it. ``reopen`` still clears it: a reopened drift has no resolution any more.
+    #
+    # OMITTED and EXPLICITLY NULL are different requests, and only
+    # ``model_fields_set`` can tell them apart — ``data.note is None`` collapses
+    # both. Without the distinction the first fix took away the only way to CLEAR
+    # a note without reopening the drift, so a wrong note was permanent.
+    if data.action == "reopen":
+        drift.resolution_note = None
+    elif "note" in data.model_fields_set:
+        drift.resolution_note = data.note
     await session.commit()
     await session.refresh(drift)
 

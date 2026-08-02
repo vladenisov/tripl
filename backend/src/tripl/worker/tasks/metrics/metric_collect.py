@@ -104,6 +104,28 @@ COLLECTION_STATUS_RUNNING = "running"
 COLLECTION_STATUS_SUCCESS = "success"
 COLLECTION_STATUS_ERROR = "error"
 
+
+def mark_collection_error(definition: MetricDefinition, message: str) -> None:
+    """Put one metric into the error state — the only way it is entered.
+
+    Stamps the timestamp alongside the status because the dispatcher's post-error
+    cooldown measures from it: a site that set the status alone would leave the
+    metric cooling down from whenever it last failed, or — on a first failure —
+    not cooling down at all, which is the retry storm the backoff exists to stop.
+
+    Six sites across two modules reach this state, and a rule six call sites must
+    remember is one the seventh forgets. Not hypothetical here: that exact shape
+    has taken this repository's production down twice (tripl-os3v).
+
+    Does NOT commit. The callers differ on that — one rolls a partial write back
+    first, another must preserve an earlier commit — and folding a commit in here
+    would take the decision away from them.
+    """
+    definition.last_collection_status = COLLECTION_STATUS_ERROR
+    definition.last_collection_error = message
+    definition.last_collection_failed_at = datetime.now(UTC)
+
+
 # Same per-task budget shape as collect_metrics, scaled down: catalog metrics do
 # not run the multi-hour event-catalog replay path.
 COLLECT_METRIC_DEFINITIONS_SOFT_TIME_LIMIT_SECONDS = 30 * 60
@@ -1687,9 +1709,8 @@ def _stamp_batch_dependency_error(session: Session, definition: MetricDefinition
     and discard correct rows because an unrelated metric failed. Overwrite the
     status only, leaving the collected values and the watermark in place.
     """
-    definition.last_collection_status = COLLECTION_STATUS_ERROR
-    definition.last_collection_error = (
-        "One or more dependent metrics failed during the shared collection batch"
+    mark_collection_error(
+        definition, "One or more dependent metrics failed during the shared collection batch"
     )
     session.commit()
 
@@ -1698,8 +1719,7 @@ def _stamp_metric_error(session: Session, definition: MetricDefinition, exc: Exc
     """Roll back any partial writes for one metric and persist a sanitized error."""
     try:
         session.rollback()
-        definition.last_collection_status = COLLECTION_STATUS_ERROR
-        definition.last_collection_error = user_facing_error(exc)
+        mark_collection_error(definition, user_facing_error(exc))
         session.commit()
     except Exception:  # pragma: no cover - best-effort status write
         session.rollback()
@@ -2651,8 +2671,7 @@ def collect_metric_definitions(
         if definition is not None:
             try:
                 session.rollback()
-                definition.last_collection_status = COLLECTION_STATUS_ERROR
-                definition.last_collection_error = user_facing_error(exc)
+                mark_collection_error(definition, user_facing_error(exc))
                 session.commit()
             except Exception:  # pragma: no cover - best-effort status write
                 session.rollback()

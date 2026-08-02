@@ -1,4 +1,4 @@
-"""Agent-payload shapers: mutation-warning hoisting.
+"""Agent-payload shapers: mutation-warning hoisting, collection summaries.
 
 Rehomed from tests/test_client.py when the HTTP client moved into the shared
 `tripl` distribution — ``with_mutation_warnings`` stayed behind because it is an
@@ -7,7 +7,7 @@ MCP prompt concern, not a transport one (tripl-ey6j.1).
 
 from __future__ import annotations
 
-from tripl_mcp.tools._common import with_mutation_warnings
+from tripl_mcp.tools._common import summarize_collection, with_mutation_warnings
 
 
 def test_mutation_warnings_are_hoisted() -> None:
@@ -24,3 +24,32 @@ def test_no_warnings_passes_through_unchanged() -> None:
     data = {"id": "e1", "warnings": []}
 
     assert with_mutation_warnings(data) is data
+
+
+def test_a_summary_reads_the_envelope_the_shared_layer_defines() -> None:
+    """Count-plus-sample is this consumer's budget; ``{items, total}`` is not.
+
+    The row filter is the visible half of that split: ``page_items`` keeps
+    objects and drops anything else, because every ``*ListResponse.items`` in
+    this API is declared ``array[object]``. The hand-written copy that used to
+    live in ``_common`` kept whatever the body carried, so one malformed
+    response reached an agent as a row and the CLI as nothing — two readings of
+    one wire format (tripl-i1dt).
+    """
+    summary = summarize_collection({"items": [{"id": "a"}, "not an object"], "total": 2})
+
+    assert summary["sample"] == [{"id": "a"}]
+    assert summary["total"] == 2
+
+
+def test_a_bare_array_and_a_non_page_object_are_still_told_apart() -> None:
+    """Why the membership test stays spelled out in ``summarize_collection``.
+
+    ``signals`` and ``jobs`` answer bare arrays, the reconciliation routes answer
+    envelopes, and a monitors payload is neither. ``page_items`` cannot make that
+    distinction — an absent envelope and an empty one unwrap identically — so the
+    question of WHETHER this is a page has no shared answer to delegate to.
+    """
+    assert summarize_collection([1, 2, 3], sample_size=2) == {"total": 3, "sample": [1, 2]}
+    assert summarize_collection({"status": "ok"}) == {"data": {"status": "ok"}}
+    assert summarize_collection({"items": [], "total": 0}) == {"total": 0, "sample": []}

@@ -14,6 +14,13 @@ ENDPOINTS: tuple[tuple[str, str], ...] = (
     ("get", EVENT_OVERRIDES),
 )
 
+# The route's own bounds: `limit` is Query(ge=1, le=5000) with a server default
+# of 200. A real project carries well over a thousand variables, so the ceiling
+# is high and the default is a page rather than the catalog. Pinned to the
+# OpenAPI document by the contract test.
+LIMIT_DEFAULT = 200
+LIMIT_MAX = 5000
+
 
 def list_variables(
     slug: str, *, branch: str | None = None, offset: int | None = None, limit: int | None = None

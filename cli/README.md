@@ -133,7 +133,10 @@ is owner-**session**-only server-side (`deps.get_owner_user` rejects every
 request carrying an API key scope), so no `tripl` command could reach it.
 Accepting a schema drift deletes the field definition on a `missing_field`
 drift — the damage `doctor`'s `schema_field_deleted_by_accept` finding exists to
-report — so that decision stays in the tripl UI.
+report — so that decision stays in the tripl UI. The API refuses the accept
+outright (`409`) when a scan config's event name format builds event names from
+that column, and its `force` override for that refusal is likewise not spelled
+here.
 
 `doctor` runs six checks, always in this order and always exactly once each:
 `connectivity`, `auth`, `projects`, `data_sources`, `scans`, `drifts`.

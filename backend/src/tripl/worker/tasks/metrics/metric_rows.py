@@ -118,6 +118,9 @@ def _build_event_name_from_row(
         return None
 
     if event_name_format:
+        # Second caller of ``_apply_name_format``. It raises ``NameFormatError``,
+        # which ``user_facing_error`` surfaces verbatim, so this path needs no
+        # try/except wrapper — do not add one (tripl-3mmh).
         res = _apply_name_format(event_name_format, kwargs)
     else:
         parts = []

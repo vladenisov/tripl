@@ -160,3 +160,12 @@ class MetricDefinition(UUIDMixin, TimestampMixin, Base):
     )
     last_collection_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_collection_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When the newest failure was stamped. Symmetric with ``last_collected_at``,
+    # and written ONLY by the collection cycle — which is the whole point. The
+    # dispatcher's post-error cooldown used to measure from ``updated_at``, and
+    # ``TimestampMixin`` sets ``onupdate=func.now()``, so an operator editing a
+    # broken metric in order to fix it restarted the very cooldown they were
+    # waiting out (tripl-os3v).
+    last_collection_failed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

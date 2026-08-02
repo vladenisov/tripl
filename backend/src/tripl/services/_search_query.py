@@ -26,6 +26,7 @@ from tripl.schemas.search import (
     SearchEventVariableValue,
     SearchResult,
 )
+from tripl.schemas.text_filters import strip_nul_bytes
 from tripl.services import app_settings_service
 from tripl.services.demo.search_embeddings import demo_query_embedding
 from tripl.services.embedding_service import embed_query
@@ -54,8 +55,14 @@ def sanitize_query(query: str) -> str:
 
     A query made only of NULs collapses to ``""`` and then takes the same
     empty-result path a whitespace-only query already took.
+
+    The NUL removal itself now lives in ``schemas.text_filters``, where a route
+    parameter type applies the identical rule to every other free-text filter
+    (tripl-8wez). One rule, one implementation; this function adds only the
+    whitespace trim, which is a search concern rather than a driver one.
     """
-    return query.replace("\x00", "").strip()
+    cleaned: str = strip_nul_bytes(query)
+    return cleaned.strip()
 
 
 def _normalize(value: str) -> str:

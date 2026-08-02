@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -52,6 +53,10 @@ from tripl.services.plan_revision_service import (
     plan_snapshot_hash,
 )
 from tripl.services.project_branch_settings_service import read_branch_merge_policy
+from tripl.services.scan_config_lookup import (
+    name_format_conflict_detail,
+    scan_configs_blocking_field_removals,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +127,71 @@ async def _check_min_approvals(
                 }
             },
         )
+
+
+async def _reject_removals_a_scan_names_events_by(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    removals: Sequence[tuple[uuid.UUID, str, FieldDefinition]],
+) -> None:
+    """Refuse the whole merge when it would delete a field a scan names events by.
+
+    The THIRD door to the tripl-lpin outage, after the drift-accept in
+    ``schema_drift_service`` and the plan-UI delete in ``field_service``. A merge
+    that drops a FieldDefinition from main is the same ``session.delete(field)``
+    with the same consequence: ``generate_events`` builds its format arguments
+    only from columns that still have one, so every collection then dies on "the
+    event name format references unknown keys" (tripl-3mmh).
+
+    **Refusing the whole merge**, with a message naming every offending field, is
+    the shape chosen over two alternatives:
+
+    * *Refuse only that deletion and report it in the merge result.* It would
+      silently diverge main from the branch that was just declared merged — main
+      keeps a field the branch says is gone — and every later three-way merge
+      compares against a base that never describes that state. There is also
+      nowhere to report it: the merge returns ``PlanBranchDetailResponse``, so
+      this needs a new response field and a new UI to read it, i.e. a fourth
+      shape for one warning.
+    * *Surface it through the merge-conflict machinery.* ``_detect_merge_conflicts``
+      is a pure three-way payload diff and ``GET /branches/{id}/conflicts`` renders
+      ``ConflictEntity{name, fields:[{field, base, ours, theirs}]}``. A scan-config
+      dependency has no base/ours/theirs values and is not a divergence between two
+      sides at all — it is an external constraint that would hold even if both
+      sides agreed. Forcing it in means either fabricating those three values or
+      inventing the fourth shape anyway.
+
+    Blocking a large merge on one field is the cost, and it is the cost every
+    other gate in ``merge_branch`` already charges (insufficient approvals, a
+    stale base, an unresolved field conflict). The repair is one edit to the
+    scan's Event name format, and then the merge goes through untouched.
+    """
+    # One query per DISTINCT event type rather than one per removed field: a
+    # merge deleting twenty fields would otherwise issue twenty SELECTs with the
+    # transaction already open. The batching lives in scan_config_lookup so this
+    # door still does not assemble the predicate itself.
+    naming = await scan_configs_blocking_field_removals(
+        session,
+        project_id=project_id,
+        removals=[(event_type_id, field.name) for event_type_id, _, field in removals],
+    )
+    blocked: list[str] = []
+    for main_event_type_id, event_type_name, field in removals:
+        configs = naming.get((main_event_type_id, field.name))
+        if configs:
+            blocked.append(
+                name_format_conflict_detail(
+                    field_name=field.name,
+                    configs=configs,
+                    lead=(
+                        "Cannot merge this branch: merging deletes "
+                        f"'{event_type_name}.{field.name}' from main."
+                    ),
+                    then="merge the branch",
+                )
+            )
+    if blocked:
+        raise HTTPException(status_code=409, detail=" ".join(blocked))
 
 
 async def _apply_merge(
@@ -270,6 +340,7 @@ async def _apply_merge(
     main_fields_by_key = {
         (main_et_by_id[field.event_type_id].name, field.name): field for field in main_fields
     }
+    removals: list[tuple[uuid.UUID, str, FieldDefinition]] = []
     for et_name, b_et in branch_et_by_name.items():
         if et_name not in main_et_name_to_id:
             continue
@@ -298,7 +369,15 @@ async def _apply_merge(
         for field_name in set(base_fields) - set(branch_fields):
             m_fd = main_fields_by_key.pop((et_name, field_name), None)
             if m_fd is not None:
-                await session.delete(m_fd)
+                removals.append((m_et_id, et_name, m_fd))
+
+    # Checked here rather than from the payloads in ``merge_branch`` so there is
+    # exactly one definition of "fields this merge deletes" — the list the deletes
+    # are actually issued from. Nothing is committed yet, so a refusal rolls the
+    # whole merge back.
+    await _reject_removals_a_scan_names_events_by(session, project_id, removals)
+    for _, _, m_fd in removals:
+        await session.delete(m_fd)
     await session.flush()
 
     main_field_by_key = {key: field.id for key, field in main_fields_by_key.items()}

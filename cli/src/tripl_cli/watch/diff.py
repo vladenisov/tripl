@@ -14,7 +14,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
-from tripl_cli.diagnostics.model import Target, format_duration, to_rfc3339
+from tripl_cli.model import Target, format_duration, to_rfc3339
 from tripl_cli.watch.model import (
     DELIVERY_STATUS_FAILED,
     STATUS_CANCELLED,

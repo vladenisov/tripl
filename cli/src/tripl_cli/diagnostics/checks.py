@@ -17,7 +17,18 @@ from datetime import datetime
 
 from tripl_cli.api import event_types as event_types_api
 from tripl_cli.api import projects as projects_api
-from tripl_cli.diagnostics.model import (
+from tripl_cli.diagnostics.scan_checks import (
+    CHECK_ID as SCANS_CHECK_ID,
+)
+from tripl_cli.diagnostics.scan_checks import (
+    CHECK_TITLE as SCANS_CHECK_TITLE,
+)
+from tripl_cli.diagnostics.scan_checks import (
+    FailureStreak,
+    check_scans,
+    streaks_by_config,
+)
+from tripl_cli.model import (
     HEALTH_PATH,
     SCOPE_PROJECT,
     Check,
@@ -32,17 +43,6 @@ from tripl_cli.diagnostics.model import (
     text_of,
     to_rfc3339,
     worst,
-)
-from tripl_cli.diagnostics.scan_checks import (
-    CHECK_ID as SCANS_CHECK_ID,
-)
-from tripl_cli.diagnostics.scan_checks import (
-    CHECK_TITLE as SCANS_CHECK_TITLE,
-)
-from tripl_cli.diagnostics.scan_checks import (
-    FailureStreak,
-    check_scans,
-    streaks_by_config,
 )
 
 CONNECTIVITY_FAILED_SKIP = "the instance is not reachable, so nothing else could be checked"

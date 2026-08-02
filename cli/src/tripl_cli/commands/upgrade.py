@@ -64,8 +64,6 @@ from tripl_cli.commands.install import (
     run_commands,
 )
 from tripl_cli.config import Config
-from tripl_cli.diagnostics.model import JsonDict, to_rfc3339
-from tripl_cli.diagnostics.report import upgrade_document
 from tripl_cli.errors import EXIT_FAILURE, EXIT_OK, TriplConfigError
 from tripl_cli.install import docker, files
 from tripl_cli.install.health import HealthOutcome, wait_for_health
@@ -85,6 +83,8 @@ from tripl_cli.install.render import (
     render_upgrade_plan,
 )
 from tripl_cli.install.shell import Command, Runner, subprocess_runner
+from tripl_cli.model import JsonDict, to_rfc3339
+from tripl_cli.report import upgrade_document
 
 # Strict three-part semver, digits only. `1.4`, `v1.4.0` and `sha-abc1234` all
 # fail it deliberately: a partial match would be an invented ordering.

@@ -12,6 +12,8 @@ call is added to that heartbeat; until then a hybrid would be more transport for
 strictly less information.
 
 A sibling of ``diagnostics``, not a member of it: ``diagnostics`` is the verdict
-machinery (Severity, Finding, Check) and watch reaches no verdict. watch imports
-from diagnostics; nothing in diagnostics imports watch at runtime.
+machinery (``checks``, ``scan_checks``) and watch reaches no verdict. The two
+things watch does share with doctor — the ``Fetched`` read regime and the
+package-root ``model``/``render``/``report`` — it imports; nothing in
+``diagnostics`` imports watch at runtime.
 """

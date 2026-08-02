@@ -16,7 +16,18 @@ its unauthenticated-ness directly instead.
 
 from __future__ import annotations
 
-from tripl_cli.api import auth, data_sources, event_types, monitoring, projects, scans
+from tripl_cli.api import (
+    auth,
+    branches,
+    data_sources,
+    event_types,
+    events,
+    monitoring,
+    projects,
+    scans,
+    search,
+    variables,
+)
 
 _SELECTION: tuple[tuple[str, str], ...] = (
     ("get", projects.LIST),
@@ -85,4 +96,32 @@ DRIFTS_ENDPOINTS: dict[str, tuple[tuple[str, str], ...]] = {
     "event_types": (("get", event_types.LIST),),
     "drifts": (("get", event_types.DRIFTS),),
     "dismiss": (("post", event_types.DRIFT_ACTIONS_PATH),),
+}
+
+# `tripl events <verb>`. Both verbs are READS: the POST and PATCH on
+# events.LIST/DETAIL exist in the shared layer for tripl-mcp and are absent here
+# because no CLI verb reaches them (see commands/events.py for why).
+#
+# `?branch=` is not in either map, and cannot be: it is a DEPENDENCY
+# (deps.get_branch_id_override reads the raw query string), so it never appears
+# in backend/openapi.json and this contract test cannot watch it. That is the
+# one parameter these commands send which nothing below protects.
+EVENTS_ENDPOINTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "events": (("get", events.LIST),),
+    "event": (("get", events.DETAIL),),
+    # `events show` resolves field_definition_id -> name from this.
+    "fields": (("get", event_types.FIELDS),),
+    # Every verb taking --branch reads the branch listing to resolve it.
+    "branches": (("get", branches.LIST),),
+}
+
+# `tripl plan <verb>`. branches.DIFF is deliberately absent: no verb reads it
+# (commands/plan.py records why), and declaring an endpoint nothing reads would
+# make this map a wish list rather than a description.
+PLAN_ENDPOINTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "types": (("get", event_types.LIST),),
+    "fields": (("get", event_types.FIELDS),),
+    "variables": (("get", variables.LIST),),
+    "branches": (("get", branches.LIST),),
+    "search": (("get", search.SEARCH),),
 }

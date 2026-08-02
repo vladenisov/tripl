@@ -20,20 +20,22 @@ import argparse
 import json
 import sys
 import time
-from collections.abc import Mapping
 from datetime import UTC, datetime
 
 import httpx
 
 from tripl_cli.api import scans as scans_api
 from tripl_cli.api.request import ApiRequest
-from tripl_cli.commands import bounded_float, bounded_int, group_help
-from tripl_cli.commands._write import (
-    add_write_flags,
-    confirm,
-    request_document,
+from tripl_cli.commands import (
+    add_json,
+    add_project,
+    add_timeout,
+    bounded_int,
+    group_help,
     require_single_project,
 )
+from tripl_cli.commands._resolve import resolve_one
+from tripl_cli.commands._write import add_write_flags, confirm, request_document
 from tripl_cli.config import Config, require_base_url
 from tripl_cli.diagnostics.collect import (
     Reader,
@@ -42,7 +44,8 @@ from tripl_cli.diagnostics.collect import (
     read_or_raise,
 )
 from tripl_cli.diagnostics.collect import select_projects as select
-from tripl_cli.diagnostics.model import (
+from tripl_cli.errors import EXIT_FAILURE, EXIT_OK
+from tripl_cli.model import (
     JsonDict,
     MutationOutcome,
     ProjectScans,
@@ -54,15 +57,14 @@ from tripl_cli.diagnostics.model import (
     as_list,
     text_of,
 )
-from tripl_cli.diagnostics.render import (
+from tripl_cli.render import (
     render_header,
     render_mutation,
     render_scan_configs,
     render_scan_jobs,
 )
-from tripl_cli.diagnostics.report import mutation_document, scan_jobs_document, scans_document
-from tripl_cli.errors import EXIT_FAILURE, EXIT_OK, TriplConfigError
-from tripl_cli.runner import REQUEST_TIMEOUT_SECONDS, gather_bounded, run_async
+from tripl_cli.report import mutation_document, scan_jobs_document, scans_document
+from tripl_cli.runner import gather_bounded, run_async
 
 # The API's own default. Deliberately not doctor's 200: `scans jobs` answers
 # "what has this config been doing lately", which a screenful covers, and the
@@ -96,26 +98,6 @@ def register(
     parser.set_defaults(handler=group_help(parser))
 
 
-def _add_timeout(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--timeout",
-        dest="timeout",
-        metavar="SECONDS",
-        type=bounded_float("--timeout", 0.1, 600.0),
-        default=REQUEST_TIMEOUT_SECONDS,
-        help=f"per-request timeout in seconds (default: {REQUEST_TIMEOUT_SECONDS})",
-    )
-
-
-def _add_json(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--json",
-        dest="as_json",
-        action="store_true",
-        help="print one JSON document on stdout and every human line on stderr",
-    )
-
-
 def _register_list(
     verbs: argparse._SubParsersAction[argparse.ArgumentParser],
     parent: argparse.ArgumentParser,
@@ -130,21 +112,15 @@ def _register_list(
             "the tripl UI."
         ),
     )
-    parser.add_argument(
-        "--project",
-        dest="project",
-        metavar="SLUG",
-        action="append",
-        help="list only this project (repeatable)",
-    )
+    add_project(parser, single=False)
     parser.add_argument(
         "--include-demo",
         dest="include_demo",
         action="store_true",
         help="also list demo projects, which are excluded by default",
     )
-    _add_json(parser)
-    _add_timeout(parser)
+    add_json(parser)
+    add_timeout(parser)
     parser.set_defaults(handler=run_list)
 
 
@@ -162,9 +138,7 @@ def _register_jobs(
         ),
     )
     parser.add_argument("scan", metavar="<scan>", help="scan config name or id (exact match)")
-    parser.add_argument(
-        "--project", dest="project", metavar="SLUG", action="append", help="project slug (required)"
-    )
+    add_project(parser, single=True)
     parser.add_argument(
         "--limit",
         dest="limit",
@@ -176,8 +150,8 @@ def _register_jobs(
             f"(default: {DEFAULT_JOBS_LIMIT})"
         ),
     )
-    _add_json(parser)
-    _add_timeout(parser)
+    add_json(parser)
+    add_timeout(parser)
     parser.set_defaults(handler=run_jobs)
 
 
@@ -197,12 +171,10 @@ def _register_run(
         ),
     )
     parser.add_argument("scan", metavar="<scan>", help="scan config name or id (exact match)")
-    parser.add_argument(
-        "--project", dest="project", metavar="SLUG", action="append", help="project slug (required)"
-    )
+    add_project(parser, single=True)
     add_write_flags(parser, prompts=False)
-    _add_json(parser)
-    _add_timeout(parser)
+    add_json(parser)
+    add_timeout(parser)
     parser.set_defaults(handler=run_run)
 
 
@@ -223,43 +195,23 @@ def _register_cancel(
     )
     parser.add_argument("scan", metavar="<scan>", help="scan config name or id (exact match)")
     parser.add_argument("job_id", metavar="<job-id>", help="the job to cancel")
-    parser.add_argument(
-        "--project", dest="project", metavar="SLUG", action="append", help="project slug (required)"
-    )
+    add_project(parser, single=True)
     add_write_flags(parser, prompts=True)
-    _add_json(parser)
-    _add_timeout(parser)
+    add_json(parser)
+    add_timeout(parser)
     parser.set_defaults(handler=run_cancel)
-
-
-def _unresolved(selector: str, named: Mapping[str, str]) -> TriplConfigError:
-    """Same shape as ``watch``'s ``--scan`` failure: the rule, then the candidates."""
-    candidates = [f"  {name} ({config_id})" for config_id, name in named.items()]
-    listing = "\n".join(candidates) if candidates else "  (this project has no scan configs)"
-    return TriplConfigError(
-        f"no scan config matches {selector!r}. The match is exact, on the name first and "
-        f"then the id. Candidates:\n{listing}"
-    )
 
 
 async def _resolve_scan(reader: Reader, slug: str, selector: str) -> tuple[str, str]:
     """``<scan>`` -> (id, name). Never guesses, never picks one of two.
 
-    ``api.scans.resolve_selectors`` is watch's own matcher, so
-    ``scans run 'prod events'`` and ``watch --scan 'prod events'`` cannot mean
-    different configs.
+    ``commands._resolve.resolve_one`` runs ``api.scans.resolve_selectors``,
+    which is watch's own matcher, so ``scans run 'prod events'`` and
+    ``watch --scan 'prod events'`` cannot mean different configs — and
+    ``--branch`` on the plan reads cannot mean a third kind of match.
     """
     listing = await reader.send(scans_api.list_configs(slug))
-    named = scans_api.config_names(as_list(listing))
-    matched, unmatched = scans_api.resolve_selectors(named, [selector])
-    if unmatched:
-        raise _unresolved(selector, named)
-    if len(matched) > 1:
-        raise TriplConfigError(
-            f"{selector!r} names {len(matched)} scan configs "
-            f"({', '.join(matched)}); name one by id."
-        )
-    return matched[0], named[matched[0]]
+    return resolve_one(scans_api.config_names(as_list(listing)), selector, what="scan config")
 
 
 def run_list(args: argparse.Namespace, config: Config) -> int:

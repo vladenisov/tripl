@@ -129,7 +129,56 @@ schema and is surfaced as the **schema-drift badge** on event rows in the
 catalog. Drift kinds are `new_field`, `missing_field`, `type_changed`,
 `enum_violation`, `required_null_violation`, `regex_violation`, and
 `range_violation`. Per drift you can **accept**, **snooze** (defaults to 7 days),
-mark **false positive**, or **reopen**.
+mark **false positive**, or **reopen**. A resolution note is optional on every
+one of them, and an action that carries no note **leaves the stored note alone**
+— re-snoozing a drift does not erase the reason somebody recorded last week.
+**Reopen** is the exception and clears the note: a reopened drift has no
+resolution to annotate.
+
+Accepting a `missing_field` drift **deletes the declared field** from the event
+type. tripl refuses that with a `409 Conflict` when a scan config on that event
+type builds its event names from the column — the plan cannot name its events
+without it, and deleting the field would fail every subsequent collection with
+*"the event name format references unknown keys"*. The message names the
+column, the scan config and its format. Fix it by editing the scan's
+[**Event name format**](#event-detail--editing) so it no longer references the column, then
+accept the drift. A project-wide scan config (one with no bound event type)
+counts too, because it can produce events for any event type in the project.
+
+A placeholder is matched on its **base column**. A format of `{event.category}`
+reads the `category` key out of the JSON `event` column, and that lookup only
+happens for columns the event type still declares — so the format depends on the
+field definition for `event`, and a `missing_field` drift on `event` is refused
+exactly as one on `action` is.
+
+**Why the refusal exists.** A `missing_field` drift for the column `action` was
+accepted in good faith on production, on an event type whose scan config named
+its events `{action}`. The field went away, every collection after it failed
+behind the generic *"Scan failed due to an internal error"*, and that scan
+collected nothing for four days before anyone connected the two. The 409 is a
+redirect rather than a wall: if the column really has vanished upstream, the scan
+is already failing whether or not the field definition exists, because the query
+cannot supply a value the format needs. Editing the event name format is the one
+repair that works in both worlds, which is why it is the only one offered.
+
+:::warning `force` exists, has no button, and is not a convenience
+The drift action route
+(`POST /api/v1/projects/{slug}/event-types/drifts/{drift_id}/actions`) accepts
+`"force": true`, which skips the check and deletes the field. It exists for one
+honest case: a **project-wide** scan config names the column in its format but
+never actually produces events for this event type, so the guard fires on a scan
+that was never going to break. It is **API-only by design** — no button in the
+app, no flag in the [CLI](../run/cli.md#tripl-drifts). A warning next to an
+Accept button is a thing operators click past, and clicking past it in good faith
+is precisely how the four-day outage happened; typing `force` into a request body
+is not something anyone does by accident.
+
+A `force` request **must** carry a `note` (a blank one is a `422`), and that note
+is stored on the drift as its resolution note, so the record of who overrode the
+guard and why survives in the audit trail. If you are not sure the scan config is
+harmless, fix the event name format instead — that costs one edit, and being
+wrong here costs a silent collection outage.
+:::
 
 ### Meta fields
 
@@ -194,6 +243,17 @@ ticket for the added/changed events; a scheduled sync promotes covered events to
 `implemented` when Jira reports the ticket done. This is branch workflow
 automation, distinct from the Jira **alert destination** that creates incident
 tickets from monitoring signals.
+
+The merged branch's detail then carries an **Implementation ticket** panel: the
+ticket key links straight to the issue in the tracker, next to the ticket
+summary and a status chip that reads `Open` until the sync sees the issue done.
+The panel is hidden — not shown empty — on branches that opened no ticket, which
+is every branch until it merges with the tracker enabled. API clients read the
+same list from
+`GET /api/v1/projects/{slug}/branches/{branch_id}/implementation-tickets`; it is
+read-only (tickets are written by the merge and sync workers) and open to any
+authenticated user, and answers `404` for a branch that belongs to another
+project.
 
 ### Plan rules
 

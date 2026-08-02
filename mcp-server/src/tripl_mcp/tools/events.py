@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
-from tripl_cli.api import events, send
+from tripl_cli.api import events, page_items, page_total, send
 
 from tripl_mcp.runtime import client_for, ensure_branch_not_main, require_branch_id
 from tripl_mcp.tools._common import (
@@ -47,10 +47,14 @@ async def list_events(
             branch=branch_id,
         ),
     )
-    items = data.get("items", []) if isinstance(data, dict) else []
+    # The TRIM is this consumer's context budget and stays here — `tripl events
+    # list --json` carries the same rows verbatim, because a pipe pays no
+    # per-token cost. The ENVELOPE is not: `{items, total}` is what the route
+    # answers, so it is read through the shared layer both surfaces share
+    # (tripl-i1dt).
     return {
-        "items": [trim(item, EVENT_LIST_FIELDS) for item in items],
-        "total": data.get("total") if isinstance(data, dict) else None,
+        "items": [trim(item, EVENT_LIST_FIELDS) for item in page_items(data)],
+        "total": page_total(data),
         "note": "Items are trimmed; use get_event for field/meta values and full detail.",
     }
 
