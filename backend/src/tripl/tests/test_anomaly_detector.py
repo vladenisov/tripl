@@ -580,7 +580,7 @@ def test_hybrid_detects_sustained_level_shift_on_seasonal_series() -> None:
 
 def test_phase_baseline_relevels_sustained_shift_instead_of_flagging_every_bucket() -> None:
     """tripl-w0ay: a level that stepped up ~6x two cycles ago and has been stable
-    since must NOT flag every bucket. On prod (windyapp) such an event showed 166
+    since must NOT flag every bucket. On a real production instance such an event showed 166
     of 167 hourly buckets flagged because the same-phase median stayed anchored to
     the pre-shift level. Re-leveling the phase expectation to the current level
     fixes it: a whole day of the stable-high plateau yields no per-bucket flags."""

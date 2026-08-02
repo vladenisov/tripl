@@ -1,6 +1,8 @@
 # design-sync NOTES — Tripl design system → claude.ai/design
 
-Project: **Tripl** (`d43b1fe0-d5d4-4f96-83e3-eb8c22b3d341`) — https://claude.ai/design/p/d43b1fe0-d5d4-4f96-83e3-eb8c22b3d341
+Project: **Tripl** — the design project id lives in `config.json` as `projectId`,
+which is where the tooling reads it. It is an identifier for a private project,
+not a credential, and it is not repeated here or written as a browsable link.
 Shape: **package** (synth-entry — `frontend` is a private app, no published lib build).
 Upload path: **incremental** (project created empty this run).
 
@@ -15,12 +17,12 @@ Upload path: **incremental** (project created empty this run).
 .ds-sync/node_modules/.bin/tailwindcss -i .design-sync/tw-input.css -o frontend/.ds-styles.css
 # 2. converter build
 node .ds-sync/package-build.mjs --config .design-sync/config.json \
-  --node-modules /home/radxa/tripl/frontend/node_modules \
+  --node-modules ./frontend/node_modules \
   --entry ./frontend/.ds-entry.tsx --out ./ds-bundle
 # 3. validate (render check — needs playwright+chromium, see TODO)
 node .ds-sync/package-validate.mjs ./ds-bundle
 ```
-Deps staged in `.ds-sync/node_modules` (esbuild, ts-morph, @types/react, @tailwindcss/cli). Node v24.13.1 (engines want >=26, but install/build work fine; pnpm not on PATH, corepack 0.34.6).
+Deps staged in `.ds-sync/node_modules` (esbuild, ts-morph, @types/react, @tailwindcss/cli). Use the node version `frontend/package.json` pins; a mismatched ambient node has run this fine, but do not rely on that.
 
 ## Durable build inputs (committed)
 - `.design-sync/config.json` — full config (projectId, componentSrcMap of 56, entry, cssEntry, tsconfig, buildCmd).
@@ -42,12 +44,12 @@ Deps staged in `.ds-sync/node_modules` (esbuild, ts-morph, @types/react, @tailwi
 
 ## STATUS (first clean validate passed — incremental gate)
 - Build + validate exit 0. 56 components, fonts shipped, render check runs on playwright chromium. 23 floor cards (all unauthored — every component is author-scoped per user).
-- **Upload channel OPEN: planId `plan_d43b1fe0d5d44f96_03c3ce1ee0ed`** (approved; lives for the session — if lost to a context reset, re-run finalize_plan with the §3 writes/deletes globs, localDir ./ds-bundle).
+- **Upload channel OPEN** (approved; the planId is session-scoped and is not recorded here — re-run finalize_plan with the §3 writes/deletes globs, localDir ./ds-bundle).
 - **Authored-preview import convention:** preview `.tsx` files import the DS package by name — `import { Button, Card } from 'frontend'` (the story-imports plugin redirects `frontend`/`frontend/X`/alias `@/components/...`-to-known-components onto `window.Tripl`). Each named export in the `.tsx` = one card cell. Do NOT add the `@dsCard` header (converter adds it). Real props/children, realistic content, no foo/bar.
 - NEXT WORKFLOW:
   1. Open upload channel (finalize_plan, one approval) — see base SKILL §3. planId lives for session.
   2. CALIBRATION: author 2-3 previews end-to-end (1 simple e.g. Button, 1 compound e.g. Card/Tabs, 1 text-heavy e.g. Field/InfoRow) to learn provider/blank-card fixes + the dtsPropsFor pattern. (May delegate to one calibration subagent.)
-  3. FAN OUT preview subagents over disjoint component sets. SUBAGENT CONTRACT: edit ONLY their `.design-sync/previews/<Name>.tsx` + their `.design-sync/.cache/review/<Name>.grade.json` + their own `.design-sync/learnings/<BATCH>.md`; record needed `dtsPropsFor` bodies + any config/provider needs in learnings (NOT config/NOTES — orchestrator-only); rebuild ONLY via `node .ds-sync/lib/preview-rebuild.mjs --config .design-sync/config.json --node-modules /home/radxa/tripl/frontend/node_modules --out ./ds-bundle --components <theirs>` then `node .ds-sync/package-capture.mjs --out ./ds-bundle --components <theirs>`; never run package-build/validate; never capture unscoped; grade each cell from the captured sheet on the absolute rubric.
+  3. FAN OUT preview subagents over disjoint component sets. SUBAGENT CONTRACT: edit ONLY their `.design-sync/previews/<Name>.tsx` + their `.design-sync/.cache/review/<Name>.grade.json` + their own `.design-sync/learnings/<BATCH>.md`; record needed `dtsPropsFor` bodies + any config/provider needs in learnings (NOT config/NOTES — orchestrator-only); rebuild ONLY via `node .ds-sync/lib/preview-rebuild.mjs --config .design-sync/config.json --node-modules ./frontend/node_modules --out ./ds-bundle --components <theirs>` then `node .ds-sync/package-capture.mjs --out ./ds-bundle --components <theirs>`; never run package-build/validate; never capture unscoped; grade each cell from the captured sheet on the absolute rubric.
   4. After each wave: orchestrator applies learnings (dtsPropsFor → config, provider/css fixes), recompile Tailwind CSS (`cfg.buildCmd`) so preview classes are included, full `package-build` + `package-validate`, then push verified batch (write components/<group>/<Name>/ + _preview/<Name>.*, re-arm sentinel). First push also carries shared base files (_ds_bundle.js, _ds_bundle.css, styles.css, README.md, _vendor/**, tokens/**, fonts/**, guidelines/**).
   5. Author conventions header (.design-sync/conventions.md, set readmeHeader), driver rebuild, then close-out (full writes + reconciliation deletes + sentinel + _ds_sync.json last).
 ## PROGRESS LOG
@@ -59,7 +61,7 @@ Deps staged in `.ds-sync/node_modules` (esbuild, ts-morph, @types/react, @tailwi
 - (was)  AppSidebar, TopBar, BranchSwitcher, CommandPalette infra, ActivityPanel, SettingsLayout, monitoring (TopMoversPanel/ReleaseRegressionPanel/SeasonalityHeatmap), EventPhotosSection, VariableValueContextTrigger. ThemeProvider is bundled (usable as cfg.provider).
 2. **Fonts** — DONE. Inter (400/500/600/700) + JetBrains Mono (400/500), latin + latin-ext, fetched to `.design-sync/fonts/` (12 woff2 + fonts.css). `cfg.extraFonts: ["../.design-sync/fonts/fonts.css"]`. Validate no longer reports `[FONT_MISSING]`; woff2 copied into `ds-bundle/fonts/`. (Both families are variable fonts upstream, so per-weight files are byte-identical — harmless.)
    - Also FIXED: `[BUNDLE_EXPORT]` for `ConfirmDialog`/`EventPhotosSection` — they're `export default`; barrel now uses `export { default as X }`.
-3. **Render check / playwright** — RESOLVED to "install playwright chromium". System `/usr/bin/chromium` is a **Rockchip hardware build with NO headless support** (`Invalid ozone platform: headless`); no xvfb, no headless-shell. `validate` honors `DS_CHROMIUM_PATH` but the system binary can't run headless, so that path is dead. Network IS available → installing playwright's own chromium (arm64) to `~/.cache/ms-playwright` (background task). Once present, run validate/capture normally (no DS_CHROMIUM_PATH needed). If playwright chromium fails on missing system libs, try `npx playwright install-deps chromium` (needs apt/sudo) or ask user.
+3. **Render check / playwright** — RESOLVED to "install playwright chromium". The system `/usr/bin/chromium` on this class of ARM board is a hardware build with **no headless support** (`Invalid ozone platform: headless`); no xvfb, no headless-shell. `validate` honors `DS_CHROMIUM_PATH` but the system binary can't run headless, so that path is dead. Network IS available → installing playwright's own chromium (arm64) to `~/.cache/ms-playwright` (background task). Once present, run validate/capture normally (no DS_CHROMIUM_PATH needed). If playwright chromium fails on missing system libs, try `npx playwright install-deps chromium` (needs apt/sudo) or ask user.
    - Decision rationale: user chose full high-fidelity sync, which requires a working headless browser for render-check + preview grading; the system browser is unusable; network available → install is the prerequisite, not optional.
 4. **Author previews** — none yet. Solo-author 2-3 (simple/compound/state-heavy/text-heavy) to calibrate, then fan out subagents over disjoint sets. App composites (AppSidebar, TopBar, CommandPalette infra, monitoring panels) need providers (theme/branch/router/query) or data — many will be floor cards; record which here as decided.
 5. **Grouping** — ui + root app components land in group `general` (source-kit derives group from dir; `ui`/`components` are generic). primitives/settings/monitoring get real groups. Cosmetic; could refine via docsMap category stubs (costs synthesized prompt) — deferred.
@@ -92,4 +94,4 @@ Deps staged in `.ds-sync/node_modules` (esbuild, ts-morph, @types/react, @tailwi
 - `frontend/.ds-styles.css` is gitignored & regenerated — re-sync MUST re-run cfg.buildCmd first.
 - The two tsconfig gotchas are converter-lib behavior; if the bundled lib is updated, re-verify the alias plugin still needs the comment-free tsconfig.
 - App composites are tied to live app code (contexts/api); their previews may break when that code changes.
-- Node engine mismatch (have 24, want 26) — currently harmless; watch on re-clone.
+- Node engine mismatch against the pinned version — harmless so far; watch on re-clone.
