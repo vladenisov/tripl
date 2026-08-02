@@ -55,6 +55,36 @@ function mockAuthFetch(options: { emailConfigured?: boolean } = {}) {
   })
 }
 
+// Router that answers POST /auth/register with the verbatim 422 pydantic emits
+// for a reserved domain (reproduced against the real RegisterRequest schema).
+function mockRegisterEmailRejected() {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+    const url = urlOf(input)
+    if (url.endsWith('/api/v1/auth/status')) {
+      return Promise.resolve(jsonResponse({ has_users: true, registration_enabled: true }))
+    }
+    if (url.endsWith('/api/v1/auth/register')) {
+      return Promise.resolve(
+        jsonResponse(
+          {
+            detail: [
+              {
+                type: 'value_error',
+                loc: ['body', 'email'],
+                msg:
+                  'value is not a valid email address: The part after the @-sign is a ' +
+                  'special-use or reserved name that cannot be used with email.',
+              },
+            ],
+          },
+          422,
+        ),
+      )
+    }
+    return Promise.reject(new Error(`Unexpected request: ${url}`))
+  })
+}
+
 function renderAuth(initialEntry = '/auth') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
@@ -75,22 +105,22 @@ describe('AuthPage', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows sign-in copy in the card header by default (login mode)', () => {
+  it('shows sign-in copy in the card header by default (login mode)', async () => {
     renderAuth()
 
     expect(
-      screen.getByRole('heading', { name: 'Sign in to tripl' }),
+      await screen.findByRole('heading', { name: 'Sign in to tripl' }),
     ).toBeInTheDocument()
     expect(
       screen.getByText('Use your account to access the workspace and monitoring tools.'),
     ).toBeInTheDocument()
   })
 
-  it('updates the card title and subtitle to registration copy when the register tab is active (UX-22)', () => {
+  it('updates the card title and subtitle to registration copy when the register tab is active (UX-22)', async () => {
     renderAuth()
 
     // The register tab is the only "Create account" control while login mode is active.
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create account' }))
 
     expect(
       screen.getByRole('heading', { name: 'Create your tripl account' }),
@@ -106,10 +136,10 @@ describe('AuthPage', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('restores the sign-in copy when switching back to Existing Account', () => {
+  it('restores the sign-in copy when switching back to Existing Account', async () => {
     renderAuth()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create account' }))
     fireEvent.click(screen.getByRole('button', { name: 'Existing Account' }))
 
     expect(
@@ -120,20 +150,20 @@ describe('AuthPage', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('gives the register tab and submit button distinct accessible names (UX .23)', () => {
+  it('gives the register tab and submit button distinct accessible names (UX .23)', async () => {
     renderAuth()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create account' }))
 
     // Tab and submit no longer collide on the same accessible name.
     expect(screen.getByRole('button', { name: 'Create account' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Create your account' })).toBeInTheDocument()
   })
 
-  it('advertises the unified password policy on the register form (UX .11)', () => {
+  it('advertises the unified password policy on the register form (UX .11)', async () => {
     renderAuth()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create account' }))
 
     const password = screen.getByLabelText('Password') as HTMLInputElement
     expect(password.minLength).toBe(12)
@@ -142,11 +172,11 @@ describe('AuthPage', () => {
     ).toBeInTheDocument()
   })
 
-  it('exposes a forgot-password entry point in the login footer (UX .13)', () => {
+  it('exposes a forgot-password entry point in the login footer (UX .13)', async () => {
     renderAuth()
 
     expect(
-      screen.getByRole('button', { name: 'Forgot your password?' }),
+      await screen.findByRole('button', { name: 'Forgot your password?' }),
     ).toBeInTheDocument()
     // The old static "contact your owner" copy is gone from the default footer —
     // it now only appears as a fallback after a request on an email-less instance.
@@ -159,7 +189,7 @@ describe('AuthPage', () => {
     mockAuthFetch({ emailConfigured: true })
     renderAuth()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Forgot your password?' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Forgot your password?' }))
     fireEvent.change(screen.getByLabelText('Email'), {
       target: { value: 'user@example.com' },
     })
@@ -176,7 +206,7 @@ describe('AuthPage', () => {
     mockAuthFetch({ emailConfigured: false })
     renderAuth()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Forgot your password?' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Forgot your password?' }))
     fireEvent.change(screen.getByLabelText('Email'), {
       target: { value: 'user@example.com' },
     })
@@ -192,6 +222,8 @@ describe('AuthPage', () => {
     renderAuth('/auth?reset_token=tok-123')
 
     // The token in the URL switches the card straight into reset mode.
+    // Deliberately synchronous: a reset token decides the mode on its own, so the
+    // instance probe must never delay the reset form.
     expect(
       screen.getByRole('heading', { name: 'Choose a new password' }),
     ).toBeInTheDocument()
@@ -211,8 +243,7 @@ describe('AuthPage', () => {
     mockStatus(false)
     renderAuth()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
-
+    // A fresh instance opens on register, so the note needs no click to appear.
     expect(
       await screen.findByText(/The first account on a new instance becomes the owner/),
     ).toBeInTheDocument()
@@ -227,9 +258,8 @@ describe('AuthPage', () => {
   it('hides the owner note on a provisioned instance (UX .13)', async () => {
     renderAuth()
 
-    // Let the /auth/status query settle (defaults to has_users: true).
-    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    // The tab strip only appears once /auth/status settles (has_users: true here).
+    fireEvent.click(await screen.findByRole('button', { name: 'Create account' }))
 
     expect(
       screen.queryByText(/The first account on a new instance becomes the owner/),
@@ -246,6 +276,8 @@ describe('AuthPage', () => {
       await screen.findByText(/Sign-ups are closed on this instance/),
     ).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Create account' })).not.toBeInTheDocument()
+    // The whole strip is withdrawn, not just the sign-up half of it.
+    expect(screen.queryByRole('button', { name: 'Existing Account' })).not.toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: 'Create your account' }),
     ).not.toBeInTheDocument()
@@ -262,5 +294,95 @@ describe('AuthPage', () => {
       await screen.findByRole('button', { name: 'Create account' }),
     ).toBeInTheDocument()
     expect(screen.queryByText(/Sign-ups are closed on this instance/)).not.toBeInTheDocument()
+  })
+
+  it('opens on the Create account tab on a brand-new instance', async () => {
+    mockStatus(false)
+    renderAuth()
+
+    // Nothing to sign in to yet, so sign-up is the opening tab.
+    expect(
+      await screen.findByRole('heading', { name: 'Create your tripl account' }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create your account' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create account' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+  })
+
+  it('keeps Sign In as the default once the instance has accounts', async () => {
+    renderAuth()
+
+    expect(
+      await screen.findByRole('heading', { name: 'Sign in to tripl' }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sign In' })).toBeInTheDocument()
+  })
+
+  it('never paints the sign-in form before the instance probe settles', async () => {
+    let resolveStatus!: (response: Response) => void
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveStatus = resolve
+        }),
+    )
+    renderAuth()
+
+    // Nothing mode-specific may render while the default tab is still unknown —
+    // this is what stops the card from flipping under the visitor.
+    expect(screen.queryByRole('button', { name: 'Sign In' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Existing Account' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Welcome to tripl' })).toBeInTheDocument()
+    expect(screen.getByText('Checking this instance…')).toBeInTheDocument()
+
+    resolveStatus(jsonResponse({ has_users: false, registration_enabled: true }))
+
+    expect(
+      await screen.findByRole('button', { name: 'Create your account' }),
+    ).toBeInTheDocument()
+  })
+
+  it('shows the reset form immediately from a ?reset_token link, without waiting on the probe', () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => {}))
+    renderAuth('/auth?reset_token=tok-123')
+
+    expect(
+      screen.getByRole('heading', { name: 'Choose a new password' }),
+    ).toBeInTheDocument()
+  })
+
+  it('never shows the raw email-validator wording when register is rejected (422)', async () => {
+    mockRegisterEmailRejected()
+    renderAuth()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create account' }))
+    fireEvent.change(screen.getByLabelText('Email'), {
+      target: { value: 'a@example.invalid' },
+    })
+    fireEvent.change(screen.getByLabelText('Password'), {
+      target: { value: 'ReservedPass9!' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Create your account' }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    const alert = screen.getByRole('alert')
+    // The library sentence must not reach the visitor…
+    expect(alert.textContent).not.toMatch(/special-use|@-sign|value is not a valid/)
+    // …and the human copy must take its place.
+    expect(alert.textContent).toContain('email domain cannot be used')
+  })
+
+  it('falls back to Sign In when the instance probe fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.reject(new Error('network down')),
+    )
+    renderAuth()
+
+    expect(
+      await screen.findByRole('heading', { name: 'Sign in to tripl' }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sign In' })).toBeInTheDocument()
   })
 })

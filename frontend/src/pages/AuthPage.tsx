@@ -33,6 +33,14 @@ const CARD_COPY: Record<AuthMode, { title: string; description: string }> = {
   },
 }
 
+// Neutral header for the beat before the instance probe decides the default tab.
+// The description doubles as the pending state, so the card body stays empty
+// rather than repeating the same sentence twice.
+const BOOTSTRAP_COPY = {
+  title: 'Welcome to tripl',
+  description: 'Checking this instance…',
+} as const
+
 export default function AuthPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -42,7 +50,9 @@ export default function AuthPage() {
   // A reset link lands on /auth?reset_token=... (the SPA has no dedicated reset
   // route), so an incoming token puts the page straight into reset mode.
   const resetToken = searchParams.get('reset_token') ?? ''
-  const [chosenMode, setChosenMode] = useState<AuthMode>('login')
+  // `null` means "no tab picked yet, follow the instance default". Once the
+  // visitor clicks a tab their choice is sticky and a late probe can't move it.
+  const [chosenMode, setChosenMode] = useState<AuthMode | null>(null)
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -57,6 +67,9 @@ export default function AuthPage() {
   const statusQuery = useQuery({
     queryKey: ['auth', 'status'],
     queryFn: authApi.status,
+    // The default tab waits on this probe, so a failure must fall back after a
+    // single round trip instead of holding the card for the global retry backoff.
+    retry: false,
   })
   const isFreshInstance = statusQuery.data?.has_users === false
   // Only a definite `false` closes the door in the UI. While the probe is in
@@ -64,17 +77,27 @@ export default function AuthPage() {
   // gate and still answers 403; guessing "closed" here would hide the form on
   // an open instance every time the page loads.
   const registrationClosed = statusQuery.data?.registration_enabled === false
+  // A brand-new instance has no account to sign in to, so sign-up is the only
+  // usable action — open on it until the visitor picks otherwise.
+  const instanceDefaultMode: AuthMode = isFreshInstance ? 'register' : 'login'
+  const effectiveMode = chosenMode ?? instanceDefaultMode
   // A live reset token always forces reset mode: a reset link must show the reset
   // form even when /auth was ALREADY mounted (same route, new ?reset_token=, no
   // remount). Deriving `mode` — rather than syncing it in an effect — means the
   // token can never be missed and avoids set-state-in-effect. The same derivation
   // falls back to login if the probe resolves "closed" while register mode is
-  // already showing (the tab is hidden, but the mode is state that predates it).
+  // already showing — whether that mode came from a click that predates the probe
+  // or from the fresh-instance default.
   const mode: AuthMode = resetToken
     ? 'reset'
-    : registrationClosed && chosenMode === 'register'
+    : registrationClosed && effectiveMode === 'register'
       ? 'login'
-      : chosenMode
+      : effectiveMode
+  // The default tab depends on has_users, so painting any mode-specific chrome
+  // before the probe settles would flip it under the visitor. Only the ambiguous
+  // case is held: an explicit tab click and a reset link both decide the mode
+  // without the probe.
+  const isBootstrapping = statusQuery.isPending && chosenMode === null && !resetToken
 
   const authMutation = useMutation({
     mutationFn: () =>
@@ -113,7 +136,11 @@ export default function AuthPage() {
     }
   }
 
-  const isAuthTab = mode === 'login' || mode === 'register'
+  // Folding the gate in here withholds both the tab strip and the auth form. The
+  // remaining blocks need no guard: while bootstrapping `mode` is 'login' and
+  // `registrationClosed` is false, so the forgot, reset, closed-sign-ups and
+  // register blocks are already unreachable — only the login footer needs one.
+  const isAuthTab = !isBootstrapping && (mode === 'login' || mode === 'register')
   const submitLabel =
     mode === 'login'
       ? 'Sign In'
@@ -122,7 +149,9 @@ export default function AuthPage() {
         : mode === 'forgot'
           ? 'Send reset link'
           : 'Set new password'
-  const { title: cardTitle, description: cardDescription } = CARD_COPY[mode]
+  const { title: cardTitle, description: cardDescription } = isBootstrapping
+    ? BOOTSTRAP_COPY
+    : CARD_COPY[mode]
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(20,184,166,0.15),_transparent_32%),linear-gradient(135deg,_rgba(15,23,42,0.98),_rgba(2,6,23,0.94))] text-slate-50">
@@ -461,7 +490,7 @@ export default function AuthPage() {
               </p>
             )}
 
-            {mode === 'login' && (
+            {!isBootstrapping && mode === 'login' && (
               <div className="space-y-2 text-sm leading-6 text-slate-400">
                 <p>Use the same account across catalog, monitoring, and alerting workflows.</p>
                 <button
