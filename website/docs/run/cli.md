@@ -24,10 +24,10 @@ Two more act on a **class of objects** and are spelled `<plural-noun> <verb>`:
 
 - **`tripl scans`** — `list` the scan configurations, print one's `jobs`, `run`
   one now, `cancel` an active job.
-- **`tripl drifts`** — `list` schema drifts, and `dismiss` one.
+- **`tripl drifts`** — `list` schema drifts, `dismiss` one, `reopen` one.
 
-`scans run`, `scans cancel` and `drifts dismiss` are the CLI's **only mutating
-commands**. Read [Write safety](#write-safety) before you use one. Every other
+`scans run`, `scans cancel`, `drifts dismiss` and `drifts reopen` are the CLI's
+**only mutating commands**. Read [Write safety](#write-safety) before you use one. Every other
 command that talks to an instance is read-only, and a `tk_r_` key is enough for
 all of them.
 
@@ -192,8 +192,9 @@ list`, `scans jobs` and `drifts list`, and it should be your default.** Those
 six issue nothing but `GET`, so a write key buys them nothing and risks
 everything.
 
-Three verbs mutate the instance and need a **`tk_w_` key backed by a user with
-the editor or owner role**: `scans run`, `scans cancel` and `drifts dismiss`.
+Four verbs mutate the instance and need a **`tk_w_` key backed by a user with
+the editor or owner role**: `scans run`, `scans cancel`, `drifts dismiss` and
+`drifts reopen`.
 Give them a key of their own rather than promoting the one in your cron job —
 see [Write safety](#write-safety).
 
@@ -472,7 +473,7 @@ key is scoped to a single project, that 403 is expected"* and the flag to type.
 Pass `--project`.
 
 The commands that act on **one** object — `scans jobs`, `scans run`,
-`scans cancel`, `drifts dismiss` — require `--project` exactly once from
+`scans cancel`, `drifts dismiss`, `drifts reopen` — require `--project` exactly once from
 everybody, project-scoped key or not, so they never reach the instance listing
 and never produce that 403.
 
@@ -891,7 +892,7 @@ mode `watch` exists to avoid.
 
 ## Write safety
 
-`doctor`, `status` and `watch` only ever read. **Three verbs do not**, and this
+`doctor`, `status` and `watch` only ever read. **Four verbs do not**, and this
 is the one table to read before you run any of them:
 
 | Command | What it changes on the instance | Key | Backing role | Asks first |
@@ -899,6 +900,7 @@ is the one table to read before you run any of them:
 | `tripl scans run` | Queues a scan job, which executes the config's stored SQL against your warehouse. | `tk_w_` | editor or owner | **No** |
 | `tripl scans cancel` | Stops a `pending` or `running` job. A running job is not killed: it stops at the next chunk boundary and metrics already written are kept. | `tk_w_` | editor or owner | **Yes** |
 | `tripl drifts dismiss` | Moves one schema drift to `false_positive` or `snoozed`, which takes it out of `doctor`'s untriaged count. | `tk_w_` | editor or owner | **Yes** |
+| `tripl drifts reopen` | Moves one schema drift back to `open`, and **discards** its resolution note and resolver. | `tk_w_` | editor or owner | **Yes** |
 
 Everything else on this page — `doctor`, `status`, `watch`, `scans list`,
 `scans jobs`, `drifts list` — is `GET`-only and needs nothing but `tk_r_`.
@@ -918,7 +920,7 @@ tripl: Forbidden (403): the API key lacks the required scope (tk_r_ keys cannot 
 Read `API detail:` — it is the server's own sentence and it says which of the
 three actually applied.
 
-### `--dry-run` is on all three
+### `--dry-run` is on all four
 
 It resolves everything a real invocation would resolve — including turning a
 `<scan>` name into a config id, which is where a typo becomes exit 2 — prints
@@ -951,12 +953,13 @@ a machine can consume.
 
 ### The confirmation rule
 
-`scans cancel` and `drifts dismiss` prompt. `scans run` does not, and it has no
-`--yes` at all — passing one is exit 2, because a flag that does nothing here is
-a flag a script author will assume does something on the next command too. The
-reasoning is that `run` executes SQL an owner already authored, on a schedule
-that already runs it; `cancel` throws away work in flight, and `dismiss` hides a
-finding from `doctor`.
+`scans cancel`, `drifts dismiss` and `drifts reopen` prompt. `scans run` does
+not, and it has no `--yes` at all — passing one is exit 2, because a flag that
+does nothing here is a flag a script author will assume does something on the
+next command too. The reasoning is that `run` executes SQL an owner already
+authored, on a schedule that already runs it; `cancel` throws away work in
+flight, `dismiss` hides a finding from `doctor`, and `reopen` destroys the note
+that says why the finding was hidden.
 
 ```bash
 tripl scans cancel 'prod events' job-91c2 --project prod
@@ -976,9 +979,9 @@ and **exit 1**, never 0: a script must never be able to read "the operator said
 no" as "the mutation happened".
 
 :::warning In a pipeline, `--yes` is mandatory, not optional
-When stdin is not a terminal and `--yes` was not given, `scans cancel` and
-`drifts dismiss` **refuse**: they print the question, name `--yes`, exit **2**
-and send nothing.
+When stdin is not a terminal and `--yes` was not given, `scans cancel`,
+`drifts dismiss` and `drifts reopen` **refuse**: they print the question, name
+`--yes`, exit **2** and send nothing.
 
 ```text
 tripl: Mark drift drift-1 of prod as false_positive? It stops appearing in `tripl doctor`'s untriaged count. Refusing to prompt because stdin is not a terminal. Re-run with --yes to confirm non-interactively. Nothing was sent.
@@ -1014,9 +1017,10 @@ Two operations exist in the REST API and will not be added to this CLI.
 - **Accepting a schema drift.** On a `missing_field` drift, accepting *deletes
   the field definition* from the event type — the exact damage doctor's
   `schema_field_deleted_by_accept` finding exists to report. The tool that
-  reports that damage must not be the easiest way to cause it, so accepting (and
-  reopening) stay in the tripl app. `dismiss` sends `false_positive` or `snooze`
-  and there is no flag that reaches `accept`.
+  reports that damage must not be the easiest way to cause it, so accepting
+  stays in the tripl app. `dismiss` sends `false_positive` or `snooze`,
+  [`reopen`](#tripl-drifts-reopen) sends `reopen`, and no flag on either reaches
+  `accept`.
 
   The API refuses one slice of that damage on its own: accepting a
   `missing_field` drift for a column a scan config's **event name format** builds
@@ -1258,8 +1262,8 @@ one row out of the untriaged pile without opening the app.
 usage: tripl drifts [-h] [--url URL] [--api-key KEY] [--config PATH] <verb> ...
 ```
 
-Two verbs: `list` and `dismiss`. A bare `tripl drifts` prints this group's help
-on stderr and exits 2.
+Three verbs: `list`, `dismiss` and `reopen`. A bare `tripl drifts` prints this
+group's help on stderr and exits 2.
 
 ### `tripl drifts list`
 
@@ -1389,9 +1393,11 @@ prod: drift drift-1 (cart_value, type_changed) is now snoozed.
 
 There is **no `--action` flag**, and that is the safety design rather than an
 omission: the only two actions reachable are `false_positive` and `snooze`, and
-which one you get is decided by whether you passed a timestamp. `accept` and
-`reopen` have no spelling here at all — see
-[what is deliberately not here](#what-is-deliberately-not-here).
+which one you get is decided by whether you passed a timestamp. This command
+never sends `accept` — see
+[what is deliberately not here](#what-is-deliberately-not-here). Undoing a
+dismissal is [`tripl drifts reopen`](#tripl-drifts-reopen), a verb of its own,
+because it moves the drift the other way and destroys something on the way.
 
 :::note `--note` overwrites; omitting it keeps the note already on the drift
 The action route writes `resolution_note` **only when the request carries a
@@ -1411,7 +1417,8 @@ here is `--note ''`, which stores an **empty** note rather than removing it.
 This CLI omits `note` from the request body entirely rather than sending `null`
 — `--dry-run` prints the exact body — so the paragraph above holds however a raw
 client's explicit `null` is read. The one action that clears a note
-unconditionally is `reopen`, which has no spelling here.
+unconditionally is `reopen`, and it is not reachable from this command — it is
+[a verb of its own](#tripl-drifts-reopen), which is why it takes no `--note`.
 :::
 
 :::warning A naive `--snooze-until` is read as **UTC**, not as your local time
@@ -1431,6 +1438,58 @@ is back in `drifts list` and in doctor's count immediately. Check the timestamp.
 straight from your arguments, so there is nothing to resolve first. The
 corollary is that a wrong `<drift-id>` is discovered by the server, as a 404 and
 exit 1, not by the CLI.
+
+### `tripl drifts reopen`
+
+```
+usage: tripl drifts reopen [-h] [--url URL] [--api-key KEY] [--config PATH]
+                           [--project SLUG] [--dry-run] [--yes] [--json]
+                           [--timeout SECONDS]
+                           <drift-id>
+```
+
+| Flag | Meaning |
+|------|---------|
+| `<drift-id>` | The drift to reopen. Take it from the first column of `drifts list`. |
+| `--project SLUG` | **Required**, exactly once — the action route carries a slug that a drift id cannot supply. |
+| `--dry-run` | Resolve everything, print the request, send nothing. Never prompts. |
+| `--yes` | Skip the confirmation. **Required when stdin is not a terminal.** |
+| `--json` | One JSON document on stdout, every human line on stderr. |
+| `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
+
+**Write. Needs a `tk_w_` key backed by an editor or owner. Prompts.**
+
+The undo for a dismissal that turned out to be wrong: the drift goes back to
+`open`, its snooze is cleared, and it counts as untriaged in `tripl doctor`
+again.
+
+```bash
+tripl drifts reopen drift-1 --project prod --yes
+```
+
+```text
+tripl drifts reopen - https://tripl.example.com (from $TRIPL_BASE_URL)
+
+prod: drift drift-1 (cart_value, type_changed) is now open.
+```
+
+:::warning Reopening **destroys** the resolution note and the resolver
+This is not the harmless direction. The action route clears `resolution_note`,
+`resolved_by` and `resolved_at` for `reopen` — so *who* dismissed this drift and
+*why* are gone the moment the request lands, and dismissing it again does not
+bring them back. Nothing in the API restores them.
+
+If the sentence matters, read it out of `tripl drifts list --json` first;
+`resolution_note` is carried there verbatim. That is also why there is **no
+`--note`** here: the route clears the note before it looks at the request's, so a
+flag would take a sentence, report success, and store nothing.
+:::
+
+There is no `--snooze-until` either — reopening clears the snooze rather than
+setting one. To move a snooze, `dismiss` again with the new timestamp; that is
+one request instead of two and never blanks the note in between.
+
+**Cost:** one request, or zero with `--dry-run`.
 
 ## `tripl events`
 
@@ -2406,9 +2465,9 @@ produced it, but not every code is reachable from every command — `doctor` own
 
 | Code | Meaning |
 |------|---------|
-| **0** | `doctor`: every check passed, or only warned and `--strict` was not given. `status`: it completed. `watch`: the run completed — `--duration` elapsed. A failed job, a new signal and a failed delivery all still exit 0, because `watch` reaches no verdict. `scans list` / `drifts list`: every read arrived, including a run that legitimately found nothing. `scans jobs`: the history was read. `events list` / `events show` / every `plan` verb: the read arrived — including a page that stopped at `--limit` with more behind it, which is reported in the footer and in `truncated`, not in the exit code. `scans run` / `scans cancel` / `drifts dismiss`: the API accepted the write — or `--dry-run` resolved everything and sent nothing. `install`: the files are on disk and, unless `--no-start`, `pull` and `up -d` both succeeded and `/health` answered (or `--wait 0` skipped the wait). `upgrade`: the new tag is pinned and running — **or the pin already equalled `--to`**, which runs nothing and is deliberately 0 so a converging provisioning script is not a failing one. |
-| **1** | The tool itself broke, or a command other than `doctor` could not complete a request — unreachable, or the API refused it (a project-scoped key with no `--project` gets a 403 here, on a perfectly healthy instance). `watch` reaches it two ways: a startup read it cannot proceed without (the project listing, or a project's scan listing), and a key revoked mid-run, which ends the run after a `watch.stopped` line carrying `reason: "authentication_failed"`. Every *other* failed read during a run is a `poll.degraded` line, not an exit. Three more routes into 1 belong to the object commands: **any** failed read in a `scans list` or `drifts list` fan-out, a `scans run` whose job came back already `failed`, and a `scans cancel` or `drifts dismiss` you **declined at the prompt** — "the operator said no" must never be readable as "the mutation happened". `install` and `upgrade` reach 1 three ways of their own: `docker compose pull` or `up -d` exited non-zero, `/health` did not answer within `--wait`, or a file could not be written (a read-only directory, or a race with a second `tripl install`). The `events` and `plan` verbs reach 1 the ordinary way and only that way: each reads ONE resource of ONE project, so there is no partial answer to report beside a failure — a refused read is the client's message and exit 1, never an empty table at exit 0. **In none of those is anything rolled back** — for `install` the stack is started, and for a failed `up -d` the new pin is left in place on purpose. Declining the backup gate is also 1. **`doctor` should never exit 1** — it turns every API failure into a finding, so an exit 1 out of doctor is a bug report, not a diagnosis. |
-| **2** | Usage or configuration error: a bad flag, an out-of-range value, no URL, no API key, an unreadable config file. For `doctor` and `status` that is always resolved before any socket opens. `watch` adds two refusals it can only reach *after* reading the project and scan listings — `--scan` matching nothing, and more than 24 selected scan configs — so for it the resolution is two rounds of HTTP in, not zero. The `scans` and `drifts` verbs add: a bare group with no verb, a missing or repeated `--project` on a command that acts on one object, a `<scan>` selector matching nothing or matching two configs, a `--snooze-until` that is not RFC 3339, a `--limit` outside 1–200, a `--status` that is not one of the six, and **`scans cancel` / `drifts dismiss` on a non-TTY without `--yes`**. The read groups add: a missing or repeated `--project` (every one of their routes is per project), a `--branch` or `<event-type>` selector matching nothing or matching two, a `--status` or `--type` outside the API's own enum, an `--offset`/`--limit` outside the route's range, a `<query>` that is blank or over 500 characters, and `--branch` on `plan branches`, which has no such flag. `install` and `upgrade` add: an explicit `--url` or `--api-key`, an `--app-url` that is not a URL, a `--version`/`--to` that is not a valid image tag, a `--wait` outside 0–3600, a `--dir` that looks like a tripl source checkout, no `docker` on `PATH` / no Compose v2 plugin / a daemon that will not answer, a `--dir` with no stack in it, a refused **downgrade**, an unorderable tag pair without `--yes`, and any prompt met on a non-TTY without `--yes`. Either way **no JSON is emitted**, no write is ever sent, and no file is written. |
+| **0** | `doctor`: every check passed, or only warned and `--strict` was not given. `status`: it completed. `watch`: the run completed — `--duration` elapsed. A failed job, a new signal and a failed delivery all still exit 0, because `watch` reaches no verdict. `scans list` / `drifts list`: every read arrived, including a run that legitimately found nothing. `scans jobs`: the history was read. `events list` / `events show` / every `plan` verb: the read arrived — including a page that stopped at `--limit` with more behind it, which is reported in the footer and in `truncated`, not in the exit code. `scans run` / `scans cancel` / `drifts dismiss` / `drifts reopen`: the API accepted the write — or `--dry-run` resolved everything and sent nothing. `install`: the files are on disk and, unless `--no-start`, `pull` and `up -d` both succeeded and `/health` answered (or `--wait 0` skipped the wait). `upgrade`: the new tag is pinned and running — **or the pin already equalled `--to`**, which runs nothing and is deliberately 0 so a converging provisioning script is not a failing one. |
+| **1** | The tool itself broke, or a command other than `doctor` could not complete a request — unreachable, or the API refused it (a project-scoped key with no `--project` gets a 403 here, on a perfectly healthy instance). `watch` reaches it two ways: a startup read it cannot proceed without (the project listing, or a project's scan listing), and a key revoked mid-run, which ends the run after a `watch.stopped` line carrying `reason: "authentication_failed"`. Every *other* failed read during a run is a `poll.degraded` line, not an exit. Three more routes into 1 belong to the object commands: **any** failed read in a `scans list` or `drifts list` fan-out, a `scans run` whose job came back already `failed`, and a `scans cancel`, `drifts dismiss` or `drifts reopen` you **declined at the prompt** — "the operator said no" must never be readable as "the mutation happened". `install` and `upgrade` reach 1 three ways of their own: `docker compose pull` or `up -d` exited non-zero, `/health` did not answer within `--wait`, or a file could not be written (a read-only directory, or a race with a second `tripl install`). The `events` and `plan` verbs reach 1 the ordinary way and only that way: each reads ONE resource of ONE project, so there is no partial answer to report beside a failure — a refused read is the client's message and exit 1, never an empty table at exit 0. **In none of those is anything rolled back** — for `install` the stack is started, and for a failed `up -d` the new pin is left in place on purpose. Declining the backup gate is also 1. **`doctor` should never exit 1** — it turns every API failure into a finding, so an exit 1 out of doctor is a bug report, not a diagnosis. |
+| **2** | Usage or configuration error: a bad flag, an out-of-range value, no URL, no API key, an unreadable config file. For `doctor` and `status` that is always resolved before any socket opens. `watch` adds two refusals it can only reach *after* reading the project and scan listings — `--scan` matching nothing, and more than 24 selected scan configs — so for it the resolution is two rounds of HTTP in, not zero. The `scans` and `drifts` verbs add: a bare group with no verb, a missing or repeated `--project` on a command that acts on one object, a `<scan>` selector matching nothing or matching two configs, a `--snooze-until` that is not RFC 3339, a `--limit` outside 1–200, a `--status` that is not one of the six, and **`scans cancel` / `drifts dismiss` / `drifts reopen` on a non-TTY without `--yes`**. The read groups add: a missing or repeated `--project` (every one of their routes is per project), a `--branch` or `<event-type>` selector matching nothing or matching two, a `--status` or `--type` outside the API's own enum, an `--offset`/`--limit` outside the route's range, a `<query>` that is blank or over 500 characters, and `--branch` on `plan branches`, which has no such flag. `install` and `upgrade` add: an explicit `--url` or `--api-key`, an `--app-url` that is not a URL, a `--version`/`--to` that is not a valid image tag, a `--wait` outside 0–3600, a `--dir` that looks like a tripl source checkout, no `docker` on `PATH` / no Compose v2 plugin / a daemon that will not answer, a `--dir` with no stack in it, a refused **downgrade**, an unorderable tag pair without `--yes`, and any prompt met on a non-TTY without `--yes`. Either way **no JSON is emitted**, no write is ever sent, and no file is written. |
 | **3** | `doctor` only: at least one check failed — or, with `--strict`, at least one warned. No other command reaches 3, whatever it observes. |
 | **130** | Interrupted (`Ctrl-C`). For `doctor` and `status` that is an abandoned run. For `watch` **it is the normal ending**: a run without `--duration` has no other way to stop, so 130 out of `watch` means "you pressed Ctrl-C", not "something went wrong". A wrapper that treats non-zero as failure needs to know this before it pages somebody. |
 

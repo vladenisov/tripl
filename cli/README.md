@@ -63,6 +63,7 @@ tripl scans run <scan> --project SLUG       # trigger a run now (WRITE)
 tripl scans cancel <scan> <job-id> --project SLUG   # cancel an active job (WRITE)
 tripl drifts list         # schema drifts; untriaged by default
 tripl drifts dismiss <drift-id> --project SLUG      # false_positive or snooze (WRITE)
+tripl drifts reopen <drift-id> --project SLUG       # back to open; drops the note (WRITE)
 tripl install --app-url https://tripl.example.com --version 1.5.0   # provision a stack and start it (HOST)
 tripl install --app-url https://tripl.example.com --dry-run   # print the plan, write nothing
 tripl upgrade --to 1.6.0  # move an installed stack to a new image tag (HOST)
@@ -73,18 +74,23 @@ cannot move you onto an image you have not read the notes for. The command says
 so on stderr when you leave it at the default.
 
 `doctor`, `status`, `watch`, `scans list`, `scans jobs` and `drifts list` are
-**read-only** — a `tk_r_` key is enough. The three marked WRITE need a `tk_w_`
+**read-only** — a `tk_r_` key is enough. The four marked WRITE need a `tk_w_`
 key backed by an editor or owner, and the CLI does not pre-judge that: the key
 prefix is derived from the scope's first letter server-side and says nothing
 about the user's role, so the request is sent and the API's own 403 is printed.
 
-`scans cancel` and `drifts dismiss` prompt on a terminal and take `--yes`; when
-stdin is **not** a terminal and `--yes` was not given they refuse with exit 2
-rather than hanging a cron job or proceeding silently. `scans run` does not
-prompt and has no `--yes` at all — passing one is exit 2, because a no-op flag
-here is a flag a script author will assume works on the next command too. All
-three writes take `--dry-run`, which resolves everything, prints the exact
-request (method, path, params, body — never a credential) and sends nothing.
+`scans cancel`, `drifts dismiss` and `drifts reopen` prompt on a terminal and
+take `--yes`; when stdin is **not** a terminal and `--yes` was not given they
+refuse with exit 2 rather than hanging a cron job or proceeding silently.
+`scans run` does not prompt and has no `--yes` at all — passing one is exit 2,
+because a no-op flag here is a flag a script author will assume works on the next
+command too. All four writes take `--dry-run`, which resolves everything, prints
+the exact request (method, path, params, body — never a credential) and sends
+nothing.
+
+`drifts reopen` is the one whose prompt is worth reading: reopening clears the
+drift's `resolution_note`, `resolved_by` and `resolved_at`, and dismissing it
+again does not bring them back.
 
 `install` and `upgrade` are the two marked HOST: they act on a **directory and
 the local Docker daemon**, not on a running instance, so they take neither
@@ -199,7 +205,7 @@ not moved).
 | Exit | Meaning |
 |------|---------|
 | 0 | Every check passed, or only warned and `--strict` was not given. `status`, whenever it completed. `watch`, whenever the run completed — a failed job or a new signal is still 0. The `scans` / `drifts` verbs, whenever every read arrived or the write was accepted (`--dry-run` included). |
-| 1 | The tool itself broke (doctor turns every API failure into a finding), or any other command could not complete a request — unreachable, or the API refused it. For `watch` this includes a key revoked mid-run. For `scans list` / `drifts list` it includes **any** failed read in the fan-out; for `scans run`, a job returned already `failed`; for `scans cancel` / `drifts dismiss`, a declined prompt. |
+| 1 | The tool itself broke (doctor turns every API failure into a finding), or any other command could not complete a request — unreachable, or the API refused it. For `watch` this includes a key revoked mid-run. For `scans list` / `drifts list` it includes **any** failed read in the fan-out; for `scans run`, a job returned already `failed`; for `scans cancel` / `drifts dismiss` / `drifts reopen`, a declined prompt. |
 | 2 | Usage or configuration error. For `doctor` and `status` that is resolved before any socket opens; `watch` also refuses after reading the listings, when `--scan` matches nothing or more than 24 scan configs are selected. The `scans` / `drifts` verbs add a bare group, a missing or repeated `--project`, an unresolved or ambiguous `<scan>`, and a prompting write on a non-TTY without `--yes`. Either way **no JSON is emitted** and no write is sent. |
 | 3 | `doctor` only: at least one check failed, or `--strict` and at least one warning. Nothing else ever exits 3. |
 | 130 | Interrupted (SIGINT). For `watch` this is the **normal** ending — a run without `--duration` has no other way to stop. |

@@ -303,19 +303,24 @@ def test_drifts_dismiss_has_no_accept_option(
     assert not _posts(tripl_api)
 
 
-def test_no_reachable_dismiss_invocation_can_send_accept(
+def test_no_reachable_drift_invocation_can_send_accept(
     tripl_api: FakeInstance,
     configured_env: None,
 ) -> None:
     """The exclusion, asserted on what goes ON THE WIRE.
 
-    ``CLI_ALLOWED_DRIFT_ACTIONS`` has no production consumer - the command picks
-    its action from two literals - so asserting on the constant's own contents
-    would pin a decoration. This drives every flag combination that reaches the
-    action route and reads the action back off the POST body, so the constant is
-    an expectation about behaviour: nothing outside it is ever sent, and
-    everything in it is reachable (the second half is what would catch a
-    "safety" change that quietly made `snooze` unreachable too).
+    ``CLI_ALLOWED_DRIFT_ACTIONS`` has no production consumer - each verb picks
+    its action from a literal - so asserting on the constant's own contents
+    would pin a decoration. This drives every flag combination on BOTH verbs that
+    reach the action route and reads the action back off the POST body, so the
+    constant is an expectation about behaviour: nothing outside it is ever sent,
+    and everything in it is reachable.
+
+    The second half is the half that keeps earning its place. It caught the
+    original "safety change quietly made `snooze` unreachable" case, and it is
+    what catches an action declared in the constant but wired to a verb nobody
+    can reach - the failure mode of adding an action and its command in the same
+    change (tripl-k8j9).
     """
     from tripl_cli.api.event_types import CLI_ALLOWED_DRIFT_ACTIONS
 
@@ -328,6 +333,8 @@ def test_no_reachable_dismiss_invocation_can_send_accept(
         ["--dry-run"],
     ):
         assert main(["drifts", "dismiss", "drift-1", "--project", "prod", "--yes", *extra]) == 0
+    for extra in ([], ["--dry-run"]):
+        assert main(["drifts", "reopen", "drift-1", "--project", "prod", "--yes", *extra]) == 0
 
     sent = [json.loads(request.content)["action"] for request in _posts(tripl_api)]
     assert sent, "no POST was captured; the test proves nothing"
@@ -480,6 +487,193 @@ def test_drifts_dismiss_without_project_exits_usage(
 ) -> None:
     assert main(["drifts", "dismiss", "drift-1", "--yes"]) == 2
     assert not tripl_api.router.calls
+
+
+# --- drifts reopen --------------------------------------------------------
+
+
+def test_drifts_reopen_sends_reopen_and_nothing_else(
+    tripl_api: FakeInstance,
+    configured_env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The body is the action alone.
+
+    Not `{"action": "reopen", "note": null}`: the route distinguishes an OMITTED
+    note from an explicitly null one via `model_fields_set`, and that distinction
+    is the only way to clear a note WITHOUT reopening a drift. Sending the key
+    would spend it for nothing here.
+    """
+    tripl_api.drift_action("prod", "drift-1", make_drift(drift_id="drift-1", status="open"))
+    assert main(["drifts", "reopen", "drift-1", "--project", "prod", "--yes"]) == 0
+    posts = _posts(tripl_api)
+    assert len(posts) == 1
+    assert posts[0].url.path == "/api/v1/projects/prod/event-types/drifts/drift-1/actions"
+    assert json.loads(posts[0].content) == {"action": "reopen"}
+    assert "is now open" in capsys.readouterr().out
+
+
+def test_drifts_reopen_has_no_note_or_snooze_flag(
+    tripl_api: FakeInstance,
+    configured_env: None,
+) -> None:
+    """Both would be flags whose value the server discards.
+
+    `schema_drift_service` sets `resolution_note = None` for this action before it
+    ever looks at the request's note, and clears `snoozed_until` outright. A
+    `--note` here would accept a sentence, send it, report success, and store
+    nothing - and the operator would have no way to tell from the output. So
+    argparse refuses them: exit 2, no socket.
+    """
+    tripl_api.drift_action("prod", "drift-1")
+    for flags in (["--note", "back to open"], ["--snooze-until", "2026-08-04T00:00:00Z"]):
+        with pytest.raises(SystemExit) as exit_info:
+            main(["drifts", "reopen", "drift-1", "--project", "prod", "--yes", *flags])
+        assert exit_info.value.code == 2
+    assert not _posts(tripl_api)
+
+
+def test_drifts_reopen_has_no_accept_option(
+    tripl_api: FakeInstance,
+    configured_env: None,
+) -> None:
+    """The second verb reaching the action route does not become the way in.
+
+    `dismiss` was audited for this the day it shipped; a new verb on the same
+    route is exactly where the exclusion would be lost by omission rather than by
+    decision.
+    """
+    tripl_api.drift_action("prod", "drift-1")
+    for flags in (["--accept"], ["--action", "accept"]):
+        with pytest.raises(SystemExit) as exit_info:
+            main(["drifts", "reopen", "drift-1", "--project", "prod", "--yes", *flags])
+        assert exit_info.value.code == 2
+    assert not _posts(tripl_api)
+
+
+def test_drifts_reopen_prompt_names_what_it_destroys(
+    tripl_api: FakeInstance,
+    configured_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Reopening is not the harmless direction, and the prompt has to say so.
+
+    Dismissing again restores the status but NOT the note or the resolver: those
+    are gone the moment this POST lands. An operator agreeing to "reopen this
+    drift" would reasonably assume otherwise.
+    """
+    monkeypatch.setattr("sys.stdin", _Stdin("no\n", isatty=True))
+    tripl_api.drift_action("prod", "drift-1")
+    assert main(["drifts", "reopen", "drift-1", "--project", "prod"]) == 1
+    assert not _posts(tripl_api)
+    prompt = capsys.readouterr().err
+    assert "DISCARDED" in prompt
+    assert "resolution note" in prompt
+    assert "aborted" in prompt
+
+
+def test_drifts_reopen_without_yes_on_a_non_tty_exits_usage_and_sends_nothing(
+    tripl_api: FakeInstance,
+    configured_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("sys.stdin", _Stdin("", isatty=False))
+    tripl_api.drift_action("prod", "drift-1")
+    assert main(["drifts", "reopen", "drift-1", "--project", "prod"]) == 2
+    assert not _posts(tripl_api)
+    assert "--yes" in capsys.readouterr().err
+
+
+def test_drifts_reopen_dry_run_sends_no_post(
+    tripl_api: FakeInstance,
+    configured_env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tripl_api.drift_action("prod", "drift-1")
+    assert main(["drifts", "reopen", "drift-1", "--project", "prod", "--dry-run", "--json"]) == 0
+    assert not _posts(tripl_api)
+    document = _document(capsys)
+    assert document["command"] == "drifts reopen"
+    assert document["dry_run"] is True
+    assert document["result"] is None
+    assert document["action"] == "reopen"
+    assert document["request"]["body"] == {"action": "reopen"}
+
+
+def test_drifts_reopen_json_document_has_the_same_shape_as_dismiss(
+    tripl_api: FakeInstance,
+    configured_env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """One document shape for the whole write surface, keys and all.
+
+    Both verbs go through `_run_drift_action` for exactly this: a consumer that
+    parses `tripl drifts dismiss --json` must not have to discover that `reopen`
+    answers something else. Every per-command key is present on both, null where
+    it does not apply - the rule `MutationOutcome` states and `scans` follows.
+    """
+    tripl_api.drift_action("prod", "drift-1")
+    assert main(["drifts", "dismiss", "drift-1", "--project", "prod", "--yes", "--json"]) == 0
+    dismissed = _document(capsys)
+    assert main(["drifts", "reopen", "drift-1", "--project", "prod", "--yes", "--json"]) == 0
+    reopened = _document(capsys)
+
+    assert dismissed.keys() == reopened.keys()
+    assert reopened["command"] == "drifts reopen"
+    assert dismissed["command"] == "drifts dismiss"
+    assert reopened["job_id"] is None
+    assert reopened["scan"] is None
+    assert reopened["drift_id"] == "drift-1"
+
+
+def test_drifts_reopen_403_from_a_read_key_exits_one_with_scope_guidance(
+    tripl_api: FakeInstance,
+    configured_env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tripl_api.drift_action("prod", "drift-1", {"detail": "Write scope required"}, status=403)
+    assert main(["drifts", "reopen", "drift-1", "--project", "prod", "--yes"]) == 1
+    assert "tk_r_ keys cannot write" in capsys.readouterr().err
+
+
+def test_drifts_reopen_unknown_drift_id_reports_the_404(
+    tripl_api: FakeInstance,
+    configured_env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tripl_api.drift_action("prod", "nope", {"detail": "Drift not found"}, status=404)
+    assert main(["drifts", "reopen", "nope", "--project", "prod", "--yes"]) == 1
+    assert "Not found (404)" in capsys.readouterr().err
+
+
+def test_drifts_reopen_without_project_exits_usage(
+    tripl_api: FakeInstance,
+    configured_env: None,
+) -> None:
+    """Exit 2 from `require_single_project`, NOT a crash formatting the prompt.
+
+    The prompt names the slug, and the slug is only trustworthy after that check
+    runs - so the sentence is built from what the check returns. Formatting it
+    from `args.project` beforehand raises TypeError here instead, replacing a
+    precise usage error with a traceback.
+    """
+    assert main(["drifts", "reopen", "drift-1", "--yes"]) == 2
+    assert not tripl_api.router.calls
+    assert main(["drifts", "reopen", "drift-1", "--project", "a", "--project", "b", "--yes"]) == 2
+    assert not tripl_api.router.calls
+
+
+def test_drifts_reopen_opens_exactly_one_connection_pool(
+    tripl_api: FakeInstance,
+    configured_env: None,
+    tracking_pool: list[httpx.AsyncClient],
+) -> None:
+    tripl_api.drift_action("prod", "drift-1")
+    assert main(["drifts", "reopen", "drift-1", "--project", "prod", "--yes"]) == 0
+    assert len(tracking_pool) == 1
+    assert tracking_pool[0].is_closed
 
 
 def test_bare_drifts_prints_help_to_stderr_and_exits_usage(

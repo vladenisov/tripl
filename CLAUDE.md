@@ -24,6 +24,8 @@ bd close <id>         # Complete work
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 
+The JSONL exports are **gitignored on purpose**: this repository is public, and the export carries the maintainer's email plus write-ups naming the private production host. Nothing breaks by leaving them out — they are not a source of truth, so `bd` keeps writing them locally and issues keep syncing over `refs/dolt/data`. Do not re-add them.
+
 ## Session Completion
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.

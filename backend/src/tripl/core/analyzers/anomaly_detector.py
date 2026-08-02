@@ -794,7 +794,7 @@ def detect_anomalies(
     # collapses to ~0, so a fixed 1.0 floor turns Poisson jitter (e.g. 10 -> 14)
     # into a 4-sigma flag. The phase path's same-phase MAD was assumed to carry
     # Poisson-scale spread empirically, but low-count seasonal series with few
-    # cycles produce a MAD far below sqrt(N) (real windyapp events flagged a +3
+    # cycles produce a MAD far below sqrt(N) (real production events flagged a +3
     # count wobble every hour), so it now gets the sqrt(N) floor too. High-volume
     # series are unaffected: sqrt(N) sits well below their real spread. The
     # averaged trend path keeps its own relative effect-size gate and is not

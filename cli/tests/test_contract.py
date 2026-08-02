@@ -907,6 +907,125 @@ def test_every_command_and_verb_has_its_own_section() -> None:
     assert not missing, f"cli.md has no section for: {missing}"
 
 
+def test_the_write_safety_section_agrees_with_how_many_mutations_there_are() -> None:
+    """The count of writes, spelled in prose, derived instead of typed.
+
+    Shipping ``drifts reopen`` took the instance from three mutating verbs to
+    four, and the page states "how many" in three separate places. Two went
+    stale in that change and a reviewer caught them (Copilot, PR #79) — "Three
+    verbs do not" sitting directly above a table listing four, and a heading
+    promising ``--dry-run`` "on all three". A third, in the exit-code table,
+    named two of the three prompting writes and no reviewer caught it.
+
+    That is this repository's signature defect wearing a different hat: one
+    fact, spelled once per place it is mentioned. So the number is computed here
+    from what actually posts, and every sentence stating it is rebuilt from that.
+
+    The set is derived TWICE, from independent sources, and the two must agree:
+    the endpoint maps (what the CLI POSTs) and the real parser (a verb carrying
+    both ``--dry-run`` and ``--project``). Either alone could go stale against
+    the code — a map entry for a verb nobody wired, or a verb wired with no
+    entry — and agreeing is what makes the count trustworthy enough to assert
+    prose against. ``install`` and ``upgrade`` carry ``--dry-run`` too and are
+    correctly excluded by both: they act on a directory and the local Docker
+    daemon, never on an instance, which is why they are absent from this table.
+    """
+    from tripl_cli.cli import build_parser
+
+    from_maps = {
+        f"tripl {group} {key}"
+        for group, mapping in (("scans", SCANS_ENDPOINTS), ("drifts", DRIFTS_ENDPOINTS))
+        for key, entries in mapping.items()
+        if any(method == "post" for method, _ in entries)
+    }
+    leaves = _leaf_parsers(build_parser())
+    from_parser = {
+        path
+        for path, parser in leaves.items()
+        if _option(parser, "--dry-run") is not None and _option(parser, "--project") is not None
+    }
+    assert from_maps == from_parser, (
+        "the endpoint maps and the parser disagree about which verbs write:\n"
+        f"  only in the maps:   {sorted(from_maps - from_parser)}\n"
+        f"  only in the parser: {sorted(from_parser - from_maps)}"
+    )
+    assert from_maps, "derived no mutating verbs at all — the derivation is broken, not the docs"
+
+    text = DOCS_PATH.read_text(encoding="utf-8")
+    start = text.index("## Write safety")
+    end = text.index("\n## ", start + 1)
+    section = " ".join(text[start:end].split())
+
+    # Every mutation has a row, and the table has a row for nothing else: a
+    # command listed here but not derivable is a promise the CLI does not keep.
+    rows = {
+        line.split("|")[1].strip().strip("`")
+        for line in text[start:end].splitlines()
+        if line.startswith("| `tripl ")
+    }
+    assert rows == from_maps, (
+        f"the write-safety table lists {sorted(rows)}, but the mutations are {sorted(from_maps)}"
+    )
+
+    counts = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five"}
+    word = counts.get(len(from_maps), str(len(from_maps)))
+    claim = f"**{word} verbs do not**"
+    assert claim in section, f"the write-safety intro does not say {claim!r}"
+    heading = f"### `--dry-run` is on all {word.lower()}"
+    assert heading in text, f"cli.md has no heading {heading!r}"
+
+    # The exit-code table describes the writes in THREE separate clauses, and the
+    # first pass at this test pinned only the one that had already been fixed —
+    # so the other two shipped stale and a reviewer found them (Copilot, PR #79,
+    # second pass). Naming all three is the point: this table is where an
+    # operator checks what a verb's exit code means, and a mutation missing from
+    # a row reads as "that case does not apply to me".
+    #
+    # Each is asserted as a SET read back out of the sentence, not as a rendered
+    # string: the order the verbs are listed in is a null change, and a test that
+    # fails on a reordering is a test people learn to edit rather than read.
+    verbs = {path.removeprefix("tripl ") for path in from_maps}
+    prompting = {
+        path.removeprefix("tripl ")
+        for path in from_maps
+        if _option(leaves[path], "--yes") is not None
+    }
+    flat = " ".join(text.split())
+
+    def named_before(marker: str, opener: str) -> set[str]:
+        """The backticked verbs in the clause ending at ``marker``.
+
+        Bounded by the clause's own opening rather than a character count: the
+        exit-1 sentence names ``scans run`` a few words earlier for an unrelated
+        reason, and a fixed-width lookback swallowed it and read it as a
+        prompting write.
+        """
+        assert marker in flat, f"the exit-code table no longer says {marker!r}"
+        head = flat[: flat.index(marker)]
+        return set(re.findall(r"`([a-z]+ [a-z]+)`", head[head.rindex(opener) :]))
+
+    for label, marker, opener, expected in (
+        ("accepted the write (exit 0)", ": the API accepted the write", ". ", verbs),
+        (
+            "declined at the prompt (exit 1)",
+            " you **declined at the prompt**",
+            ", and a ",
+            prompting,
+        ),
+        (
+            "non-TTY without --yes (exit 2)",
+            " on a non-TTY without `--yes`**",
+            " and **",
+            prompting,
+        ),
+    ):
+        found = named_before(marker, opener)
+        assert found == expected, (
+            f"the exit-code table's {label} clause names {sorted(found)}, "
+            f"but it should name {sorted(expected)}"
+        )
+
+
 def test_the_page_s_closed_claim_about_dismiss_actions_is_still_true() -> None:
     """The other half of the drift-action contract, the half that faces a reader.
 
@@ -917,34 +1036,53 @@ def test_the_page_s_closed_claim_about_dismiss_actions_is_still_true() -> None:
     undiscoverable action is the one an operator reaches for by guessing.
 
     Asserting merely that each allowed action *appears* in the section would be
-    no test at all: the section names ``accept`` and ``reopen`` too, precisely to
-    say they are unavailable, so a substring check passes for an action the page
-    documents as impossible. What the page actually makes is a CLOSED claim —
-    "the only two actions reachable are X and Y" — with the complement named on
-    the other side. Both sentences are rebuilt from the constants here, so
-    moving an action between the tuples breaks whichever sentence went stale.
+    no test at all: the section names ``accept`` too, precisely to say it is
+    unavailable, so a substring check passes for an action the page documents as
+    impossible. What the page actually makes is a CLOSED claim — "the only two
+    actions reachable are X and Y" — with the complement named on the other side.
+    Both sentences are rebuilt from the constants here, so moving an action
+    between the tuples breaks whichever sentence went stale.
+
+    The two sentences read DIFFERENT constants, and that is the point since
+    ``reopen`` became a verb (tripl-k8j9). What ``dismiss`` can send is
+    ``DISMISS_ACTIONS``; what the CLI never sends at all is the complement of
+    ``CLI_ALLOWED_DRIFT_ACTIONS``, which is ``accept`` alone. Reading one
+    constant for both would have the page deny that this CLI can reopen a drift,
+    on the very page documenting the verb that does it.
     """
-    from tripl_cli.api.event_types import CLI_ALLOWED_DRIFT_ACTIONS, DRIFT_ACTIONS
+    from tripl_cli.api.event_types import (
+        CLI_ALLOWED_DRIFT_ACTIONS,
+        DISMISS_ACTIONS,
+        DRIFT_ACTIONS,
+    )
 
     text = DOCS_PATH.read_text(encoding="utf-8")
     start = text.index("### `tripl drifts dismiss`")
+    # Bounded by the next `###`, not the next `##`: `reopen` is a sibling section
+    # now, so stopping at the group boundary would swallow it and let its prose
+    # satisfy a claim made about dismiss.
+    #
     # Whitespace-flattened: both sentences are prose the page wraps at 80
     # columns, and one of them already straddles a line break. Matching the raw
     # text would fail on a rewrap, which is not a change in what the page claims.
-    section = " ".join(text[start : text.index("\n## ", start)].split())
+    section = " ".join(text[start : text.index("\n### ", start + 1)].split())
 
     # Sorted, not tuple order: the constants have no production consumer that
     # reads them positionally, so reordering one is a null change and must not
     # fail CI. Membership is the whole contract.
-    counts = {2: "two", 3: "three", 4: "four"}
-    reachable = " and ".join(f"`{action}`" for action in sorted(CLI_ALLOWED_DRIFT_ACTIONS))
-    count = counts.get(len(CLI_ALLOWED_DRIFT_ACTIONS), str(len(CLI_ALLOWED_DRIFT_ACTIONS)))
+    counts = {1: "one", 2: "two", 3: "three", 4: "four"}
+    reachable = " and ".join(f"`{action}`" for action in sorted(DISMISS_ACTIONS))
+    count = counts.get(len(DISMISS_ACTIONS), str(len(DISMISS_ACTIONS)))
     claim = f"the only {count} actions reachable are {reachable}"
     assert claim in section, f"cli.md's dismiss section does not claim: {claim!r}"
 
     withheld = sorted(set(DRIFT_ACTIONS) - set(CLI_ALLOWED_DRIFT_ACTIONS))
+    assert withheld, "nothing is withheld any more — this test and the page it guards are stale"
+    # `never sends X`, not `X have no spelling here`: the complement is a single
+    # item now that `reopen` ships, and a sentence whose verb must agree with a
+    # count the constants decide is a sentence that breaks on a null change.
     complement = " and ".join(f"`{action}`" for action in withheld)
-    denial = f"{complement} have no spelling here at all"
+    denial = f"never sends {complement}"
     assert denial in section, f"cli.md's dismiss section does not deny: {denial!r}"
 
 

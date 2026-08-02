@@ -1,6 +1,8 @@
 """Release-regression detection for app-version metrics.
 
-Pure functions implementing internal/decisions/app-version-regression-model.md:
+Pure functions implementing the release-regression model. The decision note that
+first specified it was deleted as stale, so the four points below ARE the model
+rather than a summary of one — keep them in step with the code:
 
 1. Maturity gate on share of TOTAL traffic — a release is "active" only once it
    takes real user traffic, which excludes the dev/tester build phase.
@@ -29,7 +31,8 @@ from tripl.services.version_activation import (
     activation_bucket,
 )
 
-# Defaults from the decision note. The activation-gate constants live in
+# Model defaults, now defined here rather than in a note. The activation-gate
+# constants live in
 # ``tripl.services.version_activation`` (the single source of truth shared with
 # the app-version series selection) and are re-exported here for backward
 # compatibility. Promote to ScanConfig columns only if tuning demand appears.
