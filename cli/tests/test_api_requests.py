@@ -154,6 +154,13 @@ def test_semantic_used_reads_an_absent_flag_as_false_rather_than_unknown() -> No
     assert search_api.semantic_used({"items": [], "total": 0}) is False
     assert search_api.semantic_used(None) is False
 
+    # Junk is not the route making the claim, so it reads as False too. Under
+    # bool() the string "false" came out True, which inverts what every score in
+    # the payload means: a low confidence is ordinary under a semantic match and
+    # damning under a substring fallback (Copilot, PR #78).
+    for junk in ("false", "true", 1, 0, [], {}, "yes"):
+        assert search_api.semantic_used({"items": [], "total": 0, "semantic_used": junk}) is False
+
 
 def test_is_untriaged_matrix() -> None:
     now = datetime(2026, 8, 1, tzinfo=UTC)

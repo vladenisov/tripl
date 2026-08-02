@@ -62,5 +62,11 @@ def semantic_used(payload: Any) -> bool:
     Absent reads as False rather than as unknown: the backend declares
     ``SearchResponse.semantic_used: bool = False``, so a body without the key IS
     the route saying the index did not answer.
+
+    Only a real boolean counts, for the same reason. ``bool(value)`` would read
+    the string ``"false"`` — and any other truthy junk — as True, reporting that
+    the semantic index answered when it did not, which inverts what every score
+    in the payload means. Anything that is not a boolean is not the route making
+    that claim, so it takes the same path as absent (Copilot, PR #78).
     """
-    return bool(as_dict(payload).get("semantic_used"))
+    return as_dict(payload).get("semantic_used") is True

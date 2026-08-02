@@ -45,7 +45,11 @@ NUL = "\x00"
 
 
 def strip_nul_bytes(value: Any) -> Any:
-    """Drop U+0000 from a string; see the module docstring for why that is lossless.
+    """Drop U+0000 from a string; see the module docstring for why that is the right call.
+
+    Deliberately NOT described as lossless: for a substring filter it is not, and
+    the paragraph above spells out why it is right anyway. This line used to
+    claim the opposite of the argument it points at (Copilot, PR #78).
 
     Non-strings pass through untouched so pydantic still reports its own type
     error for them, rather than this raising ``AttributeError`` and turning a
