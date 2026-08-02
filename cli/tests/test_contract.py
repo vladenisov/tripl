@@ -907,6 +907,98 @@ def test_every_command_and_verb_has_its_own_section() -> None:
     assert not missing, f"cli.md has no section for: {missing}"
 
 
+def test_the_write_safety_section_agrees_with_how_many_mutations_there_are() -> None:
+    """The count of writes, spelled in prose, derived instead of typed.
+
+    Shipping ``drifts reopen`` took the instance from three mutating verbs to
+    four, and the page states "how many" in three separate places. Two went
+    stale in that change and a reviewer caught them (Copilot, PR #79) — "Three
+    verbs do not" sitting directly above a table listing four, and a heading
+    promising ``--dry-run`` "on all three". A third, in the exit-code table,
+    named two of the three prompting writes and no reviewer caught it.
+
+    That is this repository's signature defect wearing a different hat: one
+    fact, spelled once per place it is mentioned. So the number is computed here
+    from what actually posts, and every sentence stating it is rebuilt from that.
+
+    The set is derived TWICE, from independent sources, and the two must agree:
+    the endpoint maps (what the CLI POSTs) and the real parser (a verb carrying
+    both ``--dry-run`` and ``--project``). Either alone could go stale against
+    the code — a map entry for a verb nobody wired, or a verb wired with no
+    entry — and agreeing is what makes the count trustworthy enough to assert
+    prose against. ``install`` and ``upgrade`` carry ``--dry-run`` too and are
+    correctly excluded by both: they act on a directory and the local Docker
+    daemon, never on an instance, which is why they are absent from this table.
+    """
+    from tripl_cli.cli import build_parser
+
+    from_maps = {
+        f"tripl {group} {key}"
+        for group, mapping in (("scans", SCANS_ENDPOINTS), ("drifts", DRIFTS_ENDPOINTS))
+        for key, entries in mapping.items()
+        if any(method == "post" for method, _ in entries)
+    }
+    leaves = _leaf_parsers(build_parser())
+    from_parser = {
+        path
+        for path, parser in leaves.items()
+        if _option(parser, "--dry-run") is not None and _option(parser, "--project") is not None
+    }
+    assert from_maps == from_parser, (
+        "the endpoint maps and the parser disagree about which verbs write:\n"
+        f"  only in the maps:   {sorted(from_maps - from_parser)}\n"
+        f"  only in the parser: {sorted(from_parser - from_maps)}"
+    )
+    assert from_maps, "derived no mutating verbs at all — the derivation is broken, not the docs"
+
+    text = DOCS_PATH.read_text(encoding="utf-8")
+    start = text.index("## Write safety")
+    end = text.index("\n## ", start + 1)
+    section = " ".join(text[start:end].split())
+
+    # Every mutation has a row, and the table has a row for nothing else: a
+    # command listed here but not derivable is a promise the CLI does not keep.
+    rows = {
+        line.split("|")[1].strip().strip("`")
+        for line in text[start:end].splitlines()
+        if line.startswith("| `tripl ")
+    }
+    assert rows == from_maps, (
+        f"the write-safety table lists {sorted(rows)}, but the mutations are {sorted(from_maps)}"
+    )
+
+    counts = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five"}
+    word = counts.get(len(from_maps), str(len(from_maps)))
+    claim = f"**{word} verbs do not**"
+    assert claim in section, f"the write-safety intro does not say {claim!r}"
+    heading = f"### `--dry-run` is on all {word.lower()}"
+    assert heading in text, f"cli.md has no heading {heading!r}"
+
+    # The exit-code table names the prompting subset, which is every mutation
+    # carrying `--yes`. `scans run` is deliberately not one of them.
+    #
+    # Asserted as a SET read back out of the sentence, not as a rendered string:
+    # the order those verbs are listed in is a null change, and a test that
+    # fails on a reordering is a test people learn to edit rather than read.
+    prompting = {
+        path.removeprefix("tripl ")
+        for path in from_maps
+        if _option(leaves[path], "--yes") is not None
+    }
+    flat = " ".join(text.split())
+    marker = " you **declined at the prompt**"
+    assert marker in flat, "the exit-code table no longer explains a declined prompt"
+    # Bounded by the clause's own opening, not by a character count: the same
+    # sentence names `scans run` a few words earlier for a different reason, and
+    # a fixed-width lookback swallowed it and read it as a prompting write.
+    head = flat[: flat.index(marker)]
+    named = set(re.findall(r"`([a-z]+ [a-z]+)`", head[head.rindex(", and a ") :]))
+    assert named == prompting, (
+        f"the exit-code table names {sorted(named)} as the prompting writes, "
+        f"but they are {sorted(prompting)}"
+    )
+
+
 def test_the_page_s_closed_claim_about_dismiss_actions_is_still_true() -> None:
     """The other half of the drift-action contract, the half that faces a reader.
 
