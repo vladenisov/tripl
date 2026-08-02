@@ -39,14 +39,23 @@ ENDPOINTS: tuple[tuple[str, str], ...] = (
 # The API's own enum (SchemaDriftActionRequest.action), verbatim.
 DRIFT_ACTIONS: tuple[str, ...] = ("accept", "snooze", "false_positive", "reopen")
 
-# What `tripl drifts dismiss` may send. `accept` is EXCLUDED deliberately and
-# permanently: on a `missing_field` drift it reaches
+# What `tripl drifts dismiss` may send, and which one you get is decided by the
+# presence of `--snooze-until`. There is no `--action` flag.
+DISMISS_ACTIONS: tuple[str, ...] = ("false_positive", "snooze")
+
+# `tripl drifts reopen`, a verb of its own rather than a flag on `dismiss`:
+# dismissing and reopening move a drift in opposite directions, and
+# `dismiss --reopen` would name the wrong one (tripl-k8j9).
+REOPEN_ACTION = "reopen"
+
+# Everything the CLI can put on the wire. `accept` is the one exclusion, and it
+# is deliberate and permanent: on a `missing_field` drift it reaches
 # `schema_drift_service._apply_acceptance_to_plan`, which DELETES the
 # FieldDefinition — the exact 2026-07-30 damage doctor's
 # `schema_field_deleted_by_accept` finding exists to report. The tool that
-# reports that damage must not be the easiest way to cause it. `reopen` is left
-# out for want of demand rather than for safety; both stay in the tripl UI.
-CLI_ALLOWED_DRIFT_ACTIONS: tuple[str, ...] = ("false_positive", "snooze")
+# reports that damage must not be the easiest way to cause it, so accepting
+# stays in the tripl UI.
+CLI_ALLOWED_DRIFT_ACTIONS: tuple[str, ...] = (*DISMISS_ACTIONS, REOPEN_ACTION)
 
 # SchemaDriftStatus and SchemaDriftType, verbatim from the OpenAPI document.
 DRIFT_STATUSES: tuple[str, ...] = ("open", "accepted", "snoozed", "false_positive")
@@ -99,6 +108,14 @@ def apply_drift_action(
     Unset members are omitted rather than sent as null, so the server's own
     defaults apply and the request document a ``--dry-run`` prints is the
     smallest true statement of what would be sent.
+
+    ``note`` DOES NOT SURVIVE ``reopen``. ``schema_drift_service`` sets
+    ``resolution_note = None`` for that action before it looks at the request's
+    note at all — a reopened drift has no resolution any more, so it has no note
+    either. Sending one is not an error and not a no-op either: the stored note
+    is cleared regardless, and the one just sent is discarded. Hence no
+    ``--note`` on ``tripl drifts reopen``; a flag whose value the server throws
+    away is worse than an absent one.
     """
     body: JsonDict = {"action": action}
     if note is not None:

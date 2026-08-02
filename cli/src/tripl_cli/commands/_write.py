@@ -1,9 +1,9 @@
 """The write-safety rules, in one place, for the CLI's first mutating commands.
 
 ``doctor``, ``status`` and ``watch`` are all read-only and a ``tk_r_`` key
-suffices for every one of them. ``scans run``, ``scans cancel`` and
-``drifts dismiss`` change the instance, which is a new category and needs rules
-rather than habits (tripl-ey6j.5):
+suffices for every one of them. ``scans run``, ``scans cancel``,
+``drifts dismiss`` and ``drifts reopen`` change the instance, which is a new
+category and needs rules rather than habits (tripl-ey6j.5):
 
 * THE SERVER IS THE AUTHORITY ON SCOPE. The ``tk_r_``/``tk_w_`` prefix is derived
   in ``api_key_service.py`` from the scope's first letter and says NOTHING about

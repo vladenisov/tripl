@@ -917,34 +917,53 @@ def test_the_page_s_closed_claim_about_dismiss_actions_is_still_true() -> None:
     undiscoverable action is the one an operator reaches for by guessing.
 
     Asserting merely that each allowed action *appears* in the section would be
-    no test at all: the section names ``accept`` and ``reopen`` too, precisely to
-    say they are unavailable, so a substring check passes for an action the page
-    documents as impossible. What the page actually makes is a CLOSED claim —
-    "the only two actions reachable are X and Y" — with the complement named on
-    the other side. Both sentences are rebuilt from the constants here, so
-    moving an action between the tuples breaks whichever sentence went stale.
+    no test at all: the section names ``accept`` too, precisely to say it is
+    unavailable, so a substring check passes for an action the page documents as
+    impossible. What the page actually makes is a CLOSED claim — "the only two
+    actions reachable are X and Y" — with the complement named on the other side.
+    Both sentences are rebuilt from the constants here, so moving an action
+    between the tuples breaks whichever sentence went stale.
+
+    The two sentences read DIFFERENT constants, and that is the point since
+    ``reopen`` became a verb (tripl-k8j9). What ``dismiss`` can send is
+    ``DISMISS_ACTIONS``; what the CLI never sends at all is the complement of
+    ``CLI_ALLOWED_DRIFT_ACTIONS``, which is ``accept`` alone. Reading one
+    constant for both would have the page deny that this CLI can reopen a drift,
+    on the very page documenting the verb that does it.
     """
-    from tripl_cli.api.event_types import CLI_ALLOWED_DRIFT_ACTIONS, DRIFT_ACTIONS
+    from tripl_cli.api.event_types import (
+        CLI_ALLOWED_DRIFT_ACTIONS,
+        DISMISS_ACTIONS,
+        DRIFT_ACTIONS,
+    )
 
     text = DOCS_PATH.read_text(encoding="utf-8")
     start = text.index("### `tripl drifts dismiss`")
+    # Bounded by the next `###`, not the next `##`: `reopen` is a sibling section
+    # now, so stopping at the group boundary would swallow it and let its prose
+    # satisfy a claim made about dismiss.
+    #
     # Whitespace-flattened: both sentences are prose the page wraps at 80
     # columns, and one of them already straddles a line break. Matching the raw
     # text would fail on a rewrap, which is not a change in what the page claims.
-    section = " ".join(text[start : text.index("\n## ", start)].split())
+    section = " ".join(text[start : text.index("\n### ", start + 1)].split())
 
     # Sorted, not tuple order: the constants have no production consumer that
     # reads them positionally, so reordering one is a null change and must not
     # fail CI. Membership is the whole contract.
-    counts = {2: "two", 3: "three", 4: "four"}
-    reachable = " and ".join(f"`{action}`" for action in sorted(CLI_ALLOWED_DRIFT_ACTIONS))
-    count = counts.get(len(CLI_ALLOWED_DRIFT_ACTIONS), str(len(CLI_ALLOWED_DRIFT_ACTIONS)))
+    counts = {1: "one", 2: "two", 3: "three", 4: "four"}
+    reachable = " and ".join(f"`{action}`" for action in sorted(DISMISS_ACTIONS))
+    count = counts.get(len(DISMISS_ACTIONS), str(len(DISMISS_ACTIONS)))
     claim = f"the only {count} actions reachable are {reachable}"
     assert claim in section, f"cli.md's dismiss section does not claim: {claim!r}"
 
     withheld = sorted(set(DRIFT_ACTIONS) - set(CLI_ALLOWED_DRIFT_ACTIONS))
+    assert withheld, "nothing is withheld any more — this test and the page it guards are stale"
+    # `never sends X`, not `X have no spelling here`: the complement is a single
+    # item now that `reopen` ships, and a sentence whose verb must agree with a
+    # count the constants decide is a sentence that breaks on a null change.
     complement = " and ".join(f"`{action}`" for action in withheld)
-    denial = f"{complement} have no spelling here at all"
+    denial = f"never sends {complement}"
     assert denial in section, f"cli.md's dismiss section does not deny: {denial!r}"
 
 

@@ -1,4 +1,4 @@
-"""``tripl drifts`` — list schema drifts, and dismiss one.
+"""``tripl drifts`` — list schema drifts, dismiss one, put one back.
 
 Two facts shape this whole module:
 
@@ -11,8 +11,13 @@ Two facts shape this whole module:
   ``schema_drift_service._apply_acceptance_to_plan``, which DELETES the
   FieldDefinition — the exact damage ``doctor``'s ``schema_field_deleted_by_accept``
   finding exists to report. The tool that reports it must not be the easiest way
-  to cause it. ``dismiss`` sends ``false_positive`` or ``snooze``; accepting and
-  reopening stay in the tripl UI (tripl-ey6j.5).
+  to cause it. Accepting stays in the tripl UI (tripl-ey6j.5).
+
+``reopen`` is a VERB, not a flag on ``dismiss``. The two move a drift in
+opposite directions, so ``dismiss --reopen`` would read as its own opposite. It
+prompts for a reason ``dismiss``'s prompt does not share: reopening DISCARDS the
+resolution note and the resolver, so the record of who triaged this drift and
+why is gone, and nothing in the API restores it (tripl-k8j9).
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ import argparse
 import json
 import sys
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 import httpx
@@ -81,17 +87,18 @@ def register(
     parser = subparsers.add_parser(
         "drifts",
         parents=[parent],
-        help="list and dismiss schema drifts",
+        help="list, dismiss and reopen schema drifts",
         description=(
             "Schema drift between a tracking plan and what the warehouse actually carries. "
-            "Listing needs a tk_r_ key; dismissing needs a tk_w_ key backed by an editor or "
-            "owner. Accepting a drift is NOT available here - on a missing_field drift it "
-            "deletes the field definition, so that decision stays in the tripl UI."
+            "Listing needs a tk_r_ key; dismissing and reopening need a tk_w_ key backed by an "
+            "editor or owner. Accepting a drift is NOT available here - on a missing_field "
+            "drift it deletes the field definition, so that decision stays in the tripl UI."
         ),
     )
     verbs = parser.add_subparsers(dest="drifts_command", metavar="<verb>")
     _register_list(verbs, parent)
     _register_dismiss(verbs, parent)
+    _register_reopen(verbs, parent)
     parser.set_defaults(handler=group_help(parser))
 
 
@@ -183,6 +190,31 @@ def _register_dismiss(
     add_json(parser)
     add_timeout(parser)
     parser.set_defaults(handler=run_dismiss)
+
+
+def _register_reopen(
+    verbs: argparse._SubParsersAction[argparse.ArgumentParser],
+    parent: argparse.ArgumentParser,
+) -> None:
+    parser = verbs.add_parser(
+        "reopen",
+        parents=[parent],
+        help="put a dismissed drift back in the untriaged pile (needs a tk_w_ key)",
+        description=(
+            "Undo a dismissal: the drift returns to `open` and to doctor's untriaged count. "
+            "Needs a tk_w_ key backed by an editor or owner. Prompts, because reopening "
+            "DISCARDS the resolution note and the resolver - who dismissed this and why is "
+            "not recoverable afterwards; --yes skips the prompt and is REQUIRED when stdin is "
+            "not a terminal. There is no --note: the API clears the note on reopen whatever "
+            "the request carries."
+        ),
+    )
+    parser.add_argument("drift_id", metavar="<drift-id>", help="the drift to reopen")
+    add_project(parser, single=True)
+    add_write_flags(parser, prompts=True)
+    add_json(parser)
+    add_timeout(parser)
+    parser.set_defaults(handler=run_reopen)
 
 
 def _keep(drift: JsonDict, *, status_filter: str, untriaged: bool) -> bool:
@@ -330,23 +362,42 @@ def run_list(args: argparse.Namespace, config: Config) -> int:
     return EXIT_FAILURE if snapshot.failed else EXIT_OK
 
 
-def run_dismiss(args: argparse.Namespace, config: Config) -> int:
+def _run_drift_action(
+    args: argparse.Namespace,
+    config: Config,
+    *,
+    verb: str,
+    action: str,
+    question: Callable[[str], str],
+    note: str | None = None,
+    snoozed_until: datetime | None = None,
+) -> int:
+    """One POST to the action route, whichever verb asked for it.
+
+    Both verbs prompt, both take ``--dry-run``, both print one line and one
+    optional document, and both are one request. Spelling that twice is how the
+    two drift apart — the shape a ``--json`` consumer parses would then depend on
+    which verb produced it, for no reason it could discover. What differs is the
+    action, the sentence the operator is asked to agree to, and the two optional
+    body members ``dismiss`` alone can set.
+
+    ``question`` takes the slug rather than being a finished string: the slug is
+    only trustworthy AFTER ``require_single_project``, and a caller formatting it
+    beforehand would crash on ``--project`` given zero times or twice — replacing
+    that function's two precise usage errors with a ``TypeError``.
+    """
     slug = require_single_project(args)
     drift_id: str = str(args.drift_id)
-    snooze_until: datetime | None = args.snooze_until
-    note: str | None = args.note
     as_json: bool = bool(args.as_json)
     dry_run: bool = bool(args.dry_run)
     assume_yes: bool = bool(args.assume_yes)
     base_url = require_base_url(config)
+    command = f"drifts {verb}"
     started = time.monotonic()
     generated_at = datetime.now(UTC)
 
-    # `snooze` or `false_positive`, and NEVER `accept` - there is no flag that
-    # reaches it, which is the point (see the module docstring).
-    action = "snooze" if snooze_until is not None else "false_positive"
     request: ApiRequest = event_types_api.apply_drift_action(
-        slug, drift_id, action=action, note=note, snoozed_until=snooze_until
+        slug, drift_id, action=action, note=note, snoozed_until=snoozed_until
     )
 
     async def body(client: httpx.AsyncClient) -> tuple[Reader, JsonDict | None]:
@@ -355,16 +406,12 @@ def run_dismiss(args: argparse.Namespace, config: Config) -> int:
             return reader, None
         # Prompting inside the async body rather than before it: the alternative
         # is a second run_async, which would open a second connection pool.
-        confirm(
-            f"Mark drift {drift_id} of {slug} as {action}? "
-            "It stops appearing in `tripl doctor`'s untriaged count.",
-            assume_yes=assume_yes,
-        )
+        confirm(question(slug), assume_yes=assume_yes)
         return reader, as_dict(await reader.send(request))
 
     reader, result = run_async(config, body, timeout=float(args.timeout))
     outcome = MutationOutcome(
-        command="drifts dismiss",
+        command=command,
         run=Run(
             instance=instance_of(config, base_url, "unknown"),
             generated_at=generated_at,
@@ -380,7 +427,7 @@ def run_dismiss(args: argparse.Namespace, config: Config) -> int:
     )
     human = sys.stderr if as_json else sys.stdout
     print(
-        render_header("drifts dismiss", base_url, config.sources.get("base_url", "unknown")),
+        render_header(command, base_url, config.sources.get("base_url", "unknown")),
         file=human,
     )
     print(file=human)
@@ -389,3 +436,46 @@ def run_dismiss(args: argparse.Namespace, config: Config) -> int:
         json.dump(mutation_document(outcome), sys.stdout)
         sys.stdout.write("\n")
     return EXIT_OK
+
+
+def run_dismiss(args: argparse.Namespace, config: Config) -> int:
+    snooze_until: datetime | None = args.snooze_until
+    # `snooze` or `false_positive`, and NEVER `accept` - there is no flag that
+    # reaches it, which is the point (see the module docstring).
+    action = "snooze" if snooze_until is not None else "false_positive"
+    drift_id = str(args.drift_id)
+    return _run_drift_action(
+        args,
+        config,
+        verb="dismiss",
+        action=action,
+        question=lambda slug: (
+            f"Mark drift {drift_id} of {slug} as {action}? "
+            "It stops appearing in `tripl doctor`'s untriaged count."
+        ),
+        note=args.note,
+        snoozed_until=snooze_until,
+    )
+
+
+def run_reopen(args: argparse.Namespace, config: Config) -> int:
+    """The other direction: back to ``open``, and back into doctor's count.
+
+    No ``note`` is sent, because the API would not keep one — it clears
+    ``resolution_note`` for this action before reading the request's (see
+    ``api.event_types.apply_drift_action``). The prompt says so: the sentence
+    somebody typed when they dismissed this drift is about to be lost, and that
+    is the part of a reopen that cannot be undone by dismissing it again.
+    """
+    drift_id = str(args.drift_id)
+    return _run_drift_action(
+        args,
+        config,
+        verb="reopen",
+        action=event_types_api.REOPEN_ACTION,
+        question=lambda slug: (
+            f"Reopen drift {drift_id} of {slug}? "
+            "Its resolution note and resolver are DISCARDED, and it counts as "
+            "untriaged in `tripl doctor` again."
+        ),
+    )

@@ -517,7 +517,7 @@ def upgrade_document(
 
 
 def mutation_document(outcome: MutationOutcome) -> JsonDict:
-    """``tripl scans run|cancel`` and ``tripl drifts dismiss``.
+    """``tripl scans run|cancel`` and ``tripl drifts dismiss|reopen``.
 
     ``request`` is what WOULD be or WAS sent, method/path/params/body only. Every
     per-command key is present on every mutation, null where it does not apply.
