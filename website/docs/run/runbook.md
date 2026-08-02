@@ -221,7 +221,28 @@ relying on `docker compose ps` health status for the app. `/health`,
 the probe path is always served by the API.
 :::
 
-Worker and beat liveness are best checked from logs and broker state:
+Worker and beat liveness have a dedicated endpoint:
+
+```bash
+curl -s http://localhost:8000/api/v1/system/worker-health   # authenticated
+```
+
+It reports one of four states:
+
+| State | Meaning |
+|---|---|
+| `ok` | A heartbeat landed within the last 3 minutes. |
+| `stale` | The last heartbeat is older than `stale_after_seconds`; `last_heartbeat_at` says when. |
+| `never` | No heartbeat has ever been recorded on this instance. |
+| `unknown` | Liveness cannot be determined — Redis is off or unreachable. Not a failure signal. |
+
+One key covers both processes: `celery-beat` schedules the heartbeat every 60
+seconds and `celery-worker` executes it, so a fresh stamp proves the whole
+pipeline is turning. The app shows a banner on `stale` and `never`, because the
+API and SPA stay perfectly healthy while scans, metric collection, anomaly
+detection and alert delivery are all stopped.
+
+For the underlying detail, the logs are still the place to look:
 
 ```bash
 docker compose logs --tail=50 celery-worker

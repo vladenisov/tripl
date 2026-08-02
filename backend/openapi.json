@@ -17864,6 +17864,46 @@
         ],
         "title": "VariableValueKind",
         "type": "string"
+      },
+      "WorkerHealth": {
+        "description": "Liveness of the async pipeline (celery-beat + celery-worker together).\n\n``unknown`` is a first-class state, not an error: with Redis disabled there\nis nowhere to keep the heartbeat, so the honest answer is \"cannot tell\"\nrather than a false alarm.",
+        "properties": {
+          "last_heartbeat_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the pipeline last proved itself alive; null for never/unknown.",
+            "title": "Last Heartbeat At"
+          },
+          "stale_after_seconds": {
+            "description": "Silence beyond this many seconds is reported as stale.",
+            "title": "Stale After Seconds",
+            "type": "integer"
+          },
+          "state": {
+            "description": "ok \u2014 a heartbeat landed recently; stale \u2014 the last one is older than stale_after_seconds; never \u2014 no heartbeat has ever been seen; unknown \u2014 liveness cannot be determined (Redis is off or unreachable).",
+            "enum": [
+              "ok",
+              "stale",
+              "never",
+              "unknown"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "stale_after_seconds"
+        ],
+        "title": "WorkerHealth",
+        "type": "object"
       }
     }
   },
@@ -29923,6 +29963,28 @@
         "summary": "Test Ai Settings",
         "tags": [
           "settings"
+        ]
+      }
+    },
+    "/api/v1/system/worker-health": {
+      "get": {
+        "description": "Report whether the async pipeline (beat + worker) is alive.\n\nDeliberately not owner-gated: the person watching a scan that never\nfinishes is whoever is on the page, not necessarily an owner.",
+        "operationId": "get_worker_health_api_v1_system_worker_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerHealth"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Worker Health",
+        "tags": [
+          "system"
         ]
       }
     },

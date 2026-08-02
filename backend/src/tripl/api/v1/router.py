@@ -31,6 +31,7 @@ from tripl.api.v1.reconciliation import router as reconciliation_router
 from tripl.api.v1.relations import router as relations_router
 from tripl.api.v1.scans import router as scans_router
 from tripl.api.v1.search import router as search_router
+from tripl.api.v1.system import router as system_router
 from tripl.api.v1.users import router as users_router
 from tripl.api.v1.variables import router as variables_router
 
@@ -60,6 +61,7 @@ router.include_router(variables_router, dependencies=protected_dependencies)
 router.include_router(data_sources_router, dependencies=protected_dependencies)
 router.include_router(scans_router, dependencies=protected_dependencies)
 router.include_router(search_router, dependencies=protected_dependencies)
+router.include_router(system_router, dependencies=protected_dependencies)
 router.include_router(metrics_router, dependencies=protected_dependencies)
 router.include_router(metrics_catalog_router, dependencies=protected_dependencies)
 router.include_router(fact_tables_router, dependencies=protected_dependencies)

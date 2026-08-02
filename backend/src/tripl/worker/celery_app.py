@@ -46,6 +46,14 @@ celery_app.conf.worker_prefetch_multiplier = 1
 celery_app.conf.task_default_retry_delay = 30
 
 celery_app.conf.beat_schedule = {
+    # Liveness stamp for GET /api/v1/system/worker-health. One entry covers both
+    # processes: beat has to schedule it and a worker has to run it, so a fresh
+    # stamp is proof the whole async pipeline is turning. 60s is the cheapest
+    # interval that still lets the API call a 3-minute silence "stale".
+    "worker-heartbeat": {
+        "task": "tripl.worker.tasks.maintenance.worker_heartbeat",
+        "schedule": 60.0,
+    },
     "check-metrics-due": {
         "task": "tripl.worker.tasks.metrics.check_metrics_due",
         # Scans schedule on interval boundaries (15m, 1h, 6h, …), so 5-minute

@@ -17,6 +17,7 @@ import { ErrorState } from '@/components/error-state'
 import { MAIN_CONTENT_ID } from '@/components/landmarks'
 import { TopBar } from '@/components/top-bar'
 import { TweaksPanelProvider } from '@/components/tweaks-panel'
+import { WorkerHealthBanner } from '@/components/WorkerHealthBanner'
 import { DemoBanner } from '@/demo/DemoBanner'
 import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
 import { DemoScenarioStrip } from '@/demo/DemoScenarioStrip'
@@ -314,6 +315,10 @@ export default function Layout() {
                 className="relative min-w-0 flex-1 overflow-y-auto focus:outline-none"
               >
                 <div className="p-3 sm:p-5 lg:p-8">
+                  {/* Above everything: if the async pipeline is dead, nothing
+                      else on the page can be trusted to be current. Silent
+                      unless liveness is provably broken. */}
+                  <WorkerHealthBanner />
                   {/* Persistent demo marker across every surface of a demo
                       project — synthetic/local data, recipe version, freshness,
                       and creator/owner reset + delete controls. */}

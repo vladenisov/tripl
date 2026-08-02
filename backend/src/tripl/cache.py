@@ -232,6 +232,15 @@ def key_projects_list() -> str:
     return "tripl:projects:list"
 
 
+def key_worker_heartbeat() -> str:
+    """Liveness stamp written by the periodic heartbeat task.
+
+    A fresh value proves BOTH halves of the async pipeline: celery-beat
+    scheduled the task and celery-worker executed it.
+    """
+    return "tripl:worker:heartbeat"
+
+
 def key_signals_all(slug: str) -> str:
     return f"tripl:signals:{slug}:all"
 

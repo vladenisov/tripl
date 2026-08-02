@@ -2929,6 +2929,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/worker-health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Worker Health
+         * @description Report whether the async pipeline (beat + worker) is alive.
+         *
+         *     Deliberately not owner-gated: the person watching a scan that never
+         *     finishes is whoever is on the page, not necessarily an owner.
+         */
+        get: operations["get_worker_health_api_v1_system_worker_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users": {
         parameters: {
             query?: never;
@@ -9584,6 +9607,32 @@ export interface components {
          * @enum {string}
          */
         VariableValueKind: "low" | "high";
+        /**
+         * WorkerHealth
+         * @description Liveness of the async pipeline (celery-beat + celery-worker together).
+         *
+         *     ``unknown`` is a first-class state, not an error: with Redis disabled there
+         *     is nowhere to keep the heartbeat, so the honest answer is "cannot tell"
+         *     rather than a false alarm.
+         */
+        WorkerHealth: {
+            /**
+             * Last Heartbeat At
+             * @description When the pipeline last proved itself alive; null for never/unknown.
+             */
+            last_heartbeat_at?: string | null;
+            /**
+             * Stale After Seconds
+             * @description Silence beyond this many seconds is reported as stale.
+             */
+            stale_after_seconds: number;
+            /**
+             * State
+             * @description ok — a heartbeat landed recently; stale — the last one is older than stale_after_seconds; never — no heartbeat has ever been seen; unknown — liveness cannot be determined (Redis is off or unreachable).
+             * @enum {string}
+             */
+            state: "ok" | "stale" | "never" | "unknown";
+        };
     };
     responses: never;
     parameters: never;
@@ -16450,6 +16499,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_worker_health_api_v1_system_worker_health_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerHealth"];
                 };
             };
         };

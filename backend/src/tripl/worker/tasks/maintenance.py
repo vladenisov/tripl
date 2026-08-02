@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
 
+from tripl import cache
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.schema_drift import SchemaDrift
 from tripl.services.schema_drift_service import DRIFT_RETENTION_DAYS
@@ -34,6 +35,28 @@ STRANDED_DELIVERY_MINUTES = 15
 # permanently unreachable broker target) is eventually marked failed instead
 # of being requeued forever.
 MAX_DISPATCH_ATTEMPTS = 5
+# Deliberately longer than worker_health_service's stale threshold: a stopped
+# pipeline should report "stale" together with the time it was last seen, and
+# only decay to "never" once the stamp is old enough to be useless.
+WORKER_HEARTBEAT_TTL_SECONDS = 600
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="tripl.worker.tasks.maintenance.worker_heartbeat",
+)
+def worker_heartbeat() -> dict[str, object]:
+    """Stamp a liveness marker so the API can tell a stopped pipeline from a quiet one.
+
+    The stamp landing at all is the signal: celery-beat had to schedule this
+    task and celery-worker had to execute it, so one key covers both processes.
+    """
+    client = cache.get_sync_client()
+    if client is None:
+        logger.debug("Redis is disabled; skipping the worker heartbeat")
+        return {"written": False, "reason": "redis-disabled"}
+    stamp = datetime.now(UTC).isoformat()
+    client.set(cache.key_worker_heartbeat(), stamp, ex=WORKER_HEARTBEAT_TTL_SECONDS)
+    return {"written": True, "at": stamp}
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]
