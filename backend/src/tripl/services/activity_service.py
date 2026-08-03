@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import desc, func, select
@@ -16,6 +17,7 @@ from tripl.models.alert_rule import AlertRule
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob
@@ -58,7 +60,8 @@ async def _anomaly_items(
             MetricAnomaly.id,
             MetricAnomaly.scan_config_id,
             MetricAnomaly.scope_type,
-            MetricAnomaly.scope_ref,
+            MetricAnomaly.event_id,
+            MetricAnomaly.event_type_id,
             MetricAnomaly.bucket,
             MetricAnomaly.actual_count,
             MetricAnomaly.expected_count,
@@ -125,7 +128,13 @@ async def _anomaly_items(
                     f"{int(row.actual_count):,} actual vs {expected:,} expected · z={z_score:.1f}"
                 ),
                 occurred_at=row.created_at,
-                target_path=_monitoring_path(row.slug, row.scope_type, row.scope_ref),
+                target_path=_monitoring_path(
+                    row.slug,
+                    row.scope_type,
+                    scan_config_id=row.scan_config_id,
+                    event_id=row.event_id,
+                    event_type_id=row.event_type_id,
+                ),
             )
         )
     return items
@@ -242,6 +251,23 @@ async def _event_items(
     slug: str | None,
     limit: int,
 ) -> list[ActivityItemResponse]:
+    """Recent catalog events, restricted to each project's MAIN branch.
+
+    Event is branch-scoped and ``deep_copy_plan_to_branch`` clones every plan
+    entity with fresh ids, so joining on ``project_id`` alone put one copy of
+    each event into the feed per open working branch (tripl-r5ri). Those rows
+    were emitted as ``/p/<slug>/monitoring/event/<id>``, which the detail page
+    resolves against main — so a branch-local id produced a hard 404 rather than
+    a wrong-but-working link, and which copy took the slot was a coin flip: rows
+    seeded in one transaction share an identical ``server_default=now()``
+    ``updated_at``, leaving the ``desc(updated_at), desc(id)`` tiebreak nothing
+    to order by.
+
+    Same defect class as ``metrics_service.get_overview_kpi_series``
+    (tripl-jfm3.77), scoped the same way. The predicate is a join on
+    ``branch_id`` rather than a per-project subquery because this feed also runs
+    unscoped (``slug is None``) across every project at once.
+    """
     stmt = (
         select(
             Event.id,
@@ -256,6 +282,8 @@ async def _event_items(
         )
         .join(Project, Project.id == Event.project_id)
         .join(EventType, EventType.id == Event.event_type_id)
+        .join(PlanBranch, PlanBranch.id == Event.branch_id)
+        .where(PlanBranch.kind == BranchKind.main.value)
         .order_by(desc(Event.updated_at), desc(Event.id))
         .limit(limit)
     )
@@ -305,13 +333,38 @@ def _scope_name(
     return "metric"
 
 
-def _monitoring_path(slug: str, scope_type: str, scope_ref: str) -> str | None:
+def _monitoring_path(
+    slug: str,
+    scope_type: str,
+    *,
+    scan_config_id: uuid.UUID,
+    event_id: uuid.UUID | None,
+    event_type_id: uuid.UUID | None,
+) -> str | None:
+    """Route an anomaly to its monitoring page, or nowhere.
+
+    Built from the FK columns, never from ``scope_ref`` (tripl-r5ri).
+    ``scope_ref`` is an unconstrained ``String(64)`` the detector writes for
+    dedupe keying, whereas ``event_id`` / ``event_type_id`` are real foreign
+    keys declared ``ondelete=SET NULL`` — so deleting an event nulls the FK but
+    leaves its uuid sitting in ``scope_ref``, and routing off the latter emitted
+    a link to a row that no longer exists. A NULL FK means the target is gone:
+    return no path and let the rail render the row without a link.
+
+    No branch predicate is needed here, unlike ``_event_items``. The detector
+    only ever names rows the scan pipeline wrote, and those are on main by
+    construction: the worker's INSERT omits ``branch_id``, so the column default
+    ``plan_branch.default_branch_id`` resolves the project's main branch, and
+    ``event_generator`` narrows its dedup lookup to that branch as well. A
+    branch-local id therefore cannot reach an anomaly the way it reached the
+    event feed.
+    """
     if scope_type == SCOPE_PROJECT_TOTAL:
-        return f"/p/{slug}/monitoring/project-total/{scope_ref}"
+        return f"/p/{slug}/monitoring/project-total/{scan_config_id}"
     if scope_type == SCOPE_EVENT_TYPE:
-        return f"/p/{slug}/monitoring/event-type/{scope_ref}"
+        return f"/p/{slug}/monitoring/event-type/{event_type_id}" if event_type_id else None
     if scope_type == SCOPE_EVENT:
-        return f"/p/{slug}/monitoring/event/{scope_ref}"
+        return f"/p/{slug}/monitoring/event/{event_id}" if event_id else None
     return None
 
 

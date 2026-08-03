@@ -295,7 +295,10 @@ the plan per day on the main branch — not a history of the active-events stat
 beside it) and a plan-coverage stat, a **volume** card charted from a single scan
 config and titled with that config's name, top events over the last 48h summed
 across every scan config, active anomaly signals, recent activity, and source
-health. The volume card and the Events page's "&lt;Tab&gt; Dynamics" chart both
+health. Recent activity reads the **main branch** too, like the KPI series: an
+open working branch holds its own copy of every event, and those copies are not
+listed as separate entries. A row whose target has since been deleted is shown
+without a link rather than linking to a page that no longer resolves. The volume card and the Events page's "&lt;Tab&gt; Dynamics" chart both
 resolve the same default scan config — the most recently *created* one, so
 editing an unrelated scan never re-points them. A new project also shows a **Get started**
 checklist (Plan → Observe → Govern) that ticks steps off automatically from real
