@@ -33,6 +33,13 @@ const PALETTE = [
 ].join('|')
 
 // `text-amber-700`, `dark:bg-rose-500/15`, `hover:border-emerald-400` …
+//
+// The variant-prefix group is optional on purpose, and that is what keeps
+// bracketed variants covered: in `data-[state=open]:bg-amber-500` the prefix
+// matches zero times and `\b` still holds right after the `:`, so the match
+// simply starts at `bg-amber-500`. Verified rather than argued — a probe file
+// carrying `data-[state=open]:bg-amber-500`, `[&_svg]:text-amber-700` and
+// `peer-data-[state=checked]:border-rose-400` is flagged on all three.
 const PALETTE_CLASS = new RegExp(
   String.raw`\b(?:[a-z-]+:)*(?:text|bg|border|ring|fill|stroke|from|via|to|divide|outline|shadow|accent|caret|placeholder|decoration)-(?:${PALETTE})-\d{2,3}\b`,
   'g',
