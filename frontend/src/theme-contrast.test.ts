@@ -5,7 +5,8 @@ import { dirname, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 /**
- * Guards the WCAG AA floor for the text tokens in `index.css` (tripl-jfm3.44).
+ * Guards the WCAG AA floor for the text tokens in `index.css` (tripl-jfm3.44,
+ * extended to the status tones by tripl-zgtu).
  *
  * `--fg-subtle` and `--fg-faint` are not decoration: they carry activity
  * timestamps, chart captions, search placeholders, sidebar section labels and
@@ -13,6 +14,12 @@ import { describe, expect, it } from 'vitest'
  * 4.5:1 at those sizes, so the tokens are pinned by measurement rather than by
  * eye. This test reads the real stylesheet, so drifting a token back down
  * fails here instead of on a phone.
+ *
+ * The status tones are held to the same bar in the hardest place they appear:
+ * `--<tone>` as text on its own `--<tone>-soft` fill. That pairing IS the
+ * status-chip vocabulary (Chip, Dot, Badge, and every `bg-*-soft text-*` call
+ * site), and tinting a surface with the same hue as the text is what eats the
+ * ratio, so it is the case worth pinning.
  */
 
 const AA_BODY = 4.5
@@ -29,6 +36,13 @@ const TEXT_SURFACES = [
 ] as const
 
 const BODY_TEXT_TOKENS = ['--fg', '--fg-muted', '--fg-subtle', '--fg-faint'] as const
+
+// Every tone that carries status *text*. `--<tone>` is the ink, `--<tone>-soft`
+// the fill it sits on. `--accent` is deliberately absent: it is the
+// user-switchable brand hue (five `.accent-*` variants), it is painted as a
+// solid with `--accent-fg` on top rather than as status text, and it is
+// measured separately below. Raising it to this bar is tripl-yx0k.
+const STATUS_TONES = ['success', 'warning', 'danger', 'info'] as const
 
 type Rgb = readonly [number, number, number]
 
@@ -48,30 +62,67 @@ function block(selector: string): string {
   return css.slice(start, end)
 }
 
-/** Read `--token: oklch(L C H)` out of a block body. */
-function oklchToken(body: string, token: string): Rgb {
-  const match = new RegExp(`${token}:\\s*oklch\\(([\\d.]+)\\s+([\\d.]+)\\s+([\\d.]+)\\)`).exec(body)
-  if (!match) throw new Error(`token ${token} is not a plain oklch() triple`)
-  return oklchToSrgb(Number(match[1]), Number(match[2]), Number(match[3]))
+type Oklch = { lightness: number; chroma: number; hueDeg: number; alpha: number }
+
+/** Read `--token: oklch(L C H)` — or `oklch(L C H / A)` — out of a block body. */
+function oklchDecl(body: string, token: string): Oklch {
+  const match = new RegExp(
+    `${token}:\\s*oklch\\(([\\d.]+)\\s+([\\d.]+)\\s+([\\d.]+)(?:\\s*/\\s*([\\d.]+))?\\)`,
+  ).exec(body)
+  if (!match) throw new Error(`token ${token} is not a plain oklch() declaration`)
+  return {
+    lightness: Number(match[1]),
+    chroma: Number(match[2]),
+    hueDeg: Number(match[3]),
+    alpha: match[4] === undefined ? 1 : Number(match[4]),
+  }
 }
 
-/** oklch → oklab → linear sRGB → gamma-encoded sRGB (Björn Ottosson's matrices). */
-function oklchToSrgb(lightness: number, chroma: number, hueDeg: number): Rgb {
+/** The opaque sRGB color of a token, ignoring any alpha it carries. */
+function oklchToken(body: string, token: string): Rgb {
+  const { lightness, chroma, hueDeg } = oklchDecl(body, token)
+  return oklchToSrgb(lightness, chroma, hueDeg)
+}
+
+/** oklch → oklab → linear sRGB (Björn Ottosson's matrices), before any clamp. */
+function oklchToLinearRgb(lightness: number, chroma: number, hueDeg: number): number[] {
   const hue = (hueDeg * Math.PI) / 180
   const a = chroma * Math.cos(hue)
   const b = chroma * Math.sin(hue)
   const l = (lightness + 0.3963377774 * a + 0.2158037573 * b) ** 3
   const m = (lightness - 0.1055613458 * a - 0.0638541728 * b) ** 3
   const s = (lightness - 0.0894841775 * a - 1.291485548 * b) ** 3
-  const linear = [
+  return [
     4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
     -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
     -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
   ]
+}
+
+/** …then gamma-encoded and clamped into 8-bit sRGB. */
+function oklchToSrgb(lightness: number, chroma: number, hueDeg: number): Rgb {
   const encode = (v: number) =>
     v <= 0.0031308 ? 12.92 * v : 1.055 * Math.max(v, 0) ** (1 / 2.4) - 0.055
-  const channels = linear.map((v) => Math.round(Math.min(1, Math.max(0, encode(v))) * 255))
+  const channels = oklchToLinearRgb(lightness, chroma, hueDeg).map((v) =>
+    Math.round(Math.min(1, Math.max(0, encode(v))) * 255),
+  )
   return [channels[0]!, channels[1]!, channels[2]!] as const
+}
+
+/**
+ * Whether a declaration lands inside sRGB. Outside it the browser gamut-maps
+ * (chroma reduction against ΔE-OK), which this file's clamp does not model — so
+ * a ratio measured here for an out-of-gamut color is not the painted one.
+ */
+function isInSrgbGamut({ lightness, chroma, hueDeg }: Oklch): boolean {
+  return oklchToLinearRgb(lightness, chroma, hueDeg).every((v) => v >= -0.0005 && v <= 1.0005)
+}
+
+/** Source-over compositing of a translucent fill onto an opaque surface. */
+function composite(fill: Oklch, surface: Rgb): Rgb {
+  const rgb = oklchToSrgb(fill.lightness, fill.chroma, fill.hueDeg)
+  const mix = (i: number) => Math.round(fill.alpha * rgb[i]! + (1 - fill.alpha) * surface[i]!)
+  return [mix(0), mix(1), mix(2)] as const
 }
 
 function relativeLuminance([r, g, b]: Rgb): number {
@@ -112,6 +163,43 @@ describe.each(THEMES)('$name theme text tokens', ({ body }) => {
     for (let i = 1; i < ratios.length; i += 1) {
       expect(ratios[i]!, `${BODY_TEXT_TOKENS[i]} must be dimmer than ${BODY_TEXT_TOKENS[i - 1]}`)
         .toBeLessThan(ratios[i - 1]!)
+    }
+  })
+})
+
+describe.each(THEMES)('$name theme status tones', ({ body }) => {
+  it.each(STATUS_TONES)(
+    '--%s clears WCAG AA as text on its own soft fill',
+    (tone) => {
+      const ink = oklchToken(body, `--${tone}`)
+      const fill = oklchDecl(body, `--${tone}-soft`)
+      for (const surface of TEXT_SURFACES) {
+        const ratio = contrastRatio(ink, composite(fill, oklchToken(body, surface)))
+        expect(
+          ratio,
+          `--${tone} on --${tone}-soft over ${surface} measured ${ratio.toFixed(2)}:1`,
+        ).toBeGreaterThanOrEqual(AA_BODY)
+      }
+    },
+  )
+
+  // The same ink without the fill: `text-warning` on a plain row is as common
+  // as the chip, and the fill is not what rescues it.
+  it.each(STATUS_TONES)('--%s clears WCAG AA on an untinted surface', (tone) => {
+    const ink = oklchToken(body, `--${tone}`)
+    for (const surface of TEXT_SURFACES) {
+      const ratio = contrastRatio(ink, oklchToken(body, surface))
+      expect(
+        ratio,
+        `--${tone} on ${surface} measured ${ratio.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(AA_BODY)
+    }
+  })
+
+  // Guards the measurement itself rather than the design: see isInSrgbGamut.
+  it.each(STATUS_TONES)('--%s and its soft fill stay inside sRGB', (tone) => {
+    for (const token of [`--${tone}`, `--${tone}-soft`]) {
+      expect(isInSrgbGamut(oklchDecl(body, token)), `${token} is outside sRGB`).toBe(true)
     }
   })
 })

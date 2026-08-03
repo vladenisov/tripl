@@ -40,14 +40,22 @@
   --accent-soft: oklch(0.56 0.14 192 / 0.12);
   --accent-fg: oklch(1 0 0);
 
-  --success: oklch(0.56 0.15 152);
-  --success-soft: oklch(0.56 0.15 152 / 0.12);
-  --warning: oklch(0.65 0.17 65);
-  --warning-soft: oklch(0.65 0.17 65 / 0.14);
-  --danger: oklch(0.58 0.22 22);
-  --danger-soft: oklch(0.58 0.22 22 / 0.12);
-  --info: oklch(0.55 0.16 240);
-  --info-soft: oklch(0.55 0.16 240 / 0.12);
+  /* Status tones. Each `--<tone>` is the TEXT color for its own `--<tone>-soft`
+     fill — that is what Chip, Dot, Badge and every status chip paint — so its
+     lightness is pinned by measurement, like the --fg scale above, and verified
+     by `src/theme-contrast.test.ts`. These used to sit a stop brighter
+     (0.56 / 0.65 / 0.58 / 0.55) and measured 2.65–3.64:1 on their own fill,
+     below the AA floor for the 10–12px chips they carry. Chroma is capped just
+     inside the sRGB gamut so the ratio the test computes is the ratio the
+     browser paints: the old values sat outside it and were gamut-mapped. */
+  --success: oklch(0.485 0.126 152);
+  --success-soft: oklch(0.485 0.126 152 / 0.12);
+  --warning: oklch(0.5 0.111 65);
+  --warning-soft: oklch(0.5 0.111 65 / 0.14);
+  --danger: oklch(0.515 0.205 22);
+  --danger-soft: oklch(0.515 0.205 22 / 0.12);
+  --info: oklch(0.495 0.112 240);
+  --info-soft: oklch(0.495 0.112 240 / 0.12);
 
   /* Identity chip (user initials). Always carries white text in both themes,
      so its lightness is fixed by the AA floor for white-on-blue rather than
@@ -122,12 +130,15 @@
   --accent-soft: oklch(0.72 0.14 192 / 0.14);
   --accent-fg: oklch(0.14 0.01 250);
 
+  /* See the light-theme note: same contract, and the dark values already
+     cleared it — except --danger, whose chroma was outside sRGB (0.22 at this
+     lightness) and left it at 4.49:1 once gamut-mapped. */
   --success: oklch(0.74 0.16 152);
   --success-soft: oklch(0.74 0.16 152 / 0.14);
   --warning: oklch(0.78 0.15 75);
   --warning-soft: oklch(0.78 0.15 75 / 0.14);
-  --danger: oklch(0.68 0.22 22);
-  --danger-soft: oklch(0.68 0.22 22 / 0.14);
+  --danger: oklch(0.68 0.206 22);
+  --danger-soft: oklch(0.68 0.206 22 / 0.14);
   --info: oklch(0.72 0.14 240);
   --info-soft: oklch(0.72 0.14 240 / 0.14);
 

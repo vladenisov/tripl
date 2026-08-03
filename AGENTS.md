@@ -507,6 +507,7 @@ Project-specific expectations:
 - when changing schemas or payloads, update both backend Pydantic models and frontend TS types;
 - if you change alert message variables or formats, update both backend template logic and `ProjectAlertingTab` helper UI;
 - if you change scan or metrics summaries, check any frontend assumptions around `ScanJob.result_summary`.
+- style status colour with the tone tokens — `bg-<tone>-soft` + `text-<tone>` (success/warning/danger/info), or `<Chip tone>` / `<Badge variant>` — never a raw Tailwind shade like `text-amber-700`. Each `--<tone>` is pinned as the AA-safe ink for its own soft fill in *both* themes, so it needs no `dark:` twin; `frontend/src/theme-contrast.test.ts` measures it and `frontend/src/raw-palette.test.ts` fails the build if a raw shade reappears.
 - **update the docs when you change files**: any change to behavior, the HTTP API, config/env, or a user-facing feature must update the documentation site under `website/docs/` in the SAME change; regenerate the OpenAPI spec with `./bin/dump-openapi.sh` when the HTTP API changed.
 
 Operational assumptions to preserve unless intentionally changing them:

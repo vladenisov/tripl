@@ -11,9 +11,9 @@ import { Label } from '@/components/ui/label'
 import { formatTimestamp } from '@/lib/datetime'
 
 const ACTION_TONE: Record<string, string> = {
-  create: 'bg-emerald-500/15 text-emerald-700',
-  update: 'bg-amber-500/15 text-amber-700',
-  delete: 'bg-rose-500/15 text-rose-700',
+  create: 'bg-success-soft text-success',
+  update: 'bg-warning-soft text-warning',
+  delete: 'bg-danger-soft text-danger',
 }
 
 /**

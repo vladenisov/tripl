@@ -14,12 +14,12 @@ const badgeVariants = cva(
         destructive:
           "border-transparent bg-destructive text-destructive-foreground [a&]:hover:bg-destructive/90",
         outline: "text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
-        success:
-          "border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
-        warning:
-          "border-transparent bg-amber-500/15 text-amber-700 dark:text-amber-400",
-        info:
-          "border-transparent bg-sky-500/15 text-sky-700 dark:text-sky-400",
+        // Tone tokens, not palette shades: `--success` is pinned as the AA-safe
+        // ink for its own `--success-soft` fill in BOTH themes, so these need no
+        // `dark:` twin to hand-maintain (src/theme-contrast.test.ts).
+        success: "border-transparent bg-success-soft text-success",
+        warning: "border-transparent bg-warning-soft text-warning",
+        info: "border-transparent bg-info-soft text-info",
       },
     },
     defaultVariants: {

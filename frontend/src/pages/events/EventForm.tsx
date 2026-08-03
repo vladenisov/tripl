@@ -168,7 +168,7 @@ function FieldTemplateHints({ value, variables }: { value: string; variables: Va
   return (
     <div className="mt-1 space-y-1">
       {unknown.map(({ token }) => (
-        <p key={token} className="text-xs text-amber-600">Unknown variable token: {token}</p>
+        <p key={token} className="text-xs text-warning">Unknown variable token: {token}</p>
       ))}
       {documented.map(variable => (
         <div key={variable.id} className="flex flex-wrap items-center gap-1">
@@ -513,7 +513,7 @@ export function EventForm({
               aria-readonly={!!generatedName}
             />
             {generatedName && generatedName.missing.length > 0 && (
-              <p className="mt-1 text-xs text-amber-600">
+              <p className="mt-1 text-xs text-warning">
                 Fill field values for: {generatedName.missing.join(', ')}
               </p>
             )}

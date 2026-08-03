@@ -40,8 +40,8 @@ export function EventValueDriftPanel({ slug, eventId }: { slug: string; eventId:
   }
 
   return (
-    <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
-      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-600">
+    <div className="rounded-md border border-warning/40 bg-warning-soft p-3">
+      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-warning">
         Value drift — observed values outside the documented lists
       </div>
       <ul className="space-y-1.5">
@@ -57,7 +57,7 @@ export function EventValueDriftPanel({ slug, eventId }: { slug: string; eventId:
                 </div>
                 <div className="mt-0.5 flex flex-wrap gap-1">
                   {drift.observed_values.map(value => (
-                    <span key={value} className="rounded border border-amber-500/40 px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
+                    <span key={value} className="rounded border border-warning/40 px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
                   ))}
                 </div>
               </div>

@@ -800,7 +800,7 @@ export default function MonitoringDetailPage() {
   })()
   const latestSignal = metrics?.latest_signal
   const latestSignalBadgeClassName = latestSignal?.state === 'recent'
-    ? 'gap-1 border-amber-500/60 bg-amber-400/15 text-amber-800'
+    ? 'gap-1 border-warning/50 bg-warning-soft text-warning'
     : 'gap-1'
   const latestSignalLabel = latestSignal
     ? `${latestSignal.state === 'recent' ? 'Recent' : 'Latest scan'} ${latestSignal.direction === 'drop' ? 'drop' : 'spike'} anomaly`
@@ -1473,7 +1473,7 @@ export default function MonitoringDetailPage() {
                             variant="outline"
                             className={anomaly.direction === 'drop'
                               ? 'border-destructive/50 text-destructive'
-                              : 'border-amber-500/60 text-amber-800'}
+                              : 'border-warning/50 text-warning'}
                           >
                             {series.is_other ? 'Other' : (series.breakdown_value || '(empty)')}
                             {' share '}{anomaly.direction}:{' '}
@@ -1737,8 +1737,8 @@ function formatPercent(value: number) {
 
 function driftBandClassName(band: DistributionDriftBand) {
   if (band === 'significant') return 'border-destructive/60 bg-destructive/10 text-destructive'
-  if (band === 'minor') return 'border-amber-500/60 bg-amber-400/15 text-amber-800'
-  return 'border-emerald-500/50 bg-emerald-400/10 text-emerald-800'
+  if (band === 'minor') return 'border-warning/50 bg-warning-soft text-warning'
+  return 'border-success/40 bg-success-soft text-success'
 }
 
 function DistributionShareBar({

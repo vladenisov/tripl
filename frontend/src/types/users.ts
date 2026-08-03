@@ -1,8 +1,12 @@
 export type Role = 'owner' | 'editor' | 'viewer'
 
+// Role is a category, not a status, so the tones here are read as hues rather
+// than as verdicts. Owner takes `warning` because it is the one role that can
+// delete a project; editor keeps the blue it always had (`info` is the same
+// hue family as the sky shade it replaces); viewer stays neutral.
 export const ROLE_OPTIONS: { value: Role; label: string; chip: string }[] = [
-  { value: 'owner', label: 'Owner', chip: 'bg-violet-500/15 text-violet-700' },
-  { value: 'editor', label: 'Editor', chip: 'bg-sky-500/15 text-sky-700' },
+  { value: 'owner', label: 'Owner', chip: 'bg-warning-soft text-warning' },
+  { value: 'editor', label: 'Editor', chip: 'bg-info-soft text-info' },
   { value: 'viewer', label: 'Viewer', chip: 'bg-muted text-muted-foreground' },
 ]
 

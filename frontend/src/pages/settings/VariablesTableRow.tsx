@@ -69,7 +69,7 @@ function VariablesTableRowImpl({
             {typeLabel}
           </span>
           {driftCount > 0 && (
-            <span className="rounded border border-amber-500/50 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600" title="Observed values outside the documented list">
+            <span className="rounded border border-warning/40 bg-warning-soft px-1.5 py-0.5 text-[10px] font-medium text-warning" title="Observed values outside the documented list">
               {driftCount} drift{driftCount === 1 ? '' : 's'}
             </span>
           )}
@@ -148,7 +148,7 @@ function VariablesTableRowImpl({
               <Pencil className="h-3 w-3" aria-hidden="true" />
             </Button>
           </ScenarioCoachMark>
-          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-amber-600" aria-label={`Exclude variable ${variable.name} from scans`} onClick={() => onExclude(variable)}>
+          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-warning" aria-label={`Exclude variable ${variable.name} from scans`} onClick={() => onExclude(variable)}>
             <Ban className="h-3 w-3" aria-hidden="true" />
           </Button>
           <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete variable ${variable.name}`} onClick={() => onDelete(variable)}>

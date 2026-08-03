@@ -136,11 +136,15 @@ export function getSignalTone(signal: MonitoringSignal) {
     }
   }
 
+  // Soft fill rather than the solid amber this used to paint: the tone token
+  // is the AA-safe ink for its own fill in both themes, whereas a solid needs a
+  // foreground that flips with the theme. It also keeps the louder solid
+  // treatment above exclusive to the latest scan, which is the urgent one.
   return {
-    compact: 'text-amber-500',
-    regular: 'bg-amber-400 text-amber-950 ring-1 ring-amber-500/70',
+    compact: 'text-warning',
+    regular: 'bg-warning-soft text-warning ring-1 ring-warning/40',
     button: 'outline' as const,
-    buttonClassName: 'border-amber-500/60 bg-amber-400/15 text-amber-800 hover:bg-amber-400/20',
+    buttonClassName: 'border-warning/50 bg-warning-soft text-warning hover:bg-warning/20',
     title: 'Open recent anomaly',
   }
 }

@@ -46,9 +46,9 @@ function renderTemplateValue(value: string, variables?: Variable[]): ReactNode {
   return parts.map((part, i) =>
     part.token ? (
       part.known === false ? (
-        // Amber = the ${token} resolves to no variable (name, source_name or
-        // binding) — it will never receive observed values.
-        <span key={i} className="mono text-amber-600" title="Unknown variable token">
+        // Warning tone = the ${token} resolves to no variable (name,
+        // source_name or binding) — it will never receive observed values.
+        <span key={i} className="mono text-warning" title="Unknown variable token">
           {part.text}
         </span>
       ) : (

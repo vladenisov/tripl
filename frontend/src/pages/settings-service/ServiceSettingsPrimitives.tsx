@@ -27,7 +27,7 @@ export function StatusBadge({ active, label }: { active: boolean; label: string 
     <span
       className={
         active
-          ? 'inline-flex items-center gap-1 text-xs text-emerald-600'
+          ? 'inline-flex items-center gap-1 text-xs text-success'
           : 'inline-flex items-center gap-1 text-xs text-muted-foreground'
       }
     >

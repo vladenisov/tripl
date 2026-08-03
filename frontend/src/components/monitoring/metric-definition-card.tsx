@@ -559,7 +559,7 @@ function MetricSchedule({ definition }: { definition: MetricDefinitionDetailResp
     return <span className="text-xs text-muted-foreground">Not scheduled</span>
   }
   if (definition.collection_due) {
-    return <span className="text-xs font-medium text-amber-700">Due now</span>
+    return <span className="text-xs font-medium text-warning">Due now</span>
   }
   if (definition.next_collection_at) {
     return (
