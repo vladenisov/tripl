@@ -87,7 +87,7 @@ export function EventDriftBadge({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="inline-flex h-4 items-center gap-0.5 rounded-sm bg-amber-400/15 px-1.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 hover:bg-amber-400/25"
+          className="inline-flex h-4 items-center gap-0.5 rounded-sm bg-warning-soft px-1.5 text-[10px] font-semibold uppercase tracking-wide text-warning hover:bg-warning/25"
           aria-label={`${count} schema drift${count === 1 ? '' : 's'} on this event type`}
           title="Schema drift detected"
         >

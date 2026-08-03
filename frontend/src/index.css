@@ -35,24 +35,32 @@
   --border-strong: oklch(0.82 0.008 250);
   --border-subtle: oklch(0.94 0.004 250);
 
-  --accent: oklch(0.56 0.14 192);
-  --accent-hover: oklch(0.52 0.15 192);
-  --accent-soft: oklch(0.56 0.14 192 / 0.12);
+  --accent: oklch(0.49 0.083 192);
+  --accent-hover: oklch(0.45 0.077 192);
+  --accent-soft: oklch(0.49 0.083 192 / 0.12);
   --accent-fg: oklch(1 0 0);
 
-  --success: oklch(0.56 0.15 152);
-  --success-soft: oklch(0.56 0.15 152 / 0.12);
-  --warning: oklch(0.65 0.17 65);
-  --warning-soft: oklch(0.65 0.17 65 / 0.14);
-  --danger: oklch(0.58 0.22 22);
-  --danger-soft: oklch(0.58 0.22 22 / 0.12);
-  --info: oklch(0.55 0.16 240);
-  --info-soft: oklch(0.55 0.16 240 / 0.12);
+  /* Status tones. Each `--<tone>` is the TEXT color for its own `--<tone>-soft`
+     fill — that is what Chip, Dot, Badge and every status chip paint — so its
+     lightness is pinned by measurement, like the --fg scale above, and verified
+     by `src/theme-contrast.test.ts`. These used to sit a stop brighter
+     (0.56 / 0.65 / 0.58 / 0.55) and measured 2.65–3.64:1 on their own fill,
+     below the AA floor for the 10–12px chips they carry. Chroma is capped just
+     inside the sRGB gamut so the ratio the test computes is the ratio the
+     browser paints: the old values sat outside it and were gamut-mapped. */
+  --success: oklch(0.485 0.126 152);
+  --success-soft: oklch(0.485 0.126 152 / 0.12);
+  --warning: oklch(0.5 0.111 65);
+  --warning-soft: oklch(0.5 0.111 65 / 0.14);
+  --danger: oklch(0.515 0.205 22);
+  --danger-soft: oklch(0.515 0.205 22 / 0.12);
+  --info: oklch(0.495 0.112 240);
+  --info-soft: oklch(0.495 0.112 240 / 0.12);
 
   /* Identity chip (user initials). Always carries white text in both themes,
      so its lightness is fixed by the AA floor for white-on-blue rather than
      following the surface scale. */
-  --avatar-bg: oklch(0.52 0.14 240);
+  --avatar-bg: oklch(0.52 0.118 240);
 
   --row-h: 36px;
   --header-h: 44px;
@@ -117,19 +125,30 @@
   --border-strong: oklch(0.34 0.015 250);
   --border-subtle: oklch(0.21 0.012 250);
 
-  --accent: oklch(0.72 0.14 192);
-  --accent-hover: oklch(0.76 0.14 192);
-  --accent-soft: oklch(0.72 0.14 192 / 0.14);
+  --accent: oklch(0.72 0.122 192);
+  --accent-hover: oklch(0.76 0.129 192);
+  --accent-soft: oklch(0.72 0.122 192 / 0.14);
   --accent-fg: oklch(0.14 0.01 250);
 
+  /* See the light-theme note: same contract, and the dark values already
+     cleared it — except --danger, whose chroma was outside sRGB (0.22 at this
+     lightness) and left it at 4.49:1 once gamut-mapped. */
   --success: oklch(0.74 0.16 152);
   --success-soft: oklch(0.74 0.16 152 / 0.14);
   --warning: oklch(0.78 0.15 75);
   --warning-soft: oklch(0.78 0.15 75 / 0.14);
-  --danger: oklch(0.68 0.22 22);
-  --danger-soft: oklch(0.68 0.22 22 / 0.14);
+  --danger: oklch(0.68 0.206 22);
+  --danger-soft: oklch(0.68 0.206 22 / 0.14);
   --info: oklch(0.72 0.14 240);
   --info-soft: oklch(0.72 0.14 240 / 0.14);
+
+  /* The destructive button's label, flipped for this theme (tripl-ds9m).
+     `--destructive` is `--danger`, and --danger has to stay light here to work
+     as status text on --danger-soft — which leaves a bright red fill that white
+     cannot sit on (3.03:1). Dark ink on it reads 6.30:1. Same ink and the same
+     reason as --accent-fg above; the light theme keeps its near-white, where
+     the fill is dark enough (6.00:1). */
+  --destructive-foreground: oklch(0.14 0.01 250);
 
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.28);
   --shadow-md: 0 4px 14px rgb(0 0 0 / 0.32);
@@ -137,20 +156,20 @@
 }
 
 /* accent variants (applied to <html>) */
-.accent-teal { --accent: oklch(0.56 0.14 192); --accent-hover: oklch(0.52 0.15 192); --accent-soft: oklch(0.56 0.14 192 / 0.12); --accent-fg: oklch(1 0 0); }
-.dark.accent-teal { --accent: oklch(0.72 0.14 192); --accent-hover: oklch(0.76 0.14 192); --accent-soft: oklch(0.72 0.14 192 / 0.14); --accent-fg: oklch(0.14 0.01 250); }
+.accent-teal { --accent: oklch(0.49 0.083 192); --accent-hover: oklch(0.45 0.077 192); --accent-soft: oklch(0.49 0.083 192 / 0.12); --accent-fg: oklch(1 0 0); }
+.dark.accent-teal { --accent: oklch(0.72 0.122 192); --accent-hover: oklch(0.76 0.129 192); --accent-soft: oklch(0.72 0.122 192 / 0.14); --accent-fg: oklch(0.14 0.01 250); }
 
-.accent-violet { --accent: oklch(0.55 0.18 290); --accent-hover: oklch(0.50 0.19 290); --accent-soft: oklch(0.55 0.18 290 / 0.12); --accent-fg: oklch(1 0 0); }
-.dark.accent-violet { --accent: oklch(0.72 0.16 290); --accent-hover: oklch(0.76 0.16 290); --accent-soft: oklch(0.72 0.16 290 / 0.14); --accent-fg: oklch(0.14 0.01 250); }
+.accent-violet { --accent: oklch(0.52 0.18 290); --accent-hover: oklch(0.47 0.19 290); --accent-soft: oklch(0.52 0.18 290 / 0.12); --accent-fg: oklch(1 0 0); }
+.dark.accent-violet { --accent: oklch(0.72 0.155 290); --accent-hover: oklch(0.76 0.13 290); --accent-soft: oklch(0.72 0.155 290 / 0.14); --accent-fg: oklch(0.14 0.01 250); }
 
-.accent-lime { --accent: oklch(0.62 0.18 130); --accent-hover: oklch(0.58 0.18 130); --accent-soft: oklch(0.62 0.18 130 / 0.14); --accent-fg: oklch(1 0 0); }
+.accent-lime { --accent: oklch(0.485 0.129 130); --accent-hover: oklch(0.445 0.119 130); --accent-soft: oklch(0.485 0.129 130 / 0.14); --accent-fg: oklch(1 0 0); }
 .dark.accent-lime { --accent: oklch(0.82 0.18 130); --accent-hover: oklch(0.85 0.18 130); --accent-soft: oklch(0.82 0.18 130 / 0.16); --accent-fg: oklch(0.14 0.01 250); }
 
-.accent-amber { --accent: oklch(0.64 0.17 65); --accent-hover: oklch(0.60 0.18 65); --accent-soft: oklch(0.64 0.17 65 / 0.14); --accent-fg: oklch(1 0 0); }
+.accent-amber { --accent: oklch(0.5 0.111 65); --accent-hover: oklch(0.46 0.102 65); --accent-soft: oklch(0.5 0.111 65 / 0.14); --accent-fg: oklch(1 0 0); }
 .dark.accent-amber { --accent: oklch(0.78 0.15 75); --accent-hover: oklch(0.82 0.15 75); --accent-soft: oklch(0.78 0.15 75 / 0.16); --accent-fg: oklch(0.14 0.01 250); }
 
-.accent-rose { --accent: oklch(0.60 0.19 15); --accent-hover: oklch(0.55 0.20 15); --accent-soft: oklch(0.60 0.19 15 / 0.12); --accent-fg: oklch(1 0 0); }
-.dark.accent-rose { --accent: oklch(0.74 0.17 15); --accent-hover: oklch(0.78 0.17 15); --accent-soft: oklch(0.74 0.17 15 / 0.16); --accent-fg: oklch(0.14 0.01 250); }
+.accent-rose { --accent: oklch(0.515 0.19 15); --accent-hover: oklch(0.465 0.184 15); --accent-soft: oklch(0.515 0.19 15 / 0.12); --accent-fg: oklch(1 0 0); }
+.dark.accent-rose { --accent: oklch(0.74 0.158 15); --accent-hover: oklch(0.78 0.128 15); --accent-soft: oklch(0.74 0.158 15 / 0.16); --accent-fg: oklch(0.14 0.01 250); }
 
 /* density */
 .density-compact { --row-h: 28px; }

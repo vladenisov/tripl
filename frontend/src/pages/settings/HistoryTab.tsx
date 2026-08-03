@@ -24,9 +24,9 @@ import { getErrorMessage } from '@/lib/utils'
 import { formatDateTime } from '@/lib/datetime'
 
 const KIND_TONE: Record<PlanDiffEntry['kind'], { label: string; chip: string }> = {
-  added: { label: 'added', chip: 'bg-emerald-500/15 text-emerald-700' },
-  removed: { label: 'removed', chip: 'bg-rose-500/15 text-rose-700' },
-  changed: { label: 'changed', chip: 'bg-amber-500/15 text-amber-700' },
+  added: { label: 'added', chip: 'bg-success-soft text-success' },
+  removed: { label: 'removed', chip: 'bg-danger-soft text-danger' },
+  changed: { label: 'changed', chip: 'bg-warning-soft text-warning' },
 }
 
 const ENTITY_LABEL: Record<PlanDiffEntry['entity_type'], string> = {

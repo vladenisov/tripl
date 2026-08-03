@@ -345,7 +345,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   <TableCell>
                     <SensitivityChip value={mf.sensitivity} />
                   </TableCell>
-                  <TableCell>{mf.is_required ? <span className="text-green-600 font-medium text-xs">✓</span> : <span className="text-muted-foreground">—</span>}</TableCell>
+                  <TableCell>{mf.is_required ? <span className="text-success font-medium text-xs">✓</span> : <span className="text-muted-foreground">—</span>}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{mf.default_value ?? '—'}</TableCell>
                   <TableCell>
                     <div className="flex gap-1 justify-end">

@@ -198,8 +198,8 @@ describe('EventRow template token rendering', () => {
       },
     )
 
-    expect(screen.getByText('${variant}')).not.toHaveClass('text-amber-600')
-    expect(screen.getByText('${missing}')).toHaveClass('text-amber-600')
+    expect(screen.getByText('${variant}')).not.toHaveClass('text-warning')
+    expect(screen.getByText('${missing}')).toHaveClass('text-warning')
   })
 })
 

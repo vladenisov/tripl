@@ -152,8 +152,8 @@ function TopMoverRow({
           className={cn(
             'inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 font-medium',
             item.direction === 'spike'
-              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-              : 'bg-rose-500/15 text-rose-700 dark:text-rose-300',
+              ? 'bg-success-soft text-success'
+              : 'bg-danger-soft text-danger',
           )}
         >
           <Icon aria-hidden="true" className="h-3 w-3" />

@@ -507,6 +507,7 @@ Project-specific expectations:
 - when changing schemas or payloads, update both backend Pydantic models and frontend TS types;
 - if you change alert message variables or formats, update both backend template logic and `ProjectAlertingTab` helper UI;
 - if you change scan or metrics summaries, check any frontend assumptions around `ScanJob.result_summary`.
+- style status colour with the tone tokens — `bg-<tone>-soft` + `text-<tone>` (success/warning/danger/info), or `<Chip tone>` / `<Badge variant>` — never a raw Tailwind shade like `text-amber-700`. Each `--<tone>` is pinned as the AA-safe ink for its own soft fill in *both* themes, so it needs no `dark:` twin; `frontend/src/theme-contrast.test.ts` measures it and `frontend/src/raw-palette.test.ts` fails the build if a raw shade reappears.
 - **update the docs when you change files**: any change to behavior, the HTTP API, config/env, or a user-facing feature must update the documentation site under `website/docs/` in the SAME change; regenerate the OpenAPI spec with `./bin/dump-openapi.sh` when the HTTP API changed.
 
 Operational assumptions to preserve unless intentionally changing them:
@@ -652,6 +653,25 @@ Always call out:
 - metrics or anomaly semantics changes;
 - alerting channel/template changes;
 - environment variable changes.
+
+**After opening a PR, wait for the Copilot review and answer it — the PR is not
+done when the branch is pushed.** Copilot posts an automatic review within a few
+minutes of `gh pr create`; read it with
+`gh api repos/vladenisov/tripl/pulls/<n>/comments`, since `gh pr view` shows only
+the summary and hides the inline comments where the substance is. It has caught
+real defects here more than once (stale counts in `website/docs/run/cli.md` on
+#79, twice in a row). Treat every point as a claim to verify, not an instruction
+to obey: check it against the code, then either fix it or reply with the evidence
+that it is wrong — an unanswered comment reads as an accepted one. Also wait for
+CI (`gh pr checks <n>`) before calling the work finished; poll it with
+`until ! gh pr checks <n> 2>&1 | grep -q pending; do sleep 30; done`.
+
+Copilot reviews **once, when the PR opens**. Commits pushed afterwards are not
+re-reviewed, and the re-review cannot be requested from the CLI — the bot is not
+a collaborator (`requested_reviewers` returns 422) and this schema has no
+`CAN_BE_REVIEWER` suggested-actor filter. Either land the substance before
+opening the PR, or re-request the review from the PR page and say in the thread
+what the later commits changed.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
 ## Beads Issue Tracker
