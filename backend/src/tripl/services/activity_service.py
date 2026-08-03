@@ -267,6 +267,15 @@ async def _event_items(
     (tripl-jfm3.77), scoped the same way. The predicate is a join on
     ``branch_id`` rather than a per-project subquery because this feed also runs
     unscoped (``slug is None``) across every project at once.
+
+    ``PlanBranch.project_id == Event.project_id`` is part of the join, not
+    decoration: ``events.branch_id`` is only an FK to ``plan_branches.id``, with
+    nothing at the schema level tying the two to the same project, so
+    ``kind == main`` alone would also accept ANOTHER project's main branch. No
+    write path can produce that today — the API validates the override in
+    ``resolve_branch_id`` and the column default derives the branch from the
+    row's own ``project_id`` — but the pair is what "this project's main branch"
+    actually means, and it is free here since Project is already joined.
     """
     stmt = (
         select(
@@ -282,7 +291,10 @@ async def _event_items(
         )
         .join(Project, Project.id == Event.project_id)
         .join(EventType, EventType.id == Event.event_type_id)
-        .join(PlanBranch, PlanBranch.id == Event.branch_id)
+        .join(
+            PlanBranch,
+            (PlanBranch.id == Event.branch_id) & (PlanBranch.project_id == Event.project_id),
+        )
         .where(PlanBranch.kind == BranchKind.main.value)
         .order_by(desc(Event.updated_at), desc(Event.id))
         .limit(limit)

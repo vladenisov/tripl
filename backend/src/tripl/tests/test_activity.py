@@ -3,9 +3,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select, update
 
 from tripl.models.alert_delivery import AlertDelivery
+from tripl.models.event import Event
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.plan_branch import BranchKind, PlanBranch
+from tripl.models.project import Project
 from tripl.models.scan_job import ScanJob
 from tripl.services.activity_service import _scan_job_detail
 from tripl.tests.conftest import TestSessionLocal
@@ -452,6 +456,53 @@ async def test_an_anomaly_whose_event_was_deleted_links_nowhere_rather_than_to_a
 
     assert len(anomaly_items) == 1, "the anomaly still belongs in the feed"
     assert anomaly_items[0]["target_path"] is None
+
+
+@pytest.mark.asyncio
+async def test_another_projects_main_branch_does_not_satisfy_the_main_branch_filter(
+    client: AsyncClient,
+):
+    """ "Main" means main OF THIS PROJECT, and the join has to say so.
+
+    ``events.branch_id`` is an FK to ``plan_branches.id`` with nothing at the
+    schema level tying the two to the same project, so a filter on
+    ``kind == main`` alone would also accept a different project's main branch.
+    No write path can produce that today — the API validates the override in
+    ``resolve_branch_id``, the column default derives the branch from the row's
+    own ``project_id`` — so the state is seeded directly, which is the only way
+    to hold the invariant the join now expresses.
+    """
+    await client.post("/api/v1/projects", json={"name": "Rail Host", "slug": "rail-host"})
+    await client.post("/api/v1/projects", json={"name": "Rail Other", "slug": "rail-other"})
+    host_type_id = (
+        await client.post(
+            "/api/v1/projects/rail-host/event-types",
+            json={"name": "signup", "display_name": "Signup"},
+        )
+    ).json()["id"]
+    host_event_id = (
+        await client.post(
+            "/api/v1/projects/rail-host/events",
+            json={"event_type_id": host_type_id, "name": "Signed Up"},
+        )
+    ).json()["id"]
+
+    async with TestSessionLocal() as session:
+        other_main_branch_id = await session.scalar(
+            select(PlanBranch.id)
+            .join(Project, Project.id == PlanBranch.project_id)
+            .where(Project.slug == "rail-other", PlanBranch.kind == BranchKind.main.value)
+        )
+        assert other_main_branch_id is not None, "the other project must have a main branch"
+        await session.execute(
+            update(Event)
+            .where(Event.id == uuid.UUID(host_event_id))
+            .values(branch_id=other_main_branch_id)
+        )
+        await session.commit()
+
+    items = (await client.get("/api/v1/activity/projects/rail-host?limit=50")).json()
+    assert [item for item in items if item["type"] == "event"] == []
 
 
 class TestScanJobDetail:
