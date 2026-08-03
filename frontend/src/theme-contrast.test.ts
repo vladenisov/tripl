@@ -22,8 +22,11 @@ import { describe, expect, it } from 'vitest'
  * ratio, so it is the case worth pinning.
  */
 
+// Only the body floor is left: `--accent` used to be held to AA-large on the
+// bare background, on the theory that it is decoration. It is not — it carries
+// icons, links and chip labels at body size — so it now answers to AA_BODY like
+// everything else here (tripl-yx0k).
 const AA_BODY = 4.5
-const AA_LARGE = 3
 
 // Surfaces that body copy is actually painted on. `--surface-active` is a
 // momentary pressed state that never hosts small text, so it is excluded.
@@ -38,11 +41,23 @@ const TEXT_SURFACES = [
 const BODY_TEXT_TOKENS = ['--fg', '--fg-muted', '--fg-subtle', '--fg-faint'] as const
 
 // Every tone that carries status *text*. `--<tone>` is the ink, `--<tone>-soft`
-// the fill it sits on. `--accent` is deliberately absent: it is the
-// user-switchable brand hue (five `.accent-*` variants), it is painted as a
-// solid with `--accent-fg` on top rather than as status text, and it is
-// measured separately below. Raising it to this bar is tripl-yx0k.
+// the fill it sits on. `--accent` is held to the same bar further down, where
+// it also has to answer for the solid fill it paints.
 const STATUS_TONES = ['success', 'warning', 'danger', 'info'] as const
+
+// The brand hue is switchable, so every variant is a separate palette that has
+// to clear the floor on its own — `:root` / `.dark` carry the default (teal),
+// and each `.accent-*` class overrides it. Miss one and a user who picked lime
+// gets a theme nobody measured.
+const ACCENT_VARIANTS = ['teal', 'violet', 'lime', 'amber', 'rose'] as const
+const ACCENT_BLOCKS = [
+  { name: 'default', light: ':root', dark: '.dark' },
+  ...ACCENT_VARIANTS.map((variant) => ({
+    name: variant,
+    light: `.accent-${variant}`,
+    dark: `.dark.accent-${variant}`,
+  })),
+] as const
 
 type Rgb = readonly [number, number, number]
 
@@ -53,11 +68,15 @@ const css = readFileSync(
   'utf8',
 )
 
-/** Grab the first `<selector> { … }` block body from the stylesheet. */
+/**
+ * Grab the first `<selector> { … }` block body from the stylesheet. Ends at the
+ * first `}`, so the one-line `.accent-*` variants read the same way the
+ * multi-line theme blocks do; none of these blocks nest.
+ */
 function block(selector: string): string {
   const start = css.indexOf(`${selector} {`)
   if (start < 0) throw new Error(`no ${selector} block in index.css`)
-  const end = css.indexOf('\n}', start)
+  const end = css.indexOf('}', start)
   if (end < 0) throw new Error(`unterminated ${selector} block in index.css`)
   return css.slice(start, end)
 }
@@ -250,6 +269,8 @@ describe('destructive button', () => {
 
 describe('identity chip', () => {
   it('carries white initials at AA against --avatar-bg', () => {
+    const token = oklchDecl(block(':root'), '--avatar-bg')
+    expect(isInSrgbGamut(token), '--avatar-bg is outside sRGB').toBe(true)
     const ratio = contrastRatio([255, 255, 255], oklchToken(block(':root'), '--avatar-bg'))
     expect(ratio, `white on --avatar-bg measured ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(
       AA_BODY,
@@ -257,9 +278,60 @@ describe('identity chip', () => {
   })
 })
 
-describe('accent', () => {
-  it.each(THEMES)('$name --accent clears AA-large on --bg', ({ body }) => {
-    const ratio = contrastRatio(oklchToken(body, '--accent'), oklchToken(body, '--bg'))
-    expect(ratio).toBeGreaterThanOrEqual(AA_LARGE)
+/**
+ * The brand hue works both ways at once, which is what made it the hard case
+ * (tripl-yx0k): it is the ink for `--accent-soft` and for accent-coloured text
+ * on a plain row (~48 call sites), *and* the solid fill under `--accent-fg` on
+ * every primary button, switch, checkbox and tooltip (~26). Both roles are
+ * measured here, for all five switchable variants, because a user who picks
+ * `lime` gets a palette nobody else looks at.
+ *
+ * `--accent-hover` is only ever a fill, so it answers for its label alone.
+ */
+describe.each(ACCENT_BLOCKS)('accent: $name', ({ light, dark }) => {
+  const cases = [
+    { theme: 'light', selector: light, surfaces: ':root' },
+    { theme: 'dark', selector: dark, surfaces: '.dark' },
+  ] as const
+
+  it.each(cases)('$theme reads as ink on its own soft fill', ({ selector, surfaces }) => {
+    const body = block(selector)
+    const ink = oklchToken(body, '--accent')
+    const fill = oklchDecl(body, '--accent-soft')
+    for (const surface of TEXT_SURFACES) {
+      const base = oklchToken(block(surfaces), surface)
+      const onFill = contrastRatio(ink, composite(fill, base))
+      expect(
+        onFill,
+        `${selector} --accent on --accent-soft over ${surface} measured ${onFill.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(AA_BODY)
+
+      const onBare = contrastRatio(ink, base)
+      expect(
+        onBare,
+        `${selector} --accent on ${surface} measured ${onBare.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(AA_BODY)
+    }
+  })
+
+  it.each(cases)('$theme carries --accent-fg on the fill and on hover', ({ selector }) => {
+    const body = block(selector)
+    const label = oklchToken(body, '--accent-fg')
+    for (const fill of ['--accent', '--accent-hover'] as const) {
+      const ratio = contrastRatio(label, oklchToken(body, fill))
+      expect(
+        ratio,
+        `${selector} --accent-fg on ${fill} measured ${ratio.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(AA_BODY)
+    }
+  })
+
+  it.each(cases)('$theme stays inside sRGB', ({ selector }) => {
+    const body = block(selector)
+    for (const token of ['--accent', '--accent-hover', '--accent-soft', '--accent-fg'] as const) {
+      expect(isInSrgbGamut(oklchDecl(body, token)), `${selector} ${token} is outside sRGB`).toBe(
+        true,
+      )
+    }
   })
 })
