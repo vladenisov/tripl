@@ -8,6 +8,7 @@ scan has no version column configured.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timedelta
 
@@ -25,6 +26,8 @@ from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.services.version_activation import resolve_share_min
+
+logger = logging.getLogger(__name__)
 
 
 def _build_regression_settings(session: Session, config: ScanConfig) -> RegressionSettings:
@@ -141,25 +144,33 @@ def _recalculate_release_regressions(
             )
         return len(results)
 
-    detected = _persist(
-        detect_release_regressions(
+    detected = 0
+    for scope_type, counts in ((SCOPE_EVENT, event_counts), (SCOPE_EVENT_TYPE, type_counts)):
+        report = detect_release_regressions(
             release_total_by_bucket=release_total_by_bucket,
             all_traffic_by_bucket=all_traffic_by_bucket,
-            scope_counts=event_counts,
+            scope_counts=counts,
             latest_bucket=latest_bucket,
             settings=settings,
-        ),
-        scope_type=SCOPE_EVENT,
-    )
-    detected += _persist(
-        detect_release_regressions(
-            release_total_by_bucket=release_total_by_bucket,
-            all_traffic_by_bucket=all_traffic_by_bucket,
-            scope_counts=type_counts,
-            latest_bucket=latest_bucket,
-            settings=settings,
-        ),
-        scope_type=SCOPE_EVENT_TYPE,
-    )
+        )
+        if not report.comparable:
+            # Not a clean bill of health: the release's population is not yet
+            # comparable to the baseline's, so the composition-normalized
+            # findings are withheld. Say so, rather than writing nothing and
+            # leaving zero rows to be read as "no regressions" (tripl-9y4l).
+            # ``report.results`` still holds any silent-event rows, which no
+            # population difference explains — those are persisted.
+            logger.info(
+                "release regression comparison suppressed: scan=%s scope=%s %s vs %s "
+                "emerging_share=%.3f > %.3f; keeping %d missing-event row(s)",
+                config.id,
+                scope_type,
+                report.version,
+                report.previous_version,
+                report.emerging_share,
+                settings.max_emerging_share,
+                len(report.results),
+            )
+        detected += _persist(report.results, scope_type=scope_type)
     session.flush()
     return detected

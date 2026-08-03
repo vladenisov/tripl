@@ -34,7 +34,7 @@ def _scenario(*, new_login: int, new_daily_total: int):
     return release_total, all_traffic, scope_counts
 
 
-def _run(release_total, all_traffic, scope_counts, settings=None):
+def _report(release_total, all_traffic, scope_counts, settings=None):
     return detect_release_regressions(
         release_total_by_bucket=release_total,
         all_traffic_by_bucket=all_traffic,
@@ -42,6 +42,11 @@ def _run(release_total, all_traffic, scope_counts, settings=None):
         latest_bucket=DAYS[-1],
         settings=settings or RegressionSettings(),
     )
+
+
+def _run(release_total, all_traffic, scope_counts, settings=None):
+    """The detected rows alone — what most of these tests assert on."""
+    return _report(release_total, all_traffic, scope_counts, settings).results
 
 
 def test_missing_event_in_new_release() -> None:
@@ -169,3 +174,184 @@ def test_latest_two_releases_chosen_by_semver_not_lexical() -> None:
     assert results[0].version == "2.10.0"
     assert results[0].previous_version == "2.9.0"
     assert results[0].kind == KIND_MISSING
+
+
+# --- comparability gate (tripl-9y4l) -----------------------------------------
+#
+# Proportions below are taken from the windy-ios 15.7.4 incident, where nine
+# scopes were reported as regressions seven hours into a rollout while the app
+# was healthy: 66.0% of the new release's pageviews were onboarding screens
+# against 3.8% for the baseline.
+
+# Steady-state mix: five real screens, eight onboarding screens nobody revisits,
+# and a long tail. Sums to 1000/bucket.
+_STEADY = {
+    "main": 414,
+    "spot/main": 241,
+    "purchase/main": 128,
+    "map/main": 108,
+    "search/all": 37,
+    **{f"onboarding/{i}": 5 for i in range(8)},
+    "tail": 32,
+}
+# First hours of a rollout: the same screens exist, but the population is fresh
+# installs, so onboarding carries two thirds of the volume. Sums to 300/bucket.
+_FRESH_INSTALLS = {
+    "main": 24,
+    "spot/main": 23,
+    "purchase/main": 25,
+    "map/main": 18,
+    "search/all": 5,
+    **{f"onboarding/{i}": 25 for i in range(8)},
+    "tail": 5,
+}
+
+
+def _mix(prev_mix: dict[str, int], new_mix: dict[str, int]):
+    release_total = {
+        PREV: {d: sum(prev_mix.values()) for d in DAYS},
+        NEW: {d: sum(new_mix.values()) for d in NEW_DAYS},
+    }
+    all_traffic = {
+        d: sum(prev_mix.values()) + (sum(new_mix.values()) if d in NEW_DAYS else 0) for d in DAYS
+    }
+    scope_counts = {
+        name: {
+            PREV: {d: prev_mix.get(name, 0) for d in DAYS},
+            NEW: {d: new_mix.get(name, 0) for d in NEW_DAYS},
+        }
+        for name in set(prev_mix) | set(new_mix)
+    }
+    return release_total, all_traffic, scope_counts
+
+
+def test_a_rollout_still_full_of_fresh_installs_is_not_judged_at_all() -> None:
+    """The windy-ios 15.7.4 case: every steady-state screen looks halved."""
+    report = _report(*_mix(_STEADY, _FRESH_INSTALLS))
+
+    assert report.comparable is False
+    assert report.results == []
+    # Two thirds of the new release's volume sits in scopes the baseline barely
+    # visited, which is the whole signal.
+    assert report.emerging_share > 0.4
+    assert report.version == NEW and report.previous_version == PREV
+
+
+def test_the_gate_does_not_hide_a_release_that_really_stopped_emitting_an_event() -> None:
+    """The failure mode the gate must not have.
+
+    A release that drops `main` moves the mix by main's entire 41% — a plain
+    distribution-distance gate would suppress precisely the alert this analyzer
+    exists to raise. Volume is destroyed rather than moved here, so the
+    survivors only renormalize upward and no minor scope becomes material.
+    """
+    broken = {name: (0 if name == "main" else count) for name, count in _STEADY.items()}
+    report = _report(*_mix(_STEADY, broken))
+
+    assert report.comparable is True, "a real regression must still be judged"
+    assert report.emerging_share == 0.0
+    assert [r.scope_ref for r in report.results] == ["main"]
+    assert report.results[0].kind == KIND_MISSING
+
+
+# Half the traffic in scopes below `minor_share` is normal for a big catalog.
+_FAT_TAIL = {f"evt/{i}": 5 for i in range(100)} | {"main": 500}
+
+
+def test_a_long_tail_of_small_scopes_does_not_trip_the_gate() -> None:
+    report = _report(*_mix(_FAT_TAIL, _FAT_TAIL))
+
+    assert report.comparable is True
+    assert report.emerging_share == 0.0
+    assert report.results == []
+
+
+def test_a_fat_long_tail_does_not_hide_a_release_that_stopped_emitting_an_event() -> None:
+    """The two conditions above, together — which is where the first cut broke.
+
+    Scoring each tail scope's rise and summing it made the veto grow WITH the
+    outage: half the catalog's mass sitting under `minor_share` scored 0.500 on
+    `main` going silent, so the bigger the incident the more certain the
+    suppression. The statistic now subtracts the common renormalization every
+    survivor gets, so a destroyed scope lifts the tail without scoring at all.
+    """
+    report = _report(*_mix(_FAT_TAIL, {**_FAT_TAIL, "main": 0}))
+
+    assert report.comparable is True
+    assert report.emerging_share == 0.0
+    assert [r.scope_ref for r in report.results] == ["main"]
+
+
+def test_the_verdict_does_not_depend_on_how_finely_the_catalog_is_split() -> None:
+    """Keying on "was minor before" made the answer an artefact of partitioning:
+    the same incident scored 0.63 with onboarding as eight screens and 0.00 with
+    it as four, which let three false rows through. Materiality is now measured
+    in the NEW release, where merging scopes only makes them more material.
+    """
+
+    def split(count: int):
+        prev = {n: v for n, v in _STEADY.items() if not n.startswith("onboarding/")}
+        new = {n: v for n, v in _FRESH_INSTALLS.items() if not n.startswith("onboarding/")}
+        prev_mass = sum(v for n, v in _STEADY.items() if n.startswith("onboarding/"))
+        new_mass = sum(v for n, v in _FRESH_INSTALLS.items() if n.startswith("onboarding/"))
+        for i in range(count):
+            prev[f"ob/{i}"] = prev_mass // count
+            new[f"ob/{i}"] = new_mass // count
+        return _mix(prev, new)
+
+    verdicts = {n: _report(*split(n)) for n in (1, 2, 4, 8)}
+    assert all(not r.comparable for r in verdicts.values()), {
+        n: (r.comparable, round(r.emerging_share, 3)) for n, r in verdicts.items()
+    }
+
+
+def test_a_thin_new_release_spread_over_a_wide_catalog_is_still_judged() -> None:
+    """600 scopes each carrying a single event is granularity, not a population
+    change. Summing their share rises used to reach 0.28 and veto the release."""
+    wide_prev = {f"n/{i}": 2 for i in range(600)} | {"main": 1000}
+    wide_new = {f"n/{i}": 1 for i in range(600)} | {"main": 0}
+    report = _report(*_mix(wide_prev, wide_new))
+
+    assert report.comparable is True
+    assert [r.scope_ref for r in report.results] == ["main"]
+
+
+def test_an_event_that_went_completely_silent_survives_the_suppression() -> None:
+    """A different mix of users cannot manufacture a silent event, and that
+    finding is too expensive to swallow — so `missing` rows are reported even
+    when the composition-normalized ones are withheld. Every row in the
+    windy-ios false alarm was a `volume_drop`, so this costs nothing there.
+    """
+    report = _report(*_mix(_STEADY, {**_FRESH_INSTALLS, "main": 0}))
+
+    assert report.comparable is False, "the population is still incomparable"
+    assert [(r.scope_ref, r.kind) for r in report.results] == [("main", KIND_MISSING)]
+
+
+def test_a_release_that_loses_most_of_its_volume_is_still_reported() -> None:
+    """The case the gate's own logic gets wrong on its face: losing 90% of the
+    volume lifts each survivor tenfold, past the slack, so the comparison is
+    ruled incomparable (emerging ~0.66). The silent events are reported anyway.
+    """
+    collapsed = {name: 0 for name in _STEADY} | {"search/all": 37, "tail": 32}
+    report = _report(*_mix(_STEADY, collapsed))
+
+    assert report.comparable is False
+    assert {r.scope_ref for r in report.results} == {"main", "spot/main", "purchase/main"}
+    assert all(r.kind == KIND_MISSING for r in report.results)
+
+
+def test_without_the_gate_this_scenario_is_the_incident_itself() -> None:
+    """Pins what the gate is worth: the same inputs, bound relaxed, reproduce
+    the windy-ios failure — a fistful of healthy screens all reported as
+    regressions at once. That also proves the suppression above is the gate's
+    doing and not some other filter quietly swallowing the rows.
+    """
+    args = _mix(_STEADY, _FRESH_INSTALLS)
+    assert _report(*args).comparable is False
+
+    relaxed = _report(*args, RegressionSettings(max_emerging_share=0.99))
+    assert relaxed.comparable is True
+    flagged = {r.scope_ref for r in relaxed.results}
+    assert len(flagged) >= 3, f"expected the multi-screen false alarm, got {flagged}"
+    assert "main" in flagged and "spot/main" in flagged
