@@ -38,11 +38,16 @@
 
 # JSONL backup (periodic export for off-machine recovery)
 # Auto-enabled when a git remote exists. Override explicitly:
-# backup:
-#   enabled: false     # Disable auto-backup entirely
 #   interval: 15m      # Minimum time between auto-exports
-#   git-push: false    # Disable git push (export locally only)
 #   git-repo: ""       # Separate git repo for backups (default: project repo)
+#
+# git-push is OFF deliberately. This repository is PUBLIC, and the export
+# carries the maintainer's email on every issue plus root-cause write-ups
+# naming the private production host. Auto-push would put all of it straight
+# back after it was purged from history on 2026-08-03. The exports are
+# gitignored for the same reason: exporting locally is fine, publishing is not.
+backup:
+  git-push: false
 
 # Integration settings (access with 'bd config get/set')
 # Non-secret keys (stored in the database):
@@ -54,4 +59,15 @@
 # - linear.api_key  → use LINEAR_API_KEY env var instead
 # - github.token    → use GITHUB_TOKEN env var instead
 
-sync.remote: "git+ssh://git@github.com/vladenisov/tripl.git"
+# sync.remote is UNSET on purpose (was: this repository's own git remote).
+#
+# Beads synced its Dolt database to `refs/dolt/data` there, and on 2026-08-03
+# that ref was found to hold the whole 590-issue database in chunk form — the
+# maintainer's email included — on a PUBLIC remote. Stripping the JSONL exports
+# from history while leaving that ref would have removed only the greppable
+# copy. The ref was deleted; leaving this key set would have re-pushed it on the
+# next sync.
+#
+# Beads is therefore LOCAL-ONLY: issues live in the local Dolt DB and nothing
+# leaves the machine. To restore cross-machine sync, point this at a PRIVATE
+# repository — never this one.
