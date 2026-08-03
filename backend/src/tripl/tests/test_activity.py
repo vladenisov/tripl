@@ -3,9 +3,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select, update
 
 from tripl.models.alert_delivery import AlertDelivery
+from tripl.models.event import Event
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.plan_branch import BranchKind, PlanBranch
+from tripl.models.project import Project
 from tripl.models.scan_job import ScanJob
 from tripl.services.activity_service import _scan_job_detail
 from tripl.tests.conftest import TestSessionLocal
@@ -335,6 +339,170 @@ async def test_activity_feed_collapses_one_incident_into_one_rail_item(client: A
 async def test_project_activity_feed_returns_404_for_unknown_project(client: AsyncClient):
     resp = await client.get("/api/v1/activity/projects/missing-project")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_an_open_branch_does_not_add_a_second_unreachable_copy_of_each_event(
+    client: AsyncClient,
+):
+    """A working branch deep-copies the plan; the rail must stay on main.
+
+    Before tripl-r5ri the event query joined Event to Project alone, so every
+    open branch contributed its own clone of each event. The rail linked to
+    whichever copy won an arbitrary tiebreak, and a branch-local id 404s: the
+    monitoring page resolves ids against main. Asserting on the row count alone
+    would still pass on a feed that dropped the branch copy but kept linking to
+    it, so this follows the emitted link to the API the page calls.
+    """
+    slug = "branch-rail"
+    await client.post("/api/v1/projects", json={"name": "Branch Rail", "slug": slug})
+    event_type_id = (
+        await client.post(
+            f"/api/v1/projects/{slug}/event-types",
+            json={"name": "checkout", "display_name": "Checkout"},
+        )
+    ).json()["id"]
+    main_event_id = (
+        await client.post(
+            f"/api/v1/projects/{slug}/events",
+            json={"event_type_id": event_type_id, "name": "Order Placed"},
+        )
+    ).json()["id"]
+
+    branch_resp = await client.post(f"/api/v1/projects/{slug}/branches", json={"name": "wip"})
+    assert branch_resp.status_code == 201
+    # The clone is what the rail used to double-count, so prove it exists rather
+    # than assuming deep_copy_plan_to_branch ran.
+    branch_id = branch_resp.json()["id"]
+    branch_events = (await client.get(f"/api/v1/projects/{slug}/events?branch={branch_id}")).json()[
+        "items"
+    ]
+    assert [event["name"] for event in branch_events] == ["Order Placed"]
+    assert branch_events[0]["id"] != main_event_id
+
+    items = (await client.get(f"/api/v1/activity/projects/{slug}?limit=50")).json()
+    event_items = [item for item in items if item["type"] == "event"]
+
+    assert len(event_items) == 1, f"one event, one rail row; got {len(event_items)}"
+    assert event_items[0]["target_path"] == f"/p/{slug}/monitoring/event/{main_event_id}"
+
+    linked_id = event_items[0]["target_path"].rsplit("/", 1)[-1]
+    followed = await client.get(f"/api/v1/projects/{slug}/events/{linked_id}")
+    assert followed.status_code == 200, "the rail linked to an id the detail page cannot resolve"
+
+
+@pytest.mark.asyncio
+async def test_an_anomaly_whose_event_was_deleted_links_nowhere_rather_than_to_a_dead_id(
+    client: AsyncClient,
+):
+    """``scope_ref`` outlives the row it names; the FK does not.
+
+    ``MetricAnomaly.event_id`` is ``ondelete=SET NULL`` while ``scope_ref`` is a
+    plain ``String(64)`` the detector writes for dedupe keying, so deleting an
+    event leaves a stale uuid there. Routing off it produced a link to a 404.
+
+    The row is seeded in its post-deletion shape (FK NULL, ``scope_ref`` still
+    holding the uuid) rather than by deleting through the API: SQLite does not
+    enforce ``ON DELETE`` actions in this suite, so a delete would not reproduce
+    the state the fix is about.
+    """
+    slug = "dead-link-rail"
+    await client.post("/api/v1/projects", json={"name": "Dead Link Rail", "slug": slug})
+    data_source_id = (
+        await client.post(
+            "/api/v1/data-sources",
+            json={
+                "name": "Warehouse",
+                "db_type": "clickhouse",
+                "host": "localhost",
+                "port": 8123,
+                "database_name": "analytics",
+                "username": "default",
+                "password": "",
+            },
+        )
+    ).json()["id"]
+    scan_config_id = (
+        await client.post(
+            f"/api/v1/projects/{slug}/scans",
+            json={"data_source_id": data_source_id, "name": "Scan", "base_query": "SELECT 1"},
+        )
+    ).json()["id"]
+
+    deleted_event_id = uuid.uuid4()
+    created_at = datetime.now(UTC)
+    async with TestSessionLocal() as session:
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=uuid.UUID(scan_config_id),
+                scope_type="event",
+                scope_ref=str(deleted_event_id),
+                event_id=None,
+                event_type_id=None,
+                bucket=created_at,
+                actual_count=99,
+                expected_count=10,
+                stddev=2,
+                z_score=8,
+                direction="spike",
+                created_at=created_at,
+            )
+        )
+        await session.commit()
+
+    items = (await client.get(f"/api/v1/activity/projects/{slug}?limit=50")).json()
+    anomaly_items = [item for item in items if item["type"] == "anomaly"]
+
+    assert len(anomaly_items) == 1, "the anomaly still belongs in the feed"
+    assert anomaly_items[0]["target_path"] is None
+
+
+@pytest.mark.asyncio
+async def test_another_projects_main_branch_does_not_satisfy_the_main_branch_filter(
+    client: AsyncClient,
+):
+    """ "Main" means main OF THIS PROJECT, and the join has to say so.
+
+    ``events.branch_id`` is an FK to ``plan_branches.id`` with nothing at the
+    schema level tying the two to the same project, so a filter on
+    ``kind == main`` alone would also accept a different project's main branch.
+    No write path can produce that today — the API validates the override in
+    ``resolve_branch_id``, the column default derives the branch from the row's
+    own ``project_id`` — so the state is seeded directly, which is the only way
+    to hold the invariant the join now expresses.
+    """
+    await client.post("/api/v1/projects", json={"name": "Rail Host", "slug": "rail-host"})
+    await client.post("/api/v1/projects", json={"name": "Rail Other", "slug": "rail-other"})
+    host_type_id = (
+        await client.post(
+            "/api/v1/projects/rail-host/event-types",
+            json={"name": "signup", "display_name": "Signup"},
+        )
+    ).json()["id"]
+    host_event_id = (
+        await client.post(
+            "/api/v1/projects/rail-host/events",
+            json={"event_type_id": host_type_id, "name": "Signed Up"},
+        )
+    ).json()["id"]
+
+    async with TestSessionLocal() as session:
+        other_main_branch_id = await session.scalar(
+            select(PlanBranch.id)
+            .join(Project, Project.id == PlanBranch.project_id)
+            .where(Project.slug == "rail-other", PlanBranch.kind == BranchKind.main.value)
+        )
+        assert other_main_branch_id is not None, "the other project must have a main branch"
+        await session.execute(
+            update(Event)
+            .where(Event.id == uuid.UUID(host_event_id))
+            .values(branch_id=other_main_branch_id)
+        )
+        await session.commit()
+
+    items = (await client.get("/api/v1/activity/projects/rail-host?limit=50")).json()
+    assert [item for item in items if item["type"] == "event"] == []
 
 
 class TestScanJobDetail:
