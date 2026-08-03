@@ -215,6 +215,39 @@ describe.each(THEMES)('$name theme status tones', ({ body }) => {
   })
 })
 
+/**
+ * The destructive button is the one place a tone is painted as a SOLID fill
+ * with a label on top, so it needs a foreground that flips with the theme —
+ * `--danger` itself cannot move, being pinned above as status ink on its own
+ * soft fill. Hover is measured too: `hover:bg-destructive/90` lets the surface
+ * through, which moves the fill toward the background.
+ */
+describe('destructive button', () => {
+  it('aliases --destructive to --danger, which is what the cases below measure', () => {
+    expect(block(':root')).toMatch(/--destructive:\s*var\(--danger\)/)
+  })
+
+  it.each(THEMES)('$name label clears WCAG AA on the fill and on hover', ({ name, body }) => {
+    // The foreground is declared per theme and inherited from :root otherwise.
+    const declaredIn = /--destructive-foreground:/.test(body) ? body : block(':root')
+    const ink = oklchToken(declaredIn, '--destructive-foreground')
+    const fill = oklchDecl(body, '--danger')
+
+    const onFill = contrastRatio(ink, oklchToSrgb(fill.lightness, fill.chroma, fill.hueDeg))
+    expect(onFill, `${name} label on --destructive measured ${onFill.toFixed(2)}:1`)
+      .toBeGreaterThanOrEqual(AA_BODY)
+
+    for (const surface of TEXT_SURFACES) {
+      const hovered = composite({ ...fill, alpha: 0.9 }, oklchToken(body, surface))
+      const ratio = contrastRatio(ink, hovered)
+      expect(
+        ratio,
+        `${name} label on hover:bg-destructive/90 over ${surface} measured ${ratio.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(AA_BODY)
+    }
+  })
+})
+
 describe('identity chip', () => {
   it('carries white initials at AA against --avatar-bg', () => {
     const ratio = contrastRatio([255, 255, 255], oklchToken(block(':root'), '--avatar-bg'))
