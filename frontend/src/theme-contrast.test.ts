@@ -118,7 +118,18 @@ function isInSrgbGamut({ lightness, chroma, hueDeg }: Oklch): boolean {
   return oklchToLinearRgb(lightness, chroma, hueDeg).every((v) => v >= -0.0005 && v <= 1.0005)
 }
 
-/** Source-over compositing of a translucent fill onto an opaque surface. */
+/**
+ * Source-over compositing of a translucent fill onto an opaque surface.
+ *
+ * In gamma-encoded sRGB, not linear-light: painting a translucent background
+ * over an opaque backdrop happens in the backdrop's color space (linear-light
+ * is for `mix-blend-mode` and filters). Verified against painted pixels rather
+ * than read off the spec — screenshotting these exact pairs in Chromium and
+ * predicting them both ways gives a total absolute channel error, over 20
+ * samples per theme, of 28 (light) / 13 (dark) for the model below against
+ * 608 / 1666 for linear-light. The first is rounding; the second is a
+ * different color.
+ */
 function composite(fill: Oklch, surface: Rgb): Rgb {
   const rgb = oklchToSrgb(fill.lightness, fill.chroma, fill.hueDeg)
   const mix = (i: number) => Math.round(fill.alpha * rgb[i]! + (1 - fill.alpha) * surface[i]!)
