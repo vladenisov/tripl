@@ -121,8 +121,21 @@ def _build_item_template_context(
         "distribution": "Distribution drift",
         SCOPE_RELEASE_REGRESSION: "Release regression",
     }.get(item.scope_type, item.scope_type)
+    # An event's catalog entry and its charts are one page: `/events/detail/<id>`
+    # redirects to `/monitoring/event/<id>`, and that view carries the field
+    # values, meta fields AND the charts. So for event-scoped rows both builders
+    # produce the same URL, and printing it twice under two labels made every
+    # item look like it offered a choice it did not. The two still differ for
+    # event-type and project-total scopes — monitoring points at the scope's own
+    # page, details at the underlying event — so the lines collapse only when
+    # they genuinely coincide. Both template variables stay populated either way,
+    # so custom templates referencing ${monitoring_url} are unaffected.
     details_line = f"\n  details: {item.details_path}" if item.details_path else ""
-    monitoring_line = f"\n  monitoring: {item.monitoring_path}" if item.monitoring_path else ""
+    monitoring_line = (
+        f"\n  monitoring: {item.monitoring_path}"
+        if item.monitoring_path and item.monitoring_path != item.details_path
+        else ""
+    )
     if item.scope_type == SCOPE_RELEASE_REGRESSION:
         # Release regressions reuse the drift fields: version -> drift_field,
         # kind -> drift_type, previous release -> sample_value. Render them as a
