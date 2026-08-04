@@ -254,7 +254,7 @@ def test_the_gate_does_not_hide_a_release_that_really_stopped_emitting_an_event(
     assert report.results[0].kind == KIND_MISSING
 
 
-# Half the traffic in scopes below `minor_share` is normal for a big catalog.
+# Half the traffic in scopes too small to reason about is normal for a big catalog.
 _FAT_TAIL = {f"evt/{i}": 5 for i in range(100)} | {"main": 500}
 
 
@@ -270,7 +270,7 @@ def test_a_fat_long_tail_does_not_hide_a_release_that_stopped_emitting_an_event(
     """The two conditions above, together — which is where the first cut broke.
 
     Scoring each tail scope's rise and summing it made the veto grow WITH the
-    outage: half the catalog's mass sitting under `minor_share` scored 0.500 on
+    outage: half the catalog's mass sitting in tiny scopes scored 0.500 on
     `main` going silent, so the bigger the incident the more certain the
     suppression. The statistic now subtracts the common renormalization every
     survivor gets, so a destroyed scope lifts the tail without scoring at all.
@@ -355,3 +355,22 @@ def test_without_the_gate_this_scenario_is_the_incident_itself() -> None:
     flagged = {r.scope_ref for r in relaxed.results}
     assert len(flagged) >= 3, f"expected the multi-screen false alarm, got {flagged}"
     assert "main" in flagged and "spot/main" in flagged
+
+
+def test_a_fine_grained_catalog_is_protected_too() -> None:
+    """The shape that still alerted after the gate shipped.
+
+    "Snowplow Events (iOS)" carries 2488 events, so no single one reaches 1% of
+    a release. A share-based materiality floor is therefore a statement about
+    catalog granularity rather than about evidence, and it scored 0.0000 on the
+    same population change it scores 0.4667 on for the 92-event pageviews scan.
+    The floor counts events now, so both shapes are covered.
+    """
+    steady = {f"evt/{i}": 100 for i in range(800)} | {f"ob/{i}": 2 for i in range(200)}
+    fresh = {f"evt/{i}": 10 for i in range(800)} | {f"ob/{i}": 40 for i in range(200)}
+    report = _report(*_mix(steady, fresh))
+
+    largest = max(fresh.values()) / sum(fresh.values())
+    assert largest < 0.01, "the point of the fixture is that nothing is 1% of the release"
+    assert report.comparable is False
+    assert report.emerging_share > 0.25
