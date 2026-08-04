@@ -1615,6 +1615,80 @@ def test_release_regression_item_renders_readable_release_line() -> None:
     assert "expected=200" in rendered
 
 
+def test_an_event_item_does_not_offer_the_same_link_twice() -> None:
+    """`details` and `monitoring` resolve to one page for an event scope.
+
+    `/events/detail/<id>` redirects to `/monitoring/event/<id>`, and that view
+    carries the field values, meta fields AND the charts — so both builders
+    produce the same URL and printing it under two labels advertised a choice
+    that does not exist.
+    """
+    from tripl.alert_templates import get_default_items_template, render_alert_template
+    from tripl.models.alert_delivery_item import AlertDeliveryItem
+    from tripl.worker.tasks.alerts_messages import _build_item_template_context
+
+    event_id = uuid.uuid4()
+    same = f"https://tripl.example/p/demo/monitoring/event/{event_id}"
+    item = AlertDeliveryItem(
+        id=uuid.uuid4(),
+        delivery_id=uuid.uuid4(),
+        scope_type="event",
+        scope_ref=str(event_id),
+        scope_name="Login",
+        event_id=event_id,
+        event_type_id=None,
+        bucket=datetime(2026, 5, 1, 12, tzinfo=UTC),
+        direction="drop",
+        actual_count=10,
+        expected_count=100,
+        absolute_delta=90,
+        percent_delta=90.0,
+        details_path=same,
+        monitoring_path=same,
+    )
+    rendered = render_alert_template(
+        get_default_items_template("plain"),
+        _build_item_template_context(item, message_format="plain"),
+    )
+    assert rendered.count(same) == 1, rendered
+    assert "monitoring:" not in rendered
+
+
+def test_a_scope_whose_two_links_differ_still_offers_both() -> None:
+    """An event-type row points at the event type AND at the underlying event,
+    which are different pages, so collapsing must not reach that case."""
+    from tripl.alert_templates import get_default_items_template, render_alert_template
+    from tripl.models.alert_delivery_item import AlertDeliveryItem
+    from tripl.worker.tasks.alerts_messages import _build_item_template_context
+
+    event_id, type_id = uuid.uuid4(), uuid.uuid4()
+    details = f"https://tripl.example/p/demo/monitoring/event/{event_id}"
+    monitoring = f"https://tripl.example/p/demo/monitoring/event-type/{type_id}"
+    item = AlertDeliveryItem(
+        id=uuid.uuid4(),
+        delivery_id=uuid.uuid4(),
+        scope_type="event_type",
+        scope_ref=str(type_id),
+        scope_name="Purchases",
+        event_id=event_id,
+        event_type_id=type_id,
+        bucket=datetime(2026, 5, 1, 12, tzinfo=UTC),
+        direction="drop",
+        actual_count=10,
+        expected_count=100,
+        absolute_delta=90,
+        percent_delta=90.0,
+        details_path=details,
+        monitoring_path=monitoring,
+    )
+    rendered = render_alert_template(
+        get_default_items_template("plain"),
+        _build_item_template_context(item, message_format="plain"),
+    )
+    assert details in rendered
+    assert monitoring in rendered
+
+
 def test_format_metric_alert_value_percent_rules() -> None:
     from tripl.alert_templates import format_metric_alert_value
 
