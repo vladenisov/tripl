@@ -104,7 +104,7 @@ jobs:
           uv pip install --python /tmp/smoke/bin/python dist/*.whl
           /tmp/smoke/bin/tripl-mcp --help
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: mcp-server/dist/
@@ -123,7 +123,7 @@ jobs:
       contents: read
       id-token: write # mint the OIDC token PyPI exchanges for upload rights
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/

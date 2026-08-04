@@ -8,7 +8,7 @@ and on a TTY, which is what makes a single expected string correct at all.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -29,6 +29,11 @@ from .conftest import (
 )
 
 _DETECTED = datetime(2026, 7, 28, 4, 10, tzinfo=UTC)
+# A snooze deadline has to be relative to now. `is_untriaged` counts a snooze
+# that has RUN OUT, so a hardcoded date is a time bomb: this fixture said
+# 2026-08-04, read "1 untriaged" until that morning, and then failed CI on every
+# open branch at once — including ones that had not touched the CLI.
+_STILL_SNOOZED = datetime.now(UTC).replace(microsecond=0) + timedelta(days=30)
 _SEEN = datetime(2026, 7, 31, 19, 0, tzinfo=UTC)
 
 
@@ -127,7 +132,7 @@ def test_drifts_list_sample_with_an_unreadable_event_type(
                 field_name="amount",
                 drift_type="type_changed",
                 status="snoozed",
-                snoozed_until=datetime(2026, 8, 4, tzinfo=UTC),
+                snoozed_until=_STILL_SNOOZED,
                 detected_at=_DETECTED,
             )
         ],
@@ -141,7 +146,7 @@ def test_drifts_list_sample_with_an_unreadable_event_type(
         "  drift-1  app.screen_view.user_id  missing_field  open     "
         "detected 2026-07-28T04:10:00Z\n"
         "  drift-7  app.purchase.amount      type_changed   snoozed  "
-        "until 2026-08-04T00:00:00Z\n"
+        f"until {_STILL_SNOOZED.strftime('%Y-%m-%dT%H:%M:%SZ')}\n"
         "  /projects/prod/event-types/et-9/drifts: unavailable "
         "(Not found (404): Event type not found)\n"
         "\n"
