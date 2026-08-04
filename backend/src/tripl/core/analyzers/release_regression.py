@@ -73,11 +73,18 @@ _SMOOTHING = 0.5
 # scored 0.50 on `main` going silent, i.e. the bigger the outage the more
 # certain the suppression).
 #
-# Hence: over scopes holding at least ``minor_share`` of the new release,
-# ``max(0, share_new - growth_slack * share_prev)``. A scope only counts once it
-# has outgrown its baseline share by more than the slack, which absorbs any
-# renormalization up to a 1 - 1/slack volume loss.
-DEFAULT_MINOR_SHARE = 0.01
+# The floor on which scopes participate has to be an absolute COUNT, not a
+# share of the release. A share floor is a statement about catalog granularity,
+# not about evidence: calibrated on the 92-event pageviews scan it worked, and
+# on the 2488-event catalog behind "Snowplow Events (iOS)" no single event ever
+# reaches 1% of a release, so the gate scored 0.0000 on the very same population
+# change it scores 0.4667 on. Poisson noise depends on how many times a scope
+# was seen, so that is what the floor measures.
+#
+# Hence: over scopes seen at least ``min_scope_volume`` times in the new
+# release, ``max(0, share_new - growth_slack * share_prev)``. A scope only
+# counts once it has outgrown its baseline share by more than the slack, which
+# absorbs any renormalization up to a 1 - 1/slack volume loss.
 DEFAULT_GROWTH_SLACK = 5.0
 DEFAULT_MAX_EMERGING_SHARE = 0.25
 
@@ -96,7 +103,6 @@ class RegressionSettings:
     drop_ratio: float = DEFAULT_DROP_RATIO
     missing_ratio: float = DEFAULT_MISSING_RATIO
     sigma: float = DEFAULT_SIGMA
-    minor_share: float = DEFAULT_MINOR_SHARE
     growth_slack: float = DEFAULT_GROWTH_SLACK
     max_emerging_share: float = DEFAULT_MAX_EMERGING_SHARE
 
@@ -197,13 +203,13 @@ def emerging_share(
     window_to: datetime,
     total_new: int,
     total_prev: int,
-    minor_share: float = DEFAULT_MINOR_SHARE,
+    min_scope_volume: float = DEFAULT_MIN_EXPECTED,
     growth_slack: float = DEFAULT_GROWTH_SLACK,
 ) -> float:
     """How much of the new release's volume sits where the baseline barely went.
 
-    Sums ``max(0, share_new - growth_slack * share_prev)`` over the scopes
-    holding at least ``minor_share`` of the new release. The three cases it has
+    Sums ``max(0, share_new - growth_slack * share_prev)`` over the scopes seen
+    at least ``min_scope_volume`` times in the new release. The three cases it has
     to separate:
 
     * **Same population.** Every scope keeps roughly its share, so
@@ -217,11 +223,12 @@ def emerging_share(
       carry the new release — an eighteen-fold jump in share, far past the
       slack — and each contributes what it gained beyond it.
 
-    Two properties this deliberately has, both learned by getting them wrong:
-    the filter is on the scope being material NOW rather than minor BEFORE, so
-    the verdict does not depend on how finely the catalog is partitioned; and
-    the common renormalization is subtracted rather than summed, so a long tail
-    of small scopes cannot add up to a veto on a genuine outage.
+    Three properties this deliberately has, each learned by getting it wrong:
+    the filter is on the NEW release rather than on the baseline, so the verdict
+    does not depend on how finely the catalog is partitioned; it counts events
+    rather than share, so a fine-grained catalog where nothing reaches 1% is
+    still protected; and the common renormalization is subtracted rather than
+    summed, so a long tail cannot add up to a veto on a genuine outage.
 
     One-sided by design: scopes that SHRANK contribute nothing, since that is
     what a regression looks like and the gate must not fire on it.
@@ -230,11 +237,13 @@ def emerging_share(
         return 0.0
     emerged = 0.0
     for by_version in scope_counts.values():
-        new = _window_sum(by_version.get(v_new, {}), window_from, window_to) / total_new
-        if new < minor_share:
-            # A sub-1% scope is the long tail or Poisson noise on a thin release;
-            # either way it is not evidence about the population.
+        new_count = _window_sum(by_version.get(v_new, {}), window_from, window_to)
+        if new_count < min_scope_volume:
+            # Too few events to say anything: the share of a scope seen a
+            # handful of times is mostly Poisson noise, and summing that noise
+            # across a long tail is how a veto gets manufactured.
             continue
+        new = new_count / total_new
         prev = _window_sum(by_version.get(v_prev, {}), window_from, window_to) / total_prev
         emerged += max(0.0, new - growth_slack * prev)
     return emerged
@@ -299,7 +308,7 @@ def detect_release_regressions(
         window_to=window_to,
         total_new=total_new,
         total_prev=total_prev,
-        minor_share=settings.minor_share,
+        min_scope_volume=settings.min_expected,
         growth_slack=settings.growth_slack,
     )
     comparable = emerged <= settings.max_emerging_share
