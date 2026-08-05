@@ -46,7 +46,7 @@ from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.project_branch_settings import ProjectBranchSettings
 from tripl.models.project_tracker_config import ProjectTrackerConfig
-from tripl.models.release_regression import ReleaseRegression
+from tripl.models.release_regression import ReleaseComparability, ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob
 from tripl.models.scan_preview_job import ScanPreviewJob
@@ -107,6 +107,7 @@ __all__ = [
     "ProjectAnomalySettings",
     "ProjectBranchSettings",
     "ProjectTrackerConfig",
+    "ReleaseComparability",
     "ReleaseRegression",
     "Variable",
     "DataSource",

@@ -5,7 +5,10 @@ first specified it was deleted as stale, so the four points below ARE the model
 rather than a summary of one — keep them in step with the code:
 
 1. Maturity gate on share of TOTAL traffic — a release is "active" only once it
-   takes real user traffic, which excludes the dev/tester build phase.
+   takes real user traffic, which excludes the dev/tester build phase. A build
+   labelled as a prerelease is excluded outright, as subject and as baseline,
+   because a share gate alone cannot see a TestFlight build that took real
+   traffic.
 2. Activation-anchored comparison window over the rollout overlap.
 3. Composition-share normalization (expected vs observed counts) so adoption
    skew between a young and a mature release is removed.
@@ -19,6 +22,7 @@ the results.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -29,6 +33,7 @@ from tripl.services.version_activation import (
     DEFAULT_ACTIVE_SHARE_MIN,
     DEFAULT_MIN_RELEASE_VOLUME,
     activation_bucket,
+    released_versions,
 )
 
 # Model defaults, now defined here rather than in a note. The activation-gate
@@ -38,7 +43,6 @@ from tripl.services.version_activation import (
 # compatibility. Promote to ScanConfig columns only if tuning demand appears.
 DEFAULT_WINDOW_DAYS = 14
 DEFAULT_MIN_EXPECTED = 30.0
-DEFAULT_MIN_PREV_SHARE = 0.001
 DEFAULT_DROP_RATIO = 0.5
 DEFAULT_MISSING_RATIO = 0.05
 DEFAULT_SIGMA = 3.0
@@ -91,6 +95,13 @@ DEFAULT_MAX_EMERGING_SHARE = 0.25
 KIND_MISSING = "missing"
 KIND_VOLUME_DROP = "volume_drop"
 
+# Why a pass concluded what it concluded. Mirrored as the
+# ``ReleaseComparabilityReason`` database enum; keep the two in step.
+REASON_COMPARABLE = "comparable"
+REASON_NO_BASELINE = "no_baseline"
+REASON_BASELINE_NO_VOLUME = "baseline_no_volume"
+REASON_POPULATION_MISMATCH = "population_mismatch"
+
 
 @dataclass(frozen=True)
 class RegressionSettings:
@@ -99,12 +110,15 @@ class RegressionSettings:
     min_release_volume: int = DEFAULT_MIN_RELEASE_VOLUME
     window_days: int = DEFAULT_WINDOW_DAYS
     min_expected: float = DEFAULT_MIN_EXPECTED
-    min_prev_share: float = DEFAULT_MIN_PREV_SHARE
     drop_ratio: float = DEFAULT_DROP_RATIO
     missing_ratio: float = DEFAULT_MISSING_RATIO
     sigma: float = DEFAULT_SIGMA
     growth_slack: float = DEFAULT_GROWTH_SLACK
     max_emerging_share: float = DEFAULT_MAX_EMERGING_SHARE
+    # Per-scan ``app_version_prerelease_pattern``, already compiled. Widens the
+    # always-on SemVer prerelease-tag rule for builds this project labels some
+    # other way ("15.8.0-beta.1" is caught by default; "15.8.0b1" is not).
+    prerelease_pattern: re.Pattern[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -138,10 +152,17 @@ class ReleaseRegressionReport:
     ``volume_drop``. An event that went completely silent is not something a
     different mix of users explains, and it is the one finding expensive enough
     that a false positive beats a false negative.
+
+    ``comparable`` and ``reason`` carry no defaults on purpose. They used to
+    default to ``True``/comparable, and the two paths that return before any
+    comparison happens — fewer than two released active versions, and a baseline
+    with no volume in the shared window — inherited that default and reported a
+    clean bill of health for a comparison that was never made.
     """
 
     results: list[ReleaseRegressionResult]
-    comparable: bool = True
+    comparable: bool
+    reason: str
     emerging_share: float = 0.0
     version: str | None = None
     previous_version: str | None = None
@@ -277,10 +298,19 @@ def detect_release_regressions(
         latest_bucket=latest_bucket,
         settings=settings,
     )
-    if len(activations) < 2:
-        return ReleaseRegressionReport(results=[])
+    # Prereleases are dev/tester builds and are ineligible BOTH as subject and
+    # as baseline, the same rule the app-version series applies when it picks
+    # "latest active release". Without this the two surfaces disagreed on the
+    # same scan: the chart named 15.7.4 while the regression judged
+    # 15.8.0-beta.1 and emitted a missing row against it, and with the beta as
+    # baseline a volume_drop at emerging_share=0.0 that no other gate catches.
+    # Prerelease traffic stays in ``all_traffic_by_bucket``, so the maturity
+    # denominator is unchanged — only eligibility is filtered.
+    candidates = released_versions(activations, prerelease_pattern=settings.prerelease_pattern)
+    if len(candidates) < 2:
+        return ReleaseRegressionReport(results=[], comparable=False, reason=REASON_NO_BASELINE)
 
-    ordered = order_versions(activations.keys())
+    ordered = order_versions(candidates)
     v_new = ordered[-1]
     v_prev = ordered[-2]
 
@@ -296,7 +326,13 @@ def detect_release_regressions(
     total_new = _window_sum(release_total_by_bucket.get(v_new, {}), window_from, window_to)
     total_prev = _window_sum(release_total_by_bucket.get(v_prev, {}), window_from, window_to)
     if total_prev <= 0:
-        return ReleaseRegressionReport(results=[], version=v_new, previous_version=v_prev)
+        return ReleaseRegressionReport(
+            results=[],
+            comparable=False,
+            reason=REASON_BASELINE_NO_VOLUME,
+            version=v_new,
+            previous_version=v_prev,
+        )
 
     # Comparability gate: judge nothing until the two releases describe similar
     # populations. See the note on DEFAULT_MAX_EMERGING_SHARE.
@@ -322,10 +358,39 @@ def detect_release_regressions(
         prev_count = _window_sum(by_version.get(v_prev, {}), window_from, window_to)
 
         share_prev = prev_count / total_prev
-        if share_prev < settings.min_prev_share:
-            continue
+        # No floor on ``share_prev``. A share of the BASELINE is a statement
+        # about how finely the catalog happens to be partitioned, not about
+        # evidence — the exact mistake the comparability gate above stopped
+        # making. On the 2488-event "Snowplow Events (iOS)" catalog the 0.001
+        # floor that used to sit here was ~496x stricter than ``min_expected``
+        # and dropped 145 of the 264 scopes that had enough evidence to judge,
+        # among them a live ``:open:detailed_forecast`` going 65 -> 0.
+        # ``min_expected`` is the evidence gate: it counts the events the
+        # comparison actually rests on, which is what Poisson noise depends on.
+        #
+        # It is applied TWICE, to two different quantities, because neither one
+        # alone is a floor on evidence:
+        #
+        #   * ``expected`` is what the new release's traffic implies the scope
+        #     should show. It scales with ``total_new / total_prev``, so a
+        #     release that out-traffics its baseline inflates it for free. On
+        #     live windy-ios two adjacent active releases differed 24x
+        #     (35,380,595 against 1,475,687), and there a scope seen TWICE in
+        #     the entire baseline window reaches expected 48 and emits a
+        #     "missing" row off those two sightings. The ratio only grows as the
+        #     baseline decays out of the 14-day window, so the gate loosens
+        #     exactly as the evidence thins.
+        #   * ``prev_count`` is how many times the scope was actually SEEN in
+        #     the baseline. That is the number Poisson noise is a function of,
+        #     and it is what "we know this scope's normal volume" means.
+        #
+        # The two coincide at 1:1 traffic, so this is not a tightening of
+        # today's behaviour — it is the same bar, held when the traffic ratio
+        # would otherwise dissolve it. The deleted ``min_prev_share`` floor
+        # happened to cover this case, but at the cost of scaling with catalog
+        # granularity rather than with evidence.
         expected = total_new * share_prev
-        if expected < settings.min_expected:
+        if expected < settings.min_expected or prev_count < settings.min_expected:
             continue
 
         share_new = observed / total_new
@@ -365,6 +430,7 @@ def detect_release_regressions(
     return ReleaseRegressionReport(
         results=results,
         comparable=comparable,
+        reason=REASON_COMPARABLE if comparable else REASON_POPULATION_MISMATCH,
         emerging_share=emerged,
         version=v_new,
         previous_version=v_prev,

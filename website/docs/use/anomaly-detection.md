@@ -214,11 +214,31 @@ The test is deliberately careful about young releases:
    scan's configured minimum share of total traffic (5% by default) for a couple
    of consecutive buckets — this excludes the dev/tester trickle before a
    rollout. SemVer prereleases are excluded by default, and a scan can provide a
-   custom prerelease pattern. At least two active releases must exist to compare,
-   and the newest active release must have accumulated a minimum total volume
-   before it is judged at all.
+   custom prerelease pattern; an excluded build is ineligible both as the release
+   under test and as the baseline, so a TestFlight build that happens to take
+   real traffic cannot be judged or judged against. At least two eligible active
+   releases must exist to compare, and the newest one must have accumulated a
+   minimum total volume before it is judged at all.
 2. **Fair comparison.** Counts are normalized by each release's **adoption share**, so a young release with few users isn't unfairly compared head-to-head against a mature one. For each event, the **expected** count under the new release is the previous release's share of that event applied to the new release's total volume.
-3. **Verdict.** The ratio of observed to expected decides the outcome. If an event has nearly disappeared (observed far below expected — under ~5% of expected) it is classed as **missing**; if it merely dropped substantially (roughly half or less of expected) *and* the shortfall is also large in statistical terms — observed below `expected − 3 × √expected` — it is classed as a **volume drop**. Anything in between is not flagged. Only deficits are tested; an event firing *more* in the new release is not a regression.
+3. **Evidence gate.** An event is only tested once *both* its expected count and
+   the number of times it was actually seen in the previous release clear an
+   absolute floor (30 events). The floor counts events rather than share of the
+   baseline, because a share is a statement about how finely the catalog is
+   partitioned: in a 2488-event catalog nothing reaches a percent of a release,
+   and a share floor there silently drops most of the events that have plenty of
+   evidence to judge. Both halves are needed because the expected count scales
+   with the traffic ratio between the two releases — when a rollout carries many
+   times the volume its ageing baseline still has, an event seen a handful of
+   times can imply an expectation well past the floor.
+4. **Comparability gate.** In the first hours of a rollout the two releases are
+   not drawn from the same population — everyone on the new build is a fresh
+   install working through onboarding — and normalizing by composition then makes
+   every steady-state screen look halved. When too much of the new release's
+   volume sits in scopes the baseline barely visited, the comparison is withheld
+   and the panel says **"cannot be judged yet"** with the reason, instead of
+   reporting a clean release. Events that went *completely* silent are still
+   reported: a different mix of users cannot manufacture those.
+5. **Verdict.** The ratio of observed to expected decides the outcome. If an event has nearly disappeared (observed far below expected — under ~5% of expected) it is classed as **missing**; if it merely dropped substantially (roughly half or less of expected) *and* the shortfall is also large in statistical terms — observed below `expected − 3 × √expected` — it is classed as a **volume drop**. Anything in between is not flagged. Only deficits are tested; an event firing *more* in the new release is not a regression.
 
 ## Metrics
 

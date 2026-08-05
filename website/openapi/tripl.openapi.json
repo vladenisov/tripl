@@ -26208,6 +26208,71 @@
         ],
         "title": "RelationResponse"
       },
+      "ReleaseComparabilityItem": {
+        "properties": {
+          "scope_type": {
+            "$ref": "#/components/schemas/MetricScopeType"
+          },
+          "comparable": {
+            "type": "boolean",
+            "title": "Comparable"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/ReleaseComparabilityReason"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "previous_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Version"
+          },
+          "emerging_share": {
+            "type": "number",
+            "title": "Emerging Share"
+          },
+          "max_emerging_share": {
+            "type": "number",
+            "title": "Max Emerging Share"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scope_type",
+          "comparable",
+          "reason",
+          "emerging_share",
+          "max_emerging_share"
+        ],
+        "title": "ReleaseComparabilityItem",
+        "description": "Whether one detection pass could judge the latest release at all.\n\nServed alongside ``items`` because an empty list means two different things.\nA caller that only reads ``items`` cannot tell a healthy release from one\nwhose findings were withheld, and both were served as an empty list until\nthis was carried through."
+      },
+      "ReleaseComparabilityReason": {
+        "type": "string",
+        "enum": [
+          "comparable",
+          "no_baseline",
+          "baseline_no_volume",
+          "population_mismatch"
+        ],
+        "title": "ReleaseComparabilityReason",
+        "description": "Why one release-regression pass concluded what it concluded.\n\nMirrors the ``REASON_*`` constants in\n``tripl.core.analyzers.release_regression``, which is DB-free and so cannot\nimport this; keep the two in step."
+      },
       "ReleaseRegressionItem": {
         "properties": {
           "scope_type": {
@@ -26348,6 +26413,13 @@
             ],
             "title": "Latest Version"
           },
+          "comparability": {
+            "items": {
+              "$ref": "#/components/schemas/ReleaseComparabilityItem"
+            },
+            "type": "array",
+            "title": "Comparability"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/ReleaseRegressionItem"
@@ -26359,6 +26431,7 @@
         "type": "object",
         "required": [
           "scan_config_id",
+          "comparability",
           "items"
         ],
         "title": "ReleaseRegressionsResponse"

@@ -18,29 +18,37 @@ from sqlalchemy.orm import Session
 from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT, SCOPE_EVENT_TYPE
 from tripl.core.analyzers.release_regression import (
     RegressionSettings,
+    ReleaseRegressionReport,
     ReleaseRegressionResult,
     detect_release_regressions,
 )
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
-from tripl.models.release_regression import ReleaseRegression
+from tripl.models.release_regression import ReleaseComparability, ReleaseRegression
 from tripl.models.scan_config import ScanConfig
-from tripl.services.version_activation import resolve_share_min
+from tripl.services.version_activation import compile_prerelease_pattern, resolve_share_min
 
 logger = logging.getLogger(__name__)
 
 
 def _build_regression_settings(session: Session, config: ScanConfig) -> RegressionSettings:
     """Reuse the project's ``sigma_threshold`` for the regression significance
-    test and honor the scan's ``app_version_active_share_min`` override for the
-    activation gate; everything else stays at the model defaults."""
+    test, and honor the scan's ``app_version_active_share_min`` and
+    ``app_version_prerelease_pattern`` overrides so the analyzer decides
+    eligibility on the same inputs the app-version series does; everything else
+    stays at the model defaults."""
     share_min = resolve_share_min(config.app_version_active_share_min)
+    prerelease_pattern = compile_prerelease_pattern(config.app_version_prerelease_pattern)
     project_settings = session.execute(
         select(ProjectAnomalySettings).where(ProjectAnomalySettings.project_id == config.project_id)
     ).scalar_one_or_none()
     if project_settings is None:
-        return RegressionSettings(active_share_min=share_min)
-    return RegressionSettings(sigma=project_settings.sigma_threshold, active_share_min=share_min)
+        return RegressionSettings(active_share_min=share_min, prerelease_pattern=prerelease_pattern)
+    return RegressionSettings(
+        sigma=project_settings.sigma_threshold,
+        active_share_min=share_min,
+        prerelease_pattern=prerelease_pattern,
+    )
 
 
 def _recalculate_release_regressions(
@@ -51,8 +59,13 @@ def _recalculate_release_regressions(
     evaluation_end: datetime,
 ) -> int:
     # Regressions describe the current latest release, so we always recompute
-    # from scratch. Clearing first also makes the no-op paths self-healing.
+    # from scratch. Clearing first also makes the no-op paths self-healing. The
+    # comparability verdicts go with them: a stale "not comparable yet" outliving
+    # the pass that produced it is the same lie in the other direction.
     session.execute(delete(ReleaseRegression).where(ReleaseRegression.scan_config_id == config.id))
+    session.execute(
+        delete(ReleaseComparability).where(ReleaseComparability.scan_config_id == config.id)
+    )
 
     if not config.app_version_column or not config.interval:
         session.flush()
@@ -144,6 +157,29 @@ def _recalculate_release_regressions(
             )
         return len(results)
 
+    def _persist_verdict(report: ReleaseRegressionReport, *, scope_type: str) -> None:
+        """Record the verdict, comparable or not.
+
+        Written on every pass, not only the suppressed ones: a reader can only
+        tell "this release is fine" from "this release cannot be judged yet" if
+        the affirmative is also on the record. Without a row the API cannot
+        distinguish either from "detection has never run for this scan".
+        """
+        session.add(
+            ReleaseComparability(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                scope_type=scope_type,
+                app_version_column=config.app_version_column,
+                version=report.version,
+                previous_version=report.previous_version,
+                comparable=report.comparable,
+                reason=report.reason,
+                emerging_share=report.emerging_share,
+                max_emerging_share=settings.max_emerging_share,
+            )
+        )
+
     detected = 0
     for scope_type, counts in ((SCOPE_EVENT, event_counts), (SCOPE_EVENT_TYPE, type_counts)):
         report = detect_release_regressions(
@@ -154,23 +190,26 @@ def _recalculate_release_regressions(
             settings=settings,
         )
         if not report.comparable:
-            # Not a clean bill of health: the release's population is not yet
-            # comparable to the baseline's, so the composition-normalized
-            # findings are withheld. Say so, rather than writing nothing and
-            # leaving zero rows to be read as "no regressions" (tripl-9y4l).
-            # ``report.results`` still holds any silent-event rows, which no
-            # population difference explains — those are persisted.
+            # Not a clean bill of health: either the release's population is not
+            # yet comparable to the baseline's — so the composition-normalized
+            # findings are withheld — or no comparison happened at all. Say so,
+            # rather than writing nothing and leaving zero rows to be read as
+            # "no regressions" (tripl-9y4l). ``report.results`` still holds any
+            # silent-event rows, which no population difference explains — those
+            # are persisted.
             logger.info(
-                "release regression comparison suppressed: scan=%s scope=%s %s vs %s "
-                "emerging_share=%.3f > %.3f; keeping %d missing-event row(s)",
+                "release regression comparison withheld: scan=%s scope=%s reason=%s %s vs %s "
+                "emerging_share=%.3f (bound %.3f); keeping %d missing-event row(s)",
                 config.id,
                 scope_type,
+                report.reason,
                 report.version,
                 report.previous_version,
                 report.emerging_share,
                 settings.max_emerging_share,
                 len(report.results),
             )
+        _persist_verdict(report, scope_type=scope_type)
         detected += _persist(report.results, scope_type=scope_type)
     session.flush()
     return detected

@@ -7,6 +7,7 @@ from tripl.models.domain_enums import (
     AnomalyDirection,
     DistributionDriftBand,
     MetricScopeType,
+    ReleaseComparabilityReason,
     ReleaseRegressionKind,
     ScanInterval,
 )
@@ -220,10 +221,31 @@ class ReleaseRegressionItem(BaseModel):
     window_to: datetime
 
 
+class ReleaseComparabilityItem(BaseModel):
+    """Whether one detection pass could judge the latest release at all.
+
+    Served alongside ``items`` because an empty list means two different things.
+    A caller that only reads ``items`` cannot tell a healthy release from one
+    whose findings were withheld, and both were served as an empty list until
+    this was carried through.
+    """
+
+    scope_type: MetricScopeType
+    comparable: bool
+    reason: ReleaseComparabilityReason
+    version: str | None = None
+    previous_version: str | None = None
+    emerging_share: float
+    max_emerging_share: float
+
+
 class ReleaseRegressionsResponse(BaseModel):
     scan_config_id: uuid.UUID
     app_version_column: str | None = None
     latest_version: str | None = None
+    # One entry per scope the scan evaluated (filtered by the ``scope_type``
+    # query parameter when one is given). Empty means no pass has run.
+    comparability: list[ReleaseComparabilityItem]
     items: list[ReleaseRegressionItem]
 
 
