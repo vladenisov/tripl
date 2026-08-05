@@ -29,7 +29,7 @@ from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
-from tripl.models.release_regression import ReleaseRegression
+from tripl.models.release_regression import ReleaseComparability, ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.schema_drift import SchemaDrift
@@ -2027,6 +2027,195 @@ def test_recalculate_release_regressions_flags_missing_event_idempotently(
         )
         assert len(rows_again) == 1
 
+        # The pass records that it could judge the release, not only what it
+        # found. Zero rows and a comparable verdict is a clean bill of health;
+        # zero rows and no verdict at all is not.
+        verdicts = {
+            v.scope_type: v
+            for v in (
+                session.execute(
+                    select(ReleaseComparability).where(
+                        ReleaseComparability.scan_config_id == config.id
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        }
+        assert set(verdicts) == {"event", "event_type"}
+        assert verdicts["event"].comparable is True
+        assert verdicts["event"].reason == "comparable"
+        assert verdicts["event"].version == "2.1.0"
+        assert verdicts["event"].previous_version == "2.0.0"
+        assert verdicts["event"].app_version_column == "app_version"
+        # The event-type scope has no breakdown rows of its own, but the release
+        # pair and its populations come from the shared event-level totals, so
+        # that scope is comparable too — it simply has nothing to report.
+        assert verdicts["event_type"].comparable is True
+        assert verdicts["event_type"].version == "2.1.0"
+
+
+def test_recalculate_release_regressions_records_a_withheld_verdict(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A suppressed comparison and a healthy one used to be byte-identical: no
+    rows either way, the verdict logged at INFO and dropped. The windy-ios 15.7.4
+    mix (two thirds of the rollout's volume in onboarding screens the baseline
+    barely visited) has to leave a readable trace instead."""
+    days = [datetime(2026, 1, d) for d in range(1, 11)]
+    steady = {"main": 700, "onboarding": 20, "purchase": 280}
+    fresh = {"main": 60, "onboarding": 640, "purchase": 300}
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        config.app_version_column = "app_version"
+        events = {
+            name: Event(
+                id=uuid.uuid4(),
+                project_id=config.project_id,
+                event_type_id=config.event_type_id,
+                name=f"event_name={name}",
+                description="",
+                status="implemented",
+            )
+            for name in steady
+        }
+        session.add_all(list(events.values()))
+        session.commit()
+
+        for day in days:
+            for name, count in steady.items():
+                session.add(
+                    EventMetricBreakdown(
+                        id=uuid.uuid4(),
+                        scan_config_id=config.id,
+                        event_id=events[name].id,
+                        event_type_id=None,
+                        bucket=day,
+                        breakdown_column="app_version",
+                        breakdown_value="2.0.0",
+                        is_other=False,
+                        count=count,
+                    )
+                )
+        for day in days[6:]:
+            for name, count in fresh.items():
+                session.add(
+                    EventMetricBreakdown(
+                        id=uuid.uuid4(),
+                        scan_config_id=config.id,
+                        event_id=events[name].id,
+                        event_type_id=None,
+                        bucket=day,
+                        breakdown_column="app_version",
+                        breakdown_value="2.1.0",
+                        is_other=False,
+                        count=count,
+                    )
+                )
+        session.commit()
+
+        metrics._recalculate_release_regressions(
+            session,
+            config,
+            evaluation_start=datetime(2026, 1, 1),
+            evaluation_end=datetime(2026, 1, 11),
+        )
+        session.commit()
+
+        verdict = (
+            session.execute(
+                select(ReleaseComparability).where(
+                    ReleaseComparability.scan_config_id == config.id,
+                    ReleaseComparability.scope_type == "event",
+                )
+            )
+            .scalars()
+            .one()
+        )
+        assert verdict.comparable is False
+        assert verdict.reason == "population_mismatch"
+        assert verdict.version == "2.1.0"
+        assert verdict.previous_version == "2.0.0"
+        assert verdict.emerging_share > verdict.max_emerging_share
+
+
+def test_recalculate_release_regressions_skips_prerelease_builds(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """``ScanConfig.app_version_prerelease_pattern`` reached the app-version
+    chart but not this analyzer, so the two disagreed on the same scan: the chart
+    named the shipped release while the regression judged the TestFlight build.
+    """
+    days = [datetime(2026, 1, d) for d in range(1, 11)]
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        config.app_version_column = "app_version"
+        config.app_version_prerelease_pattern = r"\+internal$"
+        login = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Login",
+            description="",
+            status="implemented",
+        )
+        filler = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Filler",
+            description="",
+            status="implemented",
+        )
+        session.add_all([login, filler])
+        session.commit()
+
+        # Two shipped releases in lockstep, plus an internal build that took real
+        # traffic and never sent Login.
+        for day in days:
+            for version, login_count, filler_count in (
+                ("2.0.0", 100, 900),
+                ("2.1.0", 100, 900),
+                ("2.2.0+internal", 0, 1000),
+            ):
+                for event, count in ((login, login_count), (filler, filler_count)):
+                    session.add(
+                        EventMetricBreakdown(
+                            id=uuid.uuid4(),
+                            scan_config_id=config.id,
+                            event_id=event.id,
+                            event_type_id=None,
+                            bucket=day,
+                            breakdown_column="app_version",
+                            breakdown_value=version,
+                            is_other=False,
+                            count=count,
+                        )
+                    )
+        session.commit()
+
+        detected = metrics._recalculate_release_regressions(
+            session,
+            config,
+            evaluation_start=datetime(2026, 1, 1),
+            evaluation_end=datetime(2026, 1, 11),
+        )
+        session.commit()
+
+        assert detected == 0
+        verdict = (
+            session.execute(
+                select(ReleaseComparability).where(
+                    ReleaseComparability.scan_config_id == config.id,
+                    ReleaseComparability.scope_type == "event",
+                )
+            )
+            .scalars()
+            .one()
+        )
+        assert verdict.version == "2.1.0"
+        assert verdict.previous_version == "2.0.0"
+
 
 def test_recalculate_release_regressions_inert_without_version_column(
     sync_session_factory: sessionmaker[Session],
@@ -2056,6 +2245,20 @@ def test_recalculate_release_regressions_inert_without_version_column(
                 window_to=datetime(2026, 1, 2),
             )
         )
+        session.add(
+            ReleaseComparability(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                scope_type="event",
+                app_version_column="app_version",
+                version="9.9.9",
+                previous_version="9.8.0",
+                comparable=False,
+                reason="population_mismatch",
+                emerging_share=0.9,
+                max_emerging_share=0.25,
+            )
+        )
         session.commit()
 
         detected = metrics._recalculate_release_regressions(
@@ -2074,6 +2277,16 @@ def test_recalculate_release_regressions_inert_without_version_column(
             .all()
         )
         assert rows == []
+        # A stale "cannot be judged yet" outliving the pass that produced it is
+        # the same lie in the other direction.
+        verdicts = (
+            session.execute(
+                select(ReleaseComparability).where(ReleaseComparability.scan_config_id == config.id)
+            )
+            .scalars()
+            .all()
+        )
+        assert verdicts == []
 
 
 def test_collect_metrics_uses_event_level_breakdown_columns(

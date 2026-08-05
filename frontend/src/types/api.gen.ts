@@ -8202,6 +8202,39 @@ export interface components {
             target_field_id: string;
         };
         /**
+         * ReleaseComparabilityItem
+         * @description Whether one detection pass could judge the latest release at all.
+         *
+         *     Served alongside ``items`` because an empty list means two different things.
+         *     A caller that only reads ``items`` cannot tell a healthy release from one
+         *     whose findings were withheld, and both were served as an empty list until
+         *     this was carried through.
+         */
+        ReleaseComparabilityItem: {
+            /** Comparable */
+            comparable: boolean;
+            /** Emerging Share */
+            emerging_share: number;
+            /** Max Emerging Share */
+            max_emerging_share: number;
+            /** Previous Version */
+            previous_version?: string | null;
+            reason: components["schemas"]["ReleaseComparabilityReason"];
+            scope_type: components["schemas"]["MetricScopeType"];
+            /** Version */
+            version?: string | null;
+        };
+        /**
+         * ReleaseComparabilityReason
+         * @description Why one release-regression pass concluded what it concluded.
+         *
+         *     Mirrors the ``REASON_*`` constants in
+         *     ``tripl.core.analyzers.release_regression``, which is DB-free and so cannot
+         *     import this; keep the two in step.
+         * @enum {string}
+         */
+        ReleaseComparabilityReason: "comparable" | "no_baseline" | "baseline_no_volume" | "population_mismatch";
+        /**
          * ReleaseRegressionItem
          * @description One event (or event type) that regressed in the latest active release.
          */
@@ -8252,6 +8285,8 @@ export interface components {
         ReleaseRegressionsResponse: {
             /** App Version Column */
             app_version_column?: string | null;
+            /** Comparability */
+            comparability: components["schemas"]["ReleaseComparabilityItem"][];
             /** Items */
             items: components["schemas"]["ReleaseRegressionItem"][];
             /** Latest Version */

@@ -1,8 +1,15 @@
+import re
 from datetime import datetime
+
+import pytest
 
 from tripl.core.analyzers.release_regression import (
     KIND_MISSING,
     KIND_VOLUME_DROP,
+    REASON_BASELINE_NO_VOLUME,
+    REASON_COMPARABLE,
+    REASON_NO_BASELINE,
+    REASON_POPULATION_MISMATCH,
     RegressionSettings,
     detect_release_regressions,
 )
@@ -230,6 +237,7 @@ def test_a_rollout_still_full_of_fresh_installs_is_not_judged_at_all() -> None:
     report = _report(*_mix(_STEADY, _FRESH_INSTALLS))
 
     assert report.comparable is False
+    assert report.reason == REASON_POPULATION_MISMATCH
     assert report.results == []
     # Two thirds of the new release's volume sits in scopes the baseline barely
     # visited, which is the whole signal.
@@ -374,3 +382,187 @@ def test_a_fine_grained_catalog_is_protected_too() -> None:
     assert largest < 0.01, "the point of the fixture is that nothing is 1% of the release"
     assert report.comparable is False
     assert report.emerging_share > 0.25
+
+
+# --- evidence gate: counts, not share of the baseline ------------------------
+
+
+def test_a_scope_far_below_a_percent_of_the_baseline_is_still_evidence() -> None:
+    """The shape a share floor on the BASELINE cannot see.
+
+    ``:open:detailed_forecast`` fired 65 times per bucket in the baseline of the
+    2488-event "Snowplow Events (iOS)" scan and went silent in the next release.
+    At that catalog size it is 0.00065 of the release, so the 0.001 share floor
+    this analyzer used to carry dropped it — along with 145 of the 264 scopes
+    that had the evidence to be judged, being ~496x stricter than ``min_expected``
+    already was. Evidence is a count: 65 per bucket against a rollout of the same
+    volume is an expected 260, far past the floor that decides now.
+    """
+    per_bucket = 100_000
+    release_total = {
+        PREV: {d: per_bucket for d in DAYS},
+        NEW: {d: per_bucket for d in NEW_DAYS},
+    }
+    all_traffic = {d: per_bucket + (per_bucket if d in NEW_DAYS else 0) for d in DAYS}
+    scope_counts = {
+        "open:detailed_forecast": {
+            PREV: {d: 65 for d in DAYS},
+            NEW: {d: 0 for d in NEW_DAYS},
+        },
+        # Everything else, so the catalog has somewhere to keep its mass.
+        "main": {
+            PREV: {d: per_bucket - 65 for d in DAYS},
+            NEW: {d: per_bucket for d in NEW_DAYS},
+        },
+    }
+    report = _report(release_total, all_traffic, scope_counts)
+
+    assert 65 / per_bucket < 0.001, "the fixture is only interesting sub-0.1%"
+    assert report.comparable is True
+    assert [(r.scope_ref, r.kind) for r in report.results] == [
+        ("open:detailed_forecast", KIND_MISSING)
+    ]
+    assert report.results[0].expected_count == pytest.approx(260.0)
+
+
+# --- a withheld verdict must stay distinguishable from a clean one -----------
+
+
+def test_a_lone_active_release_is_not_a_clean_bill_of_health() -> None:
+    """Nothing was compared, so nothing can be affirmed. This path used to
+    inherit the dataclass default ``comparable=True``, which is what made a
+    suppressed payload and a healthy payload identical."""
+    release_total = {PREV: {d: 1000 for d in DAYS}}
+    all_traffic = {d: 1000 for d in DAYS}
+    scope_counts = {"login": {PREV: {d: 100 for d in DAYS}}}
+    report = _report(release_total, all_traffic, scope_counts)
+
+    assert report.results == []
+    assert report.comparable is False
+    assert report.reason == REASON_NO_BASELINE
+    assert report.version is None and report.previous_version is None
+
+
+def test_a_baseline_with_no_volume_in_the_window_is_not_a_clean_bill_of_health() -> None:
+    """Both releases activated, but the baseline had already gone quiet by the
+    time the subject's activation anchored the comparison window, so there is no
+    composition to normalize against — the other path that used to return the
+    affirmative default."""
+    release_total = {
+        PREV: {d: 1000 for d in DAYS[:5]},
+        NEW: {d: 1000 for d in NEW_DAYS},
+    }
+    all_traffic = {d: 1000 for d in DAYS}
+    scope_counts = {
+        "login": {
+            PREV: {d: 100 for d in DAYS[:5]},
+            NEW: {d: 0 for d in NEW_DAYS},
+        }
+    }
+    report = _report(release_total, all_traffic, scope_counts)
+
+    assert report.results == []
+    assert report.comparable is False
+    assert report.reason == REASON_BASELINE_NO_VOLUME
+    assert report.version == NEW and report.previous_version == PREV
+
+
+def test_a_healthy_comparison_says_so_explicitly() -> None:
+    report = _report(*_scenario(new_login=200, new_daily_total=500))
+
+    assert report.results == []
+    assert report.comparable is True
+    assert report.reason == REASON_COMPARABLE
+
+
+# --- prerelease builds are ineligible as subject AND as baseline -------------
+
+
+def _three_way(counts_by_version: dict[str, dict[str, int]], per_bucket: int):
+    """Releases running side by side over the last four buckets, each at
+    ``per_bucket`` events per bucket with the given per-scope split."""
+    release_total = {v: {d: per_bucket for d in NEW_DAYS} for v in counts_by_version}
+    all_traffic = {d: (per_bucket * len(counts_by_version) if d in NEW_DAYS else 0) for d in DAYS}
+    scopes = {name for mix in counts_by_version.values() for name in mix}
+    scope_counts = {
+        name: {
+            version: {d: mix.get(name, 0) for d in NEW_DAYS}
+            for version, mix in counts_by_version.items()
+        }
+        for name in scopes
+    }
+    return release_total, all_traffic, scope_counts
+
+
+def test_a_prerelease_is_never_the_release_under_test() -> None:
+    """A TestFlight build that takes real traffic clears the share gate, so
+    maturity alone cannot exclude it: the app-version chart named 15.7.4 as the
+    latest active release while this analyzer judged 15.8.0-beta.1 against it
+    and emitted a missing row for an event the beta simply never sent.
+    """
+    args = _three_way(
+        {
+            "15.7.3": {"login": 40, "main": 360},
+            "15.7.4": {"login": 40, "main": 360},
+            "15.8.0-beta.1": {"login": 0, "main": 400},
+        },
+        per_bucket=400,
+    )
+    report = _report(*args)
+
+    assert report.version == "15.7.4"
+    assert report.previous_version == "15.7.3"
+    assert report.results == []
+
+
+def test_a_prerelease_is_never_the_baseline() -> None:
+    """The other half, and the more expensive one: a tester build's composition
+    is not the app's. Judged against 15.7.4-beta.1 the diagnostics screen looks
+    like a 62% volume drop, and the comparability gate scores 0.0 on it because
+    no scope in the shipped release gained on the beta — nothing else catches it.
+    """
+    beta_heavy = {"diagnostics": 800} | {f"screen/{i}": 40 for i in range(5)}
+    shipped = {"diagnostics": 300} | {f"screen/{i}": 140 for i in range(5)}
+    report = _report(
+        *_three_way(
+            {"15.7.3": shipped, "15.7.4-beta.1": beta_heavy, "15.7.4": shipped},
+            per_bucket=1000,
+        )
+    )
+
+    assert report.version == "15.7.4"
+    assert report.previous_version == "15.7.3"
+    assert report.results == []
+
+    # The same numbers with that baseline relabelled as a shipped release. The
+    # row the beta produced is real arithmetic that only eligibility withholds,
+    # not something another gate was quietly swallowing — emerging_share is 0.0,
+    # so the comparability gate had nothing to say about it.
+    as_if_released = _report(
+        *_three_way({"15.7.2": beta_heavy, "15.7.4": shipped}, per_bucket=1000)
+    )
+    assert as_if_released.emerging_share == 0.0
+    assert [(r.scope_ref, r.kind) for r in as_if_released.results] == [
+        ("diagnostics", KIND_VOLUME_DROP)
+    ]
+
+
+def test_the_scans_own_prerelease_pattern_is_honoured() -> None:
+    """``ScanConfig.app_version_prerelease_pattern`` exists for builds SemVer
+    calls released — a ``+internal`` build tag carries no prerelease component —
+    and was a no-op here until the pattern was threaded through."""
+    args = _three_way(
+        {
+            "15.7.3": {"login": 40, "main": 360},
+            "15.7.4": {"login": 40, "main": 360},
+            "15.9.0+internal": {"login": 0, "main": 400},
+        },
+        per_bucket=400,
+    )
+
+    assert _report(*args).version == "15.9.0+internal", "SemVer alone sees a released build"
+
+    report = _report(*args, RegressionSettings(prerelease_pattern=re.compile(r"\+internal$")))
+    assert report.version == "15.7.4"
+    assert report.previous_version == "15.7.3"
+    assert report.results == []

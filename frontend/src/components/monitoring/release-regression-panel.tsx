@@ -4,7 +4,7 @@ import { PackageX, TrendingDown } from 'lucide-react'
 import { metricsApi } from '@/api/metrics'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
-import type { ReleaseRegressionItem } from '@/types'
+import type { ReleaseComparabilityItem, ReleaseRegressionItem } from '@/types'
 
 interface ReleaseRegressionPanelProps {
   slug: string
@@ -14,6 +14,41 @@ interface ReleaseRegressionPanelProps {
 
 function formatCount(value: number): string {
   return Math.round(value).toLocaleString()
+}
+
+function formatPct(value: number): string {
+  return `${(value * 100).toFixed(1)}%`
+}
+
+function versionPair(verdict: ReleaseComparabilityItem): string {
+  if (!verdict.version) return ''
+  return verdict.previous_version
+    ? ` (${verdict.version} vs ${verdict.previous_version})`
+    : ` (${verdict.version})`
+}
+
+/**
+ * Why the pass could not judge the release, in the operator's terms. The
+ * backend distinguishes "no comparison happened" from "the comparison was made
+ * and withheld", and those are different things to wait for.
+ */
+function withheldReason(verdict: ReleaseComparabilityItem): string {
+  switch (verdict.reason) {
+    case 'no_baseline':
+      return 'Fewer than two released versions have taken enough traffic to compare.'
+    case 'baseline_no_volume':
+      return `The baseline release has no volume in the comparison window${versionPair(verdict)}.`
+    case 'population_mismatch':
+      return (
+        `The new release is still drawing a different population than the baseline` +
+        `${versionPair(verdict)}: ${formatPct(verdict.emerging_share)} of its volume sits in ` +
+        `scopes the baseline barely visited, above the ${formatPct(verdict.max_emerging_share)} ` +
+        `bound. Composition-normalized findings are withheld until the mix settles; events that ` +
+        `went completely silent are still reported.`
+      )
+    default:
+      return 'The latest release cannot be judged yet.'
+  }
 }
 
 function RegressionRow({ item }: { item: ReleaseRegressionItem }) {
@@ -64,6 +99,12 @@ export function ReleaseRegressionPanel({
   })
 
   const items = query.data?.items ?? []
+  const comparability = query.data?.comparability ?? []
+  // A withheld verdict on any evaluated scope means the empty list below is not
+  // a clean bill of health. Suppression keeps `missing` rows, so a withheld
+  // verdict and a non-empty list coexist and both have to be shown.
+  const withheld = comparability.filter(verdict => !verdict.comparable)
+  const judged = comparability.length > 0
 
   return (
     <Card>
@@ -86,16 +127,32 @@ export function ReleaseRegressionPanel({
           <div className="flex h-24 items-center justify-center text-sm text-muted-foreground">
             Loading regressions…
           </div>
-        ) : items.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No events regressed in the latest release.
-          </p>
         ) : (
-          <div className="divide-y">
-            {items.map(item => (
-              <RegressionRow key={`${item.scope_type}:${item.scope_ref}`} item={item} />
-            ))}
-          </div>
+          <>
+            {withheld.length > 0 && (
+              <div className="mb-4 rounded-md border border-dashed p-3">
+                <p className="text-sm font-medium">Cannot be judged yet</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {withheldReason(withheld[0])}
+                </p>
+              </div>
+            )}
+            {items.length > 0 ? (
+              <div className="divide-y">
+                {items.map(item => (
+                  <RegressionRow key={`${item.scope_type}:${item.scope_ref}`} item={item} />
+                ))}
+              </div>
+            ) : withheld.length > 0 ? null : judged ? (
+              <p className="text-sm text-muted-foreground">
+                No events regressed in the latest release.
+              </p>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No release comparison has run for this scan yet.
+              </p>
+            )}
+          </>
         )}
       </CardContent>
     </Card>

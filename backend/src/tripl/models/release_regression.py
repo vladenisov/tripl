@@ -5,6 +5,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -16,7 +17,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, UUIDMixin
-from tripl.models.domain_enums import MetricScopeType, ReleaseRegressionKind
+from tripl.models.domain_enums import (
+    MetricScopeType,
+    ReleaseComparabilityReason,
+    ReleaseRegressionKind,
+)
 from tripl.models.enum_types import db_enum
 
 
@@ -77,6 +82,52 @@ class ReleaseRegression(UUIDMixin, Base):
     release_share: Mapped[float] = mapped_column(Float)
     window_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     window_to: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+
+class ReleaseComparability(UUIDMixin, Base):
+    """Whether the latest release could be judged at all, per scan and scope.
+
+    Zero ``ReleaseRegression`` rows is two different facts — "this release is
+    fine" and "this release cannot be judged yet" — and until this table existed
+    the two payloads were byte-identical: the verdict was computed, logged at
+    INFO, and dropped. One row per (scan, scope type), rewritten by every
+    recalculation alongside the regression rows, so it always describes the same
+    pass that produced (or withheld) them.
+
+    ``version``/``previous_version`` are nullable because the release pair is
+    only known once two eligible releases were found; ``reason ==
+    no_baseline`` leaves both NULL.
+    """
+
+    __tablename__ = "release_comparabilities"
+    __table_args__ = (
+        UniqueConstraint(
+            "scan_config_id",
+            "scope_type",
+            name="uq_release_comparability_scan_scope",
+        ),
+    )
+
+    scan_config_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("scan_configs.id", ondelete="CASCADE"),
+    )
+    scope_type: Mapped[str] = mapped_column(db_enum(MetricScopeType, "metric_scope_type"))
+    app_version_column: Mapped[str] = mapped_column(String(255))
+    version: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    previous_version: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    comparable: Mapped[bool] = mapped_column(Boolean)
+    reason: Mapped[str] = mapped_column(
+        db_enum(ReleaseComparabilityReason, "release_comparability_reason")
+    )
+    emerging_share: Mapped[float] = mapped_column(Float)
+    # The bound ``emerging_share`` was tested against, stored rather than read
+    # from config at render time so the number an operator sees is the one the
+    # verdict was actually made with.
+    max_emerging_share: Mapped[float] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

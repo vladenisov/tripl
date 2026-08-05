@@ -33,7 +33,7 @@ from tripl.models.project_anomaly_settings import (
     DEFAULT_SIGMA_THRESHOLD,
     ProjectAnomalySettings,
 )
-from tripl.models.release_regression import ReleaseRegression
+from tripl.models.release_regression import ReleaseComparability, ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.data_source import DataSourceStatsResponse, DataSourceThroughputPoint
 from tripl.schemas.event_metric import (
@@ -53,6 +53,7 @@ from tripl.schemas.event_metric import (
     PlatformParityAnomaly,
     PlatformPresenceResponse,
     PlatformPresenceRow,
+    ReleaseComparabilityItem,
     ReleaseRegressionItem,
     ReleaseRegressionsResponse,
     TopEventResponse,
@@ -1172,6 +1173,10 @@ async def get_release_regressions(
     Backed by the ReleaseRegression rows the scan recomputes each run (they
     always describe the current latest release). Empty when the scan has no
     version column.
+
+    ``comparability`` carries the verdict of the same pass, so an empty
+    ``items`` can be read as either "nothing regressed" or "the release cannot
+    be judged yet"; without it the two payloads are identical.
     """
     project = await _resolve_project(session, slug)
     config = await _resolve_scan_config(session, project.id, scan_config_id)
@@ -1180,18 +1185,44 @@ async def get_release_regressions(
             scan_config_id=config.id,
             app_version_column=None,
             latest_version=None,
+            comparability=[],
             items=[],
         )
 
     stmt = select(ReleaseRegression).where(ReleaseRegression.scan_config_id == config.id)
+    verdict_stmt = select(ReleaseComparability).where(
+        ReleaseComparability.scan_config_id == config.id
+    )
     if scope_type is not None:
         stmt = stmt.where(ReleaseRegression.scope_type == scope_type)
+        verdict_stmt = verdict_stmt.where(ReleaseComparability.scope_type == scope_type)
     regressions = list((await session.execute(stmt)).scalars())
+    verdicts = sorted(
+        (await session.execute(verdict_stmt)).scalars(),
+        key=lambda v: str(v.scope_type),
+    )
+    comparability = [
+        ReleaseComparabilityItem(
+            scope_type=verdict.scope_type,
+            comparable=verdict.comparable,
+            reason=verdict.reason,
+            version=verdict.version,
+            previous_version=verdict.previous_version,
+            emerging_share=verdict.emerging_share,
+            max_emerging_share=verdict.max_emerging_share,
+        )
+        for verdict in verdicts
+    ]
+    # The verdict knows the release pair even when no row was emitted, which is
+    # exactly the case a suppressed comparison has to name.
+    judged_versions = {v.version for v in verdicts if v.version is not None}
     if not regressions:
+        candidates = judged_versions
         return ReleaseRegressionsResponse(
             scan_config_id=config.id,
             app_version_column=config.app_version_column,
-            latest_version=None,
+            latest_version=order_versions(candidates)[-1] if candidates else None,
+            comparability=comparability,
             items=[],
         )
 
@@ -1221,7 +1252,7 @@ async def get_release_regressions(
             return type_names.get(regression.event_type_id, regression.scope_ref)
         return regression.scope_ref
 
-    latest_version = order_versions({r.version for r in regressions})[-1]
+    latest_version = order_versions({r.version for r in regressions} | judged_versions)[-1]
     # Missing events first, then by severity (lowest ratio = worst).
     ordered = sorted(regressions, key=lambda r: (0 if r.kind == "missing" else 1, r.ratio))
     items = [
@@ -1249,6 +1280,7 @@ async def get_release_regressions(
         scan_config_id=config.id,
         app_version_column=config.app_version_column,
         latest_version=latest_version,
+        comparability=comparability,
         items=items,
     )
 
