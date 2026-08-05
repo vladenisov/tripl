@@ -1249,6 +1249,141 @@ def test_send_alert_delivery_falls_back_from_telegram_markdownv2_to_plain(
     engine.dispose()
 
 
+def test_send_alert_delivery_retries_a_too_long_telegram_message_smaller(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Telegram's 4096 rejection is not a parse error and must not be retried as-is.
+
+    ``last_notified_at`` is stamped only on a successful send while the re-send
+    gate reads NULL as "never told them", so an unhandled rejection means the
+    identical oversized body is rebuilt and refused on every collection,
+    forever. Re-rendering as PLAIN — what the parse-error arm does — makes a
+    long message longer, so this needs its own arm with a smaller budget.
+    """
+    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_too_long.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    sent_payloads: list[dict[str, object]] = []
+
+    with sync_session_factory() as session:
+        project = Project(
+            id=uuid.uuid4(),
+            name="Alert Runtime",
+            slug="alert-runtime",
+            description="",
+        )
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="Runtime DS",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project.id,
+            name="Runtime Scan",
+            base_query="SELECT * FROM events",
+            time_column="created_at",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        destination = AlertDestination(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            type="telegram",
+            name="Ops Bot",
+            enabled=True,
+            bot_token_encrypted="123456:ABC_def",
+            chat_id="-100123",
+        )
+        rule = AlertRule(
+            id=uuid.uuid4(),
+            destination_id=destination.id,
+            name="Main Rule",
+            enabled=True,
+            message_template="[tripl] ${matched_count} alerts\n${items_text}",
+            message_format="plain",
+        )
+        delivery = AlertDelivery(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            scan_config_id=scan_config.id,
+            destination_id=destination.id,
+            rule_id=rule.id,
+            channel="telegram",
+            status="pending",
+            matched_count=40,
+            payload_snapshot={},
+        )
+        session.add_all([project, data_source, scan_config, destination, rule, delivery])
+        # Enough items, with long enough names, to blow past 4096 characters.
+        for index in range(40):
+            session.add(
+                AlertDeliveryItem(
+                    id=uuid.uuid4(),
+                    delivery_id=delivery.id,
+                    scope_type="event",
+                    scope_ref=f"event-{index}",
+                    scope_name=f"checkout:step:{'x' * 60}:{index}",
+                    bucket=datetime(2026, 4, 11, 9, tzinfo=UTC),
+                    direction="drop",
+                    actual_count=10,
+                    expected_count=20,
+                    absolute_delta=10,
+                    percent_delta=50,
+                    details_path=None,
+                    monitoring_path=None,
+                )
+            )
+        session.commit()
+        delivery_id = str(delivery.id)
+
+    def rejecting_post_json(url: str, body: dict[str, object]) -> None:
+        sent_payloads.append(body)
+        # Reject only the first body, in Telegram's own wording.
+        if len(sent_payloads) == 1:
+            raise ValueError(
+                "HTTP 400 from https://api.telegram.org/bot***/sendMessage: "
+                "Bad Request: message is too long"
+            )
+
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_post_json",
+        rejecting_post_json,
+    )
+
+    result = metrics.send_alert_delivery.run(delivery_id)
+
+    assert result["status"] == "sent"
+    assert len(sent_payloads) == 2
+    retried = str(sent_payloads[1]["text"])
+    # Strictly smaller than what was refused, and inside the ceiling.
+    assert len(retried) < len(str(sent_payloads[0]["text"]))
+    assert len(retried) <= 4096
+
+    with sync_session_factory() as session:
+        persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert persisted is not None
+        assert persisted.status == AlertDeliveryStatus.sent.value
+        assert persisted.payload_snapshot is not None
+        assert persisted.payload_snapshot["fallback_reason"] == "telegram_message_too_long"
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
 def test_send_alert_delivery_posts_generic_webhook(
     tmp_path,
     monkeypatch,

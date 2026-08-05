@@ -67,13 +67,16 @@ from tripl.worker.tasks.alerts_digest import (
     send_weekly_plan_digest,
 )
 from tripl.worker.tasks.alerts_messages import (
+    TELEGRAM_MESSAGE_MAX_CHARS,
     _append_ai_explanation,
     _build_ai_explanation,
     _build_email_subject,
     _build_ticket_subject,
     _build_webhook_payload,
     _is_telegram_markdown_parse_error,
+    _is_telegram_message_too_long_error,
     _render_delivery_message,
+    _telegram_items_max_chars,
 )
 
 logger = logging.getLogger(__name__)
@@ -357,6 +360,65 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                     delivery.payload_snapshot = payload_snapshot
                     rendered_message = fallback_text
                     message_format = fallback_format
+                elif _is_telegram_message_too_long_error(exc):
+                    # Deliberately not folded into the parse arm above:
+                    # re-rendering a too-long body as plain text makes it
+                    # LONGER, not shorter. The renderer already budgets
+                    # items_text against reserves for the header and the AI
+                    # note, but those reserves are estimates over a user-set
+                    # template and generated prose, so an overshoot remains
+                    # possible. Unhandled it is not a one-off failure:
+                    # last_notified_at is stamped only on a successful send and
+                    # the re-send gate reads NULL as "never told them", so the
+                    # identical oversized body is rebuilt and re-rejected on
+                    # every collection, forever.
+                    #
+                    # Retry once on a budget that is GUARANTEED smaller. The
+                    # obvious arithmetic — subtract the overshoot from the item
+                    # allowance — is not enough on its own: Telegram measures
+                    # its 4096 in UTF-16 code units while len() counts code
+                    # points, so a body carrying emoji or non-Latin text can
+                    # measure comfortably under the ceiling here and still be
+                    # refused there, leaving the overshoot zero or negative and
+                    # the "retry" byte-identical. Take whichever is smaller,
+                    # that ceiling or three quarters of what was just refused,
+                    # so the second attempt always shrinks. A second rejection
+                    # raises: visibly failed beats silently looping.
+                    overshoot = len(rendered_message) - TELEGRAM_MESSAGE_MAX_CHARS
+                    tightened = min(
+                        _telegram_items_max_chars(ai_explanation_enabled=bool(ai_explanation))
+                        - max(overshoot, 0),
+                        len(rendered_message) * 3 // 4,
+                    )
+                    shorter_text, shorter_format = _render_delivery_message(
+                        delivery,
+                        destination=destination,
+                        rule=rule,
+                        scan_name=scan_config.name,
+                        project=project,
+                        session=None,
+                        item_context_cache=item_context_cache,
+                        metric_units_cache=metric_units_cache,
+                        items_max_chars=max(tightened, 0),
+                    )
+                    if ai_explanation:
+                        shorter_text = _append_ai_explanation(
+                            shorter_text,
+                            ai_explanation,
+                            shorter_format,
+                        )
+                    _send_telegram_message(
+                        bot_token,
+                        chat_id,
+                        shorter_text,
+                        message_format=shorter_format,
+                    )
+                    payload_snapshot["fallback_reason"] = "telegram_message_too_long"
+                    payload_snapshot["message_format"] = shorter_format
+                    payload_snapshot["rendered_message"] = shorter_text
+                    delivery.payload_snapshot = payload_snapshot
+                    rendered_message = shorter_text
+                    message_format = shorter_format
                 else:
                     raise
         elif destination.type == AlertDestinationType.webhook:

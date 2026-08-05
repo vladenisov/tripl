@@ -220,6 +220,17 @@ messages, because Telegram rejects a message over 4,096 characters outright.
 Nothing is dropped — every match still reaches you, across as many messages as it
 takes. Other channels have no comparable limit and keep one delivery per rule.
 
+Should a message still come back too long — a custom item template, or an
+unusually long AI note — it is re-rendered once with a smaller item budget and
+sent. Only then does the delivery fail, which is deliberate: a failure is
+visible in the Inbox and can be retried, whereas silently rebuilding the same
+rejected message every collection is not.
+
+Release-regression items carry no recent-trend sparkline. The numbers on those
+lines describe one release's cohort over the rollout window, and the only trend
+available is the event's all-versions volume over a different window — a glyph
+that would rise while the line above it says the event dropped.
+
 The **Inbox** is one row per **incident** — a rule firing in one direction on one
 scope of a scan — over the last 30 days. An incident stays the same row for as
 long as it keeps firing, however many buckets it spans, so a decision you make

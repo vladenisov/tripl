@@ -228,9 +228,17 @@ def _touch_correlation_state(
 #
 # Sized off the 29 Telegram deliveries windy-ios has ever sent ("TG dev",
 # default templates, AI note attached): least squares over their
-# (matched_count, rendered chars) gives 400 chars per item on a 516-char base,
-# so 4096 is crossed just under 9 items — and on the widest base observed (682,
+# (matched_count, rendered chars) gave 400 chars per item on a 516-char base,
+# which crosses 4096 just under 9 items — and on the widest base observed (682,
 # the AI note varies) exactly at 8.
+#
+# Those renders PREDATE aafa632, which collapsed the duplicate
+# details/monitoring line when both resolve to the same page — worth about 90
+# characters per item on an event scope, so the honest present-day crossover is
+# nearer 13 than 9. Keeping 8 anyway: the per-item cost varies fourfold with
+# which optional lines an item carries (97-389 chars across those same
+# deliveries), the item template is user-editable, and being early with a second
+# message costs nothing while being late costs the whole delivery.
 #
 # No delivery that large exists yet: the biggest real one is 5 items / 2420
 # chars, because volume scopes could not alert at all (see

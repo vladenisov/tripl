@@ -38,7 +38,12 @@ export interface OverviewKpiSeries {
 }
 
 export interface MonitoringSignal {
-  scan_config_id: string
+  // NULL for `metric`-scope signals: catalog MetricDefinition series are
+  // project-global and belong to no single scan config. The backend has always
+  // said so (MetricSignalResponse.scan_config_id is `uuid.UUID | None`); this
+  // declaration claimed otherwise, so a consumer could treat it as a string,
+  // typecheck, and meet a null at runtime.
+  scan_config_id: string | null
   scope_type: MetricScopeType
   scope_ref: string
   state: 'latest_scan' | 'recent'

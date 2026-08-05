@@ -110,7 +110,10 @@ def load_recent_metric_points(
     until: datetime,
     width: int = SPARKLINE_WIDTH,
 ) -> list[int]:
-    """Last `width` bucket counts for the scope, ending at `until`."""
+    """Last `width` bucket counts for the scope, ending at `until`.
+
+    Empty for any scope EventMetric is not keyed by — see the closing branch.
+    """
     if scope_type == SCOPE_PROJECT_TOTAL:
         query = (
             select(EventMetric.bucket, func.sum(EventMetric.count))
@@ -140,7 +143,7 @@ def load_recent_metric_points(
             .order_by(EventMetric.bucket.desc())
             .limit(width)
         )
-    else:
+    elif scope_type == SCOPE_EVENT:
         try:
             event_id = uuid.UUID(scope_ref)
         except ValueError:
@@ -155,6 +158,34 @@ def load_recent_metric_points(
             .order_by(EventMetric.bucket.desc())
             .limit(width)
         )
+    else:
+        # EventMetric is keyed only by the three scopes above, and this branch
+        # used to fall through to the event query regardless of scope_type.
+        #
+        # For release_regression that fall-through resolved: the scope_ref of a
+        # ReleaseRegression is the event id (or, for event-type-scoped rows, the
+        # event type id — see _recalculate_release_regressions, which persists
+        # both). So an event-scoped regression got a real series and an
+        # event-type-scoped one got an empty string, from the same branch.
+        #
+        # The series it did return was the wrong one. Delivery d4d8cf9e plotted
+        # event 204494b8 across ALL app versions over the last 24 hourly buckets,
+        # under a headline (actual 15403 vs expected 32048, "dropped 51.9%")
+        # computed from the 15.7.4 cohort alone over window_from → window_to —
+        # 42 hours on the current live row. Different series, different scale,
+        # different window: the printed glyphs peaked at the series maximum (█)
+        # directly beneath the 51.9% drop.
+        #
+        # The alternative was to plot the real cohort from EventMetricBreakdown,
+        # which does carry per-version counts. Rejected: a new release's raw
+        # hourly volume tracks its adoption ramp, so that line climbs while the
+        # composition-normalized deficit in the headline widens — the same
+        # contradiction in a new disguise. An honest release-regression trend is
+        # the per-bucket observed/expected ratio, which has to be computed rather
+        # than looked up, and is a detection-side change. Until it exists, show
+        # nothing: _build_ai_explanation already omits the trend for this scope,
+        # so this makes the human template agree with the model's view.
+        return []
 
     rows = session.execute(query).all()
     # Restore chronological order (oldest → newest) for the sparkline.

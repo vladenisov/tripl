@@ -430,11 +430,18 @@ signal would otherwise show an identical, low-information value. When one incide
 the child rows (event type / event) are still shown and tagged `part of total`
 rather than folded into the project-total row. A **magnitude filter**
 (All / Significant / Major, defaulting to **Significant**) trims the list by
-relative effect (`|actual − expected| / max(expected, 1)`). The sidebar and top-bar
-badge, the Overview **Open signals** stat, and this page all report the **same**
-number — open signals across every scope that clear the Significant threshold — so
-the badge agrees with the list rather than reading lower. Sensitivity is tuned in
-**Monitoring settings** (see [How anomaly detection works](./anomaly-detection.md)).
+relative effect (`|actual − expected| / max(expected, 1)`). A **scan filter** sits
+beside it whenever signals come from more than one scan, with a count on each
+option, so a large legacy scan cannot bury a smaller live one purely by watching
+more events; catalog metrics are project-wide rather than scan-bound and get
+their own option. Both filters narrow the list already in memory — no extra
+request — and the counts on the scan options are taken from the whole stream, so
+raising the magnitude cannot make the option you are standing on disappear. The
+sidebar and top-bar badge, the Overview **Open signals** stat, and this page all
+report the **same** number — open signals across every scope that clear the
+Significant threshold — so the badge agrees with the list rather than reading
+lower. Sensitivity is tuned in **Monitoring settings** (see
+[How anomaly detection works](./anomaly-detection.md)).
 
 ### Chart annotations
 
