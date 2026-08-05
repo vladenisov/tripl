@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from math import isclose, pi, sin, sqrt
 
@@ -1056,12 +1057,15 @@ def test_phase_expectation_relevels_within_one_short_cycle() -> None:
     ]
     interval = timedelta(hours=1)
 
+    slots = list(range(len(counts)))  # contiguous grid: slot == list index
+
     def phase_at(offset: int, *, level_window: int | None = None) -> DetectedAnomaly | None:
         idx = shift_hour + offset
-        period = _select_phase_period(interval, idx)
+        period = _select_phase_period(interval, slots[idx])
         assert period == 24 * 7  # the hour-of-week baseline is what regressed
         return _phase_anomaly_at(
             counts,
+            slots,
             idx,
             SeriesPoint(bucket=_bucket(idx), count=counts[idx]),
             period,
@@ -1194,3 +1198,163 @@ def test_flat_series_decomposition_matches_the_fitted_one() -> None:
         )
         == []
     )
+
+
+# --------------------------------------------------------------------------
+# Phase is a position on the time grid, not a position in the list
+# --------------------------------------------------------------------------
+
+
+def test_uncovered_bucket_does_not_rotate_the_seasonal_phase() -> None:
+    """A single missing collection must not change the verdict on a clean series.
+
+    ``expand_series`` drops a bucket the scan never covered, so every later
+    bucket moves one position down the list. Selecting same-phase partners by
+    list position then compares 17:00 against the previous day's 16:00, and the
+    seasonal step between the two hours is scored as a real event. On windy-ios
+    with the live settings, deleting one bucket turned 0 anomalies into 2 spikes
+    (08-02 05:00 z=+4.7, 08-03 05:00 z=+4.3); on this series it produced a
+    z=+35 spike at 09:00 plus three drops at the other shape boundaries.
+    """
+    hours = 24 * 28
+    hole = 24 * 26 + 17  # inside the last three days, so partners straddle it
+    points = [point for point in _four_weeks() if point.bucket != _bucket(hole)]
+    covered = {_bucket(hour) for hour in range(hours) if hour != hole}
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(hours - 24),  # the whole last day
+        evaluation_end=_bucket(hours),
+        settings=SETTINGS,
+        covered_buckets=covered,
+    )
+
+    assert anomalies == []
+
+    # ...and the quiet is not bought by going blind: with the same hole present,
+    # a 4x spike at the daily peak is still flagged.
+    peak_hour = hours - 14  # 10:00 on the last day, normally the daily peak
+    spiked = [
+        SeriesPoint(
+            bucket=_bucket(hour),
+            count=_weekly_pattern_count(hour) * (4 if hour == peak_hour else 1),
+        )
+        for hour in range(hours)
+        if hour != hole
+    ]
+
+    spike_anomalies = detect_anomalies(
+        spiked,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(peak_hour),
+        evaluation_end=_bucket(peak_hour + 1),
+        settings=SETTINGS,
+        covered_buckets=covered,
+    )
+
+    assert [anomaly.direction for anomaly in spike_anomalies] == ["spike"]
+
+
+# --------------------------------------------------------------------------
+# A silent scope announces once (tripl-jfm3.46 continued)
+# --------------------------------------------------------------------------
+
+# The window arithmetic the metrics worker uses for an hourly scan config:
+# evaluation_end = time_to, evaluation_start = time_to - 30 buckets,
+# history_from = evaluation_start - required_history_buckets(1h), and a 2-hour
+# ingestion allowance rounded to 2 buckets. Reproduced here because the dead-scope
+# behavior only appears at this geometry: 504 buckets of history is what pins the
+# phase period at hour-of-week for every bucket production ever evaluates.
+_LIVE_SETTINGS = AnomalyDetectionSettings(
+    baseline_window_buckets=14,
+    min_history_buckets=7,
+    sigma_threshold=4.0,
+    min_expected_count=50,
+)
+_TRAILING_REEVAL_BUCKETS = 30
+_LIVE_SETTLING_BUCKETS = 2
+_DEATH_HOUR = 24 * 40
+
+
+def _production_window(
+    count_at: Callable[[int], float], *, newest_hour: int
+) -> tuple[list[SeriesPoint], datetime, datetime]:
+    history = required_history_buckets(timedelta(hours=1), _LIVE_SETTINGS)
+    first_hour = newest_hour - (history + _TRAILING_REEVAL_BUCKETS)
+    points = [
+        SeriesPoint(bucket=_bucket(hour), count=count_at(hour))
+        for hour in range(first_hour, newest_hour)
+    ]
+    return points, _bucket(newest_hour - _TRAILING_REEVAL_BUCKETS), _bucket(newest_hour)
+
+
+def _dead_event_count(hour: int) -> float:
+    """A high-volume weekly-seasonal event that stops emitting at _DEATH_HOUR."""
+    return 0.0 if hour >= _DEATH_HOUR else float(_weekly_pattern_count(hour) * 10)
+
+
+def _scan_at(count_at: Callable[[int], float], newest_hour: int) -> list[DetectedAnomaly]:
+    points, evaluation_start, evaluation_end = _production_window(count_at, newest_hour=newest_hour)
+    return detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=evaluation_start,
+        evaluation_end=evaluation_end,
+        settings=_LIVE_SETTINGS,
+        settling_buckets=_LIVE_SETTLING_BUCKETS,
+    )
+
+
+def test_dead_scope_is_announced_once_then_stays_quiet() -> None:
+    """A scope that stopped emitting is one incident, not one per bucket per scan.
+
+    Every silent bucket scores identically forever: ``_seasonal_factors`` yields
+    ``current_level == 0`` once the trailing cycle is all zeros, so the phase
+    expectation falls back to the raw same-phase median — the level the scope had
+    before it died — and z pins at -1/_PHASE_STDDEV_FLOOR_RATIO = -20.00. The
+    trend-shift detector used to be the only thing suppressing those rows, and it
+    claims a run only while the deseasonalized trend still clears
+    ``min_expected_count``, so the row count was non-monotone: on this series 4
+    rows at 6h of death, 26 at 48h, 0 at 96h, 28 at 168h.
+
+    Anchored on the run's first silent bucket instead, the incident is announced
+    once, at the bucket where the scope went quiet, and every later scan of the
+    same outage writes nothing.
+    """
+    onset_in_window = _scan_at(_dead_event_count, _DEATH_HOUR + 6)
+
+    assert len(onset_in_window) == 1
+    assert onset_in_window[0].bucket == _bucket(_DEATH_HOUR)
+    assert onset_in_window[0].direction == "drop"
+    assert onset_in_window[0].actual_count == 0
+
+    # Once the onset leaves the 30-bucket re-evaluation window the persisted row
+    # is frozen where it was written, and nothing new is emitted for the outage.
+    for age_hours in (48, 168):
+        assert _scan_at(_dead_event_count, _DEATH_HOUR + age_hours) == []
+
+
+def test_revived_scope_that_dies_again_is_announced_again() -> None:
+    """The anchor is released by the scope emitting again, not by the clock.
+
+    A second death must stay distinguishable even though the level it falls from
+    is a fifth of the original — that is what keeps 'announce once' from turning
+    into 'announce once, ever'. The revival ends the first run, and the first
+    bucket of the second silent run is a new anchor with its own row.
+    """
+    revival_hour = _DEATH_HOUR + 24 * 5
+    second_death_hour = revival_hour + 24 * 4
+
+    def count_at(hour: int) -> float:
+        if hour < _DEATH_HOUR:
+            return float(_weekly_pattern_count(hour) * 10)
+        if hour < revival_hour or hour >= second_death_hour:
+            return 0.0
+        return float(_weekly_pattern_count(hour) * 2)  # back, at a fifth of before
+
+    anomalies = _scan_at(count_at, second_death_hour + 6)
+
+    assert len(anomalies) == 1
+    assert anomalies[0].bucket == _bucket(second_death_hour)
+    assert anomalies[0].direction == "drop"
