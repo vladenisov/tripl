@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -345,12 +346,38 @@ def _fit_components(
     return _fit_components_cached(tuple(counts), interval)
 
 
-def _select_phase_period(interval: timedelta, idx: int) -> int | None:
-    """Longest phase period with >= _MIN_PHASE_CYCLES same-phase observations
-    strictly before ``idx`` (so the baseline never includes the point itself)."""
+def _grid_slots(points: Sequence[SeriesPoint], interval: timedelta) -> list[int]:
+    """Position of each point on the interval grid, counted from the first point.
+
+    The analyzed list is NOT the grid: ``expand_series`` omits buckets a scan
+    never covered and ``_present_series`` omits buckets that carry no value, so
+    the list index of a bucket shifts by one for every hole before it. Phase
+    (same hour-of-day / hour-of-week) partners must be selected on the grid
+    position, never on the list index — with one hourly collection missing, an
+    index-keyed baseline compares 05:00 against the previous day's 04:00 and
+    scores the resulting mismatch as a real event. Replayed over the real
+    windy-ios project_total series with that project's live settings, marking a
+    single bucket uncovered turned 0 anomalies into 2 spikes (08-04 04:00 z=+4.2,
+    08-04 05:00 z=+4.8) — the same two rows for every one of five hole positions
+    between 4h and 100h before the window, because what fires is the phase
+    rotation, not the hole.
+
+    Slots are relative to the first analyzed bucket rather than to an absolute
+    epoch: a phase partner is any bucket whose slot distance is a multiple of
+    the period, which is the same set whatever origin is chosen, and the count
+    of elapsed cycles (``slot // period``) stays meaningful. On a contiguous
+    grid ``slots[i] == i``, so nothing about today's behavior changes.
+    """
+    origin = points[0].bucket
+    return [(point.bucket - origin) // interval for point in points]
+
+
+def _select_phase_period(interval: timedelta, slot: int) -> int | None:
+    """Longest phase period with >= _MIN_PHASE_CYCLES cycles of grid elapsed
+    before ``slot`` (so the baseline never includes the point itself)."""
     interval_seconds = int(interval.total_seconds())
     for period in _PHASE_PERIODS_BY_INTERVAL_SECONDS.get(interval_seconds, ()):
-        if idx // period >= _MIN_PHASE_CYCLES:
+        if slot // period >= _MIN_PHASE_CYCLES:
             return period
     return None
 
@@ -411,8 +438,25 @@ def _phase_level_window(interval: timedelta, period: int) -> int:
     return min(period, min(candidates)) if candidates else period
 
 
+def _same_phase_indices(slots: Sequence[int], idx: int, period: int) -> list[int]:
+    """Indices strictly before ``idx`` that sit at the same phase of the grid."""
+    phase = slots[idx] % period
+    return [j for j in range(idx) if slots[j] % period == phase]
+
+
+def _trailing_window(
+    counts: Sequence[float], slots: Sequence[int], idx: int, span: int
+) -> list[float]:
+    """Counts within ``span`` grid slots ending at (and including) ``idx``.
+
+    Sliced by grid distance rather than by list position so a hole in the series
+    shortens the window instead of silently stretching it over more real time.
+    """
+    return list(counts[bisect_left(slots, slots[idx] - span + 1) : idx + 1])
+
+
 def _seasonal_factors(
-    counts: list[float], idx: int, period: int, level_window: int
+    counts: list[float], slots: Sequence[int], idx: int, period: int, level_window: int
 ) -> tuple[list[float], float]:
     """Level-normalized seasonal factors for ``idx``'s phase, and the current level.
 
@@ -426,21 +470,24 @@ def _seasonal_factors(
     ``_phase_level_window`` for why the window is one SHORT cycle rather than the
     full phase period. Cycles whose level is 0 (all-zero history) contribute no
     factor.
+
+    Both the partner selection and the two level windows are keyed on the grid
+    slot (``_grid_slots``), so a missing bucket cannot rotate the phase.
     """
-    same_phase = [j for j in range(idx) if j % period == idx % period]
     factors: list[float] = []
-    for j in same_phase:
-        cycle = counts[max(0, j - level_window + 1) : j + 1]
+    for j in _same_phase_indices(slots, idx, period):
+        cycle = _trailing_window(counts, slots, j, level_window)
         level = fmean(cycle) if cycle else 0.0
         if level > 0:
             factors.append(counts[j] / level)
-    current_cycle = counts[max(0, idx - level_window) : idx]
+    current_cycle = counts[bisect_left(slots, slots[idx] - level_window) : idx]
     current_level = fmean(current_cycle) if current_cycle else 0.0
     return factors, current_level
 
 
 def _phase_anomaly_at(
     counts: list[float],
+    slots: Sequence[int],
     idx: int,
     point: SeriesPoint,
     period: int,
@@ -464,11 +511,11 @@ def _phase_anomaly_at(
     shift, while a genuine one-bucket spike still stands out (the current level,
     a trailing full short cycle, barely moves). Degenerate all-zero history falls
     back to the raw same-phase median, so brand-new series behave as before."""
-    same_phase = [counts[j] for j in range(idx) if j % period == idx % period]
+    same_phase = [counts[j] for j in _same_phase_indices(slots, idx, period)]
     if not same_phase:
         return None
 
-    factors, current_level = _seasonal_factors(counts, idx, period, level_window)
+    factors, current_level = _seasonal_factors(counts, slots, idx, period, level_window)
     if factors and current_level > 0:
         expected_count = median(factors) * current_level
         scale = _robust_scale(factors) * current_level
@@ -533,7 +580,9 @@ def _detect_trend_shift(
     seasonal cycle ago, scaled by the robust spread of residuals.
     """
     trend, seasonal, residuals = components
-    period = _select_phase_period(interval, len(expanded) - 1)
+    slots = _grid_slots(expanded, interval)
+    index_by_slot = {slot: index for index, slot in enumerate(slots)}
+    period = _select_phase_period(interval, slots[-1])
     if period is None:
         return TrendShiftResult(anomalies=[], shifted_buckets=frozenset())
 
@@ -551,16 +600,20 @@ def _detect_trend_shift(
     # one incident, one row, dated when it began.
     run_start_idx: int | None = None
     for idx, point in enumerate(expanded):
-        if idx < period:
+        # "One period ago" is a position on the GRID, not ``idx - period``: with
+        # a bucket missing, the list offset lands on a neighbouring hour and the
+        # comparison is no longer like-with-like. A bucket whose partner was
+        # never collected has no comparison to make and is skipped.
+        previous_idx = index_by_slot.get(slots[idx] - period)
+        if previous_idx is None:
             continue
 
-        pre_shift_level = trend[idx - period]
+        pre_shift_level = trend[previous_idx]
         if trend[idx] < settings.min_expected_count:
             run_start_idx = None
             continue
 
-        window_start = max(0, idx - period)
-        scale = _robust_scale(residuals[window_start:idx])
+        scale = _robust_scale(residuals[previous_idx:idx])
         effective_stddev = _effective_stddev(
             scale,
             trend[idx],
@@ -778,6 +831,7 @@ def detect_anomalies(
     )
     is_count_shaped = fill_gaps
     counts = [point.count for point in expanded]
+    slots = _grid_slots(expanded, interval)
 
     # Silent-series early exit (tripl-h353): when no gate can realistically be
     # cleared, skip the per-bucket loop and the ~1s robust MSTL fit below — on
@@ -813,14 +867,17 @@ def detect_anomalies(
         # not a point anomaly — defer it to the trend-shift path instead of
         # flagging every rung (tripl-dmch.17).
         if not is_count_shaped and _continues_monotonic_trend(counts, idx):
-            has_phase_period = has_phase_period or _select_phase_period(interval, idx) is not None
+            has_phase_period = (
+                has_phase_period or _select_phase_period(interval, slots[idx]) is not None
+            )
             continue
 
-        period = _select_phase_period(interval, idx)
+        period = _select_phase_period(interval, slots[idx])
         if period is not None:
             has_phase_period = True
             anomaly = _phase_anomaly_at(
                 counts,
+                slots,
                 idx,
                 point,
                 period,
@@ -844,31 +901,31 @@ def detect_anomalies(
         if anomaly is not None:
             primary.append(anomaly)
 
-    if not has_phase_period:
-        return _merge_anomalies(primary)
-
-    components = _fit_components(counts, interval=interval)
+    components = _fit_components(counts, interval=interval) if has_phase_period else None
     if components is None:
-        return _merge_anomalies(primary)
+        merged = _merge_anomalies(primary)
+    else:
+        trend = _detect_trend_shift(
+            expanded,
+            components,
+            evaluation_start=evaluation_start,
+            settings=settings,
+            interval=interval,
+            stddev_absolute_floor=stddev_absolute_floor,
+            emission_end=emission_end,
+        )
+        # Every bucket inside a shifted run describes the SAME incident as the
+        # single trend row anchored at that run's start, so its per-bucket row is
+        # dropped rather than merged (tripl-jfm3.46). Without this a sustained
+        # level change keeps clearing the per-bucket sigma bar for as long as the
+        # baseline takes to re-level, and the incident re-enters the signal list
+        # every scan.
+        settled_primary = [
+            anomaly for anomaly in primary if anomaly.bucket not in trend.shifted_buckets
+        ]
+        merged = _merge_anomalies(settled_primary, trend.anomalies)
 
-    trend = _detect_trend_shift(
-        expanded,
-        components,
-        evaluation_start=evaluation_start,
-        settings=settings,
-        interval=interval,
-        stddev_absolute_floor=stddev_absolute_floor,
-        emission_end=emission_end,
-    )
-    # Every bucket inside a shifted run describes the SAME incident as the single
-    # trend row anchored at that run's start, so its per-bucket row is dropped
-    # rather than merged (tripl-jfm3.46). Without this a sustained level change
-    # keeps clearing the per-bucket sigma bar for as long as the baseline takes
-    # to re-level, and the incident re-enters the signal list every scan.
-    settled_primary = [
-        anomaly for anomaly in primary if anomaly.bucket not in trend.shifted_buckets
-    ]
-    return _merge_anomalies(settled_primary, trend.anomalies)
+    return merged
 
 
 def forecast_next_buckets(

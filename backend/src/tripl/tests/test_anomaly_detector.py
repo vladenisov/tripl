@@ -1056,12 +1056,15 @@ def test_phase_expectation_relevels_within_one_short_cycle() -> None:
     ]
     interval = timedelta(hours=1)
 
+    slots = list(range(len(counts)))  # contiguous grid: slot == list index
+
     def phase_at(offset: int, *, level_window: int | None = None) -> DetectedAnomaly | None:
         idx = shift_hour + offset
-        period = _select_phase_period(interval, idx)
+        period = _select_phase_period(interval, slots[idx])
         assert period == 24 * 7  # the hour-of-week baseline is what regressed
         return _phase_anomaly_at(
             counts,
+            slots,
             idx,
             SeriesPoint(bucket=_bucket(idx), count=counts[idx]),
             period,
@@ -1194,3 +1197,59 @@ def test_flat_series_decomposition_matches_the_fitted_one() -> None:
         )
         == []
     )
+
+
+# --------------------------------------------------------------------------
+# Phase is a position on the time grid, not a position in the list
+# --------------------------------------------------------------------------
+
+
+def test_uncovered_bucket_does_not_rotate_the_seasonal_phase() -> None:
+    """A single missing collection must not change the verdict on a clean series.
+
+    ``expand_series`` drops a bucket the scan never covered, so every later
+    bucket moves one position down the list. Selecting same-phase partners by
+    list position then compares 17:00 against the previous day's 16:00, and the
+    seasonal step between the two hours is scored as a real event. On windy-ios
+    with the live settings, deleting one bucket turned 0 anomalies into 2 spikes
+    (08-02 05:00 z=+4.7, 08-03 05:00 z=+4.3); on this series it produced a
+    z=+35 spike at 09:00 plus three drops at the other shape boundaries.
+    """
+    hours = 24 * 28
+    hole = 24 * 26 + 17  # inside the last three days, so partners straddle it
+    points = [point for point in _four_weeks() if point.bucket != _bucket(hole)]
+    covered = {_bucket(hour) for hour in range(hours) if hour != hole}
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(hours - 24),  # the whole last day
+        evaluation_end=_bucket(hours),
+        settings=SETTINGS,
+        covered_buckets=covered,
+    )
+
+    assert anomalies == []
+
+    # ...and the quiet is not bought by going blind: with the same hole present,
+    # a 4x spike at the daily peak is still flagged.
+    peak_hour = hours - 14  # 10:00 on the last day, normally the daily peak
+    spiked = [
+        SeriesPoint(
+            bucket=_bucket(hour),
+            count=_weekly_pattern_count(hour) * (4 if hour == peak_hour else 1),
+        )
+        for hour in range(hours)
+        if hour != hole
+    ]
+
+    spike_anomalies = detect_anomalies(
+        spiked,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(peak_hour),
+        evaluation_end=_bucket(peak_hour + 1),
+        settings=SETTINGS,
+        covered_buckets=covered,
+    )
+
+    assert [anomaly.direction for anomaly in spike_anomalies] == ["spike"]
