@@ -292,9 +292,10 @@ export function defaultRuleForm(): RuleFormState {
     notify_on_spike: true,
     notify_on_drop: true,
     ai_explanation_enabled: false,
-    // Matches the server default (AlertRule.DEFAULT_MIN_PERCENT_DELTA): a new
-    // rule watches moves of at least double or at most half, not every
-    // deviation. A form that opened at 0 would quietly disagree with the API.
+    // Matches the server default — DEFAULT_MIN_PERCENT_DELTA in
+    // backend/src/tripl/models/alert_rule.py. A new rule watches moves of at
+    // least double or at most half, not every deviation; a form that opened at
+    // 0 would quietly disagree with the API.
     min_percent_delta: 100,
     min_absolute_delta: 0,
     min_expected_count: 0,
