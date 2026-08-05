@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
@@ -11,6 +12,7 @@ from tripl.core.analyzers.anomaly_detector import SCOPE_METRIC
 from tripl.models.alert_correlation_state import AlertCorrelationState
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
+from tripl.models.alert_destination import AlertDestinationType
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.domain_enums import AnomalyDirection
 from tripl.models.scan_config import ScanConfig
@@ -51,27 +53,61 @@ def _as_utc(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=UTC)
 
 
+def _cooldown_elapsed(
+    last_notified_at: datetime | None,
+    *,
+    now: datetime,
+    cooldown_minutes: int,
+) -> bool:
+    """Whether ``cooldown_minutes`` have passed since this scope was last notified.
+
+    Keyed on the last SUCCESSFUL notification (``alerts.py`` stamps
+    ``last_notified_at`` only on a sent delivery), not on the open/close flag, so
+    a scope that closes and reopens on the next collection is still inside its
+    cooldown while one that reopens days later is not.
+
+    A NULL means the operator has never been told about this scope — a cooldown
+    cannot have elapsed on a message that was never sent, so it reads as elapsed
+    and the first delivery goes out.
+    """
+    last = _as_utc(last_notified_at)
+    if last is None:
+        return True
+    return now - last >= timedelta(minutes=cooldown_minutes)
+
+
 def _correlation_group_id(
     *,
     scan_config_id: uuid.UUID,
     rule_id: uuid.UUID,
+    scope_type: str,
+    scope_ref: str,
     direction: str,
 ) -> uuid.UUID:
-    """The stable handle for one ongoing incident: a rule firing one direction.
+    """The stable handle for one ongoing incident: one rule, one scope, one direction.
 
-    The bucket used to be part of this key, which made every hour of the same
-    incident a brand-new group. Nothing the user did in the inbox could survive
-    the next collection: acknowledging, resolving or muting a group silenced
-    exactly the bucket already delivered, and an hour later an unseen group
-    alerted again (tripl-jfm3.91).
+    The BUCKET is deliberately absent. While it was part of the key, every hour
+    of the same incident was a brand-new group and nothing the user did in the
+    inbox survived the next collection: acknowledging, resolving or muting
+    silenced exactly the bucket already delivered, and an hour later an unseen
+    group alerted again (tripl-jfm3.91). Leaving it out makes the group live as
+    long as the incident does, and it must stay out.
 
-    Dropping the bucket makes the group live as long as the incident does.
-    ``_reopen_closed_incidents`` resets it once every scope of the rule has
-    closed, so a genuinely new incident is never silenced by an old decision.
+    The SCOPE is present because ``_SUPPRESSING_INBOX_STATUSES`` gates the whole
+    group. Keyed on scan_config:rule:direction alone, one inbox action silenced
+    every other scope the rule watched, and the sole release path
+    (``_reopen_closed_incidents``) waited for every scope of the rule to close —
+    which the suppressed scope, still firing and now unseen, prevented. On
+    production one 2026-07-30 operator note ("these screens are switched off")
+    on group bd6c96f5 covered 7 unrelated iOS scopes of a single "drop" rule.
+
+    ``_reopen_closed_incidents`` now resets a scope's groups as soon as THAT
+    scope's alert state is closed, so a genuinely new incident is never silenced
+    by an old decision.
     """
     return uuid.uuid5(
         _CORRELATION_NAMESPACE,
-        f"{scan_config_id}:{rule_id}:{direction}",
+        f"{scan_config_id}:{rule_id}:{scope_type}:{scope_ref}:{direction}",
     )
 
 
@@ -111,12 +147,17 @@ def _reopen_closed_incidents(
     project_id: uuid.UUID,
     scan_config_id: uuid.UUID,
     rule_id: uuid.UUID,
+    scope_keys: Iterable[tuple[str, str]],
 ) -> None:
     """Clear an incident-scoped inbox decision once the incident is over.
 
     Without this, suppression would be permanent: acknowledging a drop would
-    silence that rule's drops forever. Called only when the rule has no active
-    scope left, so the next firing is a new incident and alerts normally.
+    silence that scope's drops forever. Called for the scopes whose alert state
+    is closed, so their next firing is a new incident and alerts normally.
+
+    Per SCOPE, matching ``_correlation_group_id``. The old rule-wide reset needed
+    every scope of the rule to be quiet at once, which a suppressed scope could
+    never be — it kept firing, unseen, holding its own release hostage.
 
     A TIMED mute is deliberately excluded. "Acknowledged" means "I am on this
     incident" and dies with it; "muted until T" means "do not tell me before T"
@@ -129,10 +170,15 @@ def _reopen_closed_incidents(
         _correlation_group_id(
             scan_config_id=scan_config_id,
             rule_id=rule_id,
+            scope_type=scope_type,
+            scope_ref=scope_ref,
             direction=direction.value,
         )
+        for scope_type, scope_ref in scope_keys
         for direction in AnomalyDirection
     ]
+    if not group_ids:
+        return
     now = datetime.now(UTC)
     for state in session.execute(
         select(AlertCorrelationState).where(
@@ -172,6 +218,48 @@ def _touch_correlation_state(
         )
         return
     state.last_seen_at = max(state.last_seen_at or seen_at, seen_at)
+
+
+# Telegram rejects a sendMessage body over 4096 characters with a 400. Nothing
+# in the render or send path enforces that ceiling, and ``last_notified_at`` is
+# stamped only on a SUCCESSFUL send (alerts.py), while the re-send gate below
+# treats a NULL ``last_notified_at`` as "never told them" — so one oversized
+# delivery is rebuilt and re-rejected on every collection, forever.
+#
+# Sized off the 29 Telegram deliveries windy-ios has ever sent ("TG dev",
+# default templates, AI note attached): least squares over their
+# (matched_count, rendered chars) gives 400 chars per item on a 516-char base,
+# so 4096 is crossed just under 9 items — and on the widest base observed (682,
+# the AI note varies) exactly at 8.
+#
+# No delivery that large exists yet: the biggest real one is 5 items / 2420
+# chars, because volume scopes could not alert at all (see
+# ``signals._emission_lag``). The replay that unblocks them rendered 14 items /
+# 4154 chars, which is when this ceiling starts to matter.
+#
+# This bounds the ITEM COUNT, not characters: the item template is user-editable
+# and the AI explanation is generated after dispatch, so the renderer still has
+# to enforce the hard 4096 ceiling itself. Only Telegram is capped — Slack,
+# email and webhook have no comparable limit, and chunking jira/linear would file
+# duplicate issues.
+_MAX_ITEMS_PER_DELIVERY: dict[str, int] = {AlertDestinationType.telegram.value: 8}
+
+
+def _delivery_chunks(
+    anomalies: list[AlertMatchCandidate],
+    *,
+    channel: str,
+) -> list[list[AlertMatchCandidate]]:
+    """Split one rule's matches into deliveries the channel can actually carry.
+
+    Chunking rather than truncating: every chunk is its own AlertDelivery with
+    its own items, so no scope is silently dropped and each chunk stamps
+    ``last_notified_at`` on the states it covers once it lands.
+    """
+    limit = _MAX_ITEMS_PER_DELIVERY.get(str(channel))
+    if limit is None or len(anomalies) <= limit:
+        return [anomalies]
+    return [anomalies[start : start + limit] for start in range(0, len(anomalies), limit)]
 
 
 def _project_metric_state_config_id(session: Session, config: ScanConfig) -> uuid.UUID:
@@ -268,15 +356,18 @@ def _prepare_alert_deliveries(
                 if existing_state.is_active and key not in matched_keys:
                     existing_state.is_active = False
                     existing_state.closed_at = now
-            # The incident is over once no scope of this rule is firing. Clear
-            # any inbox decision now so the NEXT incident is not silenced by a
+            # A scope's incident is over once that scope stops firing. Clear its
+            # inbox decision now so the NEXT incident on it is not silenced by a
             # stale acknowledge — suppression would otherwise be permanent.
-            if existing_states and not any(state.is_active for state in existing_states.values()):
+            # Every closed scope, every run, so this stays idempotent.
+            closed_keys = [key for key, state in existing_states.items() if not state.is_active]
+            if closed_keys:
                 _reopen_closed_incidents(
                     session,
                     project_id=config.project_id,
                     scan_config_id=config.id,
                     rule_id=rule.id,
+                    scope_keys=closed_keys,
                 )
 
             anomalies_to_send: list[AlertMatchCandidate] = []
@@ -303,18 +394,39 @@ def _prepare_alert_deliveries(
                     should_send = True
                 else:
                     if not current_state.is_active:
+                        # Reopen the state either way: open/close tracking has to
+                        # stay accurate even when the cooldown swallows the
+                        # notification, or the scope reads as quiet on the UI.
                         current_state.is_active = True
                         current_state.opened_at = now
                         current_state.closed_at = None
-                        should_send = True
-                    elif (
-                        current_state.last_notified_at is None
-                        or (
+                        # Gated on elapsed time, not on the flag alone. A volume
+                        # scope is a candidate for a bounded run of collections
+                        # per anomaly bucket, then closes, and its next anomaly
+                        # re-enters here — so an ungated reactivation IS the
+                        # normal path, not the rare one: over a 24h replay of
+                        # live data 406 of 436 sends (93%) came through here, 30
+                        # were first-ever scope state and ZERO reached the
+                        # cooldown branch below. Raising cooldown_minutes from
+                        # 360 to 1440 moved zero deliveries and zero items,
+                        # because nothing consulted it. Elapsed time still lets
+                        # the case this branch exists for through: a scope that
+                        # closed and reopens long after keeps alerting.
+                        should_send = _cooldown_elapsed(
+                            current_state.last_notified_at,
+                            now=now,
+                            cooldown_minutes=rule.cooldown_minutes,
+                        )
+                    elif current_state.last_notified_at is None or (
+                        (
                             current_state.last_anomaly_bucket is None
                             or anomaly.bucket > current_state.last_anomaly_bucket
                         )
-                        and now - current_state.last_notified_at
-                        >= timedelta(minutes=rule.cooldown_minutes)
+                        and _cooldown_elapsed(
+                            current_state.last_notified_at,
+                            now=now,
+                            cooldown_minutes=rule.cooldown_minutes,
+                        )
                     ):
                         should_send = True
                     current_state.last_anomaly_bucket = max(
@@ -345,13 +457,19 @@ def _prepare_alert_deliveries(
             # that have one — so while it was reserved for 2+ peers, a solitary
             # alert never reached the inbox and no action could reach it either.
             # That is the common case, and it was unactionable (tripl-jfm3.91).
-            # Co-firing is now derived from the peer count when rendering, not
-            # from whether the id exists.
+            #
+            # The id is per SCOPE now (see ``_correlation_group_id``), so peers
+            # inside one group are the same scope over time, not the scopes that
+            # fired together. Anything asking "did this co-fire?" has to count the
+            # DELIVERY's items — ``alerts_messages._build_ai_explanation`` still
+            # counts group members and now always sees one.
             correlation_by_anomaly: dict[int, uuid.UUID] = {}
             for anomaly in anomalies_to_send:
                 correlation_by_anomaly[id(anomaly)] = _correlation_group_id(
                     scan_config_id=config.id,
                     rule_id=rule.id,
+                    scope_type=anomaly.scope_type,
+                    scope_ref=anomaly.scope_ref,
                     direction=anomaly.direction,
                 )
 
@@ -364,72 +482,73 @@ def _prepare_alert_deliveries(
             if not anomalies_to_send:
                 continue
 
-            payload_snapshot = _build_delivery_snapshot(
-                config,
-                project_slug=project_slug,
-                rule=rule,
-                destination=destination,
-                anomalies=anomalies_to_send,
-                scope_names=scope_names,
-            )
-            delivery = AlertDelivery(
-                project_id=config.project_id,
-                scan_config_id=config.id,
-                scan_job_id=scan_job_id,
-                destination_id=destination.id,
-                rule_id=rule.id,
-                status=AlertDeliveryStatus.pending.value,
-                channel=destination.type,
-                matched_count=len(anomalies_to_send),
-                payload_snapshot=payload_snapshot,
-            )
-            session.add(delivery)
-            session.flush()
-
-            for anomaly in anomalies_to_send:
-                absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
-                percent_delta = (
-                    absolute_delta / anomaly.expected_count * 100
-                    if anomaly.expected_count > 0
-                    else 0.0
+            for chunk in _delivery_chunks(anomalies_to_send, channel=destination.type):
+                payload_snapshot = _build_delivery_snapshot(
+                    config,
+                    project_slug=project_slug,
+                    rule=rule,
+                    destination=destination,
+                    anomalies=chunk,
+                    scope_names=scope_names,
                 )
-                session.add(
-                    AlertDeliveryItem(
-                        delivery_id=delivery.id,
-                        scope_type=anomaly.scope_type,
-                        scope_ref=anomaly.scope_ref,
-                        scope_name=scope_names[(anomaly.scope_type, anomaly.scope_ref)],
-                        event_type_id=anomaly.event_type_id,
-                        event_id=anomaly.event_id,
-                        bucket=anomaly.bucket,
-                        direction=anomaly.direction,
-                        actual_count=anomaly.actual_count,
-                        expected_count=anomaly.expected_count,
-                        absolute_delta=absolute_delta,
-                        percent_delta=percent_delta,
-                        details_path=_build_event_details_url(
-                            project_slug,
-                            anomaly.event_id,
-                        ),
-                        monitoring_path=_build_monitoring_url(
-                            project_slug,
+                delivery = AlertDelivery(
+                    project_id=config.project_id,
+                    scan_config_id=config.id,
+                    scan_job_id=scan_job_id,
+                    destination_id=destination.id,
+                    rule_id=rule.id,
+                    status=AlertDeliveryStatus.pending.value,
+                    channel=destination.type,
+                    matched_count=len(chunk),
+                    payload_snapshot=payload_snapshot,
+                )
+                session.add(delivery)
+                session.flush()
+
+                for anomaly in chunk:
+                    absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
+                    percent_delta = (
+                        absolute_delta / anomaly.expected_count * 100
+                        if anomaly.expected_count > 0
+                        else 0.0
+                    )
+                    session.add(
+                        AlertDeliveryItem(
+                            delivery_id=delivery.id,
                             scope_type=anomaly.scope_type,
                             scope_ref=anomaly.scope_ref,
-                        ),
-                        drift_field=getattr(anomaly, "drift_field", None),
-                        drift_type=getattr(anomaly, "drift_type", None),
-                        sample_value=getattr(anomaly, "sample_value", None),
-                        correlation_group_id=correlation_by_anomaly.get(id(anomaly)),
+                            scope_name=scope_names[(anomaly.scope_type, anomaly.scope_ref)],
+                            event_type_id=anomaly.event_type_id,
+                            event_id=anomaly.event_id,
+                            bucket=anomaly.bucket,
+                            direction=anomaly.direction,
+                            actual_count=anomaly.actual_count,
+                            expected_count=anomaly.expected_count,
+                            absolute_delta=absolute_delta,
+                            percent_delta=percent_delta,
+                            details_path=_build_event_details_url(
+                                project_slug,
+                                anomaly.event_id,
+                            ),
+                            monitoring_path=_build_monitoring_url(
+                                project_slug,
+                                scope_type=anomaly.scope_type,
+                                scope_ref=anomaly.scope_ref,
+                            ),
+                            drift_field=getattr(anomaly, "drift_field", None),
+                            drift_type=getattr(anomaly, "drift_type", None),
+                            sample_value=getattr(anomaly, "sample_value", None),
+                            correlation_group_id=correlation_by_anomaly.get(id(anomaly)),
+                        )
                     )
-                )
-                item_group_id = correlation_by_anomaly.get(id(anomaly))
-                if item_group_id is not None:
-                    _touch_correlation_state(
-                        session,
-                        project_id=config.project_id,
-                        correlation_group_id=item_group_id,
-                        seen_at=anomaly.bucket,
-                    )
-            delivery_ids.append(delivery.id)
+                    item_group_id = correlation_by_anomaly.get(id(anomaly))
+                    if item_group_id is not None:
+                        _touch_correlation_state(
+                            session,
+                            project_id=config.project_id,
+                            correlation_group_id=item_group_id,
+                            seen_at=anomaly.bucket,
+                        )
+                delivery_ids.append(delivery.id)
 
     return delivery_ids
