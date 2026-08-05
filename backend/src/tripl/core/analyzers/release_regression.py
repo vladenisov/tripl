@@ -384,11 +384,15 @@ def detect_release_regressions(
         #     the baseline. That is the number Poisson noise is a function of,
         #     and it is what "we know this scope's normal volume" means.
         #
-        # The two coincide at 1:1 traffic, so this is not a tightening of
-        # today's behaviour — it is the same bar, held when the traffic ratio
-        # would otherwise dissolve it. The deleted ``min_prev_share`` floor
-        # happened to cover this case, but at the cost of scaling with catalog
-        # granularity rather than with evidence.
+        # The second clause can only ever reject a row the first one let
+        # through, and only in one direction: it binds when prev_count < 30
+        # while expected = prev_count * total_new / total_prev >= 30, which
+        # together require total_new / total_prev >= 30 / prev_count > 1. So it
+        # is inert whenever the release is no larger than its baseline, and
+        # bites exactly where the ratio was doing the work — this is not a
+        # tightening of the bar, it is the bar held still. The deleted
+        # ``min_prev_share`` floor happened to cover the same case, but at the
+        # cost of scaling with catalog granularity rather than with evidence.
         expected = total_new * share_prev
         if expected < settings.min_expected or prev_count < settings.min_expected:
             continue
