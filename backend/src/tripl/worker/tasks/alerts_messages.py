@@ -33,7 +33,7 @@ from tripl.alerting_matching import (
 from tripl.anomaly_context import build_alert_item_context
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
-from tripl.models.alert_destination import AlertDestination
+from tripl.models.alert_destination import AlertDestination, AlertDestinationType
 from tripl.models.alert_rule import AlertRule
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event, EventStatus
@@ -63,6 +63,26 @@ _AI_HISTORY_WINDOW = timedelta(days=7)
 # Prior explanations are 2-4 sentences; keep a readable head of each so three of
 # them cannot crowd out the current items.
 _AI_HISTORY_EXPLANATION_CHARS = 320
+
+# Telegram's sendMessage rejects a body over 4096 characters with HTTP 400
+# "Bad Request: message is too long"; _build_items_text had no cap at all.
+#
+# The cap is on rendered LENGTH, not item count. Across the 29 deliveries this
+# instance has sent (48 rendered items), a single item runs 97-389 characters
+# depending on how many of the optional drift/details/monitoring/movers/trend
+# lines it carries — a 4x spread, so any item count safe for a schema-drift rule
+# overshoots for an event rule carrying URLs. At the measured 355-character mean
+# the items alone pass 4096 at 12 items, and the whole message passes it at 10.
+TELEGRAM_MESSAGE_MAX_CHARS = 4096
+# What the rest of the message needs out of that 4096, so the cap on items_text
+# leaves room for it. Header: 90-98 characters across those 29 deliveries, but
+# the rule, scan and destination names interpolated into it are user-set, so
+# reserve 4x the observed maximum. AI note: bounded by
+# _AI_EXPLANATION_MAX_TOKENS (250), observed 406-641 characters; 1200 covers 250
+# tokens of Latin text (longer per token than the Cyrillic notes measured here)
+# plus the per-character backslashes MarkdownV2 escaping can add.
+_TELEGRAM_HEADER_RESERVE = 400
+_TELEGRAM_AI_NOTE_RESERVE = 1200
 
 
 def _resolve_metric_units(
@@ -225,6 +245,48 @@ def _build_item_template_context(
     return AlertTemplateContext(variables=variables, message_format=message_format)
 
 
+def _omitted_items_line(omitted: int, total: int, message_format: str) -> str:
+    """The tail that owns up to a truncated list.
+
+    Names both numbers: "+3 more of 14" tells the reader the list is a head and
+    exactly how much of it they are not seeing, which a bare "…" does not.
+    """
+    return escape_alert_value(
+        f"… +{omitted} more of {total} not shown (message length limit)",
+        message_format,
+    )
+
+
+def _telegram_items_max_chars(*, ai_explanation_enabled: bool) -> int:
+    """Character budget items_text may spend on a Telegram send."""
+    reserve = _TELEGRAM_HEADER_RESERVE + (
+        _TELEGRAM_AI_NOTE_RESERVE if ai_explanation_enabled else 0
+    )
+    return TELEGRAM_MESSAGE_MAX_CHARS - reserve
+
+
+def _default_items_max_chars(
+    destination_type: str,
+    *,
+    ai_explanation_enabled: bool,
+) -> int | None:
+    """Budget for this destination, or None where no ceiling is known.
+
+    Keyed on the destination type rather than the message format: Telegram
+    accepts all three of plain / telegram_html / telegram_markdownv2
+    (ALERT_MESSAGE_FORMATS_BY_DESTINATION), and every one of the 29 deliveries
+    this instance has sent went to Telegram as ``plain``. Inferring the ceiling
+    from the two Telegram-exclusive formats would therefore have left the only
+    rule that actually sends here uncapped.
+
+    The other channels get None: Slack's limit is 40000, and email, webhook,
+    Jira and Linear have no comparable per-message ceiling worth truncating for.
+    """
+    if destination_type == AlertDestinationType.telegram:
+        return _telegram_items_max_chars(ai_explanation_enabled=ai_explanation_enabled)
+    return None
+
+
 def _build_items_text(
     items: list[AlertDeliveryItem],
     *,
@@ -234,10 +296,31 @@ def _build_items_text(
     scan_config_id: uuid.UUID | None = None,
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
     metric_units_cache: dict[str, str | None] | None = None,
+    max_chars: int | None = None,
 ) -> str:
+    """Render the delivery's items, at most ``max_chars`` characters of them.
+
+    Stops at the first item that would not fit and appends a "+N more" tail, so
+    a long delivery loses its cheapest information (the tail of an already
+    severity-ordered list) instead of losing the whole message to a 400. Items
+    past the cut are never rendered, so their sparkline/top-mover queries do not
+    run either — which also leaves them out of ``item_context_cache`` and so out
+    of the AI prompt, matching what the reader gets.
+    """
     metric_units = _resolve_metric_units(session, items, metric_units_cache)
+    # Upper bound on the tail, reserved up front so appending it can never be
+    # what pushes the message over. Its length varies only with the two counts,
+    # and neither can exceed the item count, so rendering it at N-of-N is the
+    # longest it can get. The +1 is the newline that joins it.
+    tail_reserve = (
+        len(_omitted_items_line(len(items), len(items), message_format)) + 1
+        if max_chars is not None
+        else 0
+    )
     lines: list[str] = []
-    for item in items:
+    used = 0
+    omitted = 0
+    for index, item in enumerate(items):
         rendered_item = render_alert_template(
             items_template,
             _build_item_template_context(
@@ -251,8 +334,24 @@ def _build_items_text(
                 ),
             ),
         ).rstrip()
-        if rendered_item:
-            lines.append(rendered_item)
+        if not rendered_item:
+            continue
+        separator = 1 if lines else 0
+        would_use = used + separator + len(rendered_item)
+        # The `lines` term lets the first item in whatever its size: an
+        # items_text of nothing but a tail reports a count and shows no alert at
+        # all. A single item that alone exceeds the budget is the dispatch-side
+        # ceiling's problem, not the renderer's.
+        if max_chars is not None and lines and would_use + tail_reserve > max_chars:
+            # This item and every item after it. Counting from `index` rather
+            # than from what got appended keeps the tail honest when an earlier
+            # item rendered empty and was skipped.
+            omitted = len(items) - index
+            break
+        lines.append(rendered_item)
+        used = would_use
+    if omitted > 0:
+        lines.append(_omitted_items_line(omitted, len(items), message_format))
     return "\n".join(lines)
 
 
@@ -267,11 +366,17 @@ def _build_template_context(
     session: Session | None = None,
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
     metric_units_cache: dict[str, str | None] | None = None,
+    items_max_chars: int | None = None,
 ) -> AlertTemplateContext:
     message_format = message_format_override or rule.message_format or ALERT_MESSAGE_FORMAT_PLAIN
     items_template = normalize_message_template(rule.items_template)
     if items_template is None:
         items_template = get_default_items_template(message_format)
+    if items_max_chars is None:
+        items_max_chars = _default_items_max_chars(
+            destination.type,
+            ai_explanation_enabled=bool(rule.ai_explanation_enabled),
+        )
 
     variables = {
         "project_name": escape_alert_value(project.name if project else "", message_format),
@@ -290,6 +395,7 @@ def _build_template_context(
             scan_config_id=delivery.scan_config_id,
             item_context_cache=item_context_cache,
             metric_units_cache=metric_units_cache,
+            max_chars=items_max_chars,
         ),
     }
     return AlertTemplateContext(variables=variables, message_format=message_format)
@@ -306,7 +412,14 @@ def _render_delivery_message(
     session: Session | None = None,
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
     metric_units_cache: dict[str, str | None] | None = None,
+    items_max_chars: int | None = None,
 ) -> tuple[str, str]:
+    """Render (message, message_format) for a delivery.
+
+    ``items_max_chars`` caps the item list. None derives the cap from
+    ``destination.type`` — Telegram's 4096, nothing elsewhere. Pass it
+    explicitly to re-render tighter after a send was rejected as too long.
+    """
     template = normalize_message_template(rule.message_template)
     context = _build_template_context(
         delivery,
@@ -318,6 +431,7 @@ def _render_delivery_message(
         session=session,
         item_context_cache=item_context_cache,
         metric_units_cache=metric_units_cache,
+        items_max_chars=items_max_chars,
     )
     if template is None:
         template = get_default_message_template(context.message_format)
@@ -572,6 +686,20 @@ def _build_ticket_subject(
 def _is_telegram_markdown_parse_error(error: Exception) -> bool:
     message = str(error).lower()
     return "can't parse entities" in message or "can't find end of" in message
+
+
+def _is_telegram_message_too_long_error(error: Exception) -> bool:
+    """True for Telegram's over-4096 rejection.
+
+    ``_post_json`` turns the HTTPError into ValueError("HTTP 400 from <url>:
+    Bad Request: message is too long"), which
+    :func:`_is_telegram_markdown_parse_error` correctly does not match — it is
+    not a parse failure, and re-rendering as plain text makes a long message
+    longer, not shorter. Separating it lets the dispatcher re-render with a
+    tighter ``items_max_chars`` instead of retrying an identical body that will
+    be rejected identically.
+    """
+    return "message is too long" in str(error).lower()
 
 
 def _webhook_item_payload(item: AlertDeliveryItem) -> dict[str, object]:

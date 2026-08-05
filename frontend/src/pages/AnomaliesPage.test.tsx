@@ -7,6 +7,7 @@ import type {
   EventType,
   MetricDefinitionListResponse,
   MonitoringSignal,
+  ScanConfig,
 } from '@/types'
 import AnomaliesPage from './AnomaliesPage'
 
@@ -22,11 +23,15 @@ vi.mock('@/api/events', () => ({
 vi.mock('@/api/eventTypes', () => ({
   eventTypesApi: { list: vi.fn() },
 }))
+vi.mock('@/api/scans', () => ({
+  scansApi: { list: vi.fn() },
+}))
 
 import { metricsApi } from '@/api/metrics'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
+import { scansApi } from '@/api/scans'
 
 function makeSignal(overrides: Partial<MonitoringSignal>): MonitoringSignal {
   return {
@@ -67,6 +72,11 @@ function makeEventList(items: Array<{ id: string; name: string }>): EventListRes
   return { items, total: items.length } as unknown as EventListResponse
 }
 
+// Only `id` + `name` feed the scan id → name map behind the scan facet.
+function makeScans(items: Array<{ id: string; name: string }>): ScanConfig[] {
+  return items as unknown as ScanConfig[]
+}
+
 /** Probe target for the metric drilldown route the row should navigate to. */
 function MetricDetailProbe() {
   const { metricId } = useParams<{ metricId: string }>()
@@ -95,6 +105,8 @@ beforeEach(() => {
   vi.mocked(eventTypesApi.list).mockResolvedValue(makeEventTypes([]))
   vi.mocked(eventsApi.list).mockReset()
   vi.mocked(eventsApi.list).mockResolvedValue(makeEventList([]))
+  vi.mocked(scansApi.list).mockReset()
+  vi.mocked(scansApi.list).mockResolvedValue(makeScans([]))
 })
 
 afterEach(() => {
@@ -264,6 +276,15 @@ describe('AnomaliesPage — magnitude filter', () => {
     expect(screen.getByText('Spike on Event type · Big move')).toBeInTheDocument()
   })
 
+  it('keeps the magnitude control reachable by its accessible name', async () => {
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([makeSignal({})])
+
+    renderAnomalies()
+
+    await screen.findByText(/Spike on Metric/)
+    expect(screen.getByRole('radiogroup', { name: 'Filter by anomaly magnitude' })).toBeVisible()
+  })
+
   it('shows a lower-the-filter hint (not the empty state) when the level hides everything', async () => {
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
       // relEffect = 2/80 = 0.025 → below the default "Significant".
@@ -280,5 +301,128 @@ describe('AnomaliesPage — magnitude filter', () => {
     // The hint's "Show all" action drops the filter and reveals the row.
     fireEvent.click(screen.getByRole('button', { name: /Show all/ }))
     expect(await screen.findByText(/Spike on Event type/)).toBeInTheDocument()
+  })
+})
+
+describe('AnomaliesPage — scan facet', () => {
+  // Mirrors the shape of the windy-ios stream: a legacy scan watching most of
+  // the catalog contributes the bulk of open event-scope signals purely by
+  // size, and without a scan facet the live scan's rows are unfindable.
+  function legacyAndLiveSignals(): MonitoringSignal[] {
+    return [
+      ...Array.from({ length: 6 }, (_, i) =>
+        makeSignal({
+          scan_config_id: 'scan-legacy',
+          scope_type: 'event',
+          scope_ref: `legacy-ev-${i}`,
+        }),
+      ),
+      makeSignal({ scan_config_id: 'scan-live', scope_type: 'event', scope_ref: 'live-ev-1' }),
+    ]
+  }
+
+  const scans = makeScans([
+    { id: 'scan-legacy', name: 'Old events (iOS)' },
+    { id: 'scan-live', name: 'Snowplow Events (iOS)' },
+  ])
+
+  it('narrows the list to one scan, with per-scan counts on the options', async () => {
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
+    vi.mocked(scansApi.list).mockResolvedValue(scans)
+    vi.mocked(eventsApi.list).mockResolvedValue(
+      makeEventList([
+        { id: 'legacy-ev-0', name: 'Legacy tap' },
+        { id: 'live-ev-1', name: 'Live tap' },
+      ]),
+    )
+
+    renderAnomalies()
+
+    // Both streams are visible before the facet is touched.
+    expect(await screen.findByText('Spike on Event · Live tap')).toBeInTheDocument()
+    expect(screen.getByText('Spike on Event · Legacy tap')).toBeInTheDocument()
+
+    // The option label carries the count, so the size difference is legible
+    // before clicking: 6 legacy against 1 live.
+    const facet = screen.getByRole('radiogroup', { name: 'Filter by scan' })
+    expect(facet).toHaveTextContent('Old events (iOS) 6')
+    expect(facet).toHaveTextContent('Snowplow Events (iOS) 1')
+    expect(facet).toHaveTextContent('All scans 7')
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Snowplow Events (iOS) 1' }))
+
+    expect(await screen.findByText('Spike on Event · Live tap')).toBeInTheDocument()
+    expect(screen.queryByText('Spike on Event · Legacy tap')).not.toBeInTheDocument()
+    // The subtitle attributes the omission to the scan filter, not the level.
+    expect(screen.getByText(/1 of 7 open · 6 in other scans/)).toBeInTheDocument()
+  })
+
+  it('omits the facet when every signal comes from the same scan', async () => {
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({ scan_config_id: 'scan-legacy', scope_type: 'event', scope_ref: 'legacy-ev-0' }),
+    ])
+    vi.mocked(scansApi.list).mockResolvedValue(scans)
+
+    renderAnomalies()
+
+    await screen.findByText(/Spike on Event/)
+    expect(screen.queryByRole('radiogroup', { name: 'Filter by scan' })).not.toBeInTheDocument()
+    // The magnitude control is untouched by the facet's absence.
+    expect(screen.getByRole('radiogroup', { name: 'Filter by anomaly magnitude' })).toBeVisible()
+  })
+
+  it('falls back to the short scan ref when the scan list has not resolved', async () => {
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
+    // Scan names unavailable (still loading, or the scan was deleted).
+    vi.mocked(scansApi.list).mockResolvedValue(makeScans([]))
+
+    renderAnomalies()
+
+    const facet = await screen.findByRole('radiogroup', { name: 'Filter by scan' })
+    expect(facet).toHaveTextContent('Scan scan-leg 6')
+  })
+
+  it('offers "show all scans" when the selected scan has nothing at this level', async () => {
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+      // relEffect 2.75 → clears "Major" (≥1); relEffect 0.05 → clears neither.
+      makeSignal({
+        scan_config_id: 'scan-legacy',
+        scope_type: 'event',
+        scope_ref: 'legacy-ev-0',
+        actual_count: 300,
+        expected_count: 80,
+      }),
+      // relEffect 0.5 → clears "Significant" but not "Major".
+      makeSignal({
+        scan_config_id: 'scan-live',
+        scope_type: 'event',
+        scope_ref: 'live-ev-1',
+      }),
+      makeSignal({
+        scan_config_id: 'scan-live',
+        scope_type: 'event',
+        scope_ref: 'live-ev-2',
+      }),
+    ])
+    vi.mocked(scansApi.list).mockResolvedValue(scans)
+
+    renderAnomalies()
+
+    // Pick the live scan, then raise the level past everything it has while the
+    // legacy scan still has one — so the emptiness is the scan filter's doing.
+    // The option survives the level change (its count drops to 0), which is the
+    // point: it must not evaporate and silently reset the page to "all scans".
+    fireEvent.click(await screen.findByRole('radio', { name: 'Snowplow Events (iOS) 2' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Major' }))
+    expect(screen.getByRole('radio', { name: 'Snowplow Events (iOS) 0' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    expect(
+      await screen.findByText('Nothing in Snowplow Events (iOS) at this level'),
+    ).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Show all scans/ }))
+    expect(await screen.findByText(/Spike on Event/)).toBeInTheDocument()
   })
 })
