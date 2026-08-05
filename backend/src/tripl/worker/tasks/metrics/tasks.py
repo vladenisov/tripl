@@ -59,6 +59,8 @@ from tripl.worker.tasks.metrics._helpers import (
 from tripl.worker.tasks.metrics.catalog_sync import sync_catalog
 from tripl.worker.tasks.metrics.chunk_processing import process_chunk
 from tripl.worker.tasks.metrics.detect import (
+    ANOMALY_TRAILING_REEVAL_BUCKETS,
+    NO_INGESTION_SETTLING,
     _recalculate_metric_anomalies,
     _recalculate_metric_breakdown_anomalies,
 )
@@ -92,13 +94,6 @@ METRICS_REPLAY_MODE = "metrics_replay"
 
 COLLECT_METRICS_SOFT_TIME_LIMIT_SECONDS = 24 * 60 * 60
 COLLECT_METRICS_TIME_LIMIT_SECONDS = 25 * 60 * 60
-
-# Anomaly re-evaluation always sweeps at least this many trailing buckets, even
-# on an incremental run that only collected the newest one or two. A backfilled
-# or re-collected bucket inside this window then gets its flag cleared/updated on
-# the next run instead of being frozen at whatever the first pass decided
-# (tripl-dmch.14). Replays over a wider explicit window keep that wider window.
-ANOMALY_TRAILING_REEVAL_BUCKETS = 30
 
 # Ingestion-settling allowance (tripl-jfm3.7). ``_resolve_collection_window``
 # ends the collection window at the last COMPLETE clock interval, but a
@@ -181,6 +176,8 @@ def _covered_buckets_from_scan_jobs(
         try:
             window_from = _parse_task_datetime(raw_from)
             window_to = _parse_task_datetime(raw_to)
+        # result_summary is free-form JSON, so a recorded bound can be malformed
+        # (ValueError) or not a string at all (TypeError).
         except ValueError, TypeError:
             continue
         if window_from < window_to:
@@ -782,7 +779,28 @@ def collect_metrics(
         anomaly_evaluation_start = min(
             time_from_dt, time_to_dt - delta * ANOMALY_TRAILING_REEVAL_BUCKETS
         )
-        settling_delay = _ingestion_settling_delay(session, config.project_id)
+        # A replay states its own window, so the allowance is not just idle
+        # there — it is destructive. ``_replace_scope_anomalies`` deletes all of
+        # [start, end) and reinserts only up to the emission end, so the
+        # withheld head buckets LOSE the anomalies they correctly carried, and
+        # nothing puts them back: the next scheduled run's trailing window
+        # starts at the live clock, past the replayed range. Measured end to end
+        # with the real models, a replay drops 08-01 16:00 and 17:00 and a
+        # settling_delay of 0 drops nothing. NO_INGESTION_SETTLING exists for
+        # exactly this case, an explicit window the caller vouches for.
+        #
+        # The guarantee is weaker than "long settled", and worth naming:
+        # ``_resolve_collection_window`` only refuses a replay that reaches into
+        # the current INCOMPLETE interval, so a replay issued immediately can
+        # still end on a bucket the warehouse has not finished writing. That
+        # bucket can read low. The trade is deliberate — keeping the allowance
+        # loses correct anomalies on every replay, dropping it risks one soft
+        # bucket at the edge of a window the operator chose.
+        settling_delay = (
+            NO_INGESTION_SETTLING
+            if is_replay
+            else _ingestion_settling_delay(session, config.project_id)
+        )
         anomalies_detected = _recalculate_metric_anomalies(
             session,
             config,

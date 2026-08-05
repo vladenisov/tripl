@@ -6484,6 +6484,99 @@ def test_collect_metrics_uses_the_projects_configured_settling_allowance(
     }
 
 
+def test_metrics_replay_scores_its_window_without_the_settling_allowance(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A replay must be handed NO settling allowance.
+
+    The allowance withholds the head of the evaluated window from emission, but
+    ``_replace_scope_anomalies`` first DELETES all of [start, end) and then
+    reinserts only up to the emission end — so on a replay of already-settled
+    history the withheld buckets simply lose the anomalies they carried, and no
+    later scheduled run restores them (its trailing window starts at the live
+    clock, past the replayed range).
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        session.add(
+            ProjectAnomalySettings(
+                project_id=config.project_id,
+                anomaly_detection_enabled=True,
+                anomaly_ingestion_settling_minutes=15,
+            )
+        )
+        session.commit()
+        config_id = str(config.id)
+        project_id = config.project_id
+
+    class FakeAdapter:
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            return (["event_name"], [], [])
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: FakeAdapter())
+    monkeypatch.setattr(
+        metrics,
+        "_resolve_collection_window",
+        lambda *args, **kwargs: (datetime(2026, 8, 1, 10), datetime(2026, 8, 1, 18), True),
+    )
+    monkeypatch.setattr(
+        metrics,
+        "analyze_cardinality",
+        lambda *args, **kwargs: pytest.fail("replay must not run cardinality analysis"),
+    )
+    monkeypatch.setattr(
+        metrics,
+        "generate_events",
+        lambda *args, **kwargs: pytest.fail("replay must not sync catalog events"),
+    )
+
+    seen: dict[str, object] = {}
+
+    def capture(name: str) -> object:
+        def _recalculate(*args: object, **kwargs: object) -> int:
+            seen[name] = kwargs.get("settling_delay")
+            return 0
+
+        return _recalculate
+
+    monkeypatch.setattr(metrics, "_recalculate_metric_anomalies", capture("anomalies"))
+    monkeypatch.setattr(metrics, "_recalculate_metric_breakdown_anomalies", capture("breakdown"))
+
+    metrics.collect_metrics.run(config_id)
+
+    with sync_session_factory() as session:
+        # The project's own allowance is non-zero, so nothing but the replay
+        # branch can produce the zero below.
+        assert metrics._ingestion_settling_delay(session, project_id) == timedelta(minutes=15)
+    assert seen == {"anomalies": timedelta(0), "breakdown": timedelta(0)}
+    assert seen["anomalies"] == metrics.NO_INGESTION_SETTLING
+
+
 def test_breakdown_recalculate_skips_sub_threshold_scopes_but_ages_out_stale_rows(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,

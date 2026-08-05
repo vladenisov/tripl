@@ -51,6 +51,19 @@ _FRACTIONAL_MIN_EXPECTED_COUNT = 1e-6
 # ages markers out for rendering, so this only trims long-dead rows and never
 # touches ``metric``-scope rows (NULL scan_config_id, shared across configs).
 ANOMALY_RETENTION_DAYS = 180
+# Anomaly re-evaluation always sweeps at least this many trailing buckets, even
+# on an incremental run that only collected the newest one or two. A backfilled
+# or re-collected bucket inside this window then gets its flag cleared/updated on
+# the next run instead of being frozen at whatever the first pass decided
+# (tripl-dmch.14). Replays over a wider explicit window keep that wider window.
+#
+# The count is in buckets OF THE SERIES BEING SCORED, which is why it lives here
+# rather than in the scan orchestrator: catalog metrics carry their own grid.
+# Multiplying it by the scan config's 1h delta gave a 1d metric a 30-HOUR
+# window — one candidate bucket, which the settling allowance then withheld, so
+# the metric could never emit. A 1d series with a 25-day collapse scored 264
+# anomalies on its own grid and 0 on the 1h scan grid.
+ANOMALY_TRAILING_REEVAL_BUCKETS = 30
 # Default ingestion-settling allowance for the recalculation entrypoints: none.
 # The scan orchestrator owns the policy and passes its own allowance (see
 # ``tasks.ANOMALY_INGESTION_SETTLING``); callers that hand in an explicit,
@@ -775,15 +788,18 @@ def _purge_project_metric_anomalies(
     session: Session,
     config: ScanConfig,
     *,
-    evaluation_start: datetime | None = None,
     evaluation_end: datetime | None = None,
 ) -> None:
     """Delete ``metric``-scope anomalies for THIS project's metrics.
 
     Scoped to the project's metric ids so it never touches another project's
     metric-scope rows (which share the global ``scan_config_id IS NULL`` space).
-    Without a window it is a full purge (detection disabled); with one it clears
-    just the evaluated window.
+
+    There is deliberately no start bound. Each metric writes its rows over its
+    OWN grid's trailing window, so the earliest row a project can hold is set by
+    its longest interval, not by the scan-grid window a caller happens to hold;
+    bounding the purge by that window would strand every older row as a marker
+    no later run re-evaluates.
     """
     scope_refs = _project_metric_scope_refs(session, config.project_id)
     if not scope_refs:
@@ -792,8 +808,6 @@ def _purge_project_metric_anomalies(
         MetricAnomaly.scope_type == SCOPE_METRIC,
         MetricAnomaly.scope_ref.in_(scope_refs),
     ]
-    if evaluation_start is not None:
-        filters.append(MetricAnomaly.bucket >= evaluation_start)
     if evaluation_end is not None:
         filters.append(MetricAnomaly.bucket < evaluation_end)
     session.execute(delete(MetricAnomaly).where(*filters))
@@ -816,6 +830,11 @@ def _recalculate_project_metric_anomalies(
     Count-shaped metrics keep the standard zero-fill + ``min_expected_count``
     behavior; fractional metrics (ratios/averages/sql) drop both so sparse or
     sub-unit series do not produce false anomalies.
+
+    ``evaluation_start`` arrives on the SCAN CONFIG's grid; each metric widens it
+    onto its own grid (see ``ANOMALY_TRAILING_REEVAL_BUCKETS``). Widening only —
+    a replay hands in a window wider than any metric's trailing sweep and keeps
+    it, so a replayed range is still re-scored end to end.
     """
     metrics = list(
         session.execute(
@@ -838,7 +857,11 @@ def _recalculate_project_metric_anomalies(
             if count_shaped
             else replace(settings, min_expected_count=_FRACTIONAL_MIN_EXPECTED_COUNT)
         )
-        history_from = evaluation_start - interval_spec.delta * required_history_buckets(
+        metric_evaluation_start = min(
+            evaluation_start,
+            evaluation_end - interval_spec.delta * ANOMALY_TRAILING_REEVAL_BUCKETS,
+        )
+        history_from = metric_evaluation_start - interval_spec.delta * required_history_buckets(
             interval_spec.delta, settings
         )
         points = _load_metric_value_points(
@@ -852,14 +875,14 @@ def _recalculate_project_metric_anomalies(
             scan_config_id=None,
             scope_type=SCOPE_METRIC,
             scope_ref=str(metric.id),
-            evaluation_start=evaluation_start,
+            evaluation_start=metric_evaluation_start,
             evaluation_end=evaluation_end,
             event_id=None,
             event_type_id=None,
             anomalies=detect_anomalies(
                 points,
                 interval=interval_spec.delta,
-                evaluation_start=evaluation_start,
+                evaluation_start=metric_evaluation_start,
                 evaluation_end=evaluation_end,
                 settings=metric_settings,
                 fill_gaps=count_shaped,
@@ -1110,12 +1133,7 @@ def _recalculate_metric_anomalies(
             settling_delay=settling_delay,
         )
     else:
-        _purge_project_metric_anomalies(
-            session,
-            config,
-            evaluation_start=evaluation_start,
-            evaluation_end=evaluation_end,
-        )
+        _purge_project_metric_anomalies(session, config, evaluation_end=evaluation_end)
 
     session.flush()
     return anomalies_detected

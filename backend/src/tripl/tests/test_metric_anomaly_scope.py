@@ -64,6 +64,10 @@ _SPIKE_HOUR = 9
 _EVAL_FROM = _BASE + timedelta(hours=8)
 _EVAL_TO = _BASE + timedelta(hours=10)
 
+# 1d-aligned anchor for the daily-grid test, on the same tz-naive footing.
+_DAY = timedelta(days=1)
+_DAY_END = _BASE.replace(hour=0, minute=0, second=0, microsecond=0)
+
 
 @pytest.fixture
 def sync_session_factory(tmp_path: Path) -> Iterator[sessionmaker[Session]]:
@@ -127,6 +131,7 @@ def _add_metric(
     aggregation: MetricAggregation | None = None,
     composition: MetricComposition | None = None,
     anomaly_enabled: bool = True,
+    interval: str = "1h",
 ) -> MetricDefinition:
     metric = MetricDefinition(
         id=uuid.uuid4(),
@@ -138,13 +143,33 @@ def _add_metric(
         composition=composition.value if composition else None,
         config={},
         data_source_id=config.data_source_id,
-        interval="1h",
+        interval=interval,
         status=MetricStatus.active.value,
         anomaly_detection_enabled=anomaly_enabled,
     )
     session.add(metric)
     session.commit()
     return metric
+
+
+def _seed_values_at(
+    session: Session,
+    metric: MetricDefinition,
+    values: dict[datetime, float],
+    *,
+    scan_config_id: uuid.UUID | None = None,
+) -> None:
+    for bucket, value in values.items():
+        session.add(
+            MetricValue(
+                id=uuid.uuid4(),
+                metric_definition_id=metric.id,
+                scan_config_id=scan_config_id,
+                bucket=bucket,
+                value=value,
+            )
+        )
+    session.commit()
 
 
 def _seed_values(
@@ -154,17 +179,12 @@ def _seed_values(
     *,
     scan_config_id: uuid.UUID | None = None,
 ) -> None:
-    for hour, value in values.items():
-        session.add(
-            MetricValue(
-                id=uuid.uuid4(),
-                metric_definition_id=metric.id,
-                scan_config_id=scan_config_id,
-                bucket=_BASE + timedelta(hours=hour),
-                value=value,
-            )
-        )
-    session.commit()
+    _seed_values_at(
+        session,
+        metric,
+        {_BASE + timedelta(hours=hour): value for hour, value in values.items()},
+        scan_config_id=scan_config_id,
+    )
 
 
 def _metric_anomalies(session: Session, metric_id: uuid.UUID) -> list[MetricAnomaly]:
@@ -214,6 +234,63 @@ def test_recompute_persists_metric_scope_anomaly(
         assert anomaly.scan_config_id is None
         assert anomaly.direction == "spike"
         assert anomaly.bucket == _BASE + timedelta(hours=_SPIKE_HOUR)
+
+
+def test_daily_metric_is_evaluated_on_its_own_grid(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A 1d metric under a 1h scan config must get a 30-DAY candidate window.
+
+    ``collect_metrics`` derives ``evaluation_start`` from the SCAN grid
+    (``time_to - 1h * 30``). Passed through verbatim, a daily metric got 30
+    HOURS: one candidate bucket, and the settling allowance (one whole bucket of
+    a daily grid) withheld exactly that one, so no daily metric could emit at
+    all. That is the shape of the live ``rd1`` metric — 1d interval, a scan grid
+    of 1h, a collapse to 0.0 and no signal.
+    """
+    with sync_session_factory() as session:
+        config = _seed_project(session)
+        metric = _add_metric(
+            session,
+            config,
+            kind=MetricKind.fact,
+            aggregation=MetricAggregation.count,
+            composition=MetricComposition.single,
+            name="daily_signups",
+            interval="1d",
+        )
+        # 60 days of a flat 100/day that collapses to 0 for the last 5. The
+        # history reaches past the 21 buckets the daily phase baseline needs.
+        _seed_values_at(
+            session,
+            metric,
+            {_DAY_END - _DAY * day: (0.0 if day <= 5 else 100.0) for day in range(1, 61)},
+        )
+
+        detected = metrics_detect._recalculate_metric_anomalies(
+            session,
+            config,
+            # Exactly what collect_metrics computes for a 1h scan config.
+            evaluation_start=_DAY_END - timedelta(hours=30),
+            evaluation_end=_DAY_END,
+            settling_delay=timedelta(hours=2),
+        )
+        session.commit()
+
+        flagged = {a.bucket: a.direction for a in _metric_anomalies(session, metric.id)}
+
+    assert detected >= 1
+    collapsed = {_DAY_END - _DAY * day for day in range(2, 6)}
+    flagged_collapse = {bucket: flagged[bucket] for bucket in flagged.keys() & collapsed}
+    assert flagged_collapse
+    assert set(flagged_collapse.values()) == {"drop"}
+    # Every one of them predates the 30-hour window the scan grid produced —
+    # whose only daily candidate was the newest day, which settling withheld —
+    # so none is reachable without the per-metric window.
+    assert max(flagged_collapse) < _DAY_END - timedelta(hours=30)
+    # And the newest daily bucket does stay withheld: settling is a per-grid
+    # count, and 2h of allowance rounds up to one whole day.
+    assert _DAY_END - _DAY not in flagged
 
 
 def test_detect_metrics_disabled_skips_metric_scope(
