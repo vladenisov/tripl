@@ -14257,7 +14257,7 @@
             "type": "number",
             "minimum": 0.0,
             "title": "Min Percent Delta",
-            "default": 0
+            "default": 100.0
           },
           "min_absolute_delta": {
             "type": "number",

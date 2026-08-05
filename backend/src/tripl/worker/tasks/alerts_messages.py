@@ -424,13 +424,14 @@ def _build_ai_explanation(
     """
     ai_config = app_settings_service.get_ai_config_sync()
     lines: list[str] = [f"Project: {project_name}", f"Scan: {scan_name}", "Alert items:"]
-    # Every item now carries a correlation_group_id (it doubles as the inbox
-    # handle), so its mere presence no longer means "co-fired". Count peers in
-    # this delivery instead, or a solitary alert would claim companions.
-    group_sizes: Counter[uuid.UUID | None] = Counter(
-        item.correlation_group_id
-        for item in delivery.items
-        if item.correlation_group_id is not None
+    # The correlation id cannot answer "did this co-fire?". It is the inbox
+    # handle, every item carries one, and it is keyed per SCOPE — so counting
+    # group members finds exactly one member for every item and the tag would
+    # silently never appear again. Peers are counted inside this delivery
+    # instead, on the pair that makes co-firing mean something: one bucket, one
+    # direction.
+    cofiring_sizes: Counter[tuple[datetime, str]] = Counter(
+        (item.bucket, item.direction) for item in delivery.items
     )
     for item in delivery.items[:_AI_EXPLANATION_MAX_ITEMS]:
         sparkline, top_movers = item_context_cache.get(item.id, ("", ""))
@@ -466,7 +467,7 @@ def _build_ai_explanation(
             line += f", recent trend (old→new): {sparkline}"
         if top_movers:
             line += f", top movers: {top_movers}"
-        if group_sizes.get(item.correlation_group_id, 0) > 1:
+        if cofiring_sizes.get((item.bucket, item.direction), 0) > 1:
             line += " [co-fired with other items]"
         lines.append(line)
     # What was already said about these scopes, so a recurring drift reads as

@@ -3715,7 +3715,7 @@ export interface components {
             min_expected_count: number;
             /**
              * Min Percent Delta
-             * @default 0
+             * @default 100
              */
             min_percent_delta: number;
             /** Name */

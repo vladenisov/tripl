@@ -129,7 +129,17 @@ needs *notify on spike* enabled.
 
 - `min expected count` — ignore low-traffic buckets,
 - `min absolute delta` — require at least N events of change,
-- `min percent delta` — require at least N % of change.
+- `min percent delta` — require at least N % of change. **Defaults to `100`** —
+  at least double, or at most half, the expectation. A scope going dark is
+  exactly 100 % and still alerts.
+
+:::tip Why the percent default is not zero
+Most volume anomalies are single-bucket seasonal deviations rather than
+sustained shifts, and a busy catalog oscillates in both directions within the
+same day. On a real 2,500-event iOS catalog, replaying 24 hours of collections
+produced 436 matches at `0`, 267 at `50`, and 37 at `100` — start at the default
+and lower it once you know which scopes you want to hear about.
+:::
 
 :::warning
 Thresholds apply to the volume scopes (project total / event type / event) and to
@@ -151,9 +161,11 @@ its alert item uses the variable name as `drift_field` and a bounded novel-value
 sample as `sample_value`.
 
 **Cooldown** suppresses repeats. Default **1440 minutes (24h)**, tracked
-separately per *(rule, scan, scope)*. A rule fires when the anomaly first opens,
-when it re-opens after recovering, or when a newer anomaly bucket appears once the
-cooldown has elapsed.
+separately per *(rule, scan, scope)* and measured from the last message that was
+actually delivered. A rule fires when the anomaly first opens, when it re-opens
+after recovering, or when a newer anomaly bucket appears — in every case only
+once the cooldown has elapsed. A scope that recovers and relapses within the
+cooldown is still recorded as firing; you just aren't told twice.
 
 :::tip
 Before saving, use the **simulator** to replay a rule over the last *N* days and
@@ -203,17 +215,23 @@ Each match creates a **delivery** that moves through `pending → sent` or
 deliveries that get stuck (roughly every 5 minutes, up to a few attempts). You can
 **retry** failed deliveries manually from the UI.
 
-The **Inbox** is one row per **incident** — a rule firing in one direction on a
-scan — over the last 30 days. An incident stays the same row for as long as it
-keeps firing, however many buckets and scopes it spans, so a decision you make
+A Telegram delivery carrying more than **8 matched items** is split into several
+messages, because Telegram rejects a message over 4,096 characters outright.
+Nothing is dropped — every match still reaches you, across as many messages as it
+takes. Other channels have no comparable limit and keep one delivery per rule.
+
+The **Inbox** is one row per **incident** — a rule firing in one direction on one
+scope of a scan — over the last 30 days. An incident stays the same row for as
+long as it keeps firing, however many buckets it spans, so a decision you make
 about it holds. From the Inbox you can **acknowledge**, **resolve**, **mute**,
 **reopen**, or mark it a **false positive**, and attach a **note** saying why.
 
 **Acknowledge, resolve and mute all stop further deliveries** for that incident.
-The suppression lasts until the incident is over — once no scope of the rule is
-firing any more, the row returns to `open` on its own, so the next occurrence
-alerts normally and an old decision can never silence a new problem. **Reopen**
-lifts the suppression by hand.
+Because the row is per scope, silencing one screen leaves every other scope the
+rule watches alerting normally. The suppression lasts until that scope stops
+firing, at which point the row returns to `open` on its own, so the next
+occurrence alerts and an old decision can never silence a new problem.
+**Reopen** lifts the suppression by hand.
 
 The note is attached to the incident, survives later actions, and is only
 replaced when you write a new one.

@@ -337,6 +337,71 @@ def test_build_ai_explanation_includes_item_context(monkeypatch: pytest.MonkeyPa
     assert "platform=ios" in captured["user_prompt"]
 
 
+def _capture_prompt(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    captured: dict[str, str] = {}
+
+    def fake_complete(system_prompt: str, user_prompt: str, **kwargs: object) -> str:
+        captured["user_prompt"] = user_prompt
+        return "explained"
+
+    monkeypatch.setattr("tripl.services.llm_service.is_enabled", lambda: True)
+    monkeypatch.setattr("tripl.services.llm_service.complete", fake_complete)
+    return captured
+
+
+def test_build_ai_explanation_marks_items_that_co_fired(monkeypatch: pytest.MonkeyPatch):
+    """Two scopes moving together on one bucket is context the model needs.
+
+    The tag used to be derived from the correlation id, which is now the
+    per-scope inbox handle — every item carries its own, so counting group
+    members would find one member each and the tag would quietly never appear.
+    """
+    captured = _capture_prompt(monkeypatch)
+    delivery = _delivery_with_item()
+    peer = AlertDeliveryItem(
+        id=uuid.uuid4(),
+        scope_type="event",
+        scope_ref=str(uuid.uuid4()),
+        scope_name="Checkout Started",
+        bucket=delivery.items[0].bucket,
+        direction="drop",
+        actual_count=5,
+        expected_count=80,
+        absolute_delta=-75,
+        percent_delta=-93.75,
+        correlation_group_id=uuid.uuid4(),
+    )
+    delivery.items[0].correlation_group_id = uuid.uuid4()
+    delivery.items = [delivery.items[0], peer]
+
+    alerts_task._build_ai_explanation(
+        delivery,
+        scan_name="main",
+        project_name="AI",
+        item_context_cache={},
+    )
+
+    assert captured["user_prompt"].count("[co-fired with other items]") == 2
+
+
+def test_build_ai_explanation_does_not_claim_a_lone_item_co_fired(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """One scope in the delivery has nobody to have fired with."""
+    captured = _capture_prompt(monkeypatch)
+    delivery = _delivery_with_item()
+    delivery.items[0].correlation_group_id = uuid.uuid4()
+
+    alerts_task._build_ai_explanation(
+        delivery,
+        scan_name="main",
+        project_name="AI",
+        item_context_cache={},
+    )
+
+    assert "co-fired" not in captured["user_prompt"]
+
+
 def test_build_ai_explanation_swallows_llm_errors(monkeypatch: pytest.MonkeyPatch):
     delivery = _delivery_with_item()
     monkeypatch.setattr("tripl.services.llm_service.is_enabled", lambda: True)

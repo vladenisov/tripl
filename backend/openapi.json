@@ -2015,7 +2015,7 @@
             "type": "number"
           },
           "min_percent_delta": {
-            "default": 0,
+            "default": 100.0,
             "minimum": 0.0,
             "title": "Min Percent Delta",
             "type": "number"

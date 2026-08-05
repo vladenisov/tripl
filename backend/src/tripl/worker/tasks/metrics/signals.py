@@ -29,6 +29,7 @@ from tripl.core.analyzers.anomaly_detector import (
     SCOPE_EVENT_TYPE,
     SCOPE_METRIC,
     SCOPE_PROJECT_TOTAL,
+    settling_buckets_for,
 )
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
@@ -37,7 +38,10 @@ from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
-from tripl.models.project_anomaly_settings import ProjectAnomalySettings
+from tripl.models.project_anomaly_settings import (
+    DEFAULT_ANOMALY_INGESTION_SETTLING_MINUTES,
+    ProjectAnomalySettings,
+)
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
@@ -124,6 +128,49 @@ def _scan_config_freshness_inputs(
     )
 
 
+def _ingestion_settling_delay(session: Session, project_id: uuid.UUID) -> timedelta:
+    """The project's configured ingestion-settling allowance.
+
+    Same value and same fallback as ``tasks._ingestion_settling_delay``, which is
+    what the detection run reads. Duplicated rather than imported because
+    ``tasks`` imports this module, so the dependency only goes one way.
+    """
+    minutes = session.execute(
+        select(ProjectAnomalySettings.anomaly_ingestion_settling_minutes).where(
+            ProjectAnomalySettings.project_id == project_id
+        )
+    ).scalar()
+    if minutes is None:
+        return timedelta(minutes=DEFAULT_ANOMALY_INGESTION_SETTLING_MINUTES)
+    return timedelta(minutes=int(minutes))
+
+
+def _emission_lag(interval: timedelta | None, settling_delay: timedelta) -> timedelta:
+    """How far behind the metric head the newest EMITTABLE anomaly can sit.
+
+    ``detect_anomalies`` withholds the newest ``settling_buckets`` of the series
+    from emission (``anomaly_detector._emission_end``, wired at
+    ``tasks.py`` via ``_ingestion_settling_delay``), so a scope that is still
+    emitting into the freshest bucket carries its newest possible anomaly exactly
+    ``settling_buckets × interval`` behind that bucket. Comparing an anomaly
+    against the RAW metric head therefore asks for something the detector is
+    forbidden to produce: on the default 120-minute allowance and an hourly grid
+    that is two buckets, and the only scopes that could ever satisfy it were ones
+    that had gone SILENT, whose metric head stops advancing while the zero-filled
+    series keeps producing drops past it. That is visible in production: all 16
+    event-scope alert items ever delivered carry actual_count 0.0 (x15) or 1.0,
+    and 233 open signals were all state "recent", none "latest_scan".
+
+    Grid arithmetic, which reproduces ``_emission_end`` exactly for the
+    zero-filled count series every event scope runs on. A sparse fractional
+    series (``fill_gaps=False``) holds its emission head further back than the
+    grid says, so there this is a lower bound.
+    """
+    if interval is None:
+        return timedelta(0)
+    return settling_buckets_for(interval, settling_delay) * interval
+
+
 def _classify_signal_state(
     *,
     anomaly_bucket: datetime,
@@ -131,6 +178,7 @@ def _classify_signal_state(
     now: datetime | None = None,
     interval: timedelta | None = None,
     recent_window: timedelta | None = None,
+    emission_lag: timedelta = timedelta(0),
 ) -> str | None:
     # No stored metric values -> no live scan to anchor recency on; treat as closed.
     if latest_metric_bucket is None:
@@ -139,7 +187,9 @@ def _classify_signal_state(
     reference = now if now is not None else datetime.now(UTC)
     window = recent_window if recent_window is not None else RECENT_SIGNAL_WINDOW
 
-    if anomaly_bucket >= latest_metric_bucket:
+    # The settled head, not the raw one: buckets newer than this were withheld
+    # from emission, so no anomaly can exist there. See ``_emission_lag``.
+    if anomaly_bucket >= latest_metric_bucket - emission_lag:
         horizon = (
             window if interval is None else max(window, LATEST_SCAN_STALE_INTERVALS * interval)
         )
@@ -216,6 +266,11 @@ def _get_visible_signal_scope_keys(
         latest_anomalies.setdefault(key, anomaly)
 
     interval, recent_window = _scan_config_freshness_inputs(session, scan_config_id)
+    # No emission lag here on purpose: this is the DISPLAY set, it keeps either
+    # state, and the API renders the same signals through
+    # ``services.monitoring_utils.classify_signal_state``, which has no notion of
+    # the allowance. Feeding one side a settled head would only move signals
+    # between "latest_scan" and "recent" and split the two counts apart.
     return {
         key
         for key, anomaly in latest_anomalies.items()
@@ -248,6 +303,7 @@ def _get_latest_active_anomalies(
         latest_anomalies.setdefault(key, anomaly)
 
     interval = _scan_interval_delta(config.interval)
+    emission_lag = _emission_lag(interval, _ingestion_settling_delay(session, config.project_id))
     # Deliberately NOT narrowed by the project's open-signal window: this feeds
     # alert dispatch, which closes AlertRuleState rows for scopes that drop out.
     # Honouring a shortened window here would let a presentation setting close
@@ -259,6 +315,7 @@ def _get_latest_active_anomalies(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_metrics.get(key),
             interval=interval,
+            emission_lag=emission_lag,
         )
         == "latest_scan"
     }
@@ -273,18 +330,24 @@ def _get_active_metric_anomaly_candidates(
     Catalog metric anomalies are project-global (NULL ``scan_config_id``), so —
     unlike event scopes — they are not picked up by the config-partitioned
     ``_get_latest_active_anomalies``. We load them here keyed by their metric
-    definition, classify against the latest stored value bucket, and keep only
-    the ones whose newest anomaly is on the latest scan (an open signal).
+    definition, classify against the settled head of the latest stored value
+    bucket, and keep only the ones whose newest anomaly is on the latest scan
+    (an open signal).
+
+    Each metric is measured on its OWN grid, so the settled head is computed per
+    metric: the same 120-minute allowance withholds two buckets of an hourly
+    metric and a whole bucket of a daily one.
     """
-    scope_refs = [
-        str(metric_id)
-        for metric_id in session.execute(
-            select(MetricDefinition.id).where(
+    metric_intervals: dict[str, str | None] = {
+        str(metric_id): interval
+        for metric_id, interval in session.execute(
+            select(MetricDefinition.id, MetricDefinition.interval).where(
                 MetricDefinition.project_id == config.project_id,
                 MetricDefinition.anomaly_detection_enabled.is_(True),
             )
-        ).scalars()
-    ]
+        ).all()
+    }
+    scope_refs = list(metric_intervals)
     if not scope_refs:
         return {}
 
@@ -309,7 +372,13 @@ def _get_active_metric_anomaly_candidates(
     ).scalars():
         latest_anomalies.setdefault(anomaly.scope_ref, anomaly)
 
-    interval = _scan_interval_delta(config.interval)
+    settling_delay = _ingestion_settling_delay(session, config.project_id)
+    # A metric with no interval of its own (``event_composition``) inherits a
+    # scan's grid; this pass runs per scan config, so that config's grid stands in.
+    intervals = {
+        scope_ref: _scan_interval_delta(interval or config.interval)
+        for scope_ref, interval in metric_intervals.items()
+    }
     # See _get_latest_active_anomalies: alert candidates stay on the fixed
     # window so the presentation setting cannot close alert state.
     return {
@@ -318,7 +387,8 @@ def _get_active_metric_anomaly_candidates(
         if _classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_value_buckets.get(scope_ref),
-            interval=interval,
+            interval=intervals.get(scope_ref),
+            emission_lag=_emission_lag(intervals.get(scope_ref), settling_delay),
         )
         == "latest_scan"
     }

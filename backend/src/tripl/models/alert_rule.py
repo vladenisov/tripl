@@ -15,6 +15,24 @@ if TYPE_CHECKING:
     from tripl.models.alert_destination import AlertDestination
     from tripl.models.alert_rule_filter import AlertRuleFilter
 
+# Percent gap between observed and expected below which a VOLUME anomaly is not
+# worth a message. Drift and release-regression scopes return before the numeric
+# thresholds in ``alerting_matching.rule_matches_anomaly`` and are unaffected.
+#
+# 100 means "at least double, or at most half" — measured, not picked for the
+# round number. Replaying 24 hours of live iOS collections through the repaired
+# signal gate produced 436 items in 54 deliveries at 0 (a message every ~25
+# minutes), 267/32 at 50, and 37/7 at 100 — the last on a par with the 16 items
+# in 11 deliveries the instance actually sends today. What that volume is made
+# of argues the same way: 435 of the 436 were single-bucket seasonal deviations
+# rather than sustained level shifts, and 106 of 223 scopes fired in BOTH
+# directions inside the same day.
+#
+# A scope going dark still passes: actual 0 against any positive expectation is
+# exactly 100%, and the comparison is strict. That is the one class of volume
+# alert that reaches anyone today.
+DEFAULT_MIN_PERCENT_DELTA = 100.0
+
 
 class AlertRule(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "alert_rules"
@@ -78,7 +96,11 @@ class AlertRule(UUIDMixin, TimestampMixin, Base):
     )
     notify_on_spike: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     notify_on_drop: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
-    min_percent_delta: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    min_percent_delta: Mapped[float] = mapped_column(
+        Float,
+        default=DEFAULT_MIN_PERCENT_DELTA,
+        server_default=str(DEFAULT_MIN_PERCENT_DELTA),
+    )
     min_absolute_delta: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
     min_expected_count: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
     cooldown_minutes: Mapped[int] = mapped_column(Integer, default=1440, server_default="1440")

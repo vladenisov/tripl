@@ -15,6 +15,7 @@ from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
+from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.data_source import DataSource
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event, EventStatus
@@ -39,6 +40,7 @@ from tripl.worker.tasks.metrics import collect as metrics_collect
 from tripl.worker.tasks.metrics import dispatch as metrics_dispatch
 from tripl.worker.tasks.metrics import schedule as metrics_schedule
 from tripl.worker.tasks.metrics import schema_drift as metrics_schema_drift
+from tripl.worker.tasks.metrics import signals as metrics_signals
 from tripl.worker.tasks.metrics import tasks as metrics
 from tripl.worker.tasks.metrics._helpers import STALE_ACTIVE_SCAN_JOB_TIMEOUT
 
@@ -1647,19 +1649,55 @@ def test_correlation_group_id_is_the_same_across_buckets() -> None:
 
     scan_config_id = uuid.uuid4()
     rule_id = uuid.uuid4()
+    scope = {"scope_type": "event", "scope_ref": str(uuid.uuid4())}
 
-    first = _correlation_group_id(scan_config_id=scan_config_id, rule_id=rule_id, direction="drop")
-    second = _correlation_group_id(scan_config_id=scan_config_id, rule_id=rule_id, direction="drop")
+    first = _correlation_group_id(
+        scan_config_id=scan_config_id, rule_id=rule_id, direction="drop", **scope
+    )
+    second = _correlation_group_id(
+        scan_config_id=scan_config_id, rule_id=rule_id, direction="drop", **scope
+    )
     assert first == second
 
     # Direction still separates incidents: a spike is not the drop you acked.
-    spike = _correlation_group_id(scan_config_id=scan_config_id, rule_id=rule_id, direction="spike")
+    spike = _correlation_group_id(
+        scan_config_id=scan_config_id, rule_id=rule_id, direction="spike", **scope
+    )
     assert spike != first
     # And so does the rule.
     other_rule = _correlation_group_id(
-        scan_config_id=scan_config_id, rule_id=uuid.uuid4(), direction="drop"
+        scan_config_id=scan_config_id, rule_id=uuid.uuid4(), direction="drop", **scope
     )
     assert other_rule != first
+
+
+def test_correlation_group_id_separates_scopes() -> None:
+    """One inbox action must not silence every other scope of the rule.
+
+    Keyed on scan_config:rule:direction alone, ``_SUPPRESSING_INBOX_STATUSES``
+    gated all of them together and ``_reopen_closed_incidents`` could not release
+    them, because it waited for a scope that suppression was keeping alive. On
+    prod one operator note covered 7 unrelated scopes under group bd6c96f5.
+    """
+    from tripl.worker.tasks.metrics.dispatch import _correlation_group_id
+
+    scan_config_id = uuid.uuid4()
+    rule_id = uuid.uuid4()
+
+    def group(scope_type: str, scope_ref: str) -> uuid.UUID:
+        return _correlation_group_id(
+            scan_config_id=scan_config_id,
+            rule_id=rule_id,
+            scope_type=scope_type,
+            scope_ref=scope_ref,
+            direction="drop",
+        )
+
+    first_event = str(uuid.uuid4())
+    second_event = str(uuid.uuid4())
+    assert group("event", first_event) != group("event", second_event)
+    # The scope_type is part of it too: an event and an event_type can share a ref.
+    assert group("event", first_event) != group("event_type", first_event)
 
 
 def test_acknowledged_groups_are_suppressed(
@@ -1706,8 +1744,9 @@ def test_closing_an_incident_reopens_its_inbox_decision(
 ) -> None:
     """Suppression must not outlive the incident, or it would be permanent.
 
-    Acknowledging a drop silences that rule's drops — but only until every scope
-    stops firing. The next drop is a new incident and has to alert.
+    Acknowledging a drop silences that scope's drops — but only until the scope
+    stops firing. The next drop is a new incident and has to alert. A scope that
+    is STILL firing keeps its decision: it is the same incident.
     """
     from tripl.models.alert_correlation_state import AlertCorrelationState
     from tripl.worker.tasks.metrics.dispatch import (
@@ -1721,8 +1760,21 @@ def test_closing_an_incident_reopens_its_inbox_decision(
         session.flush()
         scan_config_id = uuid.uuid4()
         rule_id = uuid.uuid4()
+        closed_scope = ("event", str(uuid.uuid4()))
+        firing_scope = ("event", str(uuid.uuid4()))
         group_id = _correlation_group_id(
-            scan_config_id=scan_config_id, rule_id=rule_id, direction="drop"
+            scan_config_id=scan_config_id,
+            rule_id=rule_id,
+            scope_type=closed_scope[0],
+            scope_ref=closed_scope[1],
+            direction="drop",
+        )
+        still_firing_group_id = _correlation_group_id(
+            scan_config_id=scan_config_id,
+            rule_id=rule_id,
+            scope_type=firing_scope[0],
+            scope_ref=firing_scope[1],
+            direction="drop",
         )
         unrelated = uuid.uuid4()
         session.add_all(
@@ -1730,6 +1782,11 @@ def test_closing_an_incident_reopens_its_inbox_decision(
                 AlertCorrelationState(
                     project_id=project.id,
                     correlation_group_id=group_id,
+                    status="acknowledged",
+                ),
+                AlertCorrelationState(
+                    project_id=project.id,
+                    correlation_group_id=still_firing_group_id,
                     status="acknowledged",
                 ),
                 AlertCorrelationState(
@@ -1746,6 +1803,7 @@ def test_closing_an_incident_reopens_its_inbox_decision(
             project_id=project.id,
             scan_config_id=scan_config_id,
             rule_id=rule_id,
+            scope_keys=[closed_scope],
         )
         session.flush()
 
@@ -1755,6 +1813,8 @@ def test_closing_an_incident_reopens_its_inbox_decision(
         }
 
     assert states[group_id] == "open"
+    # The rule's other scope is still firing; its decision stands.
+    assert states[still_firing_group_id] == "acknowledged"
     # Another rule's decision is untouched.
     assert states[unrelated] == "acknowledged"
 
@@ -1781,11 +1841,20 @@ def test_closing_an_incident_does_not_cancel_a_timed_mute(
         session.flush()
         scan_config_id = uuid.uuid4()
         rule_id = uuid.uuid4()
+        scope = ("event", str(uuid.uuid4()))
         group_id = _correlation_group_id(
-            scan_config_id=scan_config_id, rule_id=rule_id, direction="drop"
+            scan_config_id=scan_config_id,
+            rule_id=rule_id,
+            scope_type=scope[0],
+            scope_ref=scope[1],
+            direction="drop",
         )
         lapsed_id = _correlation_group_id(
-            scan_config_id=scan_config_id, rule_id=rule_id, direction="spike"
+            scan_config_id=scan_config_id,
+            rule_id=rule_id,
+            scope_type=scope[0],
+            scope_ref=scope[1],
+            direction="spike",
         )
         now = datetime.now(UTC)
         session.add_all(
@@ -1811,6 +1880,7 @@ def test_closing_an_incident_does_not_cancel_a_timed_mute(
             project_id=project.id,
             scan_config_id=scan_config_id,
             rule_id=rule_id,
+            scope_keys=[scope],
         )
         session.flush()
 
@@ -2609,11 +2679,414 @@ def test_collect_metrics_queues_alert_deliveries(
         assert len(deliveries) == 1
         assert deliveries[0].matched_count == 3
         assert len(items) == 3
-        # All three items co-fire on the same bucket+direction, so they must
-        # share a non-null correlation_group_id.
+        # Every item carries a group id — that id is the inbox handle, and an
+        # item without one can never be acted on. One per SCOPE, so acting on
+        # any of the three leaves the other two alerting.
         group_ids = {item.correlation_group_id for item in items}
-        assert len(group_ids) == 1
-        assert next(iter(group_ids)) is not None
+        assert None not in group_ids
+        assert len(group_ids) == 3
+
+
+def _seed_alert_rule(
+    session: Session,
+    config: ScanConfig,
+    *,
+    destination_type: str = "slack",
+    include_schema_drifts: bool = False,
+) -> AlertRule:
+    destination = AlertDestination(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        type=destination_type,
+        name=f"Dest {destination_type}",
+        enabled=True,
+        webhook_url_encrypted="secret",
+        bot_token_encrypted="secret",
+        chat_id="-100",
+    )
+    rule = AlertRule(
+        id=uuid.uuid4(),
+        destination_id=destination.id,
+        name="Rule",
+        enabled=True,
+        include_project_total=True,
+        include_event_types=True,
+        include_events=True,
+        include_schema_drifts=include_schema_drifts,
+        notify_on_spike=True,
+        notify_on_drop=True,
+        min_percent_delta=0,
+        min_absolute_delta=0,
+        min_expected_count=0,
+        cooldown_minutes=1440,
+    )
+    session.add_all([destination, rule])
+    return rule
+
+
+def _seed_drop_anomaly(
+    session: Session,
+    config: ScanConfig,
+    event: Event,
+    *,
+    bucket: datetime,
+) -> MetricAnomaly:
+    anomaly = MetricAnomaly(
+        id=uuid.uuid4(),
+        scan_config_id=config.id,
+        scope_type="event",
+        scope_ref=str(event.id),
+        event_id=event.id,
+        event_type_id=None,
+        bucket=bucket,
+        actual_count=0,
+        expected_count=10,
+        stddev=1,
+        z_score=-10,
+        direction="drop",
+    )
+    session.add(anomaly)
+    return anomaly
+
+
+def test_a_live_scope_alerts_on_the_newest_bucket_the_detector_may_emit(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A volume anomaly on a still-emitting scope has to reach dispatch.
+
+    The detector withholds the newest ``settling_buckets`` of a series from
+    emission (120 minutes / 1h grid = 2 buckets), so a scope that is still
+    filling the freshest bucket can never carry an anomaly at or after its metric
+    head. Classifying against the RAW head therefore only ever admitted scopes
+    that had gone SILENT, whose head stops advancing: on prod all 16 event-scope
+    alert items ever delivered carry actual_count 0.0 (x15) or 1.0.
+    """
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session, base=_ANOMALY_BASE)
+        _seed_alert_rule(session, config)
+        head = _ANOMALY_BASE + timedelta(hours=9)
+        # The settled head: two buckets back, exactly where _emission_end put
+        # the newest emittable row.
+        _seed_drop_anomaly(session, config, event, bucket=head - timedelta(hours=2))
+        session.commit()
+
+        active = metrics_signals._get_latest_active_anomalies(session, config)
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+
+        assert ("event", str(event.id)) in active
+        assert len(delivery_ids) == 1
+        item = session.execute(select(AlertDeliveryItem)).scalar_one()
+        assert item.scope_ref == str(event.id)
+
+
+def test_an_anomaly_older_than_the_settled_head_closes_its_alert_state(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The settled head is a shift, not a removal, of the freshness bar.
+
+    A scope whose newest anomaly sits further back than the withheld buckets is
+    no longer firing on the latest scan, so its AlertRuleState must still close
+    rather than alert forever.
+    """
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session, base=_ANOMALY_BASE)
+        _seed_alert_rule(session, config)
+        head = _ANOMALY_BASE + timedelta(hours=9)
+        # One bucket behind the settled head.
+        _seed_drop_anomaly(session, config, event, bucket=head - timedelta(hours=3))
+        session.commit()
+
+        active = metrics_signals._get_latest_active_anomalies(session, config)
+
+        assert ("event", str(event.id)) not in active
+
+
+def _seed_closed_alert_state(
+    session: Session,
+    rule: AlertRule,
+    config: ScanConfig,
+    event: Event,
+    *,
+    last_notified_at: datetime,
+    last_anomaly_bucket: datetime,
+) -> AlertRuleState:
+    state = AlertRuleState(
+        id=uuid.uuid4(),
+        rule_id=rule.id,
+        scan_config_id=config.id,
+        scope_type="event",
+        scope_ref=str(event.id),
+        is_active=False,
+        opened_at=last_notified_at,
+        closed_at=last_notified_at,
+        last_anomaly_bucket=last_anomaly_bucket,
+        last_notified_at=last_notified_at,
+    )
+    session.add(state)
+    return state
+
+
+def test_reactivation_inside_the_cooldown_reopens_the_state_without_alerting(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Reopening a closed scope is the normal path, so it has to honour the cooldown.
+
+    A volume scope is a candidate for a bounded run of collections per anomaly
+    bucket and then closes, so its next anomaly arrives at a CLOSED state — over
+    a 24h replay of live data 406 of 436 sends (93%) came in through
+    reactivation and none through the cooldown branch. While reactivation
+    ignored ``last_notified_at``, cooldown_minutes changed nothing at any value.
+    """
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session, base=_ANOMALY_BASE)
+        rule = _seed_alert_rule(session, config)
+        session.flush()
+        head = _ANOMALY_BASE + timedelta(hours=9)
+        _seed_drop_anomaly(session, config, event, bucket=head - timedelta(hours=2))
+        _seed_closed_alert_state(
+            session,
+            rule,
+            config,
+            event,
+            # cooldown_minutes is 1440 on the seeded rule.
+            last_notified_at=datetime.now(UTC) - timedelta(hours=1),
+            last_anomaly_bucket=head - timedelta(hours=6),
+        )
+        session.commit()
+
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+        state = session.execute(select(AlertRuleState)).scalar_one()
+
+        assert delivery_ids == []
+        assert session.execute(select(AlertDeliveryItem)).scalars().all() == []
+        # The scope IS firing again — the state has to say so, or the monitor
+        # reads as quiet while it is silenced.
+        assert state.is_active is True
+        assert state.closed_at is None
+        assert state.last_anomaly_bucket == head - timedelta(hours=2)
+
+
+def test_reactivation_after_the_cooldown_alerts_again(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The case the reactivation branch exists for still fires.
+
+    A scope that genuinely closed and reopens long after has to alert; gating on
+    elapsed time rather than the ``is_active`` flag is what keeps that working.
+    """
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session, base=_ANOMALY_BASE)
+        rule = _seed_alert_rule(session, config)
+        session.flush()
+        head = _ANOMALY_BASE + timedelta(hours=9)
+        _seed_drop_anomaly(session, config, event, bucket=head - timedelta(hours=2))
+        _seed_closed_alert_state(
+            session,
+            rule,
+            config,
+            event,
+            last_notified_at=datetime.now(UTC) - timedelta(days=3),
+            last_anomaly_bucket=head - timedelta(days=3),
+        )
+        session.commit()
+
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+        item = session.execute(select(AlertDeliveryItem)).scalar_one()
+
+    assert len(delivery_ids) == 1
+    assert item.scope_ref == str(event.id)
+
+
+def _seed_acknowledged_group(
+    session: Session,
+    rule: AlertRule,
+    config: ScanConfig,
+    event: Event,
+) -> uuid.UUID:
+    """Acknowledge the inbox group this scope's drops belong to."""
+    from tripl.models.alert_correlation_state import AlertCorrelationState
+
+    group_id = metrics_dispatch._correlation_group_id(
+        scan_config_id=config.id,
+        rule_id=rule.id,
+        scope_type="event",
+        scope_ref=str(event.id),
+        direction="drop",
+    )
+    session.add(
+        AlertCorrelationState(
+            project_id=config.project_id,
+            correlation_group_id=group_id,
+            status="acknowledged",
+        )
+    )
+    return group_id
+
+
+def test_ack_survives_a_reactivating_scope(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Acknowledging a scope that keeps firing must not un-acknowledge it.
+
+    A scope's AlertRuleState closes as soon as its anomaly ages past the settled
+    head and reopens on the next one, so at the point inbox decisions are
+    released the state of a scope firing RIGHT NOW reads closed — on live data
+    that is 93% of sends, not an edge case. Releasing on the flag alone would
+    clear the acknowledgement the operator just made and page them again on the
+    very next collection. Only a scope absent from this run's matches is over.
+
+    Rule-wide release used to make this safe by accident: any other live scope
+    of the rule vetoed the reset. Per-scope groups removed that veto.
+    """
+    from tripl.models.alert_correlation_state import AlertCorrelationState
+
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session, base=_ANOMALY_BASE)
+        rule = _seed_alert_rule(session, config)
+        session.flush()
+        head = _ANOMALY_BASE + timedelta(hours=9)
+        _seed_drop_anomaly(session, config, event, bucket=head - timedelta(hours=2))
+        # Closed state, cooldown long elapsed: without the acknowledgement this
+        # run would alert (test_reactivation_after_the_cooldown_alerts_again).
+        _seed_closed_alert_state(
+            session,
+            rule,
+            config,
+            event,
+            last_notified_at=datetime.now(UTC) - timedelta(days=3),
+            last_anomaly_bucket=head - timedelta(days=3),
+        )
+        group_id = _seed_acknowledged_group(session, rule, config, event)
+        session.commit()
+
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+        session.flush()
+        state = session.execute(
+            select(AlertCorrelationState).where(
+                AlertCorrelationState.correlation_group_id == group_id
+            )
+        ).scalar_one()
+
+        assert state.status == "acknowledged"
+        assert delivery_ids == []
+        assert session.execute(select(AlertDeliveryItem)).scalars().all() == []
+
+
+def test_ack_is_released_once_the_scope_stops_firing(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The other half: suppression dies with the incident, or it is permanent.
+
+    Holding the decision for a firing scope must not become never releasing it —
+    a scope with nothing to match this run is over, and its next drop is a new
+    incident that has to alert.
+    """
+    from tripl.models.alert_correlation_state import AlertCorrelationState
+
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session, base=_ANOMALY_BASE)
+        rule = _seed_alert_rule(session, config)
+        session.flush()
+        head = _ANOMALY_BASE + timedelta(hours=9)
+        # No anomaly seeded at all: this scope is quiet on this run.
+        _seed_closed_alert_state(
+            session,
+            rule,
+            config,
+            event,
+            last_notified_at=datetime.now(UTC) - timedelta(days=3),
+            last_anomaly_bucket=head - timedelta(days=3),
+        )
+        group_id = _seed_acknowledged_group(session, rule, config, event)
+        session.commit()
+
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+        session.flush()
+        state = session.execute(
+            select(AlertCorrelationState).where(
+                AlertCorrelationState.correlation_group_id == group_id
+            )
+        ).scalar_one()
+
+        assert state.status == "open"
+        assert delivery_ids == []
+
+
+def test_telegram_deliveries_are_chunked_below_the_message_ceiling(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Telegram 400s on a body over 4096 chars, and a failed send is retried forever.
+
+    ``last_notified_at`` is stamped only on success while the re-send gate treats
+    NULL as "never told them", so the 14-item / 4154-char delivery that surfaced
+    this was rebuilt on every collection. Chunking keeps every item — a truncated
+    delivery would drop scopes the operator never hears about.
+    """
+    item_count = 14
+    with sync_session_factory() as session:
+        config, event_type, _event = _seed_anomaly_scan_state(session)
+        _seed_alert_rule(session, config, destination_type="telegram", include_schema_drifts=True)
+        for index in range(item_count):
+            session.add(
+                SchemaDrift(
+                    id=uuid.uuid4(),
+                    event_type_id=event_type.id,
+                    scan_config_id=config.id,
+                    field_name=f"payload.f{index}",
+                    drift_type="new_field",
+                    observed_type="String",
+                    declared_type=None,
+                    sample_value="x",
+                    detected_at=datetime.now(UTC),
+                )
+            )
+        session.commit()
+
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+
+        deliveries = session.execute(select(AlertDelivery)).scalars().all()
+        items = session.execute(select(AlertDeliveryItem)).scalars().all()
+
+    assert len(delivery_ids) == 2
+    assert sorted(delivery.matched_count for delivery in deliveries) == [6, 8]
+    # Nothing is dropped: every drift still reaches the operator, and each chunk
+    # stamps last_notified_at for its own items when it lands.
+    assert len(items) == item_count
+    assert len({item.scope_ref for item in items}) == item_count
+
+
+def test_non_telegram_channels_keep_one_delivery_per_rule(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Only Telegram has the 4096-char ceiling.
+
+    Chunking jira/linear would file duplicate issues, and Slack/email/webhook
+    have no comparable limit, so the ceiling is keyed on the channel.
+    """
+    with sync_session_factory() as session:
+        config, event_type, _event = _seed_anomaly_scan_state(session)
+        _seed_alert_rule(session, config, destination_type="slack", include_schema_drifts=True)
+        for index in range(14):
+            session.add(
+                SchemaDrift(
+                    id=uuid.uuid4(),
+                    event_type_id=event_type.id,
+                    scan_config_id=config.id,
+                    field_name=f"payload.f{index}",
+                    drift_type="new_field",
+                    observed_type="String",
+                    declared_type=None,
+                    sample_value="x",
+                    detected_at=datetime.now(UTC),
+                )
+            )
+        session.commit()
+
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+        delivery = session.execute(select(AlertDelivery)).scalar_one()
+
+    assert len(delivery_ids) == 1
+    assert delivery.matched_count == 14
 
 
 def test_breakdown_anomalies_do_not_queue_alert_deliveries(

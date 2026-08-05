@@ -28,6 +28,7 @@ from tripl.alerting_validation import (
 )
 from tripl.models.alert_delivery import AlertDeliveryStatus
 from tripl.models.alert_destination import AlertDestinationType
+from tripl.models.alert_rule import DEFAULT_MIN_PERCENT_DELTA
 from tripl.models.domain_enums import (
     AlertDriftType,
     AlertInboxStatus,
@@ -120,7 +121,10 @@ class AlertRuleCreate(AlertRuleBase):
     notify_on_spike: bool = True
     notify_on_drop: bool = True
     ai_explanation_enabled: bool = False
-    min_percent_delta: float = Field(0, ge=0)
+    # A new rule starts at the measured volume threshold rather than wide open;
+    # see DEFAULT_MIN_PERCENT_DELTA. Zero is still accepted, for a caller that
+    # deliberately wants every deviation.
+    min_percent_delta: float = Field(DEFAULT_MIN_PERCENT_DELTA, ge=0)
     min_absolute_delta: float = Field(0, ge=0)
     min_expected_count: float = Field(0, ge=0)
     cooldown_minutes: int = Field(1440, ge=1)

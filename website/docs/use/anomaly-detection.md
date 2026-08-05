@@ -154,6 +154,8 @@ The allowance closes that hole without hiding data:
 
 The withheld buckets are counted from the **end of the collected series**, which itself stops at the last *complete* clock interval. On an hourly scan with the default allowance that means the 09:00 bucket is still settling for the runs whose series end at 09:00 and at 10:00, and is first scored by a run whose series reaches 11:00. In practice, expect a signal to trail the bucket it describes by **the settling allowance plus the scan's own interval**, and never to arrive sooner than the next scan after that. Alerts inherit the same delay, because a rule can only fire on a bucket the detector has scored.
 
+Alerting judges a signal's freshness against that **settled** end of the series rather than the raw one. The distinction matters: a scope that is still delivering events can never carry a signal newer than the withheld buckets, so measuring against the raw head would mark every live scope stale and leave only scopes that had gone dark able to alert at all.
+
 **Tuning it.** The allowance is a per-project setting, `anomaly_ingestion_settling_minutes`, in **Project settings → Monitoring** as **"Ingestion settling (minutes)"**. It accepts 0–1440 minutes.
 
 - **Lower it** (down to `0`, which scores every bucket immediately) when your warehouse is genuinely real-time and you want the fastest possible detection. The cost is false drops on the newest bucket whenever a scan happens to run before ingestion finishes.
