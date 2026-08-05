@@ -59,6 +59,8 @@ from tripl.worker.tasks.metrics._helpers import (
 from tripl.worker.tasks.metrics.catalog_sync import sync_catalog
 from tripl.worker.tasks.metrics.chunk_processing import process_chunk
 from tripl.worker.tasks.metrics.detect import (
+    ANOMALY_TRAILING_REEVAL_BUCKETS,
+    NO_INGESTION_SETTLING,
     _recalculate_metric_anomalies,
     _recalculate_metric_breakdown_anomalies,
 )
@@ -92,13 +94,6 @@ METRICS_REPLAY_MODE = "metrics_replay"
 
 COLLECT_METRICS_SOFT_TIME_LIMIT_SECONDS = 24 * 60 * 60
 COLLECT_METRICS_TIME_LIMIT_SECONDS = 25 * 60 * 60
-
-# Anomaly re-evaluation always sweeps at least this many trailing buckets, even
-# on an incremental run that only collected the newest one or two. A backfilled
-# or re-collected bucket inside this window then gets its flag cleared/updated on
-# the next run instead of being frozen at whatever the first pass decided
-# (tripl-dmch.14). Replays over a wider explicit window keep that wider window.
-ANOMALY_TRAILING_REEVAL_BUCKETS = 30
 
 # Ingestion-settling allowance (tripl-jfm3.7). ``_resolve_collection_window``
 # ends the collection window at the last COMPLETE clock interval, but a
@@ -138,6 +133,21 @@ def _ingestion_settling_delay(session: Session, project_id: uuid.UUID) -> timede
     if minutes is None:
         return ANOMALY_INGESTION_SETTLING
     return timedelta(minutes=minutes)
+
+
+# A ScanJob.result_summary is free-form JSON, so a recorded window bound can be
+# malformed (ValueError from _parse_task_datetime) or not a string at all
+# (TypeError).
+#
+# Bound to a name instead of written inline because the pinned ruff (0.16.0)
+# rewrites a BARE ``except (A, B):`` into the Python 2 ``except A, B:``, which
+# does not parse. ``ruff check`` then reports zero diagnostics on the wreckage,
+# so the pre-commit format hook can land it unnoticed — it already did once on
+# this exact line, and that is how this module reached HEAD unimportable.
+# Reproduce: ``ruff format`` a file containing a bare parenthesized multi-except.
+# Both ``except (A, B) as exc:`` and ``except NAME:`` are left alone; this uses
+# the latter because the handler has no use for the exception object.
+_UNUSABLE_JOB_WINDOW = (ValueError, TypeError)
 
 
 def _covered_buckets_from_scan_jobs(
@@ -181,7 +191,7 @@ def _covered_buckets_from_scan_jobs(
         try:
             window_from = _parse_task_datetime(raw_from)
             window_to = _parse_task_datetime(raw_to)
-        except ValueError, TypeError:
+        except _UNUSABLE_JOB_WINDOW:
             continue
         if window_from < window_to:
             windows.append((window_from, window_to))
@@ -782,7 +792,19 @@ def collect_metrics(
         anomaly_evaluation_start = min(
             time_from_dt, time_to_dt - delta * ANOMALY_TRAILING_REEVAL_BUCKETS
         )
-        settling_delay = _ingestion_settling_delay(session, config.project_id)
+        # A replay re-reads history the warehouse finished delivering long ago,
+        # so the allowance has nothing left to withhold — and it is not inert:
+        # ``_replace_scope_anomalies`` deletes all of [start, end) and reinserts
+        # only up to the emission end, so the withheld head buckets lose the
+        # anomalies they correctly carried. Nothing puts them back: the next
+        # scheduled run's trailing window starts at the live clock, past the
+        # replayed range. NO_INGESTION_SETTLING is the case this constant exists
+        # for — an explicit, already-settled window.
+        settling_delay = (
+            NO_INGESTION_SETTLING
+            if is_replay
+            else _ingestion_settling_delay(session, config.project_id)
+        )
         anomalies_detected = _recalculate_metric_anomalies(
             session,
             config,
