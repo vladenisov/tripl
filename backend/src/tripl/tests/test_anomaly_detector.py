@@ -1253,3 +1253,112 @@ def test_uncovered_bucket_does_not_rotate_the_seasonal_phase() -> None:
     )
 
     assert [anomaly.direction for anomaly in spike_anomalies] == ["spike"]
+
+
+# --------------------------------------------------------------------------
+# A silent scope announces once (tripl-l429.13)
+# --------------------------------------------------------------------------
+
+
+def _business_hours_count(hour: int) -> float:
+    """Emits only during the working day, so its own baseline is full of zeros.
+
+    This is the shape that makes "anchor on the first empty bucket" wrong: the
+    run of empty buckets opens on an ordinary evening zero, which is never
+    anomalous, so anchoring there drops every anomalous bucket in the run and
+    the event dies in silence.
+    """
+    return 60.0 if 9 <= hour % 24 < 18 else 0.0
+
+
+_DEATH_HOUR = 24 * 28
+
+
+def _dying_business_hours_series(horizon: int) -> list[SeriesPoint]:
+    return [
+        SeriesPoint(
+            bucket=_bucket(hour),
+            count=0.0 if hour >= _DEATH_HOUR else _business_hours_count(hour),
+        )
+        for hour in range(horizon)
+    ]
+
+
+def _scan(points: list[SeriesPoint], *, start: int, end: int) -> list[DetectedAnomaly]:
+    return detect_anomalies(
+        points[:end],
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(start),
+        evaluation_end=_bucket(end),
+        settings=SETTINGS,
+    )
+
+
+def test_a_business_hours_event_that_dies_is_announced_once() -> None:
+    horizon = _DEATH_HOUR + 24 * 3
+    anomalies = _scan(_dying_business_hours_series(horizon), start=_DEATH_HOUR, end=horizon)
+
+    # One row for three days of silence, and it lands on a WORKING hour — the
+    # bucket where the scope stopped doing what it normally does, not the
+    # midnight zero that merely happens to open the run.
+    assert len(anomalies) == 1
+    assert anomalies[0].direction == "drop"
+    assert 9 <= anomalies[0].bucket.hour < 18
+
+
+def test_the_outage_announcement_does_not_move_with_the_evaluation_window() -> None:
+    """The property an anomaly-derived anchor cannot have.
+
+    Each collection re-evaluates a trailing window that slides forward one
+    bucket at a time, and ``_replace_scope_anomalies`` only rewrites rows inside
+    it. An anchor chosen from the anomalies of the current pass therefore moves
+    with the window: the previous announcement sits outside the rewritten range
+    and survives, a new one is written at the window's first anomalous bucket,
+    and the outage accumulates a row per scan — the same pile-up the collapse
+    exists to remove. Deriving the anchor from the series makes it stable.
+    """
+    horizon = _DEATH_HOUR + 24 * 4
+    points = _dying_business_hours_series(horizon)
+
+    first = _scan(points, start=_DEATH_HOUR, end=_DEATH_HOUR + 24 * 3)
+    assert len(first) == 1
+    anchor = first[0].bucket
+
+    # A later scan whose window starts AFTER the anchor must find nothing to
+    # announce; the row already on record is the announcement.
+    later = _scan(points, start=_DEATH_HOUR + 24, end=horizon)
+    assert later == []
+
+    # And a scan that still contains the anchor reports the same bucket, not a
+    # fresh one nearer the window's start.
+    overlapping = _scan(points, start=_DEATH_HOUR, end=horizon)
+    assert [a.bucket for a in overlapping] == [anchor]
+
+
+def test_a_revived_scope_that_dies_again_is_announced_again() -> None:
+    """Two outages are two incidents, however close together."""
+    revival_hour = _DEATH_HOUR + 24
+    second_death_hour = revival_hour + 24
+    horizon = second_death_hour + 24 * 2
+    points = [
+        SeriesPoint(
+            bucket=_bucket(hour),
+            count=(
+                _business_hours_count(hour)
+                if hour < _DEATH_HOUR or revival_hour <= hour < second_death_hour
+                else 0.0
+            ),
+        )
+        for hour in range(horizon)
+    ]
+
+    anomalies = _scan(points, start=_DEATH_HOUR, end=horizon)
+
+    # One drop per outage. The revival also scores — a day of silence pulls the
+    # same-phase medians down, so the restored traffic reads as a spike — and
+    # those buckets carry a real count, sit in no run of empty buckets, and are
+    # deliberately left alone: this collapses outages, not everything near one.
+    outages = [anomaly for anomaly in anomalies if anomaly.direction == "drop"]
+    assert len(outages) == 2
+    assert outages[0].bucket < _bucket(revival_hour) <= outages[1].bucket
+    assert all(anomaly.actual_count > 0 for anomaly in anomalies if anomaly.direction != "drop")

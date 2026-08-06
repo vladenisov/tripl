@@ -677,6 +677,147 @@ def _detect_trend_shift(
     return TrendShiftResult(anomalies=anomalies, shifted_buckets=frozenset(shifted_buckets))
 
 
+def _collapse_outage_runs(
+    anomalies: list[DetectedAnomaly],
+    expanded: list[SeriesPoint],
+    *,
+    slots: Sequence[int],
+    interval: timedelta,
+    evaluation_start: datetime,
+) -> list[DetectedAnomaly]:
+    """One row per outage: the bucket where the scope stopped behaving normally.
+
+    A scope that has gone silent stays silent, and every silent bucket scores the
+    same way forever, so the per-bucket path re-announces one incident once per
+    bucket per scan. Measured at production geometry (hourly, sigma 4.0,
+    min_expected_count 50, 504 buckets of history, 30-bucket re-evaluation
+    window, 2 settling buckets) one dead event produced 28 rows at 48h of death,
+    0 at 72-96h and 28 again at 120-168h, most at z=-20.00 — the exact z the 5%
+    relative stddev floor pins a drop-to-zero at. The non-monotonicity is the
+    trend-shift detector claiming the run only while the deseasonalized trend
+    still clears ``min_expected_count`` and dropping the claim once it decays
+    below (and, on a hard death, overshoots negative), so suppression that hangs
+    off the live trend level switches itself off exactly as the outage ages.
+
+    The anchor is the first ANOMALOUS bucket of each run of zeros, NOT the first
+    zero. That distinction is the whole correctness of this function. Anchoring
+    on the first zero is right only for a scope whose baseline never sits at
+    zero; for anything nightly-quiet, business-hours or regionally-quiet the run
+    begins at a NORMAL zero, which is never anomalous — so the filter would drop
+    every anomalous bucket in the run and emit nothing at any scan age, and a
+    whole class of events would die silently. That is strictly worse than the
+    duplicate rows this replaces, and it is what the first version of this patch
+    did.
+
+    Anchoring on the first anomalous bucket also survives the fit: it does not
+    ask whether the trend detector still claims the run, so a run is announced
+    once no matter how the decomposition drifts as the outage ages. Because
+    ``_replace_scope_anomalies`` only rewrites rows INSIDE the evaluation window,
+    the announcement stays on record once its bucket scrolls out, and later scans
+    re-derive the same anchor, find it outside their window, and write nothing.
+
+    Runs are contiguous in the ANALYZED series, not on the clock: a bucket the
+    scan never covered is absent from the list, and an unobserved bucket is not
+    evidence the scope came back, so a collection gap cannot split one outage
+    into two announcements. An outage older than the loaded history does lose
+    sight of its own anchor and re-announces once — that history is 504 buckets
+    on the hourly grid, so it takes a three-week outage.
+
+    COUNT-shaped series only. A count of 0 is an unambiguous "emitted nothing";
+    for a fractional series 0.0 is a value (a ratio that happens to be zero, and
+    possibly not even its minimum), so "the same incident" needs another
+    definition there.
+    """
+    counts = [point.count for point in expanded]
+    runs: list[tuple[int, int]] = []
+    index = 0
+    while index < len(expanded):
+        if counts[index] > 0:
+            index += 1
+            continue
+        start = index
+        while index < len(expanded) and counts[index] <= 0:
+            index += 1
+        runs.append((start, index))
+    if not runs:
+        return anomalies
+
+    in_a_run: set[datetime] = set()
+    # Buckets kept out of the runs: at most one per run, and only for a run
+    # whose anchor this pass is responsible for announcing.
+    kept: set[datetime] = set()
+    for start, end in runs:
+        run_buckets = {expanded[position].bucket for position in range(start, end)}
+        in_a_run |= run_buckets
+        anchor = _outage_anchor(expanded, counts, slots, interval, start=start, end=end)
+        if anchor < evaluation_start:
+            # The announcement belongs to the pass whose window contained the
+            # anchor, and ``_replace_scope_anomalies`` only rewrites rows inside
+            # the current window, so that row is still on record. Writing
+            # another one here — at whatever this window happens to start on —
+            # is exactly how one outage becomes a row per scan.
+            continue
+        # The anchor is where the scope stopped behaving normally, which is not
+        # necessarily a bucket the detector flagged: the trend detector may have
+        # claimed it, or its own phase may be too quiet to score. Announce at the
+        # first flagged bucket AT OR AFTER it, or the run is silenced by the very
+        # anchor meant to give it a voice.
+        candidates = sorted(
+            anomaly.bucket
+            for anomaly in anomalies
+            if anomaly.bucket in run_buckets and anomaly.bucket >= anchor
+        )
+        if candidates:
+            kept.add(candidates[0])
+    return [
+        anomaly
+        for anomaly in anomalies
+        # Anomalies outside any run of empty buckets are untouched — this
+        # collapses outages, not spikes.
+        if anomaly.bucket not in in_a_run or anomaly.bucket in kept
+    ]
+
+
+def _outage_anchor(
+    expanded: list[SeriesPoint],
+    counts: Sequence[float],
+    slots: Sequence[int],
+    interval: timedelta,
+    *,
+    start: int,
+    end: int,
+) -> datetime:
+    """The bucket in ``[start, end)`` where this scope stopped behaving normally.
+
+    The first bucket of the run whose OWN phase was usually non-empty before the
+    run began: for a business-hours event the run opens on an ordinary evening
+    zero and this walks forward to the first working hour, which is the bucket a
+    reader would call the outage.
+
+    Derived from the series, deliberately, and never from the anomaly list. The
+    anomalies a pass produces exist only inside its evaluation window, and that
+    window slides one bucket per collection — so an anomaly-derived anchor moves
+    with it, the previous anchor sits outside the rewritten range and survives,
+    and the outage accumulates one row per scan instead of announcing once. That
+    is the same weekly pile-up this function exists to remove, only rearranged.
+    Same-phase partners are taken from BEFORE the run for the same reason: a long
+    outage's own zeros would otherwise vote on whether it is normal to be empty.
+    """
+    for position in range(start, end):
+        period = _select_phase_period(interval, slots[position])
+        if period is None:
+            # Too little history for a seasonal opinion; nothing distinguishes
+            # the buckets of this run, so the first one is the honest anchor.
+            break
+        partners = [counts[j] for j in _same_phase_indices(slots, position, period) if j < start]
+        if partners and median(partners) > 0:
+            return expanded[position].bucket
+    # No bucket in the run was ever normally busy — a scope that only emits at
+    # phases this run does not cover. Announce it at the start rather than not at
+    # all: a missed outage is worse than one reported a few buckets early.
+    return expanded[start].bucket
+
+
 def _merge_anomalies(*anomaly_lists: list[DetectedAnomaly]) -> list[DetectedAnomaly]:
     anomalies_by_bucket: dict[datetime, DetectedAnomaly] = {}
     for anomaly_list in anomaly_lists:
@@ -925,7 +1066,15 @@ def detect_anomalies(
         ]
         merged = _merge_anomalies(settled_primary, trend.anomalies)
 
-    return merged
+    if not is_count_shaped:
+        return merged
+    return _collapse_outage_runs(
+        merged,
+        expanded,
+        slots=slots,
+        interval=interval,
+        evaluation_start=evaluation_start,
+    )
 
 
 def forecast_next_buckets(

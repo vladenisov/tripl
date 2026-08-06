@@ -57,6 +57,14 @@ The **trend-shift detector** works entirely on the deseasonalized trend layer. I
 
 When both detectors flag the same bucket, the one with the **larger absolute z-score** wins, so you see the more significant explanation.
 
+### An event that goes silent is reported once
+
+A scope that stops emitting keeps scoring the same way for as long as it stays silent, so without a rule against it one outage produces a fresh row every bucket of every scan — on an hourly scan, dozens per day for as long as the event is dead. Instead, a contiguous run of empty buckets is reported **once**, at the bucket where the scope stopped behaving normally, and stays quiet until it emits again. If it revives and dies a second time, that is a second run and a second report.
+
+"Stopped behaving normally" is not the same as "first empty bucket", and the difference matters for any event that is *legitimately* quiet part of the time — business hours, one region's traffic, anything with a nightly trough. For those, the run of empty buckets begins with a perfectly normal zero that was never anomalous; the report is anchored on the first bucket in the run that actually was.
+
+This applies to volume series only. For a catalog metric with a fractional value (a ratio or an average) zero is a value like any other, not an absence.
+
 ## The score: how a bucket is flagged
 
 For every evaluated bucket the detector computes:
