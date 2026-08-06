@@ -1338,6 +1338,94 @@
         }
       }
     },
+    "/api/v1/projects/{slug}/anomaly-settings/scope-overrides": {
+      "get": {
+        "tags": [
+          "anomaly-settings"
+        ],
+        "summary": "List Anomaly Scope Overrides",
+        "operationId": "list_anomaly_scope_overrides_api_v1_projects__slug__anomaly_settings_scope_overrides_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnomalyScopeOverrideListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/anomaly-settings/scope-overrides/{override_id}": {
+      "delete": {
+        "tags": [
+          "anomaly-settings"
+        ],
+        "summary": "Delete Anomaly Scope Override",
+        "description": "Undo one false-positive ratchet: the scope returns to the project setting.",
+        "operationId": "delete_anomaly_scope_override_api_v1_projects__slug__anomaly_settings_scope_overrides__override_id__delete",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "override_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Override Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{slug}/branch-settings": {
       "get": {
         "tags": [
@@ -14198,6 +14286,18 @@
             "title": "Enabled",
             "default": true
           },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
           "include_project_total": {
             "type": "boolean",
             "title": "Include Project Total",
@@ -14400,6 +14500,18 @@
             "format": "uuid",
             "title": "Destination Id"
           },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
           "name": {
             "type": "string",
             "title": "Name"
@@ -14515,6 +14627,7 @@
         "required": [
           "id",
           "destination_id",
+          "scan_config_id",
           "name",
           "enabled",
           "include_project_total",
@@ -14644,6 +14757,18 @@
               }
             ],
             "title": "Enabled"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
           },
           "include_project_total": {
             "anyOf": [
@@ -14889,6 +15014,108 @@
           "metric_breakdown_anomalies"
         ],
         "title": "AnomalyResetCounts"
+      },
+      "AnomalyScopeOverrideListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AnomalyScopeOverrideResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "AnomalyScopeOverrideListResponse"
+      },
+      "AnomalyScopeOverrideResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
+          "scan_config_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Name"
+          },
+          "scope_type": {
+            "type": "string",
+            "title": "Scope Type"
+          },
+          "scope_ref": {
+            "type": "string",
+            "title": "Scope Ref"
+          },
+          "scope_name": {
+            "type": "string",
+            "title": "Scope Name"
+          },
+          "sigma_threshold": {
+            "type": "number",
+            "title": "Sigma Threshold"
+          },
+          "min_expected_count": {
+            "type": "integer",
+            "title": "Min Expected Count"
+          },
+          "false_positive_count": {
+            "type": "integer",
+            "title": "False Positive Count"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "scan_config_id",
+          "scope_type",
+          "scope_ref",
+          "scope_name",
+          "sigma_threshold",
+          "min_expected_count",
+          "false_positive_count",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AnomalyScopeOverrideResponse",
+        "description": "One scope the false-positive ratchet has made stricter.\n\n``sigma_threshold`` / ``min_expected_count`` are ABSOLUTE and replace the\nproject settings above for this scope only. Deleting the override is the\nundo \u2014 the scope falls straight back to the project values."
       },
       "ApiKeyCreate": {
         "properties": {

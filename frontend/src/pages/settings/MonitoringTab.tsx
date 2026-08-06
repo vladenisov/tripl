@@ -2,6 +2,7 @@ import { useId, useState, type ChangeEvent } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { anomalySettingsApi } from "@/api/anomalySettings"
 import type { ProjectAnomalySettings } from "@/types"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
@@ -77,6 +78,95 @@ function NumberSetting({
   )
 }
 
+const SCOPE_TYPE_LABELS: Record<string, string> = {
+  project_total: 'Project total',
+  event_type: 'Event type',
+  event: 'Event',
+  metric: 'Metric',
+}
+
+/**
+ * The undo surface for the false-positive ratchet.
+ *
+ * Marking an alert a false positive permanently tightens the scope it fired on
+ * — it never decays and there is no confirmation step — so the only way back is
+ * to see the override here and remove it. Deleting drops that scope straight
+ * back to the project settings above; every other scope is untouched.
+ */
+function ScopeOverridesCard({ slug }: { slug: string }) {
+  const qc = useQueryClient()
+  const { data, isPending } = useQuery({
+    queryKey: ['anomalyScopeOverrides', slug],
+    queryFn: () => anomalySettingsApi.listScopeOverrides(slug),
+  })
+
+  const removeMut = useMutation({
+    mutationFn: (overrideId: string) => anomalySettingsApi.deleteScopeOverride(slug, overrideId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['anomalyScopeOverrides', slug] })
+    },
+  })
+
+  const overrides = data?.items ?? []
+
+  return (
+    <Card>
+      <CardContent className="p-6 space-y-4">
+        <div>
+          <Label className="text-sm font-medium">Scope overrides</Label>
+          <p className="text-xs text-muted-foreground mt-1">
+            Marking an alert a <strong>false positive</strong> makes the detector stricter on that
+            scope alone — permanently. These overrides replace the sigma threshold and min expected
+            count above for the scopes listed. Removing one puts that scope back on the project
+            settings.
+          </p>
+        </div>
+
+        {isPending ? (
+          <p className="text-sm text-muted-foreground">Loading scope overrides…</p>
+        ) : overrides.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No scope has been tightened. Every scope uses the project settings above.
+          </p>
+        ) : (
+          <ul className="divide-y rounded-lg border">
+            {overrides.map(override => (
+              <li
+                key={override.id}
+                className="flex items-center justify-between gap-4 p-3 text-sm"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium truncate">{override.scope_name || override.scope_ref}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {SCOPE_TYPE_LABELS[override.scope_type] ?? override.scope_type}
+                    {override.scan_config_name ? ` · ${override.scan_config_name}` : ''} · sigma{' '}
+                    {override.sigma_threshold} · min expected {override.min_expected_count} ·{' '}
+                    {override.false_positive_count} false positive
+                    {override.false_positive_count === 1 ? '' : 's'}
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={removeMut.isPending}
+                  onClick={() => removeMut.mutate(override.id)}
+                  aria-label={`Remove override for ${override.scope_name || override.scope_ref}`}
+                >
+                  Remove
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {removeMut.isError && (
+          <p className="text-sm text-destructive">{getErrorMessage(removeMut.error)}</p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 export function MonitoringTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
   const { data: settings } = useQuery({
@@ -101,6 +191,21 @@ export function MonitoringTab({ slug }: { slug: string }) {
   if (!settings) {
     return <div className="text-sm text-muted-foreground">Loading detection settings…</div>
   }
+
+  // The settling allowance and the open signal window constrain each other: a
+  // bucket held back past the window is already stale when it is finally scored,
+  // so every signal on the project would read as closed on the Anomalies page
+  // while alerts kept firing. The backend refuses that pair from both directions
+  // (see settling_window_conflict); these bounds are the hint that keeps an
+  // operator from walking into the 422 (tripl-l429.15).
+  const settlingCeilingMinutes = Math.max(
+    0,
+    Math.min(1440, settings.recent_signal_window_hours * 60 - 1),
+  )
+  const windowFloorHours = Math.max(
+    1,
+    Math.floor(settings.anomaly_ingestion_settling_minutes / 60) + 1,
+  )
 
   return (
     <div className="space-y-4">
@@ -217,15 +322,17 @@ export function MonitoringTab({ slug }: { slug: string }) {
               <Label htmlFor={recentSignalWindowId}>Open signal window (hours)</Label>
               <NumberSetting
                 id={recentSignalWindowId}
-                min={1}
+                min={windowFloorHours}
                 max={720}
                 value={settings.recent_signal_window_hours}
                 onCommit={v => updateMut.mutate({ recent_signal_window_hours: v })}
               />
               <p className="text-xs text-muted-foreground">
                 How long an anomaly keeps counting as an open signal on the Anomalies page
-                and in the sidebar badge. Between 1 and 720 hours (30 days). Alert delivery
-                is unaffected.
+                and in the sidebar badge. Between {windowFloorHours} and 720 hours (30 days).
+                Alert delivery is unaffected. The floor is the settling allowance beside it
+                ({settings.anomaly_ingestion_settling_minutes} min): a window that does not
+                outlast the allowance would close every signal before it could be scored.
               </p>
             </div>
             <div className="grid gap-2">
@@ -233,7 +340,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
               <NumberSetting
                 id={settlingMinutesId}
                 min={0}
-                max={1440}
+                max={settlingCeilingMinutes}
                 value={settings.anomaly_ingestion_settling_minutes}
                 onCommit={v => updateMut.mutate({ anomaly_ingestion_settling_minutes: v })}
               />
@@ -241,8 +348,10 @@ export function MonitoringTab({ slug }: { slug: string }) {
                 How long a warehouse keeps delivering rows for a bucket after that bucket
                 closes. The newest buckets are still collected and charted, but raise no
                 signal until the allowance has passed — so a half-delivered bucket is not
-                read as a drop. Between 0 (score immediately) and 1440 minutes (24 hours);
-                it is also the detection latency it buys.
+                read as a drop. Between 0 (score immediately) and {settlingCeilingMinutes}{' '}
+                minutes here — the ceiling is one minute under the open signal window beside
+                it ({settings.recent_signal_window_hours}h), and never above 1440 (24 hours).
+                It is also the detection latency it buys.
               </p>
             </div>
           </div>
@@ -257,6 +366,8 @@ export function MonitoringTab({ slug }: { slug: string }) {
           )}
         </CardContent>
       </Card>
+
+      <ScopeOverridesCard slug={slug} />
     </div>
   )
 }

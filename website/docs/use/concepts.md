@@ -207,6 +207,8 @@ this and surfaces it alongside the catalog.
 its effective documented list. It is reviewed per event: accept the new values
 globally or only for that event, snooze the evidence, mark it false-positive, or
 reopen it. Unlike observed samples, accepting a drift changes the plan contract.
+An acceptance covers exactly the values you accepted — a later scan reopens the
+drift when it sees a value outside that set.
 
 ### Reconciliation
 

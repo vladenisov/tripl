@@ -184,6 +184,34 @@ export interface ProjectAnomalySettings {
   updated_at: string
 }
 
+/**
+ * One scope the false-positive ratchet has made stricter.
+ *
+ * Marking an alert a false positive raises `sigma_threshold` and
+ * `min_expected_count` for the scope it fired on — and only that scope. The
+ * values here are ABSOLUTE and replace the project settings for that scope.
+ * The ratchet never decays, so deleting the override is the only way back.
+ */
+export interface AnomalyScopeOverride {
+  id: string
+  // null for `metric` scopes: catalog metric series are project-global.
+  scan_config_id: string | null
+  scan_config_name: string | null
+  scope_type: string
+  scope_ref: string
+  scope_name: string
+  sigma_threshold: number
+  min_expected_count: number
+  false_positive_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AnomalyScopeOverrideList {
+  items: AnomalyScopeOverride[]
+  total: number
+}
+
 export interface ScanJob {
   id: string
   scan_config_id: string

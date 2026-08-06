@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { ProjectAnomalySettings } from '../types'
+import type { AnomalyScopeOverrideList, ProjectAnomalySettings } from '../types'
 
 export const anomalySettingsApi = {
   get: (slug: string) =>
@@ -21,4 +21,11 @@ export const anomalySettingsApi = {
       anomaly_ingestion_settling_minutes: number
     }>,
   ) => api.patch<ProjectAnomalySettings>(`/projects/${slug}/anomaly-settings`, data),
+
+  listScopeOverrides: (slug: string) =>
+    api.get<AnomalyScopeOverrideList>(`/projects/${slug}/anomaly-settings/scope-overrides`),
+
+  /** Undo one false-positive ratchet — the scope returns to the project setting. */
+  deleteScopeOverride: (slug: string, overrideId: string) =>
+    api.del<void>(`/projects/${slug}/anomaly-settings/scope-overrides/${overrideId}`),
 }

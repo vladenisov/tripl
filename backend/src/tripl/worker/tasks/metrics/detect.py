@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy import func as sa_func
+from sqlalchemy import or_ as sa_or
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -24,6 +25,7 @@ from tripl.core.analyzers.anomaly_detector import (
     settling_buckets_for,
 )
 from tripl.core.intervals import get_interval
+from tripl.models.anomaly_scope_override import AnomalyScopeOverride
 from tripl.models.domain_enums import MetricBreakdownAnomalyKind, MetricStatus
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
@@ -90,6 +92,62 @@ def _get_project_anomaly_settings(
     return session.execute(
         select(ProjectAnomalySettings).where(ProjectAnomalySettings.project_id == project_id)
     ).scalar_one_or_none()
+
+
+# Per-scope sensitivity written by the false-positive ratchet, keyed the way an
+# anomaly keys itself. Loaded ONCE per recalculation and applied per scope — a
+# per-scope override nobody reads would be worse than the project-wide ratchet
+# it replaced, since the operator would be told the scope was tuned and nothing
+# would change.
+ScopeOverrides = dict[tuple[str, str], tuple[float, int]]
+
+
+def _load_scope_overrides(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    scan_config_id: uuid.UUID,
+) -> ScopeOverrides:
+    """Overrides that can apply to this config's recalculation.
+
+    Both this config's rows AND the project's NULL-config rows: ``metric`` scopes
+    are project-global (their ``MetricAnomaly`` rows carry a NULL scan_config_id)
+    yet are recomputed from inside a scan's run. The two sets cannot collide —
+    ``metric`` is the only scope type stored with a NULL config.
+    """
+    rows = session.execute(
+        select(AnomalyScopeOverride).where(
+            AnomalyScopeOverride.project_id == project_id,
+            sa_or(
+                AnomalyScopeOverride.scan_config_id == scan_config_id,
+                AnomalyScopeOverride.scan_config_id.is_(None),
+            ),
+        )
+    ).scalars()
+    return {
+        (str(row.scope_type), row.scope_ref): (
+            float(row.sigma_threshold),
+            int(row.min_expected_count),
+        )
+        for row in rows
+    }
+
+
+def _scope_settings(
+    settings: AnomalyDetectionSettings,
+    overrides: ScopeOverrides,
+    scope_type: str,
+    scope_ref: str,
+) -> AnomalyDetectionSettings:
+    override = overrides.get((scope_type, scope_ref))
+    if override is None:
+        return settings
+    sigma_threshold, min_expected_count = override
+    return replace(
+        settings,
+        sigma_threshold=sigma_threshold,
+        min_expected_count=min_expected_count,
+    )
 
 
 def _scan_has_event_level_breakdown_columns(session: Session, scan_config_id: uuid.UUID) -> bool:
@@ -818,6 +876,7 @@ def _recalculate_project_metric_anomalies(
     config: ScanConfig,
     *,
     settings: AnomalyDetectionSettings,
+    overrides: ScopeOverrides | None = None,
     evaluation_start: datetime,
     evaluation_end: datetime,
     covered_buckets: set[datetime] | None = None,
@@ -852,10 +911,15 @@ def _recalculate_project_metric_anomalies(
             continue
         interval_spec = get_interval(interval)
         count_shaped = is_count_shaped(metric)
+        # The scope override lands FIRST, so a fractional metric still drops the
+        # count gate afterwards: ratcheting a ratio's min_expected_count would
+        # re-introduce exactly the volume gate tripl-68bc removed for it. Its
+        # sigma ratchet still applies.
+        scoped = _scope_settings(settings, overrides or {}, SCOPE_METRIC, str(metric.id))
         metric_settings = (
-            settings
+            scoped
             if count_shaped
-            else replace(settings, min_expected_count=_FRACTIONAL_MIN_EXPECTED_COUNT)
+            else replace(scoped, min_expected_count=_FRACTIONAL_MIN_EXPECTED_COUNT)
         )
         metric_evaluation_start = min(
             evaluation_start,
@@ -935,16 +999,24 @@ def _recalculate_metric_anomalies(
 
     interval_spec = get_interval(config.interval)
     settings = _build_anomaly_settings(project_settings)
+    overrides = _load_scope_overrides(
+        session,
+        project_id=config.project_id,
+        scan_config_id=config.id,
+    )
     # Buckets at the head of the window that the warehouse may still be filling.
     # They stay in the loaded series (so baselines are complete) but no anomaly
     # is emitted for them until a later scan re-evaluates them (tripl-jfm3.7).
     settling_buckets = settling_buckets_for(interval_spec.delta, settling_delay)
+    # History depth is driven by the baseline/min-history buckets, which no
+    # override touches, so one window serves every scope.
     history_from = evaluation_start - interval_spec.delta * required_history_buckets(
         interval_spec.delta, settings
     )
     anomalies_detected = 0
 
     if project_settings.detect_project_total:
+        total_settings = _scope_settings(settings, overrides, SCOPE_PROJECT_TOTAL, str(config.id))
         points = _load_scope_points(
             session,
             scan_config_id=config.id,
@@ -967,7 +1039,7 @@ def _recalculate_metric_anomalies(
                 interval=interval_spec.delta,
                 evaluation_start=evaluation_start,
                 evaluation_end=evaluation_end,
-                settings=settings,
+                settings=total_settings,
                 covered_buckets=covered_buckets,
                 settling_buckets=settling_buckets,
             ),
@@ -999,11 +1071,12 @@ def _recalculate_metric_anomalies(
             scope_type=SCOPE_EVENT_TYPE,
         ):
             scope_ref = str(event_type_id)
+            scope_settings = _scope_settings(settings, overrides, SCOPE_EVENT_TYPE, scope_ref)
             # Provably silent (tripl-h353): the detector would early-exit on
             # this series anyway, so skip loading its history — but still run
             # the replace with no anomalies so stale window rows age out.
             if is_provably_silent(
-                type_max_counts.get(event_type_id, 0.0), settings.min_expected_count
+                type_max_counts.get(event_type_id, 0.0), scope_settings.min_expected_count
             ):
                 anomalies_detected += _replace_scope_anomalies(
                     session,
@@ -1039,7 +1112,7 @@ def _recalculate_metric_anomalies(
                     interval=interval_spec.delta,
                     evaluation_start=evaluation_start,
                     evaluation_end=evaluation_end,
-                    settings=settings,
+                    settings=scope_settings,
                     covered_buckets=covered_buckets,
                     settling_buckets=settling_buckets,
                 ),
@@ -1071,8 +1144,11 @@ def _recalculate_metric_anomalies(
             scope_type=SCOPE_EVENT,
         ):
             scope_ref = str(event_id)
+            scope_settings = _scope_settings(settings, overrides, SCOPE_EVENT, scope_ref)
             # Provably silent (tripl-h353): see the event-type loop above.
-            if is_provably_silent(event_max_counts.get(event_id, 0.0), settings.min_expected_count):
+            if is_provably_silent(
+                event_max_counts.get(event_id, 0.0), scope_settings.min_expected_count
+            ):
                 anomalies_detected += _replace_scope_anomalies(
                     session,
                     scan_config_id=config.id,
@@ -1107,7 +1183,7 @@ def _recalculate_metric_anomalies(
                     interval=interval_spec.delta,
                     evaluation_start=evaluation_start,
                     evaluation_end=evaluation_end,
-                    settings=settings,
+                    settings=scope_settings,
                     covered_buckets=covered_buckets,
                     settling_buckets=settling_buckets,
                 ),
@@ -1127,6 +1203,7 @@ def _recalculate_metric_anomalies(
             session,
             config,
             settings=settings,
+            overrides=overrides,
             evaluation_start=evaluation_start,
             evaluation_end=evaluation_end,
             covered_buckets=covered_buckets,

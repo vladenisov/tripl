@@ -809,6 +809,43 @@ export interface paths {
         patch: operations["update_project_anomaly_settings_api_v1_projects__slug__anomaly_settings_patch"];
         trace?: never;
     };
+    "/api/v1/projects/{slug}/anomaly-settings/scope-overrides": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Anomaly Scope Overrides */
+        get: operations["list_anomaly_scope_overrides_api_v1_projects__slug__anomaly_settings_scope_overrides_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/anomaly-settings/scope-overrides/{override_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Anomaly Scope Override
+         * @description Undo one false-positive ratchet: the scope returns to the project setting.
+         */
+        delete: operations["delete_anomaly_scope_override_api_v1_projects__slug__anomaly_settings_scope_overrides__override_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/branch-settings": {
         parameters: {
             query?: never;
@@ -3730,6 +3767,8 @@ export interface components {
              * @default true
              */
             notify_on_spike: boolean;
+            /** Scan Config Id */
+            scan_config_id?: string | null;
         };
         /**
          * AlertRuleFilterField
@@ -3818,6 +3857,8 @@ export interface components {
             notify_on_drop: boolean;
             /** Notify On Spike */
             notify_on_spike: boolean;
+            /** Scan Config Id */
+            scan_config_id: string | null;
             /**
              * Updated At
              * Format: date-time
@@ -3903,6 +3944,8 @@ export interface components {
             notify_on_drop?: boolean | null;
             /** Notify On Spike */
             notify_on_spike?: boolean | null;
+            /** Scan Config Id */
+            scan_config_id?: string | null;
         };
         /**
          * AnomalyDirection
@@ -3915,6 +3958,54 @@ export interface components {
             metric_anomalies: number;
             /** Metric Breakdown Anomalies */
             metric_breakdown_anomalies: number;
+        };
+        /** AnomalyScopeOverrideListResponse */
+        AnomalyScopeOverrideListResponse: {
+            /** Items */
+            items: components["schemas"]["AnomalyScopeOverrideResponse"][];
+            /** Total */
+            total: number;
+        };
+        /**
+         * AnomalyScopeOverrideResponse
+         * @description One scope the false-positive ratchet has made stricter.
+         *
+         *     ``sigma_threshold`` / ``min_expected_count`` are ABSOLUTE and replace the
+         *     project settings above for this scope only. Deleting the override is the
+         *     undo — the scope falls straight back to the project values.
+         */
+        AnomalyScopeOverrideResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** False Positive Count */
+            false_positive_count: number;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Min Expected Count */
+            min_expected_count: number;
+            /** Scan Config Id */
+            scan_config_id: string | null;
+            /** Scan Config Name */
+            scan_config_name?: string | null;
+            /** Scope Name */
+            scope_name: string;
+            /** Scope Ref */
+            scope_ref: string;
+            /** Scope Type */
+            scope_type: string;
+            /** Sigma Threshold */
+            sigma_threshold: number;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /** ApiKeyCreate */
         ApiKeyCreate: {
@@ -11399,6 +11490,67 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ProjectAnomalySettingsResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_anomaly_scope_overrides_api_v1_projects__slug__anomaly_settings_scope_overrides_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnomalyScopeOverrideListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_anomaly_scope_override_api_v1_projects__slug__anomaly_settings_scope_overrides__override_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                override_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

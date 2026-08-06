@@ -516,6 +516,12 @@ override when present, otherwise the global list). Review it from Variables or
 the event detail: accept globally, accept for that event, snooze, or mark false
 positive. See [Variables & templates](./variables-and-templates.md).
 
+**Why did a value drift I already accepted come back?**
+Because the scan saw a value that was *not* in the set you accepted. An
+acceptance covers exactly the values it documented; anything newer reopens the
+row, and the row then lists only the new values. Use **Show N resolved** in
+either review panel to inspect or reopen a drift you resolved earlier.
+
 **Where do I configure SMTP, encryption keys, and connection URLs?**
 All via environment variables / `.env`. See [Configuration](../run/configuration)
 for the full list and [Deployment](../run/deployment) for the compose stack.

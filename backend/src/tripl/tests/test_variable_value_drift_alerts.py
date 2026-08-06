@@ -55,6 +55,7 @@ def _build_rule(**overrides: object) -> AlertRule:
 def _candidate() -> DriftAlertCandidate:
     return DriftAlertCandidate(
         id=uuid.uuid4(),
+        scan_config_id=uuid.uuid4(),
         scope_type=SCOPE_VARIABLE_VALUE_DRIFT,
         scope_ref=str(uuid.uuid4()),
         event_id=uuid.uuid4(),

@@ -36,10 +36,37 @@ DEFAULT_MIN_PERCENT_DELTA = 100.0
 
 class AlertRule(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "alert_rules"
-    __table_args__ = (Index("ix_alert_rule_destination", "destination_id"),)
+    __table_args__ = (
+        Index("ix_alert_rule_destination", "destination_id"),
+        Index("ix_alert_rule_scan_config", "scan_config_id"),
+    )
 
     destination_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("alert_destinations.id", ondelete="CASCADE"),
+    )
+    # Narrow the rule to ONE scan. NULL — the default, and what every rule
+    # created before this column carries — means the whole project, which is the
+    # behaviour rules have always had: a rule hangs off a destination, a
+    # destination off a project, and ``_prepare_alert_deliveries`` runs once per
+    # scan config, so one rule fired for every scan there is. On the live
+    # instance a single low-value legacy scan contributed 82% of the alert
+    # stream and there was no way to exclude it — ``AlertRuleFilterField`` has
+    # exactly three values (event_type, event, direction) and
+    # ``filter_matches_anomaly`` passes anything else through, so no filter could
+    # name a scan.
+    #
+    # ondelete is SET NULL and NOT the obvious CASCADE: deleting a scan would
+    # otherwise delete the rule outright — name, thresholds, templates, filters
+    # — and take its delivery history with it through ``AlertDelivery.rule_id``,
+    # including deliveries the rule produced for OTHER scans while it was still
+    # project-wide. A bare SET NULL is not enough on its own either, because a
+    # rule narrowed to the noisiest scan would silently re-widen to the whole
+    # project the moment that scan is deleted and start paging on every other
+    # one. ``scan_service.delete_scan_config`` therefore also DISABLES the rules
+    # it unbinds, so the orphan is visible in the UI and inert until re-aimed.
+    scan_config_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("scan_configs.id", ondelete="SET NULL"),
+        nullable=True,
     )
     name: Mapped[str] = mapped_column(String(255))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")

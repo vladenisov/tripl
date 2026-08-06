@@ -181,7 +181,17 @@ async def update_data_source(
 
 
 async def delete_data_source(session: AsyncSession, ds_id: uuid.UUID) -> None:
+    from tripl.services._alerting_destinations import disable_rules_bound_to_scan
+
     ds = await _fetch_data_source(session, ds_id)
+    # Deleting a source takes its scan configs with it (``DataSource.scan_configs``
+    # is delete-orphan), which never passes through ``delete_scan_config`` and so
+    # never reached the unbind step. The FK is ON DELETE SET NULL and NULL means
+    # "every scan in the project", so a rule someone had narrowed to a scan of
+    # this source would silently re-widen and start paging on every OTHER scan —
+    # the exact failure the scan-delete path exists to prevent.
+    for config in ds.scan_configs:
+        await disable_rules_bound_to_scan(session, config.id)
     await session.delete(ds)
     await session.commit()
     await cache.delete_prefix(cache.prefix_data_sources())

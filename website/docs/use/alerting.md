@@ -15,8 +15,10 @@ The model has three layers:
 **Destination** (a channel) → **Rule** (routes matching signals to one
 destination) → **Delivery** (a single send attempt, carrying the matched items).
 
-Rules are project-level: they evaluate the signals produced by every scan in the
-project.
+A rule lives under a destination, and a destination belongs to a project, so by
+default a rule evaluates the signals produced by **every scan in the project**.
+A rule can also be **narrowed to a single scan** with the **Scan** picker in the
+rule editor — see [Narrowing a rule to one scan](#narrowing-a-rule-to-one-scan).
 
 :::note Demo projects are zero-egress
 In a generated demo project the only destination that can exist is the local
@@ -101,6 +103,10 @@ disable the destination if it should receive neither alerts nor the digest.
 
 A rule decides which signals reach its destination. The controls:
 
+**Scan — which scan's signals to act on.** Defaults to **All scans**: the rule
+reacts to every scan in the project. Pick a single scan to narrow it — see
+[Narrowing a rule to one scan](#narrowing-a-rule-to-one-scan) below.
+
 **Scope — which kinds of signal to act on.** Volume anomalies are on by default;
 the drift/regression signals are opt-in:
 
@@ -149,6 +155,38 @@ Thresholds apply to the volume scopes (project total / event type / event) and t
 **metric anomalies**. Schema drift, distribution drift, variable-value drift,
 and release regressions **bypass** thresholds — if you enable those scopes, they
 fire regardless of the count thresholds.
+:::
+
+### Narrowing a rule to one scan
+
+The **Scan** picker in the rule editor binds a rule to a single scan
+configuration. **All scans** (the default, and what every rule created before
+this option existed still has) keeps the original project-wide behaviour, so
+nothing changes unless you pick a scan.
+
+Use it when one scan is materially noisier or less valuable than the rest — a
+legacy or archived-data scan, for example — and you want it out of a channel
+without weakening the thresholds that the other scans depend on. Filters cannot
+do this: they only understand `event_type`, `event`, and `direction`, so there is
+no filter expression that names a scan.
+
+A common shape is two rules on the same destination: one bound to the important
+scan with sensitive thresholds, and one on **All scans** for the drift signals
+you always want.
+
+:::note Metric anomalies do not honour a scan binding
+Catalog **metric** anomalies are project-wide — a metric series is computed for
+the project, not for one scan — so a rule bound to a scan has nothing to say
+about them. On such a rule the **Metrics** scope is inert: metric anomalies are
+delivered only by rules left on **All scans**.
+:::
+
+:::note What happens when the scan is deleted
+Deleting a scan does **not** delete the rules bound to it, and does not silently
+re-aim them at the whole project (which would start paging on every other scan).
+Each such rule is unbound back to **All scans** *and disabled*, so it keeps its
+name, thresholds, templates and filters and is visible, switched off, on the
+Alerting tab until you re-aim and re-enable it.
 :::
 
 **Filters** narrow further by `event_type`, `event`, or `direction`, with
@@ -252,8 +290,12 @@ replaced when you write a new one.
 
 :::note
 Marking a group **false positive** doesn't just hide it — it nudges the detector
-on the affected scans (raises the sensitivity threshold and the minimum expected
-count) so the same benign pattern is less likely to alert again.
+on **the scope it fired on** (raises that scope's sensitivity threshold and
+minimum expected count) so the same benign pattern is less likely to alert
+again. Every other scope keeps the sensitivity you configured, and the
+project-wide settings are not touched. The nudge is permanent; it is listed and
+can be removed under **Settings → Monitoring → Scope overrides**. See
+[False positives self-tune the thresholds](./anomaly-detection.md#false-positives-self-tune-the-thresholds).
 :::
 
 ## Set up your first alert

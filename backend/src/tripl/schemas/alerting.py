@@ -78,6 +78,10 @@ class AlertRuleFilterResponse(AlertRuleFilterPayload):
 class AlertRuleBase(BaseModel):
     name: str | None = None
     enabled: bool | None = None
+    # Narrow the rule to one scan config; null (the default) means every scan in
+    # the project. On update, ``exclude_unset`` distinguishes "not mentioned"
+    # from an explicit null, so a null in the body widens the rule back.
+    scan_config_id: uuid.UUID | None = None
     include_project_total: bool | None = None
     include_event_types: bool | None = None
     include_events: bool | None = None
@@ -141,6 +145,7 @@ class AlertRuleUpdate(AlertRuleBase):
 class AlertRuleResponse(BaseModel):
     id: uuid.UUID
     destination_id: uuid.UUID
+    scan_config_id: uuid.UUID | None
     name: str
     enabled: bool
     include_project_total: bool

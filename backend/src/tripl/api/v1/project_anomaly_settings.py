@@ -1,12 +1,15 @@
+import uuid
+
 from fastapi import APIRouter, Depends
 
-from tripl.api.deps import SessionDep, get_editor_user
+from tripl.api.deps import EditorUserDep, SessionDep, get_editor_user
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.schemas.project_anomaly_settings import (
+    AnomalyScopeOverrideListResponse,
     ProjectAnomalySettingsResponse,
     ProjectAnomalySettingsUpdate,
 )
-from tripl.services import project_anomaly_settings_service
+from tripl.services import audit_service, project_anomaly_settings_service
 
 router = APIRouter(
     prefix="/projects/{slug}/anomaly-settings",
@@ -34,4 +37,36 @@ async def update_project_anomaly_settings(
         session,
         slug,
         data,
+    )
+
+
+@router.get("/scope-overrides", response_model=AnomalyScopeOverrideListResponse)
+async def list_anomaly_scope_overrides(
+    session: SessionDep,
+    slug: str,
+) -> AnomalyScopeOverrideListResponse:
+    return await project_anomaly_settings_service.list_anomaly_scope_overrides(session, slug)
+
+
+@router.delete("/scope-overrides/{override_id}", status_code=204)
+async def delete_anomaly_scope_override(
+    session: SessionDep,
+    slug: str,
+    override_id: uuid.UUID,
+    current_user: EditorUserDep,
+) -> None:
+    """Undo one false-positive ratchet: the scope returns to the project setting."""
+    existing = await project_anomaly_settings_service.get_anomaly_scope_override(
+        session, slug, override_id
+    )
+    scope_name = existing.scope_name or existing.scope_ref
+    await project_anomaly_settings_service.delete_anomaly_scope_override(session, slug, override_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="anomaly_scope_override.delete",
+        target_type="anomaly_scope_override",
+        target_id=override_id,
+        target_name=scope_name,
+        project_slug=slug,
     )

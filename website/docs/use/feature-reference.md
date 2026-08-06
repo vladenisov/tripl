@@ -195,8 +195,10 @@ that event.
 
 The table shows documented/observed samples, binding paths, usage counts, and
 open value drift. Drift can be accepted globally or for one event, snoozed,
-marked false-positive, or reopened; the event detail repeats the affected
-event's review panel. Selection enables bulk type/description/value changes and
+marked false-positive, or reopened; resolved rows sit behind a **Show N
+resolved** toggle in both panels, and a scan reopens an accepted row on its own
+once it observes a value outside the accepted set. The event detail repeats the
+affected event's review panel. Selection enables bulk type/description/value changes and
 delete. **Exclude from scans** keeps a restorable tombstone so a deliberately
 removed scan-owned variable is not recreated. See
 [Variables & templates](./variables-and-templates.md).
@@ -410,8 +412,18 @@ feed, and on the monitoring detail. Tuning lives at the project **Monitoring
 settings** (route `/p/<slug>/settings/monitoring`): toggle anomaly detection,
 choose the scopes to watch (project total / event types / events / metrics), and set the
 baseline window (buckets), minimum history (buckets), sigma threshold, minimum
-expected count, and the open signal window (hours, 1–720, default 24). Scans
-honor these settings. Monitoring settings only decide what gets **flagged** —
+expected count, the open signal window (hours, 1–720, default 24) and the
+ingestion-settling allowance (minutes, 0–1440, default 120). Scans
+honor these settings. The last two are refused when they collide — the settling
+allowance must stay strictly below the open signal window, or every signal would
+be stale before it could be scored and the Anomalies page would read zero while
+alerts kept firing (see [Detection
+latency](./anomaly-detection.md#detection-latency)). The same page lists **Scope overrides** — the scopes that
+marking an alert a **false positive** has permanently tightened, each showing the
+scan, the sigma threshold and minimum expected count now in force for that scope
+alone, and how many false positives produced them. **Remove** puts a scope back
+on the project settings; the project settings themselves are never changed by
+that feedback. Monitoring settings only decide what gets **flagged** —
 they never notify anyone by themselves. Notification delivery is a separate,
 fully available layer: route the resulting signals to Slack, Telegram, a webhook,
 email, Jira, or Linear under **Observe › Alerting** (see
@@ -426,7 +438,13 @@ spike/drop direction, scope (project total / event type / event / metric), actua
 vs expected counts, the z-score, and when it fired — linking to the monitoring
 detail for that scope. When a series drops all the way to zero, the severity
 column reads **dropped to zero** instead of the clamped z-score, since every such
-signal would otherwise show an identical, low-information value. When one incident trips several scopes on the same bucket,
+signal would otherwise show an identical, low-information value. A scope that
+dropped to zero and has not emitted since stays on this list for as long as it is
+down, rather than ageing out of the open-signal window after a day — the outage
+is announced once, so tripl re-checks whether it is still down instead of judging
+it by the age of that one announcement (see
+[An event that goes silent is reported once](./anomaly-detection.md#an-event-that-goes-silent-is-reported-once)).
+When one incident trips several scopes on the same bucket,
 the child rows (event type / event) are still shown and tagged `part of total`
 rather than folded into the project-total row. A **magnitude filter**
 (All / Significant / Major, defaulting to **Significant**) trims the list by
@@ -453,7 +471,11 @@ the chart and deletable.
 
 **Where:** Observe › Alerting (Destinations, Inbox, Audit). Destination channels:
 **Slack**, **Telegram**, **Webhook**, **Email**, **Jira**, **Linear**. Routing
-rules carry a **cooldown** (minutes); filters on `event_type` / `event` /
+rules carry a **cooldown** (minutes); an optional **Scan** binding
+(`scan_config_id`, default **All scans**) that narrows a rule to one scan
+configuration — metric-scope anomalies are project-wide and are never delivered
+by a scan-bound rule, and deleting a scan unbinds and disables the rules bound to
+it rather than widening or deleting them; filters on `event_type` / `event` /
 `direction` with operators `=`, `!=`, `IN`, `NOT IN`; thresholds for minimum
 percent delta, minimum absolute delta, and minimum expected count; an **include
 variable value drift** opt-in alongside schema, distribution, and release drift;

@@ -20,6 +20,9 @@ export type AlertMessageFormat =
 export interface AlertRule {
   id: string
   destination_id: string
+  // null means every scan in the project — the default, and what a rule created
+  // before this field existed carries.
+  scan_config_id: string | null
   name: string
   enabled: boolean
   include_project_total: boolean

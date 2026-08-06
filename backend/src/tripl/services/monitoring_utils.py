@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+import uuid
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -86,6 +87,86 @@ def _freshness_horizon(
     return max(recent_window, LATEST_SCAN_STALE_INTERVALS * interval)
 
 
+def scan_liveness_cutoff(
+    *,
+    interval: str | None,
+    recent_window: timedelta | None,
+    now: datetime | None = None,
+) -> datetime:
+    """Oldest bucket that can still prove a collector is alive.
+
+    Callers that must ASK the database for a scan's newest bucket (rather than
+    deriving it from rows they already hold) use this to bound the query: a
+    bucket older than this cutoff would fail ``_bucket_is_recent`` inside
+    ``_outage_is_still_running`` anyway, so filtering it out in SQL discards
+    nothing and keeps the read off an unbounded ``event_metrics`` scan. Derived
+    from the same horizon rule as the classification itself, because a probe
+    measured against a different window than the decision it feeds is exactly
+    how the two signal paths drifted before.
+    """
+    reference = now if now is not None else datetime.now(UTC)
+    window = recent_window if recent_window is not None else RECENT_SIGNAL_WINDOW
+    return reference - _freshness_horizon(scan_interval_to_timedelta(interval), window)
+
+
+def latest_bucket_by_scan(
+    rows: Iterable[tuple[uuid.UUID | None, datetime | None]],
+) -> dict[uuid.UUID, datetime]:
+    """Newest bucket collected per scan config — the "is this collector alive" probe.
+
+    Fed to ``classify_signal_state``'s ``scan_latest_bucket``. Shared because the
+    Anomalies page and the sidebar badge read it out of differently-shaped
+    metric-bucket maps, and those surfaces only agree while both derive scan
+    liveness by literally the same rule. Taking the max across every scope of a
+    scan (not just its project total) keeps the probe honest on a scan whose
+    per-event rows run ahead of its per-type rollup.
+    """
+    latest: dict[uuid.UUID, datetime] = {}
+    for scan_config_id, bucket in rows:
+        if scan_config_id is None or bucket is None:
+            continue
+        current = latest.get(scan_config_id)
+        if current is None or bucket > current:
+            latest[scan_config_id] = bucket
+    return latest
+
+
+def _outage_is_still_running(
+    *,
+    anomaly_actual_count: float | None,
+    scan_latest_bucket: datetime | None,
+    cutoff: datetime,
+) -> bool:
+    """Whether a persisted outage anchor still describes the CURRENT series.
+
+    Only meaningful from inside ``classify_signal_state``'s
+    ``anomaly_bucket >= latest_metric_bucket`` branch, which already establishes
+    the second half of the question: the scope has stored nothing newer than the
+    anomaly, so it has emitted nothing since. This adds the two facts that turn
+    that into "still down":
+
+      * the ANCHOR ROW says the scope was at zero when it was announced
+        (``actual_count == 0``). ``_collapse_outage_runs`` gives an outage
+        exactly one such row and never re-emits it, so this row is the whole
+        announcement — there will not be a fresher one to age against;
+      * the SCAN is still collecting something (``scan_latest_bucket`` inside
+        the same freshness horizon), so the silence belongs to this scope rather
+        than to a collector that stopped. Without it the very cap the
+        latest-scan branch exists for would be gone, and a switched-off scan
+        would pin its final anomaly red forever.
+
+    Callers that cannot answer both — catalog ``metric`` scopes have no scan to
+    ask, and a fractional series' 0.0 is a value rather than "emitted nothing" —
+    pass neither and land exactly where they did before. COUNT-shaped,
+    scan-backed scopes only, matching ``_collapse_outage_runs``.
+    """
+    if anomaly_actual_count is None or anomaly_actual_count > 0:
+        return False
+    if scan_latest_bucket is None:
+        return False
+    return _bucket_is_recent(scan_latest_bucket, cutoff)
+
+
 def classify_signal_state(
     *,
     anomaly_bucket: datetime,
@@ -93,6 +174,8 @@ def classify_signal_state(
     now: datetime | None = None,
     interval: timedelta | None = None,
     recent_window: timedelta | None = None,
+    anomaly_actual_count: float | None = None,
+    scan_latest_bucket: datetime | None = None,
 ) -> str | None:
     # No stored metric values means there is no live scan to anchor recency on, so
     # there is nothing to keep open — treat the signal as closed.
@@ -108,6 +191,17 @@ def classify_signal_state(
     if anomaly_bucket >= latest_metric_bucket:
         latest_scan_cutoff = reference - horizon
         if _bucket_is_recent(anomaly_bucket, latest_scan_cutoff):
+            return "latest_scan"
+        # An outage that never recovered has no fresher row to be judged on: its
+        # anchor was announced once, at onset, and deliberately never re-emitted.
+        # Re-check it against the series instead of its own age — the scope's
+        # newest data point is still that zero, so the incident is still running
+        # and "latest_scan" is still literally true.
+        if _outage_is_still_running(
+            anomaly_actual_count=anomaly_actual_count,
+            scan_latest_bucket=scan_latest_bucket,
+            cutoff=latest_scan_cutoff,
+        ):
             return "latest_scan"
         # A stopped scan's final anomaly still tops max(bucket) but is stale in
         # wall-clock terms; fall through to the recent-window / closed checks.

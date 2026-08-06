@@ -49,7 +49,11 @@ from tripl.services.metrics_service import (
     _resolve_scope_scan_config_id,
     _signal_from_anomaly,
 )
-from tripl.services.monitoring_utils import classify_signal_state, scan_interval_to_timedelta
+from tripl.services.monitoring_utils import (
+    classify_signal_state,
+    latest_bucket_by_scan,
+    scan_interval_to_timedelta,
+)
 
 
 async def _get_latest_anomaly_rows_multi(
@@ -526,6 +530,14 @@ async def get_active_signals(
     # of rows, so it must never be resolved per signal.
     recent_window = await _get_project_recent_signal_window(session, project.id)
 
+    # Scan liveness, derived from the rows already loaded above (no extra query):
+    # an outage anchor is only still open while its scan is still collecting
+    # SOMETHING. Same rule as the sidebar badge, via the shared helper.
+    scan_latest_buckets = latest_bucket_by_scan(
+        (scan_config_id, bucket)
+        for (scan_config_id, _scope_type, _scope_ref), bucket in latest_metrics.items()
+    )
+
     now = datetime.now(UTC)
     signals: list[MetricSignalResponse] = []
     for anomaly in latest_anomalies:
@@ -541,6 +553,10 @@ async def get_active_signals(
             now=now,
             interval=scan_interval_to_timedelta(interval_map.get(anomaly.scan_config_id)),
             recent_window=recent_window,
+            # An outage announced once and never re-emitted is re-checked against
+            # the current series rather than its own age (tripl-l429.15).
+            anomaly_actual_count=anomaly.actual_count,
+            scan_latest_bucket=scan_latest_buckets.get(anomaly.scan_config_id),
         )
         if state is not None:
             signals.append(_signal_from_anomaly(anomaly, state=state))

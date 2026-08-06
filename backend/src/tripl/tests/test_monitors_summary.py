@@ -68,18 +68,26 @@ class TestFreshnessHorizon:
         self,
         interval: str,
     ) -> None:
-        """The residual this floor does not reach — pinned, not hidden.
+        """The residual this floor does not reach — and why settings now refuse it.
 
         ``anomaly_ingestion_settling_minutes`` accepts up to 1440. At exactly
         that, the newest emittable anomaly on any sub-daily grid is a full 24
         hours behind the head, which the 24h window cannot contain — the same
         shape of bug as the daily grid, but driven by the allowance rather than
         by the bucket size, so flooring on the interval cannot see it. Fixing it
-        properly means the freshness horizon knowing the allowance, which is a
-        per-project value the display path does not currently load. Tracked in
-        tripl-l429.15, which also notes the cheaper option: refuse an allowance
-        that reaches the freshness window, since asking to score a day late and
-        to close signals after a day is incoherent.
+        *here* means the freshness horizon knowing the allowance, which is a
+        per-project value the display path does not load.
+
+        tripl-l429.15 took the other option instead: the API now REFUSES a
+        settling allowance that reaches the open-signal window
+        (``schemas.project_anomaly_settings.settling_window_conflict``, enforced
+        on the merged settings in ``project_anomaly_settings_service``), since
+        asking to score a day late and to close signals after a day is
+        incoherent. So this case is no longer reachable by configuring a project
+        — but ``classify_signal_state`` is unchanged and a row written before
+        that guard existed still holds the pair, so the behaviour stays pinned
+        here: this is exactly the display blackout the guard exists to prevent.
+        ``test_project_anomaly_settings`` pins the refusal itself.
         """
         from tripl.core.analyzers.anomaly_detector import settling_buckets_for
 
@@ -299,6 +307,106 @@ class TestClassifySignalState:
         assert scan_interval_to_timedelta(None) is None
         assert scan_interval_to_timedelta("nope") is None
         assert scan_interval_to_timedelta("6h") == timedelta(hours=6)
+
+
+class TestOngoingOutageStaysOpen:
+    """An outage anchor is re-checked against the CURRENT series, not its own age.
+
+    ``_collapse_outage_runs`` gives an outage exactly one anchor row, announced
+    at onset and never re-emitted, so a scope that has been silent for five days
+    carries a five-day-old anomaly and nothing newer. Judged on bucket age alone
+    that reads as closed, which is how a still-running incident disappeared from
+    every signal surface. The re-check asks the persisted row instead: the anchor
+    says the scope was at zero, ``anomaly_bucket >= latest_metric_bucket`` says
+    it has emitted nothing since, and a fresh ``scan_latest_bucket`` says the
+    scan is still collecting — so the silence is real and the signal is open.
+    """
+
+    def test_ongoing_outage_on_a_live_scan_stays_open(self) -> None:
+        now = datetime.now(UTC)
+        anchor = now - timedelta(days=5)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=anchor,
+                # The scope's own series stops at the anchor: silent ever since.
+                latest_metric_bucket=anchor,
+                now=now,
+                anomaly_actual_count=0.0,
+                # Other scopes on the same scan are still collecting.
+                scan_latest_bucket=now - timedelta(hours=1),
+            )
+            == "latest_scan"
+        )
+
+    def test_stopped_scan_still_closes_its_final_outage(self) -> None:
+        # The cap the latest-scan branch exists for: a collector that stopped
+        # must not pin its last anomaly red forever, outage-shaped or not.
+        now = datetime.now(UTC)
+        anchor = now - timedelta(days=5)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=anchor,
+                latest_metric_bucket=anchor,
+                now=now,
+                anomaly_actual_count=0.0,
+                scan_latest_bucket=now - timedelta(days=5),
+            )
+            is None
+        )
+
+    def test_a_stale_spike_is_not_reopened(self) -> None:
+        # Only SILENCE is re-checkable from the anchor row. A burned-out spike
+        # ages out exactly as before, whatever the scan is doing.
+        now = datetime.now(UTC)
+        anchor = now - timedelta(days=5)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=anchor,
+                latest_metric_bucket=anchor,
+                now=now,
+                anomaly_actual_count=99.0,
+                scan_latest_bucket=now - timedelta(hours=1),
+            )
+            is None
+        )
+
+    def test_a_recovered_scope_closes(self) -> None:
+        # The scope emitted again after the anchor, so the series itself says the
+        # outage is over: the latest-scan branch is not even entered.
+        now = datetime.now(UTC)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=now - timedelta(days=5),
+                latest_metric_bucket=now - timedelta(hours=1),
+                now=now,
+                anomaly_actual_count=0.0,
+                scan_latest_bucket=now - timedelta(hours=1),
+            )
+            is None
+        )
+
+    def test_omitting_the_probe_reproduces_the_old_answer(self) -> None:
+        # Callers that cannot supply the pair (catalog metrics have no scan to
+        # ask) must land exactly where they did before.
+        now = datetime.now(UTC)
+        anchor = now - timedelta(days=5)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=anchor,
+                latest_metric_bucket=anchor,
+                now=now,
+            )
+            is None
+        )
+        assert (
+            classify_signal_state(
+                anomaly_bucket=anchor,
+                latest_metric_bucket=anchor,
+                now=now,
+                anomaly_actual_count=0.0,
+            )
+            is None
+        )
 
 
 class TestConfiguredRecentWindow:

@@ -5,6 +5,7 @@ from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_filter import AlertRuleFilter
 from tripl.models.alert_rule_state import AlertRuleState
+from tripl.models.anomaly_scope_override import AnomalyScopeOverride
 from tripl.models.api_key import ApiKey
 from tripl.models.app_setting import AppSetting
 from tripl.models.audit_log import AuditLog
@@ -69,6 +70,7 @@ __all__ = [
     "AlertRuleState",
     "AlertDelivery",
     "AlertDeliveryItem",
+    "AnomalyScopeOverride",
     "ApiKey",
     "AppSetting",
     "AuditLog",

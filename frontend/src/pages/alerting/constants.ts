@@ -48,6 +48,10 @@ export type RuleFilterDraft = {
 export type RuleFormState = {
   name: string
   enabled: boolean
+  // '' is the "All scans" option — the API wants null there, so
+  // `ruleFormToPayload` converts. Radix Select cannot hold an empty value, so
+  // the picker itself uses the `ALL_SCANS_OPTION` sentinel.
+  scan_config_id: string
   include_project_total: boolean
   include_event_types: boolean
   include_events: boolean
@@ -277,10 +281,15 @@ export function isDefaultItemsTemplate(
   return normalizeRuleTemplate(value) === normalizeRuleTemplate(getDefaultItemsTemplate(messageFormat))
 }
 
+// Radix Select rejects an empty string as an item value, so "every scan in the
+// project" needs a sentinel in the picker even though the wire value is null.
+export const ALL_SCANS_OPTION = 'all'
+
 export function defaultRuleForm(): RuleFormState {
   return {
     name: '',
     enabled: true,
+    scan_config_id: '',
     include_project_total: true,
     include_event_types: true,
     include_events: true,
@@ -311,6 +320,7 @@ export function ruleToForm(rule: AlertRule): RuleFormState {
   return {
     name: rule.name,
     enabled: rule.enabled,
+    scan_config_id: rule.scan_config_id ?? '',
     include_project_total: rule.include_project_total,
     include_event_types: rule.include_event_types,
     include_events: rule.include_events,
@@ -354,6 +364,9 @@ export function ruleFormToPayload(ruleForm: RuleFormState) {
   void _ignored
   return {
     ...rest,
+    // Explicit null, never omitted: PATCH distinguishes "not mentioned" from
+    // "widen this rule back to the whole project".
+    scan_config_id: ruleForm.scan_config_id || null,
     filters,
     message_template:
       !normalizedTemplate || isDefaultMessageTemplate(normalizedTemplate, ruleForm.message_format)

@@ -254,6 +254,7 @@ async def _load_schema_drift_candidates(
     return [
         SchemaDriftAlertCandidate(
             id=drift.id,
+            scan_config_id=drift.scan_config_id,
             scope_type=SCOPE_SCHEMA_DRIFT,
             scope_ref=str(drift.id),
             event_id=None,
@@ -304,6 +305,7 @@ async def _load_distribution_drift_candidates(
         candidates.append(
             DistributionDriftAlertCandidate(
                 id=drift.id,
+                scan_config_id=drift.scan_config_id,
                 scope_type=SCOPE_DISTRIBUTION_DRIFT,
                 scope_ref=distribution_drift_scope_ref(owner_id, drift.field_name),
                 event_id=None,

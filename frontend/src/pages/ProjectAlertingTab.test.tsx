@@ -277,6 +277,92 @@ describe('ProjectAlertingTab — catalog metric scope (tripl-jfm3.108)', () => {
   })
 })
 
+describe('ProjectAlertingTab — narrowing a rule to one scan', () => {
+  // A rule hangs off a destination and a destination off a project, so a rule
+  // used to fire for every scan there is, with no filter able to say otherwise.
+  // `scan_config_id` is that missing control; null keeps the old behaviour.
+  const SCANS = [
+    { id: 'scan-ios', name: 'Old events (iOS)' },
+    { id: 'scan-web', name: 'Web' },
+  ]
+
+  function mockWithScans(rule: Record<string, unknown>) {
+    const patches: Record<string, unknown>[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (/\/rules\//.test(url) && init?.method === 'PATCH') {
+        const body = JSON.parse(String(init.body))
+        patches.push(body)
+        return jsonResponse({ ...rule, ...body })
+      }
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: false })
+      }
+      if (url.includes('/alert-destinations')) {
+        return jsonResponse([makeDestination({ rules: [rule] })])
+      }
+      if (url.includes('/alert-deliveries')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/alert-inbox')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.includes('/events')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/scans')) return jsonResponse(SCANS)
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    return patches
+  }
+
+  it('names the bound scan on the rule row, and says "all scans" when unbound', async () => {
+    mockWithScans(makeRule({ scan_config_id: 'scan-ios' }))
+    const { unmount } = renderTab()
+    expect(await screen.findByText('Scan: Old events (iOS)')).toBeInTheDocument()
+    unmount()
+
+    vi.restoreAllMocks()
+    mockWithScans(makeRule({ scan_config_id: null }))
+    renderTab()
+    expect(await screen.findByText('Scan: all scans')).toBeInTheDocument()
+  })
+
+  it('seeds the Scan picker from the saved rule', async () => {
+    mockWithScans(makeRule({ scan_config_id: 'scan-web' }))
+    renderTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Edit rule/ }))
+
+    expect(await screen.findByRole('combobox', { name: 'Scan' })).toHaveTextContent('Web')
+  })
+
+  it('carries the saved scan binding through an unrelated edit', async () => {
+    // The binding must survive a save that never touched it — otherwise editing
+    // any other field would silently widen the rule back to the whole project.
+    const patches = mockWithScans(makeRule({ scan_config_id: 'scan-ios', include_metrics: false }))
+    renderTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Edit rule/ }))
+    fireEvent.click(await screen.findByLabelText('Metrics'))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(patches).toHaveLength(1))
+    expect(patches[0].scan_config_id).toBe('scan-ios')
+  })
+
+  it('sends an explicit null for a rule that watches every scan', async () => {
+    // Omitting the key would leave a previously bound rule bound: the API
+    // distinguishes "not mentioned" from "widen me back to the project".
+    const patches = mockWithScans(makeRule({ scan_config_id: null }))
+    renderTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Edit rule/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(patches).toHaveLength(1))
+    expect(patches[0]).toHaveProperty('scan_config_id', null)
+  })
+})
+
 describe('ProjectAlertingTab — Add Email destination', () => {
   it('renders the Subject Template placeholder as a clean token example (no escape artifact)', async () => {
     mockAlertingFetch()

@@ -15,6 +15,7 @@ from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
+from tripl.models.anomaly_scope_override import AnomalyScopeOverride
 from tripl.models.data_source import DataSource
 from tripl.models.event import Event, EventStatus
 from tripl.models.event_type import EventType
@@ -224,10 +225,19 @@ async def test_alert_inbox_false_positive_updates_state_and_thresholds(
         )
         assert state is not None
         assert state.false_positive_count == 1
+        # The ratchet is per scope now: the scan keeps the sensitivity the
+        # operator gave it and the dismissed event type gets its own override.
         config = await session.get(ScanConfig, config_id)
         assert config is not None
-        assert config.sigma_threshold == 3.5
-        assert config.min_expected_count == 15
+        assert config.sigma_threshold == 3.0
+        assert config.min_expected_count == 10
+        override = await session.scalar(
+            select(AnomalyScopeOverride).where(AnomalyScopeOverride.scan_config_id == config_id)
+        )
+        assert override is not None
+        assert override.scope_type == "event_type"
+        assert override.sigma_threshold == 3.5
+        assert override.min_expected_count == 15
 
     # A second action carrying no note must not erase the first one's. The
     # assignment was unconditional, so every follow-up action silently wiped the
@@ -259,6 +269,194 @@ async def test_alert_inbox_false_positive_updates_state_and_thresholds(
         )
         assert state is not None
         assert state.note == "Rolled back"
+
+
+@pytest.mark.asyncio
+async def test_alert_inbox_false_positive_ratchets_only_the_marked_scope(
+    client: AsyncClient,
+) -> None:
+    """One "false positive" click tightens the scope it was clicked on — and
+    nothing else.
+
+    The ratchet used to raise ``sigma_threshold`` / ``min_expected_count`` on the
+    project's monitoring settings AND on every scan the group touched, so
+    dismissing one noisy event made the detector stricter on every other event,
+    event type, project total and catalog metric in the project. Per-scope
+    correlation groups (tripl-l429.1) made that button easy to reach, so the
+    blast radius had to shrink to the scope that was actually dismissed.
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Scoped Ratchet", "slug": "scoped-ratchet", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    group_id = uuid.uuid4()
+    async with TestSessionLocal() as session:
+        event_type = EventType(
+            project_id=project_id,
+            name="track",
+            display_name="Track",
+            description="",
+        )
+        data_source = DataSource(
+            name="Warehouse",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        session.add_all([event_type, data_source])
+        await session.flush()
+        noisy = Event(
+            project_id=project_id,
+            event_type_id=event_type.id,
+            name="noisy_event",
+            description="",
+            status=EventStatus.implemented.value,
+        )
+        quiet = Event(
+            project_id=project_id,
+            event_type_id=event_type.id,
+            name="quiet_event",
+            description="",
+            status=EventStatus.implemented.value,
+        )
+        config = ScanConfig(
+            project_id=project_id,
+            data_source_id=data_source.id,
+            event_type_id=event_type.id,
+            name="Events",
+            base_query="SELECT * FROM events",
+            time_column="time",
+            interval="1h",
+            sigma_threshold=3.0,
+            min_expected_count=10,
+        )
+        destination = AlertDestination(
+            project_id=project_id,
+            type="slack",
+            name="Slack",
+            enabled=True,
+            webhook_url_encrypted="secret",
+        )
+        session.add_all([noisy, quiet, config, destination])
+        await session.flush()
+        rule = AlertRule(
+            destination_id=destination.id,
+            name="Rule",
+            enabled=True,
+            include_events=True,
+            notify_on_spike=True,
+            notify_on_drop=True,
+            min_percent_delta=0,
+            min_absolute_delta=0,
+            min_expected_count=0,
+            cooldown_minutes=60,
+        )
+        settings = ProjectAnomalySettings(
+            project_id=project_id,
+            anomaly_detection_enabled=True,
+            sigma_threshold=3.0,
+            min_expected_count=10,
+        )
+        session.add_all([rule, settings])
+        await session.flush()
+        delivery = AlertDelivery(
+            project_id=project_id,
+            scan_config_id=config.id,
+            destination_id=destination.id,
+            rule_id=rule.id,
+            status="sent",
+            channel="slack",
+            matched_count=1,
+        )
+        session.add(delivery)
+        await session.flush()
+        session.add(
+            AlertDeliveryItem(
+                delivery_id=delivery.id,
+                scope_type="event",
+                scope_ref=str(noisy.id),
+                scope_name="noisy_event",
+                event_type_id=None,
+                event_id=noisy.id,
+                bucket=datetime(2026, 1, 1, tzinfo=UTC),
+                direction="spike",
+                actual_count=20,
+                expected_count=10,
+                absolute_delta=10,
+                percent_delta=100.0,
+                correlation_group_id=group_id,
+            )
+        )
+        await session.commit()
+        config_id = config.id
+        noisy_id = noisy.id
+        quiet_id = quiet.id
+
+    action_resp = await client.post(
+        f"/api/v1/projects/scoped-ratchet/alert-inbox/{group_id}/actions",
+        json={"action": "false_positive"},
+    )
+    assert action_resp.status_code == 200
+
+    async with TestSessionLocal() as session:
+        overrides = list(
+            (
+                await session.execute(
+                    select(AnomalyScopeOverride).where(
+                        AnomalyScopeOverride.project_id == project_id
+                    )
+                )
+            ).scalars()
+        )
+        # Exactly one override, on the dismissed scope, keyed the way the
+        # anomaly keys itself.
+        assert len(overrides) == 1
+        override = overrides[0]
+        assert override.scan_config_id == config_id
+        assert override.scope_type == "event"
+        assert override.scope_ref == str(noisy_id)
+        assert override.scope_ref != str(quiet_id)
+        assert override.sigma_threshold == 3.5
+        assert override.min_expected_count == 15
+        assert override.false_positive_count == 1
+
+        # The project-wide knobs the ratchet used to move are untouched, so
+        # every other scope keeps the sensitivity the operator chose.
+        project_settings = await session.scalar(
+            select(ProjectAnomalySettings).where(ProjectAnomalySettings.project_id == project_id)
+        )
+        assert project_settings is not None
+        assert project_settings.sigma_threshold == 3.0
+        assert project_settings.min_expected_count == 10
+        config = await session.get(ScanConfig, config_id)
+        assert config is not None
+        assert config.sigma_threshold == 3.0
+        assert config.min_expected_count == 10
+
+    # A second click on the same group ratchets the SAME row further rather
+    # than stacking duplicates.
+    await client.post(
+        f"/api/v1/projects/scoped-ratchet/alert-inbox/{group_id}/actions",
+        json={"action": "false_positive"},
+    )
+    async with TestSessionLocal() as session:
+        overrides = list(
+            (
+                await session.execute(
+                    select(AnomalyScopeOverride).where(
+                        AnomalyScopeOverride.project_id == project_id
+                    )
+                )
+            ).scalars()
+        )
+        assert len(overrides) == 1
+        assert overrides[0].sigma_threshold == 4.0
+        assert overrides[0].min_expected_count == 20
+        assert overrides[0].false_positive_count == 2
 
 
 def test_every_drift_type_the_pipeline_writes_exists_in_the_enum() -> None:
@@ -419,6 +617,223 @@ async def test_alerting_destination_rule_crud_and_secret_masking(client: AsyncCl
     )
     assert update_resp.status_code == 200
     assert update_resp.json()["enabled"] is False
+
+
+async def _seed_scan_config(project_id: uuid.UUID, name: str) -> uuid.UUID:
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"{name} DS",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project_id,
+            name=name,
+            base_query="SELECT * FROM events",
+            time_column="created_at",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+        await session.commit()
+        return scan_config.id
+
+
+@pytest.mark.asyncio
+async def test_alert_rule_can_be_narrowed_to_one_scan(client: AsyncClient) -> None:
+    """The HTTP surface round-trips ``scan_config_id`` and validates it.
+
+    NULL means "every scan in the project" — today's behaviour and the default,
+    so an existing rule keeps working untouched.
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Scan Bound", "slug": "scan-bound", "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    other_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Other Project", "slug": "scan-bound-other", "description": ""},
+    )
+    assert other_resp.status_code == 201
+    foreign_scan_id = await _seed_scan_config(uuid.UUID(other_resp.json()["id"]), "Foreign Scan")
+
+    scan_id = await _seed_scan_config(project_id, "Old events (iOS)")
+
+    destination_resp = await client.post(
+        "/api/v1/projects/scan-bound/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Main Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T000/B000/XXX",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+
+    # Default: unbound, i.e. the whole project.
+    default_resp = await client.post(
+        f"/api/v1/projects/scan-bound/alert-destinations/{destination_id}/rules",
+        json={"name": "Project rule"},
+    )
+    assert default_resp.status_code == 201
+    assert default_resp.json()["scan_config_id"] is None
+
+    created_resp = await client.post(
+        f"/api/v1/projects/scan-bound/alert-destinations/{destination_id}/rules",
+        json={"name": "iOS only", "scan_config_id": str(scan_id)},
+    )
+    assert created_resp.status_code == 201
+    rule = created_resp.json()
+    assert rule["scan_config_id"] == str(scan_id)
+
+    # A scan from another project is not addressable from here.
+    foreign_resp = await client.post(
+        f"/api/v1/projects/scan-bound/alert-destinations/{destination_id}/rules",
+        json={"name": "Cross project", "scan_config_id": str(foreign_scan_id)},
+    )
+    assert foreign_resp.status_code == 404
+
+    foreign_patch = await client.patch(
+        f"/api/v1/projects/scan-bound/alert-destinations/{destination_id}/rules/{rule['id']}",
+        json={"scan_config_id": str(foreign_scan_id)},
+    )
+    assert foreign_patch.status_code == 404
+
+    # An explicit null widens the rule back to the project.
+    widened = await client.patch(
+        f"/api/v1/projects/scan-bound/alert-destinations/{destination_id}/rules/{rule['id']}",
+        json={"scan_config_id": None},
+    )
+    assert widened.status_code == 200
+    assert widened.json()["scan_config_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_scan_disables_the_rules_bound_to_it(client: AsyncClient) -> None:
+    """A deleted scan must neither destroy nor silently widen its rules.
+
+    CASCADE would take the rule's name, thresholds, templates and filters with
+    it (and its delivery history through ``AlertDelivery.rule_id``). A bare SET
+    NULL would re-point a rule that was deliberately narrowed to the noisiest
+    scan at the whole project, so deleting that scan would START paging on every
+    other one. The rule is therefore kept, unbound AND disabled: visible in the
+    UI, inert until someone re-aims it.
+    """
+    from tripl.services.scan_service import delete_scan_config
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Scan Delete", "slug": "scan-delete", "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_id = await _seed_scan_config(project_id, "Doomed Scan")
+
+    destination_resp = await client.post(
+        "/api/v1/projects/scan-delete/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Main Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T000/B000/XXX",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+
+    bound_resp = await client.post(
+        f"/api/v1/projects/scan-delete/alert-destinations/{destination_id}/rules",
+        json={"name": "Bound rule", "scan_config_id": str(scan_id)},
+    )
+    assert bound_resp.status_code == 201
+    bound_rule_id = uuid.UUID(bound_resp.json()["id"])
+
+    untouched_resp = await client.post(
+        f"/api/v1/projects/scan-delete/alert-destinations/{destination_id}/rules",
+        json={"name": "Project rule"},
+    )
+    assert untouched_resp.status_code == 201
+    untouched_rule_id = uuid.UUID(untouched_resp.json()["id"])
+
+    async with TestSessionLocal() as session:
+        await delete_scan_config(session, "scan-delete", scan_id)
+
+    async with TestSessionLocal() as session:
+        bound = await session.get(AlertRule, bound_rule_id)
+        assert bound is not None, "deleting a scan must not delete its alert rule"
+        assert bound.scan_config_id is None
+        assert bound.enabled is False, "an orphaned rule must not widen to the project"
+
+        untouched = await session.get(AlertRule, untouched_rule_id)
+        assert untouched is not None
+        assert untouched.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_data_source_disables_the_rules_bound_to_its_scans(
+    client: AsyncClient,
+) -> None:
+    """The other way a scan config dies, and the one that skipped the unbind.
+
+    ``DataSource.scan_configs`` is delete-orphan, so removing a source takes its
+    scans with it WITHOUT going through ``delete_scan_config``. The FK is ON
+    DELETE SET NULL and NULL means "the whole project", so a rule narrowed to the
+    noisiest scan would come back re-aimed at every other scan the moment its
+    source was removed — paging on exactly what the operator was silencing.
+    """
+    from tripl.services.datasource_service import delete_data_source
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "DS Delete", "slug": "ds-delete", "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_id = await _seed_scan_config(project_id, "Doomed Scan")
+
+    async with TestSessionLocal() as session:
+        seeded = await session.get(ScanConfig, scan_id)
+        assert seeded is not None
+        data_source_id = seeded.data_source_id
+
+    destination_resp = await client.post(
+        "/api/v1/projects/ds-delete/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Main Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T000/B000/XXX",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+
+    bound_resp = await client.post(
+        f"/api/v1/projects/ds-delete/alert-destinations/{destination_id}/rules",
+        json={"name": "Bound rule", "scan_config_id": str(scan_id)},
+    )
+    assert bound_resp.status_code == 201
+    bound_rule_id = uuid.UUID(bound_resp.json()["id"])
+
+    async with TestSessionLocal() as session:
+        await delete_data_source(session, data_source_id)
+
+    async with TestSessionLocal() as session:
+        assert await session.get(ScanConfig, scan_id) is None, "the cascade did not run"
+        bound = await session.get(AlertRule, bound_rule_id)
+        assert bound is not None, "deleting a data source must not delete its alert rule"
+        assert bound.enabled is False, "an orphaned rule must not widen to the project"
 
 
 @pytest.mark.asyncio
@@ -1540,6 +1955,12 @@ def _build_rule(**overrides: object) -> AlertRule:
     return rule
 
 
+# Sentinel meaning "some scan, I don't care which": ``_build_anomaly`` swaps it
+# for a fresh id. Deliberately distinct from an explicit ``None``, which is what
+# a project-global (``metric``-scope) anomaly really carries on its row.
+_ANY_SCAN_CONFIG = uuid.UUID("00000000-0000-0000-0000-0000000000ff")
+
+
 def _build_anomaly(
     bucket: datetime,
     *,
@@ -1548,12 +1969,13 @@ def _build_anomaly(
     direction: str = "spike",
     actual_count: int = 100,
     expected_count: float = 10.0,
+    scan_config_id: uuid.UUID | None = _ANY_SCAN_CONFIG,
 ) -> object:
     from tripl.models.metric_anomaly import MetricAnomaly
 
     return MetricAnomaly(
         id=uuid.uuid4(),
-        scan_config_id=uuid.uuid4(),
+        scan_config_id=(uuid.uuid4() if scan_config_id == _ANY_SCAN_CONFIG else scan_config_id),
         scope_type=scope_type,
         scope_ref=scope_ref or str(uuid.uuid4()),
         event_id=None,
@@ -1659,6 +2081,7 @@ def test_schema_drift_rule_matching_uses_scope_gate_not_metric_thresholds() -> N
 
     candidate = SchemaDriftAlertCandidate(
         id=uuid.uuid4(),
+        scan_config_id=uuid.uuid4(),
         scope_type="schema",
         scope_ref=str(uuid.uuid4()),
         event_id=None,
@@ -1693,6 +2116,7 @@ def test_distribution_drift_rule_matching_uses_scope_gate_not_metric_thresholds(
 
     candidate = DistributionDriftAlertCandidate(
         id=uuid.uuid4(),
+        scan_config_id=uuid.uuid4(),
         scope_type=SCOPE_DISTRIBUTION_DRIFT,
         scope_ref="distribution-scope",
         event_id=None,
@@ -1727,6 +2151,7 @@ def test_release_regression_rule_matching_uses_scope_gate_not_metric_thresholds(
 
     candidate = DriftAlertCandidate(
         id=uuid.uuid4(),
+        scan_config_id=uuid.uuid4(),
         scope_type=SCOPE_RELEASE_REGRESSION,
         scope_ref=str(uuid.uuid4()),
         event_id=uuid.uuid4(),
@@ -1764,6 +2189,90 @@ def test_release_regression_rule_matching_uses_scope_gate_not_metric_thresholds(
     # Direction gate still applies: a regression is a drop.
     no_drop_rule = _build_rule(include_release_regressions=True, notify_on_drop=False)
     assert rule_matches_anomaly(no_drop_rule, candidate) is False
+
+
+def test_a_scan_bound_rule_ignores_every_other_scan() -> None:
+    """A rule narrowed to one scan must not fire on a sibling scan's anomaly.
+
+    Rules hang off a destination, destinations off a project, and dispatch runs
+    once per scan config — so before ``AlertRule.scan_config_id`` existed, one
+    rule fired for every scan in the project and there was no filter field able
+    to say otherwise (``AlertRuleFilterField`` is event_type/event/direction and
+    ``filter_matches_anomaly`` passes anything else through).
+    """
+    from tripl.alerting_matching import rule_matches_anomaly
+
+    watched_scan = uuid.uuid4()
+    other_scan = uuid.uuid4()
+    bucket = datetime(2026, 5, 1, 12, tzinfo=UTC)
+    rule = _build_rule(scan_config_id=watched_scan)
+
+    mine = _build_anomaly(bucket, scan_config_id=watched_scan)
+    theirs = _build_anomaly(bucket, scan_config_id=other_scan)
+
+    assert rule_matches_anomaly(rule, mine) is True
+    assert rule_matches_anomaly(rule, theirs) is False
+
+    # NULL is the migration's no-op: an unbound rule keeps watching the project.
+    project_rule = _build_rule()
+    assert rule_matches_anomaly(project_rule, mine) is True
+    assert rule_matches_anomaly(project_rule, theirs) is True
+
+
+def test_a_scan_bound_rule_has_nothing_to_say_about_catalog_metrics() -> None:
+    """``include_metrics`` goes inert once a rule is bound to a scan.
+
+    Catalog metric anomalies are project-global — their row carries a NULL
+    ``scan_config_id`` — so "this scan only" and "this project-wide series"
+    cannot both be true. The scan gate wins; only an unbound rule delivers them.
+    """
+    from tripl.alerting_matching import rule_matches_anomaly
+
+    metric_anomaly = _build_anomaly(
+        datetime(2026, 5, 1, 12, tzinfo=UTC),
+        scope_type="metric",
+        scan_config_id=None,
+    )
+
+    bound = _build_rule(include_metrics=True, scan_config_id=uuid.uuid4())
+    assert rule_matches_anomaly(bound, metric_anomaly) is False
+
+    unbound = _build_rule(include_metrics=True)
+    assert rule_matches_anomaly(unbound, metric_anomaly) is True
+
+
+def test_a_scan_bound_rule_ignores_another_scans_drift() -> None:
+    """The gate has to reach the dataclass candidates too, not only anomaly rows.
+
+    Schema / distribution / variable-value drift and release regressions arrive
+    as ``DriftAlertCandidate`` dataclasses rather than ORM rows. If they did not
+    carry the scan they came from, a scan-bound rule would silently keep firing
+    on every scan's drift.
+    """
+    from tripl.alerting_matching import DriftAlertCandidate, rule_matches_anomaly
+
+    watched_scan = uuid.uuid4()
+
+    def _drift(scan_config_id: uuid.UUID) -> DriftAlertCandidate:
+        return DriftAlertCandidate(
+            id=uuid.uuid4(),
+            scan_config_id=scan_config_id,
+            scope_type="schema",
+            scope_ref=str(uuid.uuid4()),
+            event_id=None,
+            event_type_id=uuid.uuid4(),
+            bucket=datetime(2026, 5, 1, 12, tzinfo=UTC),
+            direction="spike",
+            actual_count=1,
+            expected_count=0,
+            drift_field="payload.extra",
+            drift_type="new_field",
+            sample_value="TASK-123",
+        )
+
+    rule = _build_rule(include_schema_drifts=True, scan_config_id=watched_scan)
+    assert rule_matches_anomaly(rule, _drift(watched_scan)) is True
+    assert rule_matches_anomaly(rule, _drift(uuid.uuid4())) is False
 
 
 def test_release_regression_item_renders_readable_release_line() -> None:

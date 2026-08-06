@@ -7200,3 +7200,81 @@ def test_metric_error_cooldown_is_the_shared_backoff_curves_first_step(
         metrics_schedule.FAILURE_BACKOFF_AFTER, hour
     )
     assert delay == hour  # the metric's own interval, spelled out
+
+
+def test_recalculate_metric_anomalies_honours_per_scope_override(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A false-positive ratchet is only worth storing if detection reads it.
+
+    The ratchet writes an ``AnomalyScopeOverride`` keyed the way an anomaly keys
+    itself — (scan_config_id, scope_type, scope_ref) — so the scope an operator
+    dismissed gets stricter and every OTHER scope keeps its previous
+    sensitivity. Before tripl-l429 the ratchet raised the project-wide setting
+    instead, so one click silenced scopes nobody had complained about.
+    """
+    from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT, SCOPE_EVENT_TYPE
+    from tripl.models.anomaly_scope_override import AnomalyScopeOverride
+    from tripl.worker.tasks.metrics.detect import _recalculate_metric_anomalies
+
+    base = _ANOMALY_BASE
+    eval_start = base
+    eval_end = base + timedelta(hours=11)  # includes the missing hour-10 bucket
+    covered = {base + timedelta(hours=h) for h in range(11)}
+
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session, base=base)
+
+        _recalculate_metric_anomalies(
+            session,
+            config,
+            evaluation_start=eval_start,
+            evaluation_end=eval_end,
+            covered_buckets=covered,
+        )
+        session.commit()
+        flagged_scopes = {
+            row.scope_type
+            for row in session.execute(
+                select(MetricAnomaly).where(MetricAnomaly.scan_config_id == config.id)
+            ).scalars()
+        }
+        # Baseline: the zero-filled gap reads as a drop on both scopes.
+        assert SCOPE_EVENT in flagged_scopes
+        assert SCOPE_EVENT_TYPE in flagged_scopes
+
+        session.add(
+            AnomalyScopeOverride(
+                id=uuid.uuid4(),
+                project_id=config.project_id,
+                scan_config_id=config.id,
+                scope_type=SCOPE_EVENT,
+                scope_ref=str(event.id),
+                scope_name=event.name,
+                sigma_threshold=3.0,
+                min_expected_count=1000,
+                false_positive_count=1,
+            )
+        )
+        session.commit()
+
+        _recalculate_metric_anomalies(
+            session,
+            config,
+            evaluation_start=eval_start,
+            evaluation_end=eval_end,
+            covered_buckets=covered,
+        )
+        session.commit()
+
+        after = {
+            row.scope_type
+            for row in session.execute(
+                select(MetricAnomaly).where(MetricAnomaly.scan_config_id == config.id)
+            ).scalars()
+        }
+
+    # The overridden scope goes quiet; the event-type scope, which nobody
+    # dismissed, still flags the very same gap.
+    assert SCOPE_EVENT not in after
+    assert SCOPE_EVENT_TYPE in after

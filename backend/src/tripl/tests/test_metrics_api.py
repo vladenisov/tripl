@@ -2605,3 +2605,42 @@ async def test_app_versions_keeps_its_project_total_default(client: AsyncClient)
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["scope_type"] == "project_total"
+
+
+@pytest.mark.asyncio
+async def test_project_total_band_follows_the_scope_false_positive_override(
+    client: AsyncClient,
+) -> None:
+    """The chart band is ``expected ± sigma_threshold × stddev`` and is meant to
+    read as "outside the band = flagged". A scope the false-positive ratchet has
+    tightened is scored at ITS sigma, so serving the scan-wide value would draw a
+    band narrower than the rule that produced the dots."""
+    from tripl.models.anomaly_scope_override import AnomalyScopeOverride
+
+    setup = await _setup_metrics_project(client, "metrics-scope-band")
+    scan_config_id = await _seed_group_metrics(setup["project_id"], [], name="Band scan")
+
+    before = await client.get("/api/v1/projects/metrics-scope-band/metrics/total")
+    assert before.status_code == 200
+    scan_sigma = before.json()["sigma_threshold"]
+
+    async with TestSessionLocal() as session:
+        session.add(
+            AnomalyScopeOverride(
+                id=uuid.uuid4(),
+                project_id=uuid.UUID(setup["project_id"]),
+                scan_config_id=scan_config_id,
+                scope_type="project_total",
+                scope_ref=str(scan_config_id),
+                scope_name="Band scan",
+                sigma_threshold=scan_sigma + 1.5,
+                min_expected_count=99,
+                false_positive_count=1,
+            )
+        )
+        await session.commit()
+
+    after = await client.get("/api/v1/projects/metrics-scope-band/metrics/total")
+
+    assert after.status_code == 200
+    assert after.json()["sigma_threshold"] == scan_sigma + 1.5

@@ -417,6 +417,7 @@ def _get_active_schema_drift_candidates(
         scope_ref = str(drift.id)
         candidate = SchemaDriftAlertCandidate(
             id=drift.id,
+            scan_config_id=config.id,
             scope_type=SCOPE_SCHEMA_DRIFT,
             scope_ref=scope_ref,
             event_id=None,
@@ -462,6 +463,7 @@ def _get_active_variable_value_drift_candidates(
         scope_ref = str(drift.id)
         candidate = DriftAlertCandidate(
             id=drift.id,
+            scan_config_id=config.id,
             scope_type=SCOPE_VARIABLE_VALUE_DRIFT,
             scope_ref=scope_ref,
             event_id=drift.event_id,
@@ -500,6 +502,7 @@ def _get_active_release_regression_candidates(
     ).scalars():
         candidate = DriftAlertCandidate(
             id=regression.id,
+            scan_config_id=regression.scan_config_id,
             scope_type=SCOPE_RELEASE_REGRESSION,
             scope_ref=regression.scope_ref,
             event_id=regression.event_id,
@@ -542,6 +545,7 @@ def _get_active_distribution_drift_candidates(
         scope_ref = distribution_drift_scope_ref(owner_id, drift.field_name)
         candidate = DistributionDriftAlertCandidate(
             id=drift.id,
+            scan_config_id=drift.scan_config_id,
             scope_type=SCOPE_DISTRIBUTION_DRIFT,
             scope_ref=scope_ref,
             event_id=None,
