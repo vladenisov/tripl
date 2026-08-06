@@ -1607,6 +1607,53 @@ def test_simulate_rule_firings_skips_scope_disabled_by_rule() -> None:
     assert [a.scope_type for a in fired] == ["event_type"]
 
 
+def test_a_spike_from_a_zero_baseline_clears_a_percent_threshold() -> None:
+    """A relative threshold has nothing to divide by at a zero baseline.
+
+    The old fallback scored it 0% — the largest possible relative move reported
+    as the smallest. Harmless while the default threshold was 0, silencing once
+    it became 100: a scope resuming after an outage, or an event firing for the
+    first time, matched no rule with a percent threshold. The mirror case makes
+    the asymmetry plain, so it is asserted alongside.
+    """
+    from tripl.alerting_matching import rule_matches_anomaly
+
+    base = datetime(2026, 5, 1, 12, tzinfo=UTC)
+    rule = _build_rule(min_percent_delta=100)
+
+    appeared = _build_anomaly(base, actual_count=40, expected_count=0.0)
+    assert rule_matches_anomaly(rule, appeared) is True
+
+    # The mirror: gone to zero from a real baseline is exactly 100% and alerts.
+    went_dark = _build_anomaly(base, direction="drop", actual_count=0, expected_count=40.0)
+    assert rule_matches_anomaly(rule, went_dark) is True
+
+    # No baseline and no movement is not an event.
+    nothing = _build_anomaly(base, actual_count=0, expected_count=0.0)
+    assert rule_matches_anomaly(rule, nothing) is False
+
+
+def test_a_fractional_baseline_below_one_keeps_its_full_percent() -> None:
+    """Why the zero case is not fixed with a divisor floor of 1.
+
+    Catalog metrics reach the numeric thresholds with fractional values, gated
+    only at 1e-6. Scoring them against ``max(expected, 1)`` — the divisor the
+    UI's relative effect uses, which assumes counts — would turn this 350% into
+    70% and drop it under the very threshold the fix is about.
+    """
+    from tripl.alerting_matching import rule_matches_anomaly
+
+    ratio = _build_anomaly(
+        datetime(2026, 5, 1, 12, tzinfo=UTC),
+        scope_type="metric",
+        actual_count=0.9,
+        expected_count=0.2,
+    )
+
+    assert rule_matches_anomaly(_build_rule(include_metrics=True, min_percent_delta=300), ratio)
+    assert not rule_matches_anomaly(_build_rule(include_metrics=True, min_percent_delta=400), ratio)
+
+
 def test_schema_drift_rule_matching_uses_scope_gate_not_metric_thresholds() -> None:
     from tripl.alerting_matching import SchemaDriftAlertCandidate, rule_matches_anomaly
 

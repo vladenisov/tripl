@@ -134,11 +134,25 @@ def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
     absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
     if absolute_delta < rule.min_absolute_delta:
         return False
+    # A relative threshold has nothing to divide by when the baseline is zero,
+    # and the old fallback answered 0.0 — reporting the largest possible relative
+    # move as the smallest. It cost nothing while min_percent_delta defaulted to
+    # 0 (``0 < 0`` is false, so such a candidate passed anyway); at the measured
+    # default of 100 it silences the whole class, so a scope resuming after an
+    # outage, or an event firing for the first time, would match no rule carrying
+    # a percent threshold. The asymmetry is what gives it away: the mirror case,
+    # actual 0 against a positive expectation, is exactly 100% and alerts.
+    #
+    # Deliberately NOT scored against ``max(expected, 1)`` the way the UI's
+    # relative effect is. That divisor assumes counts, and catalog metrics arrive
+    # here with fractional values gated only at 1e-6: a ratio expected 0.2 and
+    # observed 0.9 scores 350% today and would score 70% under a floor of one,
+    # dropping below the very threshold this is about.
     if anomaly.expected_count > 0:
-        percent_delta = absolute_delta / anomaly.expected_count * 100
-    else:
-        percent_delta = 0.0
-    if percent_delta < rule.min_percent_delta:
+        if absolute_delta / anomaly.expected_count * 100 < rule.min_percent_delta:
+            return False
+    elif absolute_delta <= 0:
+        # No baseline and no movement: nothing to report.
         return False
 
     return all(filter_matches_anomaly(filter_row, anomaly) for filter_row in rule.filters)

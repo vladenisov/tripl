@@ -11,6 +11,7 @@ from tripl.alert_templates import (
     ALERT_MESSAGE_FORMAT_PLAIN,
     ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2,
 )
+from tripl.alerting_matching import SCOPE_METRIC
 from tripl.alerting_validation import (
     validate_email_address,
     validate_email_recipients,
@@ -623,15 +624,27 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         delivery.error_message = None
         alert_deliveries_total.labels(status=AlertDeliveryStatus.sent.value).inc()
         for item in delivery.items:
-            state = session.execute(
-                select(AlertRuleState).where(
-                    AlertRuleState.rule_id == delivery.rule_id,
-                    AlertRuleState.scan_config_id == delivery.scan_config_id,
-                    AlertRuleState.scope_type == item.scope_type,
-                    AlertRuleState.scope_ref == item.scope_ref,
-                )
-            ).scalar_one_or_none()
-            if state is not None:
+            filters = [
+                AlertRuleState.rule_id == delivery.rule_id,
+                AlertRuleState.scope_type == item.scope_type,
+                AlertRuleState.scope_ref == item.scope_ref,
+            ]
+            # Every scope but ``metric`` keys its state on the scan config that
+            # produced the delivery. A metric-scope state cannot: catalog metrics
+            # are project-global, so dispatch anchors their state on ONE canonical
+            # config for the whole project (the lowest id) to give them a single
+            # cooldown clock. Matching on the delivery's own config therefore
+            # found nothing for every config but that one — windy-ios runs three,
+            # so two sends in three stamped nothing, last_notified_at stayed NULL,
+            # and the re-send gate reads NULL as "never told them". The cooldown
+            # was permanently elapsed for metric scopes.
+            if item.scope_type != SCOPE_METRIC:
+                filters.append(AlertRuleState.scan_config_id == delivery.scan_config_id)
+            # Not scalar_one_or_none: what guarantees a single row is the
+            # (rule, config, scope_type, scope_ref) uniqueness, and dropping the
+            # config from the filter drops that guarantee with it. Raising here
+            # would fail a delivery that has already gone out.
+            for state in session.execute(select(AlertRuleState).where(*filters)).scalars():
                 state.last_notified_at = delivery.sent_at
                 state.last_notified_delivery_id = delivery.id
         session.commit()

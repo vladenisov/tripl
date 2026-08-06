@@ -749,6 +749,70 @@ def test_metric_scope_cooldown_shared_across_scan_configs(
         assert states_after[0].scan_config_id == canonical
 
 
+def test_sending_stamps_a_metric_state_anchored_on_another_config(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch,
+) -> None:
+    """The cooldown above is only real if the send step can find the state.
+
+    Its sibling simulates the stamp — "the send step would stamp
+    last_notified_at; simulate it so cooldown applies" — which is exactly why
+    this went unnoticed. The real path looked the state up by the DELIVERY's
+    scan_config_id, while a metric-scope state is anchored on the project's
+    canonical config, so every config but that one stamped nothing.
+    last_notified_at stayed NULL and the re-send gate reads NULL as "never told
+    them", so the cooldown was permanently elapsed for metric scopes.
+    """
+    from tripl.worker.tasks import alerts as alerts_task
+
+    with sync_session_factory() as session:
+        config1, _metric = _seed_spiked_metric(session)
+        config2 = _add_second_config(session, config1)
+        canonical = min(config1.id, config2.id)
+        # Deliver from whichever config is NOT the anchor — the case the old
+        # lookup could not resolve.
+        sending_config = config2 if canonical == config1.id else config1
+        _add_rule(session, config1, include_metrics=True)
+
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(
+            session, sending_config, scan_job_id=None
+        )
+        assert len(delivery_ids) == 1
+        state = session.execute(
+            select(AlertRuleState).where(AlertRuleState.scope_type == "metric")
+        ).scalar_one()
+        assert state.scan_config_id == canonical
+        assert state.last_notified_at is None
+        session.commit()
+
+    monkeypatch.setitem(
+        alerts_task.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        alerts_task.send_alert_delivery.run.__globals__,
+        "_post_json",
+        lambda *args, **kwargs: None,
+    )
+    # The shared fixture stores a placeholder secret; the send path validates the
+    # decrypted value as a real Slack webhook before posting.
+    monkeypatch.setitem(
+        alerts_task.send_alert_delivery.run.__globals__,
+        "_decrypt_secret",
+        lambda _value: "https://hooks.slack.com/services/T0/B0/xxxxxxxx",
+    )
+
+    result = alerts_task.send_alert_delivery.run(str(delivery_ids[0]))
+
+    assert result["status"] == "sent"
+    with sync_session_factory() as session:
+        stamped = session.execute(
+            select(AlertRuleState).where(AlertRuleState.scope_type == "metric")
+        ).scalar_one()
+        assert stamped.last_notified_at is not None
+
+
 def test_percent_metric_items_render_scaled_values_via_batched_unit_lookup(
     sync_session_factory: sessionmaker[Session],
 ) -> None:

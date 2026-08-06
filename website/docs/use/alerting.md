@@ -131,7 +131,10 @@ needs *notify on spike* enabled.
 - `min absolute delta` — require at least N events of change,
 - `min percent delta` — require at least N % of change. **Defaults to `100`** —
   at least double, or at most half, the expectation. A scope going dark is
-  exactly 100 % and still alerts.
+  exactly 100 % and still alerts, and so does one that starts firing where
+  nothing was expected: a percentage has nothing to divide by at a zero
+  baseline, so the percent gate steps aside there and `min absolute delta`
+  decides. (No movement against a baseline of zero is still not an event.)
 
 :::tip Why the percent default is not zero
 Most volume anomalies are single-bucket seasonal deviations rather than
