@@ -62,7 +62,11 @@ from tripl.semver import (
     APP_VERSION_OTHER_LABEL,
     order_versions,
 )
-from tripl.services.monitoring_utils import classify_signal_state, recent_signal_window_from_hours
+from tripl.services.monitoring_utils import (
+    classify_signal_state,
+    recent_signal_window_from_hours,
+    scan_interval_to_timedelta,
+)
 from tripl.services.project_lookup import get_project_by_slug
 from tripl.services.version_activation import (
     DEFAULT_ACTIVE_SHARE_MIN,
@@ -529,6 +533,9 @@ def _build_metrics_response(
         state = classify_signal_state(
             anomaly_bucket=latest_anomaly.bucket,
             latest_metric_bucket=latest_metric_bucket,
+            # Without the grid, a coarse series is judged against a bare 24h
+            # window narrower than one of its own buckets, and closes.
+            interval=scan_interval_to_timedelta(interval),
             recent_window=recent_window,
         )
         if state is not None:

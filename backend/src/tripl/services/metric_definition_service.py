@@ -50,7 +50,7 @@ from tripl.services.metrics_service import (
     _get_project_recent_signal_window,
     _signal_from_anomaly,
 )
-from tripl.services.monitoring_utils import classify_signal_state
+from tripl.services.monitoring_utils import classify_signal_state, scan_interval_to_timedelta
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_lookup import get_project_id_by_slug
 from tripl.services.search_service import reindex_project_branch
@@ -614,6 +614,7 @@ async def _build_list_enrichment(
     session: AsyncSession,
     metric_ids: list[uuid.UUID],
     *,
+    intervals: dict[uuid.UUID, str | None] | None = None,
     recent_window: timedelta | None = None,
 ) -> dict[uuid.UUID, _MetricListEnrichment]:
     latest_values = await _load_latest_values(session, metric_ids)
@@ -630,6 +631,12 @@ async def _build_list_enrichment(
             state = classify_signal_state(
                 anomaly_bucket=anomaly.bucket,
                 latest_metric_bucket=latest_bucket,
+                # Each metric is scored on its OWN grid, so the freshness window
+                # has to be measured on that grid too — a daily metric judged
+                # against a bare 24h window closes on the day it fires.
+                interval=scan_interval_to_timedelta(
+                    (intervals or {}).get(metric_id),
+                ),
                 recent_window=recent_window,
             )
             if state is not None:
@@ -676,6 +683,7 @@ async def list_metric_definitions_enriched(
     enrichment = await _build_list_enrichment(
         session,
         [metric.id for metric in metrics],
+        intervals={metric.id: metric.interval for metric in metrics},
         recent_window=recent_window,
     )
     items: list[MetricDefinitionListItem] = []

@@ -203,22 +203,29 @@ async def _get_active_metric_signals(
     ``scope_ref = str(metric_definition_id)``, so they are loaded on their own
     (the event-scope multi-query joins ScanConfig on scan_config_id and would
     drop them). Each metric's newest anomaly is classified against its latest
-    stored value bucket; only ``latest_scan`` (open) signals surface.
+    stored value bucket and surfaces while that classification is open — either
+    state, ``latest_scan`` or ``recent``. (It said "only latest_scan" for a
+    while; ingestion settling makes that branch unreachable for a scope that is
+    still emitting, so it would have described an empty set.)
 
     ``recent_window`` is the project's configured freshness window; callers that
     already hold it pass it in so this does not re-query, and omitting it keeps
     the default 24h window.
     """
-    metric_ids = list(
-        (
-            await session.execute(
-                select(MetricDefinition.id).where(
-                    MetricDefinition.project_id == project_id,
-                    MetricDefinition.anomaly_detection_enabled.is_(True),
-                )
+    # The interval rides along because each metric is scored on its OWN grid, so
+    # its freshness window has to be measured on that grid too.
+    interval_by_ref: dict[str, str | None] = {}
+    metric_ids: list[uuid.UUID] = []
+    for metric_id, metric_interval in (
+        await session.execute(
+            select(MetricDefinition.id, MetricDefinition.interval).where(
+                MetricDefinition.project_id == project_id,
+                MetricDefinition.anomaly_detection_enabled.is_(True),
             )
-        ).scalars()
-    )
+        )
+    ).all():
+        metric_ids.append(metric_id)
+        interval_by_ref[str(metric_id)] = metric_interval
     if not metric_ids:
         return []
 
@@ -255,6 +262,7 @@ async def _get_active_metric_signals(
         state = classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_value_buckets.get(scope_ref),
+            interval=scan_interval_to_timedelta(interval_by_ref.get(scope_ref)),
             recent_window=recent_window,
         )
         if state is not None:

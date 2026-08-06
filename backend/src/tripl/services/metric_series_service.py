@@ -64,7 +64,7 @@ from tripl.services.metrics_service import (
     _retained_versions,
     _signal_from_anomaly,
 )
-from tripl.services.monitoring_utils import classify_signal_state
+from tripl.services.monitoring_utils import classify_signal_state, scan_interval_to_timedelta
 from tripl.services.version_activation import (
     DEFAULT_ACTIVE_SHARE_MIN,
     active_release_versions,
@@ -254,6 +254,7 @@ def _latest_signal(
     *,
     data: list[MetricSeriesPoint],
     anomalies: list[MetricAnomaly],
+    interval: str | None = None,
     recent_window: timedelta | None = None,
 ) -> MetricSignalResponse | None:
     if not anomalies:
@@ -263,6 +264,9 @@ def _latest_signal(
     state = classify_signal_state(
         anomaly_bucket=latest_anomaly.bucket,
         latest_metric_bucket=latest_metric_bucket,
+        # A catalog metric carries its OWN grid, often daily. Judged against a
+        # bare 24h window it closes on the very day it fires.
+        interval=scan_interval_to_timedelta(interval),
         recent_window=recent_window,
     )
     if state is None:
@@ -299,6 +303,7 @@ async def get_metric_series(
         latest_signal=_latest_signal(
             data=data,
             anomalies=anomalies,
+            interval=interval,
             recent_window=await _get_project_recent_signal_window(session, project.id),
         ),
         data=data,

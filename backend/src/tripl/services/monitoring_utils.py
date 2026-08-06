@@ -10,12 +10,20 @@ from typing import Protocol
 # the ``recent_window`` argument below; callers that pass nothing keep this value.
 RECENT_SIGNAL_WINDOW = timedelta(hours=24)
 
-# A "latest_scan" (open) signal is only fresh while its anomaly bucket sits within
-# this many scan intervals of ``now``. Without a wall-clock cap, a scan that stops
-# collecting leaves its final anomaly pinned at ``max(bucket)`` forever, so it would
-# classify as ``latest_scan`` indefinitely (week-old anomalies staying red while the
-# charts are empty). The horizon is floored at the effective recent window so
-# sub-daily scans are never bounded tighter than that window.
+# An open signal is only fresh while its anomaly bucket sits within this many
+# scan intervals of ``now``. Two things depend on it, and they pull in opposite
+# directions:
+#
+#   * a CAP, so a scan that stops collecting cannot leave its final anomaly —
+#     still topping ``max(bucket)`` — classified as open forever, red while the
+#     charts are empty;
+#   * a FLOOR, so a grid coarser than the wall-clock window is not measured
+#     against a window shorter than one of its own buckets.
+#
+# Both are ``max(recent_window, N * interval)``, so sub-daily scans keep exactly
+# the configured window and only long grids move. A duplicate of this constant
+# lives in ``worker.tasks.metrics.signals``; ``test_monitors_summary`` pins the
+# two together, because nothing did before and the two paths drifted.
 LATEST_SCAN_STALE_INTERVALS = 3
 
 # ScanInterval enum string (e.g. "1d") -> wall-clock duration. Keyed by string so
@@ -53,10 +61,26 @@ def recent_signal_window_from_hours(hours: int | None) -> timedelta | None:
     return timedelta(hours=int(hours))
 
 
-def _latest_scan_horizon(
+def _freshness_horizon(
     interval: timedelta | None,
     recent_window: timedelta = RECENT_SIGNAL_WINDOW,
 ) -> timedelta:
+    """How long an anomaly bucket keeps a signal open, floored at the series' own grid.
+
+    A wall-clock window shorter than one bucket cannot describe freshness: on a
+    daily grid the newest anomaly the detector may emit is already a full bucket
+    behind the metric head — ingestion settling withholds the newest bucket from
+    emission — so a 24-hour window excludes it and the signal reads as closed
+    however large it was. Weekly is worse: 24 hours is a seventh of one bucket.
+    Flooring at ``LATEST_SCAN_STALE_INTERVALS`` buckets is inert on every grid up
+    to 6h (``max(24h, 18h)`` is still 24h) and only bites where the window was
+    narrower than the data it measures.
+
+    It does override a project's own ``recent_signal_window_hours`` on a long
+    grid — 6 hours on a daily scan becomes 72 — and that is deliberate: the
+    setting exists to age out burned-out spikes sooner, not to hide every signal
+    a scan can produce.
+    """
     if interval is None:
         return recent_window
     return max(recent_window, LATEST_SCAN_STALE_INTERVALS * interval)
@@ -79,15 +103,23 @@ def classify_signal_state(
     # Absent per-project override, every branch below behaves exactly as it did
     # when the 24h constant was read directly.
     window = recent_window if recent_window is not None else RECENT_SIGNAL_WINDOW
+    horizon = _freshness_horizon(interval, window)
 
     if anomaly_bucket >= latest_metric_bucket:
-        latest_scan_cutoff = reference - _latest_scan_horizon(interval, window)
+        latest_scan_cutoff = reference - horizon
         if _bucket_is_recent(anomaly_bucket, latest_scan_cutoff):
             return "latest_scan"
         # A stopped scan's final anomaly still tops max(bucket) but is stale in
         # wall-clock terms; fall through to the recent-window / closed checks.
 
-    recent_cutoff = reference - window
+    # Same horizon as the branch above, and for the same reason. Ingestion
+    # settling withholds the newest bucket(s) from EMISSION, so a scope that is
+    # still emitting can never carry an anomaly at or after its own metric head
+    # — the branch above is unreachable for anything alive, and this one decides
+    # every live signal. Measuring it against a bare 24 hours closed every signal
+    # on a daily or weekly scan outright, since the newest emittable anomaly
+    # there is already a whole bucket old.
+    recent_cutoff = reference - horizon
     if _bucket_is_recent(anomaly_bucket, recent_cutoff):
         return "recent"
 

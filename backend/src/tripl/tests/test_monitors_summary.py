@@ -15,6 +15,137 @@ from tripl.services.monitoring_utils import (
 )
 
 
+class TestFreshnessHorizon:
+    """The window an open signal is measured against, and the copies of it."""
+
+    @pytest.mark.parametrize(
+        ("interval", "settling_minutes"),
+        [
+            (iv, minutes)
+            for iv in ("15m", "1h", "6h", "1d", "1w")
+            # Every allowance short of a full day. 1440 is covered separately
+            # below: it is the one value this floor does NOT rescue.
+            for minutes in (0, 1, 59, 120, 121, 360)
+        ],
+    )
+    def test_a_live_scope_signal_stays_open_on_every_grid(
+        self,
+        interval: str,
+        settling_minutes: int,
+    ) -> None:
+        """The newest anomaly the detector may emit must classify as open.
+
+        Ingestion settling withholds the newest ``ceil(delay / interval)``
+        buckets from emission, so a scope that is still emitting carries its
+        newest possible anomaly that far behind its metric head. Measured
+        against a bare 24h window a daily grid put it a full bucket outside and
+        a weekly grid six days outside, so every signal on such a scan read as
+        closed however large it was.
+        """
+        from tripl.core.analyzers.anomaly_detector import settling_buckets_for
+
+        delta = scan_interval_to_timedelta(interval)
+        assert delta is not None
+        withheld = settling_buckets_for(delta, timedelta(minutes=settling_minutes))
+        # A head on the grid, and "now" a fraction of a bucket past it — the
+        # ordinary case, a scan that has just collected.
+        head = datetime(2026, 8, 6, tzinfo=UTC)
+        now = head + delta // 2
+        newest_emittable = head - withheld * delta
+
+        assert (
+            classify_signal_state(
+                anomaly_bucket=newest_emittable,
+                latest_metric_bucket=head,
+                now=now,
+                interval=delta,
+            )
+            is not None
+        )
+
+    @pytest.mark.parametrize("interval", ["15m", "1h", "6h"])
+    def test_a_full_day_of_settling_still_closes_a_sub_daily_signal(
+        self,
+        interval: str,
+    ) -> None:
+        """The residual this floor does not reach — pinned, not hidden.
+
+        ``anomaly_ingestion_settling_minutes`` accepts up to 1440. At exactly
+        that, the newest emittable anomaly on any sub-daily grid is a full 24
+        hours behind the head, which the 24h window cannot contain — the same
+        shape of bug as the daily grid, but driven by the allowance rather than
+        by the bucket size, so flooring on the interval cannot see it. Fixing it
+        properly means the freshness horizon knowing the allowance, which is a
+        per-project value the display path does not currently load. Tracked in
+        tripl-l429.15, which also notes the cheaper option: refuse an allowance
+        that reaches the freshness window, since asking to score a day late and
+        to close signals after a day is incoherent.
+        """
+        from tripl.core.analyzers.anomaly_detector import settling_buckets_for
+
+        delta = scan_interval_to_timedelta(interval)
+        assert delta is not None
+        withheld = settling_buckets_for(delta, timedelta(minutes=1440))
+        head = datetime(2026, 8, 6, tzinfo=UTC)
+
+        assert (
+            classify_signal_state(
+                anomaly_bucket=head - withheld * delta,
+                latest_metric_bucket=head,
+                now=head + delta // 2,
+                interval=delta,
+            )
+            is None
+        )
+
+    def test_the_horizon_is_unchanged_on_grids_finer_than_the_window(self) -> None:
+        """Inert where it should be: the floor only bites past 8h buckets."""
+        now = datetime(2026, 8, 6, 12, tzinfo=UTC)
+        head = datetime(2026, 8, 6, 12, tzinfo=UTC)
+        # 25 hours old on an hourly grid: outside the 24h window before and after.
+        stale = head - timedelta(hours=25)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=stale,
+                latest_metric_bucket=head,
+                now=now,
+                interval=timedelta(hours=1),
+            )
+            is None
+        )
+
+    def test_a_stopped_scan_still_ages_out(self) -> None:
+        """The cap half of the constant survives: a dead daily scan closes."""
+        now = datetime(2026, 8, 6, 12, tzinfo=UTC)
+        # Head and anomaly both far in the past — the scan stopped collecting.
+        head = now - timedelta(days=30)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=head,
+                latest_metric_bucket=head,
+                now=now,
+                interval=timedelta(days=1),
+            )
+            is None
+        )
+
+    def test_the_workers_copy_of_the_constant_matches(self) -> None:
+        """``signals.py`` keeps its own copy so the worker does not import the
+        request-path services layer. Nothing pinned the two together, and that
+        is how the alerting and display paths were free to disagree."""
+        from tripl.services import monitoring_utils
+        from tripl.worker.tasks.metrics import signals as worker_signals
+
+        assert (
+            worker_signals.LATEST_SCAN_STALE_INTERVALS
+            == monitoring_utils.LATEST_SCAN_STALE_INTERVALS
+        )
+        for interval in ("15m", "1h", "6h", "1d", "1w"):
+            assert worker_signals._scan_interval_delta(interval) == scan_interval_to_timedelta(
+                interval
+            )
+
+
 def _state(*, is_active: bool, last_anomaly_bucket=None, last_notified_at=None) -> SimpleNamespace:
     return SimpleNamespace(
         is_active=is_active,
