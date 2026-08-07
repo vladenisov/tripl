@@ -2624,9 +2624,13 @@ def test_release_regression_item_renders_readable_release_line() -> None:
     context = _build_item_template_context(item, message_format="plain")
     rendered = render_alert_template(get_default_items_template("plain"), context)
     assert "Release regression Login" in rendered
-    assert "release: disappeared in 2.1.0 (was 2.0.0)" in rendered
+    # "vs 2.0.0", not "(was 2.0.0)": the line now continues into the basis
+    # clause, and a parenthetical mid-sentence read as an aside. What the
+    # clause says, and why, is asserted in
+    # test_release_regression_alert_link.py.
+    assert "release: disappeared in 2.1.0 vs 2.0.0" in rendered
     assert "actual=0" in rendered
-    assert "expected=200" in rendered
+    assert "expected=200 (adoption-adjusted)" in rendered
 
 
 def test_an_event_item_does_not_offer_the_same_link_twice() -> None:

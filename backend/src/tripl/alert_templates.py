@@ -60,28 +60,38 @@ DEFAULT_ALERT_MESSAGE_TEMPLATES: dict[str, str] = {
 # carries its own unit, so it can say "no baseline" where a percentage has
 # nothing to divide by. For every item that HAS a baseline it renders exactly the
 # text these templates produced before (see ``format_percent_delta``).
+#
+# ``${expected_basis}`` sits ON the expected number rather than a line below it.
+# One scope computes ``expected`` differently from every other: a release
+# regression's expectation is the PREVIOUS release's share of the scope applied
+# to the NEW release's own volume, so it shrinks when adoption is low and the
+# comparison is share-against-share. Printed bare next to ``actual``, it reads
+# as a raw count of the same thing, and the first question a reader asks is
+# "so what if it's lower, not everyone updated yet?" — an objection the
+# normalization has already answered. The qualifier renders empty for every
+# other scope, so nothing else moves.
 DEFAULT_ALERT_ITEMS_TEMPLATES: dict[str, str] = {
     ALERT_MESSAGE_FORMAT_PLAIN: (
         "- ${scope_label} ${scope_name}: ${direction_label}, "
-        "actual=${actual_count}, expected=${expected_count}, "
+        "actual=${actual_count}, expected=${expected_count}${expected_basis}, "
         "delta=${absolute_delta} (${percent_delta_label})"
         "${drift_line}${details_line}${monitoring_line}${top_movers_line}${sparkline_line}"
     ),
     ALERT_MESSAGE_FORMAT_SLACK_MRKDWN: (
         "- ${scope_label} ${scope_name}: ${direction_label}, "
-        "actual=${actual_count}, expected=${expected_count}, "
+        "actual=${actual_count}, expected=${expected_count}${expected_basis}, "
         "delta=${absolute_delta} (${percent_delta_label})"
         "${drift_line}${details_line}${monitoring_line}${top_movers_line}${sparkline_line}"
     ),
     ALERT_MESSAGE_FORMAT_TELEGRAM_HTML: (
         "- ${scope_label} ${scope_name}: ${direction_label}, "
-        "actual=${actual_count}, expected=${expected_count}, "
+        "actual=${actual_count}, expected=${expected_count}${expected_basis}, "
         "delta=${absolute_delta} (${percent_delta_label})"
         "${drift_line}${details_line}${monitoring_line}${top_movers_line}${sparkline_line}"
     ),
     ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2: (
         "\\- ${scope_label} ${scope_name}: ${direction_label}, "
-        "actual=${actual_count}, expected=${expected_count}, "
+        "actual=${actual_count}, expected=${expected_count}${expected_basis}, "
         "delta=${absolute_delta} \\(${percent_delta_label}\\)"
         "${drift_line}${details_line}${monitoring_line}${top_movers_line}${sparkline_line}"
     ),
@@ -107,6 +117,10 @@ ALERT_ITEM_TEMPLATE_VARIABLES: dict[str, str] = {
     "direction_label": "Direction: up or down",
     "actual_count": "Actual count",
     "expected_count": "Expected count",
+    "expected_basis": (
+        "How the expected count was derived, when it is not a plain baseline "
+        '("(adoption-adjusted)" for release regressions; empty otherwise)'
+    ),
     "absolute_delta": "Absolute delta",
     "percent_delta": "Percent delta as a bare number (0 when there was no baseline)",
     "percent_delta_label": 'Percent delta with its "%" sign, or "no baseline" when expected is 0',

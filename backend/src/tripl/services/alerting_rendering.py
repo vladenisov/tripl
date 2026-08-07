@@ -72,6 +72,13 @@ def render_firing_item(
         "expected_count": escape_alert_value(
             format_metric_alert_value(firing.expected_count, metric_unit), message_format
         ),
+        # Must be defined even where it is always empty: render_alert_template
+        # leaves an unknown ${var} in the output verbatim, so omitting it here
+        # would print the literal "${expected_basis}" in every preview. The
+        # simulator replays stored anomalies, which are never release
+        # regressions (those are recomputed per scan, not stored as anomaly
+        # rows), so the qualifier has nothing to qualify.
+        "expected_basis": "",
         "absolute_delta": escape_alert_value(
             format_metric_alert_value(firing.absolute_delta, metric_unit), message_format
         ),

@@ -41,7 +41,7 @@ const CHANNEL_META: { channel: DestinationChannel; label: string; Icon: LucideIc
   { channel: 'linear', label: 'Linear', Icon: ClipboardList },
 ]
 
-export default function ProjectAlertingTab({ slug }: { slug: string }) {
+export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey }: { slug: string; focusDeliveryId?: string; focusItemKey?: string }) {
   const qc = useQueryClient()
   const { confirm, dialog } = useConfirm()
   const [createType, setCreateType] = useState<DestinationChannel | null>(null)
@@ -90,6 +90,20 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
       offset: 0,
     }),
   })
+  // A deep link from an alert message names ONE delivery, and that delivery
+  // may be older than the 50 rows the audit list carries or excluded by the
+  // active filters. Fetching it by id and pinning it above the list is what
+  // makes the link outlive the list: without this the reader lands on an audit
+  // page that does not contain the row the message told them to look at.
+  const { data: focusedDelivery } = useQuery({
+    queryKey: ['alertDelivery', slug, focusDeliveryId],
+    queryFn: () => alertingApi.getDelivery(slug, focusDeliveryId!),
+    enabled: !!focusDeliveryId,
+  })
+  const pinnedDelivery = focusedDelivery
+    && !deliveries?.items.some(item => item.id === focusedDelivery.id)
+    ? focusedDelivery
+    : null
   const { data: inbox } = useQuery({
     queryKey: ['alertInbox', slug],
     queryFn: () => alertingApi.listInbox(slug, { limit: 20 }),
@@ -615,7 +629,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                 </div>
               </div>
 
-              {!deliveries || deliveries.items.length === 0 ? (
+              {(!deliveries || deliveries.items.length === 0) && !pinnedDelivery ? (
                 <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
                   No deliveries yet.
                 </div>
@@ -636,8 +650,23 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {deliveries.items.map(delivery => (
-                        <AlertDeliveryRow key={delivery.id} slug={slug} delivery={delivery} />
+                      {pinnedDelivery && (
+                        <AlertDeliveryRow
+                          key={pinnedDelivery.id}
+                          slug={slug}
+                          delivery={pinnedDelivery}
+                          focusDeliveryId={focusDeliveryId}
+                          focusItemKey={focusItemKey}
+                        />
+                      )}
+                      {deliveries?.items.map(delivery => (
+                        <AlertDeliveryRow
+                          key={delivery.id}
+                          slug={slug}
+                          delivery={delivery}
+                          focusDeliveryId={focusDeliveryId}
+                          focusItemKey={focusItemKey}
+                        />
                       ))}
                     </TableBody>
                   </Table>

@@ -131,7 +131,18 @@ export interface AlertRuleSimulateResponse {
 export interface AlertDeliveryItem {
   id: string
   delivery_id: string
-  scope_type: 'project_total' | 'event_type' | 'event' | 'schema' | 'distribution'
+  // `metric`, `release_regression` and `variable_value_drift` were missing
+  // here while the backend has been delivering them for releases — the audit
+  // table renders whatever arrives, so nothing crashed and nothing narrowed.
+  scope_type:
+    | 'project_total'
+    | 'event_type'
+    | 'event'
+    | 'metric'
+    | 'schema'
+    | 'distribution'
+    | 'release_regression'
+    | 'variable_value_drift'
   scope_ref: string
   scope_name: string
   event_type_id: string | null

@@ -130,6 +130,84 @@ def _resolve_metric_units(
     return units
 
 
+# The parenthetical that rides on ${expected_count} for the one scope whose
+# expectation is not a plain baseline. See DEFAULT_ALERT_ITEMS_TEMPLATES.
+_ADOPTION_ADJUSTED_LABEL = " (adoption-adjusted)"
+
+_RELEASE_KIND_LABELS = {"missing": "disappeared", "volume_drop": "dropped"}
+
+
+def _plain_number(value: float) -> str:
+    """Stringify a number exactly as ``${expected_count}`` does, unescaped.
+
+    The basis clause is escaped as a whole by its caller, so escaping here too
+    would double-escape it under MarkdownV2. The plain format is the shared
+    stringifier's pass-through branch, which is all this needs.
+    """
+    return escape_alert_value(value, ALERT_MESSAGE_FORMAT_PLAIN)
+
+
+def _release_scope_noun(item: AlertDeliveryItem) -> str:
+    """What the regressed scope IS, so the basis sentence can name it."""
+    if item.event_id is not None:
+        return "event"
+    if item.event_type_id is not None:
+        return "event type"
+    return "scope"
+
+
+def _format_window_span(item: AlertDeliveryItem) -> str | None:
+    """``"51h"`` for the window this item was measured over, or None.
+
+    ``bucket`` is the window's end and ``window_from`` its start. Items
+    delivered before window_from existed, and every scope whose window IS its
+    bucket, get None and simply lose the clause.
+    """
+    if item.window_from is None or item.bucket is None:
+        return None
+    hours = round((item.bucket - item.window_from).total_seconds() / 3600)
+    if hours < 1:
+        return None
+    return f"{hours}h"
+
+
+def _release_regression_basis(item: AlertDeliveryItem) -> str:
+    """The body of the "release:" line: which build, over what window, vs what.
+
+    Naming the build is not enough. ``expected`` for a release regression is
+    ``total_new * share_prev`` — the PREVIOUS release's share of this scope
+    applied to the NEW release's own volume over the rollout-overlap window —
+    so it is not a count of the same thing as ``actual`` and the ``%`` beside
+    it is already ``1 - share_new/share_prev``, i.e. the share-for-share drop.
+    Printed bare, the pair reads as "the count halved", and the first reply is
+    "so what, the release only just rolled out" — an objection the
+    normalization has already priced in, because a smaller adopting cohort
+    shrinks ``total_new`` and shrinks ``expected`` with it.
+
+    So the line states that the expectation was built FROM the new release's
+    own volume. That single fact is what kills the misreading; the window is
+    corroboration. Costs ~117 UTF-16 units over the old line, well inside the
+    per-item budget that keeps a full 8-item Telegram delivery in one message.
+    """
+    kind_label = _RELEASE_KIND_LABELS.get(item.drift_type or "", "regressed")
+    version = item.drift_field or "the new release"
+    previous = item.sample_value or "the previous release"
+    span = _format_window_span(item)
+    window_clause = f" over the {span} rollout overlap" if span else ""
+    line = f"{kind_label} in {version} vs {previous}{window_clause}"
+    if item.expected_count <= 0:
+        # No baseline: there is no ratio to explain and ${percent_delta_label}
+        # already says "no baseline". Adding the formula here would quote a
+        # zero as if it were an expectation.
+        return line
+    return (
+        f"{line}; {_plain_number(item.expected_count)} is {previous}'s share "
+        f"of this {_release_scope_noun(item)} at {version}'s own volume, so "
+        f"{format_percent_delta(item.percent_delta, item.expected_count)} "
+        f"is share-for-share"
+    )
+
+
 def _build_item_template_context(
     item: AlertDeliveryItem,
     *,
@@ -166,13 +244,7 @@ def _build_item_template_context(
         # Release regressions reuse the drift fields: version -> drift_field,
         # kind -> drift_type, previous release -> sample_value. Render them as a
         # readable "release:" line via the shared ${drift_line} placeholder.
-        kind_label = {
-            "missing": "disappeared",
-            "volume_drop": "dropped",
-        }.get(item.drift_type or "", "regressed")
-        release_version = item.drift_field or "the new release"
-        previous_clause = f" (was {item.sample_value})" if item.sample_value else ""
-        drift_line = f"\n  release: {kind_label} in {release_version}{previous_clause}"
+        drift_line = f"\n  release: {_release_regression_basis(item)}"
     elif item.scope_type == SCOPE_VARIABLE_VALUE_DRIFT:
         # Value drift rides the shared fields: variable -> drift_field, sampled
         # novel values -> sample_value.
@@ -229,6 +301,15 @@ def _build_item_template_context(
         ),
         "expected_count": escape_alert_value(
             format_metric_alert_value(item.expected_count, metric_unit), message_format
+        ),
+        # Sits ON the number a reader would otherwise take for a raw count, so
+        # the qualification arrives before the misreading rather than a line
+        # after it. Empty for every scope whose expectation IS a baseline.
+        "expected_basis": escape_alert_value(
+            _ADOPTION_ADJUSTED_LABEL
+            if item.scope_type == SCOPE_RELEASE_REGRESSION and item.expected_count > 0
+            else "",
+            message_format,
         ),
         "absolute_delta": escape_alert_value(
             format_metric_alert_value(item.absolute_delta, metric_unit), message_format
@@ -570,14 +651,14 @@ def _build_ai_explanation(
     for item in delivery.items[:_AI_EXPLANATION_MAX_ITEMS]:
         sparkline, top_movers = item_context_cache.get(item.id, ("", ""))
         if item.scope_type == SCOPE_RELEASE_REGRESSION:
-            kind_label = {"missing": "disappeared", "volume_drop": "dropped"}.get(
-                item.drift_type or "", "regressed"
-            )
-            previous_clause = f" (was {item.sample_value})" if item.sample_value else ""
+            # Same basis clause as the rendered message. Without it the model
+            # writes the note from "observed 345 vs expected 715.7" alone and
+            # re-teaches the raw-count reading the message line just removed.
             lines.append(
-                f"- [release regression] {item.scope_name}: {kind_label} in "
-                f"{item.drift_field or 'the new release'}{previous_clause}, "
-                f"observed {item.actual_count} vs expected {item.expected_count}"
+                f"- [release regression] {item.scope_name}: "
+                f"{_release_regression_basis(item)}; observed "
+                f"{_plain_number(item.actual_count)} vs adoption-adjusted "
+                f"expected {_plain_number(item.expected_count)}"
             )
             continue
         if item.scope_type in {"schema", "distribution"}:

@@ -119,6 +119,11 @@ export const ITEM_TEMPLATE_VARIABLE_OPTIONS = [
   { name: 'direction_label', description: 'Direction: up or down' },
   { name: 'actual_count', description: 'Actual count' },
   { name: 'expected_count', description: 'Expected count' },
+  {
+    name: 'expected_basis',
+    description:
+      'Says what the expected count was built from, when it is not a plain baseline — e.g. " (adoption-adjusted)" on a release regression. Empty for every other scope.',
+  },
   { name: 'absolute_delta', description: 'Absolute delta' },
   { name: 'percent_delta', description: 'Percent delta as a bare number (0 when there was no baseline)' },
   { name: 'percent_delta_label', description: 'Percent delta with its "%" sign, or "no baseline" when expected is 0' },
@@ -131,6 +136,10 @@ export const ITEM_TEMPLATE_VARIABLE_OPTIONS = [
   { name: 'drift_type', description: 'Drift type' },
   { name: 'sample_value', description: 'Drift sample value' },
   { name: 'drift_line', description: 'Rendered schema drift line with leading newline when drift context exists' },
+  { name: 'sparkline', description: 'ASCII sparkline of recent bucket counts (empty if no history)' },
+  { name: 'sparkline_line', description: 'Rendered sparkline with leading newline when history exists' },
+  { name: 'top_movers', description: 'Inline summary of top-3 breakdown movers (empty if none)' },
+  { name: 'top_movers_line', description: 'Rendered top-movers line with leading newline when movers exist' },
 ] as const
 
 export const DEFAULT_MESSAGE_TEMPLATES: Record<AlertMessageFormat, string> = {
@@ -170,13 +179,20 @@ export const DEFAULT_MESSAGE_TEMPLATES: Record<AlertMessageFormat, string> = {
 
 // `${percent_delta_label}` rather than a bare `${percent_delta}%`: the label
 // carries its own unit, so it says "no baseline" for an item whose expected
-// count is 0 instead of printing the undefined ratio as "0.0%". Mirrors
-// backend `alert_templates.DEFAULT_ALERT_ITEMS_TEMPLATES`.
+// count is 0 instead of printing the undefined ratio as "0.0%".
+//
+// MIRRORS backend `alert_templates.DEFAULT_ALERT_ITEMS_TEMPLATES`, character for
+// character, and a backend test asserts that. This is not decoration: the rule
+// editor PREFILLS its editable textarea from here, so a variable missing below
+// is a variable every hand-edited rule silently drops. That is how
+// `${expected_basis}` — the qualifier that stops a release regression reading as
+// a raw-count comparison — would have been lost, along with `${top_movers_line}`
+// and `${sparkline_line}`, which had already drifted out unnoticed.
 export const DEFAULT_ITEMS_TEMPLATES: Record<AlertMessageFormat, string> = {
-  plain: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta_label})${drift_line}${details_line}${monitoring_line}',
-  slack_mrkdwn: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta_label})${drift_line}${details_line}${monitoring_line}',
-  telegram_html: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta_label})${drift_line}${details_line}${monitoring_line}',
-  telegram_markdownv2: '\\- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} \\(${percent_delta_label}\\)${drift_line}${details_line}${monitoring_line}',
+  plain: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}${expected_basis}, delta=${absolute_delta} (${percent_delta_label})${drift_line}${details_line}${monitoring_line}${top_movers_line}${sparkline_line}',
+  slack_mrkdwn: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}${expected_basis}, delta=${absolute_delta} (${percent_delta_label})${drift_line}${details_line}${monitoring_line}${top_movers_line}${sparkline_line}',
+  telegram_html: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}${expected_basis}, delta=${absolute_delta} (${percent_delta_label})${drift_line}${details_line}${monitoring_line}${top_movers_line}${sparkline_line}',
+  telegram_markdownv2: '\\- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}${expected_basis}, delta=${absolute_delta} \\(${percent_delta_label}\\)${drift_line}${details_line}${monitoring_line}${top_movers_line}${sparkline_line}',
 }
 
 export const MESSAGE_FORMAT_OPTIONS: Record<AlertDestinationType, { value: AlertMessageFormat; label: string }[]> = {

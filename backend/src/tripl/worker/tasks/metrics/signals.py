@@ -564,6 +564,10 @@ def _get_active_release_regression_candidates(
             drift_field=regression.version,
             drift_type=regression.kind,
             sample_value=regression.previous_version,
+            # ``bucket`` above is window_to. Carrying the other end too is what
+            # lets the alert name the rollout-overlap window it measured, so
+            # ``expected`` cannot be read as a raw count over the chart's range.
+            window_from=regression.window_from,
         )
         candidates[(candidate.scope_type, candidate.scope_ref)] = candidate
     return candidates

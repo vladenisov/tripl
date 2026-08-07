@@ -61,7 +61,7 @@ function mockItem(overrides: Partial<AlertDeliveryItem> = {}): AlertDeliveryItem
   }
 }
 
-function renderRow(delivery: AlertDelivery) {
+function renderRow(delivery: AlertDelivery, focusDeliveryId?: string, focusItemKey?: string) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -69,7 +69,12 @@ function renderRow(delivery: AlertDelivery) {
     <QueryClientProvider client={queryClient}>
       <table>
         <tbody>
-          <AlertDeliveryRow slug="demo" delivery={delivery} />
+          <AlertDeliveryRow
+            slug="demo"
+            delivery={delivery}
+            focusDeliveryId={focusDeliveryId}
+            focusItemKey={focusItemKey}
+          />
         </tbody>
       </table>
     </QueryClientProvider>,
@@ -211,5 +216,164 @@ describe('AlertDeliveryRow items table', () => {
 
     expect(await screen.findByText('no baseline')).toBeInTheDocument()
     expect(screen.queryByText('0.0%')).toBeNull()
+  })
+})
+
+// The destination of the deep link an alert message carries for release
+// regressions. Landing here has to SHOW the numbers the message quoted —
+// otherwise the link is no better than the event page it replaced.
+describe('AlertDeliveryRow deep link', () => {
+  function stubDetail(detail: AlertDeliveryDetail) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      if (String(input).endsWith('/alert-deliveries/delivery-1')) {
+        return mockJsonResponse(detail)
+      }
+      throw new Error(`Unhandled fetch: ${String(input)}`)
+    })
+  }
+
+  const releaseRegressionItem = mockItem({
+    scope_type: 'release_regression',
+    scope_name: 'spot:open:wind:',
+    actual_count: 345,
+    expected_count: 715.7,
+    absolute_delta: 370.7,
+    percent_delta: 51.8,
+    drift_field: '15.7.5',
+    drift_type: 'volume_drop',
+    sample_value: '15.7.4',
+  })
+
+  it('opens the linked delivery without a click', async () => {
+    // The link exists to show one delivery's per-scope rows. A collapsed row
+    // hides exactly those, so arriving collapsed defeats the link.
+    stubDetail({ ...mockDelivery({ status: 'sent', error_message: null }), items: [releaseRegressionItem] })
+    renderRow(mockDelivery({ status: 'sent', error_message: null }), 'delivery-1')
+
+    expect(await screen.findByText('spot:open:wind:')).toBeInTheDocument()
+    expect(screen.getByText('345')).toBeInTheDocument()
+    expect(screen.getByText('715.7')).toBeInTheDocument()
+  })
+
+  it('stays collapsed when the link names a different delivery', async () => {
+    renderRow(mockDelivery({ status: 'sent', error_message: null }), 'delivery-999')
+
+    expect(
+      screen.getByRole('button', { name: 'Expand delivery details' }),
+    ).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('says what the expected count is, so the page cannot re-teach the count reading', async () => {
+    // "actual 345 / expected 715.7" side by side reads as two counts of one
+    // thing, which is the misreading the alert message was changed to prevent.
+    // The page the message links to must not undo that.
+    stubDetail({ ...mockDelivery({ status: 'sent', error_message: null }), items: [releaseRegressionItem] })
+    renderRow(mockDelivery({ status: 'sent', error_message: null }), 'delivery-1')
+
+    expect(
+      await screen.findByText(/Adoption-adjusted: 15\.7\.4's share of this scope at 15\.7\.5's own volume/),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/share-for-share, not a raw count drop/)).toBeInTheDocument()
+  })
+
+  it('leaves the expected count of every other scope unannotated', async () => {
+    stubDetail({ ...mockDelivery({ status: 'sent', error_message: null }), items: [mockItem()] })
+    renderRow(mockDelivery({ status: 'sent', error_message: null }), 'delivery-1')
+
+    expect(await screen.findByText('checkout_completed')).toBeInTheDocument()
+    expect(screen.queryByText(/Adoption-adjusted/)).toBeNull()
+  })
+})
+
+// A telegram delivery carries up to 8 items (_MAX_ITEMS_PER_DELIVERY), and every
+// one of those lines printed the same delivery-keyed URL. Landing on the row was
+// therefore landing on 8 siblings with nothing marking the one the message
+// quoted. `?item=<scope_type>:<scope_ref>` names it.
+describe('AlertDeliveryRow per-item anchor', () => {
+  const sent = () => mockDelivery({ status: 'sent', error_message: null, matched_count: 3 })
+
+  // Three items, two of which share a scope_ref: a release regression's
+  // scope_ref IS its event id, and one rule can include events AND release
+  // regressions, so this shape is reachable, not contrived.
+  const items: AlertDeliveryItem[] = [
+    mockItem({ id: 'item-1', scope_type: 'event', scope_ref: 'evt-a', scope_name: 'Login' }),
+    mockItem({
+      id: 'item-2',
+      scope_type: 'release_regression',
+      scope_ref: 'evt-a',
+      scope_name: 'spot:open:wind:',
+    }),
+    mockItem({
+      id: 'item-3',
+      scope_type: 'release_regression',
+      scope_ref: 'evt-b',
+      scope_name: 'spot:open:swell:',
+    }),
+  ]
+
+  function stubItems() {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      if (String(input).endsWith('/alert-deliveries/delivery-1')) {
+        return mockJsonResponse({ ...sent(), items })
+      }
+      throw new Error(`Unhandled fetch: ${String(input)}`)
+    })
+  }
+
+  function rowFor(scopeName: string): HTMLElement {
+    const cell = screen.getByText(scopeName).closest('tr')
+    if (!cell) throw new Error(`No row for ${scopeName}`)
+    return cell
+  }
+
+  it('marks the one row the alert line was about', async () => {
+    stubItems()
+    renderRow(sent(), 'delivery-1', 'release_regression:evt-b')
+
+    expect(await screen.findByText('spot:open:swell:')).toBeInTheDocument()
+    expect(rowFor('spot:open:swell:')).toHaveAttribute('aria-current', 'true')
+    expect(rowFor('spot:open:wind:')).not.toHaveAttribute('aria-current')
+    expect(rowFor('Login')).not.toHaveAttribute('aria-current')
+  })
+
+  it('names the marked row in text, not only as a tint', async () => {
+    // A background tint among 8 rows is easy to miss and says nothing at all to
+    // a screen reader, so the row states why it is marked.
+    stubItems()
+    renderRow(sent(), 'delivery-1', 'release_regression:evt-b')
+
+    expect(await screen.findByText('from your alert')).toBeInTheDocument()
+    expect(rowFor('spot:open:swell:')).toHaveTextContent('from your alert')
+  })
+
+  it('does not mark a sibling that merely shares the scope_ref', async () => {
+    // The exact reason the anchor carries scope_type: `evt-a` belongs to both
+    // the event item and the release regression in this delivery.
+    stubItems()
+    renderRow(sent(), 'delivery-1', 'release_regression:evt-a')
+
+    expect(await screen.findByText('spot:open:wind:')).toBeInTheDocument()
+    expect(rowFor('spot:open:wind:')).toHaveAttribute('aria-current', 'true')
+    expect(rowFor('Login')).not.toHaveAttribute('aria-current')
+  })
+
+  it('marks nothing when the anchor names an item this delivery does not have', async () => {
+    // Stale links must degrade to the delivery-level behaviour they had before
+    // anchors existed, not mark an arbitrary row.
+    stubItems()
+    renderRow(sent(), 'delivery-1', 'release_regression:evt-gone')
+
+    expect(await screen.findByText('spot:open:wind:')).toBeInTheDocument()
+    expect(screen.queryByText('from your alert')).toBeNull()
+  })
+
+  it('ignores an anchor meant for a different delivery', async () => {
+    stubItems()
+    renderRow(sent(), 'delivery-999', 'release_regression:evt-b')
+
+    expect(
+      screen.getByRole('button', { name: 'Expand delivery details' }),
+    ).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('from your alert')).toBeNull()
   })
 })

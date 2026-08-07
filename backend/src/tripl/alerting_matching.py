@@ -65,6 +65,12 @@ class DriftAlertCandidate:
     drift_field: str | None
     drift_type: str | None
     sample_value: str | None
+    # Start of the window the comparison was measured over. Only release
+    # regressions set it (``bucket`` carries the end): their window is the
+    # activation-anchored rollout overlap, not the scan's bucket, and a message
+    # that quotes an adoption-adjusted expectation has to be able to say which
+    # window produced it. Everything else leaves it None and renders unchanged.
+    window_from: datetime | None = None
 
 
 # Same shape, distinct domain names kept for call-site readability.
