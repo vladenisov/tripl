@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import Session, selectinload
 
 from tripl import realtime
 from tripl.alert_templates import (
@@ -28,6 +28,7 @@ from tripl.alerting_validation import (
     validate_webhook_target_url,
 )
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
+from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination, AlertDestinationType
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
@@ -68,7 +69,6 @@ from tripl.worker.tasks.alerts_digest import (
     send_weekly_plan_digest,
 )
 from tripl.worker.tasks.alerts_messages import (
-    TELEGRAM_MESSAGE_MAX_CHARS,
     _append_ai_explanation,
     _build_ai_explanation,
     _build_email_subject,
@@ -77,7 +77,7 @@ from tripl.worker.tasks.alerts_messages import (
     _is_telegram_markdown_parse_error,
     _is_telegram_message_too_long_error,
     _render_delivery_message,
-    _telegram_items_max_chars,
+    split_telegram_messages,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +87,98 @@ __all__ = [
     "send_alert_delivery",
     "send_weekly_plan_digest",
 ]
+
+# Ids of the AlertDeliveryItems already handed to Telegram, kept in the
+# delivery's payload_snapshot. Telegram is the one channel whose delivery may
+# take several messages, and the messages already accepted cannot be recalled —
+# so what has reached the reader has to survive the failure of a later message,
+# the failed status that follows it, and the retry after that.
+TELEGRAM_DELIVERED_ITEM_IDS_KEY = "telegram_delivered_item_ids"
+
+
+def _read_delivered_item_ids(payload_snapshot: object) -> set[uuid.UUID]:
+    """Item ids a previous attempt recorded as delivered, from the snapshot.
+
+    Item ids are the resume point rather than a "skip the first N parts"
+    counter because item ids are stable across a retry and part boundaries are
+    not: the AI note and each item's sparkline/top-mover context are re-resolved
+    on the retry, so the same items can pack into different messages and a part
+    counter would either duplicate or drop items.
+
+    Anything unreadable is treated as "nothing delivered": re-sending a message
+    is bad, but silently dropping items because a hand-edited snapshot did not
+    parse is worse.
+    """
+    if not isinstance(payload_snapshot, dict):
+        return set()
+    raw = payload_snapshot.get(TELEGRAM_DELIVERED_ITEM_IDS_KEY)
+    if not isinstance(raw, list):
+        return set()
+    delivered: set[uuid.UUID] = set()
+    for value in raw:
+        try:
+            delivered.add(uuid.UUID(str(value)))
+        except AttributeError, TypeError, ValueError:
+            logger.warning("Ignoring unreadable delivered item id %r", value)
+    return delivered
+
+
+def _record_delivered_items(
+    session: Session,
+    delivery: AlertDelivery,
+    *,
+    payload_snapshot: dict[str, object],
+    delivered_ids: set[uuid.UUID],
+    items: list[AlertDeliveryItem],
+) -> dict[str, object]:
+    """Commit the items Telegram just accepted, before the next message is posted.
+
+    Committed per message rather than once at the end because the whole point is
+    to survive the exception that ends the attempt: a value assigned to
+    ``payload_snapshot`` but rolled back with the failure records nothing. The
+    ``status=sent`` commit at the end of the task is a separate, later write.
+
+    ``delivered_ids`` accumulates in place — it is the attempt's running set —
+    and the new snapshot is returned rather than edited in place, because the
+    dict handed in has already been committed and mutating that same object
+    would leave SQLAlchemy comparing it against itself and skipping the UPDATE.
+    """
+    delivered_ids.update(item.id for item in items)
+    updated = {
+        **payload_snapshot,
+        TELEGRAM_DELIVERED_ITEM_IDS_KEY: sorted(str(item_id) for item_id in delivered_ids),
+    }
+    delivery.payload_snapshot = updated
+    session.commit()
+    return updated
+
+
+def _stamp_rule_state(session: Session, delivery: AlertDelivery) -> None:
+    """Record this delivery as the last notification for each item's scope."""
+    for item in delivery.items:
+        filters = [
+            AlertRuleState.rule_id == delivery.rule_id,
+            AlertRuleState.scope_type == item.scope_type,
+            AlertRuleState.scope_ref == item.scope_ref,
+        ]
+        # Every scope but ``metric`` keys its state on the scan config that
+        # produced the delivery. A metric-scope state cannot: catalog metrics
+        # are project-global, so dispatch anchors their state on ONE canonical
+        # config for the whole project (the lowest id) to give them a single
+        # cooldown clock. Matching on the delivery's own config therefore
+        # found nothing for every config but that one — windy-ios runs three,
+        # so two sends in three stamped nothing, last_notified_at stayed NULL,
+        # and the re-send gate reads NULL as "never told them". The cooldown
+        # was permanently elapsed for metric scopes.
+        if item.scope_type != SCOPE_METRIC:
+            filters.append(AlertRuleState.scan_config_id == delivery.scan_config_id)
+        # Not scalar_one_or_none: what guarantees a single row is the
+        # (rule, config, scope_type, scope_ref) uniqueness, and dropping the
+        # config from the filter drops that guarantee with it. Raising here
+        # would fail a delivery that has already gone out.
+        for state in session.execute(select(AlertRuleState).where(*filters)).scalars():
+            state.last_notified_at = delivery.sent_at
+            state.last_notified_delivery_id = delivery.id
 
 
 def _post_json(
@@ -255,6 +347,39 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         # Same idea for metric units: resolved once (one batched query) and
         # reused by the session-less fallback render below.
         metric_units_cache: dict[str, str | None] = {}
+
+        # Resume point for a Telegram delivery that a previous attempt got
+        # part-way through. Telegram is the only channel that may need several
+        # messages for one delivery, and each accepted message is with the
+        # reader for good — so this attempt renders and sends ONLY the items
+        # that have not been delivered yet. Every other channel sends the whole
+        # delivery in one call, so there is nothing to resume.
+        already_delivered_ids = _read_delivered_item_ids(delivery.payload_snapshot)
+        is_telegram_resume = destination.type == AlertDestinationType.telegram and bool(
+            already_delivered_ids
+        )
+        # None means "the whole delivery", which is what every first attempt and
+        # every non-Telegram channel renders.
+        pending_items: list[AlertDeliveryItem] | None = None
+        telegram_fully_delivered = False
+        if is_telegram_resume:
+            remaining_items = [
+                item for item in delivery.items if item.id not in already_delivered_ids
+            ]
+            if remaining_items:
+                pending_items = remaining_items
+            else:
+                # Every part landed and only the bookkeeping is missing (the
+                # worker died between the last accepted message and the status
+                # commit, or that commit itself raised). Retry from the Inbox
+                # therefore FINISHES the delivery instead of re-sending it: the
+                # reader already has every item, and a second copy of an alert
+                # costs their trust in the channel, while the operator's actual
+                # complaint — a delivery stuck on "failed" — is fixed either
+                # way. The full message is still re-rendered below so the
+                # snapshot the Inbox shows describes the whole delivery.
+                telegram_fully_delivered = True
+
         text, message_format = _render_delivery_message(
             delivery,
             destination=destination,
@@ -264,6 +389,7 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
             session=session,
             item_context_cache=item_context_cache,
             metric_units_cache=metric_units_cache,
+            items=pending_items,
         )
         # AI explanation is generated once (LLM round-trip) and appended after
         # template rendering so custom templates stay untouched; the Telegram
@@ -271,8 +397,11 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         ai_explanation: str | None = None
         # The AI explanation is an outbound LLM call, so it is off for demo
         # projects for the same zero-egress reason as the send guard above — a
-        # demo_sink delivery must stay fully local end to end.
-        if rule.ai_explanation_enabled and not is_demo_project:
+        # demo_sink delivery must stay fully local end to end. It is also off on
+        # a resume: the note rides on the first message only and that message is
+        # already with the reader, so regenerating it would cost an LLM
+        # round-trip to produce something nobody would see.
+        if rule.ai_explanation_enabled and not is_demo_project and not is_telegram_resume:
             ai_explanation = _build_ai_explanation(
                 delivery,
                 scan_name=scan_config.name,
@@ -316,18 +445,69 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                     "Telegram destination configuration is invalid. "
                     "Update the bot token or chat id."
                 ) from exc
-            try:
-                _send_telegram_message(
-                    bot_token,
-                    chat_id,
-                    text,
+            # Telegram is the one channel with a per-message ceiling, so it is
+            # the one channel whose delivery may need more than one message.
+            # Nothing is dropped to fit it (website/docs/use/alerting.md): the
+            # items are packed into as many messages as they take, each measured
+            # assembled and in Telegram's own UTF-16 units. The dispatcher's
+            # 8-item chunking is an upstream estimate of the same ceiling and
+            # cannot see the rule's template or the AI note, so this is where
+            # the promise is actually kept.
+            send_items = list(delivery.items) if pending_items is None else pending_items
+            parts = (
+                []
+                if telegram_fully_delivered
+                else split_telegram_messages(
+                    delivery,
+                    destination=destination,
+                    rule=rule,
+                    scan_name=scan_config.name,
+                    project=project,
+                    message=text,
                     message_format=message_format,
+                    session=session,
+                    item_context_cache=item_context_cache,
+                    metric_units_cache=metric_units_cache,
+                    ai_explanation=ai_explanation,
+                    items=pending_items,
                 )
+            )
+            if len(parts) > 1:
+                payload_snapshot["telegram_message_parts"] = len(parts)
+                delivery.payload_snapshot = payload_snapshot
+
+            # Which items this attempt has put in front of the reader; combined
+            # with the ids a previous attempt recorded, it is what the fallback
+            # below must NOT re-send.
+            delivered_items: list[AlertDeliveryItem] = []
+            # Messages this attempt actually got into the chat. ``len(parts)`` is
+            # the PLAN, so quoting it in a failure would send an operator looking
+            # for messages that were never sent.
+            parts_sent = 0
+            try:
+                for part_text, part_items in parts:
+                    _send_telegram_message(
+                        bot_token,
+                        chat_id,
+                        part_text,
+                        message_format=message_format,
+                    )
+                    parts_sent += 1
+                    delivered_items.extend(part_items)
+                    payload_snapshot = _record_delivered_items(
+                        session,
+                        delivery,
+                        payload_snapshot=payload_snapshot,
+                        delivered_ids=already_delivered_ids,
+                        items=part_items,
+                    )
             except ValueError as exc:
                 if (
                     message_format == ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2
                     and _is_telegram_markdown_parse_error(exc)
                 ):
+                    delivered_ids = {item.id for item in delivered_items}
+                    remaining = [item for item in send_items if item.id not in delivered_ids]
                     # Reuse the already-built sparkline/top-movers context and
                     # skip the session so the fallback only re-formats — no
                     # second round of warehouse/DB queries.
@@ -341,85 +521,79 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                         session=None,
                         item_context_cache=item_context_cache,
                         metric_units_cache=metric_units_cache,
+                        items=remaining,
                     )
-                    if ai_explanation:
+                    # The note went out with the first message; do not repeat it.
+                    fallback_note = None if delivered_items else ai_explanation
+                    if fallback_note:
                         fallback_text = _append_ai_explanation(
                             fallback_text,
-                            ai_explanation,
+                            fallback_note,
                             fallback_format,
                         )
-                    _send_telegram_message(
-                        bot_token,
-                        chat_id,
-                        fallback_text,
-                        message_format=fallback_format,
-                    )
-                    payload_snapshot["requested_message_format"] = message_format
-                    payload_snapshot["fallback_reason"] = "telegram_markdown_parse_error"
-                    payload_snapshot["message_format"] = fallback_format
-                    payload_snapshot["rendered_message"] = fallback_text
-                    delivery.payload_snapshot = payload_snapshot
-                    rendered_message = fallback_text
-                    message_format = fallback_format
-                elif _is_telegram_message_too_long_error(exc):
-                    # Deliberately not folded into the parse arm above:
-                    # re-rendering a too-long body as plain text makes it
-                    # LONGER, not shorter. The renderer already budgets
-                    # items_text against reserves for the header and the AI
-                    # note, but those reserves are estimates over a user-set
-                    # template and generated prose, so an overshoot remains
-                    # possible. Unhandled it is not a one-off failure:
-                    # last_notified_at is stamped only on a successful send and
-                    # the re-send gate reads NULL as "never told them", so the
-                    # identical oversized body is rebuilt and re-rejected on
-                    # every collection, forever.
-                    #
-                    # Retry once on a budget that is GUARANTEED smaller. The
-                    # obvious arithmetic — subtract the overshoot from the item
-                    # allowance — is not enough on its own: Telegram measures
-                    # its 4096 in UTF-16 code units while len() counts code
-                    # points, so a body carrying emoji or non-Latin text can
-                    # measure comfortably under the ceiling here and still be
-                    # refused there, leaving the overshoot zero or negative and
-                    # the "retry" byte-identical. Take whichever is smaller,
-                    # that ceiling or three quarters of what was just refused,
-                    # so the second attempt always shrinks. A second rejection
-                    # raises: visibly failed beats silently looping.
-                    overshoot = len(rendered_message) - TELEGRAM_MESSAGE_MAX_CHARS
-                    tightened = min(
-                        _telegram_items_max_chars(ai_explanation_enabled=bool(ai_explanation))
-                        - max(overshoot, 0),
-                        len(rendered_message) * 3 // 4,
-                    )
-                    shorter_text, shorter_format = _render_delivery_message(
+                    for part_text, part_items in split_telegram_messages(
                         delivery,
                         destination=destination,
                         rule=rule,
                         scan_name=scan_config.name,
                         project=project,
+                        message=fallback_text,
+                        message_format=fallback_format,
+                        items=remaining,
                         session=None,
                         item_context_cache=item_context_cache,
                         metric_units_cache=metric_units_cache,
-                        items_max_chars=max(tightened, 0),
-                    )
-                    if ai_explanation:
-                        shorter_text = _append_ai_explanation(
-                            shorter_text,
-                            ai_explanation,
-                            shorter_format,
+                        ai_explanation=fallback_note,
+                    ):
+                        _send_telegram_message(
+                            bot_token,
+                            chat_id,
+                            part_text,
+                            message_format=fallback_format,
                         )
-                    _send_telegram_message(
-                        bot_token,
-                        chat_id,
-                        shorter_text,
-                        message_format=shorter_format,
-                    )
-                    payload_snapshot["fallback_reason"] = "telegram_message_too_long"
-                    payload_snapshot["message_format"] = shorter_format
-                    payload_snapshot["rendered_message"] = shorter_text
+                        # The fallback is several messages too, and can fail
+                        # part-way through for the same reasons the first loop
+                        # can — so it records what landed the same way.
+                        delivered_items.extend(part_items)
+                        payload_snapshot = _record_delivered_items(
+                            session,
+                            delivery,
+                            payload_snapshot=payload_snapshot,
+                            delivered_ids=already_delivered_ids,
+                            items=part_items,
+                        )
+                    # A fresh dict, not an in-place edit, for the same reason
+                    # _record_delivered_items returns one: this snapshot may
+                    # already be committed, and SQLAlchemy would compare the
+                    # mutated object against itself and skip the UPDATE.
+                    payload_snapshot = {
+                        **payload_snapshot,
+                        "requested_message_format": message_format,
+                        "fallback_reason": "telegram_markdown_parse_error",
+                        "message_format": fallback_format,
+                        "rendered_message": fallback_text,
+                    }
                     delivery.payload_snapshot = payload_snapshot
-                    rendered_message = shorter_text
-                    message_format = shorter_format
+                    rendered_message = fallback_text
+                    message_format = fallback_format
+                elif _is_telegram_message_too_long_error(exc):
+                    # The split already measured every message assembled and in
+                    # Telegram's units, so the only body it cannot shrink is one
+                    # carrying a SINGLE item — re-rendering that at any budget
+                    # produces the same message, which is why the retry that
+                    # used to live here is gone rather than merely fixed. Say
+                    # what happened instead: the raw HTTP 400 in the Inbox names
+                    # neither the cause nor how much of the delivery got out.
+                    raise ValueError(
+                        "Telegram refused a message as too long. "
+                        f"{len(already_delivered_ids) + len(delivered_items)} of "
+                        f"{len(delivery.items)} items had already been sent, "
+                        f"{parts_sent} message(s) of them in this attempt. The "
+                        "refused message carries a single item and cannot be split "
+                        "further, so the rule's message template, that one item and "
+                        "any AI note exceed Telegram's 4096-character limit "
+                        "together. Shorten the rule's templates."
+                    ) from exc
                 else:
                     raise
         elif destination.type == AlertDestinationType.webhook:
@@ -623,30 +797,7 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         delivery.sent_at = datetime.now(UTC)
         delivery.error_message = None
         alert_deliveries_total.labels(status=AlertDeliveryStatus.sent.value).inc()
-        for item in delivery.items:
-            filters = [
-                AlertRuleState.rule_id == delivery.rule_id,
-                AlertRuleState.scope_type == item.scope_type,
-                AlertRuleState.scope_ref == item.scope_ref,
-            ]
-            # Every scope but ``metric`` keys its state on the scan config that
-            # produced the delivery. A metric-scope state cannot: catalog metrics
-            # are project-global, so dispatch anchors their state on ONE canonical
-            # config for the whole project (the lowest id) to give them a single
-            # cooldown clock. Matching on the delivery's own config therefore
-            # found nothing for every config but that one — windy-ios runs three,
-            # so two sends in three stamped nothing, last_notified_at stayed NULL,
-            # and the re-send gate reads NULL as "never told them". The cooldown
-            # was permanently elapsed for metric scopes.
-            if item.scope_type != SCOPE_METRIC:
-                filters.append(AlertRuleState.scan_config_id == delivery.scan_config_id)
-            # Not scalar_one_or_none: what guarantees a single row is the
-            # (rule, config, scope_type, scope_ref) uniqueness, and dropping the
-            # config from the filter drops that guarantee with it. Raising here
-            # would fail a delivery that has already gone out.
-            for state in session.execute(select(AlertRuleState).where(*filters)).scalars():
-                state.last_notified_at = delivery.sent_at
-                state.last_notified_delivery_id = delivery.id
+        _stamp_rule_state(session, delivery)
         session.commit()
         if project is not None:
             realtime.publish_project_event(

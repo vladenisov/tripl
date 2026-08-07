@@ -220,11 +220,11 @@ def _touch_correlation_state(
     state.last_seen_at = max(state.last_seen_at or seen_at, seen_at)
 
 
-# Telegram rejects a sendMessage body over 4096 characters with a 400. Nothing
-# in the render or send path enforces that ceiling, and ``last_notified_at`` is
-# stamped only on a SUCCESSFUL send (alerts.py), while the re-send gate below
-# treats a NULL ``last_notified_at`` as "never told them" — so one oversized
-# delivery is rebuilt and re-rejected on every collection, forever.
+# Telegram rejects a sendMessage body over 4096 characters with a 400, and
+# ``last_notified_at`` is stamped only on a SUCCESSFUL send (alerts.py), while
+# the re-send gate below treats a NULL ``last_notified_at`` as "never told
+# them" — so one oversized delivery is rebuilt and re-rejected on every
+# collection, forever.
 #
 # Sized off the 29 Telegram deliveries windy-ios has ever sent ("TG dev",
 # default templates, AI note attached): least squares over their
@@ -246,8 +246,12 @@ def _touch_correlation_state(
 # 4154 chars, which is when this ceiling starts to matter.
 #
 # This bounds the ITEM COUNT, not characters: the item template is user-editable
-# and the AI explanation is generated after dispatch, so the renderer still has
-# to enforce the hard 4096 ceiling itself. Only Telegram is capped — Slack,
+# and the AI explanation is generated after dispatch, so a chunk this size can
+# still overshoot. The hard 4096 ceiling is enforced where the finished message
+# exists — ``alerts_messages.split_telegram_messages`` measures each one
+# assembled, in Telegram's UTF-16 units, and sends a chunk as several messages
+# when it has to. This estimate stays anyway: it costs nothing and keeps the
+# common case to one message per delivery. Only Telegram is capped — Slack,
 # email and webhook have no comparable limit, and chunking jira/linear would file
 # duplicate issues.
 _MAX_ITEMS_PER_DELIVERY: dict[str, int] = {AlertDestinationType.telegram.value: 8}
@@ -530,6 +534,16 @@ def _prepare_alert_deliveries(
 
                 for anomaly in chunk:
                     absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
+                    # 0.0 at a zero baseline is a PLACEHOLDER, not a measurement:
+                    # the ratio is undefined and the column is NOT NULL. Nothing
+                    # may print it as a percentage — every reader goes through
+                    # ``alert_templates.format_percent_delta`` (the message's
+                    # ${percent_delta_label}, the AI prompt) or the frontend's
+                    # ``lib/percentDelta`` mirror, both of which say "no baseline"
+                    # for exactly this case. The percent gate admits the class on
+                    # purpose (tripl-l429.12); printing the placeholder reported
+                    # the largest possible relative move as the smallest
+                    # (tripl-l429.24).
                     percent_delta = (
                         absolute_delta / anomaly.expected_count * 100
                         if anomaly.expected_count > 0

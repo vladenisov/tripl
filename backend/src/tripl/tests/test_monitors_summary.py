@@ -153,6 +153,62 @@ class TestFreshnessHorizon:
                 interval
             )
 
+    def test_the_workers_copy_answers_identically_on_every_grid(self) -> None:
+        """Pinning the constant was not enough: pin the ANSWER.
+
+        ``signals._classify_signal_state`` is the worker's copy of
+        ``classify_signal_state``. It carries exactly two deliberate extras, and
+        both are neutral here — ``emission_lag`` defaults to zero, which makes
+        its latest-scan test the display copy's ``anomaly_bucket >=
+        latest_metric_bucket``, and the display copy's outage re-check needs
+        ``anomaly_actual_count``/``scan_latest_bucket``, which this call does not
+        pass. With both neutral the two must agree on every input, on every grid,
+        for every configured window.
+
+        They did not. tripl-l429.14 widened only the display copy's "recent"
+        branch to the interval-floored horizon and left the worker measuring that
+        branch against the bare window, so on a daily or weekly grid an anomaly
+        older than 24 hours read "recent" to the API and closed to the worker.
+        ``_get_visible_signal_scope_keys`` — the worker's DISPLAY set, which keeps
+        either state and feeds the run summary's signals_added/signals_removed —
+        therefore disagreed with the page it is meant to describe.
+        """
+        from tripl.worker.tasks.metrics import signals as worker_signals
+
+        head = datetime(2026, 8, 6, tzinfo=UTC)
+        now = head + timedelta(minutes=30)
+        # Ages straddling every boundary either copy can have: the head itself,
+        # the 24h window, three days (the daily floor), a week and three weeks
+        # (the weekly floor).
+        offset_hours = (-1, 0, 1, 5, 23, 24, 25, 47, 48, 71, 72, 73, 167, 168, 169, 503, 504, 505)
+
+        for interval in (None, "15m", "1h", "6h", "1d", "1w"):
+            delta = scan_interval_to_timedelta(interval)
+            for window_hours in (None, 6, 24, 72):
+                window = recent_signal_window_from_hours(window_hours)
+                for hours in offset_hours:
+                    bucket = head - timedelta(hours=hours)
+                    display = classify_signal_state(
+                        anomaly_bucket=bucket,
+                        latest_metric_bucket=head,
+                        now=now,
+                        interval=delta,
+                        recent_window=window,
+                    )
+                    worker = worker_signals._classify_signal_state(
+                        anomaly_bucket=bucket,
+                        latest_metric_bucket=head,
+                        now=now,
+                        interval=delta,
+                        recent_window=window,
+                    )
+                    assert worker == display, (
+                        f"worker copy disagrees at interval={interval}, "
+                        f"recent_signal_window_hours={window_hours}, "
+                        f"anomaly {hours}h before head: "
+                        f"worker={worker!r} display={display!r}"
+                    )
+
 
 def _state(*, is_active: bool, last_anomaly_bucket=None, last_notified_at=None) -> SimpleNamespace:
     return SimpleNamespace(

@@ -217,6 +217,29 @@ describe('MonitoringTab — false-positive scope overrides', () => {
     expect(screen.getByText(/Event · Events · sigma 4\.5 · min expected 55/)).toBeInTheDocument()
   })
 
+  it('does not report a clean slate when the overrides request failed', async () => {
+    // "No scope has been tightened" is a claim about the ratchet, and this card
+    // is the ONLY way to undo it. A failed load rendering that sentence tells an
+    // operator their scopes are untouched when nobody knows (tripl-l429.24).
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/anomaly-settings/scope-overrides')) {
+        return new Response(JSON.stringify({ detail: 'Database is unavailable' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.includes('/anomaly-settings')) {
+        return jsonResponse(settingsPayload())
+      }
+      throw new Error(`Unhandled fetch: ${init?.method} ${url}`)
+    })
+    renderTab()
+
+    expect(await screen.findByText(/Database is unavailable/)).toBeInTheDocument()
+    expect(screen.queryByText(/No scope has been tightened/i)).toBeNull()
+  })
+
   it('removes an override so the scope falls back to the project settings', async () => {
     // The ratchet is permanent and never decays, so this button is the ONLY way
     // back for a scope an operator tightened by mistake.

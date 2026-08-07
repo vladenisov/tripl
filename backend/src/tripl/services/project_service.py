@@ -379,8 +379,11 @@ async def _populate_monitoring_signals(
     # them. Fold them into the count here by reusing the exact open-signal logic
     # the AnomaliesPage uses (metrics_insights_service._count_active_metric_signals_by_project,
     # the batched sibling of _get_active_metric_signals, which classifies each
-    # metric's newest anomaly against its latest stored value bucket), so the
-    # sidebar / ProjectsPage badge agrees with the AnomaliesPage list. Batched to
+    # metric's newest anomaly against its latest stored value bucket ON THAT
+    # METRIC'S OWN GRID), so the sidebar / ProjectsPage badge agrees with the
+    # AnomaliesPage list. The grid half of that claim was aspirational until
+    # tripl-l429.17: the batched sibling passed no interval at all, so a daily
+    # catalog metric read open on the page and zero here. Batched to
     # O(1) queries so listing N projects does not fan out to N per-project scans.
     # These signals have no scan_config_id and so cannot populate ``latest_signal``
     # (a ProjectLatestSignal requires one); they contribute to

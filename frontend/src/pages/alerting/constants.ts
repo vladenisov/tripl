@@ -120,7 +120,8 @@ export const ITEM_TEMPLATE_VARIABLE_OPTIONS = [
   { name: 'actual_count', description: 'Actual count' },
   { name: 'expected_count', description: 'Expected count' },
   { name: 'absolute_delta', description: 'Absolute delta' },
-  { name: 'percent_delta', description: 'Percent delta' },
+  { name: 'percent_delta', description: 'Percent delta as a bare number (0 when there was no baseline)' },
+  { name: 'percent_delta_label', description: 'Percent delta with its "%" sign, or "no baseline" when expected is 0' },
   { name: 'bucket', description: 'Anomaly bucket timestamp' },
   { name: 'details_url', description: 'Details URL' },
   { name: 'monitoring_url', description: 'Monitoring URL' },
@@ -167,11 +168,15 @@ export const DEFAULT_MESSAGE_TEMPLATES: Record<AlertMessageFormat, string> = {
   ].join('\n'),
 }
 
+// `${percent_delta_label}` rather than a bare `${percent_delta}%`: the label
+// carries its own unit, so it says "no baseline" for an item whose expected
+// count is 0 instead of printing the undefined ratio as "0.0%". Mirrors
+// backend `alert_templates.DEFAULT_ALERT_ITEMS_TEMPLATES`.
 export const DEFAULT_ITEMS_TEMPLATES: Record<AlertMessageFormat, string> = {
-  plain: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta}%)${drift_line}${details_line}${monitoring_line}',
-  slack_mrkdwn: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta}%)${drift_line}${details_line}${monitoring_line}',
-  telegram_html: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta}%)${drift_line}${details_line}${monitoring_line}',
-  telegram_markdownv2: '\\- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} \\(${percent_delta}%\\)${drift_line}${details_line}${monitoring_line}',
+  plain: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta_label})${drift_line}${details_line}${monitoring_line}',
+  slack_mrkdwn: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta_label})${drift_line}${details_line}${monitoring_line}',
+  telegram_html: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta_label})${drift_line}${details_line}${monitoring_line}',
+  telegram_markdownv2: '\\- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} \\(${percent_delta_label}\\)${drift_line}${details_line}${monitoring_line}',
 }
 
 export const MESSAGE_FORMAT_OPTIONS: Record<AlertDestinationType, { value: AlertMessageFormat; label: string }[]> = {

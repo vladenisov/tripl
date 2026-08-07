@@ -442,6 +442,10 @@ async def simulate_rule(
     firings: list[SimulatedRuleFiring] = []
     for anomaly in fired:
         absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
+        # Same placeholder-at-zero-baseline rule as the live send path — see the
+        # comment in ``dispatch._prepare_alert_deliveries``. Readers of this
+        # number go through ``alert_templates.format_percent_delta`` (rendered
+        # preview) or the frontend's ``lib/percentDelta`` (replay table).
         percent_delta = (
             absolute_delta / anomaly.expected_count * 100 if anomaly.expected_count > 0 else 0.0
         )

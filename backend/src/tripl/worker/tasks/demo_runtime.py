@@ -649,7 +649,7 @@ def _upsert_scope_anomalies(
         evaluation_start=eval_start,
         evaluation_end=eval_end,
         settings=noise.DEMO_ANOMALY_SETTINGS,
-    )
+    ).anomalies
     session.execute(
         delete(MetricAnomaly).where(
             MetricAnomaly.scan_config_id == scan_config_id,

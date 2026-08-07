@@ -157,6 +157,34 @@ class ForecastPoint:
     stddev: float
 
 
+@dataclass(frozen=True)
+class SuppressedRange:
+    """A half-open bucket range this pass deliberately declined to score.
+
+    Not "nothing was found here" — "an earlier pass already had its say here and
+    this one is not entitled to overwrite it". A caller that rewrites a window by
+    DELETE-then-INSERT must exclude these ranges from the DELETE, or it destroys
+    the earlier verdict and replaces it with nothing.
+    """
+
+    start: datetime
+    end: datetime
+
+
+@dataclass(frozen=True)
+class DetectionResult:
+    """What one detection pass has to say about its evaluation window.
+
+    ``anomalies`` are the rows to store. ``suppressed_ranges`` are the parts of
+    the window whose stored rows must be left alone (see ``SuppressedRange``);
+    they are deliberately NOT derivable from ``anomalies``, since the whole point
+    is that the pass emits nothing there.
+    """
+
+    anomalies: list[DetectedAnomaly]
+    suppressed_ranges: tuple[SuppressedRange, ...] = ()
+
+
 def expand_series(
     points: list[SeriesPoint],
     *,
@@ -684,7 +712,7 @@ def _collapse_outage_runs(
     slots: Sequence[int],
     interval: timedelta,
     evaluation_start: datetime,
-) -> list[DetectedAnomaly]:
+) -> tuple[list[DetectedAnomaly], tuple[SuppressedRange, ...]]:
     """One row per outage: the bucket where the scope stopped behaving normally.
 
     A scope that has gone silent stays silent, and every silent bucket scores the
@@ -711,10 +739,20 @@ def _collapse_outage_runs(
 
     Anchoring on the first anomalous bucket also survives the fit: it does not
     ask whether the trend detector still claims the run, so a run is announced
-    once no matter how the decomposition drifts as the outage ages. Because
-    ``_replace_scope_anomalies`` only rewrites rows INSIDE the evaluation window,
-    the announcement stays on record once its bucket scrolls out, and later scans
+    once no matter how the decomposition drifts as the outage ages. Later scans
     re-derive the same anchor, find it outside their window, and write nothing.
+
+    That last step is why the second return value exists. The anchor is gated on,
+    but the announcement is made at the first FLAGGED bucket at or after it,
+    which can be strictly LATER — a scope whose anchor phase sits below
+    ``min_expected_count`` announces several buckets downstream. The evaluation
+    window then advances one bucket per collection, so there is always a pass
+    whose window starts after the anchor but still CONTAINS the announced row: it
+    skips the run, emits nothing, and a caller that clears its whole window would
+    delete the only row the outage ever had, with no replacement and no later
+    pass willing to write one. Every run skipped here is therefore reported as a
+    ``SuppressedRange`` covering its buckets, and callers must exclude those
+    ranges when they clear the window (tripl-l429.16).
 
     Runs are contiguous in the ANALYZED series, not on the clock: a bucket the
     scan never covered is absent from the list, and an unobserved bucket is not
@@ -740,22 +778,33 @@ def _collapse_outage_runs(
             index += 1
         runs.append((start, index))
     if not runs:
-        return anomalies
+        return anomalies, ()
 
     in_a_run: set[datetime] = set()
     # Buckets kept out of the runs: at most one per run, and only for a run
     # whose anchor this pass is responsible for announcing.
     kept: set[datetime] = set()
+    suppressed: list[SuppressedRange] = []
     for start, end in runs:
         run_buckets = {expanded[position].bucket for position in range(start, end)}
         in_a_run |= run_buckets
         anchor = _outage_anchor(expanded, counts, slots, interval, start=start, end=end)
         if anchor < evaluation_start:
             # The announcement belongs to the pass whose window contained the
-            # anchor, and ``_replace_scope_anomalies`` only rewrites rows inside
-            # the current window, so that row is still on record. Writing
-            # another one here — at whatever this window happens to start on —
-            # is exactly how one outage becomes a row per scan.
+            # anchor. Writing another one here — at whatever this window happens
+            # to start on — is exactly how one outage becomes a row per scan.
+            # But the earlier pass may well have announced at a bucket LATER
+            # than the anchor (see the docstring), so that row can still be
+            # inside this window: hand it back as a range the caller must not
+            # clear, or declining to announce silently erases the announcement.
+            run_end = expanded[end - 1].bucket + interval
+            if run_end > evaluation_start:
+                # Runs that end before the window are already safe (a caller only
+                # clears from ``evaluation_start``), and reporting them would put
+                # one range per nightly-quiet gap in the history on every scan —
+                # dozens of clauses that also make stale rows in those gaps
+                # unclearable. Only overlapping runs need protecting.
+                suppressed.append(SuppressedRange(start=expanded[start].bucket, end=run_end))
             continue
         # The anchor is where the scope stopped behaving normally, which is not
         # necessarily a bucket the detector flagged: the trend detector may have
@@ -769,13 +818,14 @@ def _collapse_outage_runs(
         )
         if candidates:
             kept.add(candidates[0])
-    return [
+    collapsed = [
         anomaly
         for anomaly in anomalies
         # Anomalies outside any run of empty buckets are untouched — this
         # collapses outages, not spikes.
         if anomaly.bucket not in in_a_run or anomaly.bucket in kept
     ]
+    return collapsed, tuple(suppressed)
 
 
 def _outage_anchor(
@@ -923,7 +973,7 @@ def detect_anomalies(
     fill_gaps: bool = True,
     covered_buckets: set[datetime] | None = None,
     settling_buckets: int = 0,
-) -> list[DetectedAnomaly]:
+) -> DetectionResult:
     """Hybrid detector.
 
     Primary signal: a per-bucket phase (seasonal) baseline — each bucket judged
@@ -954,6 +1004,12 @@ def detect_anomalies(
     it a bucket that is merely half-delivered reads as a drop that disappears 40
     minutes later. Use ``settling_buckets_for`` to convert an operator's
     wall-clock ingestion allowance into a bucket count.
+
+    Returns a ``DetectionResult``, not a bare list: a pass can also report parts
+    of its window that it declined to score and whose stored rows a caller must
+    therefore NOT clear (``suppressed_ranges``, see ``_collapse_outage_runs``).
+    Callers that only display or count anomalies can ignore that field; callers
+    that PERSIST by clearing the window and re-inserting cannot.
     """
     if fill_gaps:
         expanded = expand_series(
@@ -965,7 +1021,7 @@ def detect_anomalies(
     else:
         expanded = _present_series(points, end_exclusive=evaluation_end)
     if not expanded:
-        return []
+        return DetectionResult(anomalies=[])
 
     emission_end = _emission_end(
         expanded, evaluation_end=evaluation_end, settling_buckets=settling_buckets
@@ -981,7 +1037,7 @@ def detect_anomalies(
     # the exact bound and the one acknowledged loss class. Count path only:
     # fractional series carry their own magnitude-derived floors.
     if is_count_shaped and is_provably_silent(max(counts), settings.min_expected_count):
-        return []
+        return DetectionResult(anomalies=[])
 
     stddev_absolute_floor = 1.0 if is_count_shaped else _fractional_stddev_floor(counts)
     # Poisson-aware floor (~sqrt(N)) applies to BOTH count-shaped per-bucket
@@ -1067,14 +1123,15 @@ def detect_anomalies(
         merged = _merge_anomalies(settled_primary, trend.anomalies)
 
     if not is_count_shaped:
-        return merged
-    return _collapse_outage_runs(
+        return DetectionResult(anomalies=merged)
+    collapsed, suppressed_ranges = _collapse_outage_runs(
         merged,
         expanded,
         slots=slots,
         interval=interval,
         evaluation_start=evaluation_start,
     )
+    return DetectionResult(anomalies=collapsed, suppressed_ranges=suppressed_ranges)
 
 
 def forecast_next_buckets(

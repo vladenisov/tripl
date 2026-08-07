@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import and_ as sa_and
 from sqlalchemy import delete, select
 from sqlalchemy import func as sa_func
+from sqlalchemy import not_ as sa_not
 from sqlalchemy import or_ as sa_or
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -19,12 +22,14 @@ from tripl.core.analyzers.anomaly_detector import (
     AnomalyDetectionSettings,
     DetectedAnomaly,
     SeriesPoint,
+    SuppressedRange,
     detect_anomalies,
     is_provably_silent,
     required_history_buckets,
     settling_buckets_for,
 )
 from tripl.core.intervals import get_interval
+from tripl.metric_grid import metric_grid_stmt, metric_grids
 from tripl.models.anomaly_scope_override import AnomalyScopeOverride
 from tripl.models.domain_enums import MetricBreakdownAnomalyKind, MetricStatus
 from tripl.models.event import Event
@@ -229,6 +234,7 @@ def _replace_scope_anomalies(
     event_id: uuid.UUID | None,
     event_type_id: uuid.UUID | None,
     anomalies: list[DetectedAnomaly],
+    suppressed_ranges: Sequence[SuppressedRange] = (),
 ) -> int:
     # ``metric``-scope rows carry a NULL scan_config_id and are keyed purely by
     # (scope_type, scope_ref); event scopes additionally partition by config.
@@ -238,6 +244,22 @@ def _replace_scope_anomalies(
         MetricAnomaly.bucket >= evaluation_start,
         MetricAnomaly.bucket < evaluation_end,
     ]
+    # Ranges the detector declined to score rather than found clean (tripl-l429.16).
+    # An outage is announced ONCE, at the first flagged bucket at or after its
+    # anchor, and every later pass whose window starts past that anchor emits
+    # nothing for the run — while the announced row may still sit inside this
+    # window. Clearing it here would destroy the outage's only row, and no later
+    # pass would ever write another: the event would vanish from the page, the
+    # badge, the bell and the drilldown, and its alert state would close.
+    for suppressed in suppressed_ranges:
+        delete_filters.append(
+            sa_not(
+                sa_and(
+                    MetricAnomaly.bucket >= suppressed.start,
+                    MetricAnomaly.bucket < suppressed.end,
+                )
+            )
+        )
     if scan_config_id is None:
         delete_filters.append(MetricAnomaly.scan_config_id.is_(None))
     else:
@@ -434,20 +456,35 @@ def _replace_scope_breakdown_anomalies(
     event_type_id: uuid.UUID | None,
     anomalies: list[DetectedAnomaly],
     kind: MetricBreakdownAnomalyKind = MetricBreakdownAnomalyKind.volume,
+    suppressed_ranges: Sequence[SuppressedRange] = (),
 ) -> int:
-    session.execute(
-        delete(MetricBreakdownAnomaly).where(
-            MetricBreakdownAnomaly.scan_config_id == scan_config_id,
-            MetricBreakdownAnomaly.scope_type == scope_type,
-            MetricBreakdownAnomaly.scope_ref == scope_ref,
-            MetricBreakdownAnomaly.breakdown_column == breakdown_column,
-            MetricBreakdownAnomaly.breakdown_value == breakdown_value,
-            MetricBreakdownAnomaly.is_other.is_(is_other),
-            MetricBreakdownAnomaly.kind == kind,
-            MetricBreakdownAnomaly.bucket >= evaluation_start,
-            MetricBreakdownAnomaly.bucket < evaluation_end,
+    delete_filters = [
+        MetricBreakdownAnomaly.scan_config_id == scan_config_id,
+        MetricBreakdownAnomaly.scope_type == scope_type,
+        MetricBreakdownAnomaly.scope_ref == scope_ref,
+        MetricBreakdownAnomaly.breakdown_column == breakdown_column,
+        MetricBreakdownAnomaly.breakdown_value == breakdown_value,
+        MetricBreakdownAnomaly.is_other.is_(is_other),
+        MetricBreakdownAnomaly.kind == kind,
+        MetricBreakdownAnomaly.bucket >= evaluation_start,
+        MetricBreakdownAnomaly.bucket < evaluation_end,
+    ]
+    # Same exclusion, same reason as ``_replace_scope_anomalies`` (tripl-l429.16):
+    # a count-shaped breakdown series goes through the identical outage collapse,
+    # so a ``platform=ios`` slice that dies announces ONCE, downstream of its
+    # anchor, and every later pass declines to re-announce it while the announced
+    # row still sits inside this window. Clearing it here destroys the slice's
+    # only marker with nothing to replace it.
+    for suppressed in suppressed_ranges:
+        delete_filters.append(
+            sa_not(
+                sa_and(
+                    MetricBreakdownAnomaly.bucket >= suppressed.start,
+                    MetricBreakdownAnomaly.bucket < suppressed.end,
+                )
+            )
         )
-    )
+    session.execute(delete(MetricBreakdownAnomaly).where(*delete_filters))
 
     rows: list[dict[str, object]] = []
     for anomaly in anomalies:
@@ -809,28 +846,16 @@ def _load_metric_value_points(
 
 
 def _resolve_metric_interval(session: Session, metric: MetricDefinition) -> str | None:
-    """Interval for a metric's grid.
+    """Interval for a metric's grid — the shared rule in :mod:`tripl.metric_grid`.
 
     ``sql`` / ``fact`` carry their own ``interval``;
     ``event_composition`` leaves it NULL and inherits the grid of the
-    most-recent value's ``scan_config_id`` (mirrors the series read service).
+    most-recent value's ``scan_config_id``.
     """
-    if metric.interval is not None:
-        return metric.interval
-    scan_config_id = session.execute(
-        select(MetricValue.scan_config_id)
-        .where(
-            MetricValue.metric_definition_id == metric.id,
-            MetricValue.scan_config_id.is_not(None),
-        )
-        .order_by(MetricValue.bucket.desc())
-        .limit(1)
-    ).scalar()
-    if scan_config_id is None:
-        return None
-    return session.execute(
-        select(ScanConfig.interval).where(ScanConfig.id == scan_config_id)
-    ).scalar()
+    grid = metric_grids(
+        session.execute(metric_grid_stmt(MetricDefinition.id == metric.id)).all()
+    ).get(metric.id)
+    return None if grid is None else grid.interval
 
 
 def _project_metric_scope_refs(session: Session, project_id: uuid.UUID) -> list[str]:
@@ -934,6 +959,18 @@ def _recalculate_project_metric_anomalies(
             history_from=history_from,
             time_to=evaluation_end,
         )
+        result = detect_anomalies(
+            points,
+            interval=interval_spec.delta,
+            evaluation_start=metric_evaluation_start,
+            evaluation_end=evaluation_end,
+            settings=metric_settings,
+            fill_gaps=count_shaped,
+            covered_buckets=covered_buckets,
+            # Per-metric grid: a 1d ratio needs a whole bucket withheld for
+            # the same allowance that withholds two hourly ones.
+            settling_buckets=settling_buckets_for(interval_spec.delta, settling_delay),
+        )
         detected += _replace_scope_anomalies(
             session,
             scan_config_id=None,
@@ -943,18 +980,8 @@ def _recalculate_project_metric_anomalies(
             evaluation_end=evaluation_end,
             event_id=None,
             event_type_id=None,
-            anomalies=detect_anomalies(
-                points,
-                interval=interval_spec.delta,
-                evaluation_start=metric_evaluation_start,
-                evaluation_end=evaluation_end,
-                settings=metric_settings,
-                fill_gaps=count_shaped,
-                covered_buckets=covered_buckets,
-                # Per-metric grid: a 1d ratio needs a whole bucket withheld for
-                # the same allowance that withholds two hourly ones.
-                settling_buckets=settling_buckets_for(interval_spec.delta, settling_delay),
-            ),
+            anomalies=result.anomalies,
+            suppressed_ranges=result.suppressed_ranges,
         )
     return detected
 
@@ -1025,6 +1052,15 @@ def _recalculate_metric_anomalies(
             history_from=history_from,
             time_to=evaluation_end,
         )
+        total_result = detect_anomalies(
+            points,
+            interval=interval_spec.delta,
+            evaluation_start=evaluation_start,
+            evaluation_end=evaluation_end,
+            settings=total_settings,
+            covered_buckets=covered_buckets,
+            settling_buckets=settling_buckets,
+        )
         anomalies_detected += _replace_scope_anomalies(
             session,
             scan_config_id=config.id,
@@ -1034,15 +1070,8 @@ def _recalculate_metric_anomalies(
             evaluation_end=evaluation_end,
             event_id=None,
             event_type_id=None,
-            anomalies=detect_anomalies(
-                points,
-                interval=interval_spec.delta,
-                evaluation_start=evaluation_start,
-                evaluation_end=evaluation_end,
-                settings=total_settings,
-                covered_buckets=covered_buckets,
-                settling_buckets=settling_buckets,
-            ),
+            anomalies=total_result.anomalies,
+            suppressed_ranges=total_result.suppressed_ranges,
         )
     else:
         session.execute(
@@ -1098,6 +1127,15 @@ def _recalculate_metric_anomalies(
                 history_from=history_from,
                 time_to=evaluation_end,
             )
+            type_result = detect_anomalies(
+                points,
+                interval=interval_spec.delta,
+                evaluation_start=evaluation_start,
+                evaluation_end=evaluation_end,
+                settings=scope_settings,
+                covered_buckets=covered_buckets,
+                settling_buckets=settling_buckets,
+            )
             anomalies_detected += _replace_scope_anomalies(
                 session,
                 scan_config_id=config.id,
@@ -1107,15 +1145,8 @@ def _recalculate_metric_anomalies(
                 evaluation_end=evaluation_end,
                 event_id=None,
                 event_type_id=event_type_id,
-                anomalies=detect_anomalies(
-                    points,
-                    interval=interval_spec.delta,
-                    evaluation_start=evaluation_start,
-                    evaluation_end=evaluation_end,
-                    settings=scope_settings,
-                    covered_buckets=covered_buckets,
-                    settling_buckets=settling_buckets,
-                ),
+                anomalies=type_result.anomalies,
+                suppressed_ranges=type_result.suppressed_ranges,
             )
     else:
         session.execute(
@@ -1169,6 +1200,15 @@ def _recalculate_metric_anomalies(
                 history_from=history_from,
                 time_to=evaluation_end,
             )
+            event_result = detect_anomalies(
+                points,
+                interval=interval_spec.delta,
+                evaluation_start=evaluation_start,
+                evaluation_end=evaluation_end,
+                settings=scope_settings,
+                covered_buckets=covered_buckets,
+                settling_buckets=settling_buckets,
+            )
             anomalies_detected += _replace_scope_anomalies(
                 session,
                 scan_config_id=config.id,
@@ -1178,15 +1218,8 @@ def _recalculate_metric_anomalies(
                 evaluation_end=evaluation_end,
                 event_id=event_id,
                 event_type_id=None,
-                anomalies=detect_anomalies(
-                    points,
-                    interval=interval_spec.delta,
-                    evaluation_start=evaluation_start,
-                    evaluation_end=evaluation_end,
-                    settings=scope_settings,
-                    covered_buckets=covered_buckets,
-                    settling_buckets=settling_buckets,
-                ),
+                anomalies=event_result.anomalies,
+                suppressed_ranges=event_result.suppressed_ranges,
             )
     else:
         session.execute(
@@ -1354,6 +1387,10 @@ def _recalculate_platform_parity_anomalies(
                 evaluation_end=evaluation_end,
                 event_id=stored_event_id,
                 event_type_id=stored_event_type_id,
+                # No ``suppressed_ranges`` to thread: a parity ratio is
+                # fractional, so ``fill_gaps=False`` and ``detect_anomalies``
+                # returns before ``_collapse_outage_runs`` ever runs. This lane
+                # can only ever hand back an empty tuple.
                 anomalies=detect_anomalies(
                     points,
                     interval=interval_spec.delta,
@@ -1362,7 +1399,7 @@ def _recalculate_platform_parity_anomalies(
                     settings=ratio_settings,
                     fill_gaps=False,
                     settling_buckets=settling_buckets,
-                ),
+                ).anomalies,
                 kind=MetricBreakdownAnomalyKind.parity,
             )
     return detected
@@ -1439,6 +1476,15 @@ def _recalculate_metric_breakdown_anomalies(
                 history_from=history_from,
                 time_to=evaluation_end,
             )
+            total_result = detect_anomalies(
+                points,
+                interval=interval_spec.delta,
+                evaluation_start=evaluation_start,
+                evaluation_end=evaluation_end,
+                settings=settings,
+                covered_buckets=covered_buckets,
+                settling_buckets=settling_buckets,
+            )
             anomalies_detected += _replace_scope_breakdown_anomalies(
                 session,
                 scan_config_id=config.id,
@@ -1451,15 +1497,8 @@ def _recalculate_metric_breakdown_anomalies(
                 evaluation_end=evaluation_end,
                 event_id=None,
                 event_type_id=None,
-                anomalies=detect_anomalies(
-                    points,
-                    interval=interval_spec.delta,
-                    evaluation_start=evaluation_start,
-                    evaluation_end=evaluation_end,
-                    settings=settings,
-                    covered_buckets=covered_buckets,
-                    settling_buckets=settling_buckets,
-                ),
+                anomalies=total_result.anomalies,
+                suppressed_ranges=total_result.suppressed_ranges,
             )
     else:
         session.execute(
@@ -1525,6 +1564,15 @@ def _recalculate_metric_breakdown_anomalies(
                 history_from=history_from,
                 time_to=evaluation_end,
             )
+            type_result = detect_anomalies(
+                points,
+                interval=interval_spec.delta,
+                evaluation_start=evaluation_start,
+                evaluation_end=evaluation_end,
+                settings=settings,
+                covered_buckets=covered_buckets,
+                settling_buckets=settling_buckets,
+            )
             anomalies_detected += _replace_scope_breakdown_anomalies(
                 session,
                 scan_config_id=config.id,
@@ -1537,15 +1585,8 @@ def _recalculate_metric_breakdown_anomalies(
                 evaluation_end=evaluation_end,
                 event_id=None,
                 event_type_id=event_type_id,
-                anomalies=detect_anomalies(
-                    points,
-                    interval=interval_spec.delta,
-                    evaluation_start=evaluation_start,
-                    evaluation_end=evaluation_end,
-                    settings=settings,
-                    covered_buckets=covered_buckets,
-                    settling_buckets=settling_buckets,
-                ),
+                anomalies=type_result.anomalies,
+                suppressed_ranges=type_result.suppressed_ranges,
             )
     else:
         session.execute(
@@ -1608,6 +1649,15 @@ def _recalculate_metric_breakdown_anomalies(
                 history_from=history_from,
                 time_to=evaluation_end,
             )
+            event_result = detect_anomalies(
+                points,
+                interval=interval_spec.delta,
+                evaluation_start=evaluation_start,
+                evaluation_end=evaluation_end,
+                settings=settings,
+                covered_buckets=covered_buckets,
+                settling_buckets=settling_buckets,
+            )
             anomalies_detected += _replace_scope_breakdown_anomalies(
                 session,
                 scan_config_id=config.id,
@@ -1620,15 +1670,8 @@ def _recalculate_metric_breakdown_anomalies(
                 evaluation_end=evaluation_end,
                 event_id=event_id,
                 event_type_id=None,
-                anomalies=detect_anomalies(
-                    points,
-                    interval=interval_spec.delta,
-                    evaluation_start=evaluation_start,
-                    evaluation_end=evaluation_end,
-                    settings=settings,
-                    covered_buckets=covered_buckets,
-                    settling_buckets=settling_buckets,
-                ),
+                anomalies=event_result.anomalies,
+                suppressed_ranges=event_result.suppressed_ranges,
             )
     else:
         session.execute(

@@ -51,6 +51,7 @@ from tripl.models.scan_config import ScanConfig
 from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks.metrics import detect as metrics_detect
 from tripl.worker.tasks.metrics import dispatch as metrics_dispatch
+from tripl.worker.tasks.metrics import signals as metrics_signals
 
 # 1h-aligned buckets used by the sync detect/dispatch tests. Anchored to a recent
 # wall-clock hour so the seeded spike's bucket stays inside the signal freshness
@@ -131,7 +132,7 @@ def _add_metric(
     aggregation: MetricAggregation | None = None,
     composition: MetricComposition | None = None,
     anomaly_enabled: bool = True,
-    interval: str = "1h",
+    interval: str | None = "1h",
 ) -> MetricDefinition:
     metric = MetricDefinition(
         id=uuid.uuid4(),
@@ -889,3 +890,87 @@ def test_percent_metric_items_render_scaled_values_via_batched_unit_lookup(
             metric_units_cache=units_cache,
         )
         assert fallback == text
+
+
+# ---------------------------------------------------------------------------
+# A catalog metric's alert candidacy is a property of the METRIC (tripl-l429.22)
+# ---------------------------------------------------------------------------
+
+# 30 hours back on the naive footing the sync fixtures use: outside a bare 24h
+# freshness window, inside the daily grid's own max(24h, 3 * 1d) = 72h horizon.
+_STALE_ON_AN_HOURLY_GRID = datetime.now(UTC).replace(
+    minute=0, second=0, microsecond=0, tzinfo=None
+) - timedelta(hours=30)
+
+
+def _add_daily_config(session: Session, config: ScanConfig) -> ScanConfig:
+    daily = ScanConfig(
+        id=uuid.uuid4(),
+        data_source_id=config.data_source_id,
+        project_id=config.project_id,
+        name="Daily Scan",
+        base_query="SELECT time, event_name FROM events",
+        time_column="time",
+        cardinality_threshold=100,
+        interval="1d",
+    )
+    session.add(daily)
+    session.commit()
+    return daily
+
+
+def test_metric_alert_candidacy_ignores_which_scan_dispatches(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """An ``event_composition`` metric is judged on ITS grid, not the caller's.
+
+    ``_prepare_alert_deliveries`` runs once per scan config and every run sees the
+    same project-global metric anomalies, sharing ONE AlertRuleState row. Judging
+    an interval-less catalog metric on ``config.interval`` therefore made the same
+    metric a candidate under the daily scan and a non-candidate under the hourly
+    one — the two dispatch runs open and close the same alert state in turn.
+    The metric's real grid is the daily scan its values are stamped with, so both
+    runs must agree on the daily answer.
+    """
+    with sync_session_factory() as session:
+        hourly = _seed_project(session)
+        daily = _add_daily_config(session, hourly)
+        metric = _add_metric(
+            session,
+            hourly,
+            kind=MetricKind.event_composition,
+            composition=MetricComposition.single,
+            name="checkout_starts",
+            # event_composition carries no grid of its own; the stamp on its
+            # values below is where the grid actually lives.
+            interval=None,
+        )
+        _seed_values_at(
+            session,
+            metric,
+            {_STALE_ON_AN_HOURLY_GRID: 99.0},
+            scan_config_id=daily.id,
+        )
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=None,
+                scope_type="metric",
+                scope_ref=str(metric.id),
+                event_id=None,
+                event_type_id=None,
+                bucket=_STALE_ON_AN_HOURLY_GRID,
+                actual_count=99,
+                expected_count=40,
+                stddev=5,
+                z_score=8,
+                direction="spike",
+            )
+        )
+        session.commit()
+
+        under_hourly = metrics_signals._get_active_metric_anomaly_candidates(session, hourly)
+        under_daily = metrics_signals._get_active_metric_anomaly_candidates(session, daily)
+
+    assert set(under_daily) == {("metric", str(metric.id))}
+    assert set(under_hourly) == set(under_daily)

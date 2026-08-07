@@ -6009,6 +6009,280 @@ def test_recalculate_metric_anomalies_trailing_reeval_clears_backfilled_bucket(
         assert remaining == []  # backfilled bucket re-evaluated → stale flag gone
 
 
+# --------------------------------------------------------------------------
+# An outage announced DOWNSTREAM of its anchor survives the sliding window
+# (tripl-l429.16)
+# --------------------------------------------------------------------------
+
+# Production geometry: hourly grid, sigma 4.0, min_expected_count 50. The scope
+# below runs at ~20/h through the small hours, which is BELOW that gate, so the
+# bucket where it stops behaving normally cannot itself be flagged and the
+# announcement necessarily lands several buckets later.
+_OUTAGE_SIGMA = 4.0
+_OUTAGE_MIN_EXPECTED = 50
+# 02:00 on day 28. Day 28 leaves a full 504-bucket history (three weekly cycles,
+# ``required_history_buckets`` for a 1h grid) in front of the death.
+_OUTAGE_DEATH_HOUR = 24 * 28 + 2
+_OUTAGE_HORIZON_HOURS = _OUTAGE_DEATH_HOUR + 24
+# A whole number of days back from midnight, so the hour offsets below really are
+# clock hours; recent enough that the 180-day age-out never fires, and tz-naive to
+# match the fixture's naive columns.
+_OUTAGE_BASE = datetime.now(UTC).replace(
+    hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+) - timedelta(days=30)
+
+
+def _quiet_night_count(hour: int) -> int:
+    """Dead 00:00-02:00, a thin ~20/h trickle 02:00-06:00, then ~500/h all day."""
+    hour_of_day = hour % 24
+    if hour_of_day < 2:
+        return 0
+    if hour_of_day < 6:
+        return 20
+    return 500
+
+
+def _seed_dying_quiet_night_event(session: Session, *, base: datetime) -> tuple[ScanConfig, Event]:
+    config = _create_scan_config(session, with_event_type=True)
+    session.add(
+        ProjectAnomalySettings(
+            project_id=config.project_id,
+            anomaly_detection_enabled=True,
+            sigma_threshold=_OUTAGE_SIGMA,
+            min_expected_count=_OUTAGE_MIN_EXPECTED,
+        )
+    )
+    assert config.event_type_id is not None
+    event = Event(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        event_type_id=config.event_type_id,
+        name="event_name=Checkout",
+        description="",
+        status="implemented",
+    )
+    session.add(event)
+
+    # Only the non-empty buckets are stored; the detector zero-fills the grid,
+    # exactly as a real collection leaves an empty hour unrecorded.
+    for hour in range(_OUTAGE_DEATH_HOUR):
+        count = _quiet_night_count(hour)
+        if not count:
+            continue
+        session.add(
+            EventMetric(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                event_id=event.id,
+                event_type_id=None,
+                bucket=base + timedelta(hours=hour),
+                count=count,
+            )
+        )
+    session.commit()
+    return config, event
+
+
+def _stored_outage_buckets(session: Session, config: ScanConfig, event: Event) -> list[datetime]:
+    from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT
+
+    return sorted(
+        session.execute(
+            select(MetricAnomaly.bucket).where(
+                MetricAnomaly.scan_config_id == config.id,
+                MetricAnomaly.scope_type == SCOPE_EVENT,
+                MetricAnomaly.scope_ref == str(event.id),
+            )
+        ).scalars()
+    )
+
+
+def test_outage_row_survives_every_window_position_past_its_anchor(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The outage keeps its ONE row as the evaluation window slides past the anchor.
+
+    ``_collapse_outage_runs`` gates on the anchor — the bucket where the scope
+    stopped behaving normally — but announces at the first FLAGGED bucket at or
+    after it, which for a scope whose anchor phase sits below
+    ``min_expected_count`` is hours later. The evaluation window then advances one
+    bucket per collection, so there is always a pass whose window starts AFTER the
+    anchor and still CONTAINS the announced row: it declines to announce, and a
+    caller that clears its whole window would take the outage's only row with it.
+    Nothing would ever write it back — every later pass starts later still — so
+    the event would go silent on the page, the badge, the bell and the drilldown.
+
+    Deliberately steps one bucket at a time: the detector-level sibling in
+    ``test_anomaly_detector`` jumps a full day past the anchor and skips every
+    window position where the deletion actually happens.
+    """
+    from tripl.worker.tasks.metrics.detect import _recalculate_metric_anomalies
+
+    base = _OUTAGE_BASE
+    anchor = base + timedelta(hours=_OUTAGE_DEATH_HOUR)
+    horizon = base + timedelta(hours=_OUTAGE_HORIZON_HOURS)
+
+    with sync_session_factory() as session:
+        config, event = _seed_dying_quiet_night_event(session, base=base)
+
+        # The pass whose window contains the anchor announces the outage once.
+        _recalculate_metric_anomalies(
+            session,
+            config,
+            evaluation_start=anchor,
+            evaluation_end=horizon,
+        )
+        session.commit()
+        announced = _stored_outage_buckets(session, config, event)
+        assert len(announced) == 1, "the outage is announced exactly once"
+        announced_bucket = announced[0]
+        # The announcement is DOWNSTREAM of the anchor — the premise of the bug.
+        # The anchor's own phase expects ~20/h, under the min_expected_count gate,
+        # so no detector path is allowed to flag it.
+        assert announced_bucket > anchor
+
+        # Every subsequent collection advances the window by exactly one bucket.
+        # Walk it across the anchor..announcement span and one bucket beyond.
+        announced_hour = round((announced_bucket - base).total_seconds() / 3600)
+        for hour in range(_OUTAGE_DEATH_HOUR + 1, announced_hour + 2):
+            _recalculate_metric_anomalies(
+                session,
+                config,
+                evaluation_start=base + timedelta(hours=hour),
+                evaluation_end=horizon,
+            )
+            session.commit()
+            assert _stored_outage_buckets(session, config, event) == [announced_bucket], (
+                f"the outage lost its only row when the window started at hour {hour} "
+                f"(announced at {announced_bucket}, anchor at {anchor})"
+            )
+
+
+def _seed_dying_quiet_night_breakdown(
+    session: Session, *, base: datetime
+) -> tuple[ScanConfig, EventType]:
+    """The breakdown twin of ``_seed_dying_quiet_night_event``.
+
+    Here it is a single ``platform=ios`` slice of an event type that dies, so the
+    outage collapse runs over the BREAKDOWN series. Same quiet-night shape and
+    same production geometry, so the announcement lands downstream of the anchor
+    for the same reason.
+    """
+    config = _create_scan_config(session, with_event_type=True)
+    config.metric_breakdown_columns = ["platform"]
+    assert config.event_type_id is not None
+    session.add(
+        ProjectAnomalySettings(
+            project_id=config.project_id,
+            anomaly_detection_enabled=True,
+            sigma_threshold=_OUTAGE_SIGMA,
+            min_expected_count=_OUTAGE_MIN_EXPECTED,
+            # Only the event-type breakdown lane is under test. The other two
+            # would re-score the very same rows under different scope keys and
+            # cost a full seasonal fit per pass for nothing.
+            detect_project_total=False,
+            detect_events=False,
+        )
+    )
+    event_type = session.get(EventType, config.event_type_id)
+    assert event_type is not None
+
+    # Only the non-empty buckets are stored; the detector zero-fills the grid,
+    # exactly as a real collection leaves an empty hour unrecorded.
+    for hour in range(_OUTAGE_DEATH_HOUR):
+        count = _quiet_night_count(hour)
+        if not count:
+            continue
+        session.add(
+            EventMetricBreakdown(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                event_id=None,
+                event_type_id=event_type.id,
+                bucket=base + timedelta(hours=hour),
+                breakdown_column="platform",
+                breakdown_value="ios",
+                is_other=False,
+                count=count,
+            )
+        )
+    session.commit()
+    return config, event_type
+
+
+def _stored_breakdown_outage_buckets(
+    session: Session, config: ScanConfig, event_type: EventType
+) -> list[datetime]:
+    from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT_TYPE
+
+    return sorted(
+        session.execute(
+            select(MetricBreakdownAnomaly.bucket).where(
+                MetricBreakdownAnomaly.scan_config_id == config.id,
+                MetricBreakdownAnomaly.scope_type == SCOPE_EVENT_TYPE,
+                MetricBreakdownAnomaly.scope_ref == str(event_type.id),
+                MetricBreakdownAnomaly.breakdown_column == "platform",
+                MetricBreakdownAnomaly.breakdown_value == "ios",
+            )
+        ).scalars()
+    )
+
+
+def test_breakdown_outage_row_survives_every_window_position_past_its_anchor(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A breakdown outage keeps its ONE row as the window slides past the anchor.
+
+    Identical defect to the scope-level twin above, on the second surface that
+    persists by DELETE-then-INSERT: a count-shaped breakdown series goes through
+    the same ``_collapse_outage_runs``, so its outage is announced once, at a
+    bucket downstream of the anchor, and every later pass declines to re-announce
+    it. ``_replace_scope_breakdown_anomalies`` used to clear its whole evaluation
+    window unconditionally, so the pass whose window starts after the anchor but
+    still contains the announced row deleted the platform slice's only marker and
+    nothing ever wrote it back.
+    """
+    from tripl.worker.tasks.metrics.detect import _recalculate_metric_breakdown_anomalies
+
+    base = _OUTAGE_BASE
+    anchor = base + timedelta(hours=_OUTAGE_DEATH_HOUR)
+    horizon = base + timedelta(hours=_OUTAGE_HORIZON_HOURS)
+
+    with sync_session_factory() as session:
+        config, event_type = _seed_dying_quiet_night_breakdown(session, base=base)
+
+        # The pass whose window contains the anchor announces the outage once.
+        _recalculate_metric_breakdown_anomalies(
+            session,
+            config,
+            evaluation_start=anchor,
+            evaluation_end=horizon,
+        )
+        session.commit()
+        announced = _stored_breakdown_outage_buckets(session, config, event_type)
+        assert len(announced) == 1, "the breakdown outage is announced exactly once"
+        announced_bucket = announced[0]
+        # The announcement is DOWNSTREAM of the anchor — the premise of the bug.
+        assert announced_bucket > anchor
+
+        # Every subsequent collection advances the window by exactly one bucket.
+        announced_hour = round((announced_bucket - base).total_seconds() / 3600)
+        for hour in range(_OUTAGE_DEATH_HOUR + 1, announced_hour + 2):
+            _recalculate_metric_breakdown_anomalies(
+                session,
+                config,
+                evaluation_start=base + timedelta(hours=hour),
+                evaluation_end=horizon,
+            )
+            session.commit()
+            assert _stored_breakdown_outage_buckets(session, config, event_type) == [
+                announced_bucket
+            ], (
+                f"the breakdown outage lost its only row when the window started at "
+                f"hour {hour} (announced at {announced_bucket}, anchor at {anchor})"
+            )
+
+
 def test_recalculate_skips_sub_threshold_scopes_but_ages_out_stale_rows(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,

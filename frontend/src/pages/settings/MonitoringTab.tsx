@@ -4,6 +4,7 @@ import { anomalySettingsApi } from "@/api/anomalySettings"
 import type { ProjectAnomalySettings } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { ErrorState } from "@/components/error-state"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -95,7 +96,7 @@ const SCOPE_TYPE_LABELS: Record<string, string> = {
  */
 function ScopeOverridesCard({ slug }: { slug: string }) {
   const qc = useQueryClient()
-  const { data, isPending } = useQuery({
+  const { data, isPending, isError, error, refetch } = useQuery({
     queryKey: ['anomalyScopeOverrides', slug],
     queryFn: () => anomalySettingsApi.listScopeOverrides(slug),
   })
@@ -122,8 +123,24 @@ function ScopeOverridesCard({ slug }: { slug: string }) {
           </p>
         </div>
 
+        {/* A failed load is NOT an empty list. `data` is undefined either way, so
+            reading the length alone told an operator "no scope has been
+            tightened" — a claim about the ratchet — when the request never
+            answered (tripl-l429.24). ErrorState is what this app shows for a
+            load that failed, and it carries the retry this card needs: it is the
+            only undo the permanent ratchet has. */}
         {isPending ? (
           <p className="text-sm text-muted-foreground">Loading scope overrides…</p>
+        ) : isError ? (
+          <ErrorState
+            compact
+            title="Couldn't load scope overrides"
+            error={error}
+            onRetry={() => {
+              void refetch()
+            }}
+            retryLabel="Retry"
+          />
         ) : overrides.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             No scope has been tightened. Every scope uses the project settings above.

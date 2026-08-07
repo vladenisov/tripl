@@ -24,16 +24,13 @@ import { Badge } from '@/components/ui/badge'
 import type { AlertRule, AlertRuleSimulateResponse } from '@/types'
 import { getErrorMessage } from '@/lib/utils'
 import { formatDateTime } from '@/lib/datetime'
+import { formatPercentDelta } from '@/lib/percentDelta'
 
 const DAYS_OPTIONS = [1, 3, 7, 14, 30] as const
 
 type ReplayResult = {
   saved: AlertRuleSimulateResponse
   override: AlertRuleSimulateResponse | null
-}
-
-function formatPercent(value: number) {
-  return `${value.toFixed(1)}%`
 }
 
 function FiringsCountBadge({
@@ -268,7 +265,7 @@ export function RuleReplayDialog({
                               {Math.round(firing.expected_count)}
                             </td>
                             <td className="px-3 py-1.5 text-right tnum">
-                              {formatPercent(firing.percent_delta)}
+                              {formatPercentDelta(firing.percent_delta, firing.expected_count)}
                             </td>
                           </tr>
                         ))}

@@ -402,6 +402,36 @@ def test_build_ai_explanation_does_not_claim_a_lone_item_co_fired(
     assert "co-fired" not in captured["user_prompt"]
 
 
+def test_build_ai_explanation_does_not_tell_the_model_nothing_changed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A zero baseline has no percentage, and "+0%" reads as "no movement".
+
+    The note the model writes from this prompt is what the reader receives, so
+    the prompt must not describe a scope that went from nothing to 137 as a 0%
+    change (tripl-l429.24).
+    """
+    captured = _capture_prompt(monkeypatch)
+    delivery = _delivery_with_item()
+    item = delivery.items[0]
+    item.direction = "spike"
+    item.actual_count = 137
+    item.expected_count = 0
+    item.absolute_delta = 137
+    item.percent_delta = 0.0
+
+    alerts_task._build_ai_explanation(
+        delivery,
+        scan_name="main",
+        project_name="AI",
+        item_context_cache={},
+    )
+
+    assert "(+0%)" not in captured["user_prompt"]
+    assert "no baseline" in captured["user_prompt"]
+    assert "actual 137 vs expected 0" in captured["user_prompt"]
+
+
 def test_build_ai_explanation_swallows_llm_errors(monkeypatch: pytest.MonkeyPatch):
     delivery = _delivery_with_item()
     monkeypatch.setattr("tripl.services.llm_service.is_enabled", lambda: True)

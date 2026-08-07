@@ -84,7 +84,7 @@ async def _build_anomalies(session: AsyncSession, ctx: DemoContext) -> None:
             evaluation_start=evaluation_start,
             evaluation_end=evaluation_end,
             settings=noise.DEMO_ANOMALY_SETTINGS,
-        ):
+        ).anomalies:
             session.add(
                 MetricAnomaly(
                     scan_config_id=ctx.scan_config_id,

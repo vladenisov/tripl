@@ -17,6 +17,7 @@ from tripl.core.adapters.measure_validator import SqlDialect, quote_sql_literal
 from tripl.core.bucketing import floor_to_bucket, to_utc
 from tripl.core.collection_progress import collection_progress_to
 from tripl.core.intervals import get_interval
+from tripl.metric_grid import metric_grid_stmt, metric_grids
 from tripl.models.data_source import DataSource
 from tripl.models.domain_enums import MetricComposition, MetricKind, MetricScopeType, MetricStatus
 from tripl.models.event import Event
@@ -612,13 +613,42 @@ async def _load_latest_metric_anomalies(
 
 async def _build_list_enrichment(
     session: AsyncSession,
-    metric_ids: list[uuid.UUID],
+    metrics: list[MetricDefinition],
     *,
-    intervals: dict[uuid.UUID, str | None] | None = None,
     recent_window: timedelta | None = None,
 ) -> dict[uuid.UUID, _MetricListEnrichment]:
+    """Latest value, sparkline and open signal for one page of listed metrics.
+
+    Takes the listed ROWS rather than their ids because the signal half is gated
+    on ``anomaly_detection_enabled``, which the caller already holds — reading it
+    off the rows keeps the enrichment at its three batched queries.
+    """
+    metric_ids = [metric.id for metric in metrics]
     latest_values = await _load_latest_values(session, metric_ids)
-    latest_anomalies = await _load_latest_metric_anomalies(session, metric_ids)
+    # "Detection off" is off on EVERY surface. The switch stops new rows being
+    # scored but leaves the stored ones in place, and both project-wide surfaces
+    # already drop a disabled metric
+    # (``metrics_insights_service._get_active_metric_signals`` and
+    # ``_count_active_metric_signals_by_project`` filter on the flag), so a row
+    # here reporting an open signal off those leftovers made the metrics list
+    # disagree with the Anomalies page and the badge the moment it was flipped.
+    latest_anomalies = await _load_latest_metric_anomalies(
+        session,
+        [metric.id for metric in metrics if metric.anomaly_detection_enabled],
+    )
+    # Each metric is scored on its OWN grid, so the freshness window has to be
+    # measured on that grid too — a daily metric judged against a bare 24h window
+    # closes on the day it fires. Resolved HERE rather than handed in by the
+    # caller: the caller only holds ``MetricDefinition.interval``, which is NULL
+    # for an ``event_composition`` metric whose grid comes from its source scan
+    # (tripl-l429.18).
+    grids = (
+        metric_grids(
+            (await session.execute(metric_grid_stmt(MetricDefinition.id.in_(metric_ids)))).all()
+        )
+        if metric_ids
+        else {}
+    )
     enrichment: dict[uuid.UUID, _MetricListEnrichment] = {}
     for metric_id in metric_ids:
         value_row = latest_values.get(metric_id)
@@ -627,16 +657,12 @@ async def _build_list_enrichment(
         spark = value_row[2] if value_row else []
         signal: MetricSignalResponse | None = None
         anomaly = latest_anomalies.get(metric_id)
+        grid = grids.get(metric_id)
         if anomaly is not None:
             state = classify_signal_state(
                 anomaly_bucket=anomaly.bucket,
                 latest_metric_bucket=latest_bucket,
-                # Each metric is scored on its OWN grid, so the freshness window
-                # has to be measured on that grid too — a daily metric judged
-                # against a bare 24h window closes on the day it fires.
-                interval=scan_interval_to_timedelta(
-                    (intervals or {}).get(metric_id),
-                ),
+                interval=scan_interval_to_timedelta(grid.interval if grid is not None else None),
                 recent_window=recent_window,
             )
             if state is not None:
@@ -662,8 +688,8 @@ async def list_metric_definitions_enriched(
 ) -> tuple[list[MetricDefinitionListItem], int]:
     """List rows enriched with per-metric latest value + latest signal + spark.
 
-    Enrichment is two BATCHED queries across all listed ids (one per concern),
-    never one-per-metric.
+    Enrichment is three BATCHED queries across all listed ids (one per concern:
+    values, anomalies, grids), never one-per-metric.
     """
     metrics, total = await list_metric_definitions(
         session,
@@ -682,8 +708,7 @@ async def list_metric_definitions_enriched(
     )
     enrichment = await _build_list_enrichment(
         session,
-        [metric.id for metric in metrics],
-        intervals={metric.id: metric.interval for metric in metrics},
+        metrics,
         recent_window=recent_window,
     )
     items: list[MetricDefinitionListItem] = []

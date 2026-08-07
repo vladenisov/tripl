@@ -332,6 +332,15 @@ regressions, plus chart annotations on the Volume tab. For an `event` scope it
 additionally renders variable-value drift review and the Photos & specs panel.
 For ratios, averages, and other non-count catalog metrics, the version legend
 shows each version's latest observed value rather than a sum of daily values.
+The range picker defaults to 7 days (30 for a catalog metric); when the scope's
+open signal is older than the range you selected, the range is extended back to
+that signal's bucket so the page shows what the list linked you to. That covers
+both ways it happens — a long-running outage on an `event`, `event_type`, or
+`project_total` scope, which is announced once at onset and then never
+re-emitted, and a catalog metric flagged further back than the range under a
+raised `recent_signal_window_hours`. Only a signal that is still **open** widens
+the range; one that has since closed leaves your selection exactly where you put
+it.
 
 ### Metrics catalog
 
@@ -367,7 +376,11 @@ then reveals kind-specific config:
 
 Shared fields are name, display name, description, color, unit, owner/review,
 status, breakdown columns/limit, optional version/platform columns, and the
-anomaly-detection toggle. A metric is collected only while
+anomaly-detection toggle. Turning that toggle off stops the metric being scored
+and closes its signal on every surface at once — the catalog row, the metric's
+own detail page, the Anomalies page and the sidebar badge; anomalies already
+recorded stay on the chart as history rather than being deleted. A metric is
+collected only while
 **active**; `draft` metrics are saved but not collected, and `archived` metrics
 stop collecting.
 
@@ -607,6 +620,16 @@ the run produced — new events, metric points, **new** signals, and rows scanne
 every figure on the card is that run's delta, not a project total — and
 reads "no new events discovered" when a run on an established catalog finds
 nothing new (which is normal, not a failure) rather than a bare "0 events".
+The signal figure is that run's own scan and nothing else: it compares the
+scan's open signals before and after the run, so it answers *what this run
+changed* rather than *what is open in the project*. Within that scan's event
+scopes it classifies by exactly the rule the Anomalies page uses, freshness
+floor included ([From a detected anomaly to a
+signal](./anomaly-detection.md#from-a-detected-anomaly-to-a-signal)), so a run on
+a daily or weekly scan is not measured against a shorter window than the page.
+Catalog-metric signals belong to the project rather than to a scan and are never
+counted on a scan card; the **Anomalies** page and the sidebar badge are where
+those are reported.
 A burst of same-type items from one scan — for example the events a single scan
 implements, which all share the scan's timestamp — collapses into one summary
 row ("N events implemented") that expands on click to reveal the individual

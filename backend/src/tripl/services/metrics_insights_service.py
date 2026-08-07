@@ -18,6 +18,7 @@ from tripl.core.analyzers.anomaly_detector import (
     SCOPE_PROJECT_TOTAL,
 )
 from tripl.core.intervals import get_interval
+from tripl.metric_grid import metric_grid_stmt, metric_grids
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.domain_enums import MetricBreakdownAnomalyKind
 from tripl.models.event_metric import EventMetric
@@ -216,22 +217,24 @@ async def _get_active_metric_signals(
     already hold it pass it in so this does not re-query, and omitting it keeps
     the default 24h window.
     """
-    # The interval rides along because each metric is scored on its OWN grid, so
-    # its freshness window has to be measured on that grid too.
-    interval_by_ref: dict[str, str | None] = {}
-    metric_ids: list[uuid.UUID] = []
-    for metric_id, metric_interval in (
-        await session.execute(
-            select(MetricDefinition.id, MetricDefinition.interval).where(
-                MetricDefinition.project_id == project_id,
-                MetricDefinition.anomaly_detection_enabled.is_(True),
+    # The grid rides along because each metric is scored on its OWN grid, so its
+    # freshness window has to be measured on that grid too — including the one an
+    # ``event_composition`` metric inherits from its source scan, which its own
+    # (NULL) ``interval`` column does not carry.
+    grids = metric_grids(
+        (
+            await session.execute(
+                metric_grid_stmt(
+                    MetricDefinition.project_id == project_id,
+                    MetricDefinition.anomaly_detection_enabled.is_(True),
+                )
             )
-        )
-    ).all():
-        metric_ids.append(metric_id)
-        interval_by_ref[str(metric_id)] = metric_interval
-    if not metric_ids:
+        ).all()
+    )
+    if not grids:
         return []
+    metric_ids = list(grids)
+    interval_by_ref = {str(metric_id): grid.interval for metric_id, grid in grids.items()}
 
     scope_refs = [str(metric_id) for metric_id in metric_ids]
     latest_value_buckets: dict[str, datetime] = {
@@ -311,26 +314,30 @@ async def _count_active_metric_signals_by_project(
     hyphenated ``str(uuid)`` keys the anomalies store — a SQL-level cast would
     diverge SQLite vs Postgres (see ``_get_latest_metric_buckets_multi``).
     Classification reuses ``classify_signal_state`` exactly as
-    :func:`_get_active_metric_signals` does (no scan interval on the metric path),
-    with each project's own configured freshness window applied.
+    :func:`_get_active_metric_signals` does — each metric measured on its own
+    grid (``tripl.metric_grid``) and each project's own configured freshness
+    window applied. That parity was claimed here long before it was true: this
+    query did not even select an interval, so every catalog metric was judged
+    against a bare 24h window and a DAILY metric read OPEN on the Anomalies page
+    and ZERO on the badge (tripl-l429.17).
     """
     if not project_ids:
         return {}
-    metric_rows = (
-        await session.execute(
-            select(MetricDefinition.id, MetricDefinition.project_id).where(
-                MetricDefinition.project_id.in_(project_ids),
-                MetricDefinition.anomaly_detection_enabled.is_(True),
+    grids = metric_grids(
+        (
+            await session.execute(
+                metric_grid_stmt(
+                    MetricDefinition.project_id.in_(project_ids),
+                    MetricDefinition.anomaly_detection_enabled.is_(True),
+                )
             )
-        )
-    ).all()
-    if not metric_rows:
+        ).all()
+    )
+    if not grids:
         return {}
-    project_by_scope_ref: dict[str, uuid.UUID] = {
-        str(metric_id): project_id for metric_id, project_id in metric_rows
-    }
-    metric_ids = [metric_id for metric_id, _project_id in metric_rows]
-    scope_refs = list(project_by_scope_ref)
+    grid_by_scope_ref = {str(metric_id): grid for metric_id, grid in grids.items()}
+    metric_ids = list(grids)
+    scope_refs = list(grid_by_scope_ref)
 
     latest_value_buckets: dict[str, datetime] = {
         str(metric_definition_id): bucket
@@ -363,11 +370,13 @@ async def _count_active_metric_signals_by_project(
     now = datetime.now(UTC)
     counts: dict[uuid.UUID, int] = defaultdict(int)
     for scope_ref, anomaly in latest_anomalies.items():
-        project_id = project_by_scope_ref.get(scope_ref)
+        grid = grid_by_scope_ref.get(scope_ref)
+        project_id = grid.project_id if grid is not None else None
         state = classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_value_buckets.get(scope_ref),
             now=now,
+            interval=scan_interval_to_timedelta(grid.interval if grid is not None else None),
             recent_window=recent_windows.get(project_id) if project_id is not None else None,
         )
         if (

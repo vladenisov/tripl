@@ -141,6 +141,10 @@ needs *notify on spike* enabled.
   nothing was expected: a percentage has nothing to divide by at a zero
   baseline, so the percent gate steps aside there and `min absolute delta`
   decides. (No movement against a baseline of zero is still not an event.)
+  Those alerts say **`no baseline`** where the others carry a percentage —
+  in the message, in the delivery's item table and in the simulator — because
+  there is no ratio to report. The absolute delta beside it is the number that
+  means something.
 
 :::tip Why the percent default is not zero
 Most volume anomalies are single-bucket seasonal deviations rather than
@@ -237,11 +241,17 @@ variable is rejected, so a typo fails fast rather than sending a broken message)
   `${items_count}`, `${items_text}`.
 - **Per matched item:** `${scope_name}`, `${scope_type}`, `${scope_label}`,
   `${direction}`, `${direction_label}`, `${actual_count}`, `${expected_count}`,
-  `${absolute_delta}`, `${percent_delta}`, `${bucket}`, `${details_url}`,
+  `${absolute_delta}`, `${percent_delta}`, `${percent_delta_label}`,
+  `${bucket}`, `${details_url}`,
   `${monitoring_url}`, `${drift_field}`, `${drift_type}`, `${sample_value}`,
   `${sparkline}`, `${top_movers}`, plus pre-formatted `*_line` variants
   (`${details_line}`, `${monitoring_line}`, `${drift_line}`, `${sparkline_line}`,
   `${top_movers_line}`).
+
+  `${percent_delta_label}` is the one the default templates use: it carries its
+  own `%` sign and says `no baseline` when the expected count was zero, where a
+  bare `${percent_delta}%` would print the undefined ratio as `0.0%`. Use
+  `${percent_delta}` only if you want the raw number.
 - **Email subject** supports a smaller set: `${project_name}`, `${project_slug}`,
   `${rule_name}`, `${destination_name}`, `${matched_count}`.
 
@@ -257,15 +267,32 @@ deliveries that get stuck (roughly every 5 minutes, up to a few attempts). You c
 **retry** failed deliveries manually from the UI.
 
 A Telegram delivery carrying more than **8 matched items** is split into several
-messages, because Telegram rejects a message over 4,096 characters outright.
+deliveries, because Telegram rejects a message over 4,096 characters outright.
 Nothing is dropped — every match still reaches you, across as many messages as it
 takes. Other channels have no comparable limit and keep one delivery per rule.
 
-Should a message still come back too long — a custom item template, or an
-unusually long AI note — it is re-rendered once with a smaller item budget and
-sent. Only then does the delivery fail, which is deliberate: a failure is
-visible in the Inbox and can be retried, whereas silently rebuilding the same
-rejected message every collection is not.
+That item count is only an estimate of the ceiling, so the finished message is
+measured against it too — the header, the items and the AI note as you will
+receive them, counted the way Telegram counts, where an emoji costs two. A
+message that does not fit is sent as several, each carrying whole items and
+headed by its own count, with the AI note on the first. So a long custom item
+template or an unusually long AI note costs you extra messages, never a missing
+alert.
+
+The one thing that cannot be split is a single alert item longer than 4,096
+characters on its own. Telegram refuses that message and the delivery is marked
+**failed** in the Inbox, saying how many of its items had already gone out. That
+is deliberate: a failure is visible and can be retried once you shorten the
+rule's item template, whereas silently rebuilding the same rejected message
+every collection is not.
+
+Because those messages go out one at a time, a delivery can fail after some of
+them have already arrived — Telegram rate-limits a busy group chat, or the
+connection drops mid-way. Retrying such a delivery, from the Inbox or from the
+reaper, sends only the items you have not received yet, so a retry never repeats
+an alert that is already in the chat. If every item had in fact gone out and only
+the recording of it failed, Retry sends nothing and simply marks the delivery
+**sent**.
 
 Release-regression items carry no recent-trend sparkline. The numbers on those
 lines describe one release's cohort over the rollout window, and the only trend

@@ -1664,23 +1664,31 @@ def test_send_alert_delivery_falls_back_from_telegram_markdownv2_to_plain(
     engine.dispose()
 
 
-def test_send_alert_delivery_retries_a_too_long_telegram_message_smaller(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    """Telegram's 4096 rejection is not a parse error and must not be retried as-is.
+def _telegram_units(text: str) -> int:
+    """Length the way Telegram counts it.
 
-    ``last_notified_at`` is stamped only on a successful send while the re-send
-    gate reads NULL as "never told them", so an unhandled rejection means the
-    identical oversized body is rebuilt and refused on every collection,
-    forever. Re-rendering as PLAIN — what the parse-error arm does — makes a
-    long message longer, so this needs its own arm with a smaller budget.
+    The 4096 ceiling — like the entity offsets in the same API — is counted in
+    UTF-16 code units, so anything outside the BMP costs two and ``len`` (code
+    points) under-counts it.
     """
-    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_too_long.db'}")
-    Base.metadata.create_all(engine)
-    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
-    sent_payloads: list[dict[str, object]] = []
+    return len(text.encode("utf-16-le")) // 2
 
+
+def _seed_telegram_length_case(
+    sync_session_factory,
+    *,
+    item_count: int,
+    message_template: str,
+    ai_explanation_enabled: bool = False,
+) -> tuple[str, list[str]]:
+    """One pending Telegram delivery whose items are the size live ones are.
+
+    The optional details/monitoring lines are what make a real item ~330
+    characters (97-389 across the deliveries this instance has sent), so the
+    URLs carry the production shape rather than None. Returns the delivery id
+    and every item's scope_name, in seeded order.
+    """
+    scope_names: list[str] = []
     with sync_session_factory() as session:
         project = Project(
             id=uuid.uuid4(),
@@ -1722,8 +1730,9 @@ def test_send_alert_delivery_retries_a_too_long_telegram_message_smaller(
             destination_id=destination.id,
             name="Main Rule",
             enabled=True,
-            message_template="[tripl] ${matched_count} alerts\n${items_text}",
+            message_template=message_template,
             message_format="plain",
+            ai_explanation_enabled=ai_explanation_enabled,
         )
         delivery = AlertDelivery(
             id=uuid.uuid4(),
@@ -1733,36 +1742,72 @@ def test_send_alert_delivery_retries_a_too_long_telegram_message_smaller(
             rule_id=rule.id,
             channel="telegram",
             status="pending",
-            matched_count=40,
+            matched_count=item_count,
             payload_snapshot={},
         )
         session.add_all([project, data_source, scan_config, destination, rule, delivery])
-        # Enough items, with long enough names, to blow past 4096 characters.
-        for index in range(40):
+        for index in range(item_count):
+            # Zero-padded so no scope name is a prefix of another and the
+            # "delivered exactly once" count below cannot match ":1" inside
+            # ":10".
+            scope_name = f"windyapp_ios:map:layer_switch:precipitation_overlay:{index:03d}"
+            scope_names.append(scope_name)
             session.add(
                 AlertDeliveryItem(
                     id=uuid.uuid4(),
                     delivery_id=delivery.id,
                     scope_type="event",
                     scope_ref=f"event-{index}",
-                    scope_name=f"checkout:step:{'x' * 60}:{index}",
+                    scope_name=scope_name,
                     bucket=datetime(2026, 4, 11, 9, tzinfo=UTC),
                     direction="drop",
-                    actual_count=10,
-                    expected_count=20,
-                    absolute_delta=10,
-                    percent_delta=50,
-                    details_path=None,
-                    monitoring_path=None,
+                    actual_count=15403,
+                    expected_count=32048,
+                    absolute_delta=16645,
+                    percent_delta=51.9,
+                    details_path=(
+                        f"https://tripl.windyapp.co/p/windy-ios/monitoring/event/{uuid.uuid4()}"
+                    ),
+                    monitoring_path=(
+                        f"https://tripl.windyapp.co/p/windy-ios/events/detail/{uuid.uuid4()}"
+                    ),
                 )
             )
         session.commit()
-        delivery_id = str(delivery.id)
+        return str(delivery.id), scope_names
 
-    def rejecting_post_json(url: str, body: dict[str, object]) -> None:
+
+def test_send_alert_delivery_splits_a_long_telegram_delivery_across_messages(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Every matched item reaches the reader, across as many messages as it takes.
+
+    That is what alerting.md promises. The renderer used to stop at the first
+    item that would not fit and append "+N more of 14 not shown (message length
+    limit)" — while the success path stamps ``last_notified_at`` on EVERY item
+    of the delivery, so the cut scopes were recorded as told and stayed silent
+    until they stopped firing and re-opened.
+    """
+    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_split.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    sent_payloads: list[dict[str, object]] = []
+
+    delivery_id, scope_names = _seed_telegram_length_case(
+        sync_session_factory,
+        item_count=14,
+        message_template="[tripl] ${matched_count} alerts\n${items_text}",
+    )
+
+    def telegram_post_json(
+        url: str,
+        body: dict[str, object],
+        headers: dict[str, str] | None = None,
+    ) -> None:
         sent_payloads.append(body)
-        # Reject only the first body, in Telegram's own wording.
-        if len(sent_payloads) == 1:
+        # Telegram's own rule, in Telegram's own units and wording.
+        if _telegram_units(str(body["text"])) > 4096:
             raise ValueError(
                 "HTTP 400 from https://api.telegram.org/bot***/sendMessage: "
                 "Bad Request: message is too long"
@@ -1776,24 +1821,302 @@ def test_send_alert_delivery_retries_a_too_long_telegram_message_smaller(
     monkeypatch.setitem(
         metrics.send_alert_delivery.run.__globals__,
         "_post_json",
-        rejecting_post_json,
+        telegram_post_json,
     )
 
     result = metrics.send_alert_delivery.run(delivery_id)
 
+    bodies = [str(payload["text"]) for payload in sent_payloads]
+    delivered = "\n".join(bodies)
+    missing = [name for name in scope_names if name not in delivered]
+    assert missing == [], (
+        f"{len(missing)} of {len(scope_names)} matched items never reached Telegram "
+        f"across {len(bodies)} message(s): {missing}"
+    )
+    # Split, not repeated: an item belongs to exactly one message.
+    assert [delivered.count(name) for name in scope_names] == [1] * len(scope_names)
+    assert [_telegram_units(body) for body in bodies if _telegram_units(body) > 4096] == []
+    assert len(bodies) > 1
+    assert "not shown" not in delivered
     assert result["status"] == "sent"
-    assert len(sent_payloads) == 2
-    retried = str(sent_payloads[1]["text"])
-    # Strictly smaller than what was refused, and inside the ceiling.
-    assert len(retried) < len(str(sent_payloads[0]["text"]))
-    assert len(retried) <= 4096
 
     with sync_session_factory() as session:
         persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
         assert persisted is not None
         assert persisted.status == AlertDeliveryStatus.sent.value
         assert persisted.payload_snapshot is not None
-        assert persisted.payload_snapshot["fallback_reason"] == "telegram_message_too_long"
+        assert persisted.payload_snapshot["telegram_message_parts"] == len(bodies)
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+def test_send_alert_delivery_never_re_renders_telegram_at_a_bigger_budget(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A too-long message must not be answered with an equally long one.
+
+    The retry this replaces recomputed the item budget from whether an AI note
+    was actually produced, while the render that had just been refused reserved
+    room for one because the RULE has notes enabled. A rule whose note came back
+    empty therefore retried at 3696 characters after failing at 2496 — a budget
+    that fits MORE items, so the second body was longer than the first and was
+    refused identically, and the delivery failed. The long custom preamble here
+    is what pushes the first render over the ceiling in the first place.
+    """
+    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_no_bigger_retry.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    sent_payloads: list[dict[str, object]] = []
+
+    preamble = "\n".join(
+        f"Runbook step {step}: check the release dashboard, then the deploy log, "
+        "then page the on-call engineer if the drop holds for two buckets."
+        for step in range(15)
+    )
+    delivery_id, scope_names = _seed_telegram_length_case(
+        sync_session_factory,
+        item_count=12,
+        message_template=f"[tripl] ${{matched_count}} alerts\n{preamble}\n${{items_text}}",
+        ai_explanation_enabled=True,
+    )
+
+    def telegram_post_json(
+        url: str,
+        body: dict[str, object],
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        sent_payloads.append(body)
+        if _telegram_units(str(body["text"])) > 4096:
+            raise ValueError(
+                "HTTP 400 from https://api.telegram.org/bot***/sendMessage: "
+                "Bad Request: message is too long"
+            )
+
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_post_json",
+        telegram_post_json,
+    )
+    # AI is enabled on the rule but the provider returns nothing — the exact
+    # asymmetry the old retry arithmetic keyed on.
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_build_ai_explanation",
+        lambda *args, **kwargs: None,
+    )
+
+    result = metrics.send_alert_delivery.run(delivery_id)
+
+    lengths = [_telegram_units(str(payload["text"])) for payload in sent_payloads]
+    refused = [length for length in lengths if length > 4096]
+    assert refused == [], (
+        f"{len(refused)} of {len(lengths)} attempts were over Telegram's 4096-unit "
+        f"ceiling; the attempts measured {lengths}"
+    )
+    delivered = "\n".join(str(payload["text"]) for payload in sent_payloads)
+    missing = [name for name in scope_names if name not in delivered]
+    assert missing == [], (
+        f"{len(missing)} of {len(scope_names)} matched items never reached Telegram: {missing}"
+    )
+    assert result["status"] == "sent"
+
+    with sync_session_factory() as session:
+        persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert persisted is not None
+        assert persisted.status == AlertDeliveryStatus.sent.value
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+def _retry_from_inbox(sync_session_factory, delivery_id: str) -> None:
+    """What ``retry_delivery`` does to the row before re-enqueueing the task.
+
+    Kept in the same shape as ``services/_alerting_deliveries.retry_delivery``
+    (failed -> pending, error and sent_at cleared, attempt budget reset) so the
+    resume below is exercised through the state the Inbox button really leaves.
+    """
+    with sync_session_factory() as session:
+        delivery = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert delivery is not None
+        assert delivery.status == AlertDeliveryStatus.failed.value
+        delivery.status = AlertDeliveryStatus.pending.value
+        delivery.error_message = None
+        delivery.sent_at = None
+        delivery.dispatch_attempts = 0
+        session.commit()
+
+
+def test_send_alert_delivery_resumes_a_partly_sent_telegram_split(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A retry must not re-send the messages that already reached the reader.
+
+    A long delivery goes out as several Telegram messages posted back to back.
+    If the chat's rate limit answers 429 (or the connection times out, or the
+    API 5xxes) on the second one, the first is already with the reader, but the
+    delivery is recorded failed — and the retry, manual from the Inbox or from
+    the stale-pending reaper, used to re-render and re-send EVERY message.
+    """
+    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_resume.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    accepted: list[str] = []
+    attempts: list[list[str]] = []
+    fail_after_first = True
+
+    delivery_id, scope_names = _seed_telegram_length_case(
+        sync_session_factory,
+        item_count=14,
+        message_template="[tripl] ${matched_count} alerts\n${items_text}",
+    )
+
+    def telegram_post_json(
+        url: str,
+        body: dict[str, object],
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        text = str(body["text"])
+        attempts[-1].append(text)
+        if fail_after_first and len(attempts[-1]) > 1:
+            # Neither a MarkdownV2 parse error nor an over-4096 rejection: the
+            # ordinary transport failure that used to propagate untracked.
+            raise ValueError(
+                "HTTP 429 from https://api.telegram.org/bot***/sendMessage: "
+                "Too Many Requests: retry after 27"
+            )
+        accepted.append(text)
+
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_post_json",
+        telegram_post_json,
+    )
+
+    attempts.append([])
+    first = metrics.send_alert_delivery.run(delivery_id)
+    assert first["status"] == "failed"
+    assert len(attempts[0]) > 1, (
+        "the delivery did not split into several messages, so this test is not "
+        f"exercising a partial send: {[len(body) for body in attempts[0]]}"
+    )
+    first_message_names = [name for name in scope_names if name in accepted[0]]
+    assert first_message_names, "the first message carried no items"
+
+    with sync_session_factory() as session:
+        persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert persisted is not None
+        assert persisted.status == AlertDeliveryStatus.failed.value
+
+    fail_after_first = False
+    _retry_from_inbox(sync_session_factory, delivery_id)
+    attempts.append([])
+    second = metrics.send_alert_delivery.run(delivery_id)
+    assert second["status"] == "sent"
+
+    resent = [name for name in first_message_names if any(name in body for body in attempts[1])]
+    assert resent == [], (
+        f"the retry re-sent {len(resent)} of {len(first_message_names)} items the reader "
+        f"had already received in the first message: {resent}"
+    )
+    delivered = "\n".join(accepted)
+    assert [delivered.count(name) for name in scope_names] == [1] * len(scope_names), (
+        "every matched item must reach the reader exactly once across the failed "
+        f"attempt and the retry; counts were "
+        f"{ {name: delivered.count(name) for name in scope_names} }"
+    )
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+def test_send_alert_delivery_retry_of_a_fully_sent_telegram_split_sends_nothing(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Retry after every part landed completes the record, it does not re-send.
+
+    The send loop can finish and the delivery still be recorded failed — the
+    worker is SIGKILLed before the status commit and ``task_acks_late`` re-runs
+    the task, or the bookkeeping after the loop raises. Retry then has nothing
+    left to tell the reader, so it only finishes the row.
+    """
+    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_resume_done.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    attempts: list[list[str]] = []
+    fail_after_all = True
+
+    delivery_id, scope_names = _seed_telegram_length_case(
+        sync_session_factory,
+        item_count=14,
+        message_template="[tripl] ${matched_count} alerts\n${items_text}",
+    )
+
+    def telegram_post_json(
+        url: str,
+        body: dict[str, object],
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        attempts[-1].append(str(body["text"]))
+
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_post_json",
+        telegram_post_json,
+    )
+
+    def stamp_rule_state(*args: object, **kwargs: object) -> None:
+        # Stands in for a worker death between the last accepted message and
+        # the status=sent commit: everything is out, nothing is recorded sent.
+        if fail_after_all:
+            raise RuntimeError("worker died before the status commit")
+
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_stamp_rule_state",
+        stamp_rule_state,
+    )
+
+    attempts.append([])
+    first = metrics.send_alert_delivery.run(delivery_id)
+    assert first["status"] == "failed"
+    assert len(attempts[0]) > 1
+
+    fail_after_all = False
+    _retry_from_inbox(sync_session_factory, delivery_id)
+    attempts.append([])
+    second = metrics.send_alert_delivery.run(delivery_id)
+
+    assert attempts[1] == [], (
+        f"the retry re-sent {len(attempts[1])} message(s) the reader already had"
+    )
+    assert second["status"] == "sent"
+    delivered = "\n".join(attempts[0])
+    assert [delivered.count(name) for name in scope_names] == [1] * len(scope_names)
+
+    with sync_session_factory() as session:
+        persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert persisted is not None
+        assert persisted.status == AlertDeliveryStatus.sent.value
 
     Base.metadata.drop_all(engine)
     engine.dispose()

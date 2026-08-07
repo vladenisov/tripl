@@ -1,7 +1,8 @@
-"""Rendering-side alert defects: the release-regression trend and message length.
+"""Rendering-side alert defects: the release-regression trend, message length
+and the zero-baseline percentage.
 
-Both are about what the reader is shown, so both are exercised through the
-renderer rather than through a send.
+All three are about what the reader is shown, so all three are exercised through
+the renderer rather than through a send.
 """
 
 from __future__ import annotations
@@ -31,15 +32,17 @@ from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
+from tripl.schemas.alerting import SimulatedRuleFiring
+from tripl.services.alerting_rendering import render_firing_item
 from tripl.worker.tasks.alerts_messages import (
-    _TELEGRAM_AI_NOTE_RESERVE,
     TELEGRAM_MESSAGE_MAX_CHARS,
+    _append_ai_explanation,
     _build_items_text,
-    _default_items_max_chars,
     _is_telegram_markdown_parse_error,
     _is_telegram_message_too_long_error,
     _render_delivery_message,
-    _telegram_items_max_chars,
+    split_telegram_messages,
+    telegram_message_length,
 )
 
 
@@ -147,7 +150,9 @@ def _item(index: int, *, scope_type: str = "event") -> AlertDeliveryItem:
         delivery_id=uuid.uuid4(),
         scope_type=scope_type,
         scope_ref=str(uuid.uuid4()),
-        scope_name=f"main:tap:snippet:{index}",
+        # Zero-padded so no scope name is a prefix of another: ":1" would
+        # otherwise match inside ":10" when checking which items a message got.
+        scope_name=f"main:tap:snippet:{index:03d}",
         bucket=datetime(2026, 8, 4, 19, tzinfo=UTC),
         direction="drop",
         actual_count=15403,
@@ -161,109 +166,24 @@ def _item(index: int, *, scope_type: str = "event") -> AlertDeliveryItem:
     )
 
 
-def _render(items: list[AlertDeliveryItem], *, max_chars: int | None) -> str:
+def _render(items: list[AlertDeliveryItem]) -> str:
     return _build_items_text(
         items,
         message_format=ALERT_MESSAGE_FORMAT_PLAIN,
         items_template=get_default_items_template(ALERT_MESSAGE_FORMAT_PLAIN),
-        max_chars=max_chars,
     )
 
 
 def _shown_indices(text: str, total: int) -> list[int]:
     """Which items survived. An item spans several lines, so count scope names."""
-    return [i for i in range(total) if f"main:tap:snippet:{i}:" in text]
+    return [i for i in range(total) if f"main:tap:snippet:{i:03d}:" in text]
 
 
-def test_items_text_is_uncapped_without_a_budget() -> None:
-    """No budget, no truncation — email and webhook renders are unchanged."""
-    items = [_item(i) for i in range(14)]
-    text = _render(items, max_chars=None)
-    assert _shown_indices(text, 14) == list(range(14))
-    assert "more of" not in text
-
-
-def test_items_text_stops_at_the_budget_and_says_how_many_it_dropped() -> None:
-    items = [_item(i) for i in range(14)]
-    budget = _telegram_items_max_chars(ai_explanation_enabled=True)
-    text = _render(items, max_chars=budget)
-
-    assert len(text) <= budget
-    shown = _shown_indices(text, 14)
-    assert 0 < len(shown) < 14
-    # The head is a head: the rendered items are the first ones, in order, so an
-    # already severity-ordered delivery loses its smallest rows and nothing else.
-    assert shown == list(range(len(shown)))
-    assert text.splitlines()[-1] == (
-        f"… +{14 - len(shown)} more of 14 not shown (message length limit)"
-    )
-
-
-def test_budget_leaves_room_for_the_header_and_the_ai_note() -> None:
-    """The whole Telegram message, not just items_text, has to clear 4096."""
-    items = [_item(i) for i in range(14)]
-    budget = _telegram_items_max_chars(ai_explanation_enabled=True)
-    text = _render(items, max_chars=budget)
-    # Header and AI note at the reserves the constants promise.
-    header = "[tripl] 14 alerts\nProject delivery via telegram: Test\nRule: TG dev\nScan: S\n\n"
-    ai_note = "\n\nAI: " + "x" * 1200
-    assert len(header) + len(text) + len(ai_note) <= TELEGRAM_MESSAGE_MAX_CHARS
-
-
-def test_a_single_oversized_item_is_still_rendered() -> None:
-    """An items_text of nothing but a tail reports a count and shows no alert."""
-    text = _render([_item(0)], max_chars=10)
-    assert "main:tap:snippet:0" in text
-    assert "more of" not in text
-
-
-def test_tail_is_escaped_for_the_target_format() -> None:
-    """MarkdownV2 reserves '+', '(' and '.', so an unescaped tail 400s the send
-    exactly like the too-long body it exists to prevent."""
-    items = [_item(i) for i in range(14)]
-    text = _build_items_text(
-        items,
-        message_format=ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2,
-        items_template=get_default_items_template(ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2),
-        max_chars=_telegram_items_max_chars(ai_explanation_enabled=False),
-    )
-    tail = text.splitlines()[-1]
-    assert tail.startswith("… \\+")
-    assert "\\(message length limit\\)" in tail
-
-
-def test_the_cap_follows_the_destination_not_the_message_format() -> None:
-    """All 29 deliveries this instance has sent are Telegram rendering `plain`.
-
-    Keying the default off the message format would have capped only the two
-    Telegram-exclusive formats and left that live rule — the one that can
-    actually hit the 4096 ceiling — uncapped.
-    """
-    assert _default_items_max_chars(
-        AlertDestinationType.telegram, ai_explanation_enabled=True
-    ) == _telegram_items_max_chars(ai_explanation_enabled=True)
-    # Channels with no comparable per-message ceiling stay uncapped.
-    for other in (
-        AlertDestinationType.slack,
-        AlertDestinationType.email,
-        AlertDestinationType.webhook,
-        AlertDestinationType.jira,
-        AlertDestinationType.linear,
-    ):
-        assert _default_items_max_chars(other, ai_explanation_enabled=True) is None
-    # A rule without an AI note gets the note's reserve back.
-    assert _telegram_items_max_chars(ai_explanation_enabled=False) > _telegram_items_max_chars(
-        ai_explanation_enabled=True
-    )
-
-
-def test_live_telegram_plain_delivery_is_rendered_under_the_ceiling() -> None:
-    """End to end on the shape that actually sends here: Telegram + `plain`.
-
-    The delivery that reaches 4096 has never occurred — all 29 sent deliveries
-    are 1-5 items, the longest 2420 characters — so this is the prospective
-    failure, driven at 14 items of the measured ~355-character size.
-    """
+def _telegram_delivery(
+    items: list[AlertDeliveryItem],
+    *,
+    ai_explanation_enabled: bool = True,
+) -> tuple[AlertDelivery, AlertDestination, AlertRule, Project]:
     destination = AlertDestination(
         id=uuid.uuid4(),
         project_id=uuid.uuid4(),
@@ -275,7 +195,7 @@ def test_live_telegram_plain_delivery_is_rendered_under_the_ceiling() -> None:
         destination_id=destination.id,
         name="TG dev",
         message_format=ALERT_MESSAGE_FORMAT_PLAIN,
-        ai_explanation_enabled=True,
+        ai_explanation_enabled=ai_explanation_enabled,
     )
     delivery = AlertDelivery(
         id=uuid.uuid4(),
@@ -284,23 +204,140 @@ def test_live_telegram_plain_delivery_is_rendered_under_the_ceiling() -> None:
         destination_id=destination.id,
         rule_id=rule.id,
         channel=AlertDestinationType.telegram,
-        matched_count=14,
+        matched_count=len(items),
     )
-    delivery.items = [_item(i) for i in range(14)]
+    delivery.items = items
+    project = Project(id=delivery.project_id, name="windy-ios", slug="windy-ios", description="")
+    return delivery, destination, rule, project
 
+
+def _split(
+    items: list[AlertDeliveryItem],
+    *,
+    ai_explanation: str | None = None,
+    max_chars: int = TELEGRAM_MESSAGE_MAX_CHARS,
+) -> list[tuple[str, list[AlertDeliveryItem]]]:
+    delivery, destination, rule, project = _telegram_delivery(items)
     text, message_format = _render_delivery_message(
         delivery,
         destination=destination,
         rule=rule,
         scan_name="Snowplow Events (iOS)",
-        project=Project(id=delivery.project_id, name="windy-ios", slug="windy-ios", description=""),
+        project=project,
+    )
+    if ai_explanation:
+        text = _append_ai_explanation(text, ai_explanation, message_format)
+    return split_telegram_messages(
+        delivery,
+        destination=destination,
+        rule=rule,
+        scan_name="Snowplow Events (iOS)",
+        project=project,
+        message=text,
+        message_format=message_format,
+        ai_explanation=ai_explanation,
+        max_chars=max_chars,
     )
 
-    assert message_format == ALERT_MESSAGE_FORMAT_PLAIN
-    # The AI note is appended after this by the dispatcher, so the reserve for it
-    # has to still be free once the rendered body is counted.
-    assert len(text) + _TELEGRAM_AI_NOTE_RESERVE <= TELEGRAM_MESSAGE_MAX_CHARS
-    assert "not shown (message length limit)" in text
+
+def test_items_text_renders_every_item_it_is_given() -> None:
+    """No truncation anywhere — email, Slack and webhook renders carry the lot."""
+    items = [_item(i) for i in range(14)]
+    text = _render(items)
+    assert _shown_indices(text, 14) == list(range(14))
+    assert "more of" not in text
+
+
+def test_a_delivery_that_fits_is_still_one_message() -> None:
+    """The common case pays nothing: one length check, no re-render, one send."""
+    items = [_item(i) for i in range(4)]
+    parts = _split(items)
+    assert len(parts) == 1
+    assert parts[0][1] == items
+    assert telegram_message_length(parts[0][0]) <= TELEGRAM_MESSAGE_MAX_CHARS
+
+
+def test_every_item_survives_the_split_into_several_messages() -> None:
+    """The promise alerting.md makes: as many messages as it takes, none dropped.
+
+    Driven at 14 items of the measured ~330-character size — the replay that
+    unblocked volume scopes rendered exactly that, 4154 characters, which is
+    when the ceiling starts to matter.
+    """
+    items = [_item(i) for i in range(14)]
+    parts = _split(items, ai_explanation="Checkout volume fell across four screens." * 8)
+
+    assert len(parts) > 1
+    for text, _part_items in parts:
+        assert telegram_message_length(text) <= TELEGRAM_MESSAGE_MAX_CHARS
+        assert "not shown" not in text
+    # Every item, exactly once, in the delivery's own order.
+    assert [item for _text, part_items in parts for item in part_items] == items
+    # And every item is actually rendered into the message it was assigned to.
+    for text, part_items in parts:
+        assert _shown_indices(text, 14) == [items.index(item) for item in part_items]
+
+
+def test_the_ai_note_rides_on_the_first_message_only() -> None:
+    """It summarises the whole delivery; repeating it just costs length."""
+    note = "Checkout volume fell across four screens after the 8.2 rollout."
+    parts = _split([_item(i) for i in range(14)], ai_explanation=note * 4)
+    assert len(parts) > 1
+    assert note in parts[0][0]
+    assert [note in text for text, _ in parts[1:]] == [False] * (len(parts) - 1)
+
+
+def test_the_ceiling_is_counted_in_utf16_code_units_not_code_points() -> None:
+    """Telegram counts its 4096 in UTF-16 units, so an emoji costs two.
+
+    Budgeting in ``len`` is how a message of 4000 code points gets refused at
+    4400 units — the exact way the previous attempt at this ceiling was wrong.
+    Every scope name here is astral, so a code-point split packs messages that
+    Telegram refuses.
+    """
+    assert telegram_message_length("😀") == 2
+    assert telegram_message_length("a") == 1
+
+    items = [_item(i) for i in range(14)]
+    for index, item in enumerate(items):
+        item.scope_name = f"{'😀' * 40}:{index:03d}"
+    parts = _split(items)
+
+    assert len(parts) > 1
+    for text, _part_items in parts:
+        assert telegram_message_length(text) <= TELEGRAM_MESSAGE_MAX_CHARS
+    # A code-point count would have said these messages had room to spare, and
+    # packed more items into each of them.
+    assert max(len(text) for text, _ in parts) < TELEGRAM_MESSAGE_MAX_CHARS * 0.9
+    assert [item for _text, part_items in parts for item in part_items] == items
+
+
+def test_a_single_item_over_the_ceiling_gets_its_own_message() -> None:
+    """It cannot be made to fit, and dropping it is what this fix exists to stop.
+
+    Telegram refuses it and the delivery fails visibly, which is the honest
+    outcome: no budget re-render can shorten a message of one item.
+    """
+    items = [_item(0), _item(1)]
+    items[0].scope_name = "x" * 5000
+    parts = _split(items)
+
+    assert [part_items for _text, part_items in parts] == [[items[0]], [items[1]]]
+    assert telegram_message_length(parts[0][0]) > TELEGRAM_MESSAGE_MAX_CHARS
+
+
+def test_each_message_counts_only_the_items_it_carries() -> None:
+    """ "${matched_count} alerts" has to be true of the message it heads.
+
+    Dispatch already gives every 8-item chunk its own count; a message that is
+    one of several must do the same or the reader is told to look for 14 alerts
+    in a message holding 6.
+    """
+    items = [_item(i) for i in range(14)]
+    parts = _split(items)
+    assert len(parts) > 1
+    for text, part_items in parts:
+        assert f"{len(part_items)} alerts" in text
 
 
 def test_too_long_error_is_recognised_and_is_not_a_parse_error() -> None:
@@ -319,3 +356,93 @@ def test_too_long_error_is_recognised_and_is_not_a_parse_error() -> None:
         "Bad Request: can't parse entities: Character '-' is reserved"
     )
     assert _is_telegram_message_too_long_error(parse_error) is False
+
+
+# --- the zero-baseline percentage (tripl-l429.24) ---------------------------
+#
+# The percent gate deliberately admits anomalies with no baseline at all
+# (tripl-l429.12): a scope resuming after an outage, or an event firing for the
+# first time. ``percent_delta`` is stored 0.0 for those because the ratio is
+# undefined and the column is NOT NULL — so the message printed the largest
+# possible relative move as the smallest one.
+
+
+def _zero_baseline_item() -> AlertDeliveryItem:
+    """137 events against a baseline of zero — the class the gate lets through."""
+    item = _item(0)
+    item.scope_name = "checkout:completed"
+    item.direction = "spike"
+    item.actual_count = 137
+    item.expected_count = 0
+    item.absolute_delta = 137
+    item.percent_delta = 0.0
+    item.details_path = None
+    item.monitoring_path = None
+    return item
+
+
+def _render_in(item: AlertDeliveryItem, message_format: str) -> str:
+    return _build_items_text(
+        [item],
+        message_format=message_format,
+        items_template=get_default_items_template(message_format),
+    )
+
+
+def test_a_zero_baseline_item_does_not_report_a_zero_percent_change() -> None:
+    text = _render_in(_zero_baseline_item(), ALERT_MESSAGE_FORMAT_PLAIN)
+
+    assert "0.0%" not in text
+    assert "no baseline" in text
+    # The absolute move is what there is to report, and it stays.
+    assert "actual=137, expected=0, delta=137" in text
+
+
+def test_the_zero_baseline_label_survives_markdownv2_escaping() -> None:
+    """The label rides inside the template's escaped parens like the number did."""
+    text = _render_in(_zero_baseline_item(), ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2)
+
+    assert "\\(no baseline\\)" in text
+    assert "0\\.0%" not in text
+
+
+def test_an_ordinary_item_still_renders_its_percentage_unchanged() -> None:
+    """Nothing moves for the case that has a baseline — byte for byte."""
+    plain = _render_in(_item(0), ALERT_MESSAGE_FORMAT_PLAIN)
+    markdown = _render_in(_item(0), ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2)
+
+    assert "actual=15403, expected=32048, delta=16645 (51.9%)" in plain
+    assert "delta=16645 \\(51\\.9%\\)" in markdown
+    assert "no baseline" not in plain
+
+
+def test_the_preview_says_the_same_thing_as_the_send() -> None:
+    """The in-UI simulator renders through its own copy of this context.
+
+    A rule tested in the simulator and then sent for real must not describe the
+    same firing two different ways.
+    """
+    item = _zero_baseline_item()
+    firing = SimulatedRuleFiring(
+        anomaly_id=uuid.uuid4(),
+        scope_type="event",
+        scope_ref=item.scope_ref,
+        scope_name=item.scope_name,
+        event_type_id=None,
+        event_id=None,
+        bucket=item.bucket,
+        direction=item.direction,
+        actual_count=item.actual_count,
+        expected_count=item.expected_count,
+        absolute_delta=item.absolute_delta,
+        percent_delta=item.percent_delta,
+    )
+
+    previewed = render_firing_item(
+        firing,
+        message_format=ALERT_MESSAGE_FORMAT_PLAIN,
+        items_template=get_default_items_template(ALERT_MESSAGE_FORMAT_PLAIN),
+    )
+
+    assert previewed == _render_in(item, ALERT_MESSAGE_FORMAT_PLAIN)
+    assert "no baseline" in previewed

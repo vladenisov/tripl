@@ -31,6 +31,7 @@ from tripl.core.analyzers.anomaly_detector import (
     SCOPE_PROJECT_TOTAL,
     settling_buckets_for,
 )
+from tripl.metric_grid import metric_grid_stmt, metric_grids
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
@@ -96,6 +97,21 @@ def _bucket_is_recent(bucket: datetime, cutoff: datetime) -> bool:
     if bucket.tzinfo is None:
         cutoff = cutoff.replace(tzinfo=None)
     return bucket >= cutoff
+
+
+def _freshness_horizon(interval: timedelta | None, recent_window: timedelta) -> timedelta:
+    """Mirror of ``monitoring_utils._freshness_horizon``; see there for the rationale.
+
+    Shared by BOTH branches of ``_classify_signal_state``, exactly as in the
+    display copy. It used to be inlined in the latest-scan branch alone while the
+    "recent" branch measured the bare window, so on a grid coarser than the
+    window the two copies answered differently for the same anomaly
+    (tripl-l429.19). ``test_monitors_summary`` now pins the two answers, not just
+    the constant they share.
+    """
+    if interval is None:
+        return recent_window
+    return max(recent_window, LATEST_SCAN_STALE_INTERVALS * interval)
 
 
 def _scan_config_freshness_inputs(
@@ -186,19 +202,23 @@ def _classify_signal_state(
 
     reference = now if now is not None else datetime.now(UTC)
     window = recent_window if recent_window is not None else RECENT_SIGNAL_WINDOW
+    horizon = _freshness_horizon(interval, window)
 
     # The settled head, not the raw one: buckets newer than this were withheld
     # from emission, so no anomaly can exist there. See ``_emission_lag``.
-    if anomaly_bucket >= latest_metric_bucket - emission_lag:
-        horizon = (
-            window if interval is None else max(window, LATEST_SCAN_STALE_INTERVALS * interval)
-        )
-        # A stopped scan's final anomaly stays at max(bucket) forever; only keep it
-        # "latest_scan" while it is still fresh in wall-clock terms.
-        if _bucket_is_recent(anomaly_bucket, reference - horizon):
-            return "latest_scan"
+    # A stopped scan's final anomaly stays at max(bucket) forever, so being on
+    # the head is not enough on its own — it must also still be fresh in
+    # wall-clock terms, or the row falls through to the checks below.
+    if anomaly_bucket >= latest_metric_bucket - emission_lag and _bucket_is_recent(
+        anomaly_bucket, reference - horizon
+    ):
+        return "latest_scan"
 
-    if _bucket_is_recent(anomaly_bucket, reference - window):
+    # The same horizon, and for the same reason as in the display copy: an
+    # anomaly on a daily or weekly grid is already at least a bucket behind the
+    # head, so measuring this branch against a bare 24 hours closed it while the
+    # API still rendered it open.
+    if _bucket_is_recent(anomaly_bucket, reference - horizon):
         return "recent"
 
     return None
@@ -251,6 +271,29 @@ def _get_visible_signal_scope_keys(
     session: Session,
     scan_config_id: uuid.UUID,
 ) -> set[tuple[str, str]]:
+    """Open signals of ONE scan config, as the run summary's delta counts them.
+
+    ``tasks.collect_metrics`` takes this set before and after a run and reports
+    the difference as ``signals_added`` / ``signals_removed``. That answers "what
+    did THIS RUN change", which is deliberately a different question from "what
+    is open in the project" — the one the Anomalies page answers. Two
+    consequences, stated here so the next reader does not re-file them:
+
+    * catalog-``metric`` signals are project-global (NULL ``scan_config_id``) and
+      are never counted. A run belongs to one scan config, so folding a
+      project-wide metric signal in would re-report the same signal on every
+      scan's card in the project;
+    * an outage announced in an EARLIER run stays open on the Anomalies page
+      indefinitely — ``monitoring_utils._outage_is_still_running`` re-checks the
+      anchor against the series rather than ageing it out — while it leaves this
+      set once its bucket passes the freshness horizon. It is not new in this run
+      either way, so ``signals_added`` is unaffected; only ``signals_removed``
+      can name a scope the page still lists.
+
+    Within its own scan's event scopes it classifies by exactly the page's rule,
+    interval floor included (``test_monitors_summary`` pins the two classifiers
+    to the same answer on every grid).
+    """
     latest_metrics = _get_latest_metric_buckets(session, scan_config_id)
     latest_anomalies: dict[tuple[str, str], MetricAnomaly] = {}
     for anomaly in session.execute(
@@ -337,17 +380,26 @@ def _get_active_metric_anomaly_candidates(
     Each metric is measured on its OWN grid, so the settled head is computed per
     metric: the same 120-minute allowance withholds two buckets of an hourly
     metric and a whole bucket of a daily one.
+
+    That grid is the METRIC's, never the caller's. This pass runs once per scan
+    config while the anomalies it judges are project-global and share ONE
+    ``AlertRuleState`` row, so substituting ``config.interval`` for an
+    interval-less ``event_composition`` metric made the same metric a candidate
+    under one scan and not under another — the two dispatch runs then opened and
+    closed the same alert state in turn (tripl-l429.22).
     """
-    metric_intervals: dict[str, str | None] = {
-        str(metric_id): interval
-        for metric_id, interval in session.execute(
-            select(MetricDefinition.id, MetricDefinition.interval).where(
-                MetricDefinition.project_id == config.project_id,
-                MetricDefinition.anomaly_detection_enabled.is_(True),
-            )
-        ).all()
+    metric_grids_by_ref = {
+        str(metric_id): grid
+        for metric_id, grid in metric_grids(
+            session.execute(
+                metric_grid_stmt(
+                    MetricDefinition.project_id == config.project_id,
+                    MetricDefinition.anomaly_detection_enabled.is_(True),
+                )
+            ).all()
+        ).items()
     }
-    scope_refs = list(metric_intervals)
+    scope_refs = list(metric_grids_by_ref)
     if not scope_refs:
         return {}
 
@@ -373,11 +425,9 @@ def _get_active_metric_anomaly_candidates(
         latest_anomalies.setdefault(anomaly.scope_ref, anomaly)
 
     settling_delay = _ingestion_settling_delay(session, config.project_id)
-    # A metric with no interval of its own (``event_composition``) inherits a
-    # scan's grid; this pass runs per scan config, so that config's grid stands in.
     intervals = {
-        scope_ref: _scan_interval_delta(interval or config.interval)
-        for scope_ref, interval in metric_intervals.items()
+        scope_ref: _scan_interval_delta(grid.interval)
+        for scope_ref, grid in metric_grids_by_ref.items()
     }
     # See _get_latest_active_anomalies: alert candidates stay on the fixed
     # window so the presentation setting cannot close alert state.

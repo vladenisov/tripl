@@ -5,6 +5,7 @@ from tripl.alert_templates import (
     AlertTemplateContext,
     escape_alert_value,
     format_metric_alert_value,
+    format_percent_delta,
     get_default_items_template,
     get_default_message_template,
     normalize_message_template,
@@ -75,6 +76,9 @@ def render_firing_item(
             format_metric_alert_value(firing.absolute_delta, metric_unit), message_format
         ),
         "percent_delta": escape_alert_value(f"{firing.percent_delta:.1f}", message_format),
+        "percent_delta_label": escape_alert_value(
+            format_percent_delta(firing.percent_delta, firing.expected_count), message_format
+        ),
         "bucket": escape_alert_value(firing.bucket, message_format),
         "details_url": "",
         "monitoring_url": "",
