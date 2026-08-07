@@ -140,6 +140,9 @@ const ACTION_GROUPS: { label: string; actions: string[] }[] = [
       'alert_inbox.mute',
       'alert_inbox.reopen',
       'alert_inbox.false_positive',
+      // Undoing a false-positive ratchet re-sensitises a scope, so it belongs
+      // in the same filter as the click that tightened it.
+      'anomaly_scope_override.delete',
     ],
   },
   {

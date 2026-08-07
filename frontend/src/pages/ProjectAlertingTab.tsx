@@ -380,6 +380,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                   slug={slug}
                   destination={destination}
                   eventTypes={eventTypes}
+                  scans={scans}
                   onEditDestination={openEdit}
                 />
               ))}
@@ -402,6 +403,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                       slug={slug}
                       destination={destination}
                       eventTypes={eventTypes}
+                      scans={scans}
                       onEditDestination={openEdit}
                     />
                     <div className="mt-2 flex justify-end">
@@ -486,7 +488,12 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                               <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={inboxActionMut.isPending} onClick={() => inboxActionMut.mutate({ group, action: 'mute' })}>
                                 Mute
                               </Button>
-                              <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={inboxActionMut.isPending} onClick={() => inboxActionMut.mutate({ group, action: 'false_positive' })}>
+                              {/* One click permanently desensitises the scopes
+                                  this incident fired on — and nothing else.
+                                  There is deliberately no confirm step, so the
+                                  tooltip has to carry what it does and where to
+                                  undo it. */}
+                              <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={inboxActionMut.isPending} title="Closes this incident and permanently makes detection stricter on its scopes only. Undo under Settings › Monitoring › Scope overrides." onClick={() => inboxActionMut.mutate({ group, action: 'false_positive' })}>
                                 False positive
                               </Button>
                               {group.status !== 'open' && (

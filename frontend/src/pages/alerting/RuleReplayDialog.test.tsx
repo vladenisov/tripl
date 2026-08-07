@@ -12,6 +12,7 @@ const LONG_MESSAGE = `[tripl] 3 alerts\nProject delivery via demo sink\n${'unbro
 const RULE: AlertRule = {
   id: 'rule-1',
   destination_id: 'destination-1',
+  scan_config_id: null,
   name: 'Test',
   enabled: true,
   include_project_total: true,

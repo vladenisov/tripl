@@ -5,6 +5,7 @@ import type { AlertDelivery, AlertDeliveryItem } from "@/types"
 import { alertingApi } from "@/api/alerting"
 import { getErrorMessage } from "@/lib/utils"
 import { formatDateTime } from "@/lib/datetime"
+import { formatPercentDelta } from "@/lib/percentDelta"
 import { Badge } from "@/components/ui/badge"
 import { LocalDeliveryBadge } from "@/demo/capabilityBadges"
 import { Button } from "@/components/ui/button"
@@ -207,7 +208,9 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
                             <TableCell className="text-xs">{item.actual_count}</TableCell>
                             <TableCell className="text-xs">{item.expected_count}</TableCell>
                             <TableCell className="text-xs">{item.absolute_delta}</TableCell>
-                            <TableCell className="text-xs">{item.percent_delta.toFixed(1)}%</TableCell>
+                            <TableCell className="text-xs">
+                              {formatPercentDelta(item.percent_delta, item.expected_count)}
+                            </TableCell>
                             <TableCell className="text-xs">
                               <div className="flex gap-3">
                                 {item.details_path && (

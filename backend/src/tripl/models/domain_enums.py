@@ -178,6 +178,20 @@ class ReleaseRegressionKind(enum.StrEnum):
     volume_drop = "volume_drop"
 
 
+class ReleaseComparabilityReason(enum.StrEnum):
+    """Why one release-regression pass concluded what it concluded.
+
+    Mirrors the ``REASON_*`` constants in
+    ``tripl.core.analyzers.release_regression``, which is DB-free and so cannot
+    import this; keep the two in step.
+    """
+
+    comparable = "comparable"
+    no_baseline = "no_baseline"
+    baseline_no_volume = "baseline_no_volume"
+    population_mismatch = "population_mismatch"
+
+
 class DistributionDriftBand(enum.StrEnum):
     stable = "stable"
     minor = "minor"

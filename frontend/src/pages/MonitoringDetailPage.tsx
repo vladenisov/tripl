@@ -1044,7 +1044,11 @@ export default function MonitoringDetailPage() {
             </Card>
           )}
 
-          {latestSignal && slug && scope !== 'metric' && (
+          {/* scan_config_id is NULL only for metric-scope signals, which the
+              scope guard already excludes — but it is checked rather than
+              asserted, so a future scope that also lacks one cannot put a null
+              into the query key. */}
+          {latestSignal?.scan_config_id && slug && scope !== 'metric' && (
             <TopMoversPanel
               slug={slug}
               scanConfigId={latestSignal.scan_config_id}

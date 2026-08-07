@@ -66,4 +66,32 @@ describe('EventValueDriftPanel', () => {
       ),
     )
   })
+
+  it('reveals an accepted drift behind the resolved toggle and reopens it', async () => {
+    const accepted = {
+      ...DRIFT,
+      id: 'drift-2',
+      status: 'accepted' as const,
+      observed_values: ['q'],
+    }
+    vi.mocked(variableDriftsApi.list).mockResolvedValue({ items: [accepted], total: 1 })
+    vi.mocked(variableDriftsApi.action).mockResolvedValue({ ...accepted, status: 'open' })
+
+    renderPanel()
+
+    // Resolved rows are collapsed, not hidden: the panel still renders.
+    fireEvent.click(await screen.findByRole('button', { name: 'Show 1 resolved' }))
+    expect(await screen.findByText('q')).toBeInTheDocument()
+    expect(screen.getByText('accepted')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reopen' }))
+    await waitFor(() =>
+      expect(variableDriftsApi.action).toHaveBeenCalledWith(
+        'demo',
+        'drift-2',
+        { action: 'reopen', scope: undefined, snoozed_until: undefined },
+        null,
+      ),
+    )
+  })
 })

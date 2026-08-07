@@ -44,6 +44,7 @@ from tripl.services.metrics_insights_service import (
 from tripl.services.metrics_service import _get_project_recent_signal_windows
 from tripl.services.monitoring_utils import (
     classify_signal_state,
+    latest_bucket_by_scan,
     scan_interval_to_timedelta,
     summarize_monitor_states,
 )
@@ -378,8 +379,11 @@ async def _populate_monitoring_signals(
     # them. Fold them into the count here by reusing the exact open-signal logic
     # the AnomaliesPage uses (metrics_insights_service._count_active_metric_signals_by_project,
     # the batched sibling of _get_active_metric_signals, which classifies each
-    # metric's newest anomaly against its latest stored value bucket), so the
-    # sidebar / ProjectsPage badge agrees with the AnomaliesPage list. Batched to
+    # metric's newest anomaly against its latest stored value bucket ON THAT
+    # METRIC'S OWN GRID), so the sidebar / ProjectsPage badge agrees with the
+    # AnomaliesPage list. The grid half of that claim was aspirational until
+    # tripl-l429.17: the batched sibling passed no interval at all, so a daily
+    # catalog metric read open on the page and zero here. Batched to
     # O(1) queries so listing N projects does not fan out to N per-project scans.
     # These signals have no scan_config_id and so cannot populate ``latest_signal``
     # (a ProjectLatestSignal requires one); they contribute to
@@ -515,6 +519,17 @@ async def _populate_monitoring_signals(
         ) in latest_metric_rows.all()
     }
 
+    # Scan liveness, off the rows already loaded: an outage anchor stays open only
+    # while its scan is still collecting SOMETHING. Keyed on the scan config id
+    # itself, never on the stringified scope_ref, so the dialect-dependent
+    # cast(uuid, String) above cannot reach it. Same helper as the AnomaliesPage.
+    scan_latest_buckets = latest_bucket_by_scan(
+        (scan_config_id, bucket)
+        for (_project_id, scan_config_id, _scope_type, _scope_ref), bucket in (
+            latest_metric_buckets.items()
+        )
+    )
+
     now = datetime.now(UTC)
     # Same per-project open-signal window the metric-scope half above and the
     # AnomaliesPage already honour; without it the two halves of this badge
@@ -530,6 +545,10 @@ async def _populate_monitoring_signals(
             now=now,
             interval=scan_interval_to_timedelta(scan_interval),
             recent_window=recent_windows.get(project_id),
+            # An outage announced once and never re-emitted is re-checked against
+            # the current series rather than its own age (tripl-l429.15).
+            anomaly_actual_count=anomaly.actual_count,
+            scan_latest_bucket=scan_latest_buckets.get(anomaly.scan_config_id),
         )
         if state is None:
             continue

@@ -184,4 +184,32 @@ describe('AlertDeliveryRow items table', () => {
     expect(screen.getByRole('columnheader', { name: 'Scope' })).toBeInTheDocument()
     expect(screen.queryByText(/No per-scope rows were stored/)).toBeNull()
   })
+
+  it('shows the percentage for an item that had a baseline', async () => {
+    expandRow({ ...mockDelivery({ status: 'sent', error_message: null }), items: [mockItem()] })
+
+    expect(await screen.findByText('70.0%')).toBeInTheDocument()
+  })
+
+  it('says there was no baseline instead of claiming a 0% change', async () => {
+    // The percent gate deliberately admits zero-baseline anomalies
+    // (tripl-l429.12) and the stored percent_delta is 0.0 for them because the
+    // ratio is undefined — the same value the alert message renders, so the two
+    // must read the same (tripl-l429.24).
+    expandRow({
+      ...mockDelivery({ status: 'sent', error_message: null }),
+      items: [
+        mockItem({
+          direction: 'spike',
+          actual_count: 137,
+          expected_count: 0,
+          absolute_delta: 137,
+          percent_delta: 0,
+        }),
+      ],
+    })
+
+    expect(await screen.findByText('no baseline')).toBeInTheDocument()
+    expect(screen.queryByText('0.0%')).toBeNull()
+  })
 })

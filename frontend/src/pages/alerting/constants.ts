@@ -48,6 +48,10 @@ export type RuleFilterDraft = {
 export type RuleFormState = {
   name: string
   enabled: boolean
+  // '' is the "All scans" option — the API wants null there, so
+  // `ruleFormToPayload` converts. Radix Select cannot hold an empty value, so
+  // the picker itself uses the `ALL_SCANS_OPTION` sentinel.
+  scan_config_id: string
   include_project_total: boolean
   include_event_types: boolean
   include_events: boolean
@@ -116,7 +120,8 @@ export const ITEM_TEMPLATE_VARIABLE_OPTIONS = [
   { name: 'actual_count', description: 'Actual count' },
   { name: 'expected_count', description: 'Expected count' },
   { name: 'absolute_delta', description: 'Absolute delta' },
-  { name: 'percent_delta', description: 'Percent delta' },
+  { name: 'percent_delta', description: 'Percent delta as a bare number (0 when there was no baseline)' },
+  { name: 'percent_delta_label', description: 'Percent delta with its "%" sign, or "no baseline" when expected is 0' },
   { name: 'bucket', description: 'Anomaly bucket timestamp' },
   { name: 'details_url', description: 'Details URL' },
   { name: 'monitoring_url', description: 'Monitoring URL' },
@@ -163,11 +168,15 @@ export const DEFAULT_MESSAGE_TEMPLATES: Record<AlertMessageFormat, string> = {
   ].join('\n'),
 }
 
+// `${percent_delta_label}` rather than a bare `${percent_delta}%`: the label
+// carries its own unit, so it says "no baseline" for an item whose expected
+// count is 0 instead of printing the undefined ratio as "0.0%". Mirrors
+// backend `alert_templates.DEFAULT_ALERT_ITEMS_TEMPLATES`.
 export const DEFAULT_ITEMS_TEMPLATES: Record<AlertMessageFormat, string> = {
-  plain: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta}%)${drift_line}${details_line}${monitoring_line}',
-  slack_mrkdwn: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta}%)${drift_line}${details_line}${monitoring_line}',
-  telegram_html: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta}%)${drift_line}${details_line}${monitoring_line}',
-  telegram_markdownv2: '\\- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} \\(${percent_delta}%\\)${drift_line}${details_line}${monitoring_line}',
+  plain: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta_label})${drift_line}${details_line}${monitoring_line}',
+  slack_mrkdwn: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta_label})${drift_line}${details_line}${monitoring_line}',
+  telegram_html: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta_label})${drift_line}${details_line}${monitoring_line}',
+  telegram_markdownv2: '\\- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} \\(${percent_delta_label}\\)${drift_line}${details_line}${monitoring_line}',
 }
 
 export const MESSAGE_FORMAT_OPTIONS: Record<AlertDestinationType, { value: AlertMessageFormat; label: string }[]> = {
@@ -277,10 +286,15 @@ export function isDefaultItemsTemplate(
   return normalizeRuleTemplate(value) === normalizeRuleTemplate(getDefaultItemsTemplate(messageFormat))
 }
 
+// Radix Select rejects an empty string as an item value, so "every scan in the
+// project" needs a sentinel in the picker even though the wire value is null.
+export const ALL_SCANS_OPTION = 'all'
+
 export function defaultRuleForm(): RuleFormState {
   return {
     name: '',
     enabled: true,
+    scan_config_id: '',
     include_project_total: true,
     include_event_types: true,
     include_events: true,
@@ -292,7 +306,11 @@ export function defaultRuleForm(): RuleFormState {
     notify_on_spike: true,
     notify_on_drop: true,
     ai_explanation_enabled: false,
-    min_percent_delta: 0,
+    // Matches the server default — DEFAULT_MIN_PERCENT_DELTA in
+    // backend/src/tripl/models/alert_rule.py. A new rule watches moves of at
+    // least double or at most half, not every deviation; a form that opened at
+    // 0 would quietly disagree with the API.
+    min_percent_delta: 100,
     min_absolute_delta: 0,
     min_expected_count: 0,
     cooldown_minutes: 1440,
@@ -307,6 +325,7 @@ export function ruleToForm(rule: AlertRule): RuleFormState {
   return {
     name: rule.name,
     enabled: rule.enabled,
+    scan_config_id: rule.scan_config_id ?? '',
     include_project_total: rule.include_project_total,
     include_event_types: rule.include_event_types,
     include_events: rule.include_events,
@@ -350,6 +369,9 @@ export function ruleFormToPayload(ruleForm: RuleFormState) {
   void _ignored
   return {
     ...rest,
+    // Explicit null, never omitted: PATCH distinguishes "not mentioned" from
+    // "widen this rule back to the whole project".
+    scan_config_id: ruleForm.scan_config_id || null,
     filters,
     message_template:
       !normalizedTemplate || isDefaultMessageTemplate(normalizedTemplate, ruleForm.message_format)

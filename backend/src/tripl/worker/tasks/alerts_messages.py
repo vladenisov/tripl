@@ -20,6 +20,7 @@ from tripl.alert_templates import (
     AlertTemplateContext,
     escape_alert_value,
     format_metric_alert_value,
+    format_percent_delta,
     get_default_items_template,
     get_default_message_template,
     normalize_message_template,
@@ -63,6 +64,31 @@ _AI_HISTORY_WINDOW = timedelta(days=7)
 # Prior explanations are 2-4 sentences; keep a readable head of each so three of
 # them cannot crowd out the current items.
 _AI_HISTORY_EXPLANATION_CHARS = 320
+
+# Telegram's sendMessage rejects a body over 4096 characters with HTTP 400
+# "Bad Request: message is too long".
+#
+# The ceiling is on rendered LENGTH, not item count. Across the 29 deliveries
+# this instance has sent (48 rendered items), a single item runs 97-389
+# characters depending on how many of the optional
+# drift/details/monitoring/movers/trend lines it carries — a 4x spread, so any
+# item count safe for a schema-drift rule overshoots for an event rule carrying
+# URLs. At the measured 355-character mean the items alone pass 4096 at 12
+# items, and the whole message passes it at 10.
+TELEGRAM_MESSAGE_MAX_CHARS = 4096
+
+
+def telegram_message_length(text: str) -> int:
+    """Length of ``text`` the way Telegram counts it.
+
+    The 4096 ceiling is counted in UTF-16 code units — the same units the API
+    uses for entity offsets — while ``len`` counts code points. Every character
+    outside the BMP (emoji, and the symbols an event name can carry) therefore
+    costs two where ``len`` charges one, so a body of 4000 code points can be
+    refused at 4400 units. Budgeting in ``len`` is how the previous attempt at
+    this ceiling let an oversized message through.
+    """
+    return len(text.encode("utf-16-le")) // 2
 
 
 def _resolve_metric_units(
@@ -208,6 +234,9 @@ def _build_item_template_context(
             format_metric_alert_value(item.absolute_delta, metric_unit), message_format
         ),
         "percent_delta": escape_alert_value(f"{item.percent_delta:.1f}", message_format),
+        "percent_delta_label": escape_alert_value(
+            format_percent_delta(item.percent_delta, item.expected_count), message_format
+        ),
         "bucket": escape_alert_value(item.bucket, message_format),
         "details_url": escape_alert_value(item.details_path or "", message_format),
         "monitoring_url": escape_alert_value(item.monitoring_path or "", message_format),
@@ -235,6 +264,15 @@ def _build_items_text(
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
     metric_units_cache: dict[str, str | None] | None = None,
 ) -> str:
+    """Render every item it is given, whole.
+
+    Deliberately has no length budget of its own. It used to stop at the first
+    item that would not fit and append a "+N more of 14 not shown" tail, which
+    dropped matched scopes that the success path then stamped as notified. What
+    a channel with a per-message ceiling does instead is carry fewer items per
+    message and send more messages — see :func:`split_telegram_messages`, which
+    chooses the subsets and hands them here one group at a time.
+    """
     metric_units = _resolve_metric_units(session, items, metric_units_cache)
     lines: list[str] = []
     for item in items:
@@ -251,8 +289,9 @@ def _build_items_text(
                 ),
             ),
         ).rstrip()
-        if rendered_item:
-            lines.append(rendered_item)
+        if not rendered_item:
+            continue
+        lines.append(rendered_item)
     return "\n".join(lines)
 
 
@@ -267,11 +306,19 @@ def _build_template_context(
     session: Session | None = None,
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
     metric_units_cache: dict[str, str | None] | None = None,
+    items: list[AlertDeliveryItem] | None = None,
 ) -> AlertTemplateContext:
     message_format = message_format_override or rule.message_format or ALERT_MESSAGE_FORMAT_PLAIN
     items_template = normalize_message_template(rule.items_template)
     if items_template is None:
         items_template = get_default_items_template(message_format)
+    # ``items`` is one message's share of a delivery split across several (see
+    # split_telegram_messages). Its count, not the delivery's, is what the
+    # header may claim: a reader looking at message 2 of 2 counts what is in
+    # front of them, and the dispatch-side chunking already gives each of its
+    # chunks its own matched_count for the same reason.
+    rendered_items = delivery.items if items is None else items
+    rendered_count = delivery.matched_count if items is None else len(items)
 
     variables = {
         "project_name": escape_alert_value(project.name if project else "", message_format),
@@ -280,10 +327,10 @@ def _build_template_context(
         "destination_name": escape_alert_value(destination.name, message_format),
         "rule_name": escape_alert_value(rule.name, message_format),
         "scan_name": escape_alert_value(scan_name, message_format),
-        "matched_count": escape_alert_value(delivery.matched_count, message_format),
-        "items_count": escape_alert_value(delivery.matched_count, message_format),
+        "matched_count": escape_alert_value(rendered_count, message_format),
+        "items_count": escape_alert_value(rendered_count, message_format),
         "items_text": _build_items_text(
-            delivery.items,
+            rendered_items,
             message_format=message_format,
             items_template=items_template,
             session=session,
@@ -306,7 +353,14 @@ def _render_delivery_message(
     session: Session | None = None,
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
     metric_units_cache: dict[str, str | None] | None = None,
+    items: list[AlertDeliveryItem] | None = None,
 ) -> tuple[str, str]:
+    """Render (message, message_format) for a delivery.
+
+    ``items`` renders a subset — one message's share of a delivery split across
+    several. None means the whole delivery, which is what every channel without
+    a per-message ceiling gets.
+    """
     template = normalize_message_template(rule.message_template)
     context = _build_template_context(
         delivery,
@@ -318,10 +372,90 @@ def _render_delivery_message(
         session=session,
         item_context_cache=item_context_cache,
         metric_units_cache=metric_units_cache,
+        items=items,
     )
     if template is None:
         template = get_default_message_template(context.message_format)
     return render_alert_template(template, context).rstrip(), context.message_format
+
+
+def split_telegram_messages(
+    delivery: AlertDelivery,
+    *,
+    destination: AlertDestination,
+    rule: AlertRule,
+    scan_name: str,
+    project: Project | None,
+    message: str,
+    message_format: str,
+    items: list[AlertDeliveryItem] | None = None,
+    session: Session | None = None,
+    item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
+    metric_units_cache: dict[str, str | None] | None = None,
+    ai_explanation: str | None = None,
+    max_chars: int = TELEGRAM_MESSAGE_MAX_CHARS,
+) -> list[tuple[str, list[AlertDeliveryItem]]]:
+    """``message`` as one or more messages that each clear Telegram's ceiling.
+
+    Returns (text, the items that text carries) in send order, so the caller
+    knows exactly what has gone out if a later message fails.
+
+    ``message`` is the already-rendered whole — the caller needs it anyway for
+    the payload snapshot — so the common case costs one length check and no
+    re-render at all. Only when it does not fit are the items packed greedily
+    into messages, each one measured as the reader will receive it: header,
+    items and AI note assembled and counted in Telegram's UTF-16 units. That is
+    what the reserve-based budget it replaces could only estimate — the header
+    comes from a user-editable template and the AI note from a language model,
+    so both could exceed their reserve and no items budget could see it.
+
+    The AI note rides on the first message only. It summarises the whole
+    delivery, and repeating it under every part would cost the reader nothing
+    but length.
+
+    Nothing is ever dropped: an item too long to share a message gets one of its
+    own. A SINGLE item that alone exceeds the ceiling is the one thing this
+    cannot fix — it is returned as its own message and Telegram refuses it, so
+    the delivery fails visibly instead of quietly losing the item.
+    """
+    delivery_items = delivery.items if items is None else items
+    if len(delivery_items) <= 1 or telegram_message_length(message) <= max_chars:
+        return [(message, list(delivery_items))]
+
+    def render_part(part: list[AlertDeliveryItem], *, with_ai_note: bool) -> str:
+        text, part_format = _render_delivery_message(
+            delivery,
+            destination=destination,
+            rule=rule,
+            scan_name=scan_name,
+            project=project,
+            message_format_override=message_format,
+            session=session,
+            item_context_cache=item_context_cache,
+            metric_units_cache=metric_units_cache,
+            items=part,
+        )
+        if with_ai_note and ai_explanation:
+            text = _append_ai_explanation(text, ai_explanation, part_format)
+        return text
+
+    parts: list[tuple[str, list[AlertDeliveryItem]]] = []
+    current: list[AlertDeliveryItem] = []
+    current_text = ""
+    for item in delivery_items:
+        candidate = [*current, item]
+        candidate_text = render_part(candidate, with_ai_note=not parts)
+        # ``current`` being non-empty is what keeps a lone oversized item in:
+        # closing an empty message to make room for it would drop it forever.
+        if current and telegram_message_length(candidate_text) > max_chars:
+            parts.append((current_text, current))
+            current = [item]
+            current_text = render_part(current, with_ai_note=False)
+            continue
+        current = candidate
+        current_text = candidate_text
+    parts.append((current_text, current))
+    return parts
 
 
 def _describe_age(delta: timedelta) -> str:
@@ -424,13 +558,14 @@ def _build_ai_explanation(
     """
     ai_config = app_settings_service.get_ai_config_sync()
     lines: list[str] = [f"Project: {project_name}", f"Scan: {scan_name}", "Alert items:"]
-    # Every item now carries a correlation_group_id (it doubles as the inbox
-    # handle), so its mere presence no longer means "co-fired". Count peers in
-    # this delivery instead, or a solitary alert would claim companions.
-    group_sizes: Counter[uuid.UUID | None] = Counter(
-        item.correlation_group_id
-        for item in delivery.items
-        if item.correlation_group_id is not None
+    # The correlation id cannot answer "did this co-fire?". It is the inbox
+    # handle, every item carries one, and it is keyed per SCOPE — so counting
+    # group members finds exactly one member for every item and the tag would
+    # silently never appear again. Peers are counted inside this delivery
+    # instead, on the pair that makes co-firing mean something: one bucket, one
+    # direction.
+    cofiring_sizes: Counter[tuple[datetime, str]] = Counter(
+        (item.bucket, item.direction) for item in delivery.items
     )
     for item in delivery.items[:_AI_EXPLANATION_MAX_ITEMS]:
         sparkline, top_movers = item_context_cache.get(item.id, ("", ""))
@@ -457,16 +592,21 @@ def _build_ai_explanation(
             )
             lines.append(f"- [{item.scope_type} drift] {item.scope_name}: {drift_bits}")
             continue
+        # "no baseline" rather than "+0%" for a zero-expected item: the note the
+        # model writes from this prompt is what the reader receives, and "+0%"
+        # reads as "nothing moved" for the one class where everything did
+        # (tripl-l429.24).
         line = (
             f"- [{item.scope_type}] {item.scope_name}: {item.direction}, "
             f"actual {item.actual_count} vs expected {item.expected_count} "
-            f"({item.percent_delta:+.0f}%), bucket {item.bucket:%Y-%m-%d %H:%M}"
+            f"({format_percent_delta(item.percent_delta, item.expected_count, spec='+.0f')}), "
+            f"bucket {item.bucket:%Y-%m-%d %H:%M}"
         )
         if sparkline:
             line += f", recent trend (old→new): {sparkline}"
         if top_movers:
             line += f", top movers: {top_movers}"
-        if group_sizes.get(item.correlation_group_id, 0) > 1:
+        if cofiring_sizes.get((item.bucket, item.direction), 0) > 1:
             line += " [co-fired with other items]"
         lines.append(line)
     # What was already said about these scopes, so a recurring drift reads as
@@ -572,6 +712,24 @@ def _build_ticket_subject(
 def _is_telegram_markdown_parse_error(error: Exception) -> bool:
     message = str(error).lower()
     return "can't parse entities" in message or "can't find end of" in message
+
+
+def _is_telegram_message_too_long_error(error: Exception) -> bool:
+    """True for Telegram's over-4096 rejection.
+
+    ``_post_json`` turns the HTTPError into ValueError("HTTP 400 from <url>:
+    Bad Request: message is too long"), which
+    :func:`_is_telegram_markdown_parse_error` correctly does not match — it is
+    not a parse failure, and re-rendering as plain text makes a long message
+    longer, not shorter.
+
+    Since :func:`split_telegram_messages` measures each message as Telegram
+    counts it, this can now only mean one alert item is longer than 4096 units
+    on its own — nothing a smaller budget could fix. It is matched so the
+    sender can say that in the delivery's error, instead of leaving the raw
+    HTTP 400 in the Inbox.
+    """
+    return "message is too long" in str(error).lower()
 
 
 def _webhook_item_payload(item: AlertDeliveryItem) -> dict[str, object]:

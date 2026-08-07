@@ -3,13 +3,26 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 
 import { metricsApi } from '@/api/metrics'
-import type { ReleaseRegressionItem } from '@/types'
+import type { ReleaseComparabilityItem, ReleaseRegressionItem } from '@/types'
 
 import { ReleaseRegressionPanel } from './release-regression-panel'
 
 vi.mock('@/api/metrics', () => ({
   metricsApi: { getReleaseRegressions: vi.fn() },
 }))
+
+function verdict(overrides: Partial<ReleaseComparabilityItem> = {}): ReleaseComparabilityItem {
+  return {
+    scope_type: 'event',
+    comparable: true,
+    reason: 'comparable',
+    version: '2.1.0',
+    previous_version: '2.0.0',
+    emerging_share: 0.02,
+    max_emerging_share: 0.25,
+    ...overrides,
+  }
+}
 
 function regression(overrides: Partial<ReleaseRegressionItem>): ReleaseRegressionItem {
   return {
@@ -48,6 +61,7 @@ describe('ReleaseRegressionPanel', () => {
       scan_config_id: 'scan-1',
       app_version_column: 'app_version',
       latest_version: '2.1.0',
+      comparability: [verdict()],
       items: [
         regression({ scope_ref: 'e1', scope_name: 'Login', kind: 'missing', ratio: 0 }),
         regression({
@@ -74,11 +88,86 @@ describe('ReleaseRegressionPanel', () => {
       scan_config_id: 'scan-1',
       app_version_column: 'app_version',
       latest_version: '2.1.0',
+      // The affirmative is only earned by a verdict that says the comparison
+      // was actually made.
+      comparability: [verdict()],
       items: [],
     })
 
     renderPanel()
 
     expect(await screen.findByText(/No events regressed/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Cannot be judged yet/i)).not.toBeInTheDocument()
+  })
+
+  it('says a withheld comparison cannot be judged instead of affirming health', async () => {
+    vi.mocked(metricsApi.getReleaseRegressions).mockResolvedValue({
+      scan_config_id: 'scan-1',
+      app_version_column: 'app_version',
+      latest_version: '2.1.0',
+      comparability: [
+        verdict({ comparable: false, reason: 'population_mismatch', emerging_share: 0.66 }),
+      ],
+      items: [],
+    })
+
+    renderPanel()
+
+    expect(await screen.findByText(/Cannot be judged yet/i)).toBeInTheDocument()
+    expect(screen.getByText(/66\.0% of its volume/)).toBeInTheDocument()
+    expect(screen.getByText(/2\.1\.0 vs 2\.0\.0/)).toBeInTheDocument()
+    expect(screen.queryByText(/No events regressed/i)).not.toBeInTheDocument()
+  })
+
+  it('shows the withheld notice alongside the missing rows suppression keeps', async () => {
+    vi.mocked(metricsApi.getReleaseRegressions).mockResolvedValue({
+      scan_config_id: 'scan-1',
+      app_version_column: 'app_version',
+      latest_version: '2.1.0',
+      comparability: [verdict({ comparable: false, reason: 'population_mismatch' })],
+      items: [regression({ scope_name: 'Login', kind: 'missing' })],
+    })
+
+    renderPanel()
+
+    expect(await screen.findByText(/Cannot be judged yet/i)).toBeInTheDocument()
+    expect(screen.getByText('Login')).toBeInTheDocument()
+  })
+
+  it('names the reason when no baseline release exists to compare against', async () => {
+    vi.mocked(metricsApi.getReleaseRegressions).mockResolvedValue({
+      scan_config_id: 'scan-1',
+      app_version_column: 'app_version',
+      latest_version: null,
+      comparability: [
+        verdict({
+          comparable: false,
+          reason: 'no_baseline',
+          version: null,
+          previous_version: null,
+          emerging_share: 0,
+        }),
+      ],
+      items: [],
+    })
+
+    renderPanel()
+
+    expect(await screen.findByText(/Fewer than two released versions/i)).toBeInTheDocument()
+  })
+
+  it('does not affirm health when detection has never run for the scan', async () => {
+    vi.mocked(metricsApi.getReleaseRegressions).mockResolvedValue({
+      scan_config_id: 'scan-1',
+      app_version_column: 'app_version',
+      latest_version: null,
+      comparability: [],
+      items: [],
+    })
+
+    renderPanel()
+
+    expect(await screen.findByText(/No release comparison has run/i)).toBeInTheDocument()
+    expect(screen.queryByText(/No events regressed/i)).not.toBeInTheDocument()
   })
 })

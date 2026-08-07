@@ -38,7 +38,12 @@ export interface OverviewKpiSeries {
 }
 
 export interface MonitoringSignal {
-  scan_config_id: string
+  // NULL for `metric`-scope signals: catalog MetricDefinition series are
+  // project-global and belong to no single scan config. The backend has always
+  // said so (MetricSignalResponse.scan_config_id is `uuid.UUID | None`); this
+  // declaration claimed otherwise, so a consumer could treat it as a string,
+  // typecheck, and meet a null at runtime.
+  scan_config_id: string | null
   scope_type: MetricScopeType
   scope_ref: string
   state: 'latest_scan' | 'recent'
@@ -250,10 +255,32 @@ export interface ReleaseRegressionItem {
   window_to: string
 }
 
+export type ReleaseComparabilityReason =
+  | 'comparable'
+  | 'no_baseline'
+  | 'baseline_no_volume'
+  | 'population_mismatch'
+
+/**
+ * Verdict of one release-regression pass. An empty `items` means "nothing
+ * regressed" only when the matching verdict says `comparable`; otherwise the
+ * findings were withheld and the release cannot be judged yet.
+ */
+export interface ReleaseComparabilityItem {
+  scope_type: MetricScopeType
+  comparable: boolean
+  reason: ReleaseComparabilityReason
+  version: string | null
+  previous_version: string | null
+  emerging_share: number
+  max_emerging_share: number
+}
+
 export interface ReleaseRegressionsResponse {
   scan_config_id: string
   app_version_column: string | null
   latest_version: string | null
+  comparability: ReleaseComparabilityItem[]
   items: ReleaseRegressionItem[]
 }
 

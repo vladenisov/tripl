@@ -15,6 +15,7 @@ from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
+from tripl.models.anomaly_scope_override import AnomalyScopeOverride
 from tripl.models.data_source import DataSource
 from tripl.models.event import Event, EventStatus
 from tripl.models.event_type import EventType
@@ -224,10 +225,19 @@ async def test_alert_inbox_false_positive_updates_state_and_thresholds(
         )
         assert state is not None
         assert state.false_positive_count == 1
+        # The ratchet is per scope now: the scan keeps the sensitivity the
+        # operator gave it and the dismissed event type gets its own override.
         config = await session.get(ScanConfig, config_id)
         assert config is not None
-        assert config.sigma_threshold == 3.5
-        assert config.min_expected_count == 15
+        assert config.sigma_threshold == 3.0
+        assert config.min_expected_count == 10
+        override = await session.scalar(
+            select(AnomalyScopeOverride).where(AnomalyScopeOverride.scan_config_id == config_id)
+        )
+        assert override is not None
+        assert override.scope_type == "event_type"
+        assert override.sigma_threshold == 3.5
+        assert override.min_expected_count == 15
 
     # A second action carrying no note must not erase the first one's. The
     # assignment was unconditional, so every follow-up action silently wiped the
@@ -259,6 +269,194 @@ async def test_alert_inbox_false_positive_updates_state_and_thresholds(
         )
         assert state is not None
         assert state.note == "Rolled back"
+
+
+@pytest.mark.asyncio
+async def test_alert_inbox_false_positive_ratchets_only_the_marked_scope(
+    client: AsyncClient,
+) -> None:
+    """One "false positive" click tightens the scope it was clicked on — and
+    nothing else.
+
+    The ratchet used to raise ``sigma_threshold`` / ``min_expected_count`` on the
+    project's monitoring settings AND on every scan the group touched, so
+    dismissing one noisy event made the detector stricter on every other event,
+    event type, project total and catalog metric in the project. Per-scope
+    correlation groups (tripl-l429.1) made that button easy to reach, so the
+    blast radius had to shrink to the scope that was actually dismissed.
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Scoped Ratchet", "slug": "scoped-ratchet", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    group_id = uuid.uuid4()
+    async with TestSessionLocal() as session:
+        event_type = EventType(
+            project_id=project_id,
+            name="track",
+            display_name="Track",
+            description="",
+        )
+        data_source = DataSource(
+            name="Warehouse",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        session.add_all([event_type, data_source])
+        await session.flush()
+        noisy = Event(
+            project_id=project_id,
+            event_type_id=event_type.id,
+            name="noisy_event",
+            description="",
+            status=EventStatus.implemented.value,
+        )
+        quiet = Event(
+            project_id=project_id,
+            event_type_id=event_type.id,
+            name="quiet_event",
+            description="",
+            status=EventStatus.implemented.value,
+        )
+        config = ScanConfig(
+            project_id=project_id,
+            data_source_id=data_source.id,
+            event_type_id=event_type.id,
+            name="Events",
+            base_query="SELECT * FROM events",
+            time_column="time",
+            interval="1h",
+            sigma_threshold=3.0,
+            min_expected_count=10,
+        )
+        destination = AlertDestination(
+            project_id=project_id,
+            type="slack",
+            name="Slack",
+            enabled=True,
+            webhook_url_encrypted="secret",
+        )
+        session.add_all([noisy, quiet, config, destination])
+        await session.flush()
+        rule = AlertRule(
+            destination_id=destination.id,
+            name="Rule",
+            enabled=True,
+            include_events=True,
+            notify_on_spike=True,
+            notify_on_drop=True,
+            min_percent_delta=0,
+            min_absolute_delta=0,
+            min_expected_count=0,
+            cooldown_minutes=60,
+        )
+        settings = ProjectAnomalySettings(
+            project_id=project_id,
+            anomaly_detection_enabled=True,
+            sigma_threshold=3.0,
+            min_expected_count=10,
+        )
+        session.add_all([rule, settings])
+        await session.flush()
+        delivery = AlertDelivery(
+            project_id=project_id,
+            scan_config_id=config.id,
+            destination_id=destination.id,
+            rule_id=rule.id,
+            status="sent",
+            channel="slack",
+            matched_count=1,
+        )
+        session.add(delivery)
+        await session.flush()
+        session.add(
+            AlertDeliveryItem(
+                delivery_id=delivery.id,
+                scope_type="event",
+                scope_ref=str(noisy.id),
+                scope_name="noisy_event",
+                event_type_id=None,
+                event_id=noisy.id,
+                bucket=datetime(2026, 1, 1, tzinfo=UTC),
+                direction="spike",
+                actual_count=20,
+                expected_count=10,
+                absolute_delta=10,
+                percent_delta=100.0,
+                correlation_group_id=group_id,
+            )
+        )
+        await session.commit()
+        config_id = config.id
+        noisy_id = noisy.id
+        quiet_id = quiet.id
+
+    action_resp = await client.post(
+        f"/api/v1/projects/scoped-ratchet/alert-inbox/{group_id}/actions",
+        json={"action": "false_positive"},
+    )
+    assert action_resp.status_code == 200
+
+    async with TestSessionLocal() as session:
+        overrides = list(
+            (
+                await session.execute(
+                    select(AnomalyScopeOverride).where(
+                        AnomalyScopeOverride.project_id == project_id
+                    )
+                )
+            ).scalars()
+        )
+        # Exactly one override, on the dismissed scope, keyed the way the
+        # anomaly keys itself.
+        assert len(overrides) == 1
+        override = overrides[0]
+        assert override.scan_config_id == config_id
+        assert override.scope_type == "event"
+        assert override.scope_ref == str(noisy_id)
+        assert override.scope_ref != str(quiet_id)
+        assert override.sigma_threshold == 3.5
+        assert override.min_expected_count == 15
+        assert override.false_positive_count == 1
+
+        # The project-wide knobs the ratchet used to move are untouched, so
+        # every other scope keeps the sensitivity the operator chose.
+        project_settings = await session.scalar(
+            select(ProjectAnomalySettings).where(ProjectAnomalySettings.project_id == project_id)
+        )
+        assert project_settings is not None
+        assert project_settings.sigma_threshold == 3.0
+        assert project_settings.min_expected_count == 10
+        config = await session.get(ScanConfig, config_id)
+        assert config is not None
+        assert config.sigma_threshold == 3.0
+        assert config.min_expected_count == 10
+
+    # A second click on the same group ratchets the SAME row further rather
+    # than stacking duplicates.
+    await client.post(
+        f"/api/v1/projects/scoped-ratchet/alert-inbox/{group_id}/actions",
+        json={"action": "false_positive"},
+    )
+    async with TestSessionLocal() as session:
+        overrides = list(
+            (
+                await session.execute(
+                    select(AnomalyScopeOverride).where(
+                        AnomalyScopeOverride.project_id == project_id
+                    )
+                )
+            ).scalars()
+        )
+        assert len(overrides) == 1
+        assert overrides[0].sigma_threshold == 4.0
+        assert overrides[0].min_expected_count == 20
+        assert overrides[0].false_positive_count == 2
 
 
 def test_every_drift_type_the_pipeline_writes_exists_in_the_enum() -> None:
@@ -419,6 +617,223 @@ async def test_alerting_destination_rule_crud_and_secret_masking(client: AsyncCl
     )
     assert update_resp.status_code == 200
     assert update_resp.json()["enabled"] is False
+
+
+async def _seed_scan_config(project_id: uuid.UUID, name: str) -> uuid.UUID:
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"{name} DS",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project_id,
+            name=name,
+            base_query="SELECT * FROM events",
+            time_column="created_at",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+        await session.commit()
+        return scan_config.id
+
+
+@pytest.mark.asyncio
+async def test_alert_rule_can_be_narrowed_to_one_scan(client: AsyncClient) -> None:
+    """The HTTP surface round-trips ``scan_config_id`` and validates it.
+
+    NULL means "every scan in the project" — today's behaviour and the default,
+    so an existing rule keeps working untouched.
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Scan Bound", "slug": "scan-bound", "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    other_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Other Project", "slug": "scan-bound-other", "description": ""},
+    )
+    assert other_resp.status_code == 201
+    foreign_scan_id = await _seed_scan_config(uuid.UUID(other_resp.json()["id"]), "Foreign Scan")
+
+    scan_id = await _seed_scan_config(project_id, "Old events (iOS)")
+
+    destination_resp = await client.post(
+        "/api/v1/projects/scan-bound/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Main Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T000/B000/XXX",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+
+    # Default: unbound, i.e. the whole project.
+    default_resp = await client.post(
+        f"/api/v1/projects/scan-bound/alert-destinations/{destination_id}/rules",
+        json={"name": "Project rule"},
+    )
+    assert default_resp.status_code == 201
+    assert default_resp.json()["scan_config_id"] is None
+
+    created_resp = await client.post(
+        f"/api/v1/projects/scan-bound/alert-destinations/{destination_id}/rules",
+        json={"name": "iOS only", "scan_config_id": str(scan_id)},
+    )
+    assert created_resp.status_code == 201
+    rule = created_resp.json()
+    assert rule["scan_config_id"] == str(scan_id)
+
+    # A scan from another project is not addressable from here.
+    foreign_resp = await client.post(
+        f"/api/v1/projects/scan-bound/alert-destinations/{destination_id}/rules",
+        json={"name": "Cross project", "scan_config_id": str(foreign_scan_id)},
+    )
+    assert foreign_resp.status_code == 404
+
+    foreign_patch = await client.patch(
+        f"/api/v1/projects/scan-bound/alert-destinations/{destination_id}/rules/{rule['id']}",
+        json={"scan_config_id": str(foreign_scan_id)},
+    )
+    assert foreign_patch.status_code == 404
+
+    # An explicit null widens the rule back to the project.
+    widened = await client.patch(
+        f"/api/v1/projects/scan-bound/alert-destinations/{destination_id}/rules/{rule['id']}",
+        json={"scan_config_id": None},
+    )
+    assert widened.status_code == 200
+    assert widened.json()["scan_config_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_scan_disables_the_rules_bound_to_it(client: AsyncClient) -> None:
+    """A deleted scan must neither destroy nor silently widen its rules.
+
+    CASCADE would take the rule's name, thresholds, templates and filters with
+    it (and its delivery history through ``AlertDelivery.rule_id``). A bare SET
+    NULL would re-point a rule that was deliberately narrowed to the noisiest
+    scan at the whole project, so deleting that scan would START paging on every
+    other one. The rule is therefore kept, unbound AND disabled: visible in the
+    UI, inert until someone re-aims it.
+    """
+    from tripl.services.scan_service import delete_scan_config
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Scan Delete", "slug": "scan-delete", "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_id = await _seed_scan_config(project_id, "Doomed Scan")
+
+    destination_resp = await client.post(
+        "/api/v1/projects/scan-delete/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Main Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T000/B000/XXX",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+
+    bound_resp = await client.post(
+        f"/api/v1/projects/scan-delete/alert-destinations/{destination_id}/rules",
+        json={"name": "Bound rule", "scan_config_id": str(scan_id)},
+    )
+    assert bound_resp.status_code == 201
+    bound_rule_id = uuid.UUID(bound_resp.json()["id"])
+
+    untouched_resp = await client.post(
+        f"/api/v1/projects/scan-delete/alert-destinations/{destination_id}/rules",
+        json={"name": "Project rule"},
+    )
+    assert untouched_resp.status_code == 201
+    untouched_rule_id = uuid.UUID(untouched_resp.json()["id"])
+
+    async with TestSessionLocal() as session:
+        await delete_scan_config(session, "scan-delete", scan_id)
+
+    async with TestSessionLocal() as session:
+        bound = await session.get(AlertRule, bound_rule_id)
+        assert bound is not None, "deleting a scan must not delete its alert rule"
+        assert bound.scan_config_id is None
+        assert bound.enabled is False, "an orphaned rule must not widen to the project"
+
+        untouched = await session.get(AlertRule, untouched_rule_id)
+        assert untouched is not None
+        assert untouched.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_data_source_disables_the_rules_bound_to_its_scans(
+    client: AsyncClient,
+) -> None:
+    """The other way a scan config dies, and the one that skipped the unbind.
+
+    ``DataSource.scan_configs`` is delete-orphan, so removing a source takes its
+    scans with it WITHOUT going through ``delete_scan_config``. The FK is ON
+    DELETE SET NULL and NULL means "the whole project", so a rule narrowed to the
+    noisiest scan would come back re-aimed at every other scan the moment its
+    source was removed — paging on exactly what the operator was silencing.
+    """
+    from tripl.services.datasource_service import delete_data_source
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "DS Delete", "slug": "ds-delete", "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_id = await _seed_scan_config(project_id, "Doomed Scan")
+
+    async with TestSessionLocal() as session:
+        seeded = await session.get(ScanConfig, scan_id)
+        assert seeded is not None
+        data_source_id = seeded.data_source_id
+
+    destination_resp = await client.post(
+        "/api/v1/projects/ds-delete/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Main Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T000/B000/XXX",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+
+    bound_resp = await client.post(
+        f"/api/v1/projects/ds-delete/alert-destinations/{destination_id}/rules",
+        json={"name": "Bound rule", "scan_config_id": str(scan_id)},
+    )
+    assert bound_resp.status_code == 201
+    bound_rule_id = uuid.UUID(bound_resp.json()["id"])
+
+    async with TestSessionLocal() as session:
+        await delete_data_source(session, data_source_id)
+
+    async with TestSessionLocal() as session:
+        assert await session.get(ScanConfig, scan_id) is None, "the cascade did not run"
+        bound = await session.get(AlertRule, bound_rule_id)
+        assert bound is not None, "deleting a data source must not delete its alert rule"
+        assert bound.enabled is False, "an orphaned rule must not widen to the project"
 
 
 @pytest.mark.asyncio
@@ -1249,6 +1664,464 @@ def test_send_alert_delivery_falls_back_from_telegram_markdownv2_to_plain(
     engine.dispose()
 
 
+def _telegram_units(text: str) -> int:
+    """Length the way Telegram counts it.
+
+    The 4096 ceiling — like the entity offsets in the same API — is counted in
+    UTF-16 code units, so anything outside the BMP costs two and ``len`` (code
+    points) under-counts it.
+    """
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _seed_telegram_length_case(
+    sync_session_factory,
+    *,
+    item_count: int,
+    message_template: str,
+    ai_explanation_enabled: bool = False,
+) -> tuple[str, list[str]]:
+    """One pending Telegram delivery whose items are the size live ones are.
+
+    The optional details/monitoring lines are what make a real item ~330
+    characters (97-389 across the deliveries this instance has sent), so the
+    URLs carry the production shape rather than None. Returns the delivery id
+    and every item's scope_name, in seeded order.
+    """
+    scope_names: list[str] = []
+    with sync_session_factory() as session:
+        project = Project(
+            id=uuid.uuid4(),
+            name="Alert Runtime",
+            slug="alert-runtime",
+            description="",
+        )
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="Runtime DS",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project.id,
+            name="Runtime Scan",
+            base_query="SELECT * FROM events",
+            time_column="created_at",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        destination = AlertDestination(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            type="telegram",
+            name="Ops Bot",
+            enabled=True,
+            bot_token_encrypted="123456:ABC_def",
+            chat_id="-100123",
+        )
+        rule = AlertRule(
+            id=uuid.uuid4(),
+            destination_id=destination.id,
+            name="Main Rule",
+            enabled=True,
+            message_template=message_template,
+            message_format="plain",
+            ai_explanation_enabled=ai_explanation_enabled,
+        )
+        delivery = AlertDelivery(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            scan_config_id=scan_config.id,
+            destination_id=destination.id,
+            rule_id=rule.id,
+            channel="telegram",
+            status="pending",
+            matched_count=item_count,
+            payload_snapshot={},
+        )
+        session.add_all([project, data_source, scan_config, destination, rule, delivery])
+        for index in range(item_count):
+            # Zero-padded so no scope name is a prefix of another and the
+            # "delivered exactly once" count below cannot match ":1" inside
+            # ":10".
+            scope_name = f"windyapp_ios:map:layer_switch:precipitation_overlay:{index:03d}"
+            scope_names.append(scope_name)
+            session.add(
+                AlertDeliveryItem(
+                    id=uuid.uuid4(),
+                    delivery_id=delivery.id,
+                    scope_type="event",
+                    scope_ref=f"event-{index}",
+                    scope_name=scope_name,
+                    bucket=datetime(2026, 4, 11, 9, tzinfo=UTC),
+                    direction="drop",
+                    actual_count=15403,
+                    expected_count=32048,
+                    absolute_delta=16645,
+                    percent_delta=51.9,
+                    details_path=(
+                        f"https://tripl.windyapp.co/p/windy-ios/monitoring/event/{uuid.uuid4()}"
+                    ),
+                    monitoring_path=(
+                        f"https://tripl.windyapp.co/p/windy-ios/events/detail/{uuid.uuid4()}"
+                    ),
+                )
+            )
+        session.commit()
+        return str(delivery.id), scope_names
+
+
+def test_send_alert_delivery_splits_a_long_telegram_delivery_across_messages(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Every matched item reaches the reader, across as many messages as it takes.
+
+    That is what alerting.md promises. The renderer used to stop at the first
+    item that would not fit and append "+N more of 14 not shown (message length
+    limit)" — while the success path stamps ``last_notified_at`` on EVERY item
+    of the delivery, so the cut scopes were recorded as told and stayed silent
+    until they stopped firing and re-opened.
+    """
+    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_split.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    sent_payloads: list[dict[str, object]] = []
+
+    delivery_id, scope_names = _seed_telegram_length_case(
+        sync_session_factory,
+        item_count=14,
+        message_template="[tripl] ${matched_count} alerts\n${items_text}",
+    )
+
+    def telegram_post_json(
+        url: str,
+        body: dict[str, object],
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        sent_payloads.append(body)
+        # Telegram's own rule, in Telegram's own units and wording.
+        if _telegram_units(str(body["text"])) > 4096:
+            raise ValueError(
+                "HTTP 400 from https://api.telegram.org/bot***/sendMessage: "
+                "Bad Request: message is too long"
+            )
+
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_post_json",
+        telegram_post_json,
+    )
+
+    result = metrics.send_alert_delivery.run(delivery_id)
+
+    bodies = [str(payload["text"]) for payload in sent_payloads]
+    delivered = "\n".join(bodies)
+    missing = [name for name in scope_names if name not in delivered]
+    assert missing == [], (
+        f"{len(missing)} of {len(scope_names)} matched items never reached Telegram "
+        f"across {len(bodies)} message(s): {missing}"
+    )
+    # Split, not repeated: an item belongs to exactly one message.
+    assert [delivered.count(name) for name in scope_names] == [1] * len(scope_names)
+    assert [_telegram_units(body) for body in bodies if _telegram_units(body) > 4096] == []
+    assert len(bodies) > 1
+    assert "not shown" not in delivered
+    assert result["status"] == "sent"
+
+    with sync_session_factory() as session:
+        persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert persisted is not None
+        assert persisted.status == AlertDeliveryStatus.sent.value
+        assert persisted.payload_snapshot is not None
+        assert persisted.payload_snapshot["telegram_message_parts"] == len(bodies)
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+def test_send_alert_delivery_never_re_renders_telegram_at_a_bigger_budget(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A too-long message must not be answered with an equally long one.
+
+    The retry this replaces recomputed the item budget from whether an AI note
+    was actually produced, while the render that had just been refused reserved
+    room for one because the RULE has notes enabled. A rule whose note came back
+    empty therefore retried at 3696 characters after failing at 2496 — a budget
+    that fits MORE items, so the second body was longer than the first and was
+    refused identically, and the delivery failed. The long custom preamble here
+    is what pushes the first render over the ceiling in the first place.
+    """
+    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_no_bigger_retry.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    sent_payloads: list[dict[str, object]] = []
+
+    preamble = "\n".join(
+        f"Runbook step {step}: check the release dashboard, then the deploy log, "
+        "then page the on-call engineer if the drop holds for two buckets."
+        for step in range(15)
+    )
+    delivery_id, scope_names = _seed_telegram_length_case(
+        sync_session_factory,
+        item_count=12,
+        message_template=f"[tripl] ${{matched_count}} alerts\n{preamble}\n${{items_text}}",
+        ai_explanation_enabled=True,
+    )
+
+    def telegram_post_json(
+        url: str,
+        body: dict[str, object],
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        sent_payloads.append(body)
+        if _telegram_units(str(body["text"])) > 4096:
+            raise ValueError(
+                "HTTP 400 from https://api.telegram.org/bot***/sendMessage: "
+                "Bad Request: message is too long"
+            )
+
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_post_json",
+        telegram_post_json,
+    )
+    # AI is enabled on the rule but the provider returns nothing — the exact
+    # asymmetry the old retry arithmetic keyed on.
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_build_ai_explanation",
+        lambda *args, **kwargs: None,
+    )
+
+    result = metrics.send_alert_delivery.run(delivery_id)
+
+    lengths = [_telegram_units(str(payload["text"])) for payload in sent_payloads]
+    refused = [length for length in lengths if length > 4096]
+    assert refused == [], (
+        f"{len(refused)} of {len(lengths)} attempts were over Telegram's 4096-unit "
+        f"ceiling; the attempts measured {lengths}"
+    )
+    delivered = "\n".join(str(payload["text"]) for payload in sent_payloads)
+    missing = [name for name in scope_names if name not in delivered]
+    assert missing == [], (
+        f"{len(missing)} of {len(scope_names)} matched items never reached Telegram: {missing}"
+    )
+    assert result["status"] == "sent"
+
+    with sync_session_factory() as session:
+        persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert persisted is not None
+        assert persisted.status == AlertDeliveryStatus.sent.value
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+def _retry_from_inbox(sync_session_factory, delivery_id: str) -> None:
+    """What ``retry_delivery`` does to the row before re-enqueueing the task.
+
+    Kept in the same shape as ``services/_alerting_deliveries.retry_delivery``
+    (failed -> pending, error and sent_at cleared, attempt budget reset) so the
+    resume below is exercised through the state the Inbox button really leaves.
+    """
+    with sync_session_factory() as session:
+        delivery = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert delivery is not None
+        assert delivery.status == AlertDeliveryStatus.failed.value
+        delivery.status = AlertDeliveryStatus.pending.value
+        delivery.error_message = None
+        delivery.sent_at = None
+        delivery.dispatch_attempts = 0
+        session.commit()
+
+
+def test_send_alert_delivery_resumes_a_partly_sent_telegram_split(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A retry must not re-send the messages that already reached the reader.
+
+    A long delivery goes out as several Telegram messages posted back to back.
+    If the chat's rate limit answers 429 (or the connection times out, or the
+    API 5xxes) on the second one, the first is already with the reader, but the
+    delivery is recorded failed — and the retry, manual from the Inbox or from
+    the stale-pending reaper, used to re-render and re-send EVERY message.
+    """
+    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_resume.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    accepted: list[str] = []
+    attempts: list[list[str]] = []
+    fail_after_first = True
+
+    delivery_id, scope_names = _seed_telegram_length_case(
+        sync_session_factory,
+        item_count=14,
+        message_template="[tripl] ${matched_count} alerts\n${items_text}",
+    )
+
+    def telegram_post_json(
+        url: str,
+        body: dict[str, object],
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        text = str(body["text"])
+        attempts[-1].append(text)
+        if fail_after_first and len(attempts[-1]) > 1:
+            # Neither a MarkdownV2 parse error nor an over-4096 rejection: the
+            # ordinary transport failure that used to propagate untracked.
+            raise ValueError(
+                "HTTP 429 from https://api.telegram.org/bot***/sendMessage: "
+                "Too Many Requests: retry after 27"
+            )
+        accepted.append(text)
+
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_post_json",
+        telegram_post_json,
+    )
+
+    attempts.append([])
+    first = metrics.send_alert_delivery.run(delivery_id)
+    assert first["status"] == "failed"
+    assert len(attempts[0]) > 1, (
+        "the delivery did not split into several messages, so this test is not "
+        f"exercising a partial send: {[len(body) for body in attempts[0]]}"
+    )
+    first_message_names = [name for name in scope_names if name in accepted[0]]
+    assert first_message_names, "the first message carried no items"
+
+    with sync_session_factory() as session:
+        persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert persisted is not None
+        assert persisted.status == AlertDeliveryStatus.failed.value
+
+    fail_after_first = False
+    _retry_from_inbox(sync_session_factory, delivery_id)
+    attempts.append([])
+    second = metrics.send_alert_delivery.run(delivery_id)
+    assert second["status"] == "sent"
+
+    resent = [name for name in first_message_names if any(name in body for body in attempts[1])]
+    assert resent == [], (
+        f"the retry re-sent {len(resent)} of {len(first_message_names)} items the reader "
+        f"had already received in the first message: {resent}"
+    )
+    delivered = "\n".join(accepted)
+    assert [delivered.count(name) for name in scope_names] == [1] * len(scope_names), (
+        "every matched item must reach the reader exactly once across the failed "
+        f"attempt and the retry; counts were "
+        f"{ {name: delivered.count(name) for name in scope_names} }"
+    )
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+def test_send_alert_delivery_retry_of_a_fully_sent_telegram_split_sends_nothing(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Retry after every part landed completes the record, it does not re-send.
+
+    The send loop can finish and the delivery still be recorded failed — the
+    worker is SIGKILLed before the status commit and ``task_acks_late`` re-runs
+    the task, or the bookkeeping after the loop raises. Retry then has nothing
+    left to tell the reader, so it only finishes the row.
+    """
+    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_resume_done.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    attempts: list[list[str]] = []
+    fail_after_all = True
+
+    delivery_id, scope_names = _seed_telegram_length_case(
+        sync_session_factory,
+        item_count=14,
+        message_template="[tripl] ${matched_count} alerts\n${items_text}",
+    )
+
+    def telegram_post_json(
+        url: str,
+        body: dict[str, object],
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        attempts[-1].append(str(body["text"]))
+
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_post_json",
+        telegram_post_json,
+    )
+
+    def stamp_rule_state(*args: object, **kwargs: object) -> None:
+        # Stands in for a worker death between the last accepted message and
+        # the status=sent commit: everything is out, nothing is recorded sent.
+        if fail_after_all:
+            raise RuntimeError("worker died before the status commit")
+
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_stamp_rule_state",
+        stamp_rule_state,
+    )
+
+    attempts.append([])
+    first = metrics.send_alert_delivery.run(delivery_id)
+    assert first["status"] == "failed"
+    assert len(attempts[0]) > 1
+
+    fail_after_all = False
+    _retry_from_inbox(sync_session_factory, delivery_id)
+    attempts.append([])
+    second = metrics.send_alert_delivery.run(delivery_id)
+
+    assert attempts[1] == [], (
+        f"the retry re-sent {len(attempts[1])} message(s) the reader already had"
+    )
+    assert second["status"] == "sent"
+    delivered = "\n".join(attempts[0])
+    assert [delivered.count(name) for name in scope_names] == [1] * len(scope_names)
+
+    with sync_session_factory() as session:
+        persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert persisted is not None
+        assert persisted.status == AlertDeliveryStatus.sent.value
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
 def test_send_alert_delivery_posts_generic_webhook(
     tmp_path,
     monkeypatch,
@@ -1405,6 +2278,12 @@ def _build_rule(**overrides: object) -> AlertRule:
     return rule
 
 
+# Sentinel meaning "some scan, I don't care which": ``_build_anomaly`` swaps it
+# for a fresh id. Deliberately distinct from an explicit ``None``, which is what
+# a project-global (``metric``-scope) anomaly really carries on its row.
+_ANY_SCAN_CONFIG = uuid.UUID("00000000-0000-0000-0000-0000000000ff")
+
+
 def _build_anomaly(
     bucket: datetime,
     *,
@@ -1413,12 +2292,13 @@ def _build_anomaly(
     direction: str = "spike",
     actual_count: int = 100,
     expected_count: float = 10.0,
+    scan_config_id: uuid.UUID | None = _ANY_SCAN_CONFIG,
 ) -> object:
     from tripl.models.metric_anomaly import MetricAnomaly
 
     return MetricAnomaly(
         id=uuid.uuid4(),
-        scan_config_id=uuid.uuid4(),
+        scan_config_id=(uuid.uuid4() if scan_config_id == _ANY_SCAN_CONFIG else scan_config_id),
         scope_type=scope_type,
         scope_ref=scope_ref or str(uuid.uuid4()),
         event_id=None,
@@ -1472,11 +2352,59 @@ def test_simulate_rule_firings_skips_scope_disabled_by_rule() -> None:
     assert [a.scope_type for a in fired] == ["event_type"]
 
 
+def test_a_spike_from_a_zero_baseline_clears_a_percent_threshold() -> None:
+    """A relative threshold has nothing to divide by at a zero baseline.
+
+    The old fallback scored it 0% — the largest possible relative move reported
+    as the smallest. Harmless while the default threshold was 0, silencing once
+    it became 100: a scope resuming after an outage, or an event firing for the
+    first time, matched no rule with a percent threshold. The mirror case makes
+    the asymmetry plain, so it is asserted alongside.
+    """
+    from tripl.alerting_matching import rule_matches_anomaly
+
+    base = datetime(2026, 5, 1, 12, tzinfo=UTC)
+    rule = _build_rule(min_percent_delta=100)
+
+    appeared = _build_anomaly(base, actual_count=40, expected_count=0.0)
+    assert rule_matches_anomaly(rule, appeared) is True
+
+    # The mirror: gone to zero from a real baseline is exactly 100% and alerts.
+    went_dark = _build_anomaly(base, direction="drop", actual_count=0, expected_count=40.0)
+    assert rule_matches_anomaly(rule, went_dark) is True
+
+    # No baseline and no movement is not an event.
+    nothing = _build_anomaly(base, actual_count=0, expected_count=0.0)
+    assert rule_matches_anomaly(rule, nothing) is False
+
+
+def test_a_fractional_baseline_below_one_keeps_its_full_percent() -> None:
+    """Why the zero case is not fixed with a divisor floor of 1.
+
+    Catalog metrics reach the numeric thresholds with fractional values, gated
+    only at 1e-6. Scoring them against ``max(expected, 1)`` — the divisor the
+    UI's relative effect uses, which assumes counts — would turn this 350% into
+    70% and drop it under the very threshold the fix is about.
+    """
+    from tripl.alerting_matching import rule_matches_anomaly
+
+    ratio = _build_anomaly(
+        datetime(2026, 5, 1, 12, tzinfo=UTC),
+        scope_type="metric",
+        actual_count=0.9,
+        expected_count=0.2,
+    )
+
+    assert rule_matches_anomaly(_build_rule(include_metrics=True, min_percent_delta=300), ratio)
+    assert not rule_matches_anomaly(_build_rule(include_metrics=True, min_percent_delta=400), ratio)
+
+
 def test_schema_drift_rule_matching_uses_scope_gate_not_metric_thresholds() -> None:
     from tripl.alerting_matching import SchemaDriftAlertCandidate, rule_matches_anomaly
 
     candidate = SchemaDriftAlertCandidate(
         id=uuid.uuid4(),
+        scan_config_id=uuid.uuid4(),
         scope_type="schema",
         scope_ref=str(uuid.uuid4()),
         event_id=None,
@@ -1511,6 +2439,7 @@ def test_distribution_drift_rule_matching_uses_scope_gate_not_metric_thresholds(
 
     candidate = DistributionDriftAlertCandidate(
         id=uuid.uuid4(),
+        scan_config_id=uuid.uuid4(),
         scope_type=SCOPE_DISTRIBUTION_DRIFT,
         scope_ref="distribution-scope",
         event_id=None,
@@ -1545,6 +2474,7 @@ def test_release_regression_rule_matching_uses_scope_gate_not_metric_thresholds(
 
     candidate = DriftAlertCandidate(
         id=uuid.uuid4(),
+        scan_config_id=uuid.uuid4(),
         scope_type=SCOPE_RELEASE_REGRESSION,
         scope_ref=str(uuid.uuid4()),
         event_id=uuid.uuid4(),
@@ -1582,6 +2512,90 @@ def test_release_regression_rule_matching_uses_scope_gate_not_metric_thresholds(
     # Direction gate still applies: a regression is a drop.
     no_drop_rule = _build_rule(include_release_regressions=True, notify_on_drop=False)
     assert rule_matches_anomaly(no_drop_rule, candidate) is False
+
+
+def test_a_scan_bound_rule_ignores_every_other_scan() -> None:
+    """A rule narrowed to one scan must not fire on a sibling scan's anomaly.
+
+    Rules hang off a destination, destinations off a project, and dispatch runs
+    once per scan config — so before ``AlertRule.scan_config_id`` existed, one
+    rule fired for every scan in the project and there was no filter field able
+    to say otherwise (``AlertRuleFilterField`` is event_type/event/direction and
+    ``filter_matches_anomaly`` passes anything else through).
+    """
+    from tripl.alerting_matching import rule_matches_anomaly
+
+    watched_scan = uuid.uuid4()
+    other_scan = uuid.uuid4()
+    bucket = datetime(2026, 5, 1, 12, tzinfo=UTC)
+    rule = _build_rule(scan_config_id=watched_scan)
+
+    mine = _build_anomaly(bucket, scan_config_id=watched_scan)
+    theirs = _build_anomaly(bucket, scan_config_id=other_scan)
+
+    assert rule_matches_anomaly(rule, mine) is True
+    assert rule_matches_anomaly(rule, theirs) is False
+
+    # NULL is the migration's no-op: an unbound rule keeps watching the project.
+    project_rule = _build_rule()
+    assert rule_matches_anomaly(project_rule, mine) is True
+    assert rule_matches_anomaly(project_rule, theirs) is True
+
+
+def test_a_scan_bound_rule_has_nothing_to_say_about_catalog_metrics() -> None:
+    """``include_metrics`` goes inert once a rule is bound to a scan.
+
+    Catalog metric anomalies are project-global — their row carries a NULL
+    ``scan_config_id`` — so "this scan only" and "this project-wide series"
+    cannot both be true. The scan gate wins; only an unbound rule delivers them.
+    """
+    from tripl.alerting_matching import rule_matches_anomaly
+
+    metric_anomaly = _build_anomaly(
+        datetime(2026, 5, 1, 12, tzinfo=UTC),
+        scope_type="metric",
+        scan_config_id=None,
+    )
+
+    bound = _build_rule(include_metrics=True, scan_config_id=uuid.uuid4())
+    assert rule_matches_anomaly(bound, metric_anomaly) is False
+
+    unbound = _build_rule(include_metrics=True)
+    assert rule_matches_anomaly(unbound, metric_anomaly) is True
+
+
+def test_a_scan_bound_rule_ignores_another_scans_drift() -> None:
+    """The gate has to reach the dataclass candidates too, not only anomaly rows.
+
+    Schema / distribution / variable-value drift and release regressions arrive
+    as ``DriftAlertCandidate`` dataclasses rather than ORM rows. If they did not
+    carry the scan they came from, a scan-bound rule would silently keep firing
+    on every scan's drift.
+    """
+    from tripl.alerting_matching import DriftAlertCandidate, rule_matches_anomaly
+
+    watched_scan = uuid.uuid4()
+
+    def _drift(scan_config_id: uuid.UUID) -> DriftAlertCandidate:
+        return DriftAlertCandidate(
+            id=uuid.uuid4(),
+            scan_config_id=scan_config_id,
+            scope_type="schema",
+            scope_ref=str(uuid.uuid4()),
+            event_id=None,
+            event_type_id=uuid.uuid4(),
+            bucket=datetime(2026, 5, 1, 12, tzinfo=UTC),
+            direction="spike",
+            actual_count=1,
+            expected_count=0,
+            drift_field="payload.extra",
+            drift_type="new_field",
+            sample_value="TASK-123",
+        )
+
+    rule = _build_rule(include_schema_drifts=True, scan_config_id=watched_scan)
+    assert rule_matches_anomaly(rule, _drift(watched_scan)) is True
+    assert rule_matches_anomaly(rule, _drift(uuid.uuid4())) is False
 
 
 def test_release_regression_item_renders_readable_release_line() -> None:

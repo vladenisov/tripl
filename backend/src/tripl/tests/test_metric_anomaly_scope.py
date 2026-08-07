@@ -51,6 +51,7 @@ from tripl.models.scan_config import ScanConfig
 from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks.metrics import detect as metrics_detect
 from tripl.worker.tasks.metrics import dispatch as metrics_dispatch
+from tripl.worker.tasks.metrics import signals as metrics_signals
 
 # 1h-aligned buckets used by the sync detect/dispatch tests. Anchored to a recent
 # wall-clock hour so the seeded spike's bucket stays inside the signal freshness
@@ -63,6 +64,10 @@ _BASE = datetime.now(UTC).replace(minute=0, second=0, microsecond=0, tzinfo=None
 _SPIKE_HOUR = 9
 _EVAL_FROM = _BASE + timedelta(hours=8)
 _EVAL_TO = _BASE + timedelta(hours=10)
+
+# 1d-aligned anchor for the daily-grid test, on the same tz-naive footing.
+_DAY = timedelta(days=1)
+_DAY_END = _BASE.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 @pytest.fixture
@@ -127,6 +132,7 @@ def _add_metric(
     aggregation: MetricAggregation | None = None,
     composition: MetricComposition | None = None,
     anomaly_enabled: bool = True,
+    interval: str | None = "1h",
 ) -> MetricDefinition:
     metric = MetricDefinition(
         id=uuid.uuid4(),
@@ -138,13 +144,33 @@ def _add_metric(
         composition=composition.value if composition else None,
         config={},
         data_source_id=config.data_source_id,
-        interval="1h",
+        interval=interval,
         status=MetricStatus.active.value,
         anomaly_detection_enabled=anomaly_enabled,
     )
     session.add(metric)
     session.commit()
     return metric
+
+
+def _seed_values_at(
+    session: Session,
+    metric: MetricDefinition,
+    values: dict[datetime, float],
+    *,
+    scan_config_id: uuid.UUID | None = None,
+) -> None:
+    for bucket, value in values.items():
+        session.add(
+            MetricValue(
+                id=uuid.uuid4(),
+                metric_definition_id=metric.id,
+                scan_config_id=scan_config_id,
+                bucket=bucket,
+                value=value,
+            )
+        )
+    session.commit()
 
 
 def _seed_values(
@@ -154,17 +180,12 @@ def _seed_values(
     *,
     scan_config_id: uuid.UUID | None = None,
 ) -> None:
-    for hour, value in values.items():
-        session.add(
-            MetricValue(
-                id=uuid.uuid4(),
-                metric_definition_id=metric.id,
-                scan_config_id=scan_config_id,
-                bucket=_BASE + timedelta(hours=hour),
-                value=value,
-            )
-        )
-    session.commit()
+    _seed_values_at(
+        session,
+        metric,
+        {_BASE + timedelta(hours=hour): value for hour, value in values.items()},
+        scan_config_id=scan_config_id,
+    )
 
 
 def _metric_anomalies(session: Session, metric_id: uuid.UUID) -> list[MetricAnomaly]:
@@ -214,6 +235,63 @@ def test_recompute_persists_metric_scope_anomaly(
         assert anomaly.scan_config_id is None
         assert anomaly.direction == "spike"
         assert anomaly.bucket == _BASE + timedelta(hours=_SPIKE_HOUR)
+
+
+def test_daily_metric_is_evaluated_on_its_own_grid(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A 1d metric under a 1h scan config must get a 30-DAY candidate window.
+
+    ``collect_metrics`` derives ``evaluation_start`` from the SCAN grid
+    (``time_to - 1h * 30``). Passed through verbatim, a daily metric got 30
+    HOURS: one candidate bucket, and the settling allowance (one whole bucket of
+    a daily grid) withheld exactly that one, so no daily metric could emit at
+    all. That is the shape of the live ``rd1`` metric — 1d interval, a scan grid
+    of 1h, a collapse to 0.0 and no signal.
+    """
+    with sync_session_factory() as session:
+        config = _seed_project(session)
+        metric = _add_metric(
+            session,
+            config,
+            kind=MetricKind.fact,
+            aggregation=MetricAggregation.count,
+            composition=MetricComposition.single,
+            name="daily_signups",
+            interval="1d",
+        )
+        # 60 days of a flat 100/day that collapses to 0 for the last 5. The
+        # history reaches past the 21 buckets the daily phase baseline needs.
+        _seed_values_at(
+            session,
+            metric,
+            {_DAY_END - _DAY * day: (0.0 if day <= 5 else 100.0) for day in range(1, 61)},
+        )
+
+        detected = metrics_detect._recalculate_metric_anomalies(
+            session,
+            config,
+            # Exactly what collect_metrics computes for a 1h scan config.
+            evaluation_start=_DAY_END - timedelta(hours=30),
+            evaluation_end=_DAY_END,
+            settling_delay=timedelta(hours=2),
+        )
+        session.commit()
+
+        flagged = {a.bucket: a.direction for a in _metric_anomalies(session, metric.id)}
+
+    assert detected >= 1
+    collapsed = {_DAY_END - _DAY * day for day in range(2, 6)}
+    flagged_collapse = {bucket: flagged[bucket] for bucket in flagged.keys() & collapsed}
+    assert flagged_collapse
+    assert set(flagged_collapse.values()) == {"drop"}
+    # Every one of them predates the 30-hour window the scan grid produced —
+    # whose only daily candidate was the newest day, which settling withheld —
+    # so none is reachable without the per-metric window.
+    assert max(flagged_collapse) < _DAY_END - timedelta(hours=30)
+    # And the newest daily bucket does stay withheld: settling is a per-grid
+    # count, and 2h of allowance rounds up to one whole day.
+    assert _DAY_END - _DAY not in flagged
 
 
 def test_detect_metrics_disabled_skips_metric_scope(
@@ -672,6 +750,70 @@ def test_metric_scope_cooldown_shared_across_scan_configs(
         assert states_after[0].scan_config_id == canonical
 
 
+def test_sending_stamps_a_metric_state_anchored_on_another_config(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch,
+) -> None:
+    """The cooldown above is only real if the send step can find the state.
+
+    Its sibling simulates the stamp — "the send step would stamp
+    last_notified_at; simulate it so cooldown applies" — which is exactly why
+    this went unnoticed. The real path looked the state up by the DELIVERY's
+    scan_config_id, while a metric-scope state is anchored on the project's
+    canonical config, so every config but that one stamped nothing.
+    last_notified_at stayed NULL and the re-send gate reads NULL as "never told
+    them", so the cooldown was permanently elapsed for metric scopes.
+    """
+    from tripl.worker.tasks import alerts as alerts_task
+
+    with sync_session_factory() as session:
+        config1, _metric = _seed_spiked_metric(session)
+        config2 = _add_second_config(session, config1)
+        canonical = min(config1.id, config2.id)
+        # Deliver from whichever config is NOT the anchor — the case the old
+        # lookup could not resolve.
+        sending_config = config2 if canonical == config1.id else config1
+        _add_rule(session, config1, include_metrics=True)
+
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(
+            session, sending_config, scan_job_id=None
+        )
+        assert len(delivery_ids) == 1
+        state = session.execute(
+            select(AlertRuleState).where(AlertRuleState.scope_type == "metric")
+        ).scalar_one()
+        assert state.scan_config_id == canonical
+        assert state.last_notified_at is None
+        session.commit()
+
+    monkeypatch.setitem(
+        alerts_task.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        alerts_task.send_alert_delivery.run.__globals__,
+        "_post_json",
+        lambda *args, **kwargs: None,
+    )
+    # The shared fixture stores a placeholder secret; the send path validates the
+    # decrypted value as a real Slack webhook before posting.
+    monkeypatch.setitem(
+        alerts_task.send_alert_delivery.run.__globals__,
+        "_decrypt_secret",
+        lambda _value: "https://hooks.slack.com/services/T0/B0/xxxxxxxx",
+    )
+
+    result = alerts_task.send_alert_delivery.run(str(delivery_ids[0]))
+
+    assert result["status"] == "sent"
+    with sync_session_factory() as session:
+        stamped = session.execute(
+            select(AlertRuleState).where(AlertRuleState.scope_type == "metric")
+        ).scalar_one()
+        assert stamped.last_notified_at is not None
+
+
 def test_percent_metric_items_render_scaled_values_via_batched_unit_lookup(
     sync_session_factory: sessionmaker[Session],
 ) -> None:
@@ -748,3 +890,87 @@ def test_percent_metric_items_render_scaled_values_via_batched_unit_lookup(
             metric_units_cache=units_cache,
         )
         assert fallback == text
+
+
+# ---------------------------------------------------------------------------
+# A catalog metric's alert candidacy is a property of the METRIC (tripl-l429.22)
+# ---------------------------------------------------------------------------
+
+# 30 hours back on the naive footing the sync fixtures use: outside a bare 24h
+# freshness window, inside the daily grid's own max(24h, 3 * 1d) = 72h horizon.
+_STALE_ON_AN_HOURLY_GRID = datetime.now(UTC).replace(
+    minute=0, second=0, microsecond=0, tzinfo=None
+) - timedelta(hours=30)
+
+
+def _add_daily_config(session: Session, config: ScanConfig) -> ScanConfig:
+    daily = ScanConfig(
+        id=uuid.uuid4(),
+        data_source_id=config.data_source_id,
+        project_id=config.project_id,
+        name="Daily Scan",
+        base_query="SELECT time, event_name FROM events",
+        time_column="time",
+        cardinality_threshold=100,
+        interval="1d",
+    )
+    session.add(daily)
+    session.commit()
+    return daily
+
+
+def test_metric_alert_candidacy_ignores_which_scan_dispatches(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """An ``event_composition`` metric is judged on ITS grid, not the caller's.
+
+    ``_prepare_alert_deliveries`` runs once per scan config and every run sees the
+    same project-global metric anomalies, sharing ONE AlertRuleState row. Judging
+    an interval-less catalog metric on ``config.interval`` therefore made the same
+    metric a candidate under the daily scan and a non-candidate under the hourly
+    one — the two dispatch runs open and close the same alert state in turn.
+    The metric's real grid is the daily scan its values are stamped with, so both
+    runs must agree on the daily answer.
+    """
+    with sync_session_factory() as session:
+        hourly = _seed_project(session)
+        daily = _add_daily_config(session, hourly)
+        metric = _add_metric(
+            session,
+            hourly,
+            kind=MetricKind.event_composition,
+            composition=MetricComposition.single,
+            name="checkout_starts",
+            # event_composition carries no grid of its own; the stamp on its
+            # values below is where the grid actually lives.
+            interval=None,
+        )
+        _seed_values_at(
+            session,
+            metric,
+            {_STALE_ON_AN_HOURLY_GRID: 99.0},
+            scan_config_id=daily.id,
+        )
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=None,
+                scope_type="metric",
+                scope_ref=str(metric.id),
+                event_id=None,
+                event_type_id=None,
+                bucket=_STALE_ON_AN_HOURLY_GRID,
+                actual_count=99,
+                expected_count=40,
+                stddev=5,
+                z_score=8,
+                direction="spike",
+            )
+        )
+        session.commit()
+
+        under_hourly = metrics_signals._get_active_metric_anomaly_candidates(session, hourly)
+        under_daily = metrics_signals._get_active_metric_anomaly_candidates(session, daily)
+
+    assert set(under_daily) == {("metric", str(metric.id))}
+    assert set(under_hourly) == set(under_daily)

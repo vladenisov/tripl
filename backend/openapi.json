@@ -2015,7 +2015,7 @@
             "type": "number"
           },
           "min_percent_delta": {
-            "default": 0,
+            "default": 100.0,
             "minimum": 0.0,
             "title": "Min Percent Delta",
             "type": "number"
@@ -2033,6 +2033,18 @@
             "default": true,
             "title": "Notify On Spike",
             "type": "boolean"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
           }
         },
         "required": [
@@ -2229,6 +2241,18 @@
             "title": "Notify On Spike",
             "type": "boolean"
           },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
           "updated_at": {
             "format": "date-time",
             "title": "Updated At",
@@ -2238,6 +2262,7 @@
         "required": [
           "id",
           "destination_id",
+          "scan_config_id",
           "name",
           "enabled",
           "include_project_total",
@@ -2583,6 +2608,18 @@
               }
             ],
             "title": "Notify On Spike"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
           }
         },
         "title": "AlertRuleUpdate",
@@ -2612,6 +2649,108 @@
           "metric_breakdown_anomalies"
         ],
         "title": "AnomalyResetCounts",
+        "type": "object"
+      },
+      "AnomalyScopeOverrideListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AnomalyScopeOverrideResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "AnomalyScopeOverrideListResponse",
+        "type": "object"
+      },
+      "AnomalyScopeOverrideResponse": {
+        "description": "One scope the false-positive ratchet has made stricter.\n\n``sigma_threshold`` / ``min_expected_count`` are ABSOLUTE and replace the\nproject settings above for this scope only. Deleting the override is the\nundo \u2014 the scope falls straight back to the project values.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "false_positive_count": {
+            "title": "False Positive Count",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "min_expected_count": {
+            "title": "Min Expected Count",
+            "type": "integer"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
+          "scan_config_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Name"
+          },
+          "scope_name": {
+            "title": "Scope Name",
+            "type": "string"
+          },
+          "scope_ref": {
+            "title": "Scope Ref",
+            "type": "string"
+          },
+          "scope_type": {
+            "title": "Scope Type",
+            "type": "string"
+          },
+          "sigma_threshold": {
+            "title": "Sigma Threshold",
+            "type": "number"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "scan_config_id",
+          "scope_type",
+          "scope_ref",
+          "scope_name",
+          "sigma_threshold",
+          "min_expected_count",
+          "false_positive_count",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AnomalyScopeOverrideResponse",
         "type": "object"
       },
       "ApiKeyCreate": {
@@ -13932,6 +14071,71 @@
         "title": "RelationResponse",
         "type": "object"
       },
+      "ReleaseComparabilityItem": {
+        "description": "Whether one detection pass could judge the latest release at all.\n\nServed alongside ``items`` because an empty list means two different things.\nA caller that only reads ``items`` cannot tell a healthy release from one\nwhose findings were withheld, and both were served as an empty list until\nthis was carried through.",
+        "properties": {
+          "comparable": {
+            "title": "Comparable",
+            "type": "boolean"
+          },
+          "emerging_share": {
+            "title": "Emerging Share",
+            "type": "number"
+          },
+          "max_emerging_share": {
+            "title": "Max Emerging Share",
+            "type": "number"
+          },
+          "previous_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Version"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/ReleaseComparabilityReason"
+          },
+          "scope_type": {
+            "$ref": "#/components/schemas/MetricScopeType"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "scope_type",
+          "comparable",
+          "reason",
+          "emerging_share",
+          "max_emerging_share"
+        ],
+        "title": "ReleaseComparabilityItem",
+        "type": "object"
+      },
+      "ReleaseComparabilityReason": {
+        "description": "Why one release-regression pass concluded what it concluded.\n\nMirrors the ``REASON_*`` constants in\n``tripl.core.analyzers.release_regression``, which is DB-free and so cannot\nimport this; keep the two in step.",
+        "enum": [
+          "comparable",
+          "no_baseline",
+          "baseline_no_volume",
+          "population_mismatch"
+        ],
+        "title": "ReleaseComparabilityReason",
+        "type": "string"
+      },
       "ReleaseRegressionItem": {
         "description": "One event (or event type) that regressed in the latest active release.",
         "properties": {
@@ -14056,6 +14260,13 @@
             ],
             "title": "App Version Column"
           },
+          "comparability": {
+            "items": {
+              "$ref": "#/components/schemas/ReleaseComparabilityItem"
+            },
+            "title": "Comparability",
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/ReleaseRegressionItem"
@@ -14082,6 +14293,7 @@
         },
         "required": [
           "scan_config_id",
+          "comparability",
           "items"
         ],
         "title": "ReleaseRegressionsResponse",
@@ -20780,6 +20992,94 @@
           }
         },
         "summary": "Update Project Anomaly Settings",
+        "tags": [
+          "anomaly-settings"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/anomaly-settings/scope-overrides": {
+      "get": {
+        "operationId": "list_anomaly_scope_overrides_api_v1_projects__slug__anomaly_settings_scope_overrides_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnomalyScopeOverrideListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Anomaly Scope Overrides",
+        "tags": [
+          "anomaly-settings"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/anomaly-settings/scope-overrides/{override_id}": {
+      "delete": {
+        "description": "Undo one false-positive ratchet: the scope returns to the project setting.",
+        "operationId": "delete_anomaly_scope_override_api_v1_projects__slug__anomaly_settings_scope_overrides__override_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "override_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Override Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Anomaly Scope Override",
         "tags": [
           "anomaly-settings"
         ]

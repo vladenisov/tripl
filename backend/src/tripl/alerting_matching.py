@@ -27,6 +27,11 @@ SCOPE_VARIABLE_VALUE_DRIFT = MetricScopeType.variable_value_drift.value
 
 class AlertMatchCandidate(Protocol):
     id: uuid.UUID
+    # The scan this signal came from, or NULL when it is project-global
+    # (``metric`` scope). ``rule_matches_anomaly`` needs it to honour a
+    # scan-bound rule, so EVERY candidate type has to carry it — the dataclass
+    # ones below included, or a drift candidate would slip past the gate.
+    scan_config_id: uuid.UUID | None
     scope_type: str
     scope_ref: str
     event_id: uuid.UUID | None
@@ -48,6 +53,7 @@ class DriftAlertCandidate:
     """
 
     id: uuid.UUID
+    scan_config_id: uuid.UUID | None
     scope_type: str
     scope_ref: str
     event_id: uuid.UUID | None
@@ -93,6 +99,23 @@ def filter_matches_anomaly(filter_row: AlertRuleFilter, anomaly: AlertMatchCandi
 
 
 def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
+    # Scan gate. NULL on the rule means the whole project — the behaviour every
+    # rule had before the column existed, so the migration is a no-op.
+    #
+    # It lives HERE rather than in ``dispatch._prepare_alert_deliveries`` on
+    # purpose. Dispatch already runs per scan config, so an early ``continue``
+    # there would be enough for production and invisible to the in-UI simulator,
+    # which replays a whole project's anomalies through this function in one
+    # pass — the simulator would then over-report a scan-bound rule, which is
+    # exactly the drift this module exists to prevent.
+    #
+    # A ``metric``-scope anomaly is project-global and carries NULL here, so it
+    # never equals a bound scan: ``include_metrics`` goes inert on a scan-bound
+    # rule, deliberately. A rule that says "this one scan" has nothing to say
+    # about a project-wide catalog series.
+    if rule.scan_config_id is not None and anomaly.scan_config_id != rule.scan_config_id:
+        return False
+
     # Scope gates.
     if anomaly.scope_type == MetricScopeType.project_total.value and not rule.include_project_total:
         return False
@@ -134,11 +157,25 @@ def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
     absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
     if absolute_delta < rule.min_absolute_delta:
         return False
+    # A relative threshold has nothing to divide by when the baseline is zero,
+    # and the old fallback answered 0.0 — reporting the largest possible relative
+    # move as the smallest. It cost nothing while min_percent_delta defaulted to
+    # 0 (``0 < 0`` is false, so such a candidate passed anyway); at the measured
+    # default of 100 it silences the whole class, so a scope resuming after an
+    # outage, or an event firing for the first time, would match no rule carrying
+    # a percent threshold. The asymmetry is what gives it away: the mirror case,
+    # actual 0 against a positive expectation, is exactly 100% and alerts.
+    #
+    # Deliberately NOT scored against ``max(expected, 1)`` the way the UI's
+    # relative effect is. That divisor assumes counts, and catalog metrics arrive
+    # here with fractional values gated only at 1e-6: a ratio expected 0.2 and
+    # observed 0.9 scores 350% today and would score 70% under a floor of one,
+    # dropping below the very threshold this is about.
     if anomaly.expected_count > 0:
-        percent_delta = absolute_delta / anomaly.expected_count * 100
-    else:
-        percent_delta = 0.0
-    if percent_delta < rule.min_percent_delta:
+        if absolute_delta / anomaly.expected_count * 100 < rule.min_percent_delta:
+            return False
+    elif absolute_delta <= 0:
+        # No baseline and no movement: nothing to report.
         return False
 
     return all(filter_matches_anomaly(filter_row, anomaly) for filter_row in rule.filters)
@@ -160,6 +197,11 @@ def rule_covers_event(
     depend on an anomaly's counts, which are not a property of the event, so they
     are deliberately ignored here. Non-identity filters (e.g. ``direction``) are
     firing-time gates and never narrow coverage.
+
+    ``rule.scan_config_id`` is ignored for the same reason: an event belongs to
+    a project, not to a scan, and several scans can observe the same one. A
+    scan-bound rule still watches the event — just in one scan — so the catalog's
+    Monitor column stays truthful.
     """
     if not rule.enabled or not rule.include_events:
         return False

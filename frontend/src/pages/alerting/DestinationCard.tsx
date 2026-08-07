@@ -5,6 +5,7 @@ import type {
   AlertDestination,
   AlertRule,
   EventType,
+  ScanConfig,
 } from "@/types"
 import { alertingApi } from "@/api/alerting"
 import { ScenarioCoachMark } from "@/demo/ScenarioCoachMark"
@@ -18,11 +19,13 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { FilterEditor } from "./FilterEditor"
 import { RuleReplayDialog } from "./RuleReplayDialog"
 import { TemplateEditor } from "./TemplateEditor"
 import {
+  ALL_SCANS_OPTION,
   ITEM_TEMPLATE_VARIABLE_OPTIONS,
   TEMPLATE_VARIABLE_OPTIONS,
   defaultRuleForm,
@@ -44,11 +47,13 @@ export function DestinationCard({
   slug,
   destination,
   eventTypes,
+  scans,
   onEditDestination,
 }: {
   slug: string
   destination: AlertDestination
   eventTypes: EventType[]
+  scans: ScanConfig[]
   onEditDestination: (destination: AlertDestination) => void
 }) {
   const qc = useQueryClient()
@@ -201,6 +206,11 @@ export function DestinationCard({
                         </Badge>
                       </div>
                       <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                        <span>
+                          Scan: {rule.scan_config_id
+                            ? scans.find(scan => scan.id === rule.scan_config_id)?.name ?? 'unknown scan'
+                            : 'all scans'}
+                        </span>
                         <span>Scopes: {scopeSummary(rule) || 'none'}</span>
                         <span>Direction: {directionSummary(rule) || 'none'}</span>
                         <span>Cooldown: {formatCooldown(rule.cooldown_minutes)}</span>
@@ -288,6 +298,32 @@ export function DestinationCard({
                     onChange={event => setRuleForm(current => ({ ...current, cooldown_minutes: Number(event.target.value) }))}
                   />
                 </div>
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="rule-scan">Scan</Label>
+                <Select
+                  value={ruleForm.scan_config_id || ALL_SCANS_OPTION}
+                  onValueChange={value => setRuleForm(current => ({
+                    ...current,
+                    scan_config_id: value === ALL_SCANS_OPTION ? '' : value,
+                  }))}
+                >
+                  <SelectTrigger id="rule-scan"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_SCANS_OPTION}>All scans</SelectItem>
+                    {scans.map(scan => (
+                      <SelectItem key={scan.id} value={scan.id}>
+                        {scan.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {ruleForm.scan_config_id
+                    ? 'Only signals from this scan reach the destination. Catalog metric anomalies are project-wide, so they are not delivered by a scan-bound rule.'
+                    : 'Signals from every scan in the project reach the destination.'}
+                </p>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-5 gap-3">

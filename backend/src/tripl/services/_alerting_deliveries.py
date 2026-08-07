@@ -15,7 +15,18 @@ from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination, AlertDestinationType
 from tripl.models.alert_rule import AlertRule
-from tripl.models.project_anomaly_settings import ProjectAnomalySettings
+from tripl.models.anomaly_scope_override import (
+    RATCHETABLE_SCOPE_TYPES,
+    AnomalyScopeOverride,
+    ratchet_min_expected_count,
+    ratchet_sigma_threshold,
+)
+from tripl.models.domain_enums import MetricScopeType
+from tripl.models.project_anomaly_settings import (
+    DEFAULT_MIN_EXPECTED_COUNT,
+    DEFAULT_SIGMA_THRESHOLD,
+    ProjectAnomalySettings,
+)
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.alerting import (
     AlertDeliveryDetailResponse,
@@ -376,34 +387,101 @@ async def _tune_false_positive_thresholds(
     project_id: uuid.UUID,
     correlation_group_id: uuid.UUID,
 ) -> None:
-    scan_configs = (
+    """Make the detector stricter on the scopes this group actually alerted on.
+
+    PER SCOPE, not project-wide. The ratchet used to raise
+    ``sigma_threshold`` / ``min_expected_count`` on ``ProjectAnomalySettings``
+    AND on every scan the group touched, so one click on one noisy event made
+    every other event, event type, project total and catalog metric in the
+    project less sensitive — permanently, and with no record of which click
+    caused which increment. Per-scope correlation groups (tripl-l429.1) put a
+    single scope behind that button, so the blast radius had to match it.
+
+    The scope key is ``(scan_config_id, scope_type, scope_ref)`` — how a
+    ``MetricAnomaly`` keys itself, and the only key the detection loops can
+    honour. ``metric`` scopes are stored with a NULL ``scan_config_id`` because
+    catalog metric series are project-global and their anomaly rows carry NULL
+    too, even though the DELIVERY that carried the alert is always attributed to
+    some scan config.
+
+    Still permanent and still not decaying; the undo is deleting the override
+    from Detection settings, which drops the scope straight back to the project
+    setting.
+    """
+    rows = (
         await session.execute(
-            select(ScanConfig)
-            .join(AlertDelivery, AlertDelivery.scan_config_id == ScanConfig.id)
-            .join(AlertDeliveryItem, AlertDeliveryItem.delivery_id == AlertDelivery.id)
+            select(
+                AlertDelivery.scan_config_id,
+                AlertDeliveryItem.scope_type,
+                AlertDeliveryItem.scope_ref,
+                AlertDeliveryItem.scope_name,
+            )
+            .join(AlertDelivery, AlertDelivery.id == AlertDeliveryItem.delivery_id)
             .where(
                 AlertDelivery.project_id == project_id,
                 AlertDeliveryItem.correlation_group_id == correlation_group_id,
             )
             .distinct()
+            # ``scope_name`` is a display label carried along, not part of the
+            # key, so one scope can still come back on several rows with
+            # different labels; ordering makes which label wins deterministic
+            # and the ``seen`` set below keeps it to ONE ratchet step per scope.
+            .order_by(AlertDeliveryItem.scope_name)
         )
-    ).scalars()
-    for config in scan_configs:
-        config.sigma_threshold = min(max(float(config.sigma_threshold or 3.0), 3.0) + 0.5, 10.0)
-        config.min_expected_count = min(max(int(config.min_expected_count or 0) + 5, 10), 1000)
+    ).all()
 
     settings = await session.scalar(
         select(ProjectAnomalySettings).where(ProjectAnomalySettings.project_id == project_id)
     )
-    if settings is not None:
-        settings.sigma_threshold = min(
-            max(float(settings.sigma_threshold or 3.0), 3.0) + 0.5,
-            10.0,
+    base_sigma = settings.sigma_threshold if settings is not None else DEFAULT_SIGMA_THRESHOLD
+    base_count = settings.min_expected_count if settings is not None else DEFAULT_MIN_EXPECTED_COUNT
+
+    seen: set[tuple[uuid.UUID | None, str, str]] = set()
+    for scan_config_id, scope_type, scope_ref, scope_name in rows:
+        scope_type = str(scope_type)
+        if scope_type not in RATCHETABLE_SCOPE_TYPES:
+            # Schema/distribution/variable-value drift and release regressions
+            # reach the inbox too, but nothing scores them with these two knobs,
+            # so a ratchet on them would only have moved unrelated volume
+            # scopes. The group is still marked a false positive.
+            continue
+        # ``metric`` scopes are project-global: the anomaly row carries a NULL
+        # config, so the override must too, or detection would never find it.
+        config_id = None if scope_type == MetricScopeType.metric.value else scan_config_id
+        key = (config_id, scope_type, scope_ref)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        override = await session.scalar(
+            select(AnomalyScopeOverride).where(
+                AnomalyScopeOverride.project_id == project_id,
+                AnomalyScopeOverride.scan_config_id.is_(None)
+                if config_id is None
+                else AnomalyScopeOverride.scan_config_id == config_id,
+                AnomalyScopeOverride.scope_type == scope_type,
+                AnomalyScopeOverride.scope_ref == scope_ref,
+            )
         )
-        settings.min_expected_count = min(
-            max(int(settings.min_expected_count or 0) + 5, 10),
-            1000,
-        )
+        if override is None:
+            override = AnomalyScopeOverride(
+                project_id=project_id,
+                scan_config_id=config_id,
+                scope_type=scope_type,
+                scope_ref=scope_ref,
+                scope_name=scope_name or scope_ref,
+                sigma_threshold=base_sigma,
+                min_expected_count=base_count,
+                false_positive_count=0,
+            )
+            session.add(override)
+        # Repeat clicks compound off the scope's own current value, so the
+        # second false positive on the same scope is a second step, not a reset.
+        override.sigma_threshold = ratchet_sigma_threshold(override.sigma_threshold)
+        override.min_expected_count = ratchet_min_expected_count(override.min_expected_count)
+        override.false_positive_count = (override.false_positive_count or 0) + 1
+        override.scope_name = scope_name or override.scope_name
+    await session.flush()
 
 
 async def apply_alert_inbox_action(

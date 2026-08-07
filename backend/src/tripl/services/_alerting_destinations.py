@@ -23,6 +23,7 @@ from tripl.models.alert_rule_filter import AlertRuleFilter
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
+from tripl.models.scan_config import ScanConfig
 from tripl.schemas.alerting import (
     AlertDestinationCreate,
     AlertDestinationResponse,
@@ -137,11 +138,35 @@ async def validate_filters(
             raise HTTPException(status_code=404, detail="Filter event not found")
 
 
+async def validate_scan_config(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    scan_config_id: uuid.UUID | None,
+) -> None:
+    """A rule may only be narrowed to a scan of its OWN project.
+
+    Same shape as ``validate_filters``: a 404 rather than a foreign-key error,
+    so a stale or cross-project id never reaches the database.
+    """
+    if scan_config_id is None:
+        return
+    found = await session.scalar(
+        select(ScanConfig.id).where(
+            ScanConfig.id == scan_config_id,
+            ScanConfig.project_id == project_id,
+        )
+    )
+    if found is None:
+        raise HTTPException(status_code=404, detail="Scan configuration not found")
+
+
 def rule_to_response(rule: AlertRule) -> AlertRuleResponse:
     sorted_filters = sorted(rule.filters, key=lambda item: item.position)
     return AlertRuleResponse(
         id=rule.id,
         destination_id=rule.destination_id,
+        scan_config_id=rule.scan_config_id,
         name=rule.name,
         enabled=rule.enabled,
         include_project_total=rule.include_project_total,
@@ -271,6 +296,39 @@ async def replace_rule_filters(
                 position=position,
             )
         )
+
+
+async def disable_rules_bound_to_scan(session: AsyncSession, scan_id: uuid.UUID) -> None:
+    """Unbind and DISABLE the alert rules narrowed to a scan about to be deleted.
+
+    The column's ``ondelete`` is SET NULL (see ``models.alert_rule``), and NULL
+    means "every scan in the project". Leaving it at that would take a rule
+    someone had deliberately narrowed to the noisiest scan and, the moment that
+    scan is deleted, re-point it at the whole project — so deleting a scan to
+    stop the noise would start paging on every other scan instead.
+
+    Disabling in the same transaction makes the orphan inert and visible: the
+    rule keeps its name, thresholds, templates and filters, and the Alerting tab
+    shows it switched off rather than silently re-aimed. CASCADE was rejected for
+    the opposite reason — it would delete the rule outright and take its delivery
+    history with it through ``AlertDelivery.rule_id``, including deliveries made
+    for other scans while the rule was still project-wide.
+
+    Lives here rather than in ``scan_service`` because a scan config is deleted
+    by TWO paths: ``delete_scan_config``, and the ORM cascade from
+    ``DataSource.scan_configs`` when a data source goes. Both must call it.
+    """
+    bound_rules = (
+        (await session.execute(select(AlertRule).where(AlertRule.scan_config_id == scan_id)))
+        .scalars()
+        .all()
+    )
+    for rule in bound_rules:
+        rule.scan_config_id = None
+        rule.enabled = False
+    # Same cleanup the ordinary "disable a rule" path does: a rule that is off
+    # must not leave open AlertRuleState rows behind reporting it as firing.
+    await clear_rule_states(session, [rule.id for rule in bound_rules])
 
 
 async def clear_rule_states(session: AsyncSession, rule_ids: list[uuid.UUID]) -> None:
@@ -514,6 +572,11 @@ async def create_rule(
         project_id=project.id,
         filters=data.filters,
     )
+    await validate_scan_config(
+        session,
+        project_id=project.id,
+        scan_config_id=data.scan_config_id,
+    )
     try:
         message_format, message_template, items_template = validate_template_configuration(
             destination_type=destination.type,
@@ -526,6 +589,7 @@ async def create_rule(
 
     rule = AlertRule(
         destination_id=destination.id,
+        scan_config_id=data.scan_config_id,
         name=data.name,
         enabled=data.enabled,
         include_project_total=data.include_project_total,
@@ -591,6 +655,12 @@ async def update_rule(
             session,
             project_id=project.id,
             filters=filters_payload,
+        )
+    if "scan_config_id" in update_dict:
+        await validate_scan_config(
+            session,
+            project_id=project.id,
+            scan_config_id=update_dict["scan_config_id"],
         )
     if (
         "message_format" in update_dict

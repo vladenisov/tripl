@@ -236,7 +236,10 @@ async def get_preview_job(
 
 
 async def delete_scan_config(session: AsyncSession, slug: str, scan_id: uuid.UUID) -> None:
+    from tripl.services._alerting_destinations import disable_rules_bound_to_scan
+
     config = await get_scan_config(session, slug, scan_id)
+    await disable_rules_bound_to_scan(session, scan_id)
     await session.delete(config)
     await session.commit()
 

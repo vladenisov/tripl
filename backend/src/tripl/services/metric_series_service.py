@@ -37,6 +37,7 @@ from tripl.core.analyzers.anomaly_detector import (
     forecast_next_buckets,
 )
 from tripl.core.intervals import get_interval
+from tripl.metric_grid import metric_grid_stmt, metric_grids
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.fact_table import FactTable
 from tripl.models.metric_anomaly import MetricAnomaly
@@ -64,7 +65,7 @@ from tripl.services.metrics_service import (
     _retained_versions,
     _signal_from_anomaly,
 )
-from tripl.services.monitoring_utils import classify_signal_state
+from tripl.services.monitoring_utils import classify_signal_state, scan_interval_to_timedelta
 from tripl.services.version_activation import (
     DEFAULT_ACTIVE_SHARE_MIN,
     active_release_versions,
@@ -92,34 +93,16 @@ async def _resolve_metric_interval(
 ) -> tuple[str | None, uuid.UUID | None]:
     """Interval + source scan_config for the metric's grid.
 
-    ``sql`` / ``fact`` metrics collect on their own ``interval``.
-    ``event_composition`` metrics leave ``interval`` NULL and align onto a
-    source scan grid, so the interval is taken from the ``scan_config_id``
-    stamped on their stored values.
-
-    A metric whose values were collected under more than one ``scan_config_id``
-    (e.g. after a source config was recreated) must resolve deterministically to
-    the grid currently in use, so the most-recent bucket's ``scan_config_id`` is
-    selected via ``ORDER BY bucket DESC``. Without it the engine could return any
-    matching row and silently apply the wrong bucket grid to the whole series.
+    Thin wrapper over the shared rule in :mod:`tripl.metric_grid` (own interval,
+    else the inherited source-scan grid), kept for the tuple shape this module's
+    callers read.
     """
-    scan_config_id = await session.scalar(
-        select(MetricValue.scan_config_id)
-        .where(
-            MetricValue.metric_definition_id == metric.id,
-            MetricValue.scan_config_id.is_not(None),
-        )
-        .order_by(MetricValue.bucket.desc())
-        .limit(1)
-    )
-    if metric.interval is not None:
-        return metric.interval, scan_config_id
-    if scan_config_id is not None:
-        interval = await session.scalar(
-            select(ScanConfig.interval).where(ScanConfig.id == scan_config_id)
-        )
-        return interval, scan_config_id
-    return None, scan_config_id
+    grid = metric_grids(
+        (await session.execute(metric_grid_stmt(MetricDefinition.id == metric.id))).all()
+    ).get(metric.id)
+    if grid is None:
+        return None, None
+    return grid.interval, grid.scan_config_id
 
 
 async def _load_metric_values(
@@ -164,6 +147,109 @@ async def _load_metric_anomalies(
         query = query.where(MetricAnomaly.bucket < time_to)
     result = await session.execute(query)
     return list(result.scalars().all())
+
+
+async def _latest_metric_value_bucket(
+    session: AsyncSession,
+    metric_id: uuid.UUID,
+    *,
+    since: datetime,
+    time_to: datetime | None,
+) -> datetime | None:
+    """Newest stored value bucket at or after ``since``.
+
+    ``since`` bounds the read and costs no accuracy for its one caller, which
+    only asks whether the metric stored anything NEWER than a candidate anchor —
+    rows older than that anchor cannot change the answer.
+    """
+    query = select(func.max(MetricValue.bucket)).where(
+        MetricValue.metric_definition_id == metric_id,
+        MetricValue.bucket >= since,
+    )
+    if time_to is not None:
+        query = query.where(MetricValue.bucket < time_to)
+    return (await session.execute(query)).scalar_one_or_none()
+
+
+async def _load_anomalies_reaching_open_anchor(
+    session: AsyncSession,
+    metric_id: uuid.UUID,
+    *,
+    time_from: datetime | None,
+    time_to: datetime | None,
+    interval: str | None,
+    recent_window: timedelta | None,
+) -> tuple[list[MetricAnomaly], datetime | None]:
+    """The metric's anomalies for the requested range, reaching back to an open anchor.
+
+    Returns ``(anomalies, effective_time_from)``; the caller pulls its value rows
+    with the returned floor so chart and signal describe one range.
+
+    ``recent_signal_window_hours`` is project-wide and reaches 720 (30 days),
+    while the range picker on this page is per-visit. A metric anomaly older than
+    the selected range but still inside that window is therefore OPEN on the
+    Anomalies page, the sidebar badge and the metrics list, while this read —
+    which loaded anomalies only inside the requested window — reported no signal
+    at all on the page those three link to. ``metrics_service._load_scope_anomalies``
+    fixed the identical shape for the event scopes; this is the catalog-metric
+    half of it.
+
+    Widening is CONDITIONAL: only an anchor that still classifies open earns it.
+    Reaching back to any older anomaly would quietly serve a different range than
+    the user picked on every metric that has ever been flagged. The probe runs
+    the same ``classify_signal_state`` call, on the same inputs, that
+    :func:`_latest_signal` will run once the rows are loaded, so the two cannot
+    disagree about what "open" means. Note the outage re-check is not consulted
+    on either side — a catalog metric has no scan to ask whether the collector is
+    alive (see ``monitoring_utils._outage_is_still_running``).
+    """
+    anomalies = await _load_metric_anomalies(
+        session, metric_id, time_from=time_from, time_to=time_to
+    )
+    # A row inside the range is already the metric's newest (the range ends at
+    # "now"), so it is the row every other surface classifies: nothing to reach
+    # back for, and no extra query is run.
+    if anomalies or time_from is None:
+        return anomalies, time_from
+
+    anchor = (
+        await session.execute(
+            select(MetricAnomaly)
+            .where(
+                MetricAnomaly.scope_type == SCOPE_METRIC,
+                MetricAnomaly.scope_ref == str(metric_id),
+                MetricAnomaly.bucket < time_from,
+            )
+            .order_by(MetricAnomaly.bucket.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if anchor is None:
+        return anomalies, time_from
+
+    # Mirrors what ``_build_metric_series_points`` will produce once the range
+    # starts at the anchor: an anomaly bucket with no value row of its own is
+    # backfilled from ``actual_count``, so the densified series ends at the
+    # newest of the metric's value buckets and its anomaly buckets.
+    stored_latest = await _latest_metric_value_bucket(
+        session, metric_id, since=anchor.bucket, time_to=time_to
+    )
+    latest_metric_bucket = (
+        max(anchor.bucket, stored_latest) if stored_latest is not None else anchor.bucket
+    )
+    state = classify_signal_state(
+        anomaly_bucket=anchor.bucket,
+        latest_metric_bucket=latest_metric_bucket,
+        interval=scan_interval_to_timedelta(interval),
+        recent_window=recent_window,
+    )
+    if state is None:
+        return anomalies, time_from
+
+    return (
+        await _load_metric_anomalies(session, metric_id, time_from=anchor.bucket, time_to=time_to),
+        anchor.bucket,
+    )
 
 
 def _densify_value_rows(
@@ -254,6 +340,7 @@ def _latest_signal(
     *,
     data: list[MetricSeriesPoint],
     anomalies: list[MetricAnomaly],
+    interval: str | None = None,
     recent_window: timedelta | None = None,
 ) -> MetricSignalResponse | None:
     if not anomalies:
@@ -263,6 +350,9 @@ def _latest_signal(
     state = classify_signal_state(
         anomaly_bucket=latest_anomaly.bucket,
         latest_metric_bucket=latest_metric_bucket,
+        # A catalog metric carries its OWN grid, often daily. Judged against a
+        # bare 24h window it closes on the very day it fires.
+        interval=scan_interval_to_timedelta(interval),
         recent_window=recent_window,
     )
     if state is None:
@@ -282,9 +372,36 @@ async def get_metric_series(
     metric = await _resolve_metric(session, project, metric_id)
     interval, scan_config_id = await _resolve_metric_interval(session, metric)
 
-    value_rows = await _load_metric_values(session, metric.id, time_from=time_from, time_to=time_to)
-    anomalies = await _load_metric_anomalies(
-        session, metric.id, time_from=time_from, time_to=time_to
+    # "Detection off" is off on EVERY surface. Turning the metric's switch off
+    # stops new rows being scored but leaves the stored ones in place, and both
+    # project-wide surfaces already drop a disabled metric
+    # (``metrics_insights_service._get_active_metric_signals`` and
+    # ``_count_active_metric_signals_by_project`` filter on the flag), so this
+    # page reporting an open signal from those leftovers made the four surfaces
+    # disagree the moment the switch was flipped. Only the SIGNAL is retracted:
+    # the stored anomalies still render as chart markers, because the history is
+    # real and the switch speaks about what is watched, not about what happened.
+    recent_window: timedelta | None = None
+    series_from = time_from
+    if metric.anomaly_detection_enabled:
+        recent_window = await _get_project_recent_signal_window(session, project.id)
+        anomalies, series_from = await _load_anomalies_reaching_open_anchor(
+            session,
+            metric.id,
+            time_from=time_from,
+            time_to=time_to,
+            interval=interval,
+            recent_window=recent_window,
+        )
+    else:
+        anomalies = await _load_metric_anomalies(
+            session, metric.id, time_from=time_from, time_to=time_to
+        )
+
+    # ``series_from``, not ``time_from``: the chart and the signal must describe
+    # ONE range, so a reach-back that widened the anomaly load widens this too.
+    value_rows = await _load_metric_values(
+        session, metric.id, time_from=series_from, time_to=time_to
     )
     data = _build_metric_series_points(
         interval=interval,
@@ -296,10 +413,16 @@ async def get_metric_series(
         metric_id=metric.id,
         scan_config_id=scan_config_id,
         interval=interval,
-        latest_signal=_latest_signal(
-            data=data,
-            anomalies=anomalies,
-            recent_window=await _get_project_recent_signal_window(session, project.id),
+        # Same switch as the reach-back above.
+        latest_signal=(
+            _latest_signal(
+                data=data,
+                anomalies=anomalies,
+                interval=interval,
+                recent_window=recent_window,
+            )
+            if metric.anomaly_detection_enabled
+            else None
         ),
         data=data,
         forecast=_forecast_from_series(data=data, interval=interval),

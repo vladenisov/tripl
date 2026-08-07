@@ -12,7 +12,7 @@ from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
-from tripl.models.release_regression import ReleaseRegression
+from tripl.models.release_regression import ReleaseComparability, ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.tests.conftest import TestSessionLocal
 from tripl.tests.test_project_lookup_perf import captured_sql
@@ -1483,6 +1483,77 @@ async def test_get_release_regressions_lists_missing_first(client: AsyncClient) 
 
 
 @pytest.mark.asyncio
+async def test_get_release_regressions_serves_a_withheld_verdict_with_no_rows(
+    client: AsyncClient,
+) -> None:
+    """Zero rows is two different facts. Without the verdict on the response a
+    suppressed comparison and a healthy one are byte-identical, and the panel
+    prints "No events regressed" for both. The release pair is only known from
+    the verdict here, since no row carries it."""
+    setup = await _setup_metrics_project(client, "regression-withheld")
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"Regression Withheld DS {uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=uuid.UUID(setup["project_id"]),
+            event_type_id=uuid.UUID(setup["page_type_id"]),
+            name="Withheld Regression Config",
+            base_query="SELECT time, event_name FROM events",
+            time_column="time",
+            app_version_column="app_version",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+        await session.flush()
+        session.add(
+            ReleaseComparability(
+                id=uuid.uuid4(),
+                scan_config_id=scan_config.id,
+                scope_type="event",
+                app_version_column="app_version",
+                version="2.1.0",
+                previous_version="2.0.0",
+                comparable=False,
+                reason="population_mismatch",
+                emerging_share=0.66,
+                max_emerging_share=0.25,
+            )
+        )
+        await session.commit()
+        scan_config_id = str(scan_config.id)
+
+    resp = await client.get(
+        f"/api/v1/projects/regression-withheld/scans/{scan_config_id}/release-regressions"
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["items"] == []
+    assert len(body["comparability"]) == 1
+    verdict = body["comparability"][0]
+    assert verdict["comparable"] is False
+    assert verdict["reason"] == "population_mismatch"
+    assert verdict["version"] == "2.1.0"
+    assert verdict["previous_version"] == "2.0.0"
+    assert verdict["emerging_share"] == 0.66
+    assert verdict["max_emerging_share"] == 0.25
+    # No regression row carries the pair, so this can only come from the verdict.
+    assert body["latest_version"] == "2.1.0"
+
+
+@pytest.mark.asyncio
 async def test_get_release_regressions_empty_without_version_column(client: AsyncClient) -> None:
     setup = await _setup_metrics_project(client, "regression-empty")
 
@@ -2534,3 +2605,42 @@ async def test_app_versions_keeps_its_project_total_default(client: AsyncClient)
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["scope_type"] == "project_total"
+
+
+@pytest.mark.asyncio
+async def test_project_total_band_follows_the_scope_false_positive_override(
+    client: AsyncClient,
+) -> None:
+    """The chart band is ``expected ± sigma_threshold × stddev`` and is meant to
+    read as "outside the band = flagged". A scope the false-positive ratchet has
+    tightened is scored at ITS sigma, so serving the scan-wide value would draw a
+    band narrower than the rule that produced the dots."""
+    from tripl.models.anomaly_scope_override import AnomalyScopeOverride
+
+    setup = await _setup_metrics_project(client, "metrics-scope-band")
+    scan_config_id = await _seed_group_metrics(setup["project_id"], [], name="Band scan")
+
+    before = await client.get("/api/v1/projects/metrics-scope-band/metrics/total")
+    assert before.status_code == 200
+    scan_sigma = before.json()["sigma_threshold"]
+
+    async with TestSessionLocal() as session:
+        session.add(
+            AnomalyScopeOverride(
+                id=uuid.uuid4(),
+                project_id=uuid.UUID(setup["project_id"]),
+                scan_config_id=scan_config_id,
+                scope_type="project_total",
+                scope_ref=str(scan_config_id),
+                scope_name="Band scan",
+                sigma_threshold=scan_sigma + 1.5,
+                min_expected_count=99,
+                false_positive_count=1,
+            )
+        )
+        await session.commit()
+
+    after = await client.get("/api/v1/projects/metrics-scope-band/metrics/total")
+
+    assert after.status_code == 200
+    assert after.json()["sigma_threshold"] == scan_sigma + 1.5

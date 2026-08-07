@@ -114,6 +114,22 @@ Available actions:
 - **False positive** — resolve it without changing the documented contract.
 - **Reopen** — return a resolved drift to active review.
 
+Resolved drift is collapsed, not hidden: both panels carry a **Show N resolved**
+toggle so an acceptance you regret can always be reopened.
+
+A later scan **reopens an accepted drift by itself** as soon as it observes a
+value the documented list does not cover. Accepting is what puts the values in
+that list, so a value you accepted does not come back and "outside the accepted
+set" means genuinely new — the reopened row shows only the new values, and alert
+rules subscribed to variable value drift see it again. Snoozed and
+false-positive rows are never reopened by a scan.
+
+The documented list is the arbiter, not the row's own history: if you later
+**remove an accepted value from the documented list by hand**, the next scan
+that sees it opens a drift again. A resolved row cannot keep vouching for a
+value the plan no longer documents — and this is also what stops a row that
+silently absorbed values under an older build from suppressing them forever.
+
 Alert rules can opt into **Variable value drift**. These candidates behave like
 other drift signals: they use the spike direction for rule matching, carry the
 variable name and novel-value sample in the alert, and bypass numeric volume

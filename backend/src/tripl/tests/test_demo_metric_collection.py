@@ -636,7 +636,7 @@ def test_metric_anomaly_detect_path_over_collected_series(
         evaluation_end=spike_bucket + timedelta(days=1),
         settings=_ANOMALY_SETTINGS,
         fill_gaps=True,
-    )
+    ).anomalies
     assert isinstance(baseline, list)
 
     # An unmistakable spike on the newest bucket is flagged by the real detector,
@@ -651,7 +651,7 @@ def test_metric_anomaly_detect_path_over_collected_series(
         evaluation_end=spike_bucket + timedelta(days=1),
         settings=_ANOMALY_SETTINGS,
         fill_gaps=True,
-    )
+    ).anomalies
     assert any(anomaly.bucket == spike_bucket for anomaly in detected), "spike not flagged"
 
 

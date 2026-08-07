@@ -1,0 +1,448 @@
+"""Rendering-side alert defects: the release-regression trend, message length
+and the zero-baseline percentage.
+
+All three are about what the reader is shown, so all three are exercised through
+the renderer rather than through a send.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+
+from tripl.alert_templates import (
+    ALERT_MESSAGE_FORMAT_PLAIN,
+    ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2,
+    get_default_items_template,
+)
+from tripl.alerting_matching import SCOPE_RELEASE_REGRESSION
+from tripl.anomaly_context import load_recent_metric_points
+from tripl.models import Base
+from tripl.models.alert_delivery import AlertDelivery
+from tripl.models.alert_delivery_item import AlertDeliveryItem
+from tripl.models.alert_destination import AlertDestination, AlertDestinationType
+from tripl.models.alert_rule import AlertRule
+from tripl.models.data_source import DataSource
+from tripl.models.event import Event
+from tripl.models.event_metric import EventMetric
+from tripl.models.event_type import EventType
+from tripl.models.project import Project
+from tripl.models.scan_config import ScanConfig
+from tripl.schemas.alerting import SimulatedRuleFiring
+from tripl.services.alerting_rendering import render_firing_item
+from tripl.worker.tasks.alerts_messages import (
+    TELEGRAM_MESSAGE_MAX_CHARS,
+    _append_ai_explanation,
+    _build_items_text,
+    _is_telegram_markdown_parse_error,
+    _is_telegram_message_too_long_error,
+    _render_delivery_message,
+    split_telegram_messages,
+    telegram_message_length,
+)
+
+
+@pytest.fixture
+def sync_session():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    session = factory()
+    try:
+        yield session
+    finally:
+        session.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def _seed_event_with_metrics(session: Session) -> tuple[uuid.UUID, uuid.UUID, datetime]:
+    """One event carrying 24 hourly EventMetric buckets. Returns (scan, event, last)."""
+    project = Project(id=uuid.uuid4(), name="P", slug="rr-trend", description="")
+    session.add(project)
+    session.flush()
+    data_source = DataSource(
+        id=uuid.uuid4(),
+        name="wh",
+        db_type="clickhouse",
+        host="localhost",
+        port=9000,
+        database_name="db",
+        username="u",
+        password_encrypted="x",
+    )
+    session.add(data_source)
+    session.flush()
+    config = ScanConfig(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        data_source_id=data_source.id,
+        name="scan",
+        base_query="SELECT * FROM events",
+        app_version_column="app_version",
+    )
+    event_type = EventType(
+        id=uuid.uuid4(), project_id=project.id, name="pv", display_name="PV", description=""
+    )
+    session.add_all([config, event_type])
+    session.flush()
+    event = Event(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        event_type_id=event_type.id,
+        name="main:tap:snippet",
+        description="",
+        order=0,
+    )
+    session.add(event)
+    session.flush()
+
+    last_bucket = datetime(2026, 8, 4, 19, tzinfo=UTC)
+    for hours_ago in range(24):
+        session.add(
+            EventMetric(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                event_id=event.id,
+                event_type_id=event_type.id,
+                bucket=last_bucket - timedelta(hours=hours_ago),
+                count=100 + hours_ago,
+            )
+        )
+    session.flush()
+    return config.id, event.id, last_bucket
+
+
+def test_release_regression_scope_gets_no_metric_series(sync_session: Session) -> None:
+    """A release-regression scope_ref IS an event id, so the old fall-through
+    resolved it and plotted the event's all-versions volume under a
+    release-cohort headline (delivery d4d8cf9e). The event scope still plots."""
+    scan_config_id, event_id, last_bucket = _seed_event_with_metrics(sync_session)
+
+    assert (
+        load_recent_metric_points(
+            sync_session,
+            scan_config_id=scan_config_id,
+            scope_type=SCOPE_RELEASE_REGRESSION,
+            scope_ref=str(event_id),
+            until=last_bucket,
+        )
+        == []
+    )
+
+    event_points = load_recent_metric_points(
+        sync_session,
+        scan_config_id=scan_config_id,
+        scope_type="event",
+        scope_ref=str(event_id),
+        until=last_bucket,
+    )
+    assert len(event_points) == 24
+
+
+def _item(index: int, *, scope_type: str = "event") -> AlertDeliveryItem:
+    return AlertDeliveryItem(
+        id=uuid.uuid4(),
+        delivery_id=uuid.uuid4(),
+        scope_type=scope_type,
+        scope_ref=str(uuid.uuid4()),
+        # Zero-padded so no scope name is a prefix of another: ":1" would
+        # otherwise match inside ":10" when checking which items a message got.
+        scope_name=f"main:tap:snippet:{index:03d}",
+        bucket=datetime(2026, 8, 4, 19, tzinfo=UTC),
+        direction="drop",
+        actual_count=15403,
+        expected_count=32048,
+        absolute_delta=16645,
+        percent_delta=51.9,
+        # The optional lines are what make a real item ~350 characters; the
+        # production URLs are this long.
+        details_path=f"https://tripl.windyapp.co/p/windy-ios/monitoring/event/{uuid.uuid4()}",
+        monitoring_path=f"https://tripl.windyapp.co/p/windy-ios/events/detail/{uuid.uuid4()}",
+    )
+
+
+def _render(items: list[AlertDeliveryItem]) -> str:
+    return _build_items_text(
+        items,
+        message_format=ALERT_MESSAGE_FORMAT_PLAIN,
+        items_template=get_default_items_template(ALERT_MESSAGE_FORMAT_PLAIN),
+    )
+
+
+def _shown_indices(text: str, total: int) -> list[int]:
+    """Which items survived. An item spans several lines, so count scope names."""
+    return [i for i in range(total) if f"main:tap:snippet:{i:03d}:" in text]
+
+
+def _telegram_delivery(
+    items: list[AlertDeliveryItem],
+    *,
+    ai_explanation_enabled: bool = True,
+) -> tuple[AlertDelivery, AlertDestination, AlertRule, Project]:
+    destination = AlertDestination(
+        id=uuid.uuid4(),
+        project_id=uuid.uuid4(),
+        type=AlertDestinationType.telegram,
+        name="Test",
+    )
+    rule = AlertRule(
+        id=uuid.uuid4(),
+        destination_id=destination.id,
+        name="TG dev",
+        message_format=ALERT_MESSAGE_FORMAT_PLAIN,
+        ai_explanation_enabled=ai_explanation_enabled,
+    )
+    delivery = AlertDelivery(
+        id=uuid.uuid4(),
+        project_id=destination.project_id,
+        scan_config_id=uuid.uuid4(),
+        destination_id=destination.id,
+        rule_id=rule.id,
+        channel=AlertDestinationType.telegram,
+        matched_count=len(items),
+    )
+    delivery.items = items
+    project = Project(id=delivery.project_id, name="windy-ios", slug="windy-ios", description="")
+    return delivery, destination, rule, project
+
+
+def _split(
+    items: list[AlertDeliveryItem],
+    *,
+    ai_explanation: str | None = None,
+    max_chars: int = TELEGRAM_MESSAGE_MAX_CHARS,
+) -> list[tuple[str, list[AlertDeliveryItem]]]:
+    delivery, destination, rule, project = _telegram_delivery(items)
+    text, message_format = _render_delivery_message(
+        delivery,
+        destination=destination,
+        rule=rule,
+        scan_name="Snowplow Events (iOS)",
+        project=project,
+    )
+    if ai_explanation:
+        text = _append_ai_explanation(text, ai_explanation, message_format)
+    return split_telegram_messages(
+        delivery,
+        destination=destination,
+        rule=rule,
+        scan_name="Snowplow Events (iOS)",
+        project=project,
+        message=text,
+        message_format=message_format,
+        ai_explanation=ai_explanation,
+        max_chars=max_chars,
+    )
+
+
+def test_items_text_renders_every_item_it_is_given() -> None:
+    """No truncation anywhere — email, Slack and webhook renders carry the lot."""
+    items = [_item(i) for i in range(14)]
+    text = _render(items)
+    assert _shown_indices(text, 14) == list(range(14))
+    assert "more of" not in text
+
+
+def test_a_delivery_that_fits_is_still_one_message() -> None:
+    """The common case pays nothing: one length check, no re-render, one send."""
+    items = [_item(i) for i in range(4)]
+    parts = _split(items)
+    assert len(parts) == 1
+    assert parts[0][1] == items
+    assert telegram_message_length(parts[0][0]) <= TELEGRAM_MESSAGE_MAX_CHARS
+
+
+def test_every_item_survives_the_split_into_several_messages() -> None:
+    """The promise alerting.md makes: as many messages as it takes, none dropped.
+
+    Driven at 14 items of the measured ~330-character size — the replay that
+    unblocked volume scopes rendered exactly that, 4154 characters, which is
+    when the ceiling starts to matter.
+    """
+    items = [_item(i) for i in range(14)]
+    parts = _split(items, ai_explanation="Checkout volume fell across four screens." * 8)
+
+    assert len(parts) > 1
+    for text, _part_items in parts:
+        assert telegram_message_length(text) <= TELEGRAM_MESSAGE_MAX_CHARS
+        assert "not shown" not in text
+    # Every item, exactly once, in the delivery's own order.
+    assert [item for _text, part_items in parts for item in part_items] == items
+    # And every item is actually rendered into the message it was assigned to.
+    for text, part_items in parts:
+        assert _shown_indices(text, 14) == [items.index(item) for item in part_items]
+
+
+def test_the_ai_note_rides_on_the_first_message_only() -> None:
+    """It summarises the whole delivery; repeating it just costs length."""
+    note = "Checkout volume fell across four screens after the 8.2 rollout."
+    parts = _split([_item(i) for i in range(14)], ai_explanation=note * 4)
+    assert len(parts) > 1
+    assert note in parts[0][0]
+    assert [note in text for text, _ in parts[1:]] == [False] * (len(parts) - 1)
+
+
+def test_the_ceiling_is_counted_in_utf16_code_units_not_code_points() -> None:
+    """Telegram counts its 4096 in UTF-16 units, so an emoji costs two.
+
+    Budgeting in ``len`` is how a message of 4000 code points gets refused at
+    4400 units — the exact way the previous attempt at this ceiling was wrong.
+    Every scope name here is astral, so a code-point split packs messages that
+    Telegram refuses.
+    """
+    assert telegram_message_length("😀") == 2
+    assert telegram_message_length("a") == 1
+
+    items = [_item(i) for i in range(14)]
+    for index, item in enumerate(items):
+        item.scope_name = f"{'😀' * 40}:{index:03d}"
+    parts = _split(items)
+
+    assert len(parts) > 1
+    for text, _part_items in parts:
+        assert telegram_message_length(text) <= TELEGRAM_MESSAGE_MAX_CHARS
+    # A code-point count would have said these messages had room to spare, and
+    # packed more items into each of them.
+    assert max(len(text) for text, _ in parts) < TELEGRAM_MESSAGE_MAX_CHARS * 0.9
+    assert [item for _text, part_items in parts for item in part_items] == items
+
+
+def test_a_single_item_over_the_ceiling_gets_its_own_message() -> None:
+    """It cannot be made to fit, and dropping it is what this fix exists to stop.
+
+    Telegram refuses it and the delivery fails visibly, which is the honest
+    outcome: no budget re-render can shorten a message of one item.
+    """
+    items = [_item(0), _item(1)]
+    items[0].scope_name = "x" * 5000
+    parts = _split(items)
+
+    assert [part_items for _text, part_items in parts] == [[items[0]], [items[1]]]
+    assert telegram_message_length(parts[0][0]) > TELEGRAM_MESSAGE_MAX_CHARS
+
+
+def test_each_message_counts_only_the_items_it_carries() -> None:
+    """ "${matched_count} alerts" has to be true of the message it heads.
+
+    Dispatch already gives every 8-item chunk its own count; a message that is
+    one of several must do the same or the reader is told to look for 14 alerts
+    in a message holding 6.
+    """
+    items = [_item(i) for i in range(14)]
+    parts = _split(items)
+    assert len(parts) > 1
+    for text, part_items in parts:
+        assert f"{len(part_items)} alerts" in text
+
+
+def test_too_long_error_is_recognised_and_is_not_a_parse_error() -> None:
+    """The message _post_json actually raises for an over-4096 body."""
+    too_long = ValueError(
+        "HTTP 400 from https://api.telegram.org/bot***/sendMessage: "
+        "Bad Request: message is too long"
+    )
+    assert _is_telegram_message_too_long_error(too_long) is True
+    # Re-rendering as plain text does not shorten a too-long message, so this
+    # must NOT route into the MarkdownV2 fallback.
+    assert _is_telegram_markdown_parse_error(too_long) is False
+
+    parse_error = ValueError(
+        "HTTP 400 from https://api.telegram.org/bot***/sendMessage: "
+        "Bad Request: can't parse entities: Character '-' is reserved"
+    )
+    assert _is_telegram_message_too_long_error(parse_error) is False
+
+
+# --- the zero-baseline percentage (tripl-l429.24) ---------------------------
+#
+# The percent gate deliberately admits anomalies with no baseline at all
+# (tripl-l429.12): a scope resuming after an outage, or an event firing for the
+# first time. ``percent_delta`` is stored 0.0 for those because the ratio is
+# undefined and the column is NOT NULL — so the message printed the largest
+# possible relative move as the smallest one.
+
+
+def _zero_baseline_item() -> AlertDeliveryItem:
+    """137 events against a baseline of zero — the class the gate lets through."""
+    item = _item(0)
+    item.scope_name = "checkout:completed"
+    item.direction = "spike"
+    item.actual_count = 137
+    item.expected_count = 0
+    item.absolute_delta = 137
+    item.percent_delta = 0.0
+    item.details_path = None
+    item.monitoring_path = None
+    return item
+
+
+def _render_in(item: AlertDeliveryItem, message_format: str) -> str:
+    return _build_items_text(
+        [item],
+        message_format=message_format,
+        items_template=get_default_items_template(message_format),
+    )
+
+
+def test_a_zero_baseline_item_does_not_report_a_zero_percent_change() -> None:
+    text = _render_in(_zero_baseline_item(), ALERT_MESSAGE_FORMAT_PLAIN)
+
+    assert "0.0%" not in text
+    assert "no baseline" in text
+    # The absolute move is what there is to report, and it stays.
+    assert "actual=137, expected=0, delta=137" in text
+
+
+def test_the_zero_baseline_label_survives_markdownv2_escaping() -> None:
+    """The label rides inside the template's escaped parens like the number did."""
+    text = _render_in(_zero_baseline_item(), ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2)
+
+    assert "\\(no baseline\\)" in text
+    assert "0\\.0%" not in text
+
+
+def test_an_ordinary_item_still_renders_its_percentage_unchanged() -> None:
+    """Nothing moves for the case that has a baseline — byte for byte."""
+    plain = _render_in(_item(0), ALERT_MESSAGE_FORMAT_PLAIN)
+    markdown = _render_in(_item(0), ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2)
+
+    assert "actual=15403, expected=32048, delta=16645 (51.9%)" in plain
+    assert "delta=16645 \\(51\\.9%\\)" in markdown
+    assert "no baseline" not in plain
+
+
+def test_the_preview_says_the_same_thing_as_the_send() -> None:
+    """The in-UI simulator renders through its own copy of this context.
+
+    A rule tested in the simulator and then sent for real must not describe the
+    same firing two different ways.
+    """
+    item = _zero_baseline_item()
+    firing = SimulatedRuleFiring(
+        anomaly_id=uuid.uuid4(),
+        scope_type="event",
+        scope_ref=item.scope_ref,
+        scope_name=item.scope_name,
+        event_type_id=None,
+        event_id=None,
+        bucket=item.bucket,
+        direction=item.direction,
+        actual_count=item.actual_count,
+        expected_count=item.expected_count,
+        absolute_delta=item.absolute_delta,
+        percent_delta=item.percent_delta,
+    )
+
+    previewed = render_firing_item(
+        firing,
+        message_format=ALERT_MESSAGE_FORMAT_PLAIN,
+        items_template=get_default_items_template(ALERT_MESSAGE_FORMAT_PLAIN),
+    )
+
+    assert previewed == _render_in(item, ALERT_MESSAGE_FORMAT_PLAIN)
+    assert "no baseline" in previewed

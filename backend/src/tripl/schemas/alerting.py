@@ -28,6 +28,7 @@ from tripl.alerting_validation import (
 )
 from tripl.models.alert_delivery import AlertDeliveryStatus
 from tripl.models.alert_destination import AlertDestinationType
+from tripl.models.alert_rule import DEFAULT_MIN_PERCENT_DELTA
 from tripl.models.domain_enums import (
     AlertDriftType,
     AlertInboxStatus,
@@ -77,6 +78,10 @@ class AlertRuleFilterResponse(AlertRuleFilterPayload):
 class AlertRuleBase(BaseModel):
     name: str | None = None
     enabled: bool | None = None
+    # Narrow the rule to one scan config; null (the default) means every scan in
+    # the project. On update, ``exclude_unset`` distinguishes "not mentioned"
+    # from an explicit null, so a null in the body widens the rule back.
+    scan_config_id: uuid.UUID | None = None
     include_project_total: bool | None = None
     include_event_types: bool | None = None
     include_events: bool | None = None
@@ -120,7 +125,10 @@ class AlertRuleCreate(AlertRuleBase):
     notify_on_spike: bool = True
     notify_on_drop: bool = True
     ai_explanation_enabled: bool = False
-    min_percent_delta: float = Field(0, ge=0)
+    # A new rule starts at the measured volume threshold rather than wide open;
+    # see DEFAULT_MIN_PERCENT_DELTA. Zero is still accepted, for a caller that
+    # deliberately wants every deviation.
+    min_percent_delta: float = Field(DEFAULT_MIN_PERCENT_DELTA, ge=0)
     min_absolute_delta: float = Field(0, ge=0)
     min_expected_count: float = Field(0, ge=0)
     cooldown_minutes: int = Field(1440, ge=1)
@@ -137,6 +145,7 @@ class AlertRuleUpdate(AlertRuleBase):
 class AlertRuleResponse(BaseModel):
     id: uuid.UUID
     destination_id: uuid.UUID
+    scan_config_id: uuid.UUID | None
     name: str
     enabled: bool
     include_project_total: bool

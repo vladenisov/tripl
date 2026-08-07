@@ -254,6 +254,7 @@ async def _load_schema_drift_candidates(
     return [
         SchemaDriftAlertCandidate(
             id=drift.id,
+            scan_config_id=drift.scan_config_id,
             scope_type=SCOPE_SCHEMA_DRIFT,
             scope_ref=str(drift.id),
             event_id=None,
@@ -304,6 +305,7 @@ async def _load_distribution_drift_candidates(
         candidates.append(
             DistributionDriftAlertCandidate(
                 id=drift.id,
+                scan_config_id=drift.scan_config_id,
                 scope_type=SCOPE_DISTRIBUTION_DRIFT,
                 scope_ref=distribution_drift_scope_ref(owner_id, drift.field_name),
                 event_id=None,
@@ -440,6 +442,10 @@ async def simulate_rule(
     firings: list[SimulatedRuleFiring] = []
     for anomaly in fired:
         absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
+        # Same placeholder-at-zero-baseline rule as the live send path — see the
+        # comment in ``dispatch._prepare_alert_deliveries``. Readers of this
+        # number go through ``alert_templates.format_percent_delta`` (rendered
+        # preview) or the frontend's ``lib/percentDelta`` (replay table).
         percent_delta = (
             absolute_delta / anomaly.expected_count * 100 if anomaly.expected_count > 0 else 0.0
         )

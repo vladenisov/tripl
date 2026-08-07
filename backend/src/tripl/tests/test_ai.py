@@ -337,6 +337,101 @@ def test_build_ai_explanation_includes_item_context(monkeypatch: pytest.MonkeyPa
     assert "platform=ios" in captured["user_prompt"]
 
 
+def _capture_prompt(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    captured: dict[str, str] = {}
+
+    def fake_complete(system_prompt: str, user_prompt: str, **kwargs: object) -> str:
+        captured["user_prompt"] = user_prompt
+        return "explained"
+
+    monkeypatch.setattr("tripl.services.llm_service.is_enabled", lambda: True)
+    monkeypatch.setattr("tripl.services.llm_service.complete", fake_complete)
+    return captured
+
+
+def test_build_ai_explanation_marks_items_that_co_fired(monkeypatch: pytest.MonkeyPatch):
+    """Two scopes moving together on one bucket is context the model needs.
+
+    The tag used to be derived from the correlation id, which is now the
+    per-scope inbox handle — every item carries its own, so counting group
+    members would find one member each and the tag would quietly never appear.
+    """
+    captured = _capture_prompt(monkeypatch)
+    delivery = _delivery_with_item()
+    peer = AlertDeliveryItem(
+        id=uuid.uuid4(),
+        scope_type="event",
+        scope_ref=str(uuid.uuid4()),
+        scope_name="Checkout Started",
+        bucket=delivery.items[0].bucket,
+        direction="drop",
+        actual_count=5,
+        expected_count=80,
+        absolute_delta=-75,
+        percent_delta=-93.75,
+        correlation_group_id=uuid.uuid4(),
+    )
+    delivery.items[0].correlation_group_id = uuid.uuid4()
+    delivery.items = [delivery.items[0], peer]
+
+    alerts_task._build_ai_explanation(
+        delivery,
+        scan_name="main",
+        project_name="AI",
+        item_context_cache={},
+    )
+
+    assert captured["user_prompt"].count("[co-fired with other items]") == 2
+
+
+def test_build_ai_explanation_does_not_claim_a_lone_item_co_fired(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """One scope in the delivery has nobody to have fired with."""
+    captured = _capture_prompt(monkeypatch)
+    delivery = _delivery_with_item()
+    delivery.items[0].correlation_group_id = uuid.uuid4()
+
+    alerts_task._build_ai_explanation(
+        delivery,
+        scan_name="main",
+        project_name="AI",
+        item_context_cache={},
+    )
+
+    assert "co-fired" not in captured["user_prompt"]
+
+
+def test_build_ai_explanation_does_not_tell_the_model_nothing_changed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A zero baseline has no percentage, and "+0%" reads as "no movement".
+
+    The note the model writes from this prompt is what the reader receives, so
+    the prompt must not describe a scope that went from nothing to 137 as a 0%
+    change (tripl-l429.24).
+    """
+    captured = _capture_prompt(monkeypatch)
+    delivery = _delivery_with_item()
+    item = delivery.items[0]
+    item.direction = "spike"
+    item.actual_count = 137
+    item.expected_count = 0
+    item.absolute_delta = 137
+    item.percent_delta = 0.0
+
+    alerts_task._build_ai_explanation(
+        delivery,
+        scan_name="main",
+        project_name="AI",
+        item_context_cache={},
+    )
+
+    assert "(+0%)" not in captured["user_prompt"]
+    assert "no baseline" in captured["user_prompt"]
+    assert "actual 137 vs expected 0" in captured["user_prompt"]
+
+
 def test_build_ai_explanation_swallows_llm_errors(monkeypatch: pytest.MonkeyPatch):
     delivery = _delivery_with_item()
     monkeypatch.setattr("tripl.services.llm_service.is_enabled", lambda: True)

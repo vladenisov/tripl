@@ -497,6 +497,54 @@ describe('VariablesTab', () => {
     )
   })
 
+  it('reveals an accepted drift behind the resolved toggle and reopens it', async () => {
+    mockList([
+      makeVariable({ id: 'var-1', name: 'variant', allowed_values: ['a', 'x'], open_drift_count: 0 }),
+    ])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    vi.mocked(variableOverridesApi.list).mockResolvedValue([])
+    vi.mocked(eventsApi.list).mockResolvedValue({ items: [] as never, total: 0 })
+    vi.mocked(variableDriftsApi.list).mockResolvedValue({
+      items: [
+        {
+          id: 'drift-1',
+          variable_id: 'var-1',
+          variable_name: 'variant',
+          event_id: 'ev-1',
+          event_name: 'Onboarding',
+          scan_config_id: null,
+          observed_values: ['x'],
+          status: 'accepted',
+          resolution_note: null,
+          snoozed_until: null,
+          resolved_at: '2026-07-10T00:00:00Z',
+          resolved_by: null,
+          detected_at: '2026-07-09T00:00:00Z',
+        },
+      ],
+      total: 1,
+    })
+    vi.mocked(variableDriftsApi.action).mockResolvedValue({} as never)
+
+    renderVariablesTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+    // The panel still renders with nothing open, otherwise the acceptance is
+    // unreachable and cannot be undone.
+    fireEvent.click(await screen.findByRole('button', { name: 'Show 1 resolved' }))
+    expect(await screen.findByText('accepted')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reopen' }))
+    await waitFor(() =>
+      expect(variableDriftsApi.action).toHaveBeenCalledWith(
+        'demo',
+        'drift-1',
+        { action: 'reopen', scope: undefined, snoozed_until: undefined },
+        null,
+      ),
+    )
+  })
+
   it('excludes a variable from scans and restores it from the excluded section', async () => {
     mockList([
       makeVariable({

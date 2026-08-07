@@ -15,6 +15,201 @@ from tripl.services.monitoring_utils import (
 )
 
 
+class TestFreshnessHorizon:
+    """The window an open signal is measured against, and the copies of it."""
+
+    @pytest.mark.parametrize(
+        ("interval", "settling_minutes"),
+        [
+            (iv, minutes)
+            for iv in ("15m", "1h", "6h", "1d", "1w")
+            # Every allowance short of a full day. 1440 is covered separately
+            # below: it is the one value this floor does NOT rescue.
+            for minutes in (0, 1, 59, 120, 121, 360)
+        ],
+    )
+    def test_a_live_scope_signal_stays_open_on_every_grid(
+        self,
+        interval: str,
+        settling_minutes: int,
+    ) -> None:
+        """The newest anomaly the detector may emit must classify as open.
+
+        Ingestion settling withholds the newest ``ceil(delay / interval)``
+        buckets from emission, so a scope that is still emitting carries its
+        newest possible anomaly that far behind its metric head. Measured
+        against a bare 24h window a daily grid put it a full bucket outside and
+        a weekly grid six days outside, so every signal on such a scan read as
+        closed however large it was.
+        """
+        from tripl.core.analyzers.anomaly_detector import settling_buckets_for
+
+        delta = scan_interval_to_timedelta(interval)
+        assert delta is not None
+        withheld = settling_buckets_for(delta, timedelta(minutes=settling_minutes))
+        # A head on the grid, and "now" a fraction of a bucket past it — the
+        # ordinary case, a scan that has just collected.
+        head = datetime(2026, 8, 6, tzinfo=UTC)
+        now = head + delta // 2
+        newest_emittable = head - withheld * delta
+
+        assert (
+            classify_signal_state(
+                anomaly_bucket=newest_emittable,
+                latest_metric_bucket=head,
+                now=now,
+                interval=delta,
+            )
+            is not None
+        )
+
+    @pytest.mark.parametrize("interval", ["15m", "1h", "6h"])
+    def test_a_full_day_of_settling_still_closes_a_sub_daily_signal(
+        self,
+        interval: str,
+    ) -> None:
+        """The residual this floor does not reach — and why settings now refuse it.
+
+        ``anomaly_ingestion_settling_minutes`` accepts up to 1440. At exactly
+        that, the newest emittable anomaly on any sub-daily grid is a full 24
+        hours behind the head, which the 24h window cannot contain — the same
+        shape of bug as the daily grid, but driven by the allowance rather than
+        by the bucket size, so flooring on the interval cannot see it. Fixing it
+        *here* means the freshness horizon knowing the allowance, which is a
+        per-project value the display path does not load.
+
+        tripl-l429.15 took the other option instead: the API now REFUSES a
+        settling allowance that reaches the open-signal window
+        (``schemas.project_anomaly_settings.settling_window_conflict``, enforced
+        on the merged settings in ``project_anomaly_settings_service``), since
+        asking to score a day late and to close signals after a day is
+        incoherent. So this case is no longer reachable by configuring a project
+        — but ``classify_signal_state`` is unchanged and a row written before
+        that guard existed still holds the pair, so the behaviour stays pinned
+        here: this is exactly the display blackout the guard exists to prevent.
+        ``test_project_anomaly_settings`` pins the refusal itself.
+        """
+        from tripl.core.analyzers.anomaly_detector import settling_buckets_for
+
+        delta = scan_interval_to_timedelta(interval)
+        assert delta is not None
+        withheld = settling_buckets_for(delta, timedelta(minutes=1440))
+        head = datetime(2026, 8, 6, tzinfo=UTC)
+
+        assert (
+            classify_signal_state(
+                anomaly_bucket=head - withheld * delta,
+                latest_metric_bucket=head,
+                now=head + delta // 2,
+                interval=delta,
+            )
+            is None
+        )
+
+    def test_the_horizon_is_unchanged_on_grids_finer_than_the_window(self) -> None:
+        """Inert where it should be: the floor only bites past 8h buckets."""
+        now = datetime(2026, 8, 6, 12, tzinfo=UTC)
+        head = datetime(2026, 8, 6, 12, tzinfo=UTC)
+        # 25 hours old on an hourly grid: outside the 24h window before and after.
+        stale = head - timedelta(hours=25)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=stale,
+                latest_metric_bucket=head,
+                now=now,
+                interval=timedelta(hours=1),
+            )
+            is None
+        )
+
+    def test_a_stopped_scan_still_ages_out(self) -> None:
+        """The cap half of the constant survives: a dead daily scan closes."""
+        now = datetime(2026, 8, 6, 12, tzinfo=UTC)
+        # Head and anomaly both far in the past — the scan stopped collecting.
+        head = now - timedelta(days=30)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=head,
+                latest_metric_bucket=head,
+                now=now,
+                interval=timedelta(days=1),
+            )
+            is None
+        )
+
+    def test_the_workers_copy_of_the_constant_matches(self) -> None:
+        """``signals.py`` keeps its own copy so the worker does not import the
+        request-path services layer. Nothing pinned the two together, and that
+        is how the alerting and display paths were free to disagree."""
+        from tripl.services import monitoring_utils
+        from tripl.worker.tasks.metrics import signals as worker_signals
+
+        assert (
+            worker_signals.LATEST_SCAN_STALE_INTERVALS
+            == monitoring_utils.LATEST_SCAN_STALE_INTERVALS
+        )
+        for interval in ("15m", "1h", "6h", "1d", "1w"):
+            assert worker_signals._scan_interval_delta(interval) == scan_interval_to_timedelta(
+                interval
+            )
+
+    def test_the_workers_copy_answers_identically_on_every_grid(self) -> None:
+        """Pinning the constant was not enough: pin the ANSWER.
+
+        ``signals._classify_signal_state`` is the worker's copy of
+        ``classify_signal_state``. It carries exactly two deliberate extras, and
+        both are neutral here — ``emission_lag`` defaults to zero, which makes
+        its latest-scan test the display copy's ``anomaly_bucket >=
+        latest_metric_bucket``, and the display copy's outage re-check needs
+        ``anomaly_actual_count``/``scan_latest_bucket``, which this call does not
+        pass. With both neutral the two must agree on every input, on every grid,
+        for every configured window.
+
+        They did not. tripl-l429.14 widened only the display copy's "recent"
+        branch to the interval-floored horizon and left the worker measuring that
+        branch against the bare window, so on a daily or weekly grid an anomaly
+        older than 24 hours read "recent" to the API and closed to the worker.
+        ``_get_visible_signal_scope_keys`` — the worker's DISPLAY set, which keeps
+        either state and feeds the run summary's signals_added/signals_removed —
+        therefore disagreed with the page it is meant to describe.
+        """
+        from tripl.worker.tasks.metrics import signals as worker_signals
+
+        head = datetime(2026, 8, 6, tzinfo=UTC)
+        now = head + timedelta(minutes=30)
+        # Ages straddling every boundary either copy can have: the head itself,
+        # the 24h window, three days (the daily floor), a week and three weeks
+        # (the weekly floor).
+        offset_hours = (-1, 0, 1, 5, 23, 24, 25, 47, 48, 71, 72, 73, 167, 168, 169, 503, 504, 505)
+
+        for interval in (None, "15m", "1h", "6h", "1d", "1w"):
+            delta = scan_interval_to_timedelta(interval)
+            for window_hours in (None, 6, 24, 72):
+                window = recent_signal_window_from_hours(window_hours)
+                for hours in offset_hours:
+                    bucket = head - timedelta(hours=hours)
+                    display = classify_signal_state(
+                        anomaly_bucket=bucket,
+                        latest_metric_bucket=head,
+                        now=now,
+                        interval=delta,
+                        recent_window=window,
+                    )
+                    worker = worker_signals._classify_signal_state(
+                        anomaly_bucket=bucket,
+                        latest_metric_bucket=head,
+                        now=now,
+                        interval=delta,
+                        recent_window=window,
+                    )
+                    assert worker == display, (
+                        f"worker copy disagrees at interval={interval}, "
+                        f"recent_signal_window_hours={window_hours}, "
+                        f"anomaly {hours}h before head: "
+                        f"worker={worker!r} display={display!r}"
+                    )
+
+
 def _state(*, is_active: bool, last_anomaly_bucket=None, last_notified_at=None) -> SimpleNamespace:
     return SimpleNamespace(
         is_active=is_active,
@@ -168,6 +363,106 @@ class TestClassifySignalState:
         assert scan_interval_to_timedelta(None) is None
         assert scan_interval_to_timedelta("nope") is None
         assert scan_interval_to_timedelta("6h") == timedelta(hours=6)
+
+
+class TestOngoingOutageStaysOpen:
+    """An outage anchor is re-checked against the CURRENT series, not its own age.
+
+    ``_collapse_outage_runs`` gives an outage exactly one anchor row, announced
+    at onset and never re-emitted, so a scope that has been silent for five days
+    carries a five-day-old anomaly and nothing newer. Judged on bucket age alone
+    that reads as closed, which is how a still-running incident disappeared from
+    every signal surface. The re-check asks the persisted row instead: the anchor
+    says the scope was at zero, ``anomaly_bucket >= latest_metric_bucket`` says
+    it has emitted nothing since, and a fresh ``scan_latest_bucket`` says the
+    scan is still collecting — so the silence is real and the signal is open.
+    """
+
+    def test_ongoing_outage_on_a_live_scan_stays_open(self) -> None:
+        now = datetime.now(UTC)
+        anchor = now - timedelta(days=5)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=anchor,
+                # The scope's own series stops at the anchor: silent ever since.
+                latest_metric_bucket=anchor,
+                now=now,
+                anomaly_actual_count=0.0,
+                # Other scopes on the same scan are still collecting.
+                scan_latest_bucket=now - timedelta(hours=1),
+            )
+            == "latest_scan"
+        )
+
+    def test_stopped_scan_still_closes_its_final_outage(self) -> None:
+        # The cap the latest-scan branch exists for: a collector that stopped
+        # must not pin its last anomaly red forever, outage-shaped or not.
+        now = datetime.now(UTC)
+        anchor = now - timedelta(days=5)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=anchor,
+                latest_metric_bucket=anchor,
+                now=now,
+                anomaly_actual_count=0.0,
+                scan_latest_bucket=now - timedelta(days=5),
+            )
+            is None
+        )
+
+    def test_a_stale_spike_is_not_reopened(self) -> None:
+        # Only SILENCE is re-checkable from the anchor row. A burned-out spike
+        # ages out exactly as before, whatever the scan is doing.
+        now = datetime.now(UTC)
+        anchor = now - timedelta(days=5)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=anchor,
+                latest_metric_bucket=anchor,
+                now=now,
+                anomaly_actual_count=99.0,
+                scan_latest_bucket=now - timedelta(hours=1),
+            )
+            is None
+        )
+
+    def test_a_recovered_scope_closes(self) -> None:
+        # The scope emitted again after the anchor, so the series itself says the
+        # outage is over: the latest-scan branch is not even entered.
+        now = datetime.now(UTC)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=now - timedelta(days=5),
+                latest_metric_bucket=now - timedelta(hours=1),
+                now=now,
+                anomaly_actual_count=0.0,
+                scan_latest_bucket=now - timedelta(hours=1),
+            )
+            is None
+        )
+
+    def test_omitting_the_probe_reproduces_the_old_answer(self) -> None:
+        # Callers that cannot supply the pair (catalog metrics have no scan to
+        # ask) must land exactly where they did before.
+        now = datetime.now(UTC)
+        anchor = now - timedelta(days=5)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=anchor,
+                latest_metric_bucket=anchor,
+                now=now,
+            )
+            is None
+        )
+        assert (
+            classify_signal_state(
+                anomaly_bucket=anchor,
+                latest_metric_bucket=anchor,
+                now=now,
+                anomaly_actual_count=0.0,
+            )
+            is None
+        )
 
 
 class TestConfiguredRecentWindow:

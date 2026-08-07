@@ -56,29 +56,33 @@ DEFAULT_ALERT_MESSAGE_TEMPLATES: dict[str, str] = {
     ),
 }
 
+# ``${percent_delta_label}`` rather than a bare ``${percent_delta}%``: the label
+# carries its own unit, so it can say "no baseline" where a percentage has
+# nothing to divide by. For every item that HAS a baseline it renders exactly the
+# text these templates produced before (see ``format_percent_delta``).
 DEFAULT_ALERT_ITEMS_TEMPLATES: dict[str, str] = {
     ALERT_MESSAGE_FORMAT_PLAIN: (
         "- ${scope_label} ${scope_name}: ${direction_label}, "
         "actual=${actual_count}, expected=${expected_count}, "
-        "delta=${absolute_delta} (${percent_delta}%)"
+        "delta=${absolute_delta} (${percent_delta_label})"
         "${drift_line}${details_line}${monitoring_line}${top_movers_line}${sparkline_line}"
     ),
     ALERT_MESSAGE_FORMAT_SLACK_MRKDWN: (
         "- ${scope_label} ${scope_name}: ${direction_label}, "
         "actual=${actual_count}, expected=${expected_count}, "
-        "delta=${absolute_delta} (${percent_delta}%)"
+        "delta=${absolute_delta} (${percent_delta_label})"
         "${drift_line}${details_line}${monitoring_line}${top_movers_line}${sparkline_line}"
     ),
     ALERT_MESSAGE_FORMAT_TELEGRAM_HTML: (
         "- ${scope_label} ${scope_name}: ${direction_label}, "
         "actual=${actual_count}, expected=${expected_count}, "
-        "delta=${absolute_delta} (${percent_delta}%)"
+        "delta=${absolute_delta} (${percent_delta_label})"
         "${drift_line}${details_line}${monitoring_line}${top_movers_line}${sparkline_line}"
     ),
     ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2: (
         "\\- ${scope_label} ${scope_name}: ${direction_label}, "
         "actual=${actual_count}, expected=${expected_count}, "
-        "delta=${absolute_delta} \\(${percent_delta}%\\)"
+        "delta=${absolute_delta} \\(${percent_delta_label}\\)"
         "${drift_line}${details_line}${monitoring_line}${top_movers_line}${sparkline_line}"
     ),
 }
@@ -104,7 +108,8 @@ ALERT_ITEM_TEMPLATE_VARIABLES: dict[str, str] = {
     "actual_count": "Actual count",
     "expected_count": "Expected count",
     "absolute_delta": "Absolute delta",
-    "percent_delta": "Percent delta",
+    "percent_delta": "Percent delta as a bare number (0 when there was no baseline)",
+    "percent_delta_label": 'Percent delta with its "%" sign, or "no baseline" when expected is 0',
     "bucket": "Anomaly bucket timestamp",
     "details_url": "Event details URL",
     "monitoring_url": "Monitoring URL",
@@ -125,6 +130,9 @@ _TELEGRAM_MARKDOWNV2_SPECIAL_CHARS = set("_*[]()~`>#+-=|{}.!\\")
 
 # Catalog metric unit that marks stored-fraction values (0.08 == 8%).
 METRIC_UNIT_PERCENT = "%"
+
+# What the percent parenthetical says when there is nothing to divide by.
+NO_BASELINE_LABEL = "no baseline"
 
 
 @dataclass(frozen=True)
@@ -250,3 +258,25 @@ def format_metric_alert_value(value: float, unit: str | None) -> str | float:
         return value
     scaled = round(float(value) * 100, 10)
     return f"{_stringify_alert_value(scaled)}%"
+
+
+def format_percent_delta(percent_delta: float, expected_count: float, *, spec: str = ".1f") -> str:
+    """The percent parenthetical for one alert item, unit included.
+
+    The percent gate deliberately admits anomalies with no baseline at all
+    (tripl-l429.12) — a scope resuming after an outage, an event firing for the
+    first time, a schema drift, which all arrive with ``expected_count`` 0. The
+    stored ``percent_delta`` is 0.0 for those, because the ratio is undefined and
+    the column is NOT NULL; printing it reported the largest possible relative
+    move as the smallest (tripl-l429.24). The absolute delta stands on its own
+    for that class, and the default item templates already print it.
+
+    ``expected_count > 0`` is the exact condition under which the stored number
+    was computed (``dispatch._prepare_alert_deliveries``,
+    ``alerting_service.simulate_rule``), so the label and the number can never
+    disagree about whether there was a baseline. ``spec`` is the float format the
+    caller wants around it: the item templates use ".1f", the AI prompt "+.0f".
+    """
+    if expected_count > 0:
+        return f"{percent_delta:{spec}}%"
+    return NO_BASELINE_LABEL

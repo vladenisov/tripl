@@ -18,6 +18,7 @@ from tripl.core.analyzers.anomaly_detector import (
     SCOPE_PROJECT_TOTAL,
 )
 from tripl.core.intervals import get_interval
+from tripl.metric_grid import metric_grid_stmt, metric_grids
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.domain_enums import MetricBreakdownAnomalyKind
 from tripl.models.event_metric import EventMetric
@@ -49,7 +50,11 @@ from tripl.services.metrics_service import (
     _resolve_scope_scan_config_id,
     _signal_from_anomaly,
 )
-from tripl.services.monitoring_utils import classify_signal_state, scan_interval_to_timedelta
+from tripl.services.monitoring_utils import (
+    classify_signal_state,
+    latest_bucket_by_scan,
+    scan_interval_to_timedelta,
+)
 
 
 async def _get_latest_anomaly_rows_multi(
@@ -203,24 +208,33 @@ async def _get_active_metric_signals(
     ``scope_ref = str(metric_definition_id)``, so they are loaded on their own
     (the event-scope multi-query joins ScanConfig on scan_config_id and would
     drop them). Each metric's newest anomaly is classified against its latest
-    stored value bucket; only ``latest_scan`` (open) signals surface.
+    stored value bucket and surfaces while that classification is open — either
+    state, ``latest_scan`` or ``recent``. (It said "only latest_scan" for a
+    while; ingestion settling makes that branch unreachable for a scope that is
+    still emitting, so it would have described an empty set.)
 
     ``recent_window`` is the project's configured freshness window; callers that
     already hold it pass it in so this does not re-query, and omitting it keeps
     the default 24h window.
     """
-    metric_ids = list(
+    # The grid rides along because each metric is scored on its OWN grid, so its
+    # freshness window has to be measured on that grid too — including the one an
+    # ``event_composition`` metric inherits from its source scan, which its own
+    # (NULL) ``interval`` column does not carry.
+    grids = metric_grids(
         (
             await session.execute(
-                select(MetricDefinition.id).where(
+                metric_grid_stmt(
                     MetricDefinition.project_id == project_id,
                     MetricDefinition.anomaly_detection_enabled.is_(True),
                 )
             )
-        ).scalars()
+        ).all()
     )
-    if not metric_ids:
+    if not grids:
         return []
+    metric_ids = list(grids)
+    interval_by_ref = {str(metric_id): grid.interval for metric_id, grid in grids.items()}
 
     scope_refs = [str(metric_id) for metric_id in metric_ids]
     latest_value_buckets: dict[str, datetime] = {
@@ -255,6 +269,7 @@ async def _get_active_metric_signals(
         state = classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_value_buckets.get(scope_ref),
+            interval=scan_interval_to_timedelta(interval_by_ref.get(scope_ref)),
             recent_window=recent_window,
         )
         if state is not None:
@@ -299,26 +314,30 @@ async def _count_active_metric_signals_by_project(
     hyphenated ``str(uuid)`` keys the anomalies store — a SQL-level cast would
     diverge SQLite vs Postgres (see ``_get_latest_metric_buckets_multi``).
     Classification reuses ``classify_signal_state`` exactly as
-    :func:`_get_active_metric_signals` does (no scan interval on the metric path),
-    with each project's own configured freshness window applied.
+    :func:`_get_active_metric_signals` does — each metric measured on its own
+    grid (``tripl.metric_grid``) and each project's own configured freshness
+    window applied. That parity was claimed here long before it was true: this
+    query did not even select an interval, so every catalog metric was judged
+    against a bare 24h window and a DAILY metric read OPEN on the Anomalies page
+    and ZERO on the badge (tripl-l429.17).
     """
     if not project_ids:
         return {}
-    metric_rows = (
-        await session.execute(
-            select(MetricDefinition.id, MetricDefinition.project_id).where(
-                MetricDefinition.project_id.in_(project_ids),
-                MetricDefinition.anomaly_detection_enabled.is_(True),
+    grids = metric_grids(
+        (
+            await session.execute(
+                metric_grid_stmt(
+                    MetricDefinition.project_id.in_(project_ids),
+                    MetricDefinition.anomaly_detection_enabled.is_(True),
+                )
             )
-        )
-    ).all()
-    if not metric_rows:
+        ).all()
+    )
+    if not grids:
         return {}
-    project_by_scope_ref: dict[str, uuid.UUID] = {
-        str(metric_id): project_id for metric_id, project_id in metric_rows
-    }
-    metric_ids = [metric_id for metric_id, _project_id in metric_rows]
-    scope_refs = list(project_by_scope_ref)
+    grid_by_scope_ref = {str(metric_id): grid for metric_id, grid in grids.items()}
+    metric_ids = list(grids)
+    scope_refs = list(grid_by_scope_ref)
 
     latest_value_buckets: dict[str, datetime] = {
         str(metric_definition_id): bucket
@@ -351,11 +370,13 @@ async def _count_active_metric_signals_by_project(
     now = datetime.now(UTC)
     counts: dict[uuid.UUID, int] = defaultdict(int)
     for scope_ref, anomaly in latest_anomalies.items():
-        project_id = project_by_scope_ref.get(scope_ref)
+        grid = grid_by_scope_ref.get(scope_ref)
+        project_id = grid.project_id if grid is not None else None
         state = classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_value_buckets.get(scope_ref),
             now=now,
+            interval=scan_interval_to_timedelta(grid.interval if grid is not None else None),
             recent_window=recent_windows.get(project_id) if project_id is not None else None,
         )
         if (
@@ -518,6 +539,14 @@ async def get_active_signals(
     # of rows, so it must never be resolved per signal.
     recent_window = await _get_project_recent_signal_window(session, project.id)
 
+    # Scan liveness, derived from the rows already loaded above (no extra query):
+    # an outage anchor is only still open while its scan is still collecting
+    # SOMETHING. Same rule as the sidebar badge, via the shared helper.
+    scan_latest_buckets = latest_bucket_by_scan(
+        (scan_config_id, bucket)
+        for (scan_config_id, _scope_type, _scope_ref), bucket in latest_metrics.items()
+    )
+
     now = datetime.now(UTC)
     signals: list[MetricSignalResponse] = []
     for anomaly in latest_anomalies:
@@ -533,6 +562,10 @@ async def get_active_signals(
             now=now,
             interval=scan_interval_to_timedelta(interval_map.get(anomaly.scan_config_id)),
             recent_window=recent_window,
+            # An outage announced once and never re-emitted is re-checked against
+            # the current series rather than its own age (tripl-l429.15).
+            anomaly_actual_count=anomaly.actual_count,
+            scan_latest_bucket=scan_latest_buckets.get(anomaly.scan_config_id),
         )
         if state is not None:
             signals.append(_signal_from_anomaly(anomaly, state=state))

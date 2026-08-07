@@ -1,7 +1,7 @@
 """Unit tests for the event generator module."""
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from itertools import product
 
 import pytest
@@ -1736,6 +1736,161 @@ def test_value_drift_upsert_refreshes_without_reopening(sync_session: Session, p
     # Refresh updated the sample but did NOT reopen the resolution.
     assert rows[0].observed_values == ["x", "z"]
     assert rows[0].status == "false_positive"
+
+
+def test_accepted_value_drift_reopens_on_value_outside_resolved_set(
+    sync_session: Session, project_and_type
+):
+    """An accepted row must not silently absorb a value nobody accepted."""
+    from tripl.core.analyzers._variable_value_drift import detect_variable_value_drifts
+
+    project, et, fds = project_and_type
+    variable, event = _seed_variable_event(sync_session, project, et, fds, ["a"])
+
+    detect_variable_value_drifts(
+        sync_session,
+        project_id=project.id,
+        branch_id=variable.branch_id,
+        scan_config_id=None,
+        contexts=_make_context_entry(variable, event, fds["screen"], ["a", "x"]),
+    )
+    sync_session.commit()
+
+    # Accept exactly what the service does: the novel values join the
+    # documented list and the row is resolved.
+    row = _drift_rows(sync_session, project.id)[0]
+    assert row.observed_values == ["x"]
+    row.status = "accepted"
+    row.resolved_at = datetime.now(UTC)
+    row.resolution_note = "expected experiment arm"
+    variable.allowed_values = ["a", "x"]
+    sync_session.commit()
+
+    # A later scan sees a value that was never part of the accepted set.
+    detect_variable_value_drifts(
+        sync_session,
+        project_id=project.id,
+        branch_id=variable.branch_id,
+        scan_config_id=None,
+        contexts=_make_context_entry(variable, event, fds["screen"], ["a", "x", "z"]),
+    )
+    sync_session.commit()
+
+    sync_session.expire_all()
+    rows = _drift_rows(sync_session, project.id)
+    assert len(rows) == 1
+    assert rows[0].observed_values == ["z"]
+    assert rows[0].status == "open"
+    assert rows[0].resolved_at is None
+    assert rows[0].resolution_note is None
+
+
+def test_accepted_value_drift_stays_resolved_for_values_inside_resolved_set(
+    sync_session: Session, project_and_type
+):
+    """Re-observing an already-accepted value must not re-nag.
+
+    The pair carries an OVERRIDE, which is what decides novelty, while the
+    acceptance was global and so landed in ``allowed_values``. That is the one
+    shape where an accepted value legitimately keeps arriving as novel, and the
+    row must stay resolved through it.
+    """
+    from tripl.core.analyzers._variable_value_drift import detect_variable_value_drifts
+    from tripl.models.variable_event_value_override import VariableEventValueOverride
+    from tripl.models.variable_value_drift import VariableValueDrift
+
+    project, et, fds = project_and_type
+    variable, event = _seed_variable_event(sync_session, project, et, fds, ["a", "x"])
+    sync_session.add(
+        VariableEventValueOverride(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            branch_id=variable.branch_id,
+            variable_id=variable.id,
+            event_id=event.id,
+            values=["a"],
+        )
+    )
+    resolved_at = datetime(2026, 1, 1, tzinfo=UTC)
+    accepted = VariableValueDrift(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        variable_id=variable.id,
+        event_id=event.id,
+        observed_values=["x"],
+        status="accepted",
+        detected_at=resolved_at,
+    )
+    sync_session.add(accepted)
+    sync_session.commit()
+
+    detected = detect_variable_value_drifts(
+        sync_session,
+        project_id=project.id,
+        branch_id=variable.branch_id,
+        scan_config_id=None,
+        contexts=_make_context_entry(variable, event, fds["screen"], ["a", "x"]),
+    )
+    sync_session.commit()
+
+    sync_session.expire_all()
+    rows = _drift_rows(sync_session, project.id)
+    assert detected == 0
+    assert len(rows) == 1
+    assert rows[0].status == "accepted"
+    # The evidence is the resolved set and stays frozen, retention clock included.
+    assert rows[0].observed_values == ["x"]
+    assert rows[0].detected_at.replace(tzinfo=UTC) == resolved_at
+
+
+def test_accepted_value_drift_reopens_on_a_value_it_only_absorbed(
+    sync_session: Session, project_and_type
+):
+    """A value the row swallowed but nobody accepted must not stay suppressed.
+
+    This is the population the bug created. Builds before the freeze refreshed
+    ``observed_values`` on accepted rows, so a live row's stored evidence can
+    hold values that were never accepted and therefore never documented. Reading
+    that column as "the set the user accepted" would let the fix skip exactly the
+    rows it exists for. Acceptance documents and absorption does not, so the
+    documented lists are what tell the two apart — no migration can, after the
+    fact.
+    """
+    from tripl.core.analyzers._variable_value_drift import detect_variable_value_drifts
+    from tripl.models.variable_value_drift import VariableValueDrift
+
+    project, et, fds = project_and_type
+    # "a" is documented; "cart" was accepted (and documented with it). "promo_v2"
+    # arrived a week later and was silently absorbed into the evidence.
+    variable, event = _seed_variable_event(sync_session, project, et, fds, ["a", "cart"])
+    accepted = VariableValueDrift(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        variable_id=variable.id,
+        event_id=event.id,
+        observed_values=["cart", "promo_v2"],
+        status="accepted",
+        resolution_note='accepted "cart"',
+        detected_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    sync_session.add(accepted)
+    sync_session.commit()
+
+    detected = detect_variable_value_drifts(
+        sync_session,
+        project_id=project.id,
+        branch_id=variable.branch_id,
+        scan_config_id=None,
+        contexts=_make_context_entry(variable, event, fds["screen"], ["a", "cart", "promo_v2"]),
+    )
+    sync_session.commit()
+
+    sync_session.expire_all()
+    rows = _drift_rows(sync_session, project.id)
+    assert detected == 1
+    assert len(rows) == 1
+    assert rows[0].status == "open", "an undocumented value must not read as resolved"
+    assert rows[0].observed_values == ["promo_v2"]
 
 
 # --- authored provenance across grouping copies (tripl-j94c.9) ---------------

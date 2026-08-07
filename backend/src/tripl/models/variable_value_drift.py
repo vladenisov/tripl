@@ -22,9 +22,14 @@ class VariableValueDrift(UUIDMixin, Base):
     """Observed variable values outside the documented list, per event.
 
     One row per (variable, event); the scan upsert refreshes
-    ``observed_values``/``detected_at`` but never touches ``status``, so
-    accepted/false-positive rows age out through the read-time retention
-    window exactly like schema drift.
+    ``observed_values``/``detected_at``. Snoozed and false-positive rows keep
+    their ``status`` through that refresh and age out through the read-time
+    retention window exactly like schema drift.
+
+    An ``accepted`` row is frozen instead: scans leave it alone, so its
+    ``observed_values`` stay the set the user accepted, and a scan that
+    observes a value OUTSIDE that set reopens the row rather than absorbing
+    the value into a resolved one. See ``core.analyzers._variable_value_drift``.
     """
 
     __tablename__ = "variable_value_drifts"

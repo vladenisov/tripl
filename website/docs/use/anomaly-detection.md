@@ -57,6 +57,22 @@ The **trend-shift detector** works entirely on the deseasonalized trend layer. I
 
 When both detectors flag the same bucket, the one with the **larger absolute z-score** wins, so you see the more significant explanation.
 
+### An event that goes silent is reported once
+
+A scope that stops emitting keeps scoring the same way for as long as it stays silent, so without a rule against it one outage produces a fresh row every bucket of every scan — on an hourly scan, dozens per day for as long as the event is dead. Instead, a contiguous run of empty buckets is reported **once**, at the bucket where the scope stopped behaving normally, and stays quiet until it emits again. If it revives and dies a second time, that is a second run and a second report.
+
+"Stopped behaving normally" is not the same as "first empty bucket", and the difference matters for any event that is *legitimately* quiet part of the time — business hours, one region's traffic, anything with a nightly trough. For those, the run of empty buckets begins with a perfectly normal zero that was never anomalous; the report is anchored on the first bucket in the run that actually was.
+
+The marker can land a few buckets **after** the moment the traffic stopped, and that is expected rather than a rounding error. The anchor decides *which* run gets reported, but the report itself has to sit on a bucket the detector was allowed to flag — and `min_expected_count` blocks any bucket whose phase normally expects fewer events than that. An event that trickles through the small hours and only gets busy at 06:00 therefore dies at 02:00 but is marked at the first busy hour after it, because the 02:00 phase is below the volume floor you set. It is still one report for the whole outage, and it stays on record from then on: later scans re-derive the same anchor, see it behind their window, and leave the existing marker alone instead of rewriting it.
+
+Reported once does **not** mean visible for a day. That single report stays an **open signal** for as long as the scope is still silent, however old its bucket gets — a five-day-old outage is still listed, still counted on the badge, and still in the Overview **Open signals** stat. tripl re-checks it against the stored series rather than against the report's own age: the report says the scope was at zero, the series says it has produced nothing since, and the scan says it is still collecting for other scopes. The moment the scope emits again the signal closes on its own. Nothing new is emitted to keep it open, so an outage still costs exactly one row and alert delivery is untouched (see the note on `recent_signal_window_hours` below).
+
+Clicking that row opens the scope's chart, and the chart follows the report rather than the other way round. The detail page opens on the last 7 days, so an outage that started before then would otherwise have no row of any kind inside the range it loads — the page for the incident you just clicked would show nothing at all. When the scope's open report predates the selected range, the range is extended back far enough to include it. Only a report that is **still open** does that; an older one that has since closed leaves your selection exactly where you put it.
+
+Two things close it while the scope is still down. The first is the scan itself going quiet: if *nothing* on that scan has collected within the freshness window, a switched-off collector and a dead event look identical from the stored data, and tripl will not leave a scan red on that basis. (A drop to zero on the **project total** is that case by definition, so a whole-scan blackout is judged on scan health rather than held open here.) The second is retention — an anomaly record is eventually trimmed like any other, and a scope nobody ever brought back stops being news long before then.
+
+This applies to volume series only — and to *every* volume series, not just the scope total. A single **breakdown slice** that dies (one platform, one country, while the rest of the event carries on) is reported once and keeps that report exactly the same way, so a value that disappears from the Breakdowns tab leaves a marker that stays put rather than one that vanishes on the next scan. **App-version slices are the exception** and carry no volume markers at all: a version's share rises and falls with its rollout, so scoring it against its own past would flag every release twice — once as it ramps up and once as it retires. Releases are compared against each other instead, by the release-regression check described below. Anything measured as a fraction is outside this rule: for a catalog metric with a ratio or average value, and for the platform-share comparison below, zero is a value like any other rather than an absence.
+
 ## The score: how a bucket is flagged
 
 For every evaluated bucket the detector computes:
@@ -117,7 +133,7 @@ With the default `sigma_threshold = 4.0`, `|4.8| ≥ 4.0` passes, and `expected 
 
 ## Tunables and defaults
 
-These live in the project's **monitoring settings** and apply to every scan in the project. (The two most impactful per-scan values, `sigma_threshold` and `min_expected_count`, can also be raised automatically — see [False positives](#false-positives-self-tune-the-thresholds) below.)
+These live in the project's **monitoring settings** and apply to every scan in the project. (The two most impactful values, `sigma_threshold` and `min_expected_count`, can also be raised automatically for a **single scope** — see [False positives](#false-positives-self-tune-the-thresholds) below.)
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -130,15 +146,17 @@ These live in the project's **monitoring settings** and apply to every scan in t
 | `min_history_buckets` | `7` | Minimum buckets the rolling fallback needs before it will fire. |
 | `sigma_threshold` | `4.0` | How many normal wobbles of deviation are required to flag a bucket. |
 | `min_expected_count` | `50` | Minimum expected volume before a bucket is eligible to be flagged. |
-| `recent_signal_window_hours` | `24` | How long a flagged bucket keeps counting as an **open signal**. |
-| `anomaly_ingestion_settling_minutes` | `120` | How long a bucket is left unscored after it closes, to let late-arriving warehouse rows land. Also the detection latency it buys. |
+| `recent_signal_window_hours` | `24` | How long a flagged bucket keeps counting as an **open signal**. Must stay above the settling allowance below. |
+| `anomaly_ingestion_settling_minutes` | `120` | How long a bucket is left unscored after it closes, to let late-arriving warehouse rows land. Also the detection latency it buys. Must stay below the open signal window above. |
 
 The two dials you will actually reach for:
 
 - **`sigma_threshold`** — **raise it** (e.g. to 5) to flag only larger, more confident deviations and cut noise; **lower it** (toward 3) to catch subtler swings at the cost of more false positives.
 - **`min_expected_count`** — **raise it** to ignore lower-traffic series and focus on your busiest ones; **lower it** to extend monitoring down to smaller events (expect more noise from them).
 
-`recent_signal_window_hours` is a presentation dial rather than a detection one: it does not change what gets flagged, only how long a flagged bucket keeps counting as an open signal on the **Anomalies page** and in the sidebar badge. **Lower it** (say to 6) when a busy project's open count is dominated by burned-out spikes that have long since recovered — they age out of the count sooner; **raise it** when you want a full day or more of history to stay visible. The latest-scan freshness rule below still floors the horizon at `3 × scan interval`, so shortening this window never closes a long-interval scan's signal early. **Alert delivery is deliberately unaffected**: alert candidates and monitor status stay on the fixed 24-hour window, so narrowing this dial can never close an alert state or make an already-notified rule fire again.
+`recent_signal_window_hours` is a presentation dial rather than a detection one: it does not change what gets flagged, only how long a flagged bucket keeps counting as an open signal on the **Anomalies page** and in the sidebar badge. **Lower it** (say to 6) when a busy project's open count is dominated by burned-out spikes that have long since recovered — they age out of the count sooner; **raise it** when you want a full day or more of history to stay visible. The freshness horizon is floored at `3 × the series' own interval`, so shortening this window never closes a long-interval signal early — and neither does leaving it alone: on a daily grid the newest signal the detector may emit is already a bucket old, so a bare 24 hours would age out every signal such a series can produce. On grids of 6 hours and finer the floor never binds and the window is exactly what you set. For an event scope the interval is the scan's; a **catalog metric** is measured on the grid it collects on — its own `interval`, or, for a metric derived from already-collected events, the interval of the scan it reads. Every surface applies the same grid to the same metric, so the Anomalies page, the metrics list, the sidebar badge, the Overview stat and the metric's own detail page always agree on whether its signal is open. Two things that could still have split them do not: raising this window past the range picked on the metric's detail page extends that page's range back to the signal rather than hiding it (see [Monitoring detail](./feature-reference.md#monitoring-detail)), and switching a single metric's anomaly detection off closes its signal on all five at once instead of only on the project-wide ones. It is a window on *what is new*, and it stays one: a scope that is **still silent** is unresolved rather than new, so its single outage report stays open past this window no matter how low you set it — lowering the dial trims burned-out spikes, never a running outage. **Alert delivery is deliberately unaffected**: alert candidates and monitor status stay on the fixed 24-hour window, so narrowing this dial can never close an alert state or make an already-notified rule fire again.
+
+One pairing is refused rather than allowed: this window must stay **strictly above** the [ingestion-settling allowance](#detection-latency). The allowance is how long a bucket waits before it can be scored at all; the window is how long a scored bucket counts as new. If the wait reaches the window, every signal is born already outside it — the Anomalies page, the sidebar badge and the Overview **Open signals** stat all read zero while alerting, which measures against the settled end of the series, keeps delivering. Saving either dial into that state returns an error naming both values instead of silently blanking the page, and the error arrives from both directions: raising the allowance under the stored window, or lowering the window under the stored allowance. The settings form shows the live bounds — with the defaults (24-hour window) the allowance may go up to 1439 minutes, and a 2-hour allowance needs a window of at least 3 hours.
 
 ### Detection latency
 
@@ -154,7 +172,9 @@ The allowance closes that hole without hiding data:
 
 The withheld buckets are counted from the **end of the collected series**, which itself stops at the last *complete* clock interval. On an hourly scan with the default allowance that means the 09:00 bucket is still settling for the runs whose series end at 09:00 and at 10:00, and is first scored by a run whose series reaches 11:00. In practice, expect a signal to trail the bucket it describes by **the settling allowance plus the scan's own interval**, and never to arrive sooner than the next scan after that. Alerts inherit the same delay, because a rule can only fire on a bucket the detector has scored.
 
-**Tuning it.** The allowance is a per-project setting, `anomaly_ingestion_settling_minutes`, in **Project settings → Monitoring** as **"Ingestion settling (minutes)"**. It accepts 0–1440 minutes.
+Alerting judges a signal's freshness against that **settled** end of the series rather than the raw one. The distinction matters: a scope that is still delivering events can never carry a signal newer than the withheld buckets, so measuring against the raw head would mark every live scope stale and leave only scopes that had gone dark able to alert at all.
+
+**Tuning it.** The allowance is a per-project setting, `anomaly_ingestion_settling_minutes`, in **Project settings → Monitoring** as **"Ingestion settling (minutes)"**. It accepts 0–1440 minutes, and must additionally stay **strictly below** [`recent_signal_window_hours`](#tunables-and-defaults) — a bucket that waits longer to be scored than a signal stays open is stale the moment it is judged, so the whole page would read zero. tripl refuses that pair from either side rather than accept it.
 
 - **Lower it** (down to `0`, which scores every bucket immediately) when your warehouse is genuinely real-time and you want the fastest possible detection. The cost is false drops on the newest bucket whenever a scan happens to run before ingestion finishes.
 - **Raise it** when you see drops that disappear by the next scan, or when you know a pipeline lags by more than two hours. The cost is proportionally later detection — the setting *is* the latency.
@@ -193,11 +213,18 @@ the global `allowed_values` list. An empty effective list means no finite value
 contract has been declared, so observations do not create drift.
 
 One current row is kept per variable/event context. New scans refresh its novel
-value evidence without silently changing a prior review decision; the read
-surface uses a 30-day evidence window. Accepting the drift updates the documented
-contract either globally or for that event. Snooze, false-positive, and reopen
-change only review state. Alert rules must opt in, and these candidates behave as
-spike-like drift signals that bypass numeric volume thresholds.
+value evidence without changing a snoozed or false-positive review decision; the
+read surface uses a 30-day evidence window. Accepting the drift updates the
+documented contract either globally or for that event. Snooze, false-positive,
+and reopen change only review state. Alert rules must opt in, and these
+candidates behave as spike-like drift signals that bypass numeric volume
+thresholds.
+
+An **accepted** row is frozen instead of refreshed: its recorded values are the
+set you accepted. A later scan reopens it as soon as it observes a value outside
+that set — and only then, so a value you already accepted never nags again.
+Without this the single row per variable/event would quietly absorb every future
+novel value while still reading as resolved.
 
 See [Variables & templates](./variables-and-templates.md) for the authoring and
 review workflow.
@@ -212,11 +239,31 @@ The test is deliberately careful about young releases:
    scan's configured minimum share of total traffic (5% by default) for a couple
    of consecutive buckets — this excludes the dev/tester trickle before a
    rollout. SemVer prereleases are excluded by default, and a scan can provide a
-   custom prerelease pattern. At least two active releases must exist to compare,
-   and the newest active release must have accumulated a minimum total volume
-   before it is judged at all.
+   custom prerelease pattern; an excluded build is ineligible both as the release
+   under test and as the baseline, so a TestFlight build that happens to take
+   real traffic cannot be judged or judged against. At least two eligible active
+   releases must exist to compare, and the newest one must have accumulated a
+   minimum total volume before it is judged at all.
 2. **Fair comparison.** Counts are normalized by each release's **adoption share**, so a young release with few users isn't unfairly compared head-to-head against a mature one. For each event, the **expected** count under the new release is the previous release's share of that event applied to the new release's total volume.
-3. **Verdict.** The ratio of observed to expected decides the outcome. If an event has nearly disappeared (observed far below expected — under ~5% of expected) it is classed as **missing**; if it merely dropped substantially (roughly half or less of expected) *and* the shortfall is also large in statistical terms — observed below `expected − 3 × √expected` — it is classed as a **volume drop**. Anything in between is not flagged. Only deficits are tested; an event firing *more* in the new release is not a regression.
+3. **Evidence gate.** An event is only tested once *both* its expected count and
+   the number of times it was actually seen in the previous release clear an
+   absolute floor (30 events). The floor counts events rather than share of the
+   baseline, because a share is a statement about how finely the catalog is
+   partitioned: in a 2488-event catalog nothing reaches a percent of a release,
+   and a share floor there silently drops most of the events that have plenty of
+   evidence to judge. Both halves are needed because the expected count scales
+   with the traffic ratio between the two releases — when a rollout carries many
+   times the volume its ageing baseline still has, an event seen a handful of
+   times can imply an expectation well past the floor.
+4. **Comparability gate.** In the first hours of a rollout the two releases are
+   not drawn from the same population — everyone on the new build is a fresh
+   install working through onboarding — and normalizing by composition then makes
+   every steady-state screen look halved. When too much of the new release's
+   volume sits in scopes the baseline barely visited, the comparison is withheld
+   and the panel says **"cannot be judged yet"** with the reason, instead of
+   reporting a clean release. Events that went *completely* silent are still
+   reported: a different mix of users cannot manufacture those.
+5. **Verdict.** The ratio of observed to expected decides the outcome. If an event has nearly disappeared (observed far below expected — under ~5% of expected) it is classed as **missing**; if it merely dropped substantially (roughly half or less of expected) *and* the shortfall is also large in statistical terms — observed below `expected − 3 × √expected` — it is classed as a **volume drop**. Anything in between is not flagged. Only deficits are tested; an event firing *more* in the new release is not a regression.
 
 ## Metrics
 
@@ -258,9 +305,14 @@ from. See [Schema drift](./feature-reference.md#schema-drift) before you accept
 one.
 
 A latest-scan signal remains open only while it is fresh in wall-clock time:
-`max(recent_signal_window_hours, 3 × scan interval)` — 24 hours and the scan
-interval by default. This prevents a stopped scan from pinning its
-last anomaly red forever. When the same scan/bucket/direction fires at project,
+`max(recent_signal_window_hours, 3 × the series' own interval)` — 24 hours and
+the scan interval by default, or the catalog metric's own collection interval
+where the series is a metric rather than an event scope. This prevents a stopped scan from pinning its
+last anomaly red forever. The one exception is a scope that is **still silent**:
+because its outage is reported once and never re-announced, ageing that single
+report out would erase a running incident, so it stays open until the scope
+emits again or its scan stops collecting altogether (see [An event that goes
+silent is reported once](#an-event-that-goes-silent-is-reported-once)). When the same scan/bucket/direction fires at project,
 event-type, and event scopes, that is one **incident**. The **Anomalies page**
 uses the *expanded* active-signals view: it lists every co-firing scope — project
 total, each event type, and each event — and tags the child rows `part of total`
@@ -278,6 +330,10 @@ project-total incident (always `false` in the collapsed view, which omits them).
 
 Detection deciding a bucket is anomalous is **not** the same as you getting notified. Each alert rule applies its **own** set of gates on top of detection before anything is delivered:
 
+- **Scan** — a rule watches every scan in the project by default, or can be bound
+  to one scan (`scan_config_id`), which is the only way to keep a single noisy
+  scan out of a channel. A scan-bound rule never delivers metric anomalies,
+  because a catalog metric series belongs to the project rather than to a scan.
 - **Scope toggles** — a rule can subscribe to project totals, event types, and/or
   individual events, and must explicitly opt in to metric anomalies
   (`include_metrics`) and to schema-drift, distribution-drift,
@@ -288,10 +344,19 @@ Detection deciding a bucket is anomalous is **not** the same as you getting noti
 
 So the detector's `sigma_threshold` and `min_expected_count` decide what is *flagged*; the alert rule's thresholds decide what is *delivered*. Tightening either layer reduces noise. See [Alerting](./alerting.md) for configuring rules, and the [Feature reference](./feature-reference.md) for the full field list.
 
-### False positives self-tune the thresholds
+### False positives self-tune the thresholds — per scope {#false-positives-self-tune-the-thresholds}
 
-When you mark an alert in the inbox as a **false positive**, the system doesn't just dismiss it — it **automatically nudges the detector to be stricter** on the scans that produced it. Each false-positive action raises `sigma_threshold` by 0.5 (capped at 10) and `min_expected_count` by 5 (capped at 1000), on both the affected scans and the project's monitoring settings. In effect, telling the system "this wasn't real" teaches it to demand a larger, higher-volume deviation next time. If you find the detector has grown too quiet, check whether repeated false-positive marks have ratcheted these values up, and reset them in the monitoring settings.
+When you mark an alert in the inbox as a **false positive**, the system doesn't just dismiss it — it **automatically nudges the detector to be stricter on the scope that produced it**. Each false-positive action raises that scope's `sigma_threshold` by 0.5 (capped at 10) and its `min_expected_count` by 5 (capped at 1000). In effect, telling the system "this wasn't real" teaches it to demand a larger, higher-volume deviation *from that series* next time.
+
+The tuning is stored as a **scope override**: an absolute pair of values that replaces the project settings for one scope only. A scope is exactly what an anomaly is keyed by — the scan plus the project total, event type, event, or catalog metric it was raised on. Marking one noisy event a false positive therefore leaves every other event, event type, project total and metric on the sensitivity you chose. (Catalog metrics are project-wide, so their overrides are not tied to a scan.)
+
+Two details worth knowing:
+
+- Repeat clicks on the same scope **compound**: a second false positive on the same series is a second step, not a reset.
+- Schema-drift, distribution-drift, variable-value-drift and release-regression alerts also reach the inbox, but nothing scores them with these two dials, so marking one a false positive closes the incident **without** changing any detection threshold.
+
+**Undoing it.** The ratchet is permanent — it never decays on its own. Every scope it has tightened is listed under **Settings → Monitoring → Scope overrides**, showing the scope, the scan, the values in force, and how many false positives produced them. **Remove** an override and that scope goes straight back to the project settings; nothing else moves. The project-wide `sigma_threshold` and `min_expected_count` are never changed by this feedback — they remain whatever you set. An empty list there means what it says: if the list cannot be loaded the card reports the error and offers a retry, rather than telling you nothing has been tightened.
 
 :::tip Troubleshooting
-If a series you expect to be watched is never flagged, the usual causes are: detection is disabled, the series sits below `min_expected_count`, the series is too young for a phase baseline (and too sparse for the rolling fallback), or false-positive feedback has raised the thresholds. If instead it is flagged but *late*, that is the [ingestion-settling allowance](#detection-latency) — the newest buckets are deliberately held unscored until they have settled. See [Troubleshooting](./troubleshooting.md).
+If a series you expect to be watched is never flagged, the usual causes are: detection is disabled, the series sits below `min_expected_count`, the series is too young for a phase baseline (and too sparse for the rolling fallback), or a false-positive **scope override** has raised the thresholds for that series (check **Settings → Monitoring → Scope overrides**). If instead it is flagged but *late*, that is the [ingestion-settling allowance](#detection-latency) — the newest buckets are deliberately held unscored until they have settled. See [Troubleshooting](./troubleshooting.md).
 :::

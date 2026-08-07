@@ -23,6 +23,7 @@ import { VariablesBulkBar } from "./VariablesBulkBar"
 import { VariablesTableRow } from "./VariablesTableRow"
 import { getErrorMessage } from '@/lib/utils'
 import { variablesKey, variablesPageKey } from '@/lib/queryKeys'
+import { DRIFT_STATUS_LABEL, isResolvedDrift } from '@/lib/variableDrift'
 
 // Warehouse column or dotted JSON path, e.g. "variant" or "page_data.extra.variant".
 const BINDING_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$/
@@ -119,6 +120,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const [editBindings, setEditBindings] = useState<string[]>([])
   const [overrideEventId, setOverrideEventId] = useState('')
   const [overrideValues, setOverrideValues] = useState<string[]>([])
+  const [showResolvedDrifts, setShowResolvedDrifts] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [filterText, setFilterText] = useState('')
   // Page the reviewer picked, tagged with the focus target it was picked under
@@ -205,9 +207,13 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     queryFn: () => variableDriftsApi.list(slug, { variableId: editingVar!.id }, branchId),
     enabled: !!editingVar,
   })
-  const activeDrifts = (driftList?.items ?? []).filter(
-    drift => drift.status === 'open' || drift.status === 'snoozed',
-  )
+  const driftItems = driftList?.items ?? []
+  const activeDrifts = driftItems.filter(drift => !isResolvedDrift(drift.status))
+  // Kept reachable rather than filtered away: a scan only reopens an accepted
+  // row for values outside the accepted set, so undoing the acceptance itself
+  // has to be possible from here.
+  const resolvedDrifts = driftItems.filter(drift => isResolvedDrift(drift.status))
+  const visibleDrifts = showResolvedDrifts ? [...activeDrifts, ...resolvedDrifts] : activeDrifts
 
   const driftActionMut = useMutation({
     mutationFn: ({ driftId, action, scope, snoozedUntil }: {
@@ -312,6 +318,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     setEditBindings(v.bindings ?? [])
     setOverrideEventId('')
     setOverrideValues([])
+    setShowResolvedDrifts(false)
   })
 
   const activeVariables = useMemo(
@@ -456,53 +463,69 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                 <Label>Data bindings</Label>
                 <ChipListInput values={editBindings} onChange={setEditBindings} placeholder="e.g. page_data.extra.variant" ariaLabel="Add data binding" validate={isValidBinding} />
               </div>
-              {editingVar && activeDrifts.length > 0 && (
-                <div className="rounded-md border border-warning/40 bg-warning-soft p-3">
-                  <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-warning">
+              {editingVar && driftItems.length > 0 && (
+                <div className={activeDrifts.length > 0 ? 'rounded-md border border-warning/40 bg-warning-soft p-3' : 'rounded-md border bg-muted/30 p-3'}>
+                  <div className={`mb-1 text-xs font-semibold uppercase tracking-wide ${activeDrifts.length > 0 ? 'text-warning' : 'text-muted-foreground'}`}>
                     Value drift — observed values outside the documented list
                   </div>
-                  <ul className="space-y-1.5">
-                    {activeDrifts.map((drift, driftIndex) => (
-                      <li key={drift.id} className="rounded border bg-background px-2 py-1.5">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="text-xs font-medium">
-                              {drift.event_name}
-                              {drift.status === 'snoozed' && (
-                                <span className="ml-1.5 rounded border px-1 py-0.5 text-[10px] text-muted-foreground">snoozed</span>
-                              )}
+                  {visibleDrifts.length > 0 && (
+                    <ul className="space-y-1.5">
+                      {visibleDrifts.map((drift, driftIndex) => (
+                        <li key={drift.id} className="rounded border bg-background px-2 py-1.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="text-xs font-medium">
+                                {drift.event_name}
+                                {drift.status !== 'open' && (
+                                  <span className="ml-1.5 rounded border px-1 py-0.5 text-[10px] text-muted-foreground">{DRIFT_STATUS_LABEL[drift.status]}</span>
+                                )}
+                              </div>
+                              <div className="mt-0.5 flex flex-wrap gap-1">
+                                {drift.observed_values.map(value => (
+                                  <span key={value} className="rounded border border-warning/40 px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
+                                ))}
+                              </div>
                             </div>
-                            <div className="mt-0.5 flex flex-wrap gap-1">
-                              {drift.observed_values.map(value => (
-                                <span key={value} className="rounded border border-warning/40 px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
-                              ))}
-                            </div>
+                            <ScenarioCoachMark
+                              step="variables/see-drift"
+                              // The action group is the useful target; anchoring the
+                              // whole row makes the callout cover the form above it.
+                              // Never a resolved row: its only action is Reopen.
+                              when={driftIndex === 0 && !isResolvedDrift(drift.status) && editingVar?.name === SCENARIO_SEEDED.driftVariableName}
+                            >
+                              <div className="flex shrink-0 flex-wrap gap-1">
+                                {isResolvedDrift(drift.status) ? (
+                                  <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'reopen' })}>
+                                    Reopen
+                                  </Button>
+                                ) : (
+                                  <>
+                                    <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'global' })}>
+                                      Accept
+                                    </Button>
+                                    <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'event' })}>
+                                      Accept for event
+                                    </Button>
+                                    <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => snoozeDrift(drift.id)}>
+                                      Snooze 7d
+                                    </Button>
+                                    <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'false_positive' })}>
+                                      False positive
+                                    </Button>
+                                  </>
+                                )}
+                              </div>
+                            </ScenarioCoachMark>
                           </div>
-                          <ScenarioCoachMark
-                            step="variables/see-drift"
-                            // The action group is the useful target; anchoring the
-                            // whole row makes the callout cover the form above it.
-                            when={driftIndex === 0 && editingVar?.name === SCENARIO_SEEDED.driftVariableName}
-                          >
-                            <div className="flex shrink-0 flex-wrap gap-1">
-                              <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'global' })}>
-                                Accept
-                              </Button>
-                              <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'event' })}>
-                                Accept for event
-                              </Button>
-                              <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => snoozeDrift(drift.id)}>
-                                Snooze 7d
-                              </Button>
-                              <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'false_positive' })}>
-                                False positive
-                              </Button>
-                            </div>
-                          </ScenarioCoachMark>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {resolvedDrifts.length > 0 && (
+                    <Button type="button" size="sm" variant="ghost" className="mt-1.5 h-6 px-2 text-[11px] text-muted-foreground" onClick={() => setShowResolvedDrifts(value => !value)}>
+                      {showResolvedDrifts ? 'Hide' : 'Show'} {resolvedDrifts.length} resolved
+                    </Button>
+                  )}
                   {driftActionMut.isError && (
                     <p className="mt-2 text-sm text-destructive">{getErrorMessage(driftActionMut.error)}</p>
                   )}

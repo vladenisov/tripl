@@ -9,6 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from tripl.core.analyzers.anomaly_detector import (
     SCOPE_EVENT,
@@ -19,6 +20,7 @@ from tripl.core.analyzers.anomaly_detector import (
     forecast_next_buckets,
 )
 from tripl.core.intervals import get_interval
+from tripl.models.anomaly_scope_override import AnomalyScopeOverride
 from tripl.models.domain_enums import MetricBreakdownAnomalyKind
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
@@ -33,7 +35,7 @@ from tripl.models.project_anomaly_settings import (
     DEFAULT_SIGMA_THRESHOLD,
     ProjectAnomalySettings,
 )
-from tripl.models.release_regression import ReleaseRegression
+from tripl.models.release_regression import ReleaseComparability, ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.data_source import DataSourceStatsResponse, DataSourceThroughputPoint
 from tripl.schemas.event_metric import (
@@ -53,6 +55,7 @@ from tripl.schemas.event_metric import (
     PlatformParityAnomaly,
     PlatformPresenceResponse,
     PlatformPresenceRow,
+    ReleaseComparabilityItem,
     ReleaseRegressionItem,
     ReleaseRegressionsResponse,
     TopEventResponse,
@@ -61,7 +64,13 @@ from tripl.semver import (
     APP_VERSION_OTHER_LABEL,
     order_versions,
 )
-from tripl.services.monitoring_utils import classify_signal_state, recent_signal_window_from_hours
+from tripl.services.monitoring_utils import (
+    classify_signal_state,
+    latest_bucket_by_scan,
+    recent_signal_window_from_hours,
+    scan_interval_to_timedelta,
+    scan_liveness_cutoff,
+)
 from tripl.services.project_lookup import get_project_by_slug
 from tripl.services.version_activation import (
     DEFAULT_ACTIVE_SHARE_MIN,
@@ -133,6 +142,36 @@ async def _get_scan_config_sigma_threshold(
         select(ScanConfig.sigma_threshold).where(ScanConfig.id == scan_config_id)
     )
     return result.scalar_one_or_none() or DEFAULT_SIGMA_THRESHOLD
+
+
+async def _apply_scope_sigma_override(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    scan_config_id: uuid.UUID | None,
+    scope_type: str,
+    scope_ref: str,
+    fallback: float,
+) -> float:
+    """The band multiplier for ONE scope, honouring its false-positive override.
+
+    The chart band is ``expected ± sigma_threshold × effective_stddev`` and is
+    meant to read as "outside the band = flagged". A scope the ratchet has
+    tightened is scored at its own sigma, so serving the scan-wide value would
+    draw a band narrower than the rule that produced the dots and show buckets
+    outside it that were deliberately not flagged.
+    """
+    override = await session.scalar(
+        select(AnomalyScopeOverride.sigma_threshold).where(
+            AnomalyScopeOverride.project_id == project_id,
+            AnomalyScopeOverride.scan_config_id.is_(None)
+            if scan_config_id is None
+            else AnomalyScopeOverride.scan_config_id == scan_config_id,
+            AnomalyScopeOverride.scope_type == scope_type,
+            AnomalyScopeOverride.scope_ref == scope_ref,
+        )
+    )
+    return float(override) if override is not None else fallback
 
 
 async def _get_project_recent_signal_window(
@@ -269,6 +308,36 @@ async def _resolve_scope_scan_config_id(
     return scan_config_id
 
 
+def _scope_metric_filters(
+    *,
+    scope: str,
+    scan_config_id: uuid.UUID,
+    scope_ref: str,
+) -> list[ColumnElement[bool]]:
+    """Which ``event_metrics`` rows belong to one drilldown scope.
+
+    Shared by the series pull and the open-anchor probe below, so the probe can
+    never decide "the scope has nothing newer than its anchor" off a different
+    set of rows than the chart is drawn from.
+    """
+    if scope == SCOPE_PROJECT_TOTAL:
+        return [
+            EventMetric.scan_config_id == scan_config_id,
+            EventMetric.event_id.is_(None),
+            EventMetric.event_type_id.is_not(None),
+        ]
+    if scope == SCOPE_EVENT_TYPE:
+        return [
+            EventMetric.scan_config_id == scan_config_id,
+            EventMetric.event_id.is_(None),
+            EventMetric.event_type_id == uuid.UUID(scope_ref),
+        ]
+    return [
+        EventMetric.scan_config_id == scan_config_id,
+        EventMetric.event_id == uuid.UUID(scope_ref),
+    ]
+
+
 async def _get_metric_rows(
     session: AsyncSession,
     *,
@@ -278,34 +347,22 @@ async def _get_metric_rows(
     time_from: datetime | None,
     time_to: datetime | None,
 ) -> list[tuple[datetime, int]]:
+    scope_filters = _scope_metric_filters(
+        scope=scope,
+        scan_config_id=scan_config_id,
+        scope_ref=scope_ref,
+    )
     if scope == SCOPE_PROJECT_TOTAL:
         query = (
             select(EventMetric.bucket, func.sum(EventMetric.count))
-            .where(
-                EventMetric.scan_config_id == scan_config_id,
-                EventMetric.event_id.is_(None),
-                EventMetric.event_type_id.is_not(None),
-            )
+            .where(*scope_filters)
             .group_by(EventMetric.bucket)
-            .order_by(EventMetric.bucket)
-        )
-    elif scope == SCOPE_EVENT_TYPE:
-        query = (
-            select(EventMetric.bucket, EventMetric.count)
-            .where(
-                EventMetric.scan_config_id == scan_config_id,
-                EventMetric.event_id.is_(None),
-                EventMetric.event_type_id == uuid.UUID(scope_ref),
-            )
             .order_by(EventMetric.bucket)
         )
     else:
         query = (
             select(EventMetric.bucket, EventMetric.count)
-            .where(
-                EventMetric.scan_config_id == scan_config_id,
-                EventMetric.event_id == uuid.UUID(scope_ref),
-            )
+            .where(*scope_filters)
             .order_by(EventMetric.bucket)
         )
 
@@ -343,6 +400,133 @@ async def _get_anomaly_rows(
 
     result = await session.execute(query)
     return list(result.scalars().all())
+
+
+async def _get_scope_latest_metric_bucket(
+    session: AsyncSession,
+    *,
+    scope: str,
+    scan_config_id: uuid.UUID,
+    scope_ref: str,
+    since: datetime,
+    time_to: datetime | None,
+) -> datetime | None:
+    """Newest bucket the scope stored at or after ``since``.
+
+    ``since`` bounds the read — ``event_metrics`` is the largest table here and
+    a guard test pins every query against it to a LIMIT or a bucket floor. It
+    costs no accuracy for the one caller: it asks whether anything is newer than
+    a candidate anchor, so rows older than that anchor cannot change the answer.
+    """
+    filters = _scope_metric_filters(
+        scope=scope,
+        scan_config_id=scan_config_id,
+        scope_ref=scope_ref,
+    )
+    query = select(func.max(EventMetric.bucket)).where(*filters, EventMetric.bucket >= since)
+    if time_to is not None:
+        query = query.where(EventMetric.bucket < time_to)
+    return (await session.execute(query)).scalar_one_or_none()
+
+
+async def _load_scope_anomalies(
+    session: AsyncSession,
+    *,
+    scope: str,
+    scan_config_id: uuid.UUID,
+    scope_ref: str,
+    time_from: datetime | None,
+    time_to: datetime | None,
+    interval: str | None,
+    recent_window: timedelta | None,
+    scan_latest_bucket: datetime | None,
+) -> tuple[list[MetricAnomaly], datetime | None]:
+    """The scope's anomalies for the requested range, reaching back to an open anchor.
+
+    Returns ``(anomalies, effective_time_from)``; the caller pulls its metric
+    rows with the returned floor so chart and signal describe one range.
+
+    An outage is announced ONCE, at onset, and deliberately never re-emitted, so
+    a scope that has been silent for weeks is described by a single row that old.
+    The Anomalies list, the sidebar badge and the bell all keep reporting it —
+    ``_outage_is_still_running`` re-checks the anchor against the series instead
+    of ageing it out — but the drilldown they link to loads only its selected
+    range (7 days by default), which left the page for the incident the user had
+    just clicked showing no signal at all (tripl-l429.23).
+
+    Widening is CONDITIONAL: only an anchor that still classifies open earns it.
+    Reaching back to any older anomaly would quietly serve a different range than
+    the user picked on every scope that has ever fired. The check runs the same
+    ``classify_signal_state`` call, on the same inputs, that
+    ``_build_metrics_response`` will run once the rows are loaded, so the probe
+    and the response cannot disagree about what "open" means.
+    """
+    anomalies = await _get_anomaly_rows(
+        session,
+        scan_config_id=scan_config_id,
+        scope=scope,
+        scope_ref=scope_ref,
+        time_from=time_from,
+        time_to=time_to,
+    )
+    # A row inside the range is already the scope's newest (the range ends at
+    # "now"), so it is the row every other surface classifies: nothing to reach
+    # back for, and no extra query is run.
+    if anomalies or time_from is None:
+        return anomalies, time_from
+
+    anchor = (
+        await session.execute(
+            select(MetricAnomaly)
+            .where(
+                MetricAnomaly.scan_config_id == scan_config_id,
+                MetricAnomaly.scope_type == scope,
+                MetricAnomaly.scope_ref == scope_ref,
+                MetricAnomaly.bucket < time_from,
+            )
+            .order_by(MetricAnomaly.bucket.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if anchor is None:
+        return anomalies, time_from
+
+    # Mirrors what ``_build_metric_points`` will produce once the range starts at
+    # the anchor: the densified series ends at the newest of the scope's metric
+    # buckets and its anomaly buckets, and the anchor is one of the latter.
+    stored_latest = await _get_scope_latest_metric_bucket(
+        session,
+        scope=scope,
+        scan_config_id=scan_config_id,
+        scope_ref=scope_ref,
+        since=anchor.bucket,
+        time_to=time_to,
+    )
+    latest_metric_bucket = (
+        max(anchor.bucket, stored_latest) if stored_latest is not None else anchor.bucket
+    )
+    state = classify_signal_state(
+        anomaly_bucket=anchor.bucket,
+        latest_metric_bucket=latest_metric_bucket,
+        interval=scan_interval_to_timedelta(interval),
+        recent_window=recent_window,
+        anomaly_actual_count=anchor.actual_count,
+        scan_latest_bucket=scan_latest_bucket,
+    )
+    if state is None:
+        return anomalies, time_from
+
+    return (
+        await _get_anomaly_rows(
+            session,
+            scan_config_id=scan_config_id,
+            scope=scope,
+            scope_ref=scope_ref,
+            time_from=anchor.bucket,
+            time_to=time_to,
+        ),
+        anchor.bucket,
+    )
 
 
 def _signal_from_anomaly(
@@ -502,6 +686,57 @@ def _forecast_from_points(
     ]
 
 
+async def _get_scan_latest_buckets(
+    session: AsyncSession,
+    scan_config_ids: set[uuid.UUID],
+    *,
+    since: datetime,
+) -> dict[uuid.UUID, datetime]:
+    """Newest collected bucket per scan config — the "is this collector alive" probe.
+
+    Feeds ``classify_signal_state``'s ``scan_latest_bucket`` on the drilldown
+    path. Taken across every scope of the scan (not just the one being drawn),
+    because a scope that has gone silent stops producing rows entirely: asking
+    its own series whether the collector is alive would always answer "no".
+    Shares ``latest_bucket_by_scan`` with the list path so the two surfaces
+    cannot derive scan liveness by different rules.
+
+    ``since`` bounds the read — ``event_metrics`` is the largest table here and
+    a guard test pins every query against it to a LIMIT or a bucket floor. It
+    costs no accuracy: anything older than ``scan_liveness_cutoff`` fails the
+    freshness check downstream, so an empty result and a stale maximum lead to
+    the same verdict.
+    """
+    if not scan_config_ids:
+        return {}
+    rows = await session.execute(
+        select(EventMetric.scan_config_id, func.max(EventMetric.bucket))
+        .where(
+            EventMetric.scan_config_id.in_(scan_config_ids),
+            EventMetric.bucket >= since,
+        )
+        .group_by(EventMetric.scan_config_id)
+    )
+    return latest_bucket_by_scan((scan_config_id, bucket) for scan_config_id, bucket in rows.all())
+
+
+async def _get_scan_latest_bucket(
+    session: AsyncSession,
+    scan_config_id: uuid.UUID | None,
+    *,
+    interval: str | None,
+    recent_window: timedelta | None,
+) -> datetime | None:
+    if scan_config_id is None:
+        return None
+    buckets = await _get_scan_latest_buckets(
+        session,
+        {scan_config_id},
+        since=scan_liveness_cutoff(interval=interval, recent_window=recent_window),
+    )
+    return buckets.get(scan_config_id)
+
+
 def _build_metrics_response(
     *,
     scope: str,
@@ -515,6 +750,7 @@ def _build_metrics_response(
     scan_config_name: str | None = None,
     sigma_threshold: float = DEFAULT_SIGMA_THRESHOLD,
     recent_window: timedelta | None = None,
+    scan_latest_bucket: datetime | None = None,
 ) -> EventMetricsResponse:
     data = _build_metric_points(
         interval=interval,
@@ -528,7 +764,18 @@ def _build_metrics_response(
         state = classify_signal_state(
             anomaly_bucket=latest_anomaly.bucket,
             latest_metric_bucket=latest_metric_bucket,
+            # Without the grid, a coarse series is judged against a bare 24h
+            # window narrower than one of its own buckets, and closes.
+            interval=scan_interval_to_timedelta(interval),
             recent_window=recent_window,
+            # This response IS the drilldown the Anomalies page links to, so it
+            # has to answer the ongoing-outage re-check the same way the list
+            # does. Omitting these two left the list reporting a five-day-old
+            # outage as open while the page it opened showed no signal at all.
+            # Every scope served here is count-shaped and scan-backed, which is
+            # exactly the population the re-check is defined for.
+            anomaly_actual_count=latest_anomaly.actual_count,
+            scan_latest_bucket=scan_latest_bucket,
         )
         if state is not None:
             latest_signal = _signal_from_anomaly(latest_anomaly, state=state)
@@ -570,23 +817,37 @@ async def get_event_metrics(
             data=[],
         )
 
+    sigma_threshold = await _apply_scope_sigma_override(
+        session,
+        project_id=project.id,
+        scan_config_id=scan_config_id,
+        scope_type=SCOPE_EVENT,
+        scope_ref=str(event.id),
+        fallback=await _get_scan_config_sigma_threshold(session, scan_config_id),
+    )
+    recent_window = await _get_project_recent_signal_window(session, project.id)
+    scan_latest_bucket = await _get_scan_latest_bucket(
+        session, scan_config_id, interval=interval, recent_window=recent_window
+    )
+    anomalies, effective_time_from = await _load_scope_anomalies(
+        session,
+        scope=SCOPE_EVENT,
+        scan_config_id=scan_config_id,
+        scope_ref=str(event.id),
+        time_from=time_from,
+        time_to=time_to,
+        interval=interval,
+        recent_window=recent_window,
+        scan_latest_bucket=scan_latest_bucket,
+    )
     metric_rows = await _get_metric_rows(
         session,
         scope=SCOPE_EVENT,
         scan_config_id=scan_config_id,
         scope_ref=str(event.id),
-        time_from=time_from,
+        time_from=effective_time_from,
         time_to=time_to,
     )
-    anomalies = await _get_anomaly_rows(
-        session,
-        scan_config_id=scan_config_id,
-        scope=SCOPE_EVENT,
-        scope_ref=str(event.id),
-        time_from=time_from,
-        time_to=time_to,
-    )
-    sigma_threshold = await _get_scan_config_sigma_threshold(session, scan_config_id)
     return _build_metrics_response(
         scope=SCOPE_EVENT,
         scan_config_id=scan_config_id,
@@ -596,7 +857,8 @@ async def get_event_metrics(
         anomalies=anomalies,
         event_id=event.id,
         sigma_threshold=sigma_threshold,
-        recent_window=await _get_project_recent_signal_window(session, project.id),
+        recent_window=recent_window,
+        scan_latest_bucket=scan_latest_bucket,
     )
 
 
@@ -1172,6 +1434,10 @@ async def get_release_regressions(
     Backed by the ReleaseRegression rows the scan recomputes each run (they
     always describe the current latest release). Empty when the scan has no
     version column.
+
+    ``comparability`` carries the verdict of the same pass, so an empty
+    ``items`` can be read as either "nothing regressed" or "the release cannot
+    be judged yet"; without it the two payloads are identical.
     """
     project = await _resolve_project(session, slug)
     config = await _resolve_scan_config(session, project.id, scan_config_id)
@@ -1180,18 +1446,44 @@ async def get_release_regressions(
             scan_config_id=config.id,
             app_version_column=None,
             latest_version=None,
+            comparability=[],
             items=[],
         )
 
     stmt = select(ReleaseRegression).where(ReleaseRegression.scan_config_id == config.id)
+    verdict_stmt = select(ReleaseComparability).where(
+        ReleaseComparability.scan_config_id == config.id
+    )
     if scope_type is not None:
         stmt = stmt.where(ReleaseRegression.scope_type == scope_type)
+        verdict_stmt = verdict_stmt.where(ReleaseComparability.scope_type == scope_type)
     regressions = list((await session.execute(stmt)).scalars())
+    verdicts = sorted(
+        (await session.execute(verdict_stmt)).scalars(),
+        key=lambda v: str(v.scope_type),
+    )
+    comparability = [
+        ReleaseComparabilityItem(
+            scope_type=verdict.scope_type,
+            comparable=verdict.comparable,
+            reason=verdict.reason,
+            version=verdict.version,
+            previous_version=verdict.previous_version,
+            emerging_share=verdict.emerging_share,
+            max_emerging_share=verdict.max_emerging_share,
+        )
+        for verdict in verdicts
+    ]
+    # The verdict knows the release pair even when no row was emitted, which is
+    # exactly the case a suppressed comparison has to name.
+    judged_versions = {v.version for v in verdicts if v.version is not None}
     if not regressions:
+        candidates = judged_versions
         return ReleaseRegressionsResponse(
             scan_config_id=config.id,
             app_version_column=config.app_version_column,
-            latest_version=None,
+            latest_version=order_versions(candidates)[-1] if candidates else None,
+            comparability=comparability,
             items=[],
         )
 
@@ -1221,7 +1513,7 @@ async def get_release_regressions(
             return type_names.get(regression.event_type_id, regression.scope_ref)
         return regression.scope_ref
 
-    latest_version = order_versions({r.version for r in regressions})[-1]
+    latest_version = order_versions({r.version for r in regressions} | judged_versions)[-1]
     # Missing events first, then by severity (lowest ratio = worst).
     ordered = sorted(regressions, key=lambda r: (0 if r.kind == "missing" else 1, r.ratio))
     items = [
@@ -1249,6 +1541,7 @@ async def get_release_regressions(
         scan_config_id=config.id,
         app_version_column=config.app_version_column,
         latest_version=latest_version,
+        comparability=comparability,
         items=items,
     )
 
@@ -1625,6 +1918,29 @@ async def get_events_window_metrics(
     valid_event_ids_set = set(valid_event_ids)
     # Loaded once for the whole batch — the loop below runs per requested event.
     recent_window = await _get_project_recent_signal_window(session, project.id)
+    # One query for the whole batch, for the same reason: the ongoing-outage
+    # re-check needs scan liveness per event, and resolving it inside the loop
+    # would be a round-trip per requested event. The batch can mix grids, so the
+    # floor is the WIDEST horizon among them — a narrower one would hide a
+    # coarse scan's newest bucket, and per-scan precision is restored downstream
+    # where each response re-derives the horizon from its own interval.
+    batch_scan_ids = {
+        scan_config_id for scan_config_id in latest_scan_by_event.values() if scan_config_id
+    }
+    scan_latest_buckets = await _get_scan_latest_buckets(
+        session,
+        batch_scan_ids,
+        since=min(
+            (
+                scan_liveness_cutoff(
+                    interval=interval_by_scan.get(scan_config_id),
+                    recent_window=recent_window,
+                )
+                for scan_config_id in batch_scan_ids
+            ),
+            default=datetime.now(UTC),
+        ),
+    )
     responses: list[EventWindowMetricsResponse] = []
     for event_id in event_ids:
         if event_id not in valid_event_ids_set:
@@ -1633,6 +1949,11 @@ async def get_events_window_metrics(
         scan_config_id = latest_scan_by_event.get(event_id)
         interval = interval_by_scan.get(scan_config_id) if scan_config_id is not None else None
         metric_rows = metric_rows_by_event.get(event_id, [])
+        # Deliberately NOT widened to an open anchor the way the per-scope
+        # drilldowns are (``_load_scope_anomalies``): this batch draws row
+        # sparklines and reports ``total_count`` for the window the caller asked
+        # for, so reaching outside it would silently change the number in the
+        # column next to the chart. Nothing here reads ``latest_signal``.
         metrics_response = _build_metrics_response(
             scope=SCOPE_EVENT,
             scan_config_id=scan_config_id,
@@ -1642,6 +1963,9 @@ async def get_events_window_metrics(
             anomalies=anomaly_rows_by_event.get(event_id, []),
             event_id=event_id,
             recent_window=recent_window,
+            scan_latest_bucket=(
+                scan_latest_buckets.get(scan_config_id) if scan_config_id is not None else None
+            ),
         )
         responses.append(
             EventWindowMetricsResponse(
@@ -1679,23 +2003,37 @@ async def get_event_type_metrics(
             data=[],
         )
 
+    sigma_threshold = await _apply_scope_sigma_override(
+        session,
+        project_id=project.id,
+        scan_config_id=scan_config_id,
+        scope_type=SCOPE_EVENT_TYPE,
+        scope_ref=str(event_type.id),
+        fallback=await _get_scan_config_sigma_threshold(session, scan_config_id),
+    )
+    recent_window = await _get_project_recent_signal_window(session, project.id)
+    scan_latest_bucket = await _get_scan_latest_bucket(
+        session, scan_config_id, interval=interval, recent_window=recent_window
+    )
+    anomalies, effective_time_from = await _load_scope_anomalies(
+        session,
+        scope=SCOPE_EVENT_TYPE,
+        scan_config_id=scan_config_id,
+        scope_ref=str(event_type.id),
+        time_from=time_from,
+        time_to=time_to,
+        interval=interval,
+        recent_window=recent_window,
+        scan_latest_bucket=scan_latest_bucket,
+    )
     metric_rows = await _get_metric_rows(
         session,
         scope=SCOPE_EVENT_TYPE,
         scan_config_id=scan_config_id,
         scope_ref=str(event_type.id),
-        time_from=time_from,
+        time_from=effective_time_from,
         time_to=time_to,
     )
-    anomalies = await _get_anomaly_rows(
-        session,
-        scan_config_id=scan_config_id,
-        scope=SCOPE_EVENT_TYPE,
-        scope_ref=str(event_type.id),
-        time_from=time_from,
-        time_to=time_to,
-    )
-    sigma_threshold = await _get_scan_config_sigma_threshold(session, scan_config_id)
     return _build_metrics_response(
         scope=SCOPE_EVENT_TYPE,
         scan_config_id=scan_config_id,
@@ -1705,7 +2043,8 @@ async def get_event_type_metrics(
         anomalies=anomalies,
         event_type_id=event_type.id,
         sigma_threshold=sigma_threshold,
-        recent_window=await _get_project_recent_signal_window(session, project.id),
+        recent_window=recent_window,
+        scan_latest_bucket=scan_latest_bucket,
     )
 
 
@@ -1727,20 +2066,30 @@ async def get_project_total_metrics(
     if config is None or config.project_id != project.id:
         raise HTTPException(404, "Scan config not found")
 
-    metric_rows = await _get_metric_rows(
+    recent_window = await _get_project_recent_signal_window(session, project.id)
+    scan_latest_bucket = await _get_scan_latest_bucket(
+        session,
+        resolved_scan_config_id,
+        interval=config.interval,
+        recent_window=recent_window,
+    )
+    anomalies, effective_time_from = await _load_scope_anomalies(
         session,
         scope=SCOPE_PROJECT_TOTAL,
         scan_config_id=resolved_scan_config_id,
         scope_ref=str(resolved_scan_config_id),
         time_from=time_from,
         time_to=time_to,
+        interval=config.interval,
+        recent_window=recent_window,
+        scan_latest_bucket=scan_latest_bucket,
     )
-    anomalies = await _get_anomaly_rows(
+    metric_rows = await _get_metric_rows(
         session,
-        scan_config_id=resolved_scan_config_id,
         scope=SCOPE_PROJECT_TOTAL,
+        scan_config_id=resolved_scan_config_id,
         scope_ref=str(resolved_scan_config_id),
-        time_from=time_from,
+        time_from=effective_time_from,
         time_to=time_to,
     )
     return _build_metrics_response(
@@ -1751,6 +2100,14 @@ async def get_project_total_metrics(
         interval=config.interval,
         metric_rows=metric_rows,
         anomalies=anomalies,
-        sigma_threshold=config.sigma_threshold,
-        recent_window=await _get_project_recent_signal_window(session, project.id),
+        sigma_threshold=await _apply_scope_sigma_override(
+            session,
+            project_id=project.id,
+            scan_config_id=resolved_scan_config_id,
+            scope_type=SCOPE_PROJECT_TOTAL,
+            scope_ref=str(resolved_scan_config_id),
+            fallback=config.sigma_threshold,
+        ),
+        recent_window=recent_window,
+        scan_latest_bucket=scan_latest_bucket,
     )

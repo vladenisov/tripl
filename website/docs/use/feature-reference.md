@@ -195,8 +195,10 @@ that event.
 
 The table shows documented/observed samples, binding paths, usage counts, and
 open value drift. Drift can be accepted globally or for one event, snoozed,
-marked false-positive, or reopened; the event detail repeats the affected
-event's review panel. Selection enables bulk type/description/value changes and
+marked false-positive, or reopened; resolved rows sit behind a **Show N
+resolved** toggle in both panels, and a scan reopens an accepted row on its own
+once it observes a value outside the accepted set. The event detail repeats the
+affected event's review panel. Selection enables bulk type/description/value changes and
 delete. **Exclude from scans** keeps a restorable tombstone so a deliberately
 removed scan-owned variable is not recreated. See
 [Variables & templates](./variables-and-templates.md).
@@ -330,6 +332,15 @@ regressions, plus chart annotations on the Volume tab. For an `event` scope it
 additionally renders variable-value drift review and the Photos & specs panel.
 For ratios, averages, and other non-count catalog metrics, the version legend
 shows each version's latest observed value rather than a sum of daily values.
+The range picker defaults to 7 days (30 for a catalog metric); when the scope's
+open signal is older than the range you selected, the range is extended back to
+that signal's bucket so the page shows what the list linked you to. That covers
+both ways it happens — a long-running outage on an `event`, `event_type`, or
+`project_total` scope, which is announced once at onset and then never
+re-emitted, and a catalog metric flagged further back than the range under a
+raised `recent_signal_window_hours`. Only a signal that is still **open** widens
+the range; one that has since closed leaves your selection exactly where you put
+it.
 
 ### Metrics catalog
 
@@ -365,7 +376,11 @@ then reveals kind-specific config:
 
 Shared fields are name, display name, description, color, unit, owner/review,
 status, breakdown columns/limit, optional version/platform columns, and the
-anomaly-detection toggle. A metric is collected only while
+anomaly-detection toggle. Turning that toggle off stops the metric being scored
+and closes its signal on every surface at once — the catalog row, the metric's
+own detail page, the Anomalies page and the sidebar badge; anomalies already
+recorded stay on the chart as history rather than being deleted. A metric is
+collected only while
 **active**; `draft` metrics are saved but not collected, and `archived` metrics
 stop collecting.
 
@@ -410,8 +425,18 @@ feed, and on the monitoring detail. Tuning lives at the project **Monitoring
 settings** (route `/p/<slug>/settings/monitoring`): toggle anomaly detection,
 choose the scopes to watch (project total / event types / events / metrics), and set the
 baseline window (buckets), minimum history (buckets), sigma threshold, minimum
-expected count, and the open signal window (hours, 1–720, default 24). Scans
-honor these settings. Monitoring settings only decide what gets **flagged** —
+expected count, the open signal window (hours, 1–720, default 24) and the
+ingestion-settling allowance (minutes, 0–1440, default 120). Scans
+honor these settings. The last two are refused when they collide — the settling
+allowance must stay strictly below the open signal window, or every signal would
+be stale before it could be scored and the Anomalies page would read zero while
+alerts kept firing (see [Detection
+latency](./anomaly-detection.md#detection-latency)). The same page lists **Scope overrides** — the scopes that
+marking an alert a **false positive** has permanently tightened, each showing the
+scan, the sigma threshold and minimum expected count now in force for that scope
+alone, and how many false positives produced them. **Remove** puts a scope back
+on the project settings; the project settings themselves are never changed by
+that feedback. Monitoring settings only decide what gets **flagged** —
 they never notify anyone by themselves. Notification delivery is a separate,
 fully available layer: route the resulting signals to Slack, Telegram, a webhook,
 email, Jira, or Linear under **Observe › Alerting** (see
@@ -426,15 +451,28 @@ spike/drop direction, scope (project total / event type / event / metric), actua
 vs expected counts, the z-score, and when it fired — linking to the monitoring
 detail for that scope. When a series drops all the way to zero, the severity
 column reads **dropped to zero** instead of the clamped z-score, since every such
-signal would otherwise show an identical, low-information value. When one incident trips several scopes on the same bucket,
+signal would otherwise show an identical, low-information value. A scope that
+dropped to zero and has not emitted since stays on this list for as long as it is
+down, rather than ageing out of the open-signal window after a day — the outage
+is announced once, so tripl re-checks whether it is still down instead of judging
+it by the age of that one announcement (see
+[An event that goes silent is reported once](./anomaly-detection.md#an-event-that-goes-silent-is-reported-once)).
+When one incident trips several scopes on the same bucket,
 the child rows (event type / event) are still shown and tagged `part of total`
 rather than folded into the project-total row. A **magnitude filter**
 (All / Significant / Major, defaulting to **Significant**) trims the list by
-relative effect (`|actual − expected| / max(expected, 1)`). The sidebar and top-bar
-badge, the Overview **Open signals** stat, and this page all report the **same**
-number — open signals across every scope that clear the Significant threshold — so
-the badge agrees with the list rather than reading lower. Sensitivity is tuned in
-**Monitoring settings** (see [How anomaly detection works](./anomaly-detection.md)).
+relative effect (`|actual − expected| / max(expected, 1)`). A **scan filter** sits
+beside it whenever signals come from more than one scan, with a count on each
+option, so a large legacy scan cannot bury a smaller live one purely by watching
+more events; catalog metrics are project-wide rather than scan-bound and get
+their own option. Both filters narrow the list already in memory — no extra
+request — and the counts on the scan options are taken from the whole stream, so
+raising the magnitude cannot make the option you are standing on disappear. The
+sidebar and top-bar badge, the Overview **Open signals** stat, and this page all
+report the **same** number — open signals across every scope that clear the
+Significant threshold — so the badge agrees with the list rather than reading
+lower. Sensitivity is tuned in **Monitoring settings** (see
+[How anomaly detection works](./anomaly-detection.md)).
 
 ### Chart annotations
 
@@ -446,7 +484,11 @@ the chart and deletable.
 
 **Where:** Observe › Alerting (Destinations, Inbox, Audit). Destination channels:
 **Slack**, **Telegram**, **Webhook**, **Email**, **Jira**, **Linear**. Routing
-rules carry a **cooldown** (minutes); filters on `event_type` / `event` /
+rules carry a **cooldown** (minutes); an optional **Scan** binding
+(`scan_config_id`, default **All scans**) that narrows a rule to one scan
+configuration — metric-scope anomalies are project-wide and are never delivered
+by a scan-bound rule, and deleting a scan unbinds and disables the rules bound to
+it rather than widening or deleting them; filters on `event_type` / `event` /
 `direction` with operators `=`, `!=`, `IN`, `NOT IN`; thresholds for minimum
 percent delta, minimum absolute delta, and minimum expected count; an **include
 variable value drift** opt-in alongside schema, distribution, and release drift;
@@ -578,6 +620,16 @@ the run produced — new events, metric points, **new** signals, and rows scanne
 every figure on the card is that run's delta, not a project total — and
 reads "no new events discovered" when a run on an established catalog finds
 nothing new (which is normal, not a failure) rather than a bare "0 events".
+The signal figure is that run's own scan and nothing else: it compares the
+scan's open signals before and after the run, so it answers *what this run
+changed* rather than *what is open in the project*. Within that scan's event
+scopes it classifies by exactly the rule the Anomalies page uses, freshness
+floor included ([From a detected anomaly to a
+signal](./anomaly-detection.md#from-a-detected-anomaly-to-a-signal)), so a run on
+a daily or weekly scan is not measured against a shorter window than the page.
+Catalog-metric signals belong to the project rather than to a scan and are never
+counted on a scan card; the **Anomalies** page and the sidebar badge are where
+those are reported.
 A burst of same-type items from one scan — for example the events a single scan
 implements, which all share the scan's timestamp — collapses into one summary
 row ("N events implemented") that expands on click to reveal the individual

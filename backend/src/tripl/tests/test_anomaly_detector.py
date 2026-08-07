@@ -7,6 +7,7 @@ from tripl.core.analyzers import anomaly_detector
 from tripl.core.analyzers.anomaly_detector import (
     AnomalyDetectionSettings,
     DetectedAnomaly,
+    DetectionResult,
     SeriesPoint,
     _detect_trend_shift,
     _fit_components,
@@ -51,7 +52,7 @@ def test_detect_anomalies_returns_empty_for_stable_series() -> None:
         evaluation_start=_bucket(7),
         evaluation_end=_bucket(10),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     assert anomalies == []
 
@@ -65,7 +66,7 @@ def test_detect_anomalies_detects_spike_and_drop() -> None:
         evaluation_start=_bucket(10),
         evaluation_end=_bucket(11),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     drop_points = [SeriesPoint(bucket=_bucket(hour), count=10) for hour in range(10)]
     drop_points.append(SeriesPoint(bucket=_bucket(10), count=0))
@@ -75,7 +76,7 @@ def test_detect_anomalies_detects_spike_and_drop() -> None:
         evaluation_start=_bucket(10),
         evaluation_end=_bucket(11),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     assert [anomaly.direction for anomaly in spike_anomalies] == ["spike"]
     assert [anomaly.direction for anomaly in drop_anomalies] == ["drop"]
@@ -96,7 +97,7 @@ def test_detect_anomalies_uses_effective_stddev_for_flat_baseline() -> None:
         evaluation_start=_bucket(8),
         evaluation_end=_bucket(9),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     assert len(anomalies) == 1
     assert anomalies[0].stddev == 0  # raw scale of a perfectly flat baseline
@@ -120,7 +121,7 @@ def test_detect_anomalies_poisson_floor_ignores_low_volume_noise() -> None:
         evaluation_start=_bucket(10),
         evaluation_end=_bucket(11),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     assert anomalies == []
 
@@ -145,7 +146,7 @@ def test_detect_anomalies_detects_fractional_spike_without_zero_fill() -> None:
         evaluation_end=_bucket(11),
         settings=fractional_settings,
         fill_gaps=False,
-    )
+    ).anomalies
 
     assert [anomaly.direction for anomaly in anomalies] == ["spike"]
     assert anomalies[0].actual_count == 0.9
@@ -170,7 +171,7 @@ def test_detect_anomalies_fractional_noise_stays_quiet() -> None:
         evaluation_end=_bucket(11),
         settings=fractional_settings,
         fill_gaps=False,
-    )
+    ).anomalies
 
     assert anomalies == []
 
@@ -185,7 +186,7 @@ def test_detect_anomalies_respects_min_history_gate() -> None:
         evaluation_start=_bucket(6),
         evaluation_end=_bucket(7),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     assert anomalies == []
 
@@ -206,7 +207,7 @@ def test_detect_anomalies_respects_min_expected_count_gate() -> None:
         evaluation_start=_bucket(8),
         evaluation_end=_bucket(9),
         settings=low_settings,
-    )
+    ).anomalies
 
     assert anomalies == []
 
@@ -244,7 +245,7 @@ def test_sub_threshold_series_early_exits_without_stl_fit(
         evaluation_start=_bucket(399),
         evaluation_end=_bucket(400),
         settings=high_settings,
-    )
+    ).anomalies
 
     assert anomalies == []
 
@@ -262,7 +263,7 @@ def test_max_count_at_threshold_is_not_early_exited() -> None:
         evaluation_start=_bucket(10),
         evaluation_end=_bucket(11),
         settings=SETTINGS,  # min_expected_count=10 == max(counts)
-    )
+    ).anomalies
 
     assert [anomaly.direction for anomaly in anomalies] == ["drop"]
 
@@ -319,7 +320,7 @@ def test_detect_anomalies_zero_fills_gaps_after_first_seen_bucket() -> None:
         evaluation_start=_bucket(8),
         evaluation_end=_bucket(9),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     assert len(anomalies) == 1
     assert anomalies[0].bucket == _bucket(8)
@@ -339,7 +340,7 @@ def test_detect_anomalies_respects_repeating_daily_pattern_with_stl() -> None:
         evaluation_start=_bucket(24 * 10 - 1),
         evaluation_end=_bucket(24 * 10),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     assert anomalies == []
 
@@ -358,7 +359,7 @@ def test_detect_anomalies_detects_spike_on_top_of_repeating_daily_pattern() -> N
         evaluation_start=_bucket(anomaly_hour),
         evaluation_end=_bucket(24 * 10),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     spike_anomaly = next(
         anomaly for anomaly in anomalies if anomaly.bucket == _bucket(anomaly_hour)
@@ -381,7 +382,7 @@ def test_detect_anomalies_skips_micro_deviation_on_high_volume_flat_baseline() -
         evaluation_start=_bucket(10),
         evaluation_end=_bucket(11),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     assert anomalies == []
 
@@ -398,7 +399,7 @@ def test_detect_anomalies_still_flags_meaningful_high_volume_change() -> None:
         evaluation_start=_bucket(10),
         evaluation_end=_bucket(11),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     assert len(anomalies) == 1
     assert anomalies[0].direction == "spike"
@@ -419,7 +420,7 @@ def test_detect_anomalies_detects_sustained_growth_on_top_of_daily_pattern() -> 
         evaluation_start=_bucket(24 * 10 - 24),
         evaluation_end=_bucket(24 * 10),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     anomaly_buckets = {anomaly.bucket for anomaly in anomalies}
     assert _bucket(growth_hours[-1]) in anomaly_buckets
@@ -507,7 +508,7 @@ def test_phase_baseline_no_false_positive_on_recurring_seasonal_trough() -> None
         evaluation_start=_bucket(24 * 28 - 24),
         evaluation_end=_bucket(24 * 28),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     assert anomalies == []
 
@@ -525,7 +526,7 @@ def test_phase_baseline_catches_real_drop_at_trough() -> None:
         evaluation_start=_bucket(trough_hour),
         evaluation_end=_bucket(24 * 28),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     drop = next(anomaly for anomaly in anomalies if anomaly.bucket == _bucket(trough_hour))
     assert drop.direction == "drop"
@@ -544,7 +545,7 @@ def test_phase_baseline_catches_spike_at_peak() -> None:
         evaluation_start=_bucket(peak_hour),
         evaluation_end=_bucket(24 * 28),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     spike = next(anomaly for anomaly in anomalies if anomaly.bucket == _bucket(peak_hour))
     assert spike.direction == "spike"
@@ -573,7 +574,7 @@ def test_hybrid_detects_sustained_level_shift_on_seasonal_series() -> None:
         evaluation_start=_bucket(shift_start),
         evaluation_end=_bucket(24 * 28),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     assert any(anomaly.direction == "spike" for anomaly in anomalies)
 
@@ -597,7 +598,7 @@ def test_phase_baseline_relevels_sustained_shift_instead_of_flagging_every_bucke
         evaluation_start=_bucket(24 * 28 - 24),  # the whole last day
         evaluation_end=_bucket(24 * 28),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     assert anomalies == []
 
@@ -617,7 +618,7 @@ def test_phase_baseline_poisson_floor_ignores_low_count_wobble() -> None:
         evaluation_start=_bucket(last),
         evaluation_end=_bucket(24 * 28),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     assert anomalies == []
 
@@ -637,7 +638,7 @@ def test_covered_buckets_gap_is_not_flagged_as_drop() -> None:
         evaluation_end=_bucket(9),
         settings=SETTINGS,
         covered_buckets=covered,
-    )
+    ).anomalies
 
     assert anomalies == []
 
@@ -654,7 +655,7 @@ def test_covered_buckets_none_is_byte_identical_zero_fill() -> None:
         evaluation_end=_bucket(9),
         settings=SETTINGS,
         covered_buckets=None,
-    )
+    ).anomalies
 
     assert len(anomalies) == 1
     assert anomalies[0].direction == "drop"
@@ -675,7 +676,7 @@ def test_covered_buckets_still_flags_real_change_in_covered_bucket() -> None:
         evaluation_end=_bucket(11),
         settings=SETTINGS,
         covered_buckets=covered,
-    )
+    ).anomalies
 
     assert [anomaly.direction for anomaly in anomalies] == ["spike"]
 
@@ -710,7 +711,7 @@ def test_effective_stddev_and_kind_populated_on_every_path() -> None:
         evaluation_start=_bucket(10),
         evaluation_end=_bucket(11),
         settings=SETTINGS,
-    )
+    ).anomalies
     assert rolling[0].kind == "rolling"
     assert rolling[0].effective_stddev > 0
     # z-score is recomputable from the surfaced effective_stddev.
@@ -728,7 +729,7 @@ def test_effective_stddev_and_kind_populated_on_every_path() -> None:
         evaluation_start=_bucket(peak_hour),
         evaluation_end=_bucket(24 * 28),
         settings=SETTINGS,
-    )
+    ).anomalies
     spike = next(anomaly for anomaly in phase if anomaly.bucket == _bucket(peak_hour))
     assert spike.kind in allowed_kinds
     assert spike.effective_stddev > 0
@@ -757,7 +758,7 @@ def test_trend_shift_ignores_smooth_few_percent_daily_sinusoid() -> None:
         evaluation_start=_bucket(hours - 24),  # evaluate the whole last day
         evaluation_end=_bucket(hours),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     assert anomalies == []
 
@@ -807,7 +808,7 @@ def test_trend_shift_still_flags_sharp_spike_via_phase_detector() -> None:
         evaluation_start=_bucket(peak_hour),
         evaluation_end=_bucket(24 * 28),
         settings=SETTINGS,
-    )
+    ).anomalies
 
     spike = next(anomaly for anomaly in anomalies if anomaly.bucket == _bucket(peak_hour))
     assert spike.direction == "spike"
@@ -888,7 +889,7 @@ def test_settling_allowance_suppresses_drop_on_still_filling_newest_bucket() -> 
         evaluation_end=_bucket(hours),
         settings=SETTINGS,
         settling_buckets=0,
-    )
+    ).anomalies
     settled = detect_anomalies(
         points,
         interval=timedelta(hours=1),
@@ -896,7 +897,7 @@ def test_settling_allowance_suppresses_drop_on_still_filling_newest_bucket() -> 
         evaluation_end=_bucket(hours),
         settings=SETTINGS,
         settling_buckets=1,
-    )
+    ).anomalies
 
     assert [anomaly.direction for anomaly in unsettled] == ["drop"]  # today's behavior
     assert settled == []  # the still-filling bucket is scored by a later scan
@@ -918,7 +919,7 @@ def test_settling_allowance_keeps_the_series_complete() -> None:
         evaluation_end=_bucket(hours),
         settings=SETTINGS,
         settling_buckets=0,
-    )
+    ).anomalies
     with_allowance = detect_anomalies(
         points,
         interval=timedelta(hours=1),
@@ -926,7 +927,7 @@ def test_settling_allowance_keeps_the_series_complete() -> None:
         evaluation_end=_bucket(hours),
         settings=SETTINGS,
         settling_buckets=1,
-    )
+    ).anomalies
 
     older = next(anomaly for anomaly in without if anomaly.bucket == _bucket(broken))
     still_older = next(anomaly for anomaly in with_allowance if anomaly.bucket == _bucket(broken))
@@ -960,8 +961,8 @@ def test_settling_allowance_holds_back_newest_present_fractional_bucket() -> Non
         "settings": fractional_settings,
         "fill_gaps": False,
     }
-    unsettled = detect_anomalies(points, settling_buckets=0, **kwargs)
-    settled = detect_anomalies(points, settling_buckets=1, **kwargs)
+    unsettled = detect_anomalies(points, settling_buckets=0, **kwargs).anomalies
+    settled = detect_anomalies(points, settling_buckets=1, **kwargs).anomalies
 
     assert [anomaly.direction for anomaly in unsettled] == ["drop"]
     assert settled == []
@@ -1005,7 +1006,7 @@ def _simulate_hourly_scans(
             evaluation_start=evaluation_start,
             evaluation_end=evaluation_end,
             settings=SETTINGS,
-        )
+        ).anomalies
         persisted = {
             bucket: anomaly
             for bucket, anomaly in persisted.items()
@@ -1056,12 +1057,15 @@ def test_phase_expectation_relevels_within_one_short_cycle() -> None:
     ]
     interval = timedelta(hours=1)
 
+    slots = list(range(len(counts)))  # contiguous grid: slot == list index
+
     def phase_at(offset: int, *, level_window: int | None = None) -> DetectedAnomaly | None:
         idx = shift_hour + offset
-        period = _select_phase_period(interval, idx)
+        period = _select_phase_period(interval, slots[idx])
         assert period == 24 * 7  # the hour-of-week baseline is what regressed
         return _phase_anomaly_at(
             counts,
+            slots,
             idx,
             SeriesPoint(bucket=_bucket(idx), count=counts[idx]),
             period,
@@ -1112,7 +1116,7 @@ def test_trend_rows_never_report_expectation_below_the_volume_gate() -> None:
             evaluation_start=start + timedelta(hours=24 * (shift_day - 1)),
             evaluation_end=start + timedelta(hours=24 * 30),
             settings=settings,
-        )
+        ).anomalies
 
         assert any(anomaly.kind == "trend" for anomaly in anomalies)
         assert all(anomaly.expected_count >= settings.min_expected_count for anomaly in anomalies)
@@ -1191,6 +1195,253 @@ def test_flat_series_decomposition_matches_the_fitted_one() -> None:
                 min_expected_count=0,
             ),
             fill_gaps=False,
-        )
+        ).anomalies
         == []
     )
+
+
+# --------------------------------------------------------------------------
+# Phase is a position on the time grid, not a position in the list
+# --------------------------------------------------------------------------
+
+
+def test_uncovered_bucket_does_not_rotate_the_seasonal_phase() -> None:
+    """A single missing collection must not change the verdict on a clean series.
+
+    ``expand_series`` drops a bucket the scan never covered, so every later
+    bucket moves one position down the list. Selecting same-phase partners by
+    list position then compares 17:00 against the previous day's 16:00, and the
+    seasonal step between the two hours is scored as a real event. On windy-ios
+    with the live settings, deleting one bucket turned 0 anomalies into 2 spikes
+    (08-02 05:00 z=+4.7, 08-03 05:00 z=+4.3); on this series it produced a
+    z=+35 spike at 09:00 plus three drops at the other shape boundaries.
+    """
+    hours = 24 * 28
+    hole = 24 * 26 + 17  # inside the last three days, so partners straddle it
+    points = [point for point in _four_weeks() if point.bucket != _bucket(hole)]
+    covered = {_bucket(hour) for hour in range(hours) if hour != hole}
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(hours - 24),  # the whole last day
+        evaluation_end=_bucket(hours),
+        settings=SETTINGS,
+        covered_buckets=covered,
+    ).anomalies
+
+    assert anomalies == []
+
+    # ...and the quiet is not bought by going blind: with the same hole present,
+    # a 4x spike at the daily peak is still flagged.
+    peak_hour = hours - 14  # 10:00 on the last day, normally the daily peak
+    spiked = [
+        SeriesPoint(
+            bucket=_bucket(hour),
+            count=_weekly_pattern_count(hour) * (4 if hour == peak_hour else 1),
+        )
+        for hour in range(hours)
+        if hour != hole
+    ]
+
+    spike_anomalies = detect_anomalies(
+        spiked,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(peak_hour),
+        evaluation_end=_bucket(peak_hour + 1),
+        settings=SETTINGS,
+        covered_buckets=covered,
+    ).anomalies
+
+    assert [anomaly.direction for anomaly in spike_anomalies] == ["spike"]
+
+
+# --------------------------------------------------------------------------
+# A silent scope announces once (tripl-l429.13)
+# --------------------------------------------------------------------------
+
+
+def _business_hours_count(hour: int) -> float:
+    """Emits only during the working day, so its own baseline is full of zeros.
+
+    This is the shape that makes "anchor on the first empty bucket" wrong: the
+    run of empty buckets opens on an ordinary evening zero, which is never
+    anomalous, so anchoring there drops every anomalous bucket in the run and
+    the event dies in silence.
+    """
+    return 60.0 if 9 <= hour % 24 < 18 else 0.0
+
+
+_DEATH_HOUR = 24 * 28
+
+
+def _dying_business_hours_series(horizon: int) -> list[SeriesPoint]:
+    return [
+        SeriesPoint(
+            bucket=_bucket(hour),
+            count=0.0 if hour >= _DEATH_HOUR else _business_hours_count(hour),
+        )
+        for hour in range(horizon)
+    ]
+
+
+def _scan(points: list[SeriesPoint], *, start: int, end: int) -> list[DetectedAnomaly]:
+    return detect_anomalies(
+        points[:end],
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(start),
+        evaluation_end=_bucket(end),
+        settings=SETTINGS,
+    ).anomalies
+
+
+def test_a_business_hours_event_that_dies_is_announced_once() -> None:
+    horizon = _DEATH_HOUR + 24 * 3
+    anomalies = _scan(_dying_business_hours_series(horizon), start=_DEATH_HOUR, end=horizon)
+
+    # One row for three days of silence, and it lands on a WORKING hour — the
+    # bucket where the scope stopped doing what it normally does, not the
+    # midnight zero that merely happens to open the run.
+    assert len(anomalies) == 1
+    assert anomalies[0].direction == "drop"
+    assert 9 <= anomalies[0].bucket.hour < 18
+
+
+def test_the_outage_announcement_does_not_move_with_the_evaluation_window() -> None:
+    """The property an anomaly-derived anchor cannot have.
+
+    Each collection re-evaluates a trailing window that slides forward one
+    bucket at a time, and ``_replace_scope_anomalies`` only rewrites rows inside
+    it. An anchor chosen from the anomalies of the current pass therefore moves
+    with the window: the previous announcement sits outside the rewritten range
+    and survives, a new one is written at the window's first anomalous bucket,
+    and the outage accumulates a row per scan — the same pile-up the collapse
+    exists to remove. Deriving the anchor from the series makes it stable.
+    """
+    horizon = _DEATH_HOUR + 24 * 4
+    points = _dying_business_hours_series(horizon)
+
+    first = _scan(points, start=_DEATH_HOUR, end=_DEATH_HOUR + 24 * 3)
+    assert len(first) == 1
+    anchor = first[0].bucket
+
+    # A later scan whose window starts AFTER the anchor must find nothing to
+    # announce; the row already on record is the announcement.
+    later = _scan(points, start=_DEATH_HOUR + 24, end=horizon)
+    assert later == []
+
+    # And a scan that still contains the anchor reports the same bucket, not a
+    # fresh one nearer the window's start.
+    overlapping = _scan(points, start=_DEATH_HOUR, end=horizon)
+    assert [a.bucket for a in overlapping] == [anchor]
+
+
+# --------------------------------------------------------------------------
+# A run this pass declines to announce is reported, not silently dropped
+# (tripl-l429.16)
+# --------------------------------------------------------------------------
+
+# Production geometry. What matters is that ``min_expected_count`` sits ABOVE the
+# scope's own small-hours volume: the anchor's phase then cannot clear any
+# emission gate, so the announcement is forced downstream of the anchor.
+_QUIET_PHASE_SETTINGS = AnomalyDetectionSettings(
+    baseline_window_buckets=14,
+    min_history_buckets=7,
+    sigma_threshold=4.0,
+    min_expected_count=50,
+)
+_QUIET_NIGHT_DEATH_HOUR = 24 * 28 + 2  # 02:00, the first hour of the thin trickle
+
+
+def _quiet_night_count(hour: int) -> float:
+    """Dead 00:00-02:00, a thin ~20/h trickle 02:00-06:00, then ~500/h all day."""
+    hour_of_day = hour % 24
+    if hour_of_day < 2:
+        return 0.0
+    if hour_of_day < 6:
+        return 20.0
+    return 500.0
+
+
+def _dying_quiet_night_series(horizon: int) -> list[SeriesPoint]:
+    return [
+        SeriesPoint(
+            bucket=_bucket(hour),
+            count=0.0 if hour >= _QUIET_NIGHT_DEATH_HOUR else _quiet_night_count(hour),
+        )
+        for hour in range(horizon)
+    ]
+
+
+def test_an_outage_skipped_by_this_window_is_reported_as_a_suppressed_range() -> None:
+    """Declining to announce must be distinguishable from finding nothing.
+
+    The run is gated on its ANCHOR but announced at the first FLAGGED bucket at or
+    after it. Here the anchor's own phase expects ~20 events against a
+    ``min_expected_count`` of 50, so no path may flag it and the announcement lands
+    hours downstream. Once the window has advanced past the anchor the pass emits
+    nothing at all — while the announced row is still inside the window a caller
+    would clear. An empty anomaly list alone is indistinguishable from "this window
+    is clean", so the run comes back as a ``SuppressedRange``: the caller's cue to
+    leave those buckets exactly as it found them.
+    """
+    horizon = _QUIET_NIGHT_DEATH_HOUR + 24
+    points = _dying_quiet_night_series(horizon)
+    anchor = _bucket(_QUIET_NIGHT_DEATH_HOUR)
+
+    def scan(start_hour: int) -> DetectionResult:
+        return detect_anomalies(
+            points,
+            interval=timedelta(hours=1),
+            evaluation_start=_bucket(start_hour),
+            evaluation_end=_bucket(horizon),
+            settings=_QUIET_PHASE_SETTINGS,
+        )
+
+    announcing = scan(_QUIET_NIGHT_DEATH_HOUR)
+    assert len(announcing.anomalies) == 1
+    announced = announcing.anomalies[0].bucket
+    # Strictly LATER than the anchor — the premise of the whole defect.
+    assert announced > anchor
+    # The pass that owns the announcement suppresses nothing: it is writing the row
+    # itself, so the caller must be free to rewrite the window normally.
+    assert announcing.suppressed_ranges == ()
+
+    # Every window position from the bucket after the anchor through the one after
+    # the announcement: nothing is emitted, and the announced bucket is covered.
+    for start_hour in range(_QUIET_NIGHT_DEATH_HOUR + 1, _QUIET_NIGHT_DEATH_HOUR + 9):
+        result = scan(start_hour)
+        assert result.anomalies == []
+        assert any(
+            suppressed.start <= announced < suppressed.end
+            for suppressed in result.suppressed_ranges
+        ), f"the announced bucket is unprotected when the window starts at hour {start_hour}"
+
+
+def test_a_revived_scope_that_dies_again_is_announced_again() -> None:
+    """Two outages are two incidents, however close together."""
+    revival_hour = _DEATH_HOUR + 24
+    second_death_hour = revival_hour + 24
+    horizon = second_death_hour + 24 * 2
+    points = [
+        SeriesPoint(
+            bucket=_bucket(hour),
+            count=(
+                _business_hours_count(hour)
+                if hour < _DEATH_HOUR or revival_hour <= hour < second_death_hour
+                else 0.0
+            ),
+        )
+        for hour in range(horizon)
+    ]
+
+    anomalies = _scan(points, start=_DEATH_HOUR, end=horizon)
+
+    # One drop per outage. The revival also scores — a day of silence pulls the
+    # same-phase medians down, so the restored traffic reads as a spike — and
+    # those buckets carry a real count, sit in no run of empty buckets, and are
+    # deliberately left alone: this collapses outages, not everything near one.
+    outages = [anomaly for anomaly in anomalies if anomaly.direction == "drop"]
+    assert len(outages) == 2
+    assert outages[0].bucket < _bucket(revival_hour) <= outages[1].bucket
+    assert all(anomaly.actual_count > 0 for anomaly in anomalies if anomaly.direction != "drop")
