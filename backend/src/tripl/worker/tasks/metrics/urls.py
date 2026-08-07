@@ -9,10 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tripl.alerting_matching import (
-    SCOPE_DISTRIBUTION_DRIFT,
     SCOPE_METRIC,
     SCOPE_RELEASE_REGRESSION,
-    SCOPE_VARIABLE_VALUE_DRIFT,
 )
 from tripl.core.analyzers.anomaly_detector import (
     SCOPE_EVENT,
@@ -22,34 +20,7 @@ from tripl.core.analyzers.anomaly_detector import (
 from tripl.models.project import Project
 from tripl.services import app_settings_service
 
-from ._helpers import SCOPE_SCHEMA_DRIFT
-
-# Scopes that describe a slice of a scan rather than one catalog entity, so no
-# entity-level monitoring page can show them. This is the backend half of a
-# decision the frontend already made: ``getMonitoringPath``
-# (frontend/src/lib/monitoring.ts) THROWS for exactly these rather than fall
-# through to the event route, because "routing them to the event URL (the
-# previous silent default) mis-renders an unrelated event".
-#
-# The fallthrough below used to be that silent default. For a release
-# regression it emitted the event's own monitoring page, which charts ALL
-# versions over the chart's own range against the seasonal baseline — a
-# different numerator, denominator, window AND estimator than the alert's
-# release-cohort comparison, so it cannot corroborate the alert even in
-# principle. For an event-TYPE-scoped release regression it was worse: the
-# scope_ref is an event_type_id, so the fallthrough emitted
-# ``/monitoring/event/{event_type_id}`` — a valid-looking URL for a page that
-# does not exist. Same reasoning already killed the sparkline on these items.
-_SCOPES_WITHOUT_MONITORING_PAGE = frozenset(
-    {
-        SCOPE_SCHEMA_DRIFT,
-        SCOPE_DISTRIBUTION_DRIFT,
-        SCOPE_RELEASE_REGRESSION,
-        SCOPE_VARIABLE_VALUE_DRIFT,
-    }
-)
-
-# ...and of those, the one with nowhere else to go at all.
+# The one scope with nowhere else to go at all.
 #
 # The audit row renders a fixed 8 columns — Grp / Scope / Direction / Actual /
 # Expected / Abs delta / % delta / Link (frontend AlertDeliveryRow.tsx) — and
@@ -92,10 +63,30 @@ def _build_monitoring_url(
         return f"{base}/p/{project_slug}/monitoring/metric/{scope_ref}"
     if scope_type == SCOPE_EVENT:
         return f"{base}/p/{project_slug}/monitoring/event/{scope_ref}"
-    # Every scope is now named, including the ones that get None. An unknown
-    # scope gets no link rather than a guessed one: this function's whole
-    # history of defects is a fallthrough emitting a plausible URL for a page
-    # that shows something else.
+    # Everything else — schema drift, distribution drift, release regression,
+    # variable-value drift — describes a SLICE of a scan rather than one catalog
+    # entity, so no entity-level monitoring page can show it. They get no link
+    # rather than a guessed one, which is the backend half of a decision the
+    # frontend had already made on its own: ``getMonitoringPath``
+    # (frontend/src/lib/monitoring.ts) THROWS for exactly these rather than fall
+    # through to the event route, because "routing them to the event URL (the
+    # previous silent default) mis-renders an unrelated event".
+    #
+    # This return used to BE that silent default, and it is this function's
+    # whole history of defects. For a release regression it emitted the event's
+    # own monitoring page, which charts ALL versions over the chart's own range
+    # against the seasonal baseline — a different numerator, denominator, window
+    # AND estimator than the alert's release-cohort comparison, so it could not
+    # corroborate the alert even in principle. For an event-TYPE-scoped release
+    # regression it was worse: scope_ref is an event_type_id, so it emitted
+    # ``/monitoring/event/{event_type_id}`` — a valid-looking URL for a page that
+    # does not exist. The same reasoning had already killed the sparkline on
+    # these items; nobody had applied it here.
+    #
+    # So: name every scope above, and let an unknown one fall to None. The set
+    # that used to be written out here as a constant is deliberately gone — it
+    # was never read, and a list that has to be kept in step with the branches
+    # above is one more thing that can drift out of step with them.
     return None
 
 
