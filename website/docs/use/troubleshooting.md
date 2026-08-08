@@ -231,7 +231,7 @@ a real answer, not a broken panel. Five causes, in the order worth checking:
    scan only uses columns that event type already declares; the rest are listed
    as **unmapped** and are skipped by a real run too. Columns filling a reserved
    role (event type, time, app version, platform, or an event-group-rule column)
-   are listed as **reserved**: they are collected as metric dimensions, never as
+   are listed as **reserved**: tripl already uses these, so they never become
    event fields, and their absence from the plan is intentional.
 
 If the events list is present but prefixed with **at least**, nothing is wrong —
@@ -600,12 +600,14 @@ Nothing was removed; it is one click further down.
 **The run says it raised 2 signals but Anomalies shows a different number. Which
 is wrong?**
 Neither. *Raised N anomaly signals* is that run's **delta** — what this run
-added. The **Anomalies** page counts what is **open now** across the project:
-signals from earlier runs that have not aged out, signals from other scans, and
+added. The **Anomalies** page counts what is **open now**: signals from earlier
+runs that have not closed, and — unfiltered — signals from other scans and
 catalog-metric signals that belong to the project rather than to any scan. Two
-different questions, two legitimately different answers. The run report says so
-in a line under the count, and the activity feed's "N new signals" on a scan
-card is the same delta. Do not expect the two numbers to agree.
+different questions, two legitimately different answers. Where the two disagree
+the run report prints the scan's current count under the sentence (*5 signals
+from this scan are open now*), so you are not left comparing a number here
+against a number on another page. The activity feed's "N new signals" on a scan
+card is the same delta.
 
 **Two runs both say "Rows read" but the numbers look unrelated.**
 Because they count different populations. A catalog run reports the rows the
@@ -631,14 +633,17 @@ run, and click **Signals added** — it opens Anomalies filtered to that scan
 (`/p/<slug>/anomalies?scan=<scan-config-id>`). On a busy project one large scan
 can supply most of the page, so per-scan is often the only readable view. If the
 counter reads `0` it is not a link: that run raised nothing, which is itself the
-answer.
+answer. If the link opens on *No open anomalies from &lt;scan&gt;*, the signals
+that run raised have closed since — the scan stays selected so you can see that
+is what happened, and **Show all scans** widens the view.
 
 Also check the scan's mode. **Catalog only** scans record no metric points, so
 they raise no anomalies by design — the scan's own page says so in one line under
 its name, and its row carries a **Catalog only** badge. A scan badged **Needs a
 time column** has a schedule but no time column, so the scheduler never runs it
-and it collects no metrics — manual runs still ingest events, which is why that
-scan can have green runs and no anomalies at the same time.
+and it collects no metric points — runs you start by hand still add events to
+your plan, which is why that scan can have green runs and no anomalies at the
+same time.
 
 **A scan failed with a generic "internal error" — where's the real reason?**
 User-facing fields are sanitized to avoid leaking host/port/driver details. The

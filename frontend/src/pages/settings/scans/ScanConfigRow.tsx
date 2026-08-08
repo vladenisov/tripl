@@ -42,8 +42,12 @@ export function RunStatusPill({ status, title }: { status: RunPillStatus; title?
  * What this scan actually does, derived from the two columns the dispatcher
  * filters on. It leads every badge strip because a config that collects nothing
  * used to look identical to one that collects everything (tripl-3y7z.1).
+ *
+ * Module-private on purpose: `ScanBadges` already renders it, and `ScanBadges`
+ * IS the public entry point. An outside caller reaching for the badge directly
+ * would mount it beside the strip that already contains it.
  */
-export function ScanModeBadge({ sc }: { sc: ScanConfig }) {
+function ScanModeBadge({ sc }: { sc: ScanConfig }) {
   const { label, tone, title } = SCAN_MODE_BADGE[scanModeOf(sc)]
   return (
     <Chip size="xs" tone={tone} title={title}>

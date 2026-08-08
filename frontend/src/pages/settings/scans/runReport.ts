@@ -11,9 +11,9 @@ import { jobMetricPoints, jobRowsScanned } from './scanUtils'
  * shared one label. A table header cannot vary per row, so the distinction is
  * carried in a per-cell title instead.
  */
-export type RunRowsKind = 'catalog' | 'metrics'
+type RunRowsKind = 'catalog' | 'metrics'
 
-export const ROWS_READ_TITLE: Record<RunRowsKind, string> = {
+const ROWS_READ_TITLE: Record<RunRowsKind, string> = {
   catalog: 'Warehouse rows the catalog analyzer read this run (capped by the row cap).',
   metrics: 'Warehouse rows read across every metrics chunk (capped by the metrics row cap).',
 }
@@ -23,7 +23,7 @@ export const ROWS_READ_TITLE: Record<RunRowsKind, string> = {
  * run reported neither. The precedence MUST match `jobRowsScanned`, or a cell
  * would be labelled as the population it is not.
  */
-export function jobRowsKind(job: ScanJob | null): RunRowsKind | null {
+function jobRowsKind(job: ScanJob | null): RunRowsKind | null {
   const summary = job?.result_summary
   if (!summary) return null
   if (summary.query_rows_scanned != null) return 'metrics'
@@ -54,21 +54,30 @@ export interface RunReportLine {
 
 /**
  * `signals_added` is this RUN's delta — the scan's open signals after the run
- * minus before it. The Anomalies page counts what is OPEN NOW across the whole
- * project. They are different questions with legitimately different answers, and
- * readers have taken the pair for a contradiction (tripl-jfm3.27). The rule was
- * written down in `activity_service._scan_job_detail` and in feature-reference,
- * and stated nowhere a user could see it.
+ * minus before it. The Anomalies page the sentence links to counts what is OPEN
+ * NOW for the scan. They are different questions with legitimately different
+ * answers, and readers have taken the pair for a contradiction (tripl-jfm3.27).
+ *
+ * The first attempt at saying so was a 20-word disclaimer under every run that
+ * raised anything, asserting as fact that "the two numbers differ" — which is
+ * false the moment a fresh signal is the scan's only open one, and a permanent
+ * paragraph explaining a mechanism is not what a run report is for. So: state
+ * the other number instead of explaining that another number exists, and only
+ * when it is genuinely a different number.
  */
-export const RUN_VS_OPEN_SIGNALS_HINT =
-  'Signals this run raised. The Anomalies page counts what is open now, so the two numbers differ — both are correct.'
+function openSignalsLine(openSignals: number): string {
+  if (openSignals === 0) return 'None from this scan are open now.'
+  return openSignals === 1
+    ? '1 signal from this scan is open now.'
+    : `${openSignals.toLocaleString()} signals from this scan are open now.`
+}
 
 /**
  * A scan with no schedule collects no metric points, so it can raise no signal
  * and send no alert. Said out loud, once, on the run that proves it: a green run
  * that produced nothing downstream otherwise reads as a silent failure.
  */
-export const CATALOG_ONLY_RUN_LINE =
+const CATALOG_ONLY_RUN_LINE =
   'Catalog-only scan — no metric points, so no signals and no alerts.'
 
 /**
@@ -110,7 +119,16 @@ function chunksRead(summary: ScanJobResultSummary): number | null {
  * The eight raw counters are NOT replaced by this — `JobDetails` keeps every one
  * of them, verbatim, behind a disclosure. This is what leads.
  */
-export function buildRunReport(job: ScanJob | null, mode: ScanMode): RunReportLine[] {
+export function buildRunReport(
+  job: ScanJob | null,
+  mode: ScanMode,
+  /**
+   * Signals from this scan that are open right now, or null when that is not
+   * known yet. Only ever used to put the current number next to this run's
+   * delta when the two disagree.
+   */
+  openSignals: number | null = null,
+): RunReportLine[] {
   const summary = job?.result_summary
   if (!summary) return []
 
@@ -187,7 +205,10 @@ export function buildRunReport(job: ScanJob | null, mode: ScanMode): RunReportLi
     lines.push({
       id: 'signals-added',
       text: `Raised ${count(signalsAdded, 'anomaly signal', 'anomaly signals')}.`,
-      hint: RUN_VS_OPEN_SIGNALS_HINT,
+      hint:
+        openSignals != null && openSignals !== signalsAdded
+          ? openSignalsLine(openSignals)
+          : undefined,
       target: 'anomalies',
     })
   }

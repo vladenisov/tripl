@@ -516,6 +516,38 @@ describe('AnomaliesPage — scan facet', () => {
     expect(screen.queryByRole('radio', { name: /does-not-exist/ })).toBeNull()
   })
 
+  it('keeps a real ?scan= whose signals have all closed, and explains the empty page', async () => {
+    // "Raised 2 anomaly signals" on a run from last week links here; both have
+    // since closed. Silently widening to "all" answers a question the user did
+    // not ask — a full list of a DIFFERENT scan's anomalies, with no control
+    // showing that the filter was discarded (tripl-3y7z.2).
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({ scan_config_id: 'scan-legacy', scope_type: 'event', scope_ref: 'legacy-ev-0' }),
+    ])
+    vi.mocked(scansApi.list).mockResolvedValue(scans)
+    vi.mocked(eventsApi.list).mockResolvedValue(
+      makeEventList([{ id: 'legacy-ev-0', name: 'Legacy tap' }]),
+    )
+
+    renderAnomalies('/p/demo/anomalies?scan=scan-live')
+
+    // The scan the link named is still the selection, carrying an honest 0.
+    expect(
+      await screen.findByRole('radio', { name: 'Snowplow Events (iOS) 0' }),
+    ).toHaveAttribute('aria-checked', 'true')
+
+    // ...and the page says why it is empty rather than filling itself with the
+    // other scan's rows.
+    expect(
+      screen.getByText('No open anomalies from Snowplow Events (iOS)'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Spike on Event · Legacy tap')).not.toBeInTheDocument()
+
+    // The way out is one click, and it is labelled with what it will show.
+    fireEvent.click(screen.getByRole('button', { name: 'Show all scans (1)' }))
+    expect(await screen.findByText('Spike on Event · Legacy tap')).toBeInTheDocument()
+  })
+
   it('writes the facet selection back to ?scan= so the narrowed view is linkable', async () => {
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
     vi.mocked(scansApi.list).mockResolvedValue(scans)

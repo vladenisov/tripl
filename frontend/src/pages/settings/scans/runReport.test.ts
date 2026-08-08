@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ScanJob, ScanJobResultSummary } from '@/types'
-import {
-  RUN_VS_OPEN_SIGNALS_HINT,
-  buildRunReport,
-  jobRowsKind,
-  type RunReportLine,
-} from './runReport'
+import { buildRunReport, jobRowsReadTitle, type RunReportLine } from './runReport'
 
 function job(summary: ScanJobResultSummary | null): ScanJob {
   return {
@@ -49,11 +44,14 @@ describe('buildRunReport — "Rows read" covers two populations', () => {
 
   it('labels the kind by the counter jobRowsScanned actually returns', () => {
     // jobRowsScanned prefers query_rows_scanned; the title must agree with it or
-    // a metrics run would be described under the catalog cap.
-    expect(jobRowsKind(job({ query_rows_scanned: 5, scan_rows_processed: 900 }))).toBe('metrics')
-    expect(jobRowsKind(job({ scan_rows_processed: 900 }))).toBe('catalog')
-    expect(jobRowsKind(job({}))).toBeNull()
-    expect(jobRowsKind(job(null))).toBeNull()
+    // a metrics run would be described under the catalog cap. Asserted through
+    // the title the user actually reads — the classifier behind it is module
+    // business.
+    expect(jobRowsReadTitle(job({ query_rows_scanned: 5, scan_rows_processed: 900 })))
+      .toContain('every metrics chunk')
+    expect(jobRowsReadTitle(job({ scan_rows_processed: 900 }))).toContain('catalog analyzer')
+    expect(jobRowsReadTitle(job({}))).toBeUndefined()
+    expect(jobRowsReadTitle(job(null))).toBeUndefined()
   })
 
   it('names the chunks a replay read', () => {
@@ -156,22 +154,41 @@ describe('buildRunReport — the counters that read as bad news', () => {
 })
 
 describe('buildRunReport — what this run raised vs what is open now', () => {
-  it('says on screen that the two signal numbers answer different questions', () => {
-    // The activity feed reports this run's delta; the Anomalies page reports the
-    // project's open signals. Both are correct and they routinely disagree — a
-    // fact that lived in a backend comment and in feature-reference.md, and on
-    // no screen at all.
-    const lines = buildRunReport(job({ signals_added: 1, alerts_queued: 2 }), 'monitoring')
+  it('links the run delta out, and stays quiet when there is nothing to reconcile', () => {
+    // This run's delta and the scan's open count are different questions, and a
+    // run whose signal is the scan's only open one has the same answer to both.
+    // Nothing to reconcile, so nothing is said.
+    const lines = buildRunReport(job({ signals_added: 1, alerts_queued: 2 }), 'monitoring', 1)
 
     const signals = lineById(lines, 'signals-added')!
     expect(signals.text).toBe('Raised 1 anomaly signal.')
-    expect(signals.hint).toBe(RUN_VS_OPEN_SIGNALS_HINT)
-    expect(signals.hint).toMatch(/open now/)
     expect(signals.target).toBe('anomalies')
+    expect(signals.hint).toBeUndefined()
 
     const alerts = lineById(lines, 'alerts-queued')!
     expect(alerts.text).toBe('Queued 2 alerts.')
     expect(alerts.target).toBe('alerts')
+  })
+
+  it('names the open count only where it differs from the run delta', () => {
+    // The disclaimer this replaced was attached to EVERY run that raised
+    // anything and asserted as fact that "the two numbers differ". Naming the
+    // other number is shorter, true, and only printed when there IS another
+    // number to name.
+    const grew = buildRunReport(job({ signals_added: 2 }), 'monitoring', 5)
+    expect(lineById(grew, 'signals-added')!.hint).toBe('5 signals from this scan are open now.')
+
+    const one = buildRunReport(job({ signals_added: 2 }), 'monitoring', 1)
+    expect(lineById(one, 'signals-added')!.hint).toBe('1 signal from this scan is open now.')
+
+    // Everything this run raised has closed since — what a user reading an old
+    // run most often hits, and the case the link lands on empty.
+    const closed = buildRunReport(job({ signals_added: 2 }), 'monitoring', 0)
+    expect(lineById(closed, 'signals-added')!.hint).toBe('None from this scan are open now.')
+
+    // Not known yet (the query has not resolved): say nothing rather than guess.
+    const unknown = buildRunReport(job({ signals_added: 2 }), 'monitoring')
+    expect(lineById(unknown, 'signals-added')!.hint).toBeUndefined()
   })
 
   it('omits both when the run raised nothing — a zero is not a sentence', () => {

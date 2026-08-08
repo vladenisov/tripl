@@ -134,11 +134,18 @@ export const scansApi = {
 
   dryRun: async (slug: string, data: ScanDryRunRequest): Promise<ScanDryRunResponse> => {
     const job = await scansApi.startDryRun(slug, data)
+    // Both strings reach the user, under ScanPreviewPanel's "Could not work out
+    // what this scan would create". "Dry run" is the pipeline's name for this,
+    // not the product's: nothing on that panel ever says it — the button says
+    // Check, the wait says "Working out what this scan would create…", the
+    // answer says "Would create N events". These two were the only strings that
+    // named the mechanism at the user, and the failure line does not repeat the
+    // heading above it (tripl-3y7z.6).
     return pollJob(
       job,
       jobId => scansApi.getDryRunJob(slug, jobId),
-      'Dry run timed out',
-      'Dry run failed',
+      'Timed out working out what this scan would create.',
+      'The check stopped without saying why.',
     )
   },
 

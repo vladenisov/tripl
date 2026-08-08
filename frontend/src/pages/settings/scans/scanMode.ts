@@ -64,14 +64,16 @@ export const SCAN_MODE_BADGE: Record<ScanMode, { label: string; tone: ChipTone; 
   catalog: {
     label: 'Catalog only',
     tone: 'neutral',
-    title: 'Adds events to your plan. No metrics, no anomalies, no alerts.',
+    title: 'Adds events and fields to your tracking plan. No metric points, no anomalies,'
+      + ' no alerts.',
   },
   misconfigured: {
     label: 'Needs a time column',
     tone: 'warning',
     title:
       'This scan has a schedule but no time column, so the scheduler never runs it and it'
-      + ' collects no metrics. Manual runs still ingest events. Add a time column to fix it.',
+      + ' collects no metric points. Runs you start by hand still add events to your plan.'
+      + ' Add a time column to fix it.',
   },
 }
 
@@ -87,5 +89,5 @@ export const SCAN_MODE_BADGE: Record<ScanMode, { label: string; tone: ChipTone; 
 export const SCAN_MODE_DETAIL_LABEL: Record<ScanMode, string> = {
   monitoring: 'Catalog + monitoring',
   catalog: 'Catalog only',
-  misconfigured: 'Never scheduled — schedule set but no time column',
+  misconfigured: 'Never runs on its schedule — schedule set but no time column',
 }

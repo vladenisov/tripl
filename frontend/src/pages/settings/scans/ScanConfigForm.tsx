@@ -224,8 +224,8 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
       {/* "…to ingest events and roll up metrics" promised monitoring before the
           user had chosen it, and read as a contradiction with Catalog only two
           lines below. What the scan does is now the first question, and the note
-          under the radio answers it — this line only says what you are pointing
-          at what. */}
+          under the radio answers it, so this line only has to say what you are
+          pointing at what. */}
       <p className="mb-[18px] text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
         Point a warehouse query at tripl, and choose what it does with the rows.
       </p>

@@ -4,6 +4,7 @@ import { Card } from '@/components/ui/card'
 import type { ScanJob } from '@/types'
 import { formatDateTime } from '@/lib/datetime'
 import { friendlyScanError } from '@/lib/scanError'
+import { useExpandedSignals } from '@/hooks/useExpandedSignals'
 import { ReplayChunkProgress } from './ReplayChunkProgress'
 import type { ScanMode } from './scanMode'
 import { buildRunReport, type RunReportLine, type RunReportTarget } from './runReport'
@@ -112,7 +113,22 @@ export function JobDetails({
 }) {
   const [countersOpen, setCountersOpen] = useState(false)
   const summary = job.result_summary
-  const report = buildRunReport(job, mode)
+
+  // "Raised N anomaly signals" links to the Anomalies page, which answers a
+  // different question: what is OPEN for this scan now. Rather than a permanent
+  // paragraph warning that the two numbers may not match, the report puts the
+  // other number next to this one — and only when they actually differ.
+  //
+  // Free in practice: the top bar mounts this exact query on every project page,
+  // so it is a cache read, and `enabled` keeps a run that raised nothing from
+  // asking at all.
+  const signalsAdded = summary?.signals_added ?? 0
+  const openSignalsQuery = useExpandedSignals(slug, { enabled: signalsAdded > 0 })
+  const openSignals = openSignalsQuery.data
+    ? openSignalsQuery.data.filter(signal => signal.scan_config_id === scanConfigId).length
+    : null
+
+  const report = buildRunReport(job, mode, openSignals)
 
   return (
     <div className="space-y-3 bg-muted/30 p-4">

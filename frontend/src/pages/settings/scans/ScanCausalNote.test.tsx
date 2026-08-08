@@ -47,7 +47,7 @@ describe('ScanCausalNote — a scan says what it produces (tripl-3y7z.2)', () =>
     // nothing. Collapsing it into "Catalog only" would launder the fault.
     const note = noteText(<ScanCausalNote variant="config" config={config(null, '1h')} />)
 
-    expect(note).toContain('collects no metrics')
+    expect(note).toContain('collects no metric points')
     expect(note).toContain('Add a time column to fix it.')
   })
 
@@ -59,7 +59,7 @@ describe('ScanCausalNote — a scan says what it produces (tripl-3y7z.2)', () =>
     const note = noteText(<ScanCausalNote variant="config" config={config(null, '1h')} />)
 
     expect(note).toContain('the scheduler never runs it')
-    expect(note).toContain('Manual runs still ingest events.')
+    expect(note).toContain('Runs you start by hand still add events to your plan.')
     expect(note).not.toMatch(/so it is never run/)
   })
 

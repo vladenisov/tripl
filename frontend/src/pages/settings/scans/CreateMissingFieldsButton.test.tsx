@@ -59,8 +59,8 @@ describe('CreateMissingFieldsButton — one source of truth for "which column ha
   // preview.columns minus {eventTypeColumn, timeColumn}, while the dry-run panel
   // rendered directly above it took the backend's full reserved_catalog_columns
   // set — app version, platform, event-group-rule and name-format columns too.
-  // So the panel listed app_version under "Reserved columns — collected as
-  // metric dimensions, never as event fields" and this button, one line below,
+  // So the panel listed app_version under "Reserved columns — tripl already uses
+  // these, so they never become event fields" and this button, one line below,
   // offered to create a field for it. Accepting that offer makes
   // plan_column_meta treat a reserved column as an ordinary field, which changes
   // event identity on every subsequent run.

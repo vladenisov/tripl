@@ -151,7 +151,13 @@ describe('ScanPreviewPanel — the answer leads, the rows are evidence (tripl-3y
 
   it('still shows the sample rows when the dry run could not be computed, and offers the retry', () => {
     const onRecheck = vi.fn()
-    renderPanel({ dryRun: null, dryRunError: new Error('Dry run failed'), onRecheck })
+    // The message `scansApi.dryRun` actually throws when the job failed without
+    // saying why — the panel must not be carrying a second, private vocabulary.
+    renderPanel({
+      dryRun: null,
+      dryRunError: new Error('The check stopped without saying why.'),
+      onRecheck,
+    })
 
     expect(screen.queryByTestId('scan-dry-run-summary')).toBeNull()
     expect(

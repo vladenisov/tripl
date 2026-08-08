@@ -44,13 +44,13 @@ const MODE_OPTIONS: {
     value: 'monitoring',
     label: 'Catalog + monitoring',
     description:
-      'Ingest events into your tracking plan and collect metrics, so anomalies and alerts can fire. Needs a time column and a schedule.',
+      'Adds events and fields to your tracking plan and records metric points, so anomalies and alerts can fire. Needs a time column and a schedule.',
   },
   {
     value: 'catalog',
     label: 'Catalog only',
     description:
-      'Discover events and fields when you run it. No schedule, so no metrics, no anomalies and no alerts.',
+      'Adds events and fields to your tracking plan when you run it. No schedule, so no metric points, no anomalies and no alerts.',
   },
 ]
 
@@ -348,7 +348,7 @@ export function ScanEssentialsSection({
           id="scan-event-type-column"
           hint={
             state.eventTypeId
-              ? 'Not naming anything here — the Event type above does that. It stays a reserved column, so it never becomes an event field. Clear it if you did not mean to set it.'
+              ? 'The Event type above names these events, so this column names nothing — and it never becomes an event field either. Clear it if you did not mean to set it.'
               : "The column each row's event name is in. Every distinct value becomes its own event type."
           }
         >
@@ -399,7 +399,7 @@ export function ScanEssentialsSection({
         id="scan-time-column"
         hint={
           monitoring
-            ? 'The timestamp tripl buckets metrics by. Required for monitoring.'
+            ? 'The timestamp tripl buckets metric points by. Required for monitoring.'
             : 'Optional. Bounds each run to the lookback window under Limits — without one, every run reads everything the base query returns.'
         }
         last={!monitoring && !preview}

@@ -471,9 +471,13 @@ raising the magnitude cannot make the option you are standing on disappear. The
 scan filter is **deep-linkable**: `?scan=<scan_config_id>` opens the page already
 narrowed to that scan, and picking an option writes the parameter back (choosing
 **All scans** removes it), so a narrowed view can be shared or bookmarked. This
-is where a scan run's **Signals added** counter links to. An id this project does
+is where a scan run's **Signals added** counter links to. A scan with nothing
+open right now keeps its selection and says *No open anomalies from &lt;scan&gt;* —
+a signal closes once the metric comes back to normal, so an older run's link
+lands here — with **Show all scans** one click away. Only an id this project does
 not have — a deleted scan, a stale bookmark, a hand-edited URL — degrades to
-**All scans** and shows the full list, rather than rendering an empty page. The
+**All scans** and shows the full list. Neither case ever swaps a different
+scan's anomalies in for the one you asked for. The
 sidebar and top-bar badge, the Overview **Open signals** stat, and this page all
 report the **same** number — open signals across every scope that clear the
 Significant threshold — so the badge agrees with the list rather than reading
@@ -574,11 +578,11 @@ to a page guaranteed to be empty is worse than not linking at all.
 The first question is **What this scan does**, and it decides the shape of the
 rest of the form:
 
-- **Catalog + monitoring** — ingest events into your tracking plan *and* collect
-  metrics, so anomalies and alerts can fire. A **Time column** and a **Schedule**
-  are both required; the form will not save without them.
-- **Catalog only** — discover events and fields when you run it. No schedule, so
-  no metrics, no anomalies and no alerts.
+- **Catalog + monitoring** — adds events and fields to your tracking plan *and*
+  records metric points, so anomalies and alerts can fire. A **Time column** and a
+  **Schedule** are both required; the form will not save without them.
+- **Catalog only** — adds events and fields to your tracking plan when you run
+  it. No schedule, so no metric points, no anomalies and no alerts.
 
 The difference between the two is the **schedule**, and only the schedule: a
 config with no interval is never dispatched, which is exactly what catalog-only
@@ -716,8 +720,8 @@ columns the dispatcher reads:
 | Badge | Meaning |
 | --- | --- |
 | **Monitoring** | Time column and schedule both set. Collects metric points on a schedule. |
-| **Catalog only** | No schedule. Adds events to your plan; no metrics, no anomalies, no alerts. |
-| **Needs a time column** | A schedule but **no time column**. The dispatcher never selects it, so the scheduler never runs it and it collects no metrics. Manual runs still ingest events. Add a time column to fix it. This is the same finding the CLI reports as `scan_config_not_dispatchable`. |
+| **Catalog only** | No schedule. Adds events and fields to your tracking plan; no metric points, no anomalies, no alerts. |
+| **Needs a time column** | A schedule but **no time column**. The dispatcher never selects it, so the scheduler never runs it and it collects no metric points. Runs you start by hand still add events to your plan. Add a time column to fix it. This is the same finding the CLI reports as `scan_config_not_dispatchable`. |
 
 The **Monitoring** tile at the top of the Scans page counts only the first of
 these.
@@ -733,8 +737,8 @@ curated failure detail. A run's **details** list flags warehouse
 columns that carried data but had no matching field in the plan — a real
 coverage gap worth fixing. It stays quiet about columns that were empty for
 those rows, and about reserved role columns (event type, time, version,
-platform, and any column an event-group rule matches on), which are collected as
-metric dimensions or identity and are never expected to have a plan field. Repeated identical failures collapse into
+platform, and any column an event-group rule matches on), which tripl already
+uses elsewhere and never expects to have a plan field. Repeated identical failures collapse into
 a streak with an expander, and **Run again** retries the config without losing
 its history.
 
@@ -778,10 +782,13 @@ data, in this order, each omitted when the run has nothing to report for it.
 | *This scan has a schedule but no time column, so the scheduler never runs it — no metric points, so no signals and no alerts. Add a time column to fix it.* | The same silence for the opposite reason: the run you are reading is a manual one, and the schedule above it is never dispatched. It gets its own sentence because calling it a catalog-only scan would name a mode its owner never picked. |
 
 *Raised N anomaly signals* is that run's **delta** — signals the run added. The
-**Anomalies** page counts what is **open now** across the project. The two
-answer different questions and routinely disagree; both are correct, and the run
-report says so on screen, under the sentence. The same holds for the activity
-feed's "N new signals" on a scan card.
+**Anomalies** page it links to counts what is **open now** for that scan. The two
+answer different questions and routinely disagree; both are correct. Where they
+disagree the report puts the other number under the sentence — *5 signals from
+this scan are open now*, or *None from this scan are open now* once they have
+closed — and where they agree it says nothing, because there is nothing to
+reconcile. The same delta is what the activity feed's "N new signals" reports on
+a scan card.
 
 Every counter the run reported is still there, verbatim, behind **Show raw
 counters**: *Events created*, *Variables created*, *Events skipped*, *Columns

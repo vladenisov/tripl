@@ -1649,7 +1649,7 @@ describe('ProjectSettingsPage', () => {
     ).toBeInTheDocument()
     expect(document.body.textContent).not.toMatch(/every column is already mapped/)
     expect(
-      screen.getByText(/created_at, payload — no field definition matches them/),
+      screen.getByText(/created_at, payload — no field matches them/),
     ).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Create 2 fields' }))

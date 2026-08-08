@@ -22,7 +22,7 @@ import { formatDateTime } from '@/lib/datetime'
 /** How many names are listed inline. A 10,000-event plan must not be a DOM bomb. */
 const MAX_LISTED = 20
 
-export const NAME_FORMAT_FIX =
+const NAME_FORMAT_FIX =
   'Fix the event name format — a scan with this format fails every run.'
 
 /**
@@ -46,10 +46,10 @@ const NO_WINDOW_NOTE = 'No time window — the whole base query was read'
  */
 const TRUNCATED_LEAD = 'More distinct events exist than this preview looked at.'
 
-export const EVENTS_TRUNCATED_NOTE =
+const EVENTS_TRUNCATED_NOTE =
   `${TRUNCATED_LEAD} Narrow the base query to see them all.`
 
-export const EVENTS_TRUNCATED_WINDOWED_NOTE =
+const EVENTS_TRUNCATED_WINDOWED_NOTE =
   `${TRUNCATED_LEAD} Narrow the base query, or shorten Limits → Lookback (hours),`
   + ' to see them all.'
 
@@ -290,12 +290,12 @@ export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
         <ColumnNote
           label="Reserved columns"
           columns={dryRun.reserved_columns}
-          explanation="collected as metric dimensions, never as event fields."
+          explanation="tripl already uses these, so they never become event fields."
         />
         <ColumnNote
           label="Unmapped columns"
           columns={dryRun.unmapped_columns}
-          explanation="no field definition matches them, so a run skips them too."
+          explanation="no field matches them, so a run skips them too."
         />
         {dryRun.warnings.map(warning => (
           <Note key={warning}>{warning}</Note>

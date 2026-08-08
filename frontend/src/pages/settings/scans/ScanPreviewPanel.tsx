@@ -75,8 +75,9 @@ export function ScanPreviewPanel({
           and a duplicated word, all above the answer the user came for. The
           answer leads: the first line of this panel is now either
           "What this scan would create" or the one sentence saying why there is
-          no answer yet. The JSON-on-demand behaviour is said where it can be
-          acted on, next to Discover JSON keys in JsonValuePathsPicker. */}
+          no answer yet. Nothing was lost by dropping the JSON-on-demand
+          sentence: JsonValuePathsPicker expresses the same fact as a button you
+          press ("Discover JSON keys"), which is where it is actionable. */}
       {eventTargetMissing && (
         <p className="text-xs" style={{ color: 'var(--fg-subtle)' }}>{NO_EVENT_TARGET_TEXT}</p>
       )}

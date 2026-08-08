@@ -203,7 +203,7 @@ describe('ScanDryRunSummary — the panel names events, not rows (tripl-3y7z.6)'
     // And the list it points at is still there, so the headline and the detail
     // now say the same thing.
     expect(
-      screen.getByText(/platform_family — no field definition matches them/),
+      screen.getByText(/platform_family — no field matches them/),
     ).toBeInTheDocument()
   })
 

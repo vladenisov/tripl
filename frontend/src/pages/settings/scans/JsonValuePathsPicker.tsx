@@ -69,7 +69,7 @@ export function JsonValuePathsPicker({
                 {jsonColumn.column}
               </div>
               {jsonColumn.paths.length === 0 ? (
-                <div className="text-xs text-muted-foreground">No nested paths found in sample.</div>
+                <div className="text-xs text-muted-foreground">No nested keys found in the sampled rows.</div>
               ) : (
                 <div className="grid gap-2">
                   {jsonColumn.paths.map(path => (

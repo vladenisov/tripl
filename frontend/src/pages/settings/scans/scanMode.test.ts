@@ -98,7 +98,7 @@ describe('mode copy', () => {
   // of the two places a user actually reads, so it obeys the rule too.
   it('does not print a healthy mode name on the detail page for the broken quadrant', () => {
     expect(SCAN_MODE_DETAIL_LABEL.misconfigured).toBe(
-      'Never scheduled — schedule set but no time column',
+      'Never runs on its schedule — schedule set but no time column',
     )
     expect(SCAN_MODE_DETAIL_LABEL.misconfigured).not.toMatch(/^Catalog only/)
   })
@@ -108,7 +108,9 @@ describe('mode copy', () => {
   // completed runs of exactly this config.
   it('blames the scheduler rather than claiming the scan never runs', () => {
     expect(SCAN_MODE_BADGE.misconfigured.title).toContain('the scheduler never runs it')
-    expect(SCAN_MODE_BADGE.misconfigured.title).toContain('Manual runs still ingest events')
+    expect(SCAN_MODE_BADGE.misconfigured.title).toContain(
+      'Runs you start by hand still add events to your plan',
+    )
     expect(SCAN_MODE_BADGE.misconfigured.title).not.toMatch(/so it is never run/)
   })
 })

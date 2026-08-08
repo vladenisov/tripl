@@ -160,14 +160,14 @@ monitored tracking plan.
    a scan config.
 2. Answer **What this scan does** — it is the first question on the form, and it
    decides everything else:
-   - **Catalog + monitoring** — ingest events into your plan *and* collect
-     metrics, so anomalies and alerts can fire. This is the default, and it needs
-     a **time column** and a **schedule**. Pick this one if you are following
-     this guide; Step 6 depends on it.
-   - **Catalog only** — discover events and fields when you run it, nothing
-     more. No schedule, so no metric points, no anomalies and no alerts. It can
-     still take a **time column**, which bounds each run to the lookback window
-     rather than reading the whole query.
+   - **Catalog + monitoring** — adds events and fields to your tracking plan
+     *and* records metric points, so anomalies and alerts can fire. This is the
+     default, and it needs a **time column** and a **schedule**. Pick this one if
+     you are following this guide; Step 6 depends on it.
+   - **Catalog only** — adds events and fields to your tracking plan when you
+     run it, nothing more. No schedule, so no metric points, no anomalies and no
+     alerts. It can still take a **time column**, which bounds each run to the
+     lookback window rather than reading the whole query.
 3. Point it at your data: pick the **data source** and give the **base query** —
    typically just selecting from the table where your events land.
 4. **Load the preview.** It reads a few rows from your query so the pickers
@@ -238,15 +238,21 @@ Each scan restates its own half of that chain: the scans list says it once, the
 scan form says it under the mode you have selected, and a scan's own page says
 what *that* scan does today. A scan with a schedule but no time column is never
 picked up by the scheduler, and says so — its badge reads **Needs a time
-column**, and its page adds that manual runs still ingest events.
+column**, and its page adds that runs you start by hand still add events to your
+plan.
 
 The chain also runs backwards, which is how you get from an alert to its cause.
-On a run's **Run details**, **Signals added** links to
+An alert names the scan it came from, so **Govern → Scans** is where you start:
+open that scan, expand the run in **Recent runs**, and its **Run details** puts
+you one click from the rest. **Signals added** opens
 [Anomalies](./use/feature-reference.md) filtered to that scan, and **Alerts
-queued** links to the alerting audit log filtered the same way — so a Telegram
-message naming a scan is two clicks from the anomalies that produced it. A
-counter of `0` is plain text, not a link, because there would be nothing on the
-other side.
+queued** opens the alerting audit log filtered the same way. A counter of `0` is
+plain text, not a link, because there would be nothing on the other side.
+
+Those two pages answer *what is open now*, while the run counts *what that run
+raised* — so an older run can link to a page with nothing on it. When that
+happens the page says so, and keeps the scan selected rather than quietly
+showing you a different scan's anomalies.
 
 :::note Scanning is optional — you can also write the plan by hand
 Events, event types, fields, and variables can all be created manually under

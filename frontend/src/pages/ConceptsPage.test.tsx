@@ -66,6 +66,23 @@ describe('ConceptsPage', () => {
     expect(screen.getByText(/a monitor decides which signals matter/i)).toBeInTheDocument()
   })
 
+  it('teaches the scan chain in the glossary, not only on the scan screens (tripl-3y7z.2)', () => {
+    renderConcepts()
+
+    expect(screen.getByRole('heading', { name: 'Scans', level: 3 })).toBeInTheDocument()
+
+    // Someone who gets a Telegram alert naming a scan comes here to find out
+    // what a scan is. The definition has to reach the thing that messaged them,
+    // in the same words the scans list and the scan form use.
+    const scans = screen.getByText(/Warehouse queries that add events and fields/)
+    expect(scans).toHaveTextContent(/metric points/)
+    expect(scans).toHaveTextContent(/anomaly detection and alerts are built on/)
+
+    // ...and it must not call every scan "scheduled" — a catalog-only scan has
+    // no schedule, which is the very thing that makes it catalog-only.
+    expect(screen.queryByText(/^Scheduled warehouse queries/)).toBeNull()
+  })
+
   it('links a term to where it lives in the app, scoped to the project slug', () => {
     renderConcepts()
 

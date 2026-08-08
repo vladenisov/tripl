@@ -13,8 +13,8 @@ import { isJsonPreviewType } from './scanUtils'
  * rendered directly above it derived the same idea from the backend's full
  * `reserved_catalog_columns` set (app version, platform, event-group-rule and
  * name-format columns too). Two answers to one question, one above the other, on
- * the same screen: the panel listed `app_version` as reserved — "collected as
- * metric dimensions, never as event fields" — while this button offered to
+ * the same screen: the panel listed `app_version` as reserved — "tripl already
+ * uses these, so they never become event fields" — while this button offered to
  * create a field for it, which `plan_column_meta` would then fold into event
  * identity on every subsequent run.
  *

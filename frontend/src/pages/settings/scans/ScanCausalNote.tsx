@@ -53,14 +53,15 @@ function configNote(config: Pick<ScanConfig, 'time_column' | 'interval'>): strin
   // that the SCHEDULER never picks it up, so nothing collects metrics on its own.
   if (mode === 'misconfigured') {
     return 'This scan has a schedule but no time column, so the scheduler never runs it and it'
-      + ' collects no metrics. Manual runs still ingest events. Add a time column to fix it.'
+      + ' collects no metric points. Runs you start by hand still add events to your plan.'
+      + ' Add a time column to fix it.'
   }
   if (mode === 'catalog') {
-    return 'Runs when you start it. Adds events to your plan only — no metric points, no'
-      + ' anomalies, no alerts.'
+    return 'Runs when you start it. Adds events and fields to your tracking plan only — no'
+      + ' metric points, no anomalies, no alerts.'
   }
-  return `Runs ${cadencePhrase(config.interval)}. Each run adds events to your plan and records`
-    + ' metric points for anomaly detection.'
+  return `Runs ${cadencePhrase(config.interval)}. Each run adds events to your tracking plan and`
+    + ' records metric points for anomaly detection.'
 }
 
 type ScanCausalNoteProps =
