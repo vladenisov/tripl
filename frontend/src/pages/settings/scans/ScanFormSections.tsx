@@ -11,6 +11,7 @@ import { DistributionDriftPicker } from './DistributionDriftPicker'
 import { EventGroupRulesEditor } from './EventGroupRulesEditor'
 import { JsonValuePathsPicker } from './JsonValuePathsPicker'
 import { MetricBreakdownPicker } from './MetricBreakdownPicker'
+import { ScanCausalNote } from './ScanCausalNote'
 import { ScanPreviewPanel } from './ScanPreviewPanel'
 import { SqlEditor } from '@/components/sql-editor'
 import { Field, SCard } from './scanLayout'
@@ -211,6 +212,12 @@ export function ScanEssentialsSection({
           ))}
         </div>
       </fieldset>
+
+      {/* Next sibling of the mode radio: the consequence of the selection above,
+          restated as the chain it feeds (tripl-3y7z.2). */}
+      <div className="border-b px-[18px] pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
+        <ScanCausalNote variant="form" mode={state.mode} />
+      </div>
 
       <Field label="Name" id="scan-name">
         <Input

@@ -202,9 +202,13 @@ export function ScansTab({ slug }: { slug: string }) {
       <div className="flex items-end justify-between gap-4">
         <div className="min-w-0">
           <h2 className="text-lg font-semibold">Scans</h2>
+          {/* The mechanical description said what a scan IS; this one says what
+              it PRODUCES and what consumes it, because a scan's output reaches
+              the user as anomalies and alerts (tripl-3y7z.2). */}
           <p className="mt-1 max-w-[560px] text-sm" style={{ color: 'var(--fg-subtle)' }}>
-            Warehouse queries tripl runs on a schedule to ingest events and roll up metrics from
-            your data sources.
+            Scans read your warehouse on a schedule. Every run adds events and fields to your
+            tracking plan; a monitoring scan also records metric points, and those points are what
+            anomaly detection and alerts are built on.
           </p>
         </div>
         <Button

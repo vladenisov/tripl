@@ -394,6 +394,12 @@ can be removed under **Settings → Monitoring → Scope overrides**. See
 4. **Save.** The next scan that produces a matching signal sends a delivery and
    records it in the Inbox and Audit views.
 
+The Audit log can be filtered to a single scan with
+`?scan=<scan_config_id>` — `/p/<slug>/settings/alerting?scan=<scan_config_id>`.
+That is the link behind a scan run's **Alerts queued** counter, so an alert
+naming a scan is reachable from the run that queued it. An id the project does
+not have degrades to **All**.
+
 If alerts don't arrive, see
 [Troubleshooting → "alerts never fire"](./troubleshooting.md). For the broader
 catalog of monitoring surfaces, see the [Feature reference](./feature-reference.md).

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Activity, ArrowDown, ArrowUp, Settings2 } from 'lucide-react'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
@@ -115,7 +115,23 @@ export default function AnomaliesPage() {
   const { slug } = useParams<{ slug: string }>()
   const branchId = useActiveBranchId()
   const [level, setLevel] = useState<MagnitudeLevel>(DEFAULT_MAGNITUDE_LEVEL)
-  const [scanId, setScanId] = useState<string>(ALL_SCANS)
+  // The scan facet lives in the URL, not in component state, so a scan can hand
+  // its own anomalies over: the "Signals added" counter on a scan run links to
+  // `?scan=<id>` (tripl-3y7z.2). Same idiom as MetricsCatalog's `?kind=`.
+  // `replace` — a filter flip is not a place the Back button should stop.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const scanId = searchParams.get('scan') ?? ALL_SCANS
+  const setScanId = (next: string) => {
+    setSearchParams(
+      (previous) => {
+        const params = new URLSearchParams(previous)
+        if (next === ALL_SCANS) params.delete('scan')
+        else params.set('scan', next)
+        return params
+      },
+      { replace: true },
+    )
+  }
 
   // expanded: surface every flagged scope — project_total, each event_type and
   // each event — instead of collapsing an incident's fan-out into one total row.
@@ -213,8 +229,11 @@ export default function AnomaliesPage() {
       id,
       label: `${facetLabel(id, scanNames)} ${countsAtLevel.get(id) ?? 0}`,
     }))
-  // A selection the current data no longer contains (the scan stopped firing,
-  // or a refetch dropped it) reads as "all" rather than as an empty page.
+  // A selection the current data no longer contains (the scan stopped firing, a
+  // refetch dropped it, or `?scan=` names an id this project never had) reads as
+  // "all" rather than as an empty page. Now that the selection arrives from the
+  // URL this guard also covers hand-edited and stale links, so a dead deep link
+  // degrades to the full list instead of an unexplained blank.
   const activeScanId = scanTotals.has(scanId) ? scanId : ALL_SCANS
 
   // Magnitude first, then scan, then rank most-severe first (largest |z|).

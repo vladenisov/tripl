@@ -186,6 +186,33 @@ monitored tracking plan.
 Starting a scan creates a **run** — watch its status and progress under the scan,
 and use **Run again** if one fails.
 
+### What happens after a scan runs
+
+Every run adds events and fields to your tracking plan. A **Catalog +
+monitoring** scan also records **metric points**, and those points are what
+anomaly detection and alerts are built on:
+
+**events → metric points → signals → alerts**
+
+- **Catalog + monitoring** — the scan adds events to your tracking plan and
+  records metric points every run. Anomaly detection reads those points and
+  raises signals; alerts are sent from signals.
+- **Catalog only** — the scan adds events and fields to your tracking plan. It
+  records no metric points, so it raises no anomalies and sends no alerts.
+
+Each scan restates its own half of that chain: the scans list says it once, the
+scan form says it under the mode you have selected, and a scan's own page says
+what *that* scan does today. A scan with a schedule but no time column is never
+run at all, and says so.
+
+The chain also runs backwards, which is how you get from an alert to its cause.
+On a run's **Run details**, **Signals added** links to
+[Anomalies](./use/feature-reference.md) filtered to that scan, and **Alerts
+queued** links to the alerting audit log filtered the same way — so a Telegram
+message naming a scan is two clicks from the anomalies that produced it. A
+counter of `0` is plain text, not a link, because there would be nothing on the
+other side.
+
 :::note Scanning is optional — you can also write the plan by hand
 Events, event types, fields, and variables can all be created manually under
 **Plan**, and most teams do a bit of both: scan to bootstrap, edit by hand to

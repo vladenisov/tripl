@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation, useParams } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   EventListResponse,
@@ -83,11 +83,18 @@ function MetricDetailProbe() {
   return <div>metric-detail:{metricId}</div>
 }
 
-function renderAnomalies() {
+/** Exposes the live URL so the `?scan=` round trip is assertable. */
+function LocationProbe() {
+  const location = useLocation()
+  return <div>anomalies-location:{location.pathname}{location.search}</div>
+}
+
+function renderAnomalies(entry = '/p/demo/anomalies') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/p/demo/anomalies']}>
+      <MemoryRouter initialEntries={[entry]}>
+        <LocationProbe />
         <Routes>
           <Route path="/p/:slug/anomalies" element={<AnomaliesPage />} />
           <Route path="/p/:slug/monitoring/metric/:metricId" element={<MetricDetailProbe />} />
@@ -452,5 +459,81 @@ describe('AnomaliesPage — scan facet', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Show all scans/ }))
     expect(await screen.findByText(/Spike on Event/)).toBeInTheDocument()
+  })
+
+  // `?scan=` is what makes a scan's "Signals added" counter reach the anomalies
+  // it produced. Before this the facet was component state only, so the link had
+  // nowhere to land but the unfiltered page (tripl-3y7z.2).
+  it('pre-selects the scan named by ?scan= and shows only its signals', async () => {
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
+    vi.mocked(scansApi.list).mockResolvedValue(scans)
+    vi.mocked(eventsApi.list).mockResolvedValue(
+      makeEventList([
+        { id: 'legacy-ev-0', name: 'Legacy tap' },
+        { id: 'live-ev-1', name: 'Live tap' },
+      ]),
+    )
+
+    renderAnomalies('/p/demo/anomalies?scan=scan-live')
+
+    // Landed already narrowed: no click, and the legacy stream that drowns this
+    // one out by size is gone.
+    expect(await screen.findByText('Spike on Event · Live tap')).toBeInTheDocument()
+    expect(screen.queryByText('Spike on Event · Legacy tap')).not.toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Snowplow Events (iOS) 1' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    expect(screen.getByRole('radio', { name: 'All scans 7' })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    )
+  })
+
+  it('degrades an unknown ?scan= to All rather than rendering an empty page', async () => {
+    // A deleted scan, a stale bookmark or a hand-edited URL must not produce a
+    // page that shows nothing and explains nothing. This is the `activeScanId`
+    // guard: dropping it on the way to reading the URL would empty the list.
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
+    vi.mocked(scansApi.list).mockResolvedValue(scans)
+    vi.mocked(eventsApi.list).mockResolvedValue(
+      makeEventList([
+        { id: 'legacy-ev-0', name: 'Legacy tap' },
+        { id: 'live-ev-1', name: 'Live tap' },
+      ]),
+    )
+
+    renderAnomalies('/p/demo/anomalies?scan=does-not-exist')
+
+    // The FULL list, both scans — not an empty state, not one scan.
+    expect(await screen.findByText('Spike on Event · Live tap')).toBeInTheDocument()
+    expect(screen.getByText('Spike on Event · Legacy tap')).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'All scans 7' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    // No phantom option is manufactured for the id that does not exist.
+    expect(screen.queryByRole('radio', { name: /does-not-exist/ })).toBeNull()
+  })
+
+  it('writes the facet selection back to ?scan= so the narrowed view is linkable', async () => {
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
+    vi.mocked(scansApi.list).mockResolvedValue(scans)
+    vi.mocked(eventsApi.list).mockResolvedValue(
+      makeEventList([
+        { id: 'legacy-ev-0', name: 'Legacy tap' },
+        { id: 'live-ev-1', name: 'Live tap' },
+      ]),
+    )
+
+    renderAnomalies()
+
+    fireEvent.click(await screen.findByRole('radio', { name: 'Snowplow Events (iOS) 1' }))
+    expect(await screen.findByText('anomalies-location:/p/demo/anomalies?scan=scan-live'))
+      .toBeInTheDocument()
+
+    // ...and clearing it removes the parameter rather than leaving `scan=all`.
+    fireEvent.click(screen.getByRole('radio', { name: 'All scans 7' }))
+    expect(await screen.findByText('anomalies-location:/p/demo/anomalies')).toBeInTheDocument()
   })
 })

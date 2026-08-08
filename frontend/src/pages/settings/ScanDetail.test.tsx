@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -245,6 +245,74 @@ describe('ScanDetail', () => {
     })
     // "Metric rows" collided with Observe › Metrics, the user-defined catalog.
     expect(screen.queryByText('Metric rows')).toBeNull()
+  })
+
+  // A scan's output reaches the user as anomalies and Telegram alerts, and the
+  // run report used to print those two counts as dead numbers — the owner got
+  // "Scan: Snowplow Events (iOS)" in Telegram and could reach nothing from it
+  // (tripl-3y7z.2).
+  async function renderExpandedRun(summary: Record<string, number>) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([
+          {
+            id: 'job-signals',
+            scan_config_id: 'scan-1',
+            status: 'completed',
+            started_at: '2026-01-01T00:00:00Z',
+            completed_at: '2026-01-01T00:00:10Z',
+            result_summary: summary,
+            error_message: null,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:10Z',
+          },
+        ])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/scans/scan-1']}>
+          <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand run details' }))
+  }
+
+  it('links Signals added and Alerts queued to this scan on the surfaces that hold them', async () => {
+    await renderExpandedRun({ signals_added: 3, alerts_queued: 2 })
+
+    // The counter is the only affordance connecting a run to its anomalies.
+    const signalsCard = screen.getByText('Signals added').parentElement!
+    const signalsLink = within(signalsCard).getByRole('link')
+    expect(signalsLink).toHaveAttribute('href', '/p/demo/anomalies?scan=scan-1')
+    expect(signalsLink).toHaveAttribute('title', 'View anomalies from this scan')
+    expect(signalsLink).toHaveTextContent('3')
+
+    // ...and the same for the alert that actually reached Telegram.
+    const alertsCard = screen.getByText('Alerts queued').parentElement!
+    const alertsLink = within(alertsCard).getByRole('link')
+    expect(alertsLink).toHaveAttribute('href', '/p/demo/settings/alerting?scan=scan-1')
+    expect(alertsLink).toHaveAttribute('title', 'View alerts from this scan')
+    expect(alertsLink).toHaveTextContent('2')
+  })
+
+  it('leaves a zero counter as plain text — a link to a guaranteed-empty page is worse than none', async () => {
+    await renderExpandedRun({ signals_added: 0, alerts_queued: 0 })
+
+    const signalsCard = screen.getByText('Signals added').parentElement!
+    expect(within(signalsCard).queryByRole('link')).toBeNull()
+    expect(signalsCard).toHaveTextContent('0')
+
+    const alertsCard = screen.getByText('Alerts queued').parentElement!
+    expect(within(alertsCard).queryByRole('link')).toBeNull()
   })
 
   it('renders the platform presence grid from a mocked response', async () => {

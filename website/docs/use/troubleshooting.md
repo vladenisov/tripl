@@ -496,6 +496,18 @@ uses a rolling fallback and skips low-volume series; with very little data it
 will correctly report nothing. Give it time, and check the project's anomaly
 settings (sigma threshold, minimum expected count, baseline window).
 
+To look at just this scan instead of the whole project, open the scan, expand a
+run, and click **Signals added** — it opens Anomalies filtered to that scan
+(`/p/<slug>/anomalies?scan=<scan-config-id>`). On a busy project one large scan
+can supply most of the page, so per-scan is often the only readable view. If the
+counter reads `0` it is not a link: that run raised nothing, which is itself the
+answer.
+
+Also check the scan's mode. **Catalog only** scans record no metric points, so
+they raise no anomalies by design — the scan's own page says so in one line under
+its name, and its row carries a **Catalog only** badge. A scan badged **No
+metrics collected** has a schedule but no time column and is never run at all.
+
 **A scan failed with a generic "internal error" — where's the real reason?**
 User-facing fields are sanitized to avoid leaking host/port/driver details. The
 full exception is in the worker logs:

@@ -57,6 +57,9 @@ export default function ProjectSettingsPage() {
   // identifies the page but not the line the alert message quoted.
   const [searchParams] = useSearchParams()
   const focusItemKey = searchParams.get('item') ?? undefined
+  // `?scan=<scan_config_id>` narrows the alerting audit log to one scan — the
+  // target of the "Alerts queued" counter on a scan run (tripl-3y7z.2).
+  const focusScanId = searchParams.get('scan') ?? undefined
 
   if (!slug) return null
 
@@ -87,7 +90,12 @@ export default function ProjectSettingsPage() {
           {/* `itemId` focuses one delivery and `?item=` one row inside it —
               together the target of the deep link an alert message carries for
               scopes with no monitoring page. */}
-          <ProjectAlertingTab slug={slug} focusDeliveryId={itemId} focusItemKey={focusItemKey} />
+          <ProjectAlertingTab
+            slug={slug}
+            focusDeliveryId={itemId}
+            focusItemKey={focusItemKey}
+            focusScanId={focusScanId}
+          />
         </Suspense>
       )}
       {tab === 'branches' && <BranchesTab slug={slug} branchId={itemId} />}

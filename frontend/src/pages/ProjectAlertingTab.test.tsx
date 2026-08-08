@@ -380,3 +380,84 @@ describe('ProjectAlertingTab — Add Email destination', () => {
     expect(placeholder).toContain('${rule_name}')
   })
 })
+
+describe('ProjectAlertingTab — per-scan focus via ?scan= (tripl-3y7z.2)', () => {
+  // A scan run's "Alerts queued" counter links here with `?scan=<id>`. Without
+  // the seed the link lands on an unfiltered audit log — which does not close
+  // the finding: the owner still cannot get from a Telegram message back to the
+  // scan that produced it.
+  function mockWithDeliveryUrls(scans: unknown[]) {
+    const deliveryUrls: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/alert-deliveries')) {
+        deliveryUrls.push(url)
+        return jsonResponse({ items: [], total: 0 })
+      }
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: false })
+      }
+      if (url.includes('/alert-destinations')) {
+        return jsonResponse([makeDestination({ rules: [makeRule()] })])
+      }
+      if (url.includes('/alert-inbox')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.includes('/events')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/scans')) return jsonResponse(scans)
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    return deliveryUrls
+  }
+
+  function renderWithFocus(focusScanId?: string) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting']}>
+          <ProjectAlertingTab slug="demo" focusScanId={focusScanId} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('seeds the delivery scan filter, so the audit log opens already narrowed', async () => {
+    const deliveryUrls = mockWithDeliveryUrls([{ id: 'scan-1', name: 'Snowplow Events (iOS)' }])
+    renderWithFocus('scan-1')
+
+    // Every request the tab makes for deliveries carries the scan — not just
+    // eventually, but from the first one, so no unfiltered page is ever shown.
+    await waitFor(() => expect(deliveryUrls.length).toBeGreaterThan(0))
+    for (const url of deliveryUrls) {
+      expect(url).toContain('scan_config_id=scan-1')
+    }
+  })
+
+  it('asks for nothing scan-specific when no ?scan= was given', async () => {
+    const deliveryUrls = mockWithDeliveryUrls([{ id: 'scan-1', name: 'Snowplow Events (iOS)' }])
+    renderWithFocus(undefined)
+
+    await waitFor(() => expect(deliveryUrls.length).toBeGreaterThan(0))
+    for (const url of deliveryUrls) {
+      expect(url).not.toContain('scan_config_id')
+    }
+  })
+
+  it('degrades an unknown ?scan= to All once the scan list resolves', async () => {
+    // A deleted scan or a stale link must not pin the audit log to a filter that
+    // can never match, leaving a permanently empty page with no explanation.
+    const deliveryUrls = mockWithDeliveryUrls([{ id: 'scan-1', name: 'Snowplow Events (iOS)' }])
+    renderWithFocus('scan-that-was-deleted')
+
+    // The first request may still carry the id (the scan list is in flight and
+    // dropping a filter on a `[]` default would discard VALID ones); what must
+    // not survive is the settled state.
+    await screen.findByText('Audit')
+    await waitFor(() => {
+      expect(deliveryUrls.length).toBeGreaterThan(0)
+      expect(deliveryUrls.at(-1)).not.toContain('scan_config_id')
+    })
+  })
+})

@@ -1,4 +1,5 @@
 import { Fragment, useState } from "react"
+import { Link } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Ban, ChevronDown, GitMerge, RotateCcw, XCircle } from "lucide-react"
 import { scansApi } from "@/api/scans"
@@ -273,6 +274,8 @@ export function ScanDetail({
     <JobRow
       key={job.id}
       job={job}
+      slug={slug}
+      scanConfigId={scanConfig.id}
       watched={job.id === scanJobId}
       expanded={expandedJobId === job.id}
       onToggle={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}
@@ -490,6 +493,8 @@ export function ScanDetail({
 
 function JobRow({
   job,
+  slug,
+  scanConfigId,
   watched,
   expanded,
   onToggle,
@@ -499,6 +504,9 @@ function JobRow({
   retryPending,
 }: {
   job: ScanJob
+  /** Both only reach JobDetails, which links its Signals/Alerts counters out. */
+  slug: string
+  scanConfigId: string
   /** This is the run the coached demo scenario is following — at most one row. */
   watched: boolean
   expanded: boolean
@@ -592,7 +600,7 @@ function JobRow({
       {expanded && (
         <tr>
           <td colSpan={6} className="p-0">
-            <JobDetails job={job} />
+            <JobDetails job={job} slug={slug} scanConfigId={scanConfigId} />
           </td>
         </tr>
       )}
@@ -600,7 +608,44 @@ function JobRow({
   )
 }
 
-function JobDetails({ job }: { job: ScanJob }) {
+/**
+ * A counter that names something reachable links to the surface that holds it;
+ * a zero renders as plain text. A link to a guaranteed-empty page is worse than
+ * no link, and 0 is guaranteed-empty by construction.
+ *
+ * Both links filter by SCAN, not by run: `result_summary` stores counts only,
+ * with no signal or delivery ids, so the run cannot be reconstructed from it.
+ * The titles say "from this scan" so the copy does not imply otherwise.
+ */
+function CounterValue({
+  value,
+  href,
+  title,
+  color,
+}: {
+  value: number
+  href: string
+  title: string
+  color: string
+}) {
+  const body = <span className="text-lg font-bold" style={{ color }}>{value}</span>
+  if (value <= 0) return body
+  return (
+    <Link to={href} title={title} className="no-underline hover:underline">
+      {body}
+    </Link>
+  )
+}
+
+function JobDetails({
+  job,
+  slug,
+  scanConfigId,
+}: {
+  job: ScanJob
+  slug: string
+  scanConfigId: string
+}) {
   const summary = job.result_summary
   return (
     <div className="space-y-3 bg-muted/30 p-4">
@@ -635,10 +680,30 @@ function JobDetails({ job }: { job: ScanJob }) {
               <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.distribution_drifts}</div><div className="text-muted-foreground">Distribution rows</div></Card>
             )}
             {summary.signals_added != null && (
-              <Card className="p-3 text-center"><div className="text-lg font-bold" style={{ color: 'var(--danger)' }}>{summary.signals_added}</div><div className="text-muted-foreground">Signals added</div></Card>
+              <Card className="p-3 text-center">
+                <div>
+                  <CounterValue
+                    value={summary.signals_added}
+                    href={`/p/${slug}/anomalies?scan=${scanConfigId}`}
+                    title="View anomalies from this scan"
+                    color="var(--danger)"
+                  />
+                </div>
+                <div className="text-muted-foreground">Signals added</div>
+              </Card>
             )}
             {summary.alerts_queued != null && (
-              <Card className="p-3 text-center"><div className="text-lg font-bold" style={{ color: 'var(--warning)' }}>{summary.alerts_queued}</div><div className="text-muted-foreground">Alerts queued</div></Card>
+              <Card className="p-3 text-center">
+                <div>
+                  <CounterValue
+                    value={summary.alerts_queued}
+                    href={`/p/${slug}/settings/alerting?scan=${scanConfigId}`}
+                    title="View alerts from this scan"
+                    color="var(--warning)"
+                  />
+                </div>
+                <div className="text-muted-foreground">Alerts queued</div>
+              </Card>
             )}
           </div>
           {summary.details && summary.details.length > 0 && (

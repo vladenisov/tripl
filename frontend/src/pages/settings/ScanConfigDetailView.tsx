@@ -17,6 +17,7 @@ import { ErrorState } from '@/components/error-state'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getErrorMessage } from '@/lib/utils'
 import { ScanDetail } from './ScanDetail'
+import { ScanCausalNote } from './scans/ScanCausalNote'
 import { ScanConfigurationTab } from './scans/ScanConfigForm'
 import { ScanBadges } from './scans/ScanConfigRow'
 import { BackLink, SrcIcon } from './scans/scanLayout'
@@ -137,6 +138,12 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
           <p className="mt-1 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
             Ingests from <span style={{ color: 'var(--fg-muted)' }}>{dataSource?.name ?? 'Unknown source'}</span>
           </p>
+          {/* One line under the header saying what this scan produces and what
+              reads it. Mounted here rather than inside ScanDetail so it sits
+              above the tab strip and holds for both tabs (tripl-3y7z.2). */}
+          <div className="mt-1">
+            <ScanCausalNote variant="config" config={sc} />
+          </div>
         </div>
         <ScenarioCoachMark step="live-loop/run-scan">
           <Button variant="secondary" size="sm" disabled={runMut.isPending} onClick={() => runMut.mutate()}>

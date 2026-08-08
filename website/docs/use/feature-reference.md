@@ -468,6 +468,12 @@ more events; catalog metrics are project-wide rather than scan-bound and get
 their own option. Both filters narrow the list already in memory — no extra
 request — and the counts on the scan options are taken from the whole stream, so
 raising the magnitude cannot make the option you are standing on disappear. The
+scan filter is **deep-linkable**: `?scan=<scan_config_id>` opens the page already
+narrowed to that scan, and picking an option writes the parameter back (choosing
+**All scans** removes it), so a narrowed view can be shared or bookmarked. This
+is where a scan run's **Signals added** counter links to. An id this project does
+not have — a deleted scan, a stale bookmark, a hand-edited URL — degrades to
+**All scans** and shows the full list, rather than rendering an empty page. The
 sidebar and top-bar badge, the Overview **Open signals** stat, and this page all
 report the **same** number — open signals across every scope that clear the
 Significant threshold — so the badge agrees with the list rather than reading
@@ -499,7 +505,14 @@ and are enabled by the rule editor's **Metrics** box (`include_metrics`). A rule
 **simulated/replayed** over the last N days (default 7), optionally overriding
 the saved cooldown. The **Inbox** groups correlated deliveries; the **Audit**
 view lists deliveries filterable by status (pending / sent / failed) with retry
-on failures.
+on failures, plus channel, destination, rule, and **scan**.
+
+The scan filter is deep-linkable the same way Anomalies' is:
+`/p/<slug>/settings/alerting?scan=<scan_config_id>` opens the audit log already
+narrowed to one scan, which is where a scan run's **Alerts queued** counter
+links. As on Anomalies, an id this project does not have degrades to **All**
+once the scan list resolves, so a link to a since-deleted scan shows the full
+audit log rather than a permanently empty one.
 
 ---
 
@@ -542,6 +555,18 @@ every non-archived status and therefore reports a larger total.
 **Where:** Govern › Scans (route `/p/<slug>/scans`; requires a data source). The
 legacy `/p/<slug>/settings/scans` path still resolves — it redirects here, so old
 bookmarks and links keep working.
+
+Every scan surface states the chain a scan feeds, because a scan's output reaches
+you as anomalies and alerts and nothing on these screens used to say so. The list
+says it once for all scans; the form says it under the mode you have selected;
+and a scan's own page says what *that* scan does today — including the case where
+it has a schedule but no time column, is never run, and collects nothing. A run's
+**Signals added** and **Alerts queued** counters are links back out to the
+[Anomalies](#anomalies) and [Alerting](#alerting) surfaces filtered to that scan
+(`?scan=<scan_config_id>` on both). The link filters by **scan**, not by run — a
+run's stored summary carries counts only, no signal or delivery ids — so the
+tooltips read "from this scan". A counter of `0` renders as plain text: linking
+to a page guaranteed to be empty is worse than not linking at all.
 
 #### What the scan form asks
 
