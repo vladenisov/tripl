@@ -194,11 +194,14 @@ events, or far fewer than you expected.
 The dry run is the same planner a real run uses, so "it would create nothing" is
 a real answer, not a broken panel. Four causes, in the order worth checking:
 
-1. **The window is empty.** The dry run only reads rows inside the scan's
-   lookback (**Limits → Lookback (hours)**, default 24). If your table has no
-   rows in that window — a staging table, a backfill that stopped, a timestamp
-   column in the wrong unit — there is nothing to name. The summary prints the
-   window it used; widen the lookback or clear the time column to check.
+1. **The window is empty.** When the scan has a **Time column**, the dry run only
+   reads rows inside its lookback (**Limits → Lookback (hours)**, default 24). If
+   your table has no rows in that window — a staging table, a backfill that
+   stopped, a timestamp column in the wrong unit — there is nothing to name. The
+   summary prints the window it used; widen the lookback or clear the time column
+   to check. With no time column there is no window at all: the summary says *No
+   time window — the whole base query was read*, and an empty answer is then
+   about your whole query, not about a window.
 
 2. **The event name format is broken.** If the panel shows *Event name format
    error*, that is the whole answer: a format referencing a key the rows cannot
@@ -231,11 +234,12 @@ has its own entry below.
 
 **Symptom.** The preview names events, but hedges the count.
 
-Nothing is wrong. The dry run does not read your whole table; it reads the most
-common column combinations inside the scan's lookback window, up to a cap of
-5,000. When it hits that cap, more distinct events exist than it looked at, so N
-is a **floor**: the scan would create at least that many, possibly more. Saying a
-flat *N* there would be the one claim the panel is built not to make.
+Nothing is wrong. The dry run reads the most common column combinations inside
+the scan's lookback window — or across the whole base query, if the scan has no
+time column to window on — up to a cap of 5,000. When it hits that cap, more
+distinct events exist than it looked at, so N is a **floor**: the scan would
+create at least that many, possibly more. Saying a flat *N* there would be the
+one claim the panel is built not to make.
 
 The panel also prints *More distinct events exist than this preview looked at.*
 Two ways to turn the floor into a firm number:
@@ -246,12 +250,14 @@ Two ways to turn the floor into a firm number:
 - **Widen or narrow the window.** **Limits → Lookback (hours)** decides how much
   data the dry run reads at all. A shorter window with the same cap is more
   likely to be complete — but remember it is then a statement about less of your
-  data, not about more of it.
+  data, not about more of it. The lookback needs a **Time column**: it is the
+  predicate the window is expressed on, so the form asks for the column before it
+  offers the field. Without one there is no window and the cap is the only bound.
 
 A count with no *at least* is exact **for what it read**: every distinct event in
 the sample, with the exact number of sampled rows behind each one. It is still
 not a table-wide total, because the lookback window is a separate bound. The
-panel always names the window it used.
+panel always says which window it used, including when there was none.
 
 See [Scans → The dry run](feature-reference.md#the-dry-run--what-this-scan-would-create).
 
@@ -299,8 +305,9 @@ to every curated message rather than leaving each raise site to remember it:
 - **Row limit reached.** *"Scan failed: The scan query reached the configured row
   limit (50000); increase scan_row_limit to avoid partial generation."* The default cap is
   50,000 rows for scans (100,000 for metrics). Narrow the base query, set a
-  time column + lookback so less data is scanned, or raise the per-config row
-  limit. Catalog-metric collection reports the same condition as *"… reached the
+  time column + lookback so less data is scanned (the **Time column** field is on
+  the form in both modes — a Catalog only scan can be windowed too), or raise the
+  per-config row limit. Catalog-metric collection reports the same condition as *"… reached the
   metric query row limit (100000) for chunk …"* and **fails the chunk on
   purpose**: collection replaces a window by deleting it and re-inserting, so
   writing a capped result would erase the tail of the window rather than leave

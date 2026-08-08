@@ -42,8 +42,9 @@ export interface ScanFormPayload {
 export interface ScanFormState {
   /**
    * Form state only — never sent to the backend, never stored. It decides which
-   * fields the form asks for and how `toBackendPayload` resolves the two columns
-   * the dispatcher reads (see scanMode.ts).
+   * fields the form asks for and whether the payload carries a schedule (see
+   * scanMode.ts). It does NOT decide the time column: that is a query bound in
+   * both modes and is the user's to set or clear.
    */
   mode: ScanFormMode
   dataSourceId: string
@@ -107,21 +108,20 @@ function initialState(scanConfig: ScanConfig | null): ScanFormState {
 }
 
 /**
- * The time column as the backend will see it. In Catalog only the field does not
- * exist, so a value left over from a previous Catalog + monitoring selection must
- * not leak into the payload — or into the preview's windowing.
- */
-export function effectiveTimeColumn(state: ScanFormState): string | null {
-  return state.mode === 'monitoring' ? state.timeColumn || null : null
-}
-
-/**
  * Assembles the create/update payload from form state.
  *
- * Catalog only forces the three monitoring columns to null regardless of what the
- * (now hidden) inputs still hold: the mode is the user's answer, not the leftover
- * state behind it. Monitoring keeps both — `canSubmitScanForm` refuses to submit
- * until they are set, so the silently-never-monitoring config this whole change
+ * Catalog only is the absence of a SCHEDULE, and nothing else. The dispatcher
+ * selects on `time_column IS NOT NULL AND interval IS NOT NULL`
+ * (worker/tasks/metrics/schedule.py:349-350), so a null interval alone already
+ * makes a config catalog-only; nulling the time column with it bought nothing
+ * and cost the per-run bound, because `resolve_lookback_window` returns None
+ * without a time column and the run then reads the whole base query. That is why
+ * only `interval` and `replay_chunk_interval` are mode-gated here: a saved time
+ * column must survive an edit made in Catalog only, and a catalog scan bounded
+ * to the last 24h is a config a user is entitled to keep.
+ *
+ * Monitoring additionally REQUIRES the time column — `canSubmitScanForm` refuses
+ * to submit without it, so the silently-never-monitoring config this whole change
  * exists to kill cannot be created.
  */
 export function toBackendPayload(state: ScanFormState): ScanFormPayload {
@@ -131,7 +131,7 @@ export function toBackendPayload(state: ScanFormState): ScanFormPayload {
     base_query: state.baseQuery,
     event_type_id: state.eventTypeId || null,
     event_type_column: state.eventTypeColumn || null,
-    time_column: effectiveTimeColumn(state),
+    time_column: state.timeColumn || null,
     event_name_format: state.eventNameFormat || null,
     json_value_paths: state.jsonValuePaths,
     event_group_rules: stripUiIds(state.eventGroupRules),
@@ -163,9 +163,10 @@ export function toBackendPayload(state: ScanFormState): ScanFormPayload {
  *
  * Building it out of `toBackendPayload` is the point: "what would this scan
  * create?" has to be answered for the config that would actually be saved, not
- * for a second reading of form state that could drift from it. Catalog only
- * therefore drops the time column here too, so the dry run reports the whole
- * table rather than a window the saved scan would not apply.
+ * for a second reading of form state that could drift from it. The window the
+ * dry run reads is therefore the window the saved scan would read — including
+ * the case with no time column, where both read everything the base query
+ * returns and the panel says so.
  */
 export function toDryRunRequest(state: ScanFormState): ScanDryRunRequest {
   const payload = toBackendPayload(state)
@@ -264,7 +265,7 @@ export function useScanForm(
         data_source_id: state.dataSourceId,
         base_query: state.baseQuery,
         limit: 10,
-        time_column: effectiveTimeColumn(state),
+        time_column: state.timeColumn || null,
         scan_lookback_hours: parseOptionalPositiveInt(state.scanLookbackHours),
       }),
     onSuccess: data => {
@@ -315,7 +316,7 @@ export function useScanForm(
         data_source_id: state.dataSourceId,
         base_query: state.baseQuery,
         json_value_paths: state.jsonValuePaths,
-        time_column: effectiveTimeColumn(state),
+        time_column: state.timeColumn || null,
         scan_lookback_hours: parseOptionalPositiveInt(state.scanLookbackHours),
         include_json_paths: true,
       }),

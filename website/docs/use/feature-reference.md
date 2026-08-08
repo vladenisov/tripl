@@ -576,9 +576,18 @@ rest of the form:
 - **Catalog + monitoring** — ingest events into your tracking plan *and* collect
   metrics, so anomalies and alerts can fire. A **Time column** and a **Schedule**
   are both required; the form will not save without them.
-- **Catalog only** — discover events and fields. No metrics, no anomalies, no
-  alerts. The time column and schedule are not asked for at all, and leaving them
-  empty produces no warning.
+- **Catalog only** — discover events and fields when you run it. No schedule, so
+  no metrics, no anomalies and no alerts.
+
+The difference between the two is the **schedule**, and only the schedule: a
+config with no interval is never dispatched, which is exactly what catalog-only
+means. The **Time column** is asked for in both modes because it does a second
+job that has nothing to do with monitoring — it bounds every run to
+**Limits → Lookback (hours)**. In Catalog only it is optional and unflagged
+(*No time column — read the whole query* is a legitimate answer); leaving it
+empty means each run reads everything the base query returns, which the Limits
+section says in place of the lookback field. Choosing **Catalog only** never
+clears a time column you already saved.
 
 Only a monitoring scan produces metric points, so only a monitoring scan can
 raise a signal or send an alert. See
@@ -586,8 +595,9 @@ raise a signal or send an alert. See
 
 **Always visible (the essentials):** the mode choice, **Name**, **Data source**,
 **Base query** (used as a subquery), the **Load preview** button and the preview
-panel, **Event type** (or auto-detect), and — in Catalog + monitoring only —
-**Time column** and **Schedule**. The schedule is one of *Every 15 min* (`15m`),
+panel, **Event type** (or auto-detect), **Time column** (required in Catalog +
+monitoring, an optional run bound in Catalog only), and — in Catalog + monitoring
+only — **Schedule**. The schedule is one of *Every 15 min* (`15m`),
 *Every hour* (`1h`), *Every 6 hours* (`6h`), *Every day* (`1d`), or *Every week*
 (`1w`).
 
@@ -600,7 +610,7 @@ section that already holds a non-default value.
 | **Event names and grouping** | How tripl turns warehouse rows into event names. Leave it alone and events are named from the column values already in your data. | Event type column · Event name format · Cardinality threshold · Event groups · JSON values to keep as-is |
 | **App version** | Attach an app release and platform to every event. Leave it alone if you do not ship versioned apps. | App version column · Platform column · Pre-release version pattern · Traffic share that counts as released |
 | **Metric breakdowns and drift** *(Catalog + monitoring only)* | Extra columns to split metrics by, and columns whose value mix you want watched for drift. Leave it alone to collect one series per event. | Metric breakdowns · Value limit · Distribution drift |
-| **Limits** | Caps on how much warehouse data each run reads. Leave them alone unless runs are slow or expensive. | Replay chunk size · Lookback (hours) · Row cap per run · Row cap per metrics run |
+| **Limits** | Caps on how much warehouse data each run reads. Leave them alone unless runs are slow or expensive. | Replay chunk size · Lookback (hours) *(needs a time column — with none, the section says each run reads the whole base query instead of offering the field)* · Row cap per run · Row cap per metrics run |
 
 Sections that need your query's columns stay empty until a preview is loaded and
 say so. The shared number of releases to retain lives under **Settings → Project
@@ -640,7 +650,7 @@ partialities are reported independently:
 
 | Bound | What it means | How it reads |
 | --- | --- | --- |
-| **Lookback window** | Only rows inside the scan's lookback were read. An event absent from the last 24 hours is not an event that will not be created. | The summary names the window it used. |
+| **Lookback window** | With a **Time column**, only rows inside the scan's lookback were read — an event absent from the last 24 hours is not an event that will not be created. With none there is no window, and the whole base query was read. | The summary names the window it used, or says *No time window — the whole base query was read*. |
 | **Sample** | The dry run examines at most a fixed number of the *most common* column combinations (5,000 by default, `sample_row_limit`). If it hit that cap, more distinct events exist than it looked at. | "Would create **at least** N events", never a flat N. |
 | **Event cap** | Generation stops at 10,000 events per pass. The real scan stops there too. | An explicit note when the cap was reached. |
 

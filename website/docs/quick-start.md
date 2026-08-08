@@ -164,8 +164,10 @@ monitored tracking plan.
      metrics, so anomalies and alerts can fire. This is the default, and it needs
      a **time column** and a **schedule**. Pick this one if you are following
      this guide; Step 6 depends on it.
-   - **Catalog only** — discover events and fields, nothing more. No metric
-     points, so no anomalies and no alerts.
+   - **Catalog only** — discover events and fields when you run it, nothing
+     more. No schedule, so no metric points, no anomalies and no alerts. It can
+     still take a **time column**, which bounds each run to the lookback window
+     rather than reading the whole query.
 3. Point it at your data: pick the **data source** and give the **base query** —
    typically just selecting from the table where your events land.
 4. **Load the preview.** It leads with **What this scan would create**: the event
@@ -175,19 +177,24 @@ monitored tracking plan.
    **Show sample rows** — they are the evidence, not the answer.
 
    The answer is bounded, and says which bound it is under. It reads the scan's
-   lookback window and at most the 5,000 most common column combinations, so when
-   it hits that cap it reads *Would create **at least** N events* rather than a
-   flat count. It never projects a table-wide total.
+   lookback window — or, if the scan has no time column to window on, everything
+   the base query returns, which the panel states — and at most the 5,000 most
+   common column combinations, so when it hits that cap it reads *Would create
+   **at least** N events* rather than a flat count. It never projects a
+   table-wide total.
 
    Change the form afterwards — a different event name format, a different
    cardinality threshold — and the panel says the answer no longer describes this
    scan; **Check again** re-runs it. If your **Event name format** references a
    key the rows cannot supply, the preview says so here: that format would fail
    *every* run of the config, so this is the cheapest place to find out.
-5. In Catalog + monitoring, choose the **Time column** (the timestamp tripl
-   buckets counts by) and the **Schedule** — every 15 minutes, hourly, every 6
-   hours, daily, or weekly. The form will not let you create the scan until both
-   are set, because a monitoring scan missing either one is never run at all.
+5. Choose the **Time column** (the timestamp tripl buckets counts by, and what
+   bounds each run to the lookback window) and — in Catalog + monitoring — the
+   **Schedule**: every 15 minutes, hourly, every 6 hours, daily, or weekly. In
+   Catalog + monitoring the form will not let you create the scan until both are
+   set, because a monitoring scan missing either one is never run at all. In
+   Catalog only the time column is optional; leaving it empty means every run
+   reads everything the base query returns.
 6. Open **Event names and grouping** and **App version** if you need them. These
    sections start collapsed on purpose: leaving them alone gives sensible
    behaviour, and each says what that behaviour is. Version and platform columns

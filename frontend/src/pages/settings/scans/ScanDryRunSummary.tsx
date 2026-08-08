@@ -25,6 +25,14 @@ const MAX_LISTED = 20
 export const NAME_FORMAT_FIX =
   'Fix the event name format — a scan with this format fails every run.'
 
+/**
+ * The panel used to print the window sentence only when there WAS one, so a scan
+ * with no time column silently read the whole base query while three docs and the
+ * Limits section still described a bounded read. A missing bound is a fact about
+ * the answer, so it is stated rather than omitted.
+ */
+const NO_WINDOW_NOTE = 'No time window — the whole base query was read'
+
 export const EVENTS_TRUNCATED_NOTE =
   'More distinct events exist than this preview looked at.'
   + ' Raise the sample row limit or narrow the base query to see them all.'
@@ -182,9 +190,11 @@ export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
           What this scan would create
         </h4>
         <Note>
-          {windowed && (
+          {windowed ? (
             <>From {formatDateTime(dryRun.window_from as string)} to{' '}
             {formatDateTime(dryRun.window_to as string)} · </>
+          ) : (
+            <>{NO_WINDOW_NOTE} · </>
           )}
           {sampleSentence}
         </Note>

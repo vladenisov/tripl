@@ -150,5 +150,22 @@ describe('ScanDryRunSummary — the panel names events, not rows (tripl-3y7z.6)'
       screen.getByText(/4,812 rows in the 143 most common column combinations\./),
     ).toBeInTheDocument()
     expect(screen.getByText(/^From /)).toBeInTheDocument()
+    expect(screen.queryByText(/No time window/)).toBeNull()
+  })
+
+  // Three docs promised the dry run reads the scan's lookback window. Without a
+  // time column resolve_lookback_window returns None and the read is the whole
+  // base query — the panel used to print nothing at all there, so the missing
+  // bound was invisible on the one screen built to be trusted about it.
+  it('says the read was unbounded when there was no window', () => {
+    render(
+      <ScanDryRunSummary
+        dryRun={dryRun({ window_from: null, window_to: null, sampled_rows: 4812 })}
+      />,
+    )
+
+    expect(
+      screen.getByText(/No time window — the whole base query was read · 4,812 rows in the/),
+    ).toBeInTheDocument()
   })
 })

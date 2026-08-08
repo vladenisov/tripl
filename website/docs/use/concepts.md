@@ -171,8 +171,11 @@ Every scan is one of two things, and you choose which when you create it:
   points on a schedule. It needs a **time column** (what tripl buckets the
   counts by) and a **schedule** (how often it runs). Both are required, because
   without either one the scheduler never picks the scan up.
-- A **catalog-only scan** discovers events and fields and stops there. It records
-  no metric points.
+- A **catalog-only scan** discovers events and fields and stops there. It has no
+  schedule — that absence is what makes it catalog-only — so it runs when you
+  start it and records no metric points. It may still name a **time column**,
+  which does not turn it into a monitoring scan: there it only bounds each run to
+  the lookback window instead of reading everything the base query returns.
 
 **Only a monitoring scan produces metric points, and metric points are what
 everything downstream is built on** — no points means no [signals](#monitor--signal),

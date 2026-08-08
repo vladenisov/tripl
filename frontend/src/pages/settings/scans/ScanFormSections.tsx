@@ -44,12 +44,18 @@ const MODE_OPTIONS: {
   {
     value: 'catalog',
     label: 'Catalog only',
-    description: 'Discover events and fields. No metrics, no anomalies, no alerts.',
+    description:
+      'Discover events and fields when you run it. No schedule, so no metrics, no anomalies and no alerts.',
   },
 ]
 
 const PREVIEW_GATE_TEXT =
   "Load preview first — tripl needs your query's columns to offer choices here."
+
+// Module-private on purpose: the tests assert the rendered sentence, which is the
+// only place it matters.
+const NO_LOOKBACK_WITHOUT_TIME_COLUMN =
+  'Each run reads everything the base query returns. Pick a Time column to bound runs to a window.'
 
 interface SectionProps {
   form: UseScanFormResult
@@ -141,8 +147,9 @@ function PreviewGate() {
 
 /**
  * Everything a scan cannot be created without, always visible: what the scan
- * does, where it reads from, and — in Catalog + monitoring only — the two
- * columns that decide whether it is ever dispatched.
+ * does, where it reads from, the time column that bounds every run, and — in
+ * Catalog + monitoring only — the schedule that, together with that column,
+ * decides whether the dispatcher ever picks the config up.
  */
 export function ScanEssentialsSection({
   form,
@@ -162,6 +169,17 @@ export function ScanEssentialsSection({
   const selectedSource = dataSources.find(ds => ds.id === state.dataSourceId)
   const sourceName = selectedSource?.name ?? ''
   const { data: schemaData } = useDataSourceSchema(state.dataSourceId || undefined)
+
+  // A saved config opens its edit form before any preview has been loaded, so
+  // the column list is empty and a <select> whose value matches no option shows
+  // its placeholder instead. That made an existing time column read as "not
+  // set" on the one screen a user checks — so the saved value is always among
+  // the choices, whether or not a preview has named it.
+  const previewColumns = preview?.columns.map(column => column.name) ?? []
+  const timeColumnChoices =
+    state.timeColumn && !previewColumns.includes(state.timeColumn)
+      ? [state.timeColumn, ...previewColumns]
+      : previewColumns
 
   return (
     <SCard title="" footer={footerFor?.()}>
@@ -290,7 +308,6 @@ export function ScanEssentialsSection({
         label="Event type"
         id="scan-event-type"
         hint="Leave on auto-detect to derive from the data."
-        last={!monitoring}
       >
         <select
           id="scan-event-type"
@@ -315,53 +332,71 @@ export function ScanEssentialsSection({
         </div>
       )}
 
-      {/* Catalog only shows neither field and no warning: empty is a deliberate
-          answer there, and nagging about it would be the product second-guessing
-          a choice the user just made. */}
+      {/* The time column is asked for in BOTH modes, because it does two jobs and
+          only one of them is monitoring: it buckets metric points, and it bounds
+          every run to Limits → Lookback (hours). Catalog only drops the SCHEDULE
+          — that alone is what makes a config catalog-only, since the dispatcher
+          selects on `time_column IS NOT NULL AND interval IS NOT NULL`. Hiding
+          this field in Catalog only is what let an unrelated edit null a saved
+          column and hand the next run an unbounded full-table read. In Catalog
+          only it is optional and says what leaving it empty costs; there is no
+          warning, because empty is a legitimate answer there. */}
+      <Field
+        label="Time column"
+        id="scan-time-column"
+        hint={
+          monitoring
+            ? 'The timestamp tripl buckets metrics by. Required for monitoring.'
+            : 'Optional. Bounds each run to the lookback window under Limits — without one, every run reads everything the base query returns.'
+        }
+        last={!monitoring}
+      >
+        <select
+          id="scan-time-column"
+          value={state.timeColumn}
+          onChange={e => setTimeColumn(e.target.value)}
+          className={`${SELECT_CLASS} max-w-[280px]`}
+          disabled={!preview}
+        >
+          {/* Monitoring cannot proceed on the empty option, so it stays a
+              disabled placeholder there; Catalog only needs it selectable, or a
+              time column could be set and never removed again. */}
+          <option value="" disabled={monitoring}>
+            {preview
+              ? monitoring
+                ? 'Choose a time column'
+                : 'No time column — read the whole query'
+              : 'Load preview first'}
+          </option>
+          {timeColumnChoices.map(name => (
+            <option key={name} value={name}>{name}</option>
+          ))}
+        </select>
+        {monitoring && !state.timeColumn && (
+          <p role="alert" className="mt-1.5 text-xs" style={{ color: 'var(--warning)' }}>
+            Pick a time column — monitoring needs one to build a time series.
+          </p>
+        )}
+      </Field>
       {monitoring && (
-        <>
-          <Field
-            label="Time column"
-            id="scan-time-column"
-            hint="The timestamp tripl buckets metrics by. Required for monitoring."
+        <Field label="Schedule" id="scan-interval" hint="How often this scan runs." last>
+          <select
+            id="scan-interval"
+            value={state.interval}
+            onChange={e => setInterval(e.target.value)}
+            className={`${SELECT_CLASS} max-w-[280px]`}
           >
-            <select
-              id="scan-time-column"
-              value={state.timeColumn}
-              onChange={e => setTimeColumn(e.target.value)}
-              className={`${SELECT_CLASS} max-w-[280px]`}
-              disabled={!preview}
-            >
-              <option value="" disabled>{preview ? 'Choose a time column' : 'Load preview first'}</option>
-              {preview?.columns.map(column => (
-                <option key={column.name} value={column.name}>{column.name}</option>
-              ))}
-            </select>
-            {!state.timeColumn && (
-              <p role="alert" className="mt-1.5 text-xs" style={{ color: 'var(--warning)' }}>
-                Pick a time column — monitoring needs one to build a time series.
-              </p>
-            )}
-          </Field>
-          <Field label="Schedule" id="scan-interval" hint="How often this scan runs." last>
-            <select
-              id="scan-interval"
-              value={state.interval}
-              onChange={e => setInterval(e.target.value)}
-              className={`${SELECT_CLASS} max-w-[280px]`}
-            >
-              <option value="" disabled>Choose a schedule</option>
-              {INTERVAL_OPTIONS.map(option => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-            {!state.interval && (
-              <p role="alert" className="mt-1.5 text-xs" style={{ color: 'var(--warning)' }}>
-                Pick a schedule — monitoring needs one to collect metrics.
-              </p>
-            )}
-          </Field>
-        </>
+            <option value="" disabled>Choose a schedule</option>
+            {INTERVAL_OPTIONS.map(option => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+          {!state.interval && (
+            <p role="alert" className="mt-1.5 text-xs" style={{ color: 'var(--warning)' }}>
+              Pick a schedule — monitoring needs one to collect metrics.
+            </p>
+          )}
+        </Field>
       )}
     </SCard>
   )
@@ -571,17 +606,35 @@ export function LimitsSection({ form, footerFor }: SectionProps) {
           </select>
         </Field>
       )}
-      <Field label="Lookback (hours)" id="scan-lookback-hours" hint="How far back each run reads. Default 24.">
-        <Input
+      {/* A lookback is the predicate `<time column> >= now() - N hours`, so with
+          no time column there is no window to set: resolve_lookback_window
+          returns None and the run reads everything the base query returns.
+          Offering the input anyway would be a control that states a bound and
+          applies none, so the field is replaced by the one sentence that says
+          what is actually happening and where to change it. */}
+      {state.timeColumn ? (
+        <Field
+          label="Lookback (hours)"
           id="scan-lookback-hours"
-          type="number"
-          min={1}
-          value={state.scanLookbackHours}
-          onChange={e => set('scanLookbackHours', e.target.value)}
-          className="font-mono max-w-[280px]"
-          placeholder="Default"
-        />
-      </Field>
+          hint={`How far back each run reads, counted on ${state.timeColumn}. Default 24.`}
+        >
+          <Input
+            id="scan-lookback-hours"
+            type="number"
+            min={1}
+            value={state.scanLookbackHours}
+            onChange={e => set('scanLookbackHours', e.target.value)}
+            className="font-mono max-w-[280px]"
+            placeholder="Default"
+          />
+        </Field>
+      ) : (
+        <Field label="Lookback (hours)">
+          <p className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
+            {NO_LOOKBACK_WITHOUT_TIME_COLUMN}
+          </p>
+        </Field>
+      )}
       <Field label="Row cap per run" id="scan-row-limit">
         <Input
           id="scan-row-limit"
