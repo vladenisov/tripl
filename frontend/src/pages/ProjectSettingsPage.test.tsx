@@ -1672,6 +1672,258 @@ describe('ProjectSettingsPage', () => {
     })
   })
 
+  // The case above cannot tell the two implementations apart: with no app
+  // version, platform or time column named, the reserved set the button used to
+  // build in TypeScript ({event type column, time column}) and the backend's
+  // `reserved_catalog_columns` happen to agree, so both produce "Create 2
+  // fields". This one is the case where they DISAGREE, which is the only kind
+  // that can catch the defect coming back.
+  //
+  // The draft names `app_version` as its app version column and `platform` as
+  // its platform column. Those are metric dimensions: the backend reserves them
+  // and leaves them out of `unmapped_columns`, and the panel says so out loud.
+  // The old local recomputation subtracted neither, so it offered "Create 4
+  // fields" — app_version and platform included — one line under a panel
+  // listing those very columns as reserved. Accepting that offer gives them
+  // FieldDefinitions, and `plan_column_meta` then folds them into event
+  // identity on every subsequent run.
+  //
+  // So this asserts the whole screen agrees: whatever the panel calls reserved,
+  // the button does not offer, and the request carries only what the dry run
+  // called unmapped. It fails if anyone reintroduces a second answer at the
+  // call site, which a unit test on the component alone cannot see.
+  it('never offers a column the dry run reserved, even though a local reserved set would', async () => {
+    const bulkBodies: unknown[] = []
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({
+          tables: [
+            { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+          ],
+        })
+      }
+
+      if (url.endsWith('/api/v1/data-sources')) {
+        return mockJsonResponse([
+          {
+            id: 'ds-1',
+            name: 'Main DS',
+            db_type: 'clickhouse',
+            host: 'localhost',
+            port: 8123,
+            database_name: 'default',
+            username: 'default',
+            password_set: false,
+            connection_settings: {
+              location: null,
+              maximum_bytes_billed: null,
+              dataset_allowlist: null,
+              sslmode: null,
+              sslrootcert: null,
+              sslcert: null,
+              search_path: null,
+              sslkey_set: false,
+            },
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+        ])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/event-types')) {
+        return mockJsonResponse([
+          {
+            id: 'type-1',
+            project_id: 'project-1',
+            name: 'purchase',
+            display_name: 'Purchase',
+            description: '',
+            color: '#0ea5e9',
+            order: 0,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+            field_definitions: [
+              {
+                id: 'field-1',
+                event_type_id: 'type-1',
+                name: 'event_name',
+                display_name: 'Event name',
+                field_type: 'string',
+                is_required: false,
+                enum_options: null,
+                description: '',
+                order: 0,
+                sensitivity: 'none',
+              },
+            ],
+          },
+        ])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/scans') && (!init || !init.method || init.method === 'GET')) {
+        return mockJsonResponse([])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/scans/preview') && init?.method === 'POST') {
+        return mockJsonResponse({
+          id: 'preview-job-1',
+          scan_config_id: null,
+          status: 'completed',
+          error_message: null,
+          created_at: '2026-04-12T00:00:00Z',
+          started_at: '2026-04-12T00:00:00Z',
+          completed_at: '2026-04-12T00:00:00Z',
+          result_summary: {
+            columns: [
+              { name: 'event_name', type_name: 'String', is_nullable: false },
+              { name: 'created_at', type_name: 'DateTime', is_nullable: false },
+              { name: 'app_version', type_name: 'String', is_nullable: true },
+              { name: 'platform', type_name: 'String', is_nullable: true },
+              { name: 'payload', type_name: 'JSON', is_nullable: true },
+            ],
+            rows: [
+              {
+                event_name: 'purchase',
+                created_at: '2026-04-12T10:30:00',
+                app_version: '2.10.0',
+                platform: 'ios',
+                payload: { total: 42 },
+              },
+            ],
+            json_columns: [],
+          },
+        })
+      }
+
+      // What `build_dry_run_payload` returns for this draft. The explicit event
+      // type makes may_create_fields False, so `fields` is empty; the app
+      // version and platform columns land in `reserved_catalog_columns`, so
+      // `unmapped_columns` is the rest minus the one field "Purchase" declares.
+      if (url.endsWith('/api/v1/projects/demo/scans/dry-run') && init?.method === 'POST') {
+        return mockJsonResponse({
+          id: 'dry-run-job-1',
+          status: 'completed',
+          started_at: '2026-04-12T00:00:00Z',
+          completed_at: '2026-04-12T00:00:00Z',
+          error_message: null,
+          created_at: '2026-04-12T00:00:00Z',
+          updated_at: '2026-04-12T00:00:00Z',
+          result_summary: {
+            window_from: null,
+            window_to: null,
+            sampled_rows: 1,
+            sample_row_limit: 5000,
+            sample_is_complete: true,
+            breakdown_combinations: 1,
+            events: [
+              {
+                name: 'purchase',
+                source_name: 'purchase',
+                event_type: 'Purchase',
+                approx_row_count: 1,
+                share_of_sample: 1,
+                status: 'new',
+                grouped_by_rule: null,
+                count_confidence: 'exact',
+              },
+            ],
+            events_truncated: false,
+            max_events_reached: false,
+            fields: [],
+            templated_columns: [],
+            reserved_columns: ['app_version', 'platform'],
+            unmapped_columns: ['created_at', 'payload'],
+            warnings: [],
+            errors: [],
+          },
+        })
+      }
+
+      if (
+        url.endsWith('/api/v1/projects/demo/event-types/type-1/fields/bulk')
+        && init?.method === 'POST'
+      ) {
+        bulkBodies.push(JSON.parse(String(init.body)))
+        return mockJsonResponse([])
+      }
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
+          <Routes>
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    const addScanButton = await screen.findByRole('button', { name: /New scan/i })
+    await waitFor(() => expect(addScanButton).not.toBeDisabled())
+    fireEvent.click(addScanButton)
+
+    await screen.findByText('New scan')
+    const textboxes = screen.getAllByRole('textbox')
+    fireEvent.change(textboxes[0], { target: { value: 'Versioned scan' } })
+    fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
+
+    const selects = screen.getAllByRole('combobox')
+    fireEvent.change(selects[0], { target: { value: 'ds-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
+
+    await screen.findByTestId('scan-preview-panel')
+
+    const updatedSelects = screen.getAllByRole('combobox')
+    fireEvent.change(updatedSelects[1], { target: { value: 'type-1' } })
+
+    // Named before the check runs, so the answer the panel renders is the answer
+    // for a draft that reserves them — not a stale one the button would hide for.
+    fireEvent.click(screen.getByRole('button', { name: /App version/ }))
+    fireEvent.change(screen.getByLabelText('App version column'), {
+      target: { value: 'app_version' },
+    })
+    fireEvent.change(screen.getByLabelText('Platform column'), {
+      target: { value: 'platform' },
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Check' }))
+
+    // The panel's two lists, which the button must not contradict.
+    expect(
+      await screen.findByText(
+        /app_version, platform — tripl already uses these, so they never become event fields/,
+      ),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/created_at, payload — no field matches them/),
+    ).toBeInTheDocument()
+
+    // Two, not four. The old TS reserved set held only the event type column and
+    // the time column, neither of which this draft names, so it would have
+    // counted every preview column without a field definition.
+    expect(screen.getByRole('button', { name: 'Create 2 fields' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Create 4 fields' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create 2 fields' }))
+
+    await waitFor(() => expect(bulkBodies).toHaveLength(1))
+    expect(bulkBodies[0]).toEqual({
+      fields: [
+        { name: 'created_at', display_name: 'created_at', field_type: 'string' },
+        { name: 'payload', display_name: 'payload', field_type: 'json' },
+      ],
+    })
+  })
+
   it('keeps saved JSON value paths visible when edit preview omits them', async () => {
     const previewBodies: unknown[] = []
 
