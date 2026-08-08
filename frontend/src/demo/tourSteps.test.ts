@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { buildNavGroups } from '../lib/navigation'
 import { buildMetricBuildingBlocks, buildTourSteps } from './tourSteps'
 
 describe('buildTourSteps', () => {
@@ -34,6 +35,35 @@ describe('buildTourSteps', () => {
     expect(byId.get('reconciliation')).toBe('/p/acme/reconciliation')
     expect(byId.get('branches')).toBe('/p/acme/settings/branches')
     expect(byId.get('alerting')).toBe('/p/acme/settings/alerting')
+  })
+
+  it('tags every step with a nav group the sidebar actually renders (tripl-3y7z)', () => {
+    // ProductTour prints `step.area` as the step's chip. The scans step said
+    // 'Connect', a group buildNavGroups has never produced, so a reader who
+    // dismissed the tour and went looking for "Connect → Scans" had nowhere to
+    // go. Derived from navigation itself so a future rename cannot drift.
+    const groups = buildNavGroups('acme', undefined).map((group) => group.label)
+    for (const step of steps) {
+      expect(groups, `step "${step.id}" is tagged with area "${step.area}"`).toContain(step.area)
+    }
+  })
+
+  it('files the scans step under the group that owns Scans (tripl-3y7z)', () => {
+    const scans = steps.find((step) => step.id === 'scans')
+    const govern = buildNavGroups('acme', undefined).find((group) => group.label === 'Govern')
+    expect(govern?.items.map((item) => item.id)).toContain('scans')
+    expect(scans?.area).toBe('Govern')
+  })
+
+  it('describes a scan by what every run produces, not by a baseline (tripl-3y7z)', () => {
+    // A scan fills the tracking plan; only a Catalog + monitoring scan records
+    // metric points, and only on its schedule. "Pull recent volume from a source
+    // so tripl can learn the baseline" described neither a Catalog only scan nor
+    // the manual run a newcomer starts from this step.
+    const scans = steps.find((step) => step.id === 'scans')
+    expect(scans?.blurb).not.toMatch(/baseline/i)
+    expect(scans?.blurb).toMatch(/tracking plan/i)
+    expect(scans?.blurb).toMatch(/Catalog \+ monitoring/)
   })
 
   it('demos meaning-first search with the curated examples (tripl-odrj.5)', () => {

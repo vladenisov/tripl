@@ -590,4 +590,27 @@ class TestScanJobDetail:
         assert detail == "no new events discovered"
 
     def test_running_job_without_summary_reports_status(self):
-        assert _scan_job_detail("running", None, None) == "Scan job status changed"
+        assert _scan_job_detail("running", None, None) == "Run status changed"
+
+    def test_no_fallback_uses_the_api_spelling_job(self):
+        """The activity rail is a web-UI surface, so it says *run* (tripl-3y7z).
+
+        feature-reference.md states the `job` spelling lives in the API and the
+        CLI only, and activity-panel.tsx renders `detail` verbatim.
+        """
+        for status in ("pending", "running", "completed", "cancelled", "failed"):
+            detail = _scan_job_detail(status, None, None)
+            assert "job" not in detail.lower(), f"{status!r} detail still says job: {detail!r}"
+
+    def test_completed_fallback_does_not_claim_a_metrics_collection(self):
+        """A completed metrics collection ALWAYS carries ``events_created``
+        (collect_metrics writes it unconditionally), so this branch is never one.
+        It is reached by an event-groups apply, which the old wording
+        "Metrics collection job updated" mislabelled as metrics work."""
+        detail = _scan_job_detail(
+            "completed",
+            {"mode": "event_groups_apply", "events_merged": 0, "event_types_processed": 4},
+            None,
+        )
+        assert detail == "Run finished with no counts to report"
+        assert "Metrics collection" not in detail

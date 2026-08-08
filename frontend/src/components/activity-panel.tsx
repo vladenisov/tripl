@@ -44,9 +44,13 @@ const KIND_ICON: Record<ActivityItemType, LucideIcon> = {
   event: Check,
 }
 
+// The noun a collapsed burst counts. A `scan` item is one scan RUN, not one
+// scan, so three completed runs of one nightly scan must read "3 runs
+// completed" — "3 scans completed" claimed the project had three scans
+// (tripl-3y7z). The title stem already carries the scan noun ("Scan completed").
 const TYPE_PLURAL: Record<ActivityItemType, string> = {
   anomaly: 'anomalies',
-  scan: 'scans',
+  scan: 'runs',
   alert: 'alerts',
   event: 'events',
 }

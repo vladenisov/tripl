@@ -9,7 +9,13 @@
 
 export interface TourStep {
   id: string
-  /** Grouped-nav area this surface belongs to (Plan / Observe / Govern / Connect). */
+  /**
+   * Grouped-nav area this surface belongs to. It must be one of the group
+   * labels `buildNavGroups` actually renders — Plan, Observe or Govern. The
+   * tour prints this as the step's chip, so a name the sidebar does not have
+   * sends the reader looking for a group that does not exist; 'Connect' was
+   * exactly that (tripl-3y7z).
+   */
   area: string
   title: string
   blurb: string
@@ -89,16 +95,24 @@ export function buildTourSteps(slug: string): TourStep[] {
     },
     {
       id: 'scans',
-      area: 'Connect',
+      // Scans live under Govern in the sidebar, and every doc says
+      // "Govern → Scans". 'Connect' named no group at all.
+      area: 'Govern',
       title: 'Scans',
-      blurb: 'Pull recent volume from a source so tripl can learn the baseline.',
+      // A scan is not "pull volume to learn a baseline": that describes only the
+      // scheduled metrics collection of a monitoring scan. What EVERY scan does
+      // is fill the tracking plan (tripl-3y7z).
+      blurb:
+        'Read your warehouse into the tracking plan. Catalog + monitoring also records metric points on a schedule.',
       to: `${base}/scans`,
     },
     {
       id: 'live-activity',
       area: 'Observe',
       title: 'Live activity',
-      blurb: 'The Overview updates live as scans and metric collection run.',
+      // "as scans ... run" counted an execution as a scan, the same slip the
+      // activity rail's burst summary made. An execution is a *run*.
+      blurb: 'The Overview updates live as scan runs and metric collection land.',
       to: `${base}/overview`,
     },
     {

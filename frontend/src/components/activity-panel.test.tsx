@@ -19,6 +19,22 @@ function implementedEvent(name: string, occurredAt: string) {
   }
 }
 
+/** One RUN of a scan, as `_scan_job_items` emits it. */
+function completedRun(id: string, scanName: string, occurredAt: string) {
+  return {
+    id: `scan-job:${id}`,
+    project_id: 'project-1',
+    project_slug: 'demo',
+    project_name: 'Demo',
+    type: 'scan',
+    severity: 'low',
+    title: `Scan completed: ${scanName}`,
+    detail: 'no new events discovered · 512 rows scanned',
+    occurred_at: occurredAt,
+    target_path: '/p/demo/scans',
+  }
+}
+
 function mockJsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -170,6 +186,29 @@ describe('ActivityPanel', () => {
     expect(await screen.findByText('Event implemented: checkout_started')).toBeInTheDocument()
     expect(screen.getByText('Event implemented: page_view')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /events implemented/ })).not.toBeInTheDocument()
+  })
+
+  it('counts a burst of scan items as runs, not as scans (tripl-3y7z)', async () => {
+    // Three RUNS of ONE nightly scan, retried in quick succession. The old
+    // summary read "3 scans completed", so a project with a single scan appeared
+    // to have three — a run counted as a scan, the noun the epic settled.
+    const stamp = new Date().toISOString()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/activity/projects/demo?limit=20')) {
+        return mockJsonResponse([
+          completedRun('3', 'Nightly scan', stamp),
+          completedRun('2', 'Nightly scan', stamp),
+          completedRun('1', 'Nightly scan', stamp),
+        ])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderActivityPanel('demo')
+
+    expect(await screen.findByRole('button', { name: /3 runs completed/ })).toBeInTheDocument()
+    expect(screen.queryByText(/scans completed/)).not.toBeInTheDocument()
   })
 
   it('narrows the rail and drops its footer when there is no activity', async () => {

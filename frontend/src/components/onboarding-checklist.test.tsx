@@ -114,6 +114,19 @@ describe('OnboardingChecklist', () => {
     }
   })
 
+  it('describes "Run a scan" by what a run produces, not by a baseline (tripl-3y7z)', () => {
+    // The step ticks on ANY executed run, including a Catalog only scan's, and
+    // the manual Run now it asks for calls `run_scan`, which writes events and
+    // fields but never a metric point. "Pull recent volume so tripl can learn
+    // the baseline" was therefore false for the very run that completes it.
+    renderChecklist({ summary: makeSummary() })
+
+    const body = document.body.textContent ?? ''
+    expect(body).not.toMatch(/learn the baseline/i)
+    expect(body).not.toMatch(/Pull recent volume/i)
+    expect(screen.getByText(/Catalog \+ monitoring/)).toBeInTheDocument()
+  })
+
   it('auto-derives the completed count from project state', () => {
     // plan (event types), scan (an EXECUTED job), and reconciliation (coverage)
     // are done → 3 of 5.

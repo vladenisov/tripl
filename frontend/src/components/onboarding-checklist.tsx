@@ -130,7 +130,12 @@ function buildSteps(slug: string, summary: ProjectSummary, sourceCount: number):
     {
       id: 'scan',
       title: 'Run a scan',
-      hint: 'Pull recent volume so tripl can learn the baseline.',
+      // What this step actually asks for is a manual run, and `run_scan` writes
+      // events and fields — never a metric point. Volume arrives later, from the
+      // scheduled collection a Catalog + monitoring scan gets. Promising "pull
+      // recent volume so tripl can learn the baseline" was false for the run the
+      // step ticks on, and false outright for a Catalog only scan (tripl-3y7z).
+      hint: 'Read real warehouse data into your plan. Pick Catalog + monitoring to also track volume.',
       href: `${base}/scans`,
       // A seeded ScanConfig (scan_count > 0) does NOT count — require an
       // actually-executed job.
