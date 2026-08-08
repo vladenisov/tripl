@@ -186,6 +186,47 @@ match live either.
 
 ---
 
+## The scan preview names no events
+
+**Symptom.** The preview loads, but **What this scan would create** lists zero
+events, or far fewer than you expected.
+
+The dry run is the same planner a real run uses, so "it would create nothing" is
+a real answer, not a broken panel. Four causes, in the order worth checking:
+
+1. **The window is empty.** The dry run only reads rows inside the scan's
+   lookback (**Limits → Lookback (hours)**, default 24). If your table has no
+   rows in that window — a staging table, a backfill that stopped, a timestamp
+   column in the wrong unit — there is nothing to name. The summary prints the
+   window it used; widen the lookback or clear the time column to check.
+
+2. **The event name format is broken.** If the panel shows *Event name format
+   error*, that is the whole answer: a format referencing a key the rows cannot
+   supply fails **every** run of the config, not just the preview. The message
+   names the missing key and lists the keys that are available. Fix the format
+   before creating the scan — this is exactly the failure the dry run exists to
+   catch early.
+
+3. **Cardinality collapsed everything into one event.** A column with more
+   distinct values than the **Cardinality threshold** becomes a `${column}`
+   template rather than one event per value, so thousands of rows can legitimately
+   produce one event. The panel names each collapsed column and its distinct
+   count. Raise the threshold, or name the column in **Event name format** — a
+   column the name is built from is always enumerated regardless of cardinality.
+
+4. **The columns are unmapped or reserved.** With an explicit **Event type**, a
+   scan only uses columns that event type already declares; the rest are listed
+   as **unmapped** and are skipped by a real run too. Columns filling a reserved
+   role (event type, time, app version, platform, or an event-group-rule column)
+   are listed as **reserved**: they are collected as metric dimensions, never as
+   event fields, and their absence from the plan is intentional.
+
+If the events list is present but prefixed with **at least**, nothing is wrong —
+the sample hit its cap, and the count is a floor rather than a total. See
+[Scans → The dry run](feature-reference.md#the-dry-run--what-this-scan-would-create).
+
+---
+
 ## A scan job fails / a data-source connection test fails
 
 **Symptom.** A scan job ends in `failed`, or the **Test connection** button on a

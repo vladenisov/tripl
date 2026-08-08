@@ -608,6 +608,50 @@ say so. The shared number of releases to retain lives under **Settings → Proje
 role columns (event type, time, version, platform) cannot simultaneously be
 selected as scalar breakdown/drift fields.
 
+#### The dry run — what this scan would create
+
+Loading a preview also asks the backend "what would this config create?" and
+answers with **event names and field names**, not raw rows. The answer is
+computed by pushing the sampled warehouse rows through the *same* planner a real
+run uses, so the names you see are the names a run would write — the event name
+format, the group rules and the cardinality collapse are all applied for real.
+Nothing is written: the planner is a pure function and the dry run holds no
+transaction open on your plan.
+
+It is deliberately bounded, and says so rather than rounding up. Three separate
+partialities are reported independently:
+
+| Bound | What it means | How it reads |
+| --- | --- | --- |
+| **Lookback window** | Only rows inside the scan's lookback were read. An event absent from the last 24 hours is not an event that will not be created. | The summary names the window it used. |
+| **Sample** | The dry run examines at most a fixed number of the *most common* column combinations (5,000 by default, `sample_row_limit`). If it hit that cap, more distinct events exist than it looked at. | "Would create **at least** N events", never a flat N. |
+| **Event cap** | Generation stops at 10,000 events per pass. The real scan stops there too. | An explicit note when the cap was reached. |
+
+It never projects a table-wide total. Each event carries its share of the sample
+and an exact count of the sampled rows behind it — not an estimate of how many
+rows exist in your warehouse.
+
+Three more things it reports, each answering a question the raw rows could not:
+
+- **Templated columns.** A column with more distinct values than the
+  **Cardinality threshold** collapses into a `${column}` template, so you get one
+  event instead of thousands. The dry run names the column and its distinct
+  count, because that is a step function of a threshold you are editing on the
+  same form, not a property of your data.
+- **Event name format errors.** A format referencing a key the rows cannot supply
+  fails *every* run of that config. Catching it here, instead of after two
+  hundred failed production runs, is the single most valuable thing this feature
+  does. The error is reported, not raised — the dry run still completes.
+- **Fields.** A field is either `json` or `string`. That is the entire type
+  inference a scan performs; claiming `integer` or `timestamp` would be a claim
+  about something the scan does not do. Fields are only reported as "would be
+  added" on the auto-detect (event type column) path, which is the path that
+  creates them; with an explicit event type, columns the event type does not
+  declare are listed as **unmapped** instead, because a run would skip them.
+
+Like the preview, the dry run runs free-text SQL against a stored credential, so
+it is **owner-only**.
+
 #### The mode badge
 
 Every scan row and the scan detail header carry a badge derived from the two

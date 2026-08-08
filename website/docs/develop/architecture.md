@@ -319,6 +319,47 @@ photos, comments) and merge back via a
    not overwrite user-authored field values or recreate excluded variables.
 6. `ScanJob.result_summary` is filled in for the UI.
 
+Steps 4 and 5 are two modules, not one. `core/analyzers/event_plan.plan_events`
+is the **pure** half: it turns breakdown rows into event identities by applying
+the name format, the group rules and the cardinality collapse, and it touches no
+`Session`. `core/analyzers/event_generator.generate_events` is the persistence
+tail: it calls `plan_events` and then materialises the plan — variables, field
+values, variable contexts, merges. The split exists so a *dry run* can ask the
+question without answering it in a second implementation: `generate_events`
+persists at eleven sites and cannot be made not to with a flag, and a
+savepoint-and-rollback was rejected because it really executes `session.delete()`
+on events and metrics.
+
+Two invariants the split must preserve:
+
+- The **reserved column set** is computed by the caller
+  (`worker/utils/reserved_columns.reserved_catalog_columns`) and passed down.
+  `core` must never import `worker`, and re-deriving the set inside the planner
+  is what took a production scan down for 200 consecutive runs.
+- Variable creation is hoisted out of the column loop into an **ordered**
+  `variables_needed` list. `ensure_variable` creates a variable with the first
+  type it is asked for, so a `set` would make the stored type depend on hash
+  order.
+
+### Scan dry-run flow
+
+1. The api creates a `ScanDryRunJob` (table `scan_dry_run_jobs`) from either a
+   saved `scan_config_id` or a draft, and answers `202`.
+2. The `dry_run_scan_config_async` Celery task runs the same `GROUP BY ALL` a
+   real scan runs, bounded by `sample_row_limit`.
+3. It resolves the target event type(s) exactly as `run_scan` does, then calls
+   `plan_events` — never `generate_events`.
+4. `ScanDryRunJob.result_summary` is filled with the event names, the fields that
+   would be added, the templated columns, and the three independent bounds
+   (window, sample, event cap) the answer is subject to. Nothing is written to
+   the plan.
+
+Draft inputs live on the row rather than in a request payload for the same reason
+`ScanPreviewJob` does it: the work is dispatched, and the worker must be able to
+reconstruct the request without the caller still being there. A draft is
+reconstituted as a **transient** `ScanConfig` — constructed, never added to the
+session — so `reserved_catalog_columns` can be reused verbatim on it.
+
 ### Metrics flow
 
 1. Beat schedules due-checks.

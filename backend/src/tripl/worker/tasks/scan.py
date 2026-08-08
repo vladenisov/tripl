@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -11,19 +12,31 @@ from sqlalchemy.orm import Session
 
 from tripl import cache, realtime
 from tripl.core.adapters.base import BaseAdapter, ColumnInfo
-from tripl.core.analyzers.cardinality import analyze_cardinality, analyze_cardinality_grouped
+from tripl.core.analyzers.cardinality import (
+    BreakdownAnalysis,
+    analyze_cardinality,
+    analyze_cardinality_grouped,
+)
 from tripl.core.analyzers.event_generator import (
     GenerationResult,
     generate_events,
     merge_existing_events_for_group_rules,
 )
+from tripl.core.analyzers.event_plan import (
+    DEFAULT_MAX_EVENTS,
+    breakdown_row_count,
+    plan_events,
+)
 from tripl.core.analyzers.preview import build_json_paths_payload, build_preview_payload
+from tripl.core.name_template import NameFormatError
+from tripl.core.warehouse_types import is_complex_type
 from tripl.json_paths import group_json_value_paths
 from tripl.models.data_source import DataSource, TestStatus
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
+from tripl.models.scan_dry_run_job import ScanDryRunJob
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.scan_preview_job import ScanPreviewJob
 from tripl.observability.metrics import scan_runs_total
@@ -474,6 +487,375 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             logger.exception("Failed to update event group apply job status after error")
         raise
     finally:
+        session.close()
+
+
+@dataclass
+class _DryRunTarget:
+    """One event type a dry-run would write into, and the rows that reach it."""
+
+    name: str
+    event_type: EventType | None
+    analysis: BreakdownAnalysis
+    # True on the grouped path only: ``catalog_sync`` auto-creates the event type
+    # and a FieldDefinition per unreserved column there, so those fields WOULD
+    # exist by the time events are generated. The single-event-type path creates
+    # nothing, so a column with no field definition really is dropped and must be
+    # reported as unmapped instead of quietly folded into an event name.
+    may_create_fields: bool
+
+
+def _dry_run_targets(
+    session: Session,
+    config: ScanConfig,
+    adapter: BaseAdapter,
+    columns: list[ColumnInfo],
+    *,
+    scan_window: TimeWindow | None,
+    row_limit: int,
+) -> list[_DryRunTarget]:
+    """Resolve the event type(s) exactly the way a real run resolves them."""
+    json_value_paths = group_json_value_paths(config.json_value_paths)
+    common = {
+        "threshold": config.cardinality_threshold,
+        "json_value_paths": json_value_paths,
+        "time_column": config.time_column if scan_window else None,
+        "time_from": scan_window[0] if scan_window else None,
+        "time_to": scan_window[1] if scan_window else None,
+        "row_limit": row_limit,
+    }
+
+    if config.event_type_id is not None:
+        analysis = analyze_cardinality(adapter, config.base_query, columns, **common)  # type: ignore[arg-type]
+        event_type = session.get(EventType, config.event_type_id)
+        if event_type is None:
+            msg = f"EventType {config.event_type_id} not found"
+            raise ValueError(msg)
+        return [
+            _DryRunTarget(
+                name=event_type.name,
+                event_type=event_type,
+                analysis=analysis,
+                may_create_fields=False,
+            )
+        ]
+
+    if not config.event_type_column:
+        msg = "Either event_type_id or event_type_column must be specified"
+        raise ScanError(msg)
+
+    group_values, grouped = analyze_cardinality_grouped(
+        adapter,
+        config.base_query,
+        columns,
+        group_column=config.event_type_column,
+        **common,  # type: ignore[arg-type]
+    )
+    plan_branch = main_branch_id(session, config.project_id)
+    targets: list[_DryRunTarget] = []
+    for value in group_values:
+        event_type = session.execute(
+            select(EventType).where(
+                EventType.project_id == config.project_id,
+                EventType.branch_id == plan_branch,
+                EventType.name == value,
+            )
+        ).scalar_one_or_none()
+        targets.append(
+            _DryRunTarget(
+                name=value,
+                event_type=event_type,
+                analysis=grouped[value],
+                may_create_fields=True,
+            )
+        )
+    return targets
+
+
+def _existing_event_identities(
+    session: Session, project_id: uuid.UUID, event_type_id: uuid.UUID
+) -> set[str]:
+    """Scan identities already in the plan for this event type.
+
+    Keyed on ``source_name`` for the same reason ``generate_events`` dedups on
+    it: a user may rename ``name`` freely, and matching on the display name would
+    report an already-catalogued event as new.
+    """
+    branch = main_branch_id(session, project_id)
+    query = select(Event.source_name, Event.name).where(
+        Event.project_id == project_id,
+        Event.event_type_id == event_type_id,
+    )
+    if branch is not None:
+        query = query.where(Event.branch_id == branch)
+    return {
+        source_name or name for source_name, name in session.execute(query) if (source_name or name)
+    }
+
+
+def build_dry_run_payload(
+    session: Session,
+    adapter: BaseAdapter,
+    config: ScanConfig,
+    *,
+    sample_row_limit: int,
+) -> dict[str, object]:
+    """Answer "what would this scan create?" without writing anything.
+
+    Every event name here comes out of ``plan_events`` — the same function
+    ``generate_events`` calls — so the preview cannot promise a name a run would
+    not produce. Three separate partialities are echoed rather than smoothed
+    over: the lookback window, the sample cap, and the event cap. None of them is
+    extrapolated to a table-wide total.
+    """
+    columns = adapter.get_columns(config.base_query)
+    if config.time_column:
+        columns = [c for c in columns if c.name != config.time_column]
+    scan_window = resolve_lookback_window(
+        time_column=config.time_column,
+        lookback_hours=config.scan_lookback_hours,
+    )
+    # Computed on the DRAFT and passed down: ``core`` must never import
+    # ``worker``, and re-deriving the reserved set is what took a production scan
+    # down for 200 consecutive runs (tripl-lpin).
+    skip_cols = reserved_catalog_columns(config)
+
+    targets = _dry_run_targets(
+        session,
+        config,
+        adapter,
+        columns,
+        scan_window=scan_window,
+        row_limit=sample_row_limit,
+    )
+
+    counts_by_identity: dict[str, int] = {}
+    rule_by_identity: dict[str, str] = {}
+    display_by_identity: dict[str, str] = {}
+    existing_identities: set[str] = set()
+    fields: list[dict[str, object]] = []
+    templated: dict[str, dict[str, object]] = {}
+    warnings: list[str] = []
+    errors: list[str] = []
+    known_field_names: set[str] = set()
+    max_events_reached = False
+
+    for target in targets:
+        existing_fds = (
+            {fd.name: fd.id for fd in target.event_type.field_definitions}
+            if target.event_type is not None
+            else {}
+        )
+        field_ids: dict[str, uuid.UUID] = dict(existing_fds)
+        if target.event_type is None:
+            warnings.append(
+                f"Event type {target.name!r} is not in your plan yet and would be added"
+            )
+        if target.may_create_fields:
+            for column in columns:
+                if column.name in skip_cols or column.name in field_ids:
+                    continue
+                # A hypothetical id: nothing is written, but the planner keys
+                # field values on one, and a column with no id is dropped from
+                # the event name entirely.
+                field_ids[column.name] = uuid.uuid4()
+                fields.append(
+                    {
+                        "name": column.name,
+                        "type": "json" if is_complex_type(column.type_name) else "string",
+                        "status": "new",
+                        "event_type": target.name,
+                    }
+                )
+        known_field_names |= set(field_ids)
+
+        try:
+            plan = plan_events(
+                target.analysis,
+                field_ids,
+                cardinality_threshold=config.cardinality_threshold,
+                event_type_column=config.event_type_column,
+                time_column=config.time_column,
+                event_name_format=config.event_name_format,
+                event_group_rules=config.event_group_rules,
+                reserved_columns=skip_cols,
+                max_events=DEFAULT_MAX_EVENTS,
+            )
+        except NameFormatError as exc:
+            # Deliberately not fatal. Surfacing the unknown key here, instead of
+            # after 200 failed production runs, is the highest-value thing this
+            # endpoint does (tripl-lpin); failing the job would hide it behind a
+            # generic error banner.
+            errors.append(str(exc))
+            continue
+
+        warnings.extend(plan.details)
+        max_events_reached = max_events_reached or plan.truncated
+        for col_name, meta in plan.col_meta.items():
+            if meta.get("is_json") or meta.get("is_low") or col_name in templated:
+                continue
+            card = target.analysis.results.get(col_name)
+            templated[col_name] = {
+                "column": col_name,
+                "distinct_values": card.count if card is not None else 0,
+                "threshold": config.cardinality_threshold,
+            }
+
+        if target.event_type is not None:
+            existing_identities |= _existing_event_identities(
+                session, config.project_id, target.event_type.id
+            )
+        for planned in plan.events:
+            counts_by_identity[planned.name] = counts_by_identity.get(planned.name, 0) + (
+                planned.row_count if planned.row_count is not None else 1
+            )
+            display_by_identity.setdefault(planned.name, planned.name)
+            if planned.matched_rule_name is not None:
+                rule_by_identity.setdefault(planned.name, planned.matched_rule_name)
+
+    breakdown_combinations = sum(len(t.analysis.rows) for t in targets)
+    sampled_rows = sum(
+        breakdown_row_count(t.analysis, row) or 1 for t in targets for row in t.analysis.rows
+    )
+    sample_is_complete = not any(t.analysis.row_limit_reached for t in targets)
+    # "exact" needs BOTH: a complete sample AND no lookback window. A window is a
+    # second, independent partiality — an event absent from the last 24h is not
+    # an event that will not be created.
+    count_confidence = "exact" if sample_is_complete and scan_window is None else "sampled"
+
+    events = [
+        {
+            "name": display_by_identity[identity],
+            "source_name": identity,
+            "approx_row_count": count,
+            "share_of_sample": (count / sampled_rows) if sampled_rows else 0.0,
+            "status": "existing" if identity in existing_identities else "new",
+            "grouped_by_rule": rule_by_identity.get(identity),
+            "count_confidence": count_confidence,
+        }
+        for identity, count in sorted(
+            counts_by_identity.items(), key=lambda item: (-item[1], item[0])
+        )
+    ]
+
+    return {
+        "window_from": scan_window[0].isoformat() if scan_window else None,
+        "window_to": scan_window[1].isoformat() if scan_window else None,
+        "sampled_rows": sampled_rows,
+        "sample_row_limit": sample_row_limit,
+        "sample_is_complete": sample_is_complete,
+        "breakdown_combinations": breakdown_combinations,
+        "events": events,
+        # An incomplete sample means distinct events may exist that this pass
+        # never looked at, so the caller must say "at least N", never "N".
+        "events_truncated": not sample_is_complete,
+        "max_events_reached": max_events_reached,
+        "fields": fields,
+        "templated_columns": list(templated.values()),
+        "reserved_columns": sorted(skip_cols),
+        "unmapped_columns": sorted(
+            c.name for c in columns if c.name not in skip_cols and c.name not in known_field_names
+        ),
+        "warnings": warnings,
+        "errors": errors,
+    }
+
+
+def _dry_run_config(session: Session, job: ScanDryRunJob) -> ScanConfig:
+    """The config a dry-run should read: the saved one, or a draft stand-in.
+
+    The draft is a TRANSIENT ``ScanConfig`` — constructed, never ``session.add``ed,
+    so it is never flushed. Building it (rather than threading a dozen kwargs
+    around) is what lets ``reserved_catalog_columns`` be reused verbatim instead
+    of re-derived, which is the invariant tripl-lpin was about.
+    """
+    if job.scan_config_id is not None:
+        config = session.get(ScanConfig, job.scan_config_id)
+        if config is None:
+            msg = f"ScanConfig {job.scan_config_id} not found"
+            raise ValueError(msg)
+        return config
+
+    if job.data_source_id is None or not job.base_query:
+        msg = f"ScanDryRunJob {job.id} carries neither a scan config nor a draft"
+        raise ValueError(msg)
+
+    return ScanConfig(
+        project_id=job.project_id,
+        data_source_id=job.data_source_id,
+        name="(dry run)",
+        base_query=job.base_query,
+        event_type_id=job.event_type_id,
+        event_type_column=job.event_type_column,
+        time_column=job.time_column,
+        event_name_format=job.event_name_format,
+        event_group_rules=list(job.event_group_rules or []),
+        json_value_paths=list(job.json_value_paths or []),
+        cardinality_threshold=job.cardinality_threshold,
+        app_version_column=job.app_version_column,
+        platform_column=job.platform_column,
+        scan_lookback_hours=job.scan_lookback_hours,
+    )
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="tripl.worker.tasks.scan.dry_run_scan_config_async",
+    bind=True,
+    max_retries=0,
+)
+def dry_run_scan_config_async(self: object, job_id: str) -> dict[str, object]:
+    """Compute "what would this scan create?" off the request path.
+
+    A dry-run runs the same ``GROUP BY ALL`` a real scan runs, so it is strictly
+    slower than the preview that already needed a worker job.
+    """
+    session = _get_sync_session()
+    adapter: BaseAdapter | None = None
+    try:
+        job = session.get(ScanDryRunJob, uuid.UUID(job_id))
+        if job is None:
+            msg = f"ScanDryRunJob {job_id} not found"
+            raise ValueError(msg)
+
+        config = _dry_run_config(session, job)
+        ds = session.get(DataSource, config.data_source_id)
+        if ds is None:
+            msg = f"DataSource {config.data_source_id} not found"
+            raise ValueError(msg)
+
+        job.status = ScanJobStatus.running.value
+        job.started_at = datetime.now(UTC)
+        session.commit()
+
+        adapter = _build_adapter(ds)
+        payload = build_dry_run_payload(
+            session,
+            adapter,
+            config,
+            sample_row_limit=job.sample_row_limit,
+        )
+
+        job.status = ScanJobStatus.completed.value
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = payload
+        session.commit()
+        return payload
+    except Exception as e:
+        logger.exception(f"Scan dry run failed: {e}")
+        session.rollback()
+        try:
+            job = session.get(ScanDryRunJob, uuid.UUID(job_id))
+            if job:
+                job.status = ScanJobStatus.failed.value
+                job.completed_at = datetime.now(UTC)
+                job.error_message = user_facing_error(e)
+                session.commit()
+        except Exception:
+            logger.exception("Failed to update scan dry-run job status after error")
+        raise
+    finally:
+        if adapter is not None:
+            adapter.close()
         session.close()
 
 

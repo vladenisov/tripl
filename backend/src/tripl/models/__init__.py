@@ -49,6 +49,7 @@ from tripl.models.project_branch_settings import ProjectBranchSettings
 from tripl.models.project_tracker_config import ProjectTrackerConfig
 from tripl.models.release_regression import ReleaseComparability, ReleaseRegression
 from tripl.models.scan_config import ScanConfig
+from tripl.models.scan_dry_run_job import ScanDryRunJob
 from tripl.models.scan_job import ScanJob
 from tripl.models.scan_preview_job import ScanPreviewJob
 from tripl.models.schema_drift import SchemaDrift
@@ -115,6 +116,7 @@ __all__ = [
     "DataSource",
     "DistributionDrift",
     "ScanConfig",
+    "ScanDryRunJob",
     "ScanJob",
     "ScanPreviewJob",
     "SchemaDrift",

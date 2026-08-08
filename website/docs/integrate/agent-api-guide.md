@@ -274,6 +274,80 @@ POST /api/v1/projects/{slug}/search/reindex?branch=<branch_id>
 
 Use this after out-of-band maintenance or imports if search results look stale. When embeddings are enabled, the normal embedding refresh flow is scheduled by the backend.
 
+## Dry-Running a Scan
+
+Ask what a scan config *would* create, without writing anything:
+
+```http
+POST /api/v1/projects/{slug}/scans/dry-run
+```
+
+Send either a saved config:
+
+```json
+{ "scan_config_id": "…", "sample_row_limit": 5000 }
+```
+
+or a draft, in which case `data_source_id` and `base_query` are both required and
+every other field is optional (`event_type_id`, `event_type_column`,
+`time_column`, `event_name_format`, `event_group_rules`, `json_value_paths`,
+`cardinality_threshold`, `app_version_column`, `platform_column`,
+`scan_lookback_hours`). When `scan_config_id` is present the draft fields are
+ignored.
+
+It answers `202` with a job record; poll it:
+
+```http
+GET /api/v1/projects/{slug}/scans/dry-run-jobs/{job_id}
+```
+
+Same 202-and-poll shape as `/scans/preview`, and for the same reason: a dry run
+issues the same `GROUP BY ALL` a real scan issues, which can outlive a gateway
+timeout. While `status` is `pending` or `running`, `result_summary` is `null`.
+On `completed` it holds:
+
+```json
+{
+  "window_from": "2026-08-07T12:00:00Z",
+  "window_to": "2026-08-08T12:00:00Z",
+  "sampled_rows": 4812,
+  "sample_row_limit": 5000,
+  "sample_is_complete": false,
+  "breakdown_combinations": 143,
+  "events": [
+    {
+      "name": "Purchase Completed",
+      "source_name": "Purchase Completed",
+      "approx_row_count": 3120,
+      "share_of_sample": 0.648,
+      "status": "new",
+      "grouped_by_rule": null,
+      "count_confidence": "sampled"
+    }
+  ],
+  "events_truncated": true,
+  "max_events_reached": false,
+  "fields": [{ "name": "props", "type": "json", "status": "new", "event_type": "Purchase" }],
+  "templated_columns": [{ "column": "country", "distinct_values": 214, "threshold": 100 }],
+  "reserved_columns": ["ts", "app_version"],
+  "unmapped_columns": ["legacy_flag"],
+  "warnings": [],
+  "errors": []
+}
+```
+
+Read it honestly. `sample_is_complete: false` means more distinct events exist
+than the pass examined, so report "at least N", never N. `count_confidence` is
+`"exact"` only when the sample is complete *and* no lookback window applied.
+`share_of_sample` is deliberately offered instead of a projected table-wide
+total — do not compute one. `errors` carries event-name-format failures verbatim
+and does **not** fail the job; a non-empty `errors` means the config would fail
+every real run.
+
+Both routes are **owner-only** and session-only (an API key cannot reach them),
+because the draft's `base_query` is free-text SQL run against a stored warehouse
+credential. This is the same gate `/scans/preview` carries.
+
 ## Replaying Metrics
 
 Recollect an existing scan config's metrics over a window you name:

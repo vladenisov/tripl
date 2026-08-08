@@ -375,6 +375,20 @@ async def test_editor_cannot_run_sql_against_a_warehouse(fresh_anon_client: Asyn
     assert preview.status_code == 403
     assert "owner" in preview.json()["detail"].lower()
 
+    # The dry-run is the same hazard by another name: it runs a draft's free-text
+    # SQL against the same stored credential, so it carries the same role.
+    dry_run = await fresh_anon_client.post(
+        "/api/v1/projects/sql-proj/scans/dry-run",
+        json={"data_source_id": ds_id, "base_query": "SELECT currentUser() AS name"},
+    )
+    assert dry_run.status_code == 403
+    assert "owner" in dry_run.json()["detail"].lower()
+
+    dry_run_poll = await fresh_anon_client.get(
+        "/api/v1/projects/sql-proj/scans/dry-run-jobs/00000000-0000-0000-0000-000000000000",
+    )
+    assert dry_run_poll.status_code == 403
+
     create = await fresh_anon_client.post(
         "/api/v1/projects/sql-proj/scans",
         json={
