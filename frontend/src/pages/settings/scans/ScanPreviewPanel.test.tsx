@@ -59,6 +59,7 @@ function renderPanel(over: Partial<React.ComponentProps<typeof ScanPreviewPanel>
       dryRunStale={false}
       dryRunPending={false}
       dryRunError={null}
+      eventTargetMissing={false}
       onRecheck={() => {}}
       {...over}
     />,
@@ -130,14 +131,61 @@ describe('ScanPreviewPanel — the answer leads, the rows are evidence (tripl-3y
     expect(onRecheck).toHaveBeenCalledTimes(1)
   })
 
-  it('still shows the sample rows when the dry run could not be computed', () => {
-    renderPanel({ dryRun: null, dryRunError: new Error('Dry run failed') })
+  it('still shows the sample rows when the dry run could not be computed, and offers the retry', () => {
+    const onRecheck = vi.fn()
+    renderPanel({ dryRun: null, dryRunError: new Error('Dry run failed'), onRecheck })
 
     expect(screen.queryByTestId('scan-dry-run-summary')).toBeNull()
     expect(
       screen.getByText('Could not work out what this scan would create'),
     ).toBeInTheDocument()
+    // Without this the panel is a dead end: the rows are loaded, so nothing on
+    // screen would ask the question again.
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(onRecheck).toHaveBeenCalledTimes(1)
+
     fireEvent.click(screen.getByRole('button', { name: 'Show sample rows (5)' }))
     expect(screen.getAllByText('purchase_completed')).toHaveLength(2)
+  })
+})
+
+describe('ScanPreviewPanel — a draft that cannot name its events (tripl-3y7z)', () => {
+  // The P0. A brand-new scan has no event type and no event type column — the
+  // column is picked FROM the rows this panel is showing. The panel used to
+  // report the worker's own precondition here as a failure: "Could not work out
+  // what this scan would create" over "Scan failed: Either event_type_id or
+  // event_type_column must be specified". Nothing failed; the question was
+  // unanswerable, and saying so is what the user can act on.
+  it('says the question is unanswerable and which control answers it', () => {
+    renderPanel({ dryRun: null, eventTargetMissing: true })
+
+    const note = screen.getByText(/Nothing tells this scan how to name events yet/)
+    expect(note).toBeInTheDocument()
+    expect(note).toHaveTextContent(
+      'Pick an Event type, or the Event type column your event names are in.',
+    )
+    // No failure framing, and no database field names anywhere on the panel.
+    expect(screen.queryByText('Could not work out what this scan would create')).toBeNull()
+    expect(document.body.textContent).not.toMatch(/event_type_id|event_type_column/)
+  })
+
+  // A stale answer computed from a draft that COULD name events does not
+  // describe one that cannot, and its "Check again" button would be a no-op.
+  it('withholds an answer left over from a draft that could still name events', () => {
+    renderPanel({ dryRunStale: true, eventTargetMissing: true })
+
+    expect(screen.queryByTestId('scan-dry-run-summary')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
+  })
+
+  // Once the draft can name events, the same rows are one click from the answer
+  // — without that, the first Load preview would leave the panel permanently
+  // empty and the promised answer unreachable.
+  it('offers the check as soon as the draft names its events', () => {
+    const onRecheck = vi.fn()
+    renderPanel({ dryRun: null, eventTargetMissing: false, onRecheck })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check' }))
+    expect(onRecheck).toHaveBeenCalledTimes(1)
   })
 })

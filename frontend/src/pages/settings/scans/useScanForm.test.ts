@@ -1,11 +1,14 @@
 import { type ReactNode, createElement } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { renderHook } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
-import type { ScanConfig } from '@/types'
+import { act, renderHook, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { scansApi } from '@/api/scans'
+import type { ScanConfig, ScanConfigPreview, ScanDryRunResponse } from '@/types'
 import {
   type ScanFormState,
   canSubmitScanForm,
+  hasEventTarget,
+  scanFormBlocker,
   toBackendPayload,
   toDryRunRequest,
   useScanForm,
@@ -18,7 +21,10 @@ function formState(overrides: Partial<ScanFormState> = {}): ScanFormState {
     name: 'Main scan',
     baseQuery: 'SELECT * FROM analytics.events',
     eventTypeId: '',
-    eventTypeColumn: '',
+    // A complete scan names its events. The fixture answers that question the
+    // way the form now makes every scan answer it, so a test that cares about
+    // the naming gate has to opt out of it explicitly.
+    eventTypeColumn: 'event_name',
     timeColumn: 'received_at',
     appVersionColumn: '',
     appVersionPrereleasePattern: '',
@@ -127,11 +133,69 @@ describe('toDryRunRequest (tripl-3y7z.6)', () => {
   })
 })
 
-describe('useScanForm — editing a saved catalog scan (tripl-3y7z)', () => {
-  function wrapper({ children }: { children: ReactNode }) {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    return createElement(QueryClientProvider, { client }, children)
+function wrapper({ children }: { children: ReactNode }) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return createElement(QueryClientProvider, { client }, children)
+}
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('loadPreview — the first click on a brand-new scan (tripl-3y7z)', () => {
+  const previewPayload: ScanConfigPreview = {
+    columns: [{ name: 'event_name', type_name: 'String', is_nullable: false }],
+    rows: [{ event_name: 'signup_started' }],
+    json_columns: [],
   }
+
+  // The P0: "Load preview" fired the dry run unconditionally, and a brand-new
+  // scan opens with no event type and no event type column — the column is
+  // picked FROM the rows this very click loads. The worker aborted on its own
+  // precondition and the panel reported `Scan failed: Either event_type_id or
+  // event_type_column must be specified`, deterministically, on the first click
+  // of every scan created on the defaults.
+  it('asks the warehouse nothing about events until the draft says how they are named', async () => {
+    const preview = vi.spyOn(scansApi, 'preview').mockResolvedValue(previewPayload)
+    const dryRun = vi
+      .spyOn(scansApi, 'dryRun')
+      .mockResolvedValue({ events: [] } as unknown as ScanDryRunResponse)
+
+    const { result } = renderHook(() => useScanForm('demo', null), { wrapper })
+    act(() => result.current.setDataSourceId('ds-1'))
+    act(() => result.current.setBaseQuery('SELECT * FROM analytics.events'))
+    act(() => result.current.loadPreview())
+
+    await waitFor(() => expect(preview).toHaveBeenCalledTimes(1))
+    expect(dryRun).not.toHaveBeenCalled()
+
+    // Once the column that names events is chosen from those rows, the same
+    // button answers the question it was always meant to answer.
+    act(() => result.current.setEventTypeColumn('event_name'))
+    act(() => result.current.loadPreview())
+
+    await waitFor(() => expect(dryRun).toHaveBeenCalledTimes(1))
+    expect(dryRun.mock.calls[0][1].event_type_column).toBe('event_name')
+  })
+
+  it('answers straight away when an explicit event type already names every row', async () => {
+    const preview = vi.spyOn(scansApi, 'preview').mockResolvedValue(previewPayload)
+    const dryRun = vi
+      .spyOn(scansApi, 'dryRun')
+      .mockResolvedValue({ events: [] } as unknown as ScanDryRunResponse)
+
+    const { result } = renderHook(() => useScanForm('demo', null), { wrapper })
+    act(() => result.current.setDataSourceId('ds-1'))
+    act(() => result.current.setBaseQuery('SELECT * FROM analytics.events'))
+    act(() => result.current.set('eventTypeId', 'et-1'))
+    act(() => result.current.loadPreview())
+
+    await waitFor(() => expect(preview).toHaveBeenCalledTimes(1))
+    expect(dryRun).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('useScanForm — editing a saved catalog scan (tripl-3y7z)', () => {
 
   // The whole defect, end to end: a saved manual scan bounded to the last 24h
   // (time column, no interval) is classified `catalog`, so its edit form opens on
@@ -181,5 +245,59 @@ describe('canSubmitScanForm', () => {
     expect(canSubmitScanForm(formState({ mode: 'catalog', name: '   ' }))).toBe(false)
     expect(canSubmitScanForm(formState({ mode: 'catalog', dataSourceId: '' }))).toBe(false)
     expect(canSubmitScanForm(formState({ mode: 'catalog', baseQuery: '' }))).toBe(false)
+  })
+
+  // The defect: with no event type AND no event type column, `run_scan` aborts
+  // on its own precondition in BOTH modes — so the scan the form happily created
+  // could never ingest an event, and its first run landed in Recent runs as
+  // failed. The gate did not check either field, so "Create scan" was enabled.
+  it('refuses a scan that cannot name its events, in either mode', () => {
+    const unnameable = { eventTypeId: '', eventTypeColumn: '' }
+
+    expect(canSubmitScanForm(formState(unnameable))).toBe(false)
+    expect(canSubmitScanForm(formState({ ...unnameable, mode: 'catalog' }))).toBe(false)
+  })
+
+  it('accepts either answer to "where does the event name come from?"', () => {
+    expect(canSubmitScanForm(formState({ eventTypeId: 'et-1', eventTypeColumn: '' }))).toBe(true)
+    expect(canSubmitScanForm(formState({ eventTypeId: '', eventTypeColumn: 'event_name' }))).toBe(true)
+  })
+})
+
+describe('scanFormBlocker', () => {
+  // A disabled button with no reason is how a user concludes the form is broken.
+  it('names the missing answer, in the order the form asks for it', () => {
+    expect(scanFormBlocker(formState({ name: '  ' }))).toBe(
+      'A scan needs a name, a data source and a base query.',
+    )
+    expect(scanFormBlocker(formState({ eventTypeId: '', eventTypeColumn: '' }))).toBe(
+      'Pick an Event type, or the Event type column your event names are in.',
+    )
+    expect(scanFormBlocker(formState({ timeColumn: '' }))).toBe(
+      'Catalog + monitoring needs a time column and a schedule.',
+    )
+    expect(scanFormBlocker(formState())).toBeNull()
+  })
+
+  // No user-facing string may name a database field: the message this replaces
+  // was `Either event_type_id or event_type_column must be specified`.
+  it('names controls, never database columns', () => {
+    const messages = [
+      scanFormBlocker(formState({ name: '  ' })),
+      scanFormBlocker(formState({ eventTypeId: '', eventTypeColumn: '' })),
+      scanFormBlocker(formState({ timeColumn: '' })),
+    ]
+
+    for (const message of messages) {
+      expect(message).not.toMatch(/event_type_id|event_type_column/)
+    }
+  })
+})
+
+describe('hasEventTarget — the gate on asking the warehouse anything', () => {
+  it('is false only when neither answer is given', () => {
+    expect(hasEventTarget(formState({ eventTypeId: '', eventTypeColumn: '' }))).toBe(false)
+    expect(hasEventTarget(formState({ eventTypeId: 'et-1', eventTypeColumn: '' }))).toBe(true)
+    expect(hasEventTarget(formState({ eventTypeId: '', eventTypeColumn: 'event_name' }))).toBe(true)
   })
 })

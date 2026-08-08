@@ -21,12 +21,28 @@ import { formatPreviewCell } from './scanUtils'
  * to JsonValuePathsPicker so this panel is only ever about what the query
  * returns and what tripl would make of it.
  */
+/**
+ * What the panel says when the draft cannot be dry-run yet.
+ *
+ * The question is unanswerable, not failed: with no event type and no event
+ * type column there is nothing to name events after, so no scan — dry or real —
+ * can create anything. Saying that is the whole fix; the alternative was firing
+ * the run anyway and reporting the worker's own precondition back as
+ * `Scan failed: …` under a heading claiming a scan had failed.
+ */
+const NO_EVENT_TARGET_TEXT =
+  'Nothing tells this scan how to name events yet, so there is nothing to work out. '
+  + 'Pick an Event type, or the Event type column your event names are in.'
+
+const NOT_CHECKED_YET_TEXT = 'The sample rows are loaded. Now tripl can work out what this scan would create.'
+
 export function ScanPreviewPanel({
   preview,
   dryRun,
   dryRunStale,
   dryRunPending,
   dryRunError,
+  eventTargetMissing,
   onRecheck,
 }: {
   preview: ScanConfigPreview
@@ -36,10 +52,19 @@ export function ScanPreviewPanel({
   dryRunStale: boolean
   dryRunPending: boolean
   dryRunError: unknown
+  /**
+   * The draft names neither an event type nor an event type column, so no dry
+   * run was asked for — and any answer already on screen described a draft that
+   * could name events, which this one cannot.
+   */
+  eventTargetMissing: boolean
   onRecheck: () => void
 }) {
   const [rowsOpen, setRowsOpen] = useState(false)
   const rows = preview.rows.slice(0, 5)
+  const showAnswer = Boolean(dryRun) && !eventTargetMissing
+  const offerFirstCheck =
+    !eventTargetMissing && !dryRun && !dryRunPending && !dryRunError
 
   return (
     <div className="space-y-4 rounded-lg border bg-muted/20 p-4">
@@ -50,13 +75,31 @@ export function ScanPreviewPanel({
         </p>
       </div>
 
-      {dryRunPending && (
+      {eventTargetMissing && (
+        <p className="text-xs" style={{ color: 'var(--fg-subtle)' }}>{NO_EVENT_TARGET_TEXT}</p>
+      )}
+      {offerFirstCheck && (
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="m-0 flex-1 text-xs text-muted-foreground">{NOT_CHECKED_YET_TEXT}</p>
+          <Button type="button" variant="outline" size="sm" onClick={onRecheck}>
+            Check
+          </Button>
+        </div>
+      )}
+      {!eventTargetMissing && dryRunPending && (
         <p className="text-xs text-muted-foreground">Working out what this scan would create…</p>
       )}
-      {!dryRunPending && Boolean(dryRunError) && (
-        <ErrorState compact title="Could not work out what this scan would create" error={dryRunError} />
+      {!eventTargetMissing && !dryRunPending && Boolean(dryRunError) && (
+        <div className="space-y-2">
+          <ErrorState compact title="Could not work out what this scan would create" error={dryRunError} />
+          {/* The rows are already loaded, so the retry is this one job rather
+              than the whole preview — and without it the panel is a dead end. */}
+          <Button type="button" variant="outline" size="sm" onClick={onRecheck}>
+            Try again
+          </Button>
+        </div>
       )}
-      {dryRun && (
+      {showAnswer && dryRun && (
         <div className="space-y-2">
           {/* A dry run describes one specific draft. Once the draft moves the
               answer is stale, and a stale "would create 3 events: A, B, C" is

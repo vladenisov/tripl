@@ -27,7 +27,7 @@ from tripl.models.field_definition import FieldDefinition
 from tripl.models.scan_config import ScanConfig
 from tripl.models.variable import Variable
 from tripl.worker.plan_scope import main_branch_id
-from tripl.worker.tasks._errors import ScanError
+from tripl.worker.tasks._errors import NO_EVENT_NAMING_MSG, ScanError
 from tripl.worker.tasks.metrics.generation import (
     _build_variable_lookup,
     _ensure_event_type_with_fields,
@@ -306,8 +306,7 @@ def sync_catalog(
             f"{out.single_result.events_skipped} updated"
         )
     else:
-        msg = "Either event_type_id or event_type_column must be specified"
-        raise ValueError(msg)
+        raise ValueError(NO_EVENT_NAMING_MSG)
 
     if is_replay:
         if out.replay_branch_id is None and out.single_result and out.single_result.events_by_name:

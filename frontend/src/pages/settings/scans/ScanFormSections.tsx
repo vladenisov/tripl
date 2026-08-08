@@ -17,7 +17,7 @@ import { SqlEditor } from '@/components/sql-editor'
 import { Field, SCard } from './scanLayout'
 import type { ScanFormMode } from './scanMode'
 import { CHUNK_LABELS, SELECT_CLASS, eligibleChunkIntervals } from './scanUtils'
-import type { UseScanFormResult } from './useScanForm'
+import { type UseScanFormResult, hasEventTarget } from './useScanForm'
 
 // The manual/"no schedule" option is gone: a schedule is only ever asked for in
 // Catalog + monitoring, where leaving it empty is the defect this form exists to
@@ -162,10 +162,13 @@ export function ScanEssentialsSection({
 }: SectionProps) {
   const {
     state, set, preview, dryRun, dryRunStale,
-    setBaseQuery, setDataSourceId, setTimeColumn, setInterval,
+    setBaseQuery, setDataSourceId, setEventTypeColumn, setTimeColumn, setInterval,
     previewMut, dryRunMut, loadPreview, runDryRun,
   } = form
   const monitoring = state.mode === 'monitoring'
+  // Kept on screen when it already holds a value even under an explicit event
+  // type, so a saved config's column is never both invisible and unremovable.
+  const namesEventsFromColumn = !state.eventTypeId || Boolean(state.eventTypeColumn)
   const selectedSource = dataSources.find(ds => ds.id === state.dataSourceId)
   const sourceName = selectedSource?.name ?? ''
   const { data: schemaData } = useDataSourceSchema(state.dataSourceId || undefined)
@@ -176,10 +179,10 @@ export function ScanEssentialsSection({
   // set" on the one screen a user checks — so the saved value is always among
   // the choices, whether or not a preview has named it.
   const previewColumns = preview?.columns.map(column => column.name) ?? []
-  const timeColumnChoices =
-    state.timeColumn && !previewColumns.includes(state.timeColumn)
-      ? [state.timeColumn, ...previewColumns]
-      : previewColumns
+  const withSaved = (saved: string) =>
+    saved && !previewColumns.includes(saved) ? [saved, ...previewColumns] : previewColumns
+  const timeColumnChoices = withSaved(state.timeColumn)
+  const eventTypeColumnChoices = withSaved(state.eventTypeColumn)
 
   return (
     <SCard title="" footer={footerFor?.()}>
@@ -299,15 +302,23 @@ export function ScanEssentialsSection({
             dryRunStale={dryRunStale}
             dryRunPending={dryRunMut.isPending}
             dryRunError={dryRunMut.isError ? dryRunMut.error : null}
+            eventTargetMissing={!hasEventTarget(state)}
             onRecheck={runDryRun}
           />
         </div>
       )}
 
+      {/* "Where does the event name come from?" is ONE question, so it is asked
+          in one place. It used to be split: an "Auto-detect" default here, and
+          the column auto-detect actually reads hidden in a collapsed section
+          whose header said to leave it alone. Nothing detected anything — with
+          neither set, `run_scan` and the dry-run planner both abort, so every
+          scan created on the defaults failed its first run. "Auto-detect" is
+          gone with it; the empty option now names the answer it stands for. */}
       <Field
         label="Event type"
         id="scan-event-type"
-        hint="Leave on auto-detect to derive from the data."
+        hint="Give every row the same event type, or read each event's name from a column."
       >
         <select
           id="scan-event-type"
@@ -315,10 +326,53 @@ export function ScanEssentialsSection({
           onChange={e => set('eventTypeId', e.target.value)}
           className={`${SELECT_CLASS} max-w-[280px]`}
         >
-          <option value="">Auto-detect</option>
+          <option value="">Name events from a column</option>
           {eventTypes.map(et => <option key={et.id} value={et.id}>{et.display_name}</option>)}
         </select>
       </Field>
+      {namesEventsFromColumn && (
+        <Field
+          label="Event type column"
+          id="scan-event-type-column"
+          hint={
+            state.eventTypeId
+              ? 'Not naming anything here — the Event type above does that. It stays a reserved column, so it never becomes an event field. Clear it if you did not mean to set it.'
+              : "The column each row's event name is in. Every distinct value becomes its own event type."
+          }
+        >
+          <select
+            id="scan-event-type-column"
+            value={state.eventTypeColumn}
+            onChange={e => setEventTypeColumn(e.target.value)}
+            className={`${SELECT_CLASS} max-w-[280px]`}
+            disabled={!preview}
+          >
+            {/* Selectable only when an Event type carries the naming instead —
+                otherwise clearing it would leave the scan unable to name a
+                thing, which is the state this field exists to prevent. */}
+            <option value="" disabled={!state.eventTypeId}>
+              {preview
+                ? state.eventTypeId
+                  ? 'None'
+                  : 'Choose a column'
+                : 'Load preview first'}
+            </option>
+            {eventTypeColumnChoices.map(name => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+          </select>
+          {/* Only once the column list exists: before that the select is
+              disabled and the user is being flagged for not doing something the
+              form has not let them do yet. The disabled Create button carries
+              the gate in the meantime. */}
+          {preview && !state.eventTypeColumn && !state.eventTypeId && (
+            <p role="alert" className="mt-1.5 text-xs" style={{ color: 'var(--warning)' }}>
+              Pick the column your event names are in — without it this scan cannot name a single
+              event, and every run fails.
+            </p>
+          )}
+        </Field>
+      )}
       {preview && state.eventTypeId && (
         <div className="border-b px-[18px] pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
           <CreateMissingFieldsButton
@@ -405,11 +459,15 @@ export function ScanEssentialsSection({
 export function EventNamingSection({ form, footerFor }: SectionProps) {
   const {
     state, set, preview,
-    setEventTypeColumn, toggleJsonValuePath, discoverJsonMut,
+    toggleJsonValuePath, discoverJsonMut,
   } = form
+  // "Event type column" is no longer here — it is half of the essentials'
+  // "where does the event name come from?" question, and burying the field a
+  // scan cannot run without behind a header saying to leave it alone is what
+  // made every default scan fail. What is left is genuinely optional, so the
+  // header can promise that leaving it alone works and be telling the truth.
   const defaultOpen = Boolean(
-    state.eventTypeColumn
-    || state.eventNameFormat
+    state.eventNameFormat
     || state.cardinalityThreshold !== 100
     || state.eventGroupRules.length
     || state.jsonValuePaths.length,
@@ -418,24 +476,10 @@ export function EventNamingSection({ form, footerFor }: SectionProps) {
   return (
     <CollapsibleSection
       title="Event names and grouping"
-      explanation="How tripl turns warehouse rows into event names. Leave this alone and events are named from the column values already in your data."
+      explanation="Reshape the names tripl derives above — rewrite them from a template, collapse high-cardinality values, or merge several into one. Leave this alone and each name is used as it is."
       defaultOpen={defaultOpen}
       footer={footerFor?.()}
     >
-      <Field label="Event type column" id="scan-event-type-column">
-        <select
-          id="scan-event-type-column"
-          value={state.eventTypeColumn}
-          onChange={e => setEventTypeColumn(e.target.value)}
-          className={`${SELECT_CLASS} max-w-[280px]`}
-          disabled={!preview}
-        >
-          <option value="">{preview ? 'No grouping' : 'Load preview first'}</option>
-          {preview?.columns.map(column => (
-            <option key={column.name} value={column.name}>{column.name}</option>
-          ))}
-        </select>
-      </Field>
       <Field label="Event name format" id="scan-event-name-format" hint="Template, e.g. {action}:{category}.">
         <Input
           id="scan-event-name-format"

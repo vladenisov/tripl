@@ -595,11 +595,20 @@ raise a signal or send an alert. See
 
 **Always visible (the essentials):** the mode choice, **Name**, **Data source**,
 **Base query** (used as a subquery), the **Load preview** button and the preview
-panel, **Event type** (or auto-detect), **Time column** (required in Catalog +
-monitoring, an optional run bound in Catalog only), and — in Catalog + monitoring
-only — **Schedule**. The schedule is one of *Every 15 min* (`15m`),
+panel, **Event type** and **Event type column**, **Time column** (required in
+Catalog + monitoring, an optional run bound in Catalog only), and — in Catalog +
+monitoring only — **Schedule**. The schedule is one of *Every 15 min* (`15m`),
 *Every hour* (`1h`), *Every 6 hours* (`6h`), *Every day* (`1d`), or *Every week*
 (`1w`).
+
+**Event type** and **Event type column** are one question — where the name of
+each event comes from — so they are asked together. Choose an event type and
+every row becomes that event; leave it on *Name events from a column* and each
+distinct value of the chosen column becomes its own event type. One of the two is
+required in both modes: a config with neither cannot name anything, so no run of
+it can ingest an event. **Create scan** and **Save** stay disabled until it is
+answered, and the preview panel says the same thing rather than asking your
+warehouse a question with no answer.
 
 **Everything else is a collapsed section.** Each carries one line saying what it
 is for and what happens if you leave it alone. Editing a saved config opens any
@@ -607,7 +616,7 @@ section that already holds a non-default value.
 
 | Section | What it is for | Contains |
 | --- | --- | --- |
-| **Event names and grouping** | How tripl turns warehouse rows into event names. Leave it alone and events are named from the column values already in your data. | Event type column · Event name format · Cardinality threshold · Event groups · JSON values to keep as-is |
+| **Event names and grouping** | Reshape the names tripl derives from the essentials — rewrite them from a template, collapse high-cardinality values, or merge several into one. Leave it alone and each name is used as it is. | Event name format · Cardinality threshold · Event groups · JSON values to keep as-is |
 | **App version** | Attach an app release and platform to every event. Leave it alone if you do not ship versioned apps. | App version column · Platform column · Pre-release version pattern · Traffic share that counts as released |
 | **Metric breakdowns and drift** *(Catalog + monitoring only)* | Extra columns to split metrics by, and columns whose value mix you want watched for drift. Leave it alone to collect one series per event. | Metric breakdowns · Value limit · Distribution drift |
 | **Limits** | Caps on how much warehouse data each run reads. Leave them alone unless runs are slow or expensive. | Replay chunk size · Lookback (hours) *(needs a time column — with none, the section says each run reads the whole base query instead of offering the field)* · Row cap per run · Row cap per metrics run |
@@ -634,6 +643,12 @@ The dry run describes one specific draft. Change the form after it ran — a
 different event name format, a new group rule, a different cardinality threshold
 — and the panel says the answer no longer describes this scan and offers
 **Check again**, rather than leaving a stale list of event names on screen.
+
+A brand-new scan picks its **Event type column** from the very rows this button
+loads, so on the first click there is often nothing yet that says how events are
+named. The panel says so and asks nothing of your warehouse — *Nothing tells this
+scan how to name events yet* — and once you answer, with an **Event type** or
+that column, a **Check** button turns the same rows into the answer.
 
 #### The dry run — what this scan would create
 
@@ -672,7 +687,7 @@ Three more things it reports, each answering a question the raw rows could not:
 - **Fields.** A field is either `json` or `string`. That is the entire type
   inference a scan performs; claiming `integer` or `timestamp` would be a claim
   about something the scan does not do. Fields are only reported as "would be
-  added" on the auto-detect (event type column) path, which is the path that
+  added" on the event type column path, which is the path that
   creates them; with an explicit event type, columns the event type does not
   declare are listed as **unmapped** instead, because a run would skip them.
 

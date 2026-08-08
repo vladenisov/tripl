@@ -45,7 +45,7 @@ from tripl.worker.celery_app import celery_app
 from tripl.worker.db import _build_adapter, _get_sync_session
 from tripl.worker.plan_scope import main_branch_id
 from tripl.worker.search_reindex import reindex_main_branch_from_worker
-from tripl.worker.tasks._errors import ScanError, user_facing_error
+from tripl.worker.tasks._errors import NO_EVENT_NAMING_MSG, ScanError, user_facing_error
 from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 from tripl.worker.utils.reserved_columns import reserved_catalog_columns
 
@@ -255,8 +255,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             scan_rows_processed = len(analysis.rows)
             scan_truncated = analysis.row_limit_reached
         else:
-            msg = "Either event_type_id or event_type_column must be specified"
-            raise ScanError(msg)
+            raise ScanError(NO_EVENT_NAMING_MSG)
 
         session.commit()
         reindex_main_branch_from_worker(session, config.project_id)
@@ -541,8 +540,7 @@ def _dry_run_targets(
         ]
 
     if not config.event_type_column:
-        msg = "Either event_type_id or event_type_column must be specified"
-        raise ScanError(msg)
+        raise ScanError(NO_EVENT_NAMING_MSG)
 
     group_values, grouped = analyze_cardinality_grouped(
         adapter,

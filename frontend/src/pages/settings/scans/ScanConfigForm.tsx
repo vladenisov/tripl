@@ -18,7 +18,7 @@ import {
   MetricsDriftSection,
   ScanEssentialsSection,
 } from './ScanFormSections'
-import { MONITORING_INCOMPLETE_TITLE, canSubmitScanForm, useScanForm } from './useScanForm'
+import { scanFormBlocker, useScanForm } from './useScanForm'
 import { dataSourcesKey } from '@/lib/queryKeys'
 
 // ─── Configuration tab (page-style edit, each SCard has its own Save footer) ───
@@ -68,7 +68,9 @@ export function ScanConfigurationTab({
 
   const canReplay = Boolean(scanConfig.time_column && scanConfig.interval)
 
-  const canSave = canSubmitScanForm(form.state)
+  // The reason, not just the fact: a disabled Save with no explanation is how a
+  // user ends up believing the form is broken.
+  const saveBlocker = scanFormBlocker(form.state)
 
   const footerFor = () => (
     <>
@@ -79,8 +81,8 @@ export function ScanConfigurationTab({
         type="button"
         size="sm"
         onClick={() => updateMut.mutate()}
-        disabled={updateMut.isPending || !canSave}
-        title={canSave ? undefined : MONITORING_INCOMPLETE_TITLE}
+        disabled={updateMut.isPending || saveBlocker !== null}
+        title={saveBlocker ?? undefined}
       >
         {updateMut.isPending ? 'Saving…' : 'Save'}
       </Button>
@@ -194,7 +196,7 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
   })
 
   const loaded = Boolean(form.preview)
-  const canCreate = canSubmitScanForm(form.state)
+  const createBlocker = scanFormBlocker(form.state)
 
   const sectionProps = {
     form,
@@ -258,8 +260,8 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
         <Button
           type="button"
           size="sm"
-          disabled={!canCreate || createMut.isPending}
-          title={canCreate ? undefined : MONITORING_INCOMPLETE_TITLE}
+          disabled={createBlocker !== null || createMut.isPending}
+          title={createBlocker ?? undefined}
           onClick={() => createMut.mutate()}
         >
           <Plus className="size-3" />

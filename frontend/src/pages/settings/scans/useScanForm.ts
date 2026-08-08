@@ -190,15 +190,49 @@ export function toDryRunRequest(state: ScanFormState): ScanDryRunRequest {
 export const MONITORING_INCOMPLETE_TITLE =
   'Catalog + monitoring needs a time column and a schedule.'
 
+/** Hover text when the scan has no answer to "where do event names come from?". */
+export const EVENT_NAMING_INCOMPLETE_TITLE =
+  'Pick an Event type, or the Event type column your event names are in.'
+
+/** Hover text before the three fields every scan needs are filled in. */
+export const ESSENTIALS_INCOMPLETE_TITLE =
+  'A scan needs a name, a data source and a base query.'
+
 /**
- * Save gate shared by create and edit. In Catalog only, empty is a deliberate
- * answer; in Catalog + monitoring both columns are required, because a config
- * missing either one is never dispatched and collects nothing, forever.
+ * Whether the config says how its events are named — an event type for every
+ * row, or the column each row's event name is read from.
+ *
+ * Neither is not a configuration: `run_scan` and the dry-run planner both abort
+ * on it, in both modes, so a scan that answers this question with nothing cannot
+ * ingest a single event. That makes it a save gate rather than a warning, and it
+ * is why nothing asks the warehouse anything until one of the two is set.
  */
+export function hasEventTarget(state: ScanFormState): boolean {
+  return Boolean(state.eventTypeId || state.eventTypeColumn)
+}
+
+/**
+ * The first unmet requirement, in the order the form asks for them, or null when
+ * the config can be saved. Doubles as the disabled button's hover text, so the
+ * reason is never "the button is off and I do not know why".
+ */
+export function scanFormBlocker(state: ScanFormState): string | null {
+  if (!state.dataSourceId || !state.name.trim() || !state.baseQuery.trim()) {
+    return ESSENTIALS_INCOMPLETE_TITLE
+  }
+  if (!hasEventTarget(state)) return EVENT_NAMING_INCOMPLETE_TITLE
+  // In Catalog only, an empty time column and an empty schedule are deliberate
+  // answers; in Catalog + monitoring a config missing either one is never
+  // dispatched and collects nothing, forever.
+  if (state.mode === 'monitoring' && !(state.timeColumn && state.interval)) {
+    return MONITORING_INCOMPLETE_TITLE
+  }
+  return null
+}
+
+/** Save gate shared by create and edit. */
 export function canSubmitScanForm(state: ScanFormState): boolean {
-  if (!state.dataSourceId || !state.name.trim() || !state.baseQuery.trim()) return false
-  if (state.mode === 'catalog') return true
-  return Boolean(state.timeColumn && state.interval)
+  return scanFormBlocker(state) === null
 }
 
 export interface UseScanFormResult {
@@ -308,7 +342,18 @@ export function useScanForm(
       setDryRunResult({ answer, requestKey: JSON.stringify(request) }),
   })
 
-  const runDryRun = () => dryRunMut.mutate(toDryRunRequest(state))
+  /**
+   * A dry run is only asked for once the draft can answer "how are events
+   * named?". Firing it without an event type or an event type column made the
+   * worker abort on its own internal precondition, and the panel reported that
+   * as `Scan failed: …` — on the first click of every scan created on the
+   * defaults. The form says what is missing instead; nothing is asked of the
+   * warehouse until it can be answered.
+   */
+  const runDryRun = () => {
+    if (!hasEventTarget(state)) return
+    dryRunMut.mutate(toDryRunRequest(state))
+  }
 
   const discoverJsonMut = useMutation<ScanConfigPreview, unknown, void>({
     mutationFn: () =>
@@ -342,6 +387,11 @@ export function useScanForm(
    * and the dry run says what the config would create; splitting them into two
    * controls would make "what would this create?" an optional extra, which is
    * how the promise in the docs went unbuilt in the first place.
+   *
+   * The dry run is the half that can be unanswerable: on a brand-new scan the
+   * column that names events is picked FROM these sample rows, so the first
+   * click loads rows only and `runDryRun` no-ops until the draft names its
+   * events.
    */
   const loadPreview = () => {
     discoverJsonMut.reset()

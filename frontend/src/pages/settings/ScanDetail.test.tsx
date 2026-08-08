@@ -27,7 +27,8 @@ const scanConfig: ScanConfig = {
   event_type_id: null,
   name: 'Main scan',
   base_query: 'SELECT * FROM analytics.events',
-  event_type_column: null,
+  // A scan names its events one of two ways; this one uses the column.
+  event_type_column: 'event_name',
   time_column: 'created_at',
   event_name_format: null,
   json_value_paths: [],
@@ -140,9 +141,10 @@ describe('ScanDetail', () => {
     expect(screen.getByText('Metrics & drift')).toBeInTheDocument()
     expect(screen.getByText('Last run')).toBeInTheDocument()
     expect(screen.getByText('SELECT * FROM analytics.events')).toBeInTheDocument()
-    // The mocked config has time_column set and no event type → Auto-detect.
+    // The mocked config has time_column set and no event type, so the name
+    // comes from the event type column instead — which is what the row says.
     expect(screen.getByText('created_at')).toBeInTheDocument()
-    expect(screen.getByText('Auto-detect')).toBeInTheDocument()
+    expect(screen.getByText('Named from a column')).toBeInTheDocument()
     expect(await screen.findByText(/No runs yet/)).toBeInTheDocument()
   })
 

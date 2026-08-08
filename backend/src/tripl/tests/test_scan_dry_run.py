@@ -335,6 +335,40 @@ class TestDryRunAPI:
         )
         assert resp.status_code == 422
 
+    async def test_a_draft_must_say_how_its_events_are_named(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The defect this guard closes: the scan form fired a dry-run on every
+        new scan's first "Load preview" with neither field set, the job was
+        dispatched, and ``_dry_run_targets`` aborted on its own precondition —
+        which reached the user as ``Scan failed: Either event_type_id or
+        event_type_column must be specified``. Unanswerable is a 422 before any
+        warehouse query, not a failed job."""
+        monkeypatch.setattr(scan_tasks.dry_run_scan_config_async, "delay", lambda job_id: None)
+
+        resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans/dry-run",
+            json={
+                "data_source_id": data_source["id"],
+                "base_query": "SELECT * FROM events",
+            },
+        )
+        assert resp.status_code == 422, resp.text
+
+        with_column = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans/dry-run",
+            json={
+                "data_source_id": data_source["id"],
+                "base_query": "SELECT * FROM events",
+                "event_type_column": "event_name",
+            },
+        )
+        assert with_column.status_code == 202, with_column.text
+
     async def test_base_query_must_be_a_read_only_select(
         self, client: AsyncClient, project: dict, data_source: dict
     ) -> None:

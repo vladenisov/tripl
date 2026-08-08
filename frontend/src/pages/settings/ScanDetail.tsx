@@ -274,9 +274,18 @@ export function ScanDetail({
       {/* Mapping + metrics grid */}
       <div className="grid items-start gap-3 lg:grid-cols-2">
         <SurfPanel title="Event mapping">
+          {/* "Auto-detect" claimed a detection that never happened: with no
+              event type AND no event type column a scan cannot name anything,
+              and every run of it fails. The form asks the two together now, so
+              this row says which of the two answers the config gave. */}
           <KV
             label="Event type"
-            value={etName ?? <span style={{ color: 'var(--fg-faint)' }}>Auto-detect</span>}
+            value={
+              etName
+              ?? (scanConfig.event_type_column
+                ? <span style={{ color: 'var(--fg-faint)' }}>Named from a column</span>
+                : <NoneTag />)
+            }
           />
           <KV label="Event type column" value={scanConfig.event_type_column || <NoneTag />} mono={!!scanConfig.event_type_column} />
           <KV

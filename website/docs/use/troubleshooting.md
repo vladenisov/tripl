@@ -192,9 +192,19 @@ match live either.
 events, or far fewer than you expected.
 
 The dry run is the same planner a real run uses, so "it would create nothing" is
-a real answer, not a broken panel. Four causes, in the order worth checking:
+a real answer, not a broken panel. Five causes, in the order worth checking:
 
-1. **The window is empty.** When the scan has a **Time column**, the dry run only
+1. **Nothing tells the scan how to name events.** A scan names its events one of
+   two ways: an **Event type**, which makes every row the same event, or an
+   **Event type column**, whose values become the event names. With neither, the
+   panel says so — *Nothing tells this scan how to name events yet* — and asks
+   nothing of your warehouse, because there is nothing it could answer. This is
+   also why **Create scan** stays disabled: a config with neither cannot ingest a
+   single event, so a scan that has it would fail every run. Both controls sit
+   together in the form's always-visible block; the column is picked from your
+   query's columns, so load a preview first.
+
+2. **The window is empty.** When the scan has a **Time column**, the dry run only
    reads rows inside its lookback (**Limits → Lookback (hours)**, default 24). If
    your table has no rows in that window — a staging table, a backfill that
    stopped, a timestamp column in the wrong unit — there is nothing to name. The
@@ -203,21 +213,21 @@ a real answer, not a broken panel. Four causes, in the order worth checking:
    time window — the whole base query was read*, and an empty answer is then
    about your whole query, not about a window.
 
-2. **The event name format is broken.** If the panel shows *Event name format
+3. **The event name format is broken.** If the panel shows *Event name format
    error*, that is the whole answer: a format referencing a key the rows cannot
    supply fails **every** run of the config, not just the preview. The message
    names the missing key and lists the keys that are available. Fix the format
    before creating the scan — this is exactly the failure the dry run exists to
    catch early.
 
-3. **Cardinality collapsed everything into one event.** A column with more
+4. **Cardinality collapsed everything into one event.** A column with more
    distinct values than the **Cardinality threshold** becomes a `${column}`
    template rather than one event per value, so thousands of rows can legitimately
    produce one event. The panel names each collapsed column and its distinct
    count. Raise the threshold, or name the column in **Event name format** — a
    column the name is built from is always enumerated regardless of cardinality.
 
-4. **The columns are unmapped or reserved.** With an explicit **Event type**, a
+5. **The columns are unmapped or reserved.** With an explicit **Event type**, a
    scan only uses columns that event type already declares; the rest are listed
    as **unmapped** and are skipped by a real run too. Columns filling a reserved
    role (event type, time, app version, platform, or an event-group-rule column)
@@ -312,9 +322,14 @@ to every curated message rather than leaving each raise site to remember it:
   purpose**: collection replaces a window by deleting it and re-inserting, so
   writing a capped result would erase the tail of the window rather than leave
   it as it was. Narrow the metric's breakdown or replay in shorter chunks.
-- **Misconfigured event typing.** *"Scan failed: Either event_type_id or
-  event_type_column must be specified."* Pick a single event type for the
-  config, or set the column that splits rows into event types.
+- **Misconfigured event typing.** *"Scan failed: This scan has no Event type and
+  no Event type column, so it cannot name any events. Set one under the scan's
+  Configuration tab."* The config names neither, so it cannot name a single event. The scan form no
+  longer lets one be created or saved — **Event type** and **Event type column**
+  are asked for together in the always-visible block, and **Create scan** stays
+  disabled until one of them is answered — so a config in this state was made
+  through the API or predates that gate. Open it under **Govern → Scans**, answer
+  the question, and save.
 - **Event name format references a column that is gone.** *"Scan failed: the
   event name format references unknown keys: `action`. Available keys: …"* The
   scan's **Event name format** names a column the query no longer supplies —

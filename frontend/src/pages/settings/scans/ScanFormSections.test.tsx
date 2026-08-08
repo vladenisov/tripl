@@ -54,14 +54,16 @@ const dataSource = {
   updated_at: '2026-01-01T00:00:00Z',
 }
 
-function setupFetch() {
+const eventType = { id: 'et-1', display_name: 'Purchase', name: 'purchase' }
+
+function setupFetch(eventTypes: unknown[] = []) {
   vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
     const url = String(input)
     if (url.includes('/data-sources/') && url.includes('/schema')) {
       return mockJsonResponse({ tables: [] })
     }
     if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
-    if (url.includes('/event-types')) return mockJsonResponse([])
+    if (url.includes('/event-types')) return mockJsonResponse(eventTypes)
     throw new Error(`Unhandled fetch: ${url}`)
   })
 }
@@ -115,6 +117,80 @@ describe('ScanFormSections — progressive disclosure', () => {
     expect(screen.getByLabelText('Data source')).toBeInTheDocument()
     expect(screen.getByLabelText('Event type')).toBeInTheDocument()
     expect(screen.getByLabelText('Schedule')).toBeInTheDocument()
+  })
+})
+
+describe('ScanFormSections — where event names come from', () => {
+  // "Event type column" used to live in the collapsed "Event names and grouping"
+  // section, under a header telling the user to leave it alone — while the
+  // Event type default read "Auto-detect", which detected nothing without it.
+  // Where the name comes from is ONE question, so it is asked in one place.
+  it('asks for the naming column next to Event type, not behind a chevron', async () => {
+    setupFetch()
+    renderCreatePage()
+
+    await screen.findByText('New scan config')
+
+    const eventType = screen.getByLabelText('Event type')
+    const column = screen.getByLabelText('Event type column')
+    expect(column).toBeInTheDocument()
+    expect(eventType.compareDocumentPosition(column)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+
+    // And the option that stands for "read it from a column" says so, instead of
+    // promising a detection that never happens.
+    expect(screen.queryByRole('option', { name: 'Auto-detect' })).toBeNull()
+    expect(screen.getByRole('option', { name: 'Name events from a column' })).toBeInTheDocument()
+  })
+
+  // The collapsed section's one-line explanation was false on the default path:
+  // leaving it alone left the naming column null, and every run of the scan
+  // failed. What is left in there really is optional.
+  it('no longer promises that leaving the collapsed section alone names anything', async () => {
+    setupFetch()
+    renderCreatePage()
+
+    await screen.findByText('New scan config')
+
+    expect(
+      screen.queryByText(/Leave this alone and events are named from the column values/),
+    ).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Event names and grouping/ }))
+    expect(screen.getByLabelText('Event name format')).toBeInTheDocument()
+  })
+
+  // The whole P0, from the user's side: on the defaults the form let the scan be
+  // created, and its first real run failed with a message naming two database
+  // fields. The gate is now on the button, and its reason names a control.
+  it('refuses to create a scan that cannot name a single event', async () => {
+    setupFetch()
+    renderCreatePage()
+
+    await screen.findByText('New scan config')
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Main scan' } })
+    fireEvent.change(screen.getByLabelText('Data source'), { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getByPlaceholderText('SELECT * FROM analytics.events'), {
+      target: { value: 'SELECT * FROM analytics.events' },
+    })
+
+    const create = screen.getByRole('button', { name: /Create scan/ })
+    expect(create).toBeDisabled()
+    expect(create).toHaveAttribute(
+      'title',
+      'Pick an Event type, or the Event type column your event names are in.',
+    )
+    expect(document.body.textContent).not.toMatch(/event_type_id|event_type_column/)
+  })
+
+  // Two red flags on an untouched form is how red becomes decoration. The naming
+  // column cannot be picked before its options exist, so it is not flagged then.
+  it('does not flag the naming column while it is still disabled', async () => {
+    setupFetch()
+    renderCreatePage()
+
+    await screen.findByText('New scan config')
+
+    expect(screen.getByLabelText('Event type column')).toBeDisabled()
+    expect(screen.queryByText(/without it this scan cannot name a single event/)).toBeNull()
   })
 })
 
@@ -184,7 +260,7 @@ describe('ScanFormSections — the mode choice', () => {
   // The defect: on the old defaults this scan was creatable, ran green forever,
   // and collected no metric point, raised no anomaly and sent no alert.
   it('flags both missing columns in Catalog + monitoring and refuses to create the scan', async () => {
-    setupFetch()
+    setupFetch([eventType])
     renderCreatePage()
 
     await screen.findByText('New scan config')
@@ -193,6 +269,12 @@ describe('ScanFormSections — the mode choice', () => {
     fireEvent.change(screen.getByPlaceholderText('SELECT * FROM analytics.events'), {
       target: { value: 'SELECT * FROM analytics.events' },
     })
+    // How events are named is asked for before the time column, so answer it —
+    // otherwise its own blocker is the one on the button.
+    await waitFor(() =>
+      expect(screen.getByRole('option', { name: 'Purchase' })).toBeInTheDocument(),
+    )
+    fireEvent.change(screen.getByLabelText('Event type'), { target: { value: 'et-1' } })
 
     expect(
       screen.getByText('Pick a time column — monitoring needs one to build a time series.'),

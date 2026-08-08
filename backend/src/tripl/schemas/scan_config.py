@@ -398,6 +398,16 @@ class ScanDryRunRequest(BaseModel):
             raise ValueError(
                 "either scan_config_id, or both data_source_id and base_query, must be provided"
             )
+        # A draft that names neither is unanswerable, not merely empty: the
+        # planner resolves event types exactly the way a real run does, and both
+        # abort on this. Rejecting it here turns what was a dispatched job that
+        # failed with the worker's internal precondition into a 422 the caller
+        # can act on before any warehouse query is issued.
+        if self.event_type_id is None and not self.event_type_column:
+            raise ValueError(
+                "a draft must set either event_type_id or event_type_column, "
+                "so the dry-run knows how events are named"
+            )
         return self
 
 
