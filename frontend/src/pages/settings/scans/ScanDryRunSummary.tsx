@@ -88,6 +88,22 @@ const UNDECLARED_COLUMNS_LINE =
 /** True only when every column really is accounted for. */
 const ALL_MAPPED_LINE = 'No new fields — every column is already mapped.'
 
+/**
+ * What a grouped scan's nameless group is called on screen.
+ *
+ * `analyze_cardinality_grouped` maps a NULL group value to the empty string, and
+ * a genuine empty cell stringifies to the empty string too, so the dry run
+ * carries `event_type: ""` for every event under those rows. Rendered verbatim
+ * the chip is an empty span — invisible next to the labelled rows, so the one
+ * row it was added to disambiguate is the one it fails to disambiguate.
+ *
+ * Named rather than hidden: the label is also the answer to "why are there two
+ * `home` rows?" — some of your rows carry no type — which is a fact about the
+ * user's data they can act on. The empty string stays on the wire, where it is
+ * the real group name; only this screen gives it a reader's name.
+ */
+const NO_EVENT_TYPE_LABEL = '(no event type)'
+
 function count(value: number, singular: string, plural: string): string {
   return `${value.toLocaleString()} ${value === 1 ? singular : plural}`
 }
@@ -174,7 +190,7 @@ function EventList({ events }: { events: ScanDryRunResponse['events'] }) {
                 count read as double-counting rather than as two real events. */}
             {showEventType && (
               <span style={{ color: 'var(--fg-faint)' }} className="shrink-0 text-[11px]">
-                {event.event_type}
+                {event.event_type || NO_EVENT_TYPE_LABEL}
               </span>
             )}
             {event.grouped_by_rule && (
@@ -245,6 +261,10 @@ export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
     : `Would create at least ${count(events.length, 'event', 'events')}`
 
   const windowed = Boolean(dryRun.window_from && dryRun.window_to)
+  // Not "no events" — no ANSWER. With no rows the grouped analysis returns no
+  // group values, so the dry run has no targets and knows nothing about what a
+  // run would write.
+  const readNothing = dryRun.sampled_rows === 0
   const sampleSentence =
     `${count(dryRun.sampled_rows, 'row', 'rows')} in the`
     + ` ${dryRun.breakdown_combinations.toLocaleString()} most common column combinations.`
@@ -268,48 +288,57 @@ export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
         </Note>
       </div>
 
-      {/* Read nothing, so there is nothing to say about events or fields. The
-          generic body below would answer "Would create 0 events" above a fields
-          headline whose wording assumes an explicit event type — on a path that
-          may have none. This is troubleshooting.md's documented "the window is
-          empty" case (a stale table, a stopped backfill, a timestamp in the
-          wrong unit), so it is worth naming rather than rendering as zeroes. */}
-      {dryRun.sampled_rows === 0 && (
+      {/* Read nothing, so there is nothing to say about events OR fields — the
+          note REPLACES both bodies rather than sitting above them.
+
+          Every line in those two bodies is a claim about rows this answer never
+          saw: "Would create 0 events" reads as "this scan creates nothing", and
+          the fields headline falls through to "every column is already mapped"
+          — a run over a non-empty window would create a field for EVERY
+          unreserved column on the grouped path. Gating only the events body
+          would leave the second, and gating the events count only would leave a
+          headline with no rows behind it. This is troubleshooting.md's
+          documented "the window is empty" case (a stale table, a stopped
+          backfill, a timestamp in the wrong unit): the remedy is the whole
+          answer, and nothing else here is known. */}
+      {readNothing ? (
         <Note tone="warning">
           {windowed ? EMPTY_WINDOW_NOTE : EMPTY_QUERY_NOTE}
         </Note>
+      ) : (
+        <>
+          <div>
+            <div className="flex flex-wrap items-baseline gap-x-2 text-[13px]">
+              <span className="font-medium" style={{ color: 'var(--fg)' }}>{eventsHeadline}</span>
+              {events.length > 0 && (
+                <span className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
+                  · {newEvents} new · {existingEvents} already in your plan
+                </span>
+              )}
+            </div>
+            <EventList events={events} />
+            {dryRun.events_truncated && (
+              <Note>{windowed ? EVENTS_TRUNCATED_WINDOWED_NOTE : EVENTS_TRUNCATED_NOTE}</Note>
+            )}
+            {dryRun.max_events_reached && (
+              <Note tone="warning">
+                Stopped at {events.length.toLocaleString()} events. The real scan stops there too.
+              </Note>
+            )}
+          </div>
+
+          <div>
+            <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+              {newFields.length > 0
+                ? `Would add ${count(newFields.length, 'field', 'fields')}`
+                : dryRun.unmapped_columns.length > 0
+                  ? UNDECLARED_COLUMNS_LINE
+                  : ALL_MAPPED_LINE}
+            </div>
+            <FieldList fields={dryRun.fields} />
+          </div>
+        </>
       )}
-
-      <div>
-        <div className="flex flex-wrap items-baseline gap-x-2 text-[13px]">
-          <span className="font-medium" style={{ color: 'var(--fg)' }}>{eventsHeadline}</span>
-          {events.length > 0 && (
-            <span className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
-              · {newEvents} new · {existingEvents} already in your plan
-            </span>
-          )}
-        </div>
-        <EventList events={events} />
-        {dryRun.events_truncated && (
-          <Note>{windowed ? EVENTS_TRUNCATED_WINDOWED_NOTE : EVENTS_TRUNCATED_NOTE}</Note>
-        )}
-        {dryRun.max_events_reached && (
-          <Note tone="warning">
-            Stopped at {events.length.toLocaleString()} events. The real scan stops there too.
-          </Note>
-        )}
-      </div>
-
-      <div>
-        <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-          {newFields.length > 0
-            ? `Would add ${count(newFields.length, 'field', 'fields')}`
-            : dryRun.unmapped_columns.length > 0
-              ? UNDECLARED_COLUMNS_LINE
-              : ALL_MAPPED_LINE}
-        </div>
-        <FieldList fields={dryRun.fields} />
-      </div>
 
       {dryRun.templated_columns.length > 0 && (
         <div className="space-y-1">

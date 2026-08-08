@@ -207,6 +207,74 @@ describe('ScanDryRunSummary — the panel names events, not rows (tripl-3y7z.6)'
     ).toBeInTheDocument()
   })
 
+  // The sibling of the assertion above, and the one the fix for "an empty window
+  // reports every column as unmapped" opened up: with no rows the dry run has no
+  // targets, so `unmapped_columns` is now [] as well as `fields` — and the same
+  // fallthrough that used to be blocked by the unmapped list landed on "every
+  // column is already mapped". Nothing was analysed, and a run over a non-empty
+  // window would create a field for every unreserved column on this path.
+  it('claims nothing about fields when it read no rows', () => {
+    render(
+      <ScanDryRunSummary
+        dryRun={dryRun({
+          window_from: '2026-08-07T12:00:00Z',
+          window_to: '2026-08-08T12:00:00Z',
+          sampled_rows: 0,
+          breakdown_combinations: 0,
+          events: [],
+          fields: [],
+          unmapped_columns: [],
+        })}
+      />,
+    )
+
+    expect(document.body.textContent).not.toMatch(/every column is already mapped/)
+    expect(document.body.textContent).not.toMatch(/No new fields/)
+    // The events body is the same class of claim: 0 rows read is not 0 events.
+    expect(document.body.textContent).not.toMatch(/Would create/)
+    // What is left is the one thing the answer does know, and its remedy.
+    expect(
+      screen.getByText(/The query returned no rows in this window/),
+    ).toBeInTheDocument()
+  })
+
+  // Unbounded read, same rule — the remedy differs, the silence does not.
+  it('claims nothing about fields when the whole query was empty', () => {
+    render(<ScanDryRunSummary dryRun={dryRun({ sampled_rows: 0, breakdown_combinations: 0 })} />)
+
+    expect(document.body.textContent).not.toMatch(/every column is already mapped/)
+    expect(document.body.textContent).not.toMatch(/Would create/)
+    expect(
+      screen.getByText('The query returned no rows, so there is nothing to describe yet.'),
+    ).toBeInTheDocument()
+  })
+
+  // The event-type chip exists to keep two same-named rows from reading as one
+  // double-counted event. On the grouped path a NULL or empty event-type column
+  // becomes the group name '' (cardinality.py), so the chip rendered an empty
+  // span — no chip at all on exactly the row that needed one.
+  it('names the group whose event-type column is empty', () => {
+    render(
+      <ScanDryRunSummary
+        dryRun={dryRun({
+          events: [
+            event('home', 120, { event_type: '' }),
+            event('home', 80, { event_type: 'checkout' }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getAllByText('home')).toHaveLength(2)
+    expect(screen.getByText('checkout')).toBeInTheDocument()
+    // The nameless group gets a label a reader can act on, not a blank span.
+    expect(screen.getByText('(no event type)')).toBeInTheDocument()
+    const rows = screen.getAllByText('home').map(node => node.closest('li'))
+    for (const row of rows) {
+      expect(row?.textContent).toMatch(/\(no event type\)|checkout/)
+    }
+  })
+
   // A collapsed column is why the user got 3 events instead of 3000 — a step
   // function of a threshold they are editing on the same form, not a property of
   // their data. Unnamed, the count reads as a fact about the warehouse.
