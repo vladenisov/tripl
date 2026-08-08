@@ -3014,6 +3014,140 @@ def test_an_anomaly_older_than_the_settled_head_closes_its_alert_state(
         assert ("event", str(event.id)) not in active
 
 
+# ---------------------------------------------------------------------------
+# An outage that is still running keeps its alert state open (tripl-l429.26).
+# ---------------------------------------------------------------------------
+
+_OUTAGE_ANCHOR = _ANOMALY_BASE - timedelta(days=5)
+
+
+def _seed_aged_outage(
+    session: Session,
+    *,
+    scan_alive: bool,
+    actual_count: float = 0,
+) -> tuple[ScanConfig, Event]:
+    """One scope that went silent five days ago, on a scan that may still be alive.
+
+    ``_seed_anomaly_scan_state`` lays the event's metric rows down at the anchor
+    and nothing after — the shape ``_collapse_outage_runs`` leaves behind once it
+    has announced an outage once (one anchor row at ``actual_count`` 0, never
+    re-emitted). With ``scan_alive`` the SAME scan keeps collecting for its
+    event-type scope right up to the present, so the collector is demonstrably
+    alive and the silence belongs to the scope rather than to a switched-off scan.
+    """
+    config, event_type, event = _seed_anomaly_scan_state(session, base=_OUTAGE_ANCHOR)
+    _seed_alert_rule(session, config)
+    anchor = _OUTAGE_ANCHOR + timedelta(hours=9)
+
+    if scan_alive:
+        # A sibling scope of the same scan, still collecting now.
+        for hour in range(3):
+            session.add(
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=config.id,
+                    event_id=None,
+                    event_type_id=event_type.id,
+                    bucket=_ANOMALY_BASE + timedelta(hours=hour),
+                    count=10,
+                )
+            )
+
+    anomaly = _seed_drop_anomaly(session, config, event, bucket=anchor)
+    anomaly.actual_count = actual_count
+    session.commit()
+    return config, event
+
+
+def test_an_outage_that_is_still_running_keeps_its_alert_state_open(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A live incident must not have its alert closed by the age of its own report.
+
+    An outage is announced ONCE, at onset, and deliberately never re-emitted, so
+    a scope that has been down for five days is described by a single five-day-old
+    row. Judging that row by its own age closed the alert state at
+    ``max(24h, 3 x interval)`` into an incident that was still running — while the
+    Anomalies page, the sidebar badge, the metrics list and the drilldown all kept
+    rendering it open, because they re-check the anchor against the series
+    (``monitoring_utils._outage_is_still_running``). The monitor therefore read
+    healthy during a live outage and ``_reopen_closed_incidents`` cleared the
+    operator's inbox acknowledgement mid-incident.
+
+    The worker never carried that re-check. It was an unported gap, not a
+    deliberate divergence: this is exactly the population the re-check is defined
+    for (count-shaped, scan-backed), and both of its inputs were already in hand.
+    """
+    with sync_session_factory() as session:
+        config, event = _seed_aged_outage(session, scan_alive=True)
+
+        active = metrics_signals._get_latest_active_anomalies(session, config)
+
+        assert ("event", str(event.id)) in active
+
+
+def test_an_outage_on_a_scan_that_stopped_collecting_still_closes(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The cap the re-check must not remove.
+
+    A switched-off collector and a dead event look identical from the stored
+    data, so the re-check only holds a signal open while the SCAN is provably
+    still collecting for something. Without this, the wall-clock cap that stops a
+    decommissioned scan pinning its final anomaly red forever would be gone — and
+    on the alert path that means a rule that never stops firing.
+    """
+    with sync_session_factory() as session:
+        config, event = _seed_aged_outage(session, scan_alive=False)
+
+        active = metrics_signals._get_latest_active_anomalies(session, config)
+
+        assert ("event", str(event.id)) not in active
+
+
+def test_an_aged_spike_is_not_held_open_by_the_outage_recheck(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Only silence earns the re-check — a burned-out spike still ages out.
+
+    The anchor row has to SAY the scope was at zero. A scope that emitted
+    something has a series that can age its own report out normally, and holding
+    every stale anomaly open on a live scan would keep alert state open for every
+    scope that ever fired.
+    """
+    with sync_session_factory() as session:
+        config, event = _seed_aged_outage(session, scan_alive=True, actual_count=7)
+
+        active = metrics_signals._get_latest_active_anomalies(session, config)
+
+        assert ("event", str(event.id)) not in active
+
+
+def test_an_aged_ongoing_outage_leaves_the_run_delta_but_not_alerting(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The one divergence between the two signal paths that is deliberate.
+
+    ``_get_visible_signal_scope_keys`` answers "what did THIS RUN change", which
+    is a different question from "what is open in the project". An outage
+    announced in an earlier run is not new in this one, so it leaves the run
+    delta at the freshness horizon while staying an open alert candidate and
+    staying listed on the Anomalies page.
+
+    Pinned because the divergence was previously only a comment. Giving this set
+    the outage re-check too would make ``signals_removed`` stop naming a scope
+    the page still lists — the opposite of what its docstring promises — so the
+    next attempt to "unify" the two has to break this test to do it.
+    """
+    with sync_session_factory() as session:
+        config, event = _seed_aged_outage(session, scan_alive=True)
+        key = ("event", str(event.id))
+
+        assert key in metrics_signals._get_latest_active_anomalies(session, config)
+        assert key not in metrics_signals._get_visible_signal_scope_keys(session, config.id)
+
+
 def _seed_closed_alert_state(
     session: Session,
     rule: AlertRule,

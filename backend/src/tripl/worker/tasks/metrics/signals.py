@@ -231,6 +231,16 @@ def _get_visible_signal_scope_keys(
       either way, so ``signals_added`` is unaffected; only ``signals_removed``
       can name a scope the page still lists.
 
+      This is now the ONE place the two signal paths deliberately answer
+      differently: ``_get_latest_active_anomalies`` runs the re-check, because
+      closing an alert on a running outage is wrong, and this set does not,
+      because a run summary reporting "0 signals removed" for a run that removed
+      nothing is right. Passing the re-check's arguments here would make
+      ``signals_removed`` stop naming a scope whose signal the page still lists,
+      which is the opposite of what this docstring promises above. Pinned by
+      ``test_metrics_tasks.test_an_aged_ongoing_outage_leaves_the_run_delta_but_not_alerting``
+      so the next person to "unify" the two has to read this paragraph first.
+
     Within its own scan's event scopes it classifies by exactly the page's rule,
     interval floor included — literally the same function, since it calls
     ``monitoring_utils.classify_signal_state`` with the same arguments the API
@@ -289,10 +299,40 @@ def _get_latest_active_anomalies(
 
     interval = scan_interval_to_timedelta(config.interval)
     emission_lag = _emission_lag(interval, _ingestion_settling_delay(session, config.project_id))
+    # The scan's liveness probe, for the outage re-check below. The newest bucket
+    # ANY scope of this config has stored — the same quantity
+    # ``monitoring_utils.latest_bucket_by_scan`` computes for the display path,
+    # taken from rows already in hand, so this costs no extra query.
+    scan_latest_bucket = max(latest_metrics.values(), default=None)
     # Deliberately NOT narrowed by the project's open-signal window: this feeds
     # alert dispatch, which closes AlertRuleState rows for scopes that drop out.
     # Honouring a shortened window here would let a presentation setting close
     # alert state and re-trigger the same alert past its cooldown.
+    #
+    # The outage re-check IS honoured, and used not to be. These scopes are
+    # exactly the population it is defined for — count-shaped and scan-backed —
+    # and an outage is announced once, at onset, and never re-emitted, so ageing
+    # that single row out closed the alert state of an incident that was still
+    # running. The Anomalies page, the badge, the list and the drilldown all kept
+    # rendering it open (they have run this re-check since tripl-l429.20), so at
+    # ``max(24h, 3 x interval)`` into a live outage the monitor read healthy while
+    # the page read down, and ``_reopen_closed_incidents`` cleared the operator's
+    # inbox acknowledgement mid-incident.
+    #
+    # In STEADY STATE this sends strictly fewer messages, not more: a collapsed
+    # outage anchor's bucket never advances, so the still-active branch
+    # (``dispatch``: ``anomaly.bucket > last_anomaly_bucket``) cannot re-fire, and
+    # staying open REMOVES the reactivation branch that a spurious close would
+    # otherwise have opened. There is one ONE-OFF exception, on the first
+    # dispatch run after this ships: a scope whose state had ALREADY wrongly
+    # closed re-enters as a candidate, takes the reactivation branch, and — if its
+    # ``last_notified_at`` is older than the rule's ``cooldown_minutes`` (default
+    # 1440) — sends once. That is one message per scope that is genuinely still
+    # down and whose monitor had gone quiet on it, and it does not repeat.
+    #
+    # The cap still holds: once the scan itself stops collecting,
+    # ``scan_latest_bucket`` goes stale, ``_outage_is_still_running`` returns
+    # False and the state closes exactly as before (tripl-l429.26).
     return {
         key: anomaly
         for key, anomaly in latest_anomalies.items()
@@ -301,6 +341,8 @@ def _get_latest_active_anomalies(
             latest_metric_bucket=latest_metrics.get(key),
             interval=interval,
             emission_lag=emission_lag,
+            anomaly_actual_count=anomaly.actual_count,
+            scan_latest_bucket=scan_latest_bucket,
         )
         == "latest_scan"
     }
