@@ -7,6 +7,7 @@ import { metricsApi } from '@/api/metrics'
 import { Card, CardContent } from '@/components/ui/card'
 import { CHART_SURFACE_TAB_INDEX } from '@/components/ui/chart-format'
 import { formatSignalSeverity } from '@/lib/monitoring'
+import { NO_BASELINE_LABEL, formatRatioDelta, ratioDelta } from '@/lib/percentDelta'
 import { cn } from '@/lib/utils'
 import type { TopMoverItem } from '@/types'
 
@@ -25,11 +26,24 @@ function formatCount(value: number): string {
   return Math.round(value).toLocaleString()
 }
 
+/**
+ * What the chip beside a top-mover row says: a signed percentage, the words
+ * `no baseline`, or '' when there is genuinely nothing to add.
+ *
+ * Two cases used to share the empty string and so looked identical in the row:
+ * a real change too small to round to a whole percent, and a breakdown value
+ * with no baseline at all. Only the first is genuinely nothing to say — the
+ * signed absolute-delta badge next to this chip already carries it. The second
+ * is a fact, and one the detector admits on purpose (a brand-new breakdown value
+ * whose median expectation is 0 passes `min_expected_count` at its floor), so it
+ * is named rather than left as a gap in a column every other row fills
+ * (tripl-l429.27).
+ */
 function percentDelta(actual: number, expected: number): string {
-  if (expected <= 0) return ''
-  const pct = ((actual - expected) / expected) * 100
+  const pct = ratioDelta(actual, expected)
+  if (pct === null) return NO_BASELINE_LABEL
   if (Math.abs(pct) < 0.5) return ''
-  return `${pct > 0 ? '+' : ''}${pct.toFixed(0)}%`
+  return formatRatioDelta(pct)
 }
 
 export function TopMoversPanel({
@@ -159,7 +173,18 @@ function TopMoverRow({
           <Icon aria-hidden="true" className="h-3 w-3" />
           {delta > 0 ? '+' : ''}{formatCount(delta)}
         </span>
-        {pct && <span className="text-muted-foreground">{pct}</span>}
+        {pct && (
+          <span
+            className="text-muted-foreground"
+            title={
+              item.expected_count > 0
+                ? undefined
+                : 'No baseline to compare against for this breakdown value'
+            }
+          >
+            {pct}
+          </span>
+        )}
         <span className="font-mono text-muted-foreground">
           {formatSignalSeverity(item)}
         </span>

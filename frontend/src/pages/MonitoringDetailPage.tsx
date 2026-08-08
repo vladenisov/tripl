@@ -43,6 +43,7 @@ import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/met
 import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, defaultGranularityForRange, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { formatSignalSeverity, resolveDetailScope } from '@/lib/monitoring'
+import { NO_BASELINE_LABEL, formatRatioDelta, ratioDelta } from '@/lib/percentDelta'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type {
   AppVersionSeriesResponse,
@@ -2188,9 +2189,11 @@ function EventActionOverflow() {
 }
 
 function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: 'danger' | 'warning' }) {
-  const delta = signal.expected_count > 0
-    ? ((signal.actual_count - signal.expected_count) / signal.expected_count) * 100
-    : null
+  // No baseline is a fact about the signal, not a missing value: dropping the
+  // clause left the banner silently shorter on exactly the anomalies that moved
+  // the most — an event firing where nothing was expected, a scope resuming
+  // after an outage — so it says so instead (tripl-l429.27).
+  const delta = ratioDelta(signal.actual_count, signal.expected_count)
   const Arrow = signal.direction === 'drop' ? ArrowDown : ArrowUp
   return (
     <div
@@ -2203,7 +2206,9 @@ function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: '
       <Arrow size={15} style={{ color: `var(--${tone})` }} />
       <span className="text-[12.5px]" style={{ color: 'var(--fg-muted)' }}>
         {signal.direction === 'drop' ? 'Volume drop' : 'Volume spike'} detected
-        {delta != null && ` — ${delta > 0 ? '+' : ''}${delta.toFixed(0)}% vs. baseline`}
+        {delta === null
+          ? ` — ${NO_BASELINE_LABEL} to compare against`
+          : ` — ${formatRatioDelta(delta)} vs. baseline`}
         {` (${formatSignalSeverity(signal)}).`}
       </span>
       <div className="flex-1" />

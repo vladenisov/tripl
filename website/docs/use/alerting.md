@@ -74,6 +74,54 @@ There is no separate destination-test endpoint. Use rule replay to validate
 matching, then confirm the first real delivery in **Audit**; a failing webhook
 or an unverified bot token is the most common transport failure.
 
+### What a Webhook destination POSTs
+
+The body is JSON, so downstream automation (Zapier, n8n, your own service) can
+read individual fields instead of scraping the rendered `message`:
+
+```json
+{
+  "project":     { "name": "Checkout", "slug": "checkout" },
+  "destination": { "id": "…", "name": "Ops Webhook" },
+  "rule":        { "id": "…", "name": "Volume drops" },
+  "scan":        { "id": "…", "name": "Hourly scan" },
+  "matched_count": 1,
+  "message": "…the same text the chat channels would receive…",
+  "items": [
+    {
+      "scope_type": "event",
+      "scope_ref": "…",
+      "scope_name": "purchase:success",
+      "direction": "drop",
+      "actual_count": 10,
+      "expected_count": 20,
+      "absolute_delta": 10,
+      "percent_delta": 50.0,
+      "bucket": "2026-04-11T09:00:00+00:00",
+      "details_url": "…",
+      "monitoring_url": "…",
+      "drift_field": null,
+      "drift_type": null,
+      "sample_value": null
+    }
+  ]
+}
+```
+
+:::warning `percent_delta` is `null` when there is no baseline
+`"percent_delta"` is **`null`**, not `0`, whenever `"expected_count"` is `0` —
+a scope resuming after an outage, an event firing for the first time, a schema
+drift. There is no ratio to report for those, and reporting `0` would tell a
+consumer testing `percent_delta > threshold` that nothing changed about the
+anomalies that changed the most. Use `"absolute_delta"` for that class; it is
+the number that means something. The same rule applies to the item list inside a
+delivery's `payload_snapshot` in the API and the Inbox.
+
+Deliveries recorded **before this behaviour shipped** still carry `0.0` in their
+stored `payload_snapshot` — a delivery is a frozen record and is not rewritten.
+Read `expected_count == 0` to disambiguate historical rows.
+:::
+
 ### The AI note remembers what it already told you
 
 When **AI explanation** is on for a rule, the note is written with the last
@@ -142,9 +190,13 @@ needs *notify on spike* enabled.
   baseline, so the percent gate steps aside there and `min absolute delta`
   decides. (No movement against a baseline of zero is still not an event.)
   Those alerts say **`no baseline`** where the others carry a percentage —
-  in the message, in the delivery's item table and in the simulator — because
-  there is no ratio to report. The absolute delta beside it is the number that
-  means something.
+  in the message, in the delivery's item table, in the simulator, in the AI
+  explanation, and in the monitoring surfaces that work a percentage out for
+  themselves (the signal banner on a scope's page, the **Top movers** rows) —
+  because there is no ratio to report. The absolute delta beside it is the
+  number that means something. Programs get the same fact as JSON `null` rather
+  than the words; see
+  [What a Webhook destination POSTs](#what-a-webhook-destination-posts).
 
 :::tip Why the percent default is not zero
 Most volume anomalies are single-bucket seasonal deviations rather than
@@ -256,6 +308,17 @@ variable is rejected, so a typo fails fast rather than sending a broken message)
   own `%` sign and says `no baseline` when the expected count was zero, where a
   bare `${percent_delta}%` would print the undefined ratio as `0.0%`. Use
   `${percent_delta}` only if you want the raw number.
+
+  **If you already saved a custom item template, check it for
+  `${percent_delta}`.** A saved template is your text and nothing rewrites it, so
+  a rule written before `${percent_delta_label}` existed goes on printing `0.0%`
+  for every anomaly against a zero baseline — a scope resuming after an outage,
+  an event firing for the first time, a schema drift — which reads as "nothing
+  changed" about the anomalies that changed the most. The fix is one edit, in
+  **Alerting → the rule → Message template**: replace `${percent_delta}%` with
+  `${percent_delta_label}`, dropping the literal `%` you were writing after it
+  because the label brings its own. Nothing else in your template moves, and
+  rules still on the default template already say `no baseline`.
 
   `${expected_basis}` is empty for almost every item. It exists because one
   scope computes its expectation differently from all the others: a **release

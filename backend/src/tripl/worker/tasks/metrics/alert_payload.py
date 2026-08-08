@@ -11,6 +11,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from tripl.alert_templates import percent_delta_or_none
 from tripl.alerting_matching import (
     SCOPE_DISTRIBUTION_DRIFT,
     SCOPE_METRIC,
@@ -173,6 +174,8 @@ def _build_delivery_snapshot(
             event_id=anomaly.event_id,
             delivery_id=delivery_id,
         )
+        expected = anomaly.expected_count
+        absolute_delta = abs(anomaly.actual_count - expected)
         items.append(
             {
                 "scope_type": anomaly.scope_type,
@@ -180,14 +183,18 @@ def _build_delivery_snapshot(
                 "scope_name": scope_names[(anomaly.scope_type, anomaly.scope_ref)],
                 "direction": anomaly.direction,
                 "actual_count": anomaly.actual_count,
-                "expected_count": round(anomaly.expected_count),
-                "absolute_delta": round(abs(anomaly.actual_count - anomaly.expected_count)),
-                "percent_delta": (
-                    abs(anomaly.actual_count - anomaly.expected_count)
-                    / anomaly.expected_count
-                    * 100
-                    if anomaly.expected_count > 0
-                    else 0.0
+                "expected_count": round(expected),
+                "absolute_delta": round(absolute_delta),
+                # ``null`` rather than the stored 0.0 placeholder when there was
+                # no baseline: this blob is read as JSON (the Inbox, the audit
+                # API, anything reading ``AlertDelivery.payload_snapshot``), and
+                # a number there is indistinguishable from "no change"
+                # (tripl-l429.27). Rows written before that change still carry
+                # 0.0 — a frozen record is not rewritten — so a consumer reading
+                # historical deliveries disambiguates on ``expected_count == 0``.
+                "percent_delta": percent_delta_or_none(
+                    absolute_delta / expected * 100 if expected > 0 else 0.0,
+                    expected,
                 ),
                 "details_path": details_path,
                 "monitoring_path": monitoring_path,

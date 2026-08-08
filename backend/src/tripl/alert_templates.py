@@ -122,7 +122,10 @@ ALERT_ITEM_TEMPLATE_VARIABLES: dict[str, str] = {
         '("(adoption-adjusted)" for release regressions; empty otherwise)'
     ),
     "absolute_delta": "Absolute delta",
-    "percent_delta": "Percent delta as a bare number (0 when there was no baseline)",
+    "percent_delta": (
+        "Percent delta as a bare number. Prints 0 when there was no baseline, so "
+        "prefer percent_delta_label unless you need the raw number"
+    ),
     "percent_delta_label": 'Percent delta with its "%" sign, or "no baseline" when expected is 0',
     "bucket": "Anomaly bucket timestamp",
     "details_url": "Event details URL",
@@ -294,3 +297,24 @@ def format_percent_delta(percent_delta: float, expected_count: float, *, spec: s
     if expected_count > 0:
         return f"{percent_delta:{spec}}%"
     return NO_BASELINE_LABEL
+
+
+def percent_delta_or_none(percent_delta: float, expected_count: float) -> float | None:
+    """The machine-readable twin of :func:`format_percent_delta`.
+
+    Same gate, same fact, different encoding: a human reading an alert is told
+    the words ``no baseline``; a program parsing JSON is handed ``null``. What
+    neither may be handed is the stored ``0.0`` placeholder, because a consumer
+    cannot tell it apart from a real "no change" — and the class it hides is
+    exactly the loudest one, a scope firing from nothing or resuming after an
+    outage (tripl-l429.27). ``expected_count`` travels beside it in every payload
+    and corroborates the null, but a consumer that only reads this field must
+    still not be misled by it.
+
+    Callers keep the stored column as it is: ``AlertDeliveryItem.percent_delta``
+    is NOT NULL and holds frozen history, so the placeholder stays there and only
+    the outbound encodings change.
+    """
+    if expected_count > 0:
+        return percent_delta
+    return None

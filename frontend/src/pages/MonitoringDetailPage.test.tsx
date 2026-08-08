@@ -795,6 +795,31 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     expect(banner.textContent).not.toMatch(/z\s*=/)
   })
 
+  it('names a zero baseline in the banner rather than dropping the clause (tripl-l429.27)', async () => {
+    // An event firing where nothing was expected. The "vs. baseline" clause used
+    // to be omitted silently, so the banner was quietly shorter on exactly the
+    // signals that moved the most and a reader could not tell whether the
+    // comparison was missing or undefined.
+    installEventDetailFetch({
+      latestSignal: {
+        ...dropToZeroSignal(),
+        direction: 'spike',
+        actual_count: 137,
+        expected_count: 0,
+        stddev: 1,
+        z_score: 9.1,
+      },
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const banner = screen.getByText(/Volume spike detected/)
+    expect(banner.textContent).toContain('no baseline to compare against')
+    // Never the undefined ratio written as a number.
+    expect(banner.textContent).not.toContain('vs. baseline')
+    expect(banner.textContent).not.toMatch(/[+-]?\d+% vs/)
+  })
+
   it('keeps the numeric z-score in the banner for a partial (non-zero) drop', async () => {
     installEventDetailFetch({
       latestSignal: {

@@ -41,9 +41,11 @@ from tripl.worker.tasks.alerts_messages import (
     _is_telegram_markdown_parse_error,
     _is_telegram_message_too_long_error,
     _render_delivery_message,
+    _webhook_item_payload,
     split_telegram_messages,
     telegram_message_length,
 )
+from tripl.worker.tasks.metrics.alert_payload import _build_delivery_snapshot
 
 
 @pytest.fixture
@@ -446,3 +448,120 @@ def test_the_preview_says_the_same_thing_as_the_send() -> None:
 
     assert previewed == _render_in(item, ALERT_MESSAGE_FORMAT_PLAIN)
     assert "no baseline" in previewed
+
+
+def test_a_saved_custom_template_still_prints_the_bare_number() -> None:
+    """``${percent_delta}`` is documented as a raw number and stays one.
+
+    An operator's saved ``items_template`` is their content: no code rewrites it,
+    so a rule that wrote ``${percent_delta}%`` before ``${percent_delta_label}``
+    existed goes on printing ``0.0%`` at a zero baseline. Pinned here so the
+    behaviour is a deliberate contract rather than an oversight — the way out is
+    the operator swapping the variable, which
+    ``website/docs/use/alerting.md`` ("Message templates") tells them to do.
+    """
+    item = _zero_baseline_item()
+
+    raw = _build_items_text(
+        [item],
+        message_format=ALERT_MESSAGE_FORMAT_PLAIN,
+        items_template="${scope_name}: ${percent_delta}%",
+    )
+    labelled = _build_items_text(
+        [item],
+        message_format=ALERT_MESSAGE_FORMAT_PLAIN,
+        items_template="${scope_name}: ${percent_delta_label}",
+    )
+
+    assert raw == "checkout:completed: 0.0%"
+    assert labelled == "checkout:completed: no baseline"
+
+
+# --- the machine encodings of the same fact (tripl-l429.27) -----------------
+#
+# Humans are told "no baseline"; programs are handed JSON null. What neither may
+# be handed is the stored 0.0 placeholder, which a consumer cannot tell apart
+# from a real "no change".
+
+
+def test_the_webhook_body_says_null_rather_than_zero_at_a_zero_baseline() -> None:
+    payload = _webhook_item_payload(_zero_baseline_item())
+
+    assert payload["percent_delta"] is None, (
+        "0.0 in the webhook body reads as 'no change' on the anomaly that "
+        "moved the most; expected_count sits beside it but a consumer testing "
+        "percent_delta alone has no way to know that"
+    )
+    # The numbers that do mean something are untouched.
+    assert payload["expected_count"] == 0
+    assert payload["actual_count"] == 137
+    assert payload["absolute_delta"] == 137
+
+
+def test_the_webhook_body_still_carries_the_number_when_there_was_a_baseline() -> None:
+    payload = _webhook_item_payload(_item(0))
+
+    assert payload["percent_delta"] == 51.9
+    assert payload["expected_count"] == 32048
+
+
+def _snapshot_items(expected_count: float) -> list[dict[str, object]]:
+    """``payload_snapshot["items"]`` for one anomaly with the given baseline."""
+    from tripl.models.metric_anomaly import MetricAnomaly
+
+    anomaly = MetricAnomaly(
+        id=uuid.uuid4(),
+        scan_config_id=uuid.uuid4(),
+        scope_type="event",
+        scope_ref="event-1",
+        event_id=None,
+        event_type_id=None,
+        bucket=datetime(2026, 8, 4, 19, tzinfo=UTC),
+        direction="spike",
+        actual_count=137,
+        expected_count=expected_count,
+        stddev=1.0,
+        z_score=9.9,
+    )
+    snapshot = _build_delivery_snapshot(
+        ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=uuid.uuid4(),
+            project_id=uuid.uuid4(),
+            name="Hourly scan",
+            base_query="SELECT 1",
+            time_column="created_at",
+            cardinality_threshold=100,
+            interval="1h",
+        ),
+        project_slug="checkout",
+        rule=AlertRule(id=uuid.uuid4(), destination_id=uuid.uuid4(), name="Volume drops"),
+        destination=AlertDestination(
+            id=uuid.uuid4(),
+            project_id=uuid.uuid4(),
+            type=AlertDestinationType.webhook.value,
+            name="Ops Webhook",
+        ),
+        anomalies=[anomaly],
+        scope_names={("event", "event-1"): "checkout:completed"},
+        delivery_id=uuid.uuid4(),
+    )
+    items = snapshot["items"]
+    assert isinstance(items, list)
+    return items
+
+
+def test_the_frozen_delivery_snapshot_says_null_at_a_zero_baseline() -> None:
+    """The audit/Inbox blob is read as JSON too, so it gets the same encoding."""
+    (item,) = _snapshot_items(0.0)
+
+    assert item["percent_delta"] is None
+    assert item["expected_count"] == 0
+    assert item["absolute_delta"] == 137
+
+
+def test_the_frozen_delivery_snapshot_keeps_the_ratio_when_there_was_one() -> None:
+    (item,) = _snapshot_items(100.0)
+
+    assert item["percent_delta"] == pytest.approx(37.0)
+    assert item["expected_count"] == 100
