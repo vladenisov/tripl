@@ -58,8 +58,8 @@ export function ScanConfigurationTab({
 
   const handleDelete = async () => {
     const ok = await confirm({
-      title: 'Delete scan config',
-      message: `Delete "${scanConfig.name}"? Stops ingestion from this query. Ingested events are kept.`,
+      title: 'Delete scan',
+      message: `Delete "${scanConfig.name}"? Stops adding events from this query. Events already in your plan are kept.`,
       confirmLabel: 'Delete',
       variant: 'danger',
     })
@@ -104,7 +104,7 @@ export function ScanConfigurationTab({
       {dialog}
       {updateMut.isError && (
         <div className="mb-5">
-          <ErrorState compact title="Could not save scan config" error={updateMut.error} />
+          <ErrorState compact title="Could not save scan" error={updateMut.error} />
         </div>
       )}
       <ScanEssentialsSection {...sectionProps} />
@@ -146,10 +146,10 @@ export function ScanConfigurationTab({
         <div className="flex items-center gap-[18px] px-[18px] py-3.5">
           <div className="flex-1">
             <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-              Delete scan config
+              Delete scan
             </div>
             <div className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
-              Stops ingestion from this query. Ingested events are kept.
+              Stops adding events from this query. Events already in your plan are kept.
             </div>
           </div>
           <Button
@@ -220,7 +220,7 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
           <span aria-hidden>←</span> Scans
         </button>
       </div>
-      <h1 className="m-0 mb-1 text-[19px] font-semibold tracking-tight">New scan config</h1>
+      <h1 className="m-0 mb-1 text-[19px] font-semibold tracking-tight">New scan</h1>
       {/* "…to ingest events and roll up metrics" promised monitoring before the
           user had chosen it, and read as a contradiction with Catalog only two
           lines below. What the scan does is now the first question, and the note
@@ -238,7 +238,7 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
 
       {createMut.isError && (
         <div className="mb-5">
-          <ErrorState compact title="Could not create scan config" error={createMut.error} />
+          <ErrorState compact title="Could not create scan" error={createMut.error} />
         </div>
       )}
 
@@ -249,7 +249,7 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
               "optional" either any more — it is how you find out what this scan
               would put in your plan before you create it (tripl-3y7z.6). */}
           {loaded
-            ? 'Creates the config and runs the first scan.'
+            ? 'Creates the scan. Run it from its page when you are ready.'
             : form.state.mode === 'monitoring'
               ? 'Load a preview to choose a time column and see what this scan would create.'
               : 'Load a preview to see what this scan would create.'}

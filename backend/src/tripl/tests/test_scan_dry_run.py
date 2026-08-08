@@ -376,6 +376,45 @@ class TestDryRunWorker:
         finally:
             engine.dispose()
 
+    def test_an_empty_window_claims_no_column_is_unmapped(self, tmp_path, monkeypatch) -> None:
+        """Knowing nothing is not the same as knowing every column is unmapped.
+
+        With no rows the grouped analysis returns no group values, so there are
+        no targets, the per-target loop never runs and ``known_field_names``
+        stays empty. Deriving ``unmapped_columns`` from that emptiness reported
+        EVERY column as one a run would skip — the opposite of the truth, since
+        a run over a non-empty window creates fields for exactly those columns.
+
+        It also mis-routed the panel: ``fields == [] and unmapped_columns != []``
+        is how it detects the explicit-event-type path, so a zero-row auto-detect
+        answer rendered a sentence about "the fields this event type already
+        declares" on a path that has no event type.
+
+        Uses the GROUPED seed deliberately. ``_seed`` names an explicit event
+        type whose two declared fields are the same two columns the fake adapter
+        returns, so ``known_field_names`` covers everything and this assertion
+        would hold with or without the fix — a test that proves nothing. The
+        grouped config derives its targets from the rows, so zero rows is the
+        only way to reach the empty-targets branch at all.
+        """
+        engine = create_engine(f"sqlite:///{tmp_path / 'dry_empty.db'}")
+        try:
+            Base.metadata.create_all(engine)
+            factory = sessionmaker(engine, expire_on_commit=False)
+            job_id, _project_id = _seed_grouped(factory)
+
+            result = _run(monkeypatch, factory, _FakeAdapter([]), job_id)
+
+            assert result["sampled_rows"] == 0
+            assert result["events"] == []
+            assert result["fields"] == []
+            assert result["unmapped_columns"] == [], (
+                "a dry run that read no rows analysed no columns, so it cannot "
+                "report any column as unmapped"
+            )
+        finally:
+            engine.dispose()
+
     def test_one_name_under_two_event_types_is_two_events_not_one(
         self, tmp_path, monkeypatch
     ) -> None:

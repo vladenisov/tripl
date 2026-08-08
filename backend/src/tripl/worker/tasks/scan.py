@@ -761,9 +761,18 @@ def build_dry_run_payload(
         "fields": fields,
         "templated_columns": list(templated.values()),
         "reserved_columns": sorted(skip_cols),
+        # "Unmapped" is a claim about ANALYSED columns: this one was looked at and
+        # no field definition covers it. With no targets nothing was analysed at
+        # all — an empty window yields no group values, so `_dry_run_targets`
+        # returns nothing and `known_field_names` stays empty. Reporting every
+        # column as unmapped there tells the user a run skips columns it would in
+        # fact create, and sends the panel down its explicit-event-type branch on
+        # a path that has no event type. Say nothing rather than something false.
         "unmapped_columns": sorted(
             c.name for c in columns if c.name not in skip_cols and c.name not in known_field_names
-        ),
+        )
+        if targets
+        else [],
         "warnings": warnings,
         "errors": errors,
     }

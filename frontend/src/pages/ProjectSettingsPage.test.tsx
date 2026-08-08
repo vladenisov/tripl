@@ -1169,7 +1169,7 @@ describe('ProjectSettingsPage', () => {
     fireEvent.click(addScanButton)
 
     // Create flow is an in-place page (no dialog).
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
     const textboxes = screen.getAllByRole('textbox')
     fireEvent.change(textboxes[0], { target: { value: 'Main scan' } })
     fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
@@ -1370,7 +1370,7 @@ describe('ProjectSettingsPage', () => {
     await waitFor(() => expect(addScanButton).not.toBeDisabled())
     fireEvent.click(addScanButton)
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
     const textboxes = screen.getAllByRole('textbox')
     fireEvent.change(textboxes[0], { target: { value: 'Versioned scan' } })
     fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
@@ -1622,7 +1622,7 @@ describe('ProjectSettingsPage', () => {
     await waitFor(() => expect(addScanButton).not.toBeDisabled())
     fireEvent.click(addScanButton)
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
     const textboxes = screen.getAllByRole('textbox')
     fireEvent.change(textboxes[0], { target: { value: 'Main scan' } })
     fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })

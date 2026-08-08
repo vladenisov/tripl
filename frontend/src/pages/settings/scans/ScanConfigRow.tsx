@@ -66,7 +66,11 @@ export function ScanBadges({
 }) {
   const items: string[] = []
   if (sc.interval) items.push(`⏱ ${intervalLabel[sc.interval] ?? sc.interval}`)
-  if (sc.scan_lookback_hours) items.push(`Lookback ${sc.scan_lookback_hours}h`)
+  // A lookback is the predicate `<time column> >= now() - N`, so with no time
+  // column it bounds nothing. Showing it anyway put "Lookback 24h" on the header
+  // of a scan whose Source & query panel reads "Time column: None" — leaving the
+  // badge as the only surface still claiming a bound the run does not apply.
+  if (sc.scan_lookback_hours && sc.time_column) items.push(`Lookback ${sc.scan_lookback_hours}h`)
   if (sc.scan_row_limit) items.push(`Scan cap ${sc.scan_row_limit.toLocaleString()}`)
   if (sc.metrics_row_limit) items.push(`Metrics cap ${sc.metrics_row_limit.toLocaleString()}`)
   if (sc.json_value_paths.length) items.push(`JSON keep ${sc.json_value_paths.length}`)
@@ -87,7 +91,7 @@ export function ScanBadges({
   )
 }
 
-// One row in the "Scan configs" table.
+// One row in the "Scans" table.
 export function ScanListRow({
   sc,
   dataSource,
@@ -154,7 +158,7 @@ export function ScanListRow({
     <tr
       role="button"
       tabIndex={0}
-      aria-label={`View scan config ${sc.name}`}
+      aria-label={`View scan ${sc.name}`}
       className="cursor-pointer border-t transition-colors hover:bg-[var(--surface-hover)]"
       style={{ borderColor: 'var(--border-subtle)' }}
       onClick={onNavigate}

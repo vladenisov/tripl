@@ -206,9 +206,9 @@ export function ScansTab({ slug }: { slug: string }) {
               it PRODUCES and what consumes it, because a scan's output reaches
               the user as anomalies and alerts (tripl-3y7z.2). */}
           <p className="mt-1 max-w-[560px] text-sm" style={{ color: 'var(--fg-subtle)' }}>
-            Scans read your warehouse on a schedule. Every run adds events and fields to your
-            tracking plan; a monitoring scan also records metric points, and those points are what
-            anomaly detection and alerts are built on.
+            Scans read your warehouse. Every run adds events and fields to your tracking plan; a
+            monitoring scan also runs on a schedule and records metric points, and those points are
+            what anomaly detection and alerts are built on.
           </p>
         </div>
         <Button
@@ -223,7 +223,7 @@ export function ScansTab({ slug }: { slug: string }) {
       </div>
 
       <div className="grid grid-cols-3 gap-3">
-        <StatCard label="Scan configs" value={scanConfigs.length} />
+        <StatCard label="Scans" value={scanConfigs.length} />
         <StatCard label="Monitoring" value={monitoringCount} />
         <StatCard
           label="Warehouse rows read · 24h"
@@ -236,13 +236,13 @@ export function ScansTab({ slug }: { slug: string }) {
         <EmptyState
           icon={Search}
           title="No data sources"
-          description="Add a data source connection first (via the global Data Sources page) to create scan configs."
+          description="Add a data source connection first (via the global Data Sources page) to create a scan."
         />
       )}
 
-      <SurfPanel title="Scan configs" subtitle={`${scanConfigs.length} configs`}>
+      <SurfPanel title="Scans" subtitle={`${scanConfigs.length} scans`}>
         {scanConfigsLoading ? (
-          <div className="space-y-2 px-4 py-4" aria-busy="true" aria-label="Loading scan configs">
+          <div className="space-y-2 px-4 py-4" aria-busy="true" aria-label="Loading scans">
             {[0, 1, 2].map((index) => (
               <Skeleton key={index} className="h-10 w-full" />
             ))}
@@ -251,7 +251,7 @@ export function ScansTab({ slug }: { slug: string }) {
           <div className="p-4">
             <ErrorState
               compact
-              title="Couldn't load scan configs"
+              title="Couldn't load scans"
               error={scanConfigsErrorObj}
               onRetry={() => {
                 void refetchScanConfigs()
@@ -260,7 +260,7 @@ export function ScansTab({ slug }: { slug: string }) {
           </div>
         ) : scanConfigs.length === 0 ? (
           <p className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
-            No scan configs yet.
+            No scans yet.
           </p>
         ) : (
           <table className="w-full border-collapse">

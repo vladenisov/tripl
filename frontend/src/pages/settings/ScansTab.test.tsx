@@ -189,8 +189,8 @@ describe('ScansTab', () => {
     renderTab()
 
     expect(await screen.findByText('Main events scan')).toBeInTheDocument()
-    // "Scan configs" appears both as a KPI label and the panel title.
-    expect(screen.getAllByText('Scan configs').length).toBeGreaterThanOrEqual(1)
+    // "Scans" appears as the heading, a KPI label and the panel title.
+    expect(screen.getAllByText('Scans').length).toBeGreaterThanOrEqual(1)
     // "Monitoring" is both the KPI label and this row's mode badge.
     expect(screen.getAllByText('Monitoring')).toHaveLength(2)
     // "Rows scanned" said nothing about which rows; these are warehouse rows the
@@ -378,7 +378,7 @@ describe('ScansTab', () => {
     expect(screen.getByText('Needs a time column')).toBeInTheDocument()
     expect(screen.queryByText('No metrics collected')).toBeNull()
 
-    // The KPI grid is [Scan configs, Monitoring, Warehouse rows read · 24h]; the
+    // The KPI grid is [Scans, Monitoring, Warehouse rows read · 24h]; the
     // Monitoring tile must read 0, not 1.
     const monitoringLabel = screen.getByText('Monitoring')
     expect(monitoringLabel.parentElement?.textContent).toBe('Monitoring0')
@@ -405,7 +405,9 @@ describe('ScansTab', () => {
 
     // In-place page view — no router navigation occurred.
     expect(navigateMock).not.toHaveBeenCalled()
-    expect(await screen.findByText('New scan config')).toBeInTheDocument()
+    // Scoped to the heading: the list's own "New scan" BUTTON now carries the
+    // same words, so a bare text query would match it and pass either way.
+    expect(await screen.findByRole('heading', { name: 'New scan' })).toBeInTheDocument()
     // The essentials block is always visible; everything else is a collapsed
     // section whose fields are not mounted until it is opened.
     expect(screen.getByLabelText('Name')).toBeInTheDocument()
@@ -416,7 +418,7 @@ describe('ScansTab', () => {
     // Cancel returns to the list without navigation.
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.getByText('Main events scan')).toBeInTheDocument())
-    expect(screen.queryByText('New scan config')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'New scan' })).not.toBeInTheDocument()
     expect(navigateMock).not.toHaveBeenCalled()
   })
 })

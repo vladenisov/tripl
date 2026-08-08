@@ -34,6 +34,20 @@ const NAME_FORMAT_FIX =
 const NO_WINDOW_NOTE = 'No time window — the whole base query was read'
 
 /**
+ * The read-nothing answer, stated rather than rendered as a wall of zeroes.
+ *
+ * With no rows the grouped analysis returns no group values, so the dry run has
+ * no targets and genuinely knows nothing — not "no events would be created".
+ * The two variants exist because the remedy differs: a bounded read points at
+ * the window, an unbounded one can only point at the query.
+ */
+const EMPTY_WINDOW_NOTE =
+  'The query returned no rows in this window. Widen Limits → Lookback (hours), or check that'
+  + ' the time column is the one your table actually fills.'
+
+const EMPTY_QUERY_NOTE = 'The query returned no rows, so there is nothing to describe yet.'
+
+/**
  * Both remedies here are controls the product actually has.
  *
  * The note used to lead with "Raise the sample row limit". `sample_row_limit` is
@@ -138,6 +152,7 @@ function NameFormatErrors({ errors }: { errors: string[] }) {
 function EventList({ events }: { events: ScanDryRunResponse['events'] }) {
   if (events.length === 0) return null
   const shown = events.slice(0, MAX_LISTED)
+  const showEventType = new Set(events.map(event => event.event_type)).size > 1
   return (
     <>
       <ul className="m-0 mt-1.5 list-none space-y-1 p-0">
@@ -152,6 +167,16 @@ function EventList({ events }: { events: ScanDryRunResponse['events'] }) {
             <span className="min-w-0 flex-1 truncate font-medium" style={{ color: 'var(--fg)' }}>
               {event.name}
             </span>
+            {/* Only when the answer spans more than one event type. A grouped
+                scan names events from the columns left after the event-type
+                column is reserved out, so the same name under two group values
+                is ordinary — and two identical rows differing only in a row
+                count read as double-counting rather than as two real events. */}
+            {showEventType && (
+              <span style={{ color: 'var(--fg-faint)' }} className="shrink-0 text-[11px]">
+                {event.event_type}
+              </span>
+            )}
             {event.grouped_by_rule && (
               <span style={{ color: 'var(--fg-faint)' }} className="shrink-0 text-[11px]">
                 merged by {event.grouped_by_rule}
@@ -242,6 +267,18 @@ export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
           {sampleSentence}
         </Note>
       </div>
+
+      {/* Read nothing, so there is nothing to say about events or fields. The
+          generic body below would answer "Would create 0 events" above a fields
+          headline whose wording assumes an explicit event type — on a path that
+          may have none. This is troubleshooting.md's documented "the window is
+          empty" case (a stale table, a stopped backfill, a timestamp in the
+          wrong unit), so it is worth naming rather than rendering as zeroes. */}
+      {dryRun.sampled_rows === 0 && (
+        <Note tone="warning">
+          {windowed ? EMPTY_WINDOW_NOTE : EMPTY_QUERY_NOTE}
+        </Note>
+      )}
 
       <div>
         <div className="flex flex-wrap items-baseline gap-x-2 text-[13px]">

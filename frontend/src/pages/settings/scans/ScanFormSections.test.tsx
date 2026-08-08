@@ -119,7 +119,7 @@ describe('ScanFormSections — progressive disclosure', () => {
     setupFetch()
     renderCreatePage()
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
 
     expect(screen.queryByLabelText('Cardinality threshold')).toBeNull()
     expect(screen.queryByLabelText('Row cap per metrics run')).toBeNull()
@@ -132,7 +132,7 @@ describe('ScanFormSections — progressive disclosure', () => {
     setupFetch()
     renderCreatePage()
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
 
     expect(screen.getByLabelText('Name')).toBeInTheDocument()
     expect(screen.getByLabelText('Data source')).toBeInTheDocument()
@@ -150,7 +150,7 @@ describe('ScanFormSections — where event names come from', () => {
     setupFetch()
     renderCreatePage()
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
 
     const eventType = screen.getByLabelText('Event type')
     const column = screen.getByLabelText('Event type column')
@@ -170,7 +170,7 @@ describe('ScanFormSections — where event names come from', () => {
     setupFetch()
     renderCreatePage()
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
 
     expect(
       screen.queryByText(/Leave this alone and events are named from the column values/),
@@ -186,7 +186,7 @@ describe('ScanFormSections — where event names come from', () => {
     setupFetch()
     renderCreatePage()
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Main scan' } })
     fireEvent.change(screen.getByLabelText('Data source'), { target: { value: 'ds-1' } })
     fireEvent.change(screen.getByPlaceholderText('SELECT * FROM analytics.events'), {
@@ -208,7 +208,7 @@ describe('ScanFormSections — where event names come from', () => {
     setupFetch()
     renderCreatePage()
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
 
     expect(screen.getByLabelText('Event type column')).toBeDisabled()
     expect(screen.queryByText(/without it this scan cannot name a single event/)).toBeNull()
@@ -229,7 +229,7 @@ describe('ScanFormSections — the answer comes after the questions', () => {
     setupFetch([eventType])
     renderCreatePage()
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Main scan' } })
     fireEvent.change(screen.getByLabelText('Data source'), { target: { value: 'ds-1' } })
     fireEvent.change(screen.getByPlaceholderText('SELECT * FROM analytics.events'), {
@@ -252,7 +252,7 @@ describe('ScanFormSections — the answer comes after the questions', () => {
     setupFetch()
     renderCreatePage()
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
     const button = screen.getByRole('button', { name: /Load preview/ })
 
     expect(button.compareDocumentPosition(screen.getByLabelText('Time column'))).toBe(
@@ -266,7 +266,7 @@ describe('ScanFormSections — the mode choice', () => {
     setupFetch()
     renderCreatePage()
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
     expect(screen.getByRole('radio', { name: 'Catalog + monitoring' })).toBeChecked()
   })
 
@@ -278,14 +278,14 @@ describe('ScanFormSections — the mode choice', () => {
     setupFetch()
     renderCreatePage()
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
     fireEvent.click(screen.getByRole('radio', { name: 'Catalog only' }))
 
     await waitFor(() => expect(screen.queryByLabelText('Schedule')).toBeNull())
     expect(screen.getByLabelText('Time column')).toBeInTheDocument()
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.queryByText(/needs a time column/)).toBeNull()
-    expect(screen.queryByText(/needs one to collect metrics/)).toBeNull()
+    expect(screen.queryByText(/needs one to record metric points/)).toBeNull()
   })
 
   // The time column is required in monitoring and optional in Catalog only, so
@@ -295,7 +295,7 @@ describe('ScanFormSections — the mode choice', () => {
     setupFetch()
     renderCreatePage()
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
     const emptyOption = () =>
       (screen.getByLabelText('Time column') as HTMLSelectElement).options[0]
 
@@ -313,7 +313,7 @@ describe('ScanFormSections — the mode choice', () => {
     setupFetch()
     renderCreatePage()
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
     fireEvent.click(screen.getByRole('button', { name: /Limits/ }))
 
     expect(screen.queryByLabelText('Lookback (hours)')).toBeNull()
@@ -330,7 +330,7 @@ describe('ScanFormSections — the mode choice', () => {
     setupFetch([eventType])
     renderCreatePage()
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Main scan' } })
     fireEvent.change(screen.getByLabelText('Data source'), { target: { value: 'ds-1' } })
     fireEvent.change(screen.getByPlaceholderText('SELECT * FROM analytics.events'), {
@@ -344,10 +344,10 @@ describe('ScanFormSections — the mode choice', () => {
     fireEvent.change(screen.getByLabelText('Event type'), { target: { value: 'et-1' } })
 
     expect(
-      screen.getByText('Pick a time column — monitoring needs one to build a time series.'),
+      screen.getByText('Load a preview to choose a time column — monitoring needs one.'),
     ).toBeInTheDocument()
     expect(
-      screen.getByText('Pick a schedule — monitoring needs one to collect metrics.'),
+      screen.getByText('Pick a schedule — monitoring needs one to record metric points.'),
     ).toBeInTheDocument()
 
     const create = screen.getByRole('button', { name: /Create scan/ })
@@ -369,14 +369,14 @@ describe('ScanFormSections — the mode choice', () => {
     setupFetch()
     renderCreatePage()
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
 
     expect(screen.queryAllByRole('alert')).toHaveLength(0)
     expect(
-      screen.queryByText('Pick a time column — monitoring needs one to build a time series.'),
+      screen.queryByText('Load a preview to choose a time column — monitoring needs one.'),
     ).toBeNull()
     expect(
-      screen.queryByText('Pick a schedule — monitoring needs one to collect metrics.'),
+      screen.queryByText('Pick a schedule — monitoring needs one to record metric points.'),
     ).toBeNull()
     // Nothing is lost: the gate is still on, and the button still says why.
     const create = screen.getByRole('button', { name: /Create scan/ })
@@ -402,7 +402,7 @@ describe('ScanFormSections — the mode choice', () => {
     } as unknown as ScanConfig)
 
     expect(
-      await screen.findByText('Pick a time column — monitoring needs one to build a time series.'),
+      await screen.findByText('Load a preview to choose a time column — monitoring needs one.'),
     ).toBeInTheDocument()
   })
 
@@ -410,7 +410,7 @@ describe('ScanFormSections — the mode choice', () => {
     setupFetch()
     renderCreatePage()
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
 
     expect(screen.queryByText('No time series')).toBeNull()
     expect(screen.queryByText('No schedule (manual)')).toBeNull()
@@ -452,7 +452,7 @@ describe('ScanFormSections — the mode choice', () => {
     setupFetch()
     renderCreatePage()
 
-    await screen.findByText('New scan config')
+    await screen.findByText('New scan')
     expect(screen.getByRole('button', { name: /Metric breakdowns and drift/ })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('radio', { name: 'Catalog only' }))

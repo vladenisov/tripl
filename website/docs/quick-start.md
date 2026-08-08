@@ -150,14 +150,15 @@ per-warehouse permissions and setup requirements.
 
 ## Step 5 — Create your first scan
 
-A **scan** reads a warehouse table on a schedule and does two jobs at once: it
-**drafts your plan** (proposing events, fields, and value lists from what it
-actually finds) and it **collects the volume counts** that power monitoring.
+A **scan** reads a warehouse table. Every run **drafts your plan** — proposing
+events, fields, and value lists from what it actually finds. A *monitoring* scan
+also runs on a schedule and **collects the volume counts** that power monitoring;
+a *Catalog only* scan has no schedule and collects none.
 It is the fastest way to turn an existing events table into a written,
 monitored tracking plan.
 
 1. Open **Govern → Scans** in your project (route: `/p/<slug>/scans`) and create
-   a scan config.
+   a scan.
 2. Answer **What this scan does** — it is the first question on the form, and it
    decides everything else:
    - **Catalog + monitoring** — adds events and fields to your tracking plan

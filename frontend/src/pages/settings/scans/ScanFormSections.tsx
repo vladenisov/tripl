@@ -427,7 +427,16 @@ export function ScanEssentialsSection({
         </select>
         {monitoringPairIsNext && !state.timeColumn && (
           <p role="alert" className="mt-1.5 text-xs" style={{ color: 'var(--warning)' }}>
-            Pick a time column — monitoring needs one to build a time series.
+            {/* The select above is `disabled={!preview}` and reads "Load preview
+                first", so "Pick a time column" pointed at a control the reader
+                cannot use. An explicit Event type satisfies the blocker without
+                a preview, and a saved never-dispatched config opens with none —
+                both reach this branch. Name the step that IS available instead
+                of dropping the warning, which would let a saved broken config
+                open quiet. */}
+            {preview
+              ? 'Pick a time column — monitoring buckets metric points by it.'
+              : 'Load a preview to choose a time column — monitoring needs one.'}
           </p>
         )}
       </Field>
@@ -446,7 +455,7 @@ export function ScanEssentialsSection({
           </select>
           {monitoringPairIsNext && !state.interval && (
             <p role="alert" className="mt-1.5 text-xs" style={{ color: 'var(--warning)' }}>
-              Pick a schedule — monitoring needs one to collect metrics.
+              Pick a schedule — monitoring needs one to record metric points.
             </p>
           )}
         </Field>

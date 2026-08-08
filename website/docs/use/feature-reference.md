@@ -598,11 +598,11 @@ Only a monitoring scan produces metric points, so only a monitoring scan can
 raise a signal or send an alert. See
 [Concepts](concepts.md#monitoring-scan-vs-catalog-only-scan) for the definitions.
 
-**Always visible (the essentials):** the mode choice, **Name**, **Data source**,
-**Base query** (used as a subquery), the **Load preview** button and the preview
-panel, **Event type** and **Event type column**, **Time column** (required in
-Catalog + monitoring, an optional run bound in Catalog only), and — in Catalog +
-monitoring only — **Schedule**. The schedule is one of *Every 15 min* (`15m`),
+**Always visible (the essentials), in the order they appear:** the mode choice,
+**Name**, **Data source**, **Base query** (used as a subquery), the **Load
+preview** button, **Event type** and **Event type column**, **Time column**
+(required in Catalog + monitoring, an optional run bound in Catalog only), — in
+Catalog + monitoring only — **Schedule**, and finally the preview panel. The schedule is one of *Every 15 min* (`15m`),
 *Every hour* (`1h`), *Every 6 hours* (`6h`), *Every day* (`1d`), or *Every week*
 (`1w`).
 
@@ -634,7 +634,8 @@ selected as scalar breakdown/drift fields.
 
 #### The preview panel
 
-**Where:** the scan form, under **Load preview**. One button, two halves.
+**Where:** the scan form, at the foot of the always-visible block — after the
+fields the answer is computed from. One button, two halves.
 
 1. **What this scan would create** — the dry run, described below. Event names,
    field names and the bounds the answer is under. This is what the panel leads
