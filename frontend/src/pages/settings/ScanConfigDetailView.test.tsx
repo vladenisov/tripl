@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -119,7 +119,7 @@ function renderDetail(project: Project) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/p/${SLUG}/settings/scans/scan-1`]}>
+      <MemoryRouter initialEntries={[`/p/${SLUG}/scans/scan-1`]}>
         <DemoScenarioProvider project={project} pollIntervalMs={10}>
           <ScanConfigDetail slug={SLUG} scanConfigId="scan-1" />
         </DemoScenarioProvider>
@@ -131,6 +131,41 @@ function renderDetail(project: Project) {
 afterEach(() => {
   vi.restoreAllMocks()
   window.localStorage.clear()
+})
+
+describe('ScanConfigDetail — header status wording', () => {
+  it('heads a successful scan "Succeeded", the same word the run row uses — never "Healthy"', async () => {
+    // The header read its label from STATUS_META, which mapped `ok` → "Healthy",
+    // while the run pill two lines below read SCAN_RUN_STATUS and said
+    // "Succeeded" — one run, two words. "Healthy" is also the Monitors lexeme,
+    // and a scan has no alert rule to be healthy or firing about.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.includes('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
+      if (url.includes('/scans/scan-1/jobs')) {
+        return mockJsonResponse([
+          { ...job('job-ok', 'completed'), completed_at: '2026-02-01T00:00:10Z' },
+        ])
+      }
+      if (url.endsWith('/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      if (url.includes('/data-sources')) return mockJsonResponse([])
+      if (url.includes('event-types') || url.includes('eventTypes')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderDetail(demoProject({ is_demo: false }))
+
+    // Scope to the header line so the run table's own pill cannot satisfy this.
+    const heading = await screen.findByRole('heading', { name: 'Main scan' })
+    await waitFor(() => {
+      expect(within(heading.parentElement!).getByText('Succeeded')).toBeInTheDocument()
+    })
+    // The negative assertion is the point: "Healthy" must not appear on any
+    // scan surface (statusLexicon reserves it for monitors).
+    expect(screen.queryByText('Healthy')).toBeNull()
+  })
 })
 
 describe('ScanConfigDetail — coached demo scenario', () => {

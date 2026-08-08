@@ -25,7 +25,7 @@ describe('buildTourSteps', () => {
   it('deep-links each step to the real project surface', () => {
     const byId = new Map(steps.map((step) => [step.id, step.to]))
     expect(byId.get('events')).toBe('/p/acme/events')
-    expect(byId.get('scans')).toBe('/p/acme/settings/scans')
+    expect(byId.get('scans')).toBe('/p/acme/scans')
     expect(byId.get('live-activity')).toBe('/p/acme/overview')
     expect(byId.get('metrics')).toBe('/p/acme/metrics')
     expect(byId.get('monitors')).toBe('/p/acme/monitors')

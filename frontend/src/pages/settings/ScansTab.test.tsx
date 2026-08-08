@@ -191,8 +191,10 @@ describe('ScansTab', () => {
     expect(await screen.findByText('Main events scan')).toBeInTheDocument()
     // "Scan configs" appears both as a KPI label and the panel title.
     expect(screen.getAllByText('Scan configs').length).toBeGreaterThanOrEqual(1)
-    expect(screen.getByText('Scheduled')).toBeInTheDocument()
-    expect(screen.getByText('Rows scanned · 24h')).toBeInTheDocument()
+    expect(screen.getByText('Monitoring')).toBeInTheDocument()
+    // "Rows scanned" said nothing about which rows; these are warehouse rows the
+    // runs read, not rows written to the plan.
+    expect(screen.getByText('Warehouse rows read · 24h')).toBeInTheDocument()
     // Rows lead with a human summary (source · cadence); the raw SQL is demoted
     // to a faint secondary line rather than its own prominent column.
     expect(screen.getByText(/Web Production · Every 15 min/)).toBeInTheDocument()
@@ -354,7 +356,7 @@ describe('ScansTab', () => {
     renderTab()
 
     fireEvent.click(await screen.findByText('Main events scan'))
-    expect(navigateMock).toHaveBeenCalledWith('/p/demo/settings/scans/scan-1')
+    expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans/scan-1')
   })
 
   it('opens the create page in place and gates column mapping behind preview', async () => {
@@ -438,7 +440,7 @@ describe('ScansTab — coached demo scenario', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     return render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[`/p/${SLUG}/settings/scans`]}>
+        <MemoryRouter initialEntries={[`/p/${SLUG}/scans`]}>
           <DemoScenarioProvider project={project} pollIntervalMs={10}>
             <ScansTab slug={SLUG} />
           </DemoScenarioProvider>

@@ -165,8 +165,8 @@ const AREAS: readonly Area[] = [
       {
         term: 'Scans',
         definition:
-          'Background jobs that inspect your data sources, compute plan coverage, and discover shadow and dead events.',
-        path: '/settings/scans',
+          'Scheduled warehouse queries that inspect your data sources, compute plan coverage, and discover shadow and dead events.',
+        path: '/scans',
       },
       {
         term: 'Audit log',

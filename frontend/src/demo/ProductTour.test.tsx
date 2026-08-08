@@ -98,7 +98,7 @@ describe('ProductTour', () => {
     // Every surface is one click away regardless of stepper position.
     expect(screen.getByRole('link', { name: /^Scans$/i })).toHaveAttribute(
       'href',
-      '/p/acme/settings/scans',
+      '/p/acme/scans',
     )
     expect(screen.getByRole('link', { name: /^Branches$/i })).toHaveAttribute(
       'href',

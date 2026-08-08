@@ -69,7 +69,7 @@ function renderMark(ui: React.ReactElement, project: Project | undefined = demoP
   return render(ui, {
     wrapper: ({ children }) => (
       <QueryClientProvider client={client}>
-        <MemoryRouter initialEntries={[`/p/${SLUG}/settings/scans`]}>
+        <MemoryRouter initialEntries={[`/p/${SLUG}/scans`]}>
           <DemoScenarioProvider project={project} pollIntervalMs={POLL_MS}>
             {children}
             <Probe />

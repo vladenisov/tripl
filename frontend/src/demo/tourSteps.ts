@@ -92,7 +92,7 @@ export function buildTourSteps(slug: string): TourStep[] {
       area: 'Connect',
       title: 'Scans',
       blurb: 'Pull recent volume from a source so tripl can learn the baseline.',
-      to: `${base}/settings/scans`,
+      to: `${base}/scans`,
     },
     {
       id: 'live-activity',

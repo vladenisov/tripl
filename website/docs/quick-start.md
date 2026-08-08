@@ -156,7 +156,8 @@ actually finds) and it **collects the volume counts** that power monitoring.
 It is the fastest way to turn an existing events table into a written,
 monitored tracking plan.
 
-1. Open **Govern → Scans** in your project and create a scan config.
+1. Open **Govern → Scans** in your project (route: `/p/<slug>/scans`) and create
+   a scan config.
 2. Point it at your data: pick the **data source** and give the **base query** —
    typically just selecting from the table where your events land.
 3. Map the columns: which column holds the **event name**, which holds the
@@ -171,7 +172,7 @@ monitored tracking plan.
 6. Once the results look right, set the **Schedule** (every 15 minutes, hourly,
    every 6 hours, daily, or weekly) so scans keep running without you.
 
-A running scan creates a **job** — watch its status and progress under the scan,
+Starting a scan creates a **run** — watch its status and progress under the scan,
 and use **Run again** if one fails.
 
 :::note Scanning is optional — you can also write the plan by hand

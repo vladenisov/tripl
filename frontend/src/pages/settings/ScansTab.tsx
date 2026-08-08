@@ -215,8 +215,12 @@ export function ScansTab({ slug }: { slug: string }) {
 
       <div className="grid grid-cols-3 gap-3">
         <StatCard label="Scan configs" value={scanConfigs.length} />
-        <StatCard label="Scheduled" value={scheduledCount} />
-        <StatCard label="Rows scanned · 24h" value={formatCount(rowsScanned24h)} />
+        <StatCard label="Monitoring" value={scheduledCount} />
+        <StatCard
+          label="Warehouse rows read · 24h"
+          value={formatCount(rowsScanned24h)}
+          title="Rows read across every catalog and metrics run in the last 24 hours."
+        />
       </div>
 
       {dataSources.length === 0 && (
@@ -273,7 +277,7 @@ export function ScansTab({ slug }: { slug: string }) {
                   dataSource={dsMap.get(sc.data_source_id) ?? null}
                   runInfo={runInfoById.get(sc.id) ?? LOADING_SCAN_RUN_INFO}
                   intervalLabel={INTERVAL_LABEL}
-                  onNavigate={() => navigate(`/p/${slug}/settings/scans/${sc.id}`)}
+                  onNavigate={() => navigate(`/p/${slug}/scans/${sc.id}`)}
                   onRun={() => runScan.mutate(sc.id)}
                   runPending={pendingScanId === sc.id}
                   // The step-1 CTA opens this list; point the coach at the first
@@ -288,7 +292,7 @@ export function ScansTab({ slug }: { slug: string }) {
       </SurfPanel>
 
       {recentRuns.length > 0 && (
-        <SurfPanel title="Recent runs" subtitle="Latest jobs across all scans">
+        <SurfPanel title="Recent runs" subtitle="Latest runs across all scans">
           <div>
             {recentRuns.map(run => {
               const isFailed = run.status === 'failed'

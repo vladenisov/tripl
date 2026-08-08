@@ -182,7 +182,7 @@ async def _scan_job_items(
                 title=f"Scan {status}: {row.scan_name}",
                 detail=_scan_job_detail(status, row.result_summary, row.error_message),
                 occurred_at=row.occurred_at,
-                target_path=f"/p/{row.slug}/settings/scans",
+                target_path=f"/p/{row.slug}/scans",
             )
         )
     return items

@@ -429,10 +429,10 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
                   hint={`/p/${activeProject.slug}/settings/alerting`}
                 />
                 <Item
-                  onSelect={() => goTo(`/p/${activeProject.slug}/settings/scans`)}
+                  onSelect={() => goTo(`/p/${activeProject.slug}/scans`)}
                   icon={Search}
-                  label="Scan settings"
-                  hint={`/p/${activeProject.slug}/settings/scans`}
+                  label="Scans"
+                  hint={`/p/${activeProject.slug}/scans`}
                 />
               </Group>
             )}

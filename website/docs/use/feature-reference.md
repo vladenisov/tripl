@@ -539,7 +539,9 @@ every non-archived status and therefore reports a larger total.
 
 ### Scans
 
-**Where:** Govern › Scans (requires a data source). A scan config covers: source
+**Where:** Govern › Scans (route `/p/<slug>/scans`; requires a data source). The
+legacy `/p/<slug>/settings/scans` path still resolves — it redirects here, so old
+bookmarks and links keep working. A scan config covers: source
 & query (name, data source, base query used as a subquery, with async preview);
 event mapping (event type or auto-detect, event-type column, time column,
 event-name format); optional app-version and platform columns; metrics & drift
@@ -557,12 +559,14 @@ The platform column powers the platform-presence matrix. Reserved role columns
 (event type, time, version, platform) cannot simultaneously be selected as
 scalar breakdown/drift fields.
 
-### Scan jobs
+### Scan runs
 
-Running a scan creates a job. From a config you can run a scan, apply event
-groups, jump directly to **Review events**, or replay metrics over historical
-chunks (replay requires a time column and an interval). Jobs expose status,
-progress, and curated failure detail. A job's **details** list flags warehouse
+Starting a scan creates a **run**. (The API and the CLI call the same record a
+`job` — `tripl scans jobs`, `scan_job.*` stream events — but every screen in the
+web UI says *run*.) From a config you can run a scan, apply event groups, jump
+directly to **Review events**, or replay metrics over historical chunks (replay
+requires a time column and an interval). Runs expose status, progress, and
+curated failure detail. A run's **details** list flags warehouse
 columns that carried data but had no matching field in the plan — a real
 coverage gap worth fixing. It stays quiet about columns that were empty for
 those rows, and about reserved role columns (event type, time, version,
@@ -570,6 +574,21 @@ platform, and any column an event-group rule matches on), which are collected as
 metric dimensions or identity and are never expected to have a plan field. Repeated identical failures collapse into
 a streak with an expander, and **Run again** retries the config without losing
 its history.
+
+The scan list heads three figures: **Scan configs**, **Monitoring** (configs that
+have both a time column and a schedule, so the dispatcher actually picks them
+up), and **Warehouse rows read · 24h**. The detail page adds **Rows read · last
+run**, **Events written**, and **Metric points**.
+
+**Metric points**, not "metric rows": these are points on a metric time series —
+what anomaly detection and alerts are built on — and *Metrics* is the name of a
+different surface (Observe › Metrics, the catalog of user-defined metrics). The
+figure sums all four counters a run reports (per-event, per-type, and their
+breakdown variants), so the list and the detail page always show the same number
+for the same run.
+
+**Rows read** counts warehouse rows a run read — bounded by the row caps below —
+not rows written into your plan.
 
 ### Audit log
 

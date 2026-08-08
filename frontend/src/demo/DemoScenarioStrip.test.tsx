@@ -98,7 +98,7 @@ describe('DemoScenarioStrip — the active chapter', () => {
       screen.getByText('Run a scan to pull fresh volume from the demo warehouse.'),
     ).toBeInTheDocument()
     expect(screen.getByText('Step 1 of 4')).toBeInTheDocument()
-    expect(cta(/Open Scans/)).toHaveAttribute('href', `/p/${SLUG}/settings/scans`)
+    expect(cta(/Open Scans/)).toHaveAttribute('href', `/p/${SLUG}/scans`)
   })
 
   it('sizes the progress to the chapter, not to a global step count', () => {
@@ -113,7 +113,7 @@ describe('DemoScenarioStrip — the active chapter', () => {
     renderStrip(liveLoopState('live-loop/watch-scan', { scan: scanArtifact() }))
 
     expect(screen.getByText('Watch it land')).toBeInTheDocument()
-    expect(cta(/Open the run/)).toHaveAttribute('href', `/p/${SLUG}/settings/scans/sc-1`)
+    expect(cta(/Open the run/)).toHaveAttribute('href', `/p/${SLUG}/scans/sc-1`)
   })
 
   it('pulses while the scan the user started is being watched', () => {
@@ -199,7 +199,7 @@ describe('DemoScenarioStrip — dismissal and completion', () => {
 })
 
 describe('DemoScenarioStrip — when the coached control is nowhere on screen', () => {
-  const SCANS_ROUTE = `/p/${SLUG}/settings/scans`
+  const SCANS_ROUTE = `/p/${SLUG}/scans`
   const MISSING_COPY =
     "The highlighted control isn't visible — it may be filtered out, below the fold, or already handled. Resetting the demo project restores every guided example."
   const missingLine = () => screen.queryByText(MISSING_COPY)

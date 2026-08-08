@@ -20,7 +20,7 @@ import { ScanDetail } from './ScanDetail'
 import { ScanConfigurationTab } from './scans/ScanConfigForm'
 import { ScanBadges } from './scans/ScanConfigRow'
 import { BackLink, SrcIcon } from './scans/scanLayout'
-import { INTERVAL_LABEL, STATUS_META } from './scans/scanLayoutConstants'
+import { INTERVAL_LABEL, SCAN_STATUS_LABEL, STATUS_META } from './scans/scanLayoutConstants'
 import { deriveScanRunInfo } from './scans/scanUtils'
 import { dataSourcesKey } from '@/lib/queryKeys'
 
@@ -76,7 +76,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
     },
   })
 
-  const goBack = () => navigate(`/p/${slug}/settings/scans`)
+  const goBack = () => navigate(`/p/${slug}/scans`)
 
   // Loading the config list errored — surface it with a retry instead of a
   // blank screen (tripl-2su6.9).
@@ -130,7 +130,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
             <span className="inline-flex items-center gap-1.5">
               <Dot tone={meta.tone} pulse={runInfo.status === 'running'} size={6} />
               <span className="text-xs" style={{ color: `var(--${meta.tone === 'neutral' ? 'fg-subtle' : meta.tone})` }}>
-                {meta.label}
+                {SCAN_STATUS_LABEL[runInfo.status]}
               </span>
             </span>
           </div>

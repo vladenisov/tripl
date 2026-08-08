@@ -131,7 +131,7 @@ function buildSteps(slug: string, summary: ProjectSummary, sourceCount: number):
       id: 'scan',
       title: 'Run a scan',
       hint: 'Pull recent volume so tripl can learn the baseline.',
-      href: `${base}/settings/scans`,
+      href: `${base}/scans`,
       // A seeded ScanConfig (scan_count > 0) does NOT count — require an
       // actually-executed job.
       done: hasExecutedScanJob(summary),

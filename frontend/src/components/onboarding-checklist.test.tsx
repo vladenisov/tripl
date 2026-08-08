@@ -105,7 +105,7 @@ describe('OnboardingChecklist', () => {
     const expected: ReadonlyArray<[RegExp, string]> = [
       [/Define your plan/, '/p/demo/events'],
       [/Connect a data source/, '/settings/data-sources'],
-      [/Run a scan/, '/p/demo/settings/scans'],
+      [/Run a scan/, '/p/demo/scans'],
       [/Review reconciliation/, '/p/demo/reconciliation'],
       [/Set up alerting/, '/p/demo/settings/alerting'],
     ]

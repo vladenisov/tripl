@@ -54,6 +54,32 @@ export function jobRowsScanned(job: ScanJob | null): number | null {
   return job.result_summary.query_rows_scanned ?? job.result_summary.scan_rows_processed ?? null
 }
 
+/**
+ * Metric time-series points a run upserted. The four counters are disjoint
+ * populations; summing them is the only number that means "points written".
+ *
+ * The detail stat card and the list chip MUST both call this. They used to
+ * compute it two different ways — the card read
+ * `breakdown_event_metrics ?? event_metrics`, the chip summed all four — so any
+ * scan with breakdowns showed two different totals for the same run on two
+ * screens, and a scan with only per-event series showed the breakdown count of
+ * a run that had none.
+ *
+ * Null only when the run has no result summary, or reported none of the four.
+ */
+export function jobMetricPoints(job: ScanJob | null): number | null {
+  const summary = job?.result_summary
+  if (!summary) return null
+  const counters = [
+    summary.event_metrics,
+    summary.type_metrics,
+    summary.breakdown_event_metrics,
+    summary.breakdown_type_metrics,
+  ]
+  if (counters.every((value) => value == null)) return null
+  return counters.reduce((total: number, value) => total + (value ?? 0), 0)
+}
+
 export function jobDurationSeconds(job: ScanJob): number | null {
   if (!job.started_at || !job.completed_at) return null
   return (new Date(job.completed_at).getTime() - new Date(job.started_at).getTime()) / 1000
@@ -82,15 +108,11 @@ export function summarizeScanChanges(job: ScanJob | null): ScanChange[] {
     }
   }
   push(summary.events_created, 'event', 'events', 'success')
-  // These are time-series ROWS collected, not metric definitions created. Calling
-  // them "metrics" made an ordinary scan read as "+2000 metrics" — as though it
-  // had just defined two thousand metrics (tripl-2gtk).
-  const metricRows =
-    (summary.event_metrics ?? 0) +
-    (summary.type_metrics ?? 0) +
-    (summary.breakdown_event_metrics ?? 0) +
-    (summary.breakdown_type_metrics ?? 0)
-  push(metricRows || undefined, 'metric point', 'metric points', 'info')
+  // These are time-series POINTS collected, not metric definitions created.
+  // Calling them "metrics" made an ordinary scan read as "+2000 metrics" — as
+  // though it had just defined two thousand metrics (tripl-2gtk). One formula,
+  // shared with the detail page's stat card.
+  push(jobMetricPoints(job) || undefined, 'metric point', 'metric points', 'info')
   push(summary.variables_created, 'variable', 'variables', 'info')
   push(summary.signals_added, 'signal', 'signals', 'danger')
   push(summary.alerts_queued, 'alert', 'alerts', 'warning')

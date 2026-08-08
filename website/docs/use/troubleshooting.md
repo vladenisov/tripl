@@ -470,6 +470,12 @@ problems degrade performance, they don't stop scans, metrics, or alerts.
 
 ## FAQ
 
+**An old link or bookmark points at `/p/<slug>/settings/scans` — is it broken?**
+No. Scans moved to `/p/<slug>/scans` (Govern › Scans is a top-level surface, not
+a settings tab). Both `/p/<slug>/settings/scans` and
+`/p/<slug>/settings/scans/<scan-id>` redirect to the new paths, so bookmarks,
+older docs, and the deep links in already-delivered alerts keep working.
+
 **Do I need to run scans on a schedule to get metrics?**
 No. A scan fills the catalog. Metrics, anomalies, and alerts come from the
 scheduled `collect_metrics` job, which runs automatically for any scan config

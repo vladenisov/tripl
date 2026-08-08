@@ -36,8 +36,9 @@ executed, and what is intentionally unavailable.
 None of the following is faked — it runs the normal services and workers over the
 synthetic source:
 
-- **Scans** — Preview, Run now, and Replay run the real scan pipeline against the
-  synthetic `events` table and reconcile against the authored plan.
+- **Scans** (Govern › Scans, route `/p/<slug>/scans`) — Preview, Run now, and
+  Replay run the real scan pipeline against the synthetic `events` table and
+  reconcile against the authored plan.
 - **Metric collection** — SQL, event‑composition, fact‑single and fact‑ratio
   metrics are collected by the real collectors (including batched fact scans);
   unsupported SQL returns an honest capability error rather than a fabricated
@@ -137,10 +138,10 @@ The demo offers two guides, and they do different jobs.
 
   The chapters follow **your** actions, not the demo's. The runtime clock is
   producing real scans and collections of its own in the background, so a step
-  advances only when the job or collection **you** started settles — a background
+  advances only when the run or collection **you** started settles — a background
   run never ticks it forward. A run that fails, or that a reset wipes out, sends you
   back to the action with an explanation rather than leaving you waiting. The
-  current Scans page also follows that exact job to its terminal status, even if a
+  current Scans page also follows that exact run to its terminal status, even if a
   realtime update is missed, so completing the step never requires a reload.
   Progress is remembered per project (in your browser), so reloading mid-scan
   resumes the watch.

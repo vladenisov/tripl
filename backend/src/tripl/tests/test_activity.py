@@ -154,6 +154,14 @@ async def test_project_activity_feed_uses_real_backend_records(client: AsyncClie
     )
     assert not any("/events/detail/" in (item["target_path"] or "") for item in items)
 
+    # Scans moved to the top-level `/p/<slug>/scans` route. The feed's own deep
+    # link has to follow, or every scan row in the activity rail lands on the
+    # legacy path and has to be bounced through a redirect.
+    scan_items = [item for item in items if item["type"] == "scan"]
+    assert scan_items, "expected a scan activity item"
+    assert all(item["target_path"] == f"/p/{slug}/scans" for item in scan_items)
+    assert not any("/settings/scans" in (item["target_path"] or "") for item in items)
+
 
 @pytest.mark.asyncio
 async def test_activity_feed_excludes_stale_anomalies(client: AsyncClient):

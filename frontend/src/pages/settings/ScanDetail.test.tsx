@@ -143,7 +143,7 @@ describe('ScanDetail', () => {
     // The mocked config has time_column set and no event type → Auto-detect.
     expect(screen.getByText('created_at')).toBeInTheDocument()
     expect(screen.getByText('Auto-detect')).toBeInTheDocument()
-    expect(await screen.findByText(/No jobs yet/)).toBeInTheDocument()
+    expect(await screen.findByText(/No runs yet/)).toBeInTheDocument()
   })
 
   it('labels a failed job, offers a retry, and never shows raw scan internals', async () => {
@@ -188,12 +188,63 @@ describe('ScanDetail', () => {
     // Raw host/port never reaches the DOM, collapsed or expanded.
     expect(screen.queryByText(/clickhouse\.internal/)).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Expand job details' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Expand run details' }))
     expect(
       screen.getByText('Scan failed: the data source did not respond in time.'),
     ).toBeInTheDocument()
     expect(screen.queryByText(/clickhouse\.internal/)).not.toBeInTheDocument()
     expect(screen.queryByText(/8443/)).not.toBeInTheDocument()
+  })
+
+  it('counts metric points the same way the list chip does, and never calls them "Metric rows"', async () => {
+    // The stat card used to read `breakdown_event_metrics ?? event_metrics`,
+    // so a run with breakdowns reported 5 here and 17 on the scan list — two
+    // numbers for one run. Both now call scanUtils.jobMetricPoints.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([
+          {
+            id: 'job-metrics',
+            scan_config_id: 'scan-1',
+            status: 'completed',
+            started_at: '2026-01-01T00:00:00Z',
+            completed_at: '2026-01-01T00:00:10Z',
+            result_summary: {
+              event_metrics: 2,
+              type_metrics: 3,
+              breakdown_event_metrics: 5,
+              breakdown_type_metrics: 7,
+            },
+            error_message: null,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:10Z',
+          },
+        ])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+      </QueryClientProvider>,
+    )
+
+    // 2 + 3 + 5 + 7. The old fallback rendered 5.
+    await waitFor(() => {
+      const card = screen.getByText('Metric points').parentElement!
+      expect(card).toHaveTextContent('17')
+    })
+    // "Metric rows" collided with Observe › Metrics, the user-defined catalog.
+    expect(screen.queryByText('Metric rows')).toBeNull()
   })
 
   it('renders the platform presence grid from a mocked response', async () => {
@@ -371,7 +422,7 @@ describe('ScanDetail — coached demo scenario', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     return render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[`/p/${SLUG}/settings/scans/scan-1`]}>
+        <MemoryRouter initialEntries={[`/p/${SLUG}/scans/scan-1`]}>
           <DemoScenarioProvider project={project} pollIntervalMs={10}>
             <ScanDetail slug={SLUG} scanConfig={scanConfig} eventTypes={[]} branchId={null} />
           </DemoScenarioProvider>
@@ -419,7 +470,7 @@ describe('ScanDetail — coached demo scenario', () => {
     )
     renderInScenario(demoProject())
 
-    expect(await screen.findByText('Recent jobs')).toBeInTheDocument()
+    expect(await screen.findByText('Recent runs')).toBeInTheDocument()
     expect(screen.queryByRole('note')).not.toBeInTheDocument()
   })
 
@@ -429,7 +480,7 @@ describe('ScanDetail — coached demo scenario', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Retry scan' }))
 
-    await waitFor(() => expect(screen.getByText('Recent jobs')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Recent runs')).toBeInTheDocument())
     expect(screen.queryByRole('note')).not.toBeInTheDocument()
     expect(window.localStorage.getItem(`tripl-demo-scenario:${SLUG}`)).toBeNull()
   })

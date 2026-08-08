@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import ProjectSettingsPage from './ProjectSettingsPage'
+import ProjectScansPage from './ProjectScansPage'
 
 // CodeMirror needs real layout measurement that jsdom can't provide and
 // tokenizes SQL across many spans. Stub it with a plain textarea that exposes
@@ -307,12 +308,10 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -450,11 +449,10 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -463,7 +461,7 @@ describe('ProjectSettingsPage', () => {
     fireEvent.click(await screen.findByText('Main scan'))
     fireEvent.click(await screen.findByRole('button', { name: 'Apply groups' }))
 
-    expect(await screen.findByText('Group apply job queued.')).toBeInTheDocument()
+    expect(await screen.findByText('Group apply queued.')).toBeInTheDocument()
     expect(calls).toContain('POST /api/v1/projects/demo/scans/scan-1/event-groups/apply')
   })
 
@@ -581,11 +579,10 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -1152,11 +1149,10 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -1347,11 +1343,10 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -1542,11 +1537,10 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -1726,11 +1720,10 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
