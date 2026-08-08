@@ -40,7 +40,21 @@ export function formModeOf(config: ScanConfig | null): ScanFormMode {
   return scanModeOf(config) === 'catalog' ? 'catalog' : 'monitoring'
 }
 
-/** Badge shown first on a scan's badge strip and on its list row. */
+/**
+ * Badge shown first on a scan's badge strip and on its list row.
+ *
+ * The fault has to be readable AS a fault. "No metrics collected" was true of a
+ * catalog-only scan too, so a list holding both badges gave a reader no way to
+ * tell the choice from the defect — the tone and a hover `title` were the only
+ * difference, and a tooltip is invisible on touch. `Needs a time column` is the
+ * diagnosis and the fix in three words, and cannot be misread as a mode.
+ *
+ * The `title` says what a manual run still does, because it still does it:
+ * `trigger_scan` has no dispatchability guard (the guard is on
+ * `trigger_metrics_replay` alone), so **Run now** works on this config and the
+ * page underneath lists its green runs. "It is never run" is the one claim the
+ * scan's own page falsifies.
+ */
 export const SCAN_MODE_BADGE: Record<ScanMode, { label: string; tone: ChipTone; title: string }> = {
   monitoring: {
     label: 'Monitoring',
@@ -53,16 +67,25 @@ export const SCAN_MODE_BADGE: Record<ScanMode, { label: string; tone: ChipTone; 
     title: 'Adds events to your plan. No metrics, no anomalies, no alerts.',
   },
   misconfigured: {
-    label: 'No metrics collected',
+    label: 'Needs a time column',
     tone: 'warning',
     title:
-      'This scan has a schedule but no time column, so it is never run. Add a time column to fix it.',
+      'This scan has a schedule but no time column, so the scheduler never runs it and it'
+      + ' collects no metrics. Manual runs still ingest events. Add a time column to fix it.',
   },
 }
 
-/** Value of the `Mode` row in the scan detail's "Source & query" panel. */
+/**
+ * Value of the `Mode` row in the scan detail's "Source & query" panel.
+ *
+ * `misconfigured` gets its own wording rather than a "Catalog only" prefix: the
+ * Mode row is where a user goes to check what their scan is doing, and printing
+ * the healthy mode's name there is exactly the laundering the header comment
+ * above rules out. It is not catalog-only — a catalog-only scan is a choice, and
+ * this one asked for a schedule and never got one.
+ */
 export const SCAN_MODE_DETAIL_LABEL: Record<ScanMode, string> = {
   monitoring: 'Catalog + monitoring',
   catalog: 'Catalog only',
-  misconfigured: 'Catalog only — schedule set but no time column',
+  misconfigured: 'Never scheduled — schedule set but no time column',
 }

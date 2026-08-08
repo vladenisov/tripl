@@ -82,13 +82,29 @@ describe('buildRunReport — a catalog-only run', () => {
     expect(lines.some(line => line.text.startsWith('Recorded'))).toBe(false)
   })
 
-  it('says the same for a scan whose schedule is never dispatched', () => {
-    // A schedule without a time column is never picked up, so its runs collect
-    // exactly as much as a catalog-only scan's do: nothing.
+  // A schedule without a time column also collects nothing, and that silence
+  // also has to be said out loud — but NOT in the catalog-only sentence. The
+  // user configured monitoring; telling them they are looking at a "Catalog-only
+  // scan" names a mode they never picked and reads as working-as-configured.
+  it('does not call a never-dispatched scan a catalog-only scan', () => {
     const lines = buildRunReport(job({ scan_rows_processed: 900 }), 'misconfigured')
-    expect(lines.map(line => line.text)).toContain(
+    const texts = lines.map(line => line.text)
+
+    expect(texts).not.toContain(
       'Catalog-only scan — no metric points, so no signals and no alerts.',
     )
+    expect(lineById(lines, 'catalog-only')).toBeUndefined()
+  })
+
+  it('says the schedule is the thing that never runs, and how to fix it', () => {
+    const lines = buildRunReport(job({ scan_rows_processed: 900 }), 'misconfigured')
+    const line = lineById(lines, 'never-scheduled')!
+
+    // The run being read is proof the scan itself can run: it is in the history
+    // because someone pressed Run now, which trigger_scan does not guard.
+    expect(line.text).toContain('the scheduler never runs it')
+    expect(line.text).toContain('no signals and no alerts')
+    expect(line.text).toContain('Add a time column to fix it.')
   })
 
   it('never appears on a monitoring run that recorded points', () => {

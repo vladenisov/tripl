@@ -17,7 +17,12 @@ import { SqlEditor } from '@/components/sql-editor'
 import { Field, SCard } from './scanLayout'
 import type { ScanFormMode } from './scanMode'
 import { CHUNK_LABELS, SELECT_CLASS, eligibleChunkIntervals } from './scanUtils'
-import { type UseScanFormResult, hasEventTarget } from './useScanForm'
+import {
+  MONITORING_INCOMPLETE_TITLE,
+  type UseScanFormResult,
+  hasEventTarget,
+  scanFormBlocker,
+} from './useScanForm'
 
 // The manual/"no schedule" option is gone: a schedule is only ever asked for in
 // Catalog + monitoring, where leaving it empty is the defect this form exists to
@@ -166,6 +171,24 @@ export function ScanEssentialsSection({
     previewMut, dryRunMut, loadPreview, runDryRun,
   } = form
   const monitoring = state.mode === 'monitoring'
+  /**
+   * Whether the monitoring pair is the FIRST thing standing between this draft
+   * and a saved scan — the gate on both warnings below.
+   *
+   * A new scan opens on Catalog + monitoring with neither field set, so both
+   * used to render on first paint: two red blocks on a form nobody had typed
+   * into yet, the first of them pointing at a select the form had not enabled
+   * (its options are the preview's columns). People stop reading a warning that
+   * fires on the ordinary path, and these are the two that later mean "this scan
+   * will never collect anything".
+   *
+   * `scanFormBlocker` already orders the requirements the way the form asks for
+   * them, so reusing it costs nothing and cannot drift from the disabled Create
+   * button's own reason. It also keeps the case that matters loud: a saved
+   * never-dispatched config has its name, source, query and naming answered
+   * already, so its edit form flags the missing time column immediately.
+   */
+  const monitoringPairIsNext = scanFormBlocker(state) === MONITORING_INCOMPLETE_TITLE
   // Kept on screen when it already holds a value even under an explicit event
   // type, so a saved config's column is never both invisible and unremovable.
   const namesEventsFromColumn = !state.eventTypeId || Boolean(state.eventTypeColumn)
@@ -275,9 +298,11 @@ export function ScanEssentialsSection({
           tables={schemaData?.tables}
         />
       </Field>
+      {/* The button loads the sample rows; the ANSWER it also computes is
+          rendered at the foot of this card, after the fields that feed it. */}
       <Field
         label="Preview"
-        hint="Shows what this scan would create, and the sample rows the column pickers use."
+        hint="Loads sample rows so the pickers below can offer real columns. What this scan would create is answered underneath them."
       >
         <div className="flex flex-col gap-2">
           <Button
@@ -294,19 +319,6 @@ export function ScanEssentialsSection({
           {previewMut.isError && <ErrorState compact title="Preview failed" error={previewMut.error} />}
         </div>
       </Field>
-      {preview && (
-        <div className="border-b px-[18px] py-4" style={{ borderColor: 'var(--border-subtle)' }}>
-          <ScanPreviewPanel
-            preview={preview}
-            dryRun={dryRun}
-            dryRunStale={dryRunStale}
-            dryRunPending={dryRunMut.isPending}
-            dryRunError={dryRunMut.isError ? dryRunMut.error : null}
-            eventTargetMissing={!hasEventTarget(state)}
-            onRecheck={runDryRun}
-          />
-        </div>
-      )}
 
       {/* "Where does the event name come from?" is ONE question, so it is asked
           in one place. It used to be split: an "Auto-detect" default here, and
@@ -403,7 +415,7 @@ export function ScanEssentialsSection({
             ? 'The timestamp tripl buckets metrics by. Required for monitoring.'
             : 'Optional. Bounds each run to the lookback window under Limits — without one, every run reads everything the base query returns.'
         }
-        last={!monitoring}
+        last={!monitoring && !preview}
       >
         <select
           id="scan-time-column"
@@ -426,14 +438,14 @@ export function ScanEssentialsSection({
             <option key={name} value={name}>{name}</option>
           ))}
         </select>
-        {monitoring && !state.timeColumn && (
+        {monitoringPairIsNext && !state.timeColumn && (
           <p role="alert" className="mt-1.5 text-xs" style={{ color: 'var(--warning)' }}>
             Pick a time column — monitoring needs one to build a time series.
           </p>
         )}
       </Field>
       {monitoring && (
-        <Field label="Schedule" id="scan-interval" hint="How often this scan runs." last>
+        <Field label="Schedule" id="scan-interval" hint="How often this scan runs." last={!preview}>
           <select
             id="scan-interval"
             value={state.interval}
@@ -445,12 +457,38 @@ export function ScanEssentialsSection({
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </select>
-          {!state.interval && (
+          {monitoringPairIsNext && !state.interval && (
             <p role="alert" className="mt-1.5 text-xs" style={{ color: 'var(--warning)' }}>
               Pick a schedule — monitoring needs one to collect metrics.
             </p>
           )}
         </Field>
+      )}
+
+      {/* Last in the card, because it is the only thing here that is an ANSWER
+          rather than a question — and because a dry run describes one specific
+          draft. `toDryRunRequest` carries the time column (it is what the scan
+          window is computed from), so with this panel above the Time column
+          field, the sequence the form itself demands was: check → scroll down →
+          pick the time column the form is asking for in red → and the answer
+          just given turns to "The form changed since this check ran". Every
+          monitoring scan, every time, until the user learns to ignore the one
+          banner that also catches a genuinely broken event name format.
+          Everything the request is built from that is still below this point
+          lives in a collapsed section, where an edit is deliberate and staling
+          the answer is the banner doing its job. */}
+      {preview && (
+        <div data-testid="scan-preview-panel" className="px-[18px] py-4">
+          <ScanPreviewPanel
+            preview={preview}
+            dryRun={dryRun}
+            dryRunStale={dryRunStale}
+            dryRunPending={dryRunMut.isPending}
+            dryRunError={dryRunMut.isError ? dryRunMut.error : null}
+            eventTargetMissing={!hasEventTarget(state)}
+            onRecheck={runDryRun}
+          />
+        </div>
       )}
     </SCard>
   )

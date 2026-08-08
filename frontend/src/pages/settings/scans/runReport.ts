@@ -71,6 +71,21 @@ export const RUN_VS_OPEN_SIGNALS_HINT =
 export const CATALOG_ONLY_RUN_LINE =
   'Catalog-only scan — no metric points, so no signals and no alerts.'
 
+/**
+ * The same silence, for the opposite reason — and it must not borrow the line
+ * above. A scan whose schedule is never dispatched produces no metric points
+ * because it is BROKEN, not because its owner chose catalog-only, and calling
+ * that a "catalog-only scan" on the run report tells a user who asked for
+ * monitoring that they are looking at a mode they never picked.
+ *
+ * The run being read proves this line's own wording: a manual run is how it got
+ * here, so the sentence blames the scheduler rather than claiming the scan never
+ * runs.
+ */
+const NEVER_SCHEDULED_RUN_LINE =
+  'This scan has a schedule but no time column, so the scheduler never runs it — no metric'
+  + ' points, so no signals and no alerts. Add a time column to fix it.'
+
 function count(value: number, singular: string, plural: string): string {
   return `${value.toLocaleString()} ${value === 1 ? singular : plural}`
 }
@@ -186,14 +201,17 @@ export function buildRunReport(job: ScanJob | null, mode: ScanMode): RunReportLi
     })
   }
 
-  // `misconfigured` is included deliberately: a schedule without a time column
-  // is never dispatched, so its runs collect exactly as much as a catalog-only
-  // scan's do — nothing. The scan's badge and causal note carry the fix; this
-  // line only has to stop the run reading as a silent failure. The detail
-  // panel already calls that state "Catalog only — schedule set but no time
-  // column", so the vocabulary matches.
-  if (mode !== 'monitoring' && metricPoints === 0) {
+  // Both non-monitoring modes end a run with no metric points, and both need
+  // saying so — a green run that produced nothing downstream otherwise reads as
+  // a silent failure. But they are not the same fact, and one line for both said
+  // "Catalog-only scan" to a user who configured monitoring and got none. The
+  // fault gets its own sentence, carrying the fix, matching the badge and the
+  // Mode row.
+  if (metricPoints === 0 && mode === 'catalog') {
     lines.push({ id: 'catalog-only', text: CATALOG_ONLY_RUN_LINE })
+  }
+  if (metricPoints === 0 && mode === 'misconfigured') {
+    lines.push({ id: 'never-scheduled', text: NEVER_SCHEDULED_RUN_LINE })
   }
 
   return lines

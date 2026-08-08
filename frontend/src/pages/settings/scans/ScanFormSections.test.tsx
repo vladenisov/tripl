@@ -56,6 +56,17 @@ const dataSource = {
 
 const eventType = { id: 'et-1', display_name: 'Purchase', name: 'purchase' }
 
+// A preview job that is already `completed` when the POST answers, so pollJob
+// returns without ever sleeping and the suite stays deterministic.
+const previewPayload = {
+  columns: [
+    { name: 'event_name', type_name: 'String', is_nullable: false },
+    { name: 'event_ts', type_name: 'DateTime', is_nullable: false },
+  ],
+  rows: [{ event_name: 'checkout', event_ts: '2026-01-01T00:00:00Z' }],
+  json_columns: [],
+}
+
 function setupFetch(eventTypes: unknown[] = []) {
   vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
     const url = String(input)
@@ -63,6 +74,16 @@ function setupFetch(eventTypes: unknown[] = []) {
       return mockJsonResponse({ tables: [] })
     }
     if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
+    if (url.includes('/scans/preview')) {
+      return mockJsonResponse({
+        id: 'preview-job-1',
+        status: 'completed',
+        started_at: null,
+        completed_at: null,
+        result_summary: previewPayload,
+        error_message: null,
+      })
+    }
     if (url.includes('/event-types')) return mockJsonResponse(eventTypes)
     throw new Error(`Unhandled fetch: ${url}`)
   })
@@ -194,6 +215,52 @@ describe('ScanFormSections — where event names come from', () => {
   })
 })
 
+describe('ScanFormSections — the answer comes after the questions', () => {
+  // The dry run answers for one specific draft, and `toDryRunRequest` carries
+  // the time column (the scan window is computed from it). With the panel above
+  // the Time column field, the sequence the form itself demands was: load the
+  // preview, read the answer, scroll down, pick the time column the form is
+  // asking for in red — and watch the answer turn into "The form changed since
+  // this check ran, so it no longer describes this scan". Every monitoring scan,
+  // every time, until the banner is background noise and no longer protects the
+  // case it was written for. So the answer is rendered after everything visible
+  // that feeds it.
+  it('renders the preview panel after the fields the answer is computed from', async () => {
+    setupFetch([eventType])
+    renderCreatePage()
+
+    await screen.findByText('New scan config')
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Main scan' } })
+    fireEvent.change(screen.getByLabelText('Data source'), { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getByPlaceholderText('SELECT * FROM analytics.events'), {
+      target: { value: 'SELECT * FROM analytics.events' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Load preview/ }))
+
+    const panel = await screen.findByTestId('scan-preview-panel')
+
+    for (const label of ['Event type', 'Event type column', 'Time column', 'Schedule']) {
+      expect(screen.getByLabelText(label).compareDocumentPosition(panel)).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      )
+    }
+  })
+
+  // The button stays where the query is — it is what brings the column pickers
+  // to life, so it cannot wait until after them. Only its answer moves.
+  it('keeps Load preview above the pickers it fills', async () => {
+    setupFetch()
+    renderCreatePage()
+
+    await screen.findByText('New scan config')
+    const button = screen.getByRole('button', { name: /Load preview/ })
+
+    expect(button.compareDocumentPosition(screen.getByLabelText('Time column'))).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    )
+  })
+})
+
 describe('ScanFormSections — the mode choice', () => {
   it('defaults a new scan to Catalog + monitoring', async () => {
     setupFetch()
@@ -289,6 +356,54 @@ describe('ScanFormSections — the mode choice', () => {
       'title',
       'Catalog + monitoring needs a time column and a schedule.',
     )
+  })
+
+  // People stop reading a warning that fires on the ordinary path. A new scan
+  // opens on Catalog + monitoring with neither the time column nor the schedule
+  // set, so both alerts rendered on first paint — before a name, a source or a
+  // query, and one of them pointing at a select the form had not enabled yet
+  // (its options come from the preview). Red on an untouched form teaches the
+  // user that red is decoration, on the one form where it later means "this scan
+  // will never collect anything".
+  it('says nothing in warning colour on a form nobody has typed into yet', async () => {
+    setupFetch()
+    renderCreatePage()
+
+    await screen.findByText('New scan config')
+
+    expect(screen.queryAllByRole('alert')).toHaveLength(0)
+    expect(
+      screen.queryByText('Pick a time column — monitoring needs one to build a time series.'),
+    ).toBeNull()
+    expect(
+      screen.queryByText('Pick a schedule — monitoring needs one to collect metrics.'),
+    ).toBeNull()
+    // Nothing is lost: the gate is still on, and the button still says why.
+    const create = screen.getByRole('button', { name: /Create scan/ })
+    expect(create).toBeDisabled()
+    expect(create).toHaveAttribute('title', 'A scan needs a name, a data source and a base query.')
+  })
+
+  // The other half of the same gate: suppressing the alerts must not silence the
+  // case they exist for. A saved config with a schedule and no time column is
+  // the never-dispatched one, and it arrives with everything else already
+  // answered — so its Configuration tab flags the fault the moment it opens.
+  it('flags the missing time column as soon as a never-dispatched scan is opened', async () => {
+    setupFetch()
+    renderConfigurationTab({
+      id: 'sc-2',
+      data_source_id: 'ds-1',
+      name: 'Scheduled but idle',
+      base_query: 'SELECT * FROM analytics.events',
+      event_type_column: 'event_name',
+      time_column: null,
+      interval: '1h',
+      cardinality_threshold: 100,
+    } as unknown as ScanConfig)
+
+    expect(
+      await screen.findByText('Pick a time column — monitoring needs one to build a time series.'),
+    ).toBeInTheDocument()
   })
 
   it('never offers a way to say "no time series" or "no schedule" inside monitoring', async () => {

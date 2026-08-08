@@ -560,7 +560,8 @@ Every scan surface states the chain a scan feeds, because a scan's output reache
 you as anomalies and alerts and nothing on these screens used to say so. The list
 says it once for all scans; the form says it under the mode you have selected;
 and a scan's own page says what *that* scan does today — including the case where
-it has a schedule but no time column, is never run, and collects nothing. A run's
+it has a schedule but no time column, so the scheduler never runs it and it
+collects no metrics. A run's
 **Signals added** and **Alerts queued** counters are links back out to the
 [Anomalies](#anomalies) and [Alerting](#alerting) surfaces filtered to that scan
 (`?scan=<scan_config_id>` on both). The link filters by **scan**, not by run — a
@@ -703,7 +704,7 @@ columns the dispatcher reads:
 | --- | --- |
 | **Monitoring** | Time column and schedule both set. Collects metric points on a schedule. |
 | **Catalog only** | No schedule. Adds events to your plan; no metrics, no anomalies, no alerts. |
-| **No metrics collected** | A schedule but **no time column**. The dispatcher never selects it, so it never runs and never collects anything. Add a time column to fix it. This is the same finding the CLI reports as `scan_config_not_dispatchable`. |
+| **Needs a time column** | A schedule but **no time column**. The dispatcher never selects it, so the scheduler never runs it and it collects no metrics. Manual runs still ingest events. Add a time column to fix it. This is the same finding the CLI reports as `scan_config_not_dispatchable`. |
 
 The **Monitoring** tile at the top of the Scans page counts only the first of
 these.
@@ -760,7 +761,8 @@ data, in this order, each omitted when the run has nothing to report for it.
 | *Recorded N metric points.* | Time-series points written. Only a monitoring scan produces these. |
 | *Raised N anomaly signals.* | Signals **this run** added. Links to [Anomalies](#anomalies) filtered to this scan. |
 | *Queued N alerts.* | Alerts **this run** queued. Links to [Alerting](#alerting) filtered to this scan. |
-| *Catalog-only scan — no metric points, so no signals and no alerts.* | Shown on a scan that collects no metrics, so a green run that produced nothing downstream does not read as a silent failure. It also appears on a scan with a schedule but no time column, which is never dispatched and so collects just as little. |
+| *Catalog-only scan — no metric points, so no signals and no alerts.* | Shown on a scan with no schedule, so a green run that produced nothing downstream does not read as a silent failure. |
+| *This scan has a schedule but no time column, so the scheduler never runs it — no metric points, so no signals and no alerts. Add a time column to fix it.* | The same silence for the opposite reason: the run you are reading is a manual one, and the schedule above it is never dispatched. It gets its own sentence because calling it a catalog-only scan would name a mode its owner never picked. |
 
 *Raised N anomaly signals* is that run's **delta** — signals the run added. The
 **Anomalies** page counts what is **open now** across the project. The two

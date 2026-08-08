@@ -170,11 +170,31 @@ monitored tracking plan.
      rather than reading the whole query.
 3. Point it at your data: pick the **data source** and give the **base query** —
    typically just selecting from the table where your events land.
-4. **Load the preview.** It leads with **What this scan would create**: the event
+4. **Load the preview.** It reads a few rows from your query so the pickers
+   below it can offer your real columns instead of a blank box. Nothing is
+   written.
+5. Answer the questions those columns unlock, top to bottom:
+   - **Event type** — give every row the same event type, or leave it on *Name
+     events from a column* and pick the **Event type column** whose values are
+     the event names. One of the two is required: a scan with neither cannot name
+     a single event, and **Create scan** stays disabled until you answer.
+   - **Time column** — the timestamp tripl buckets counts by, and what bounds
+     each run to the lookback window.
+   - **Schedule** (Catalog + monitoring only) — every 15 minutes, hourly, every
+     6 hours, daily, or weekly.
+
+   In Catalog + monitoring the form will not let you create the scan until the
+   time column and the schedule are both set, because a monitoring scan missing
+   either one is never scheduled and collects nothing. In Catalog only the time
+   column is optional; leaving it empty means every run reads everything the base
+   query returns.
+6. **Read what this scan would create.** At the foot of that same block —
+   *after* the fields it is computed from, so answering them cannot invalidate
+   it — the preview panel leads with **What this scan would create**: the event
    names tripl would add to your plan and the fields it would add with them,
    worked out by pushing the sampled rows through the *same* planner a real run
-   uses. Nothing is written. The sample warehouse rows are kept underneath, under
-   **Show sample rows** — they are the evidence, not the answer.
+   uses. The sample warehouse rows are kept underneath, under **Show sample
+   rows** — they are the evidence, not the answer.
 
    The answer is bounded, and says which bound it is under. It reads the scan's
    lookback window — or, if the scan has no time column to window on, everything
@@ -188,19 +208,12 @@ monitored tracking plan.
    scan; **Check again** re-runs it. If your **Event name format** references a
    key the rows cannot supply, the preview says so here: that format would fail
    *every* run of the config, so this is the cheapest place to find out.
-5. Choose the **Time column** (the timestamp tripl buckets counts by, and what
-   bounds each run to the lookback window) and — in Catalog + monitoring — the
-   **Schedule**: every 15 minutes, hourly, every 6 hours, daily, or weekly. In
-   Catalog + monitoring the form will not let you create the scan until both are
-   set, because a monitoring scan missing either one is never run at all. In
-   Catalog only the time column is optional; leaving it empty means every run
-   reads everything the base query returns.
-6. Open **Event names and grouping** and **App version** if you need them. These
+7. Open **Event names and grouping** and **App version** if you need them. These
    sections start collapsed on purpose: leaving them alone gives sensible
    behaviour, and each says what that behaviour is. Version and platform columns
    unlock release-regression tracking and per-platform breakdowns later, so set
    them if you have them.
-7. Run it, then open **Review events** and triage the draft: keep what makes
+8. Run it, then open **Review events** and triage the draft: keep what makes
    sense, fix descriptions and types, flag fields that carry personal data,
    and delete the noise.
 
@@ -224,7 +237,8 @@ anomaly detection and alerts are built on:
 Each scan restates its own half of that chain: the scans list says it once, the
 scan form says it under the mode you have selected, and a scan's own page says
 what *that* scan does today. A scan with a schedule but no time column is never
-run at all, and says so.
+picked up by the scheduler, and says so — its badge reads **Needs a time
+column**, and its page adds that manual runs still ingest events.
 
 The chain also runs backwards, which is how you get from an alert to its cause.
 On a run's **Run details**, **Signals added** links to

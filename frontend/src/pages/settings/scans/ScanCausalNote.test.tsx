@@ -47,8 +47,20 @@ describe('ScanCausalNote — a scan says what it produces (tripl-3y7z.2)', () =>
     // nothing. Collapsing it into "Catalog only" would launder the fault.
     const note = noteText(<ScanCausalNote variant="config" config={config(null, '1h')} />)
 
-    expect(note).toContain('never collects metrics')
+    expect(note).toContain('collects no metrics')
     expect(note).toContain('Add a time column to fix it.')
+  })
+
+  // The note is rendered on the scan's own page, directly above Recent runs —
+  // which lists this scan's completed manual runs, because trigger_scan has no
+  // dispatchability guard. A warning the page underneath falsifies is a warning
+  // the user learns to dismiss, and this is the one badge carrying a real fault.
+  it('does not claim a never-dispatched scan is never run, which its own run history disproves', () => {
+    const note = noteText(<ScanCausalNote variant="config" config={config(null, '1h')} />)
+
+    expect(note).toContain('the scheduler never runs it')
+    expect(note).toContain('Manual runs still ingest events.')
+    expect(note).not.toMatch(/so it is never run/)
   })
 
   it('promises the whole chain in the form note for Catalog + monitoring', () => {

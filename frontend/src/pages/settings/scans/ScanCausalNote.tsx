@@ -47,9 +47,13 @@ function cadencePhrase(interval: string | null): string {
 /** The present-tense sentence for a SAVED config, keyed by its derived mode. */
 function configNote(config: Pick<ScanConfig, 'time_column' | 'interval'>): string {
   const mode = scanModeOf(config)
+  // "It is never run" is false, and falsified by the page it sits on: `Run now`
+  // works (only `trigger_metrics_replay` guards on dispatchability), and Recent
+  // runs lists this scan's completed runs directly underneath. What is true is
+  // that the SCHEDULER never picks it up, so nothing collects metrics on its own.
   if (mode === 'misconfigured') {
-    return 'This scan has a schedule but no time column, so it is never run and never collects'
-      + ' metrics. Add a time column to fix it.'
+    return 'This scan has a schedule but no time column, so the scheduler never runs it and it'
+      + ' collects no metrics. Manual runs still ingest events. Add a time column to fix it.'
   }
   if (mode === 'catalog') {
     return 'Runs when you start it. Adds events to your plan only — no metric points, no'

@@ -91,7 +91,7 @@ monitoring charts stay empty and no anomalies or alerts ever show up.
 **Fix.**
 
 - Open **Govern → Scans** and look at the badge on the scan's row. **Catalog
-  only** or **No metrics collected** means this scan was never going to produce a
+  only** or **Needs a time column** means this scan was never going to produce a
   metric point, and the fix is in the form, not in the infrastructure.
 - Open the scan and check **What this scan does** at the top of the form. Choose
   **Catalog + monitoring**, then fill in the **Time column** and **Schedule** it
@@ -629,8 +629,10 @@ answer.
 
 Also check the scan's mode. **Catalog only** scans record no metric points, so
 they raise no anomalies by design — the scan's own page says so in one line under
-its name, and its row carries a **Catalog only** badge. A scan badged **No
-metrics collected** has a schedule but no time column and is never run at all.
+its name, and its row carries a **Catalog only** badge. A scan badged **Needs a
+time column** has a schedule but no time column, so the scheduler never runs it
+and it collects no metrics — manual runs still ingest events, which is why that
+scan can have green runs and no anomalies at the same time.
 
 **A scan failed with a generic "internal error" — where's the real reason?**
 User-facing fields are sanitized to avoid leaking host/port/driver details. The

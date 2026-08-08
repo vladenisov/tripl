@@ -372,7 +372,11 @@ describe('ScansTab', () => {
     renderTab()
 
     expect(await screen.findByText('Main events scan')).toBeInTheDocument()
-    expect(screen.getByText('No metrics collected')).toBeInTheDocument()
+    // The badge has to name the fault, not restate what a healthy "Catalog only"
+    // row also does — in a list holding both, "No metrics collected" left the
+    // reader with the tone and a hover title to tell a choice from a defect.
+    expect(screen.getByText('Needs a time column')).toBeInTheDocument()
+    expect(screen.queryByText('No metrics collected')).toBeNull()
 
     // The KPI grid is [Scan configs, Monitoring, Warehouse rows read · 24h]; the
     // Monitoring tile must read 0, not 1.
