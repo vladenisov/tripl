@@ -1099,12 +1099,14 @@ describe('ProjectSettingsPage', () => {
           result_summary: {
             columns: [
               { name: 'event_name', type_name: 'String', is_nullable: false },
+              { name: 'screen', type_name: 'String', is_nullable: false },
               { name: 'created_at', type_name: 'DateTime', is_nullable: false },
               { name: 'payload', type_name: 'JSON', is_nullable: true },
             ],
             rows: [
               {
                 event_name: 'purchase',
+                screen: 'checkout',
                 created_at: '2026-04-12T10:30:00',
                 payload: { extra: { key: 'TASK-123' }, locale: 'en' },
               },
@@ -1178,6 +1180,9 @@ describe('ProjectSettingsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
     expect(await screen.findByRole('button', { name: 'Reload preview' })).toBeInTheDocument()
 
+    // Every scan must say where its event names come from, in both modes, so
+    // this one names the column it reads them from.
+    fireEvent.change(screen.getByLabelText('Event type column'), { target: { value: 'screen' } })
     // Catalog + monitoring is the default, and it will not create a scan until
     // both of the columns the dispatcher reads are answered.
     fireEvent.change(screen.getByLabelText('Time column'), { target: { value: 'created_at' } })
@@ -1207,7 +1212,7 @@ describe('ProjectSettingsPage', () => {
         name: 'Main scan',
         base_query: 'SELECT * FROM analytics.events',
         event_type_id: null,
-        event_type_column: null,
+        event_type_column: 'screen',
         time_column: 'created_at',
         event_name_format: null,
         json_value_paths: ['payload.extra.key'],
@@ -1372,7 +1377,10 @@ describe('ProjectSettingsPage', () => {
     fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'ds-1' } })
 
     fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
-    await screen.findByText('Column pickers use the sample rows. JSON paths are discovered on demand to keep the preview fast.')
+    await screen.findByTestId('scan-preview-panel')
+
+    // Catalog-only scans still have to say where their event names come from.
+    fireEvent.change(screen.getByLabelText('Event type column'), { target: { value: 'event_name' } })
 
     // App version is orthogonal to monitoring, so this scan is catalog-only —
     // which is exactly the mode where leaving the schedule empty is legitimate.
@@ -1395,7 +1403,13 @@ describe('ProjectSettingsPage', () => {
     })
   })
 
-  it('creates missing event type fields from scan preview columns', async () => {
+  // Three components, one screen, one answer. The dry-run panel, the unmapped
+  // column list inside it and the "Create N fields" offer under it used to be
+  // computed from two different reserved-column sets and printed contradicting
+  // claims about the same data: "No new fields — every column is already mapped"
+  // directly above "Unmapped columns: created_at, payload" and a button offering
+  // to create those very fields.
+  it('offers to create exactly the columns the dry run says a run would skip', async () => {
     const bulkBodies: unknown[] = []
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -1497,6 +1511,51 @@ describe('ProjectSettingsPage', () => {
         })
       }
 
+      // The authoritative answer: `unmapped_columns` comes out of the backend's
+      // full reserved_catalog_columns set, and the button under the panel is
+      // driven by it rather than by a second reading of the preview columns.
+      if (url.endsWith('/api/v1/projects/demo/scans/dry-run') && init?.method === 'POST') {
+        return mockJsonResponse({
+          id: 'dry-run-job-1',
+          status: 'completed',
+          started_at: '2026-04-12T00:00:00Z',
+          completed_at: '2026-04-12T00:00:00Z',
+          error_message: null,
+          created_at: '2026-04-12T00:00:00Z',
+          updated_at: '2026-04-12T00:00:00Z',
+          result_summary: {
+            window_from: null,
+            window_to: null,
+            sampled_rows: 1,
+            sample_row_limit: 5000,
+            sample_is_complete: true,
+            breakdown_combinations: 1,
+            events: [
+              {
+                name: 'purchase',
+                source_name: 'purchase',
+                event_type: 'Purchase',
+                approx_row_count: 1,
+                share_of_sample: 1,
+                status: 'new',
+                grouped_by_rule: null,
+                count_confidence: 'exact',
+              },
+            ],
+            events_truncated: false,
+            max_events_reached: false,
+            // Empty on the explicit-event-type path, always: a run writes only
+            // into the fields "Purchase" already declares.
+            fields: [],
+            templated_columns: [],
+            reserved_columns: [],
+            unmapped_columns: ['created_at', 'payload'],
+            warnings: [],
+            errors: [],
+          },
+        })
+      }
+
       if (
         url.endsWith('/api/v1/projects/demo/event-types/type-1/fields/bulk')
         && init?.method === 'POST'
@@ -1572,16 +1631,27 @@ describe('ProjectSettingsPage', () => {
     fireEvent.change(selects[0], { target: { value: 'ds-1' } })
     fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
 
-    expect(
-      await screen.findByText(
-        'Column pickers use the sample rows. JSON paths are discovered on demand to keep the preview fast.',
-      ),
-    ).toBeInTheDocument()
+    await screen.findByTestId('scan-preview-panel')
 
     const updatedSelects = screen.getAllByRole('combobox')
     fireEvent.change(updatedSelects[1], { target: { value: 'type-1' } })
 
-    expect(await screen.findByText(/2 preview columns have no matching field/)).toBeInTheDocument()
+    // Nothing is asked of the warehouse until the draft can name its events, so
+    // the answer is one click away once the event type is picked.
+    fireEvent.click(await screen.findByRole('button', { name: 'Check' }))
+
+    // The headline that used to be false on this exact path.
+    expect(
+      await screen.findByText(
+        'No new fields — a run only fills the fields this event type already declares.'
+        + ' The columns it does not declare are listed below.',
+      ),
+    ).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/every column is already mapped/)
+    expect(
+      screen.getByText(/created_at, payload — no field definition matches them/),
+    ).toBeInTheDocument()
+
     fireEvent.click(screen.getByRole('button', { name: 'Create 2 fields' }))
 
     await waitFor(() => {

@@ -697,6 +697,13 @@ Three more things it reports, each answering a question the raw rows could not:
   added" on the event type column path, which is the path that
   creates them; with an explicit event type, columns the event type does not
   declare are listed as **unmapped** instead, because a run would skip them.
+  The panel says so in those words — *a run only fills the fields this event
+  type already declares* — and reserves *every column is already mapped* for the
+  case where nothing is unmapped. When something is, a **Create N fields** button
+  sits directly under the panel and declares exactly the columns it just listed
+  on that event type; it never offers a reserved column, because it is driven by
+  the same `unmapped_columns` answer rather than by a second reading of the
+  preview.
 
 Like the preview, the dry run runs free-text SQL against a stored credential, so
 it is **owner-only**.

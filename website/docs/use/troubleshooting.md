@@ -251,18 +251,24 @@ distinct events exist than it looked at, so N is a **floor**: the scan would
 create at least that many, possibly more. Saying a flat *N* there would be the
 one claim the panel is built not to make.
 
-The panel also prints *More distinct events exist than this preview looked at.*
-Two ways to turn the floor into a firm number:
+The panel also prints *More distinct events exist than this preview looked at*,
+followed by the remedies that apply to your scan. There are two, and the panel
+names the second one only when your scan actually has a window to shorten:
 
 - **Narrow the base query.** Fewer columns means fewer combinations, so the same
   cap covers more of your data. Dropping a high-cardinality column you were not
   going to name events from is usually enough.
-- **Widen or narrow the window.** **Limits → Lookback (hours)** decides how much
-  data the dry run reads at all. A shorter window with the same cap is more
-  likely to be complete — but remember it is then a statement about less of your
-  data, not about more of it. The lookback needs a **Time column**: it is the
-  predicate the window is expressed on, so the form asks for the column before it
-  offers the field. Without one there is no window and the cap is the only bound.
+- **Shorten the window.** **Limits → Lookback (hours)** decides how much data the
+  dry run reads at all. A shorter window with the same cap is more likely to be
+  complete — but remember it is then a statement about less of your data, not
+  about more of it. The lookback needs a **Time column**: it is the predicate the
+  window is expressed on, so the form asks for the column before it offers the
+  field. Without one there is no window, the cap is the only bound, and the panel
+  does not offer this remedy at all.
+
+There is deliberately no third remedy. The sample cap itself (`sample_row_limit`)
+is an API-only field with no control in the product, so the panel never suggests
+raising it.
 
 A count with no *at least* is exact **for what it read**: every distinct event in
 the sample, with the exact number of sampled rows behind each one. It is still

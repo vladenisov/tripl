@@ -103,6 +103,56 @@ describe('ScanDryRunSummary — the panel names events, not rows (tripl-3y7z.6)'
     ).toBeInTheDocument()
   })
 
+  // The note used to open with "Raise the sample row limit". `sample_row_limit`
+  // is backend-only: toDryRunRequest never sends it, no form field exposes it,
+  // and Limits offers Lookback, Row cap per run and Row cap per metrics run —
+  // none of which is it. An analyst who follows the first remedy hunts the
+  // settings for a control that does not exist.
+  it('names only remedies the product actually has', () => {
+    render(
+      <ScanDryRunSummary
+        dryRun={dryRun({ events: THREE_EVENTS, sample_is_complete: false, events_truncated: true })}
+      />,
+    )
+
+    expect(document.body.textContent).not.toMatch(/sample row limit/i)
+    expect(
+      screen.getByText(
+        'More distinct events exist than this preview looked at. Narrow the base query to see them all.',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  // The lookback is a real remedy only when a window was applied. Without a time
+  // column resolve_lookback_window returns None, so pointing at Limits →
+  // Lookback (hours) there is the same defect one control along.
+  it('offers the lookback only when a window was actually applied', () => {
+    const truncated = {
+      events: THREE_EVENTS,
+      sample_is_complete: false,
+      events_truncated: true,
+    }
+    const { unmount } = render(<ScanDryRunSummary dryRun={dryRun(truncated)} />)
+    expect(document.body.textContent).not.toMatch(/Lookback/)
+    unmount()
+
+    render(
+      <ScanDryRunSummary
+        dryRun={dryRun({
+          ...truncated,
+          window_from: '2026-08-07T12:00:00Z',
+          window_to: '2026-08-08T12:00:00Z',
+        })}
+      />,
+    )
+    expect(
+      screen.getByText(
+        'More distinct events exist than this preview looked at. Narrow the base query,'
+        + ' or shorten Limits → Lookback (hours), to see them all.',
+      ),
+    ).toBeInTheDocument()
+  })
+
   it('names the fields it would add and their types', () => {
     render(
       <ScanDryRunSummary
@@ -131,6 +181,30 @@ describe('ScanDryRunSummary — the panel names events, not rows (tripl-3y7z.6)'
     )
 
     expect(screen.getByText('No new fields — every column is already mapped.')).toBeInTheDocument()
+  })
+
+  // The contradiction three reviewers found independently. With an explicit
+  // Event type the backend sets may_create_fields=False, so `fields` is ALWAYS
+  // empty — and the panel printed "every column is already mapped" in the same
+  // render as its own "Unmapped columns: platform_family" list, with a
+  // "Create 1 field" button underneath. A user who reads the bold line and stops
+  // creates a scan believing every column is captured.
+  it('never claims every column is mapped while listing columns that are not', () => {
+    render(<ScanDryRunSummary dryRun={dryRun({ fields: [], unmapped_columns: ['platform_family'] })} />)
+
+    expect(screen.queryByText('No new fields — every column is already mapped.')).toBeNull()
+    expect(document.body.textContent).not.toMatch(/every column is already mapped/)
+    expect(
+      screen.getByText(
+        'No new fields — a run only fills the fields this event type already declares.'
+        + ' The columns it does not declare are listed below.',
+      ),
+    ).toBeInTheDocument()
+    // And the list it points at is still there, so the headline and the detail
+    // now say the same thing.
+    expect(
+      screen.getByText(/platform_family — no field definition matches them/),
+    ).toBeInTheDocument()
   })
 
   // A collapsed column is why the user got 3 events instead of 3000 — a step

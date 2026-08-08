@@ -33,9 +33,46 @@ export const NAME_FORMAT_FIX =
  */
 const NO_WINDOW_NOTE = 'No time window — the whole base query was read'
 
+/**
+ * Both remedies here are controls the product actually has.
+ *
+ * The note used to lead with "Raise the sample row limit". `sample_row_limit` is
+ * a backend-only field: `toDryRunRequest` never sends it, no form field exposes
+ * it, and it is always the default 5,000 — so the first thing the note told a
+ * user to do could not be done, on the one panel built to be trusted. The
+ * lookback is only offered when a window was actually applied, because without a
+ * time column `resolve_lookback_window` returns None and Limits → Lookback
+ * (hours) bounds nothing. Both strings match troubleshooting.md's two remedies.
+ */
+const TRUNCATED_LEAD = 'More distinct events exist than this preview looked at.'
+
 export const EVENTS_TRUNCATED_NOTE =
-  'More distinct events exist than this preview looked at.'
-  + ' Raise the sample row limit or narrow the base query to see them all.'
+  `${TRUNCATED_LEAD} Narrow the base query to see them all.`
+
+export const EVENTS_TRUNCATED_WINDOWED_NOTE =
+  `${TRUNCATED_LEAD} Narrow the base query, or shorten Limits → Lookback (hours),`
+  + ' to see them all.'
+
+/**
+ * What "no new fields" means on the explicit-event-type path.
+ *
+ * `_dry_run_targets` sets `may_create_fields=False` when the config names an
+ * Event type, so `fields` comes back empty on EVERY such answer — a run writes
+ * only into the fields that event type already declares. The panel printed
+ * "every column is already mapped" there, directly above its own Unmapped
+ * columns list and a button offering to create those very fields: three
+ * statements on one screen, two of them contradicting the first.
+ *
+ * `fields` empty AND `unmapped_columns` non-empty happens only on that path. The
+ * grouped path creates a field for every unreserved column it does not already
+ * have (`may_create_fields=True`), so it never leaves a column unmapped.
+ */
+const UNDECLARED_COLUMNS_LINE =
+  'No new fields — a run only fills the fields this event type already declares.'
+  + ' The columns it does not declare are listed below.'
+
+/** True only when every column really is accounted for. */
+const ALL_MAPPED_LINE = 'No new fields — every column is already mapped.'
 
 function count(value: number, singular: string, plural: string): string {
   return `${value.toLocaleString()} ${value === 1 ? singular : plural}`
@@ -216,7 +253,9 @@ export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
           )}
         </div>
         <EventList events={events} />
-        {dryRun.events_truncated && <Note>{EVENTS_TRUNCATED_NOTE}</Note>}
+        {dryRun.events_truncated && (
+          <Note>{windowed ? EVENTS_TRUNCATED_WINDOWED_NOTE : EVENTS_TRUNCATED_NOTE}</Note>
+        )}
         {dryRun.max_events_reached && (
           <Note tone="warning">
             Stopped at {events.length.toLocaleString()} events. The real scan stops there too.
@@ -228,7 +267,9 @@ export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
         <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
           {newFields.length > 0
             ? `Would add ${count(newFields.length, 'field', 'fields')}`
-            : 'No new fields — every column is already mapped.'}
+            : dryRun.unmapped_columns.length > 0
+              ? UNDECLARED_COLUMNS_LINE
+              : ALL_MAPPED_LINE}
         </div>
         <FieldList fields={dryRun.fields} />
       </div>

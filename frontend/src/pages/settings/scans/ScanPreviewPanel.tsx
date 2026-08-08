@@ -16,8 +16,8 @@ import { formatPreviewCell } from './scanUtils'
  * tripl would create". The rows are not deleted; they are demoted to the
  * evidence they always were, behind a disclosure, with their caption intact.
  *
- * Mounted in the form's always-visible essentials block, directly under the
- * "Load preview" button. The JSON-value-path picker used to live here; it moved
+ * Mounted at the foot of the form's always-visible essentials block, after the
+ * fields the answer is computed from. The JSON-value-path picker used to live here; it moved
  * to JsonValuePathsPicker so this panel is only ever about what the query
  * returns and what tripl would make of it.
  */
@@ -68,13 +68,15 @@ export function ScanPreviewPanel({
 
   return (
     <div className="space-y-4 rounded-lg border bg-muted/20 p-4">
-      <div className="space-y-1">
-        <div className="text-sm font-medium">Preview</div>
-        <p className="text-xs text-muted-foreground">
-          Column pickers use the sample rows. JSON paths are discovered on demand to keep the preview fast.
-        </p>
-      </div>
-
+      {/* No heading here, deliberately. The panel used to open with a second
+          "Preview" title (the Field above it is already labelled Preview) and a
+          sentence explaining that JSON paths are discovered on demand "to keep
+          the preview fast" — tripl's own latency engineering, restated plumbing,
+          and a duplicated word, all above the answer the user came for. The
+          answer leads: the first line of this panel is now either
+          "What this scan would create" or the one sentence saying why there is
+          no answer yet. The JSON-on-demand behaviour is said where it can be
+          acted on, next to Discover JSON keys in JsonValuePathsPicker. */}
       {eventTargetMissing && (
         <p className="text-xs" style={{ color: 'var(--fg-subtle)' }}>{NO_EVENT_TARGET_TEXT}</p>
       )}

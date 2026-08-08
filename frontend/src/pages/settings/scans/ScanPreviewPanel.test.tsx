@@ -90,6 +90,23 @@ describe('ScanPreviewPanel — the answer leads, the rows are evidence (tripl-3y
     expect(screen.getByRole('button', { name: 'Hide sample rows' })).toBeInTheDocument()
   })
 
+  // "The order is the whole change" was the panel's own claim, and it was not
+  // kept: the panel opened with a SECOND "Preview" heading (the Field wrapping
+  // it is already labelled Preview) and a sentence about tripl's own latency
+  // engineering — "JSON paths are discovered on demand to keep the preview fast"
+  // — so the user read the word Preview twice and one clause of internal
+  // plumbing before reaching the event names.
+  it('opens with the answer, not with a restatement of its own plumbing', () => {
+    const { container } = renderPanel()
+
+    const answer = 'What this scan would create'
+    // Sliced rather than `startsWith`, so a failure quotes what the panel put
+    // in front of the answer instead of just "expected false to be true".
+    expect(container.textContent?.slice(0, answer.length)).toBe(answer)
+    expect(document.body.textContent).not.toMatch(/Column pickers use the sample rows/)
+    expect(document.body.textContent).not.toMatch(/keep the preview fast/)
+  })
+
   // A format referencing a key the rows cannot supply fails EVERY run of the
   // config. Reading it here instead of after two hundred failed production runs
   // is the single highest-value thing the dry run does (tripl-lpin).

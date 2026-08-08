@@ -385,19 +385,6 @@ export function ScanEssentialsSection({
           )}
         </Field>
       )}
-      {preview && state.eventTypeId && (
-        <div className="border-b px-[18px] pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
-          <CreateMissingFieldsButton
-            slug={slug}
-            eventType={eventTypes.find(et => et.id === state.eventTypeId)}
-            preview={preview}
-            eventTypeColumn={state.eventTypeColumn}
-            timeColumn={state.timeColumn}
-            branchId={branchId}
-          />
-        </div>
-      )}
-
       {/* The time column is asked for in BOTH modes, because it does two jobs and
           only one of them is monitoring: it buckets metric points, and it bounds
           every run to Limits → Lookback (hours). Catalog only drops the SCHEDULE
@@ -478,7 +465,7 @@ export function ScanEssentialsSection({
           lives in a collapsed section, where an edit is deliberate and staling
           the answer is the banner doing its job. */}
       {preview && (
-        <div data-testid="scan-preview-panel" className="px-[18px] py-4">
+        <div data-testid="scan-preview-panel" className="space-y-3 px-[18px] py-4">
           <ScanPreviewPanel
             preview={preview}
             dryRun={dryRun}
@@ -488,6 +475,21 @@ export function ScanEssentialsSection({
             eventTargetMissing={!hasEventTarget(state)}
             onRecheck={runDryRun}
           />
+          {/* Directly under the answer it acts on, and driven by the same
+              `unmapped_columns` the panel just listed — it used to sit hundreds
+              of pixels higher, computing its own reserved set, so the two could
+              and did disagree about the same columns on the same screen. Hidden
+              while the answer is stale: those column names belong to the draft
+              the dry run ran on, which is no longer this one. */}
+          {dryRun && !dryRunStale && state.eventTypeId && (
+            <CreateMissingFieldsButton
+              slug={slug}
+              eventType={eventTypes.find(et => et.id === state.eventTypeId)}
+              preview={preview}
+              unmappedColumns={dryRun.unmapped_columns}
+              branchId={branchId}
+            />
+          )}
         </div>
       )}
     </SCard>
