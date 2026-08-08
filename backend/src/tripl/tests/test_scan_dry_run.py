@@ -525,6 +525,13 @@ class TestDryRunAPI:
             },
         )
         assert resp.status_code == 422, resp.text
+        # The 422 body is read by a person — the CLI and the agent API surface it
+        # verbatim — so it names the CONTROLS, never the columns behind them.
+        # Naming `event_type_id` here would reintroduce, one layer down, exactly
+        # the string this guard was added to stop reaching a user.
+        detail = resp.text
+        assert "Event type column" in detail, detail
+        assert "event_type_id" not in detail, detail
 
         with_column = await client.post(
             f"/api/v1/projects/{project['slug']}/scans/dry-run",

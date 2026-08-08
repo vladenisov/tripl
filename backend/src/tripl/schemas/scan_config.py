@@ -408,9 +408,14 @@ class ScanDryRunRequest(BaseModel):
         # failed with the worker's internal precondition into a 422 the caller
         # can act on before any warehouse query is issued.
         if self.event_type_id is None and not self.event_type_column:
+            # Named after the CONTROLS, not the columns behind them. The worker's
+            # sibling message (``_errors.NO_EVENT_NAMING_MSG``) was rewritten the
+            # same way in this change, and a 422 body is read by a person — the
+            # agent API and the CLI surface it verbatim. "event_type_id" is the
+            # exact vocabulary this epic exists to keep off a user's screen.
             raise ValueError(
-                "a draft must set either event_type_id or event_type_column, "
-                "so the dry-run knows how events are named"
+                "set either Event type or Event type column, so the preview "
+                "knows how this scan names its events"
             )
         return self
 
