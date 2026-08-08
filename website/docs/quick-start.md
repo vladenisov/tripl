@@ -158,19 +158,30 @@ monitored tracking plan.
 
 1. Open **Govern → Scans** in your project (route: `/p/<slug>/scans`) and create
    a scan config.
-2. Point it at your data: pick the **data source** and give the **base query** —
+2. Answer **What this scan does** — it is the first question on the form, and it
+   decides everything else:
+   - **Catalog + monitoring** — ingest events into your plan *and* collect
+     metrics, so anomalies and alerts can fire. This is the default, and it needs
+     a **time column** and a **schedule**. Pick this one if you are following
+     this guide; Step 6 depends on it.
+   - **Catalog only** — discover events and fields, nothing more. No metric
+     points, so no anomalies and no alerts.
+3. Point it at your data: pick the **data source** and give the **base query** —
    typically just selecting from the table where your events land.
-3. Map the columns: which column holds the **event name**, which holds the
-   **timestamp**, and (optionally) which hold the **app version** and
-   **platform**. Version and platform unlock release-regression tracking and
-   per-platform breakdowns later, so set them if you have them.
 4. **Preview** the scan. The preview shows exactly which events, fields, and
    values tripl would create from the real data — before anything is written.
-5. Run it, then open **Review events** and triage the draft: keep what makes
+5. In Catalog + monitoring, choose the **Time column** (the timestamp tripl
+   buckets counts by) and the **Schedule** — every 15 minutes, hourly, every 6
+   hours, daily, or weekly. The form will not let you create the scan until both
+   are set, because a monitoring scan missing either one is never run at all.
+6. Open **Event names and grouping** and **App version** if you need them. These
+   sections start collapsed on purpose: leaving them alone gives sensible
+   behaviour, and each says what that behaviour is. Version and platform columns
+   unlock release-regression tracking and per-platform breakdowns later, so set
+   them if you have them.
+7. Run it, then open **Review events** and triage the draft: keep what makes
    sense, fix descriptions and types, flag fields that carry personal data,
    and delete the noise.
-6. Once the results look right, set the **Schedule** (every 15 minutes, hourly,
-   every 6 hours, daily, or weekly) so scans keep running without you.
 
 Starting a scan creates a **run** — watch its status and progress under the scan,
 and use **Run again** if one fails.

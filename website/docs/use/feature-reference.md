@@ -541,23 +541,61 @@ every non-archived status and therefore reports a larger total.
 
 **Where:** Govern › Scans (route `/p/<slug>/scans`; requires a data source). The
 legacy `/p/<slug>/settings/scans` path still resolves — it redirects here, so old
-bookmarks and links keep working. A scan config covers: source
-& query (name, data source, base query used as a subquery, with async preview);
-event mapping (event type or auto-detect, event-type column, time column,
-event-name format); optional app-version and platform columns; metrics & drift
-(breakdown columns, distribution-drift fields, JSON paths); ordered
-**event-group rules** that can rename/group matching values; and a **Schedule**
-— one of *No schedule
-(manual)*, *Every 15 min* (`15m`), *Every hour* (`1h`), *Every 6 hours* (`6h`),
-*Every day* (`1d`), or *Every week* (`1w`).
+bookmarks and links keep working.
 
-Advanced controls bound catalog/metrics row counts and scan lookback, choose a
-replay chunk interval, and cap breakdown cardinality. Version monitoring also
-exposes the active-traffic share gate and an optional prerelease pattern; the
-shared number of releases to retain lives under **Settings → Project → General**.
-The platform column powers the platform-presence matrix. Reserved role columns
-(event type, time, version, platform) cannot simultaneously be selected as
-scalar breakdown/drift fields.
+#### What the scan form asks
+
+The first question is **What this scan does**, and it decides the shape of the
+rest of the form:
+
+- **Catalog + monitoring** — ingest events into your tracking plan *and* collect
+  metrics, so anomalies and alerts can fire. A **Time column** and a **Schedule**
+  are both required; the form will not save without them.
+- **Catalog only** — discover events and fields. No metrics, no anomalies, no
+  alerts. The time column and schedule are not asked for at all, and leaving them
+  empty produces no warning.
+
+Only a monitoring scan produces metric points, so only a monitoring scan can
+raise a signal or send an alert. See
+[Concepts](concepts.md#monitoring-scan-vs-catalog-only-scan) for the definitions.
+
+**Always visible (the essentials):** the mode choice, **Name**, **Data source**,
+**Base query** (used as a subquery), the **Load preview** button and its sample
+rows, **Event type** (or auto-detect), and — in Catalog + monitoring only —
+**Time column** and **Schedule**. The schedule is one of *Every 15 min* (`15m`),
+*Every hour* (`1h`), *Every 6 hours* (`6h`), *Every day* (`1d`), or *Every week*
+(`1w`).
+
+**Everything else is a collapsed section.** Each carries one line saying what it
+is for and what happens if you leave it alone. Editing a saved config opens any
+section that already holds a non-default value.
+
+| Section | What it is for | Contains |
+| --- | --- | --- |
+| **Event names and grouping** | How tripl turns warehouse rows into event names. Leave it alone and events are named from the column values already in your data. | Event type column · Event name format · Cardinality threshold · Event groups · JSON values to keep as-is |
+| **App version** | Attach an app release and platform to every event. Leave it alone if you do not ship versioned apps. | App version column · Platform column · Pre-release version pattern · Traffic share that counts as released |
+| **Metric breakdowns and drift** *(Catalog + monitoring only)* | Extra columns to split metrics by, and columns whose value mix you want watched for drift. Leave it alone to collect one series per event. | Metric breakdowns · Value limit · Distribution drift |
+| **Limits** | Caps on how much warehouse data each run reads. Leave them alone unless runs are slow or expensive. | Replay chunk size · Lookback (hours) · Row cap per run · Row cap per metrics run |
+
+Sections that need your query's columns stay empty until a preview is loaded and
+say so. The shared number of releases to retain lives under **Settings → Project
+→ General**. The platform column powers the platform-presence matrix. Reserved
+role columns (event type, time, version, platform) cannot simultaneously be
+selected as scalar breakdown/drift fields.
+
+#### The mode badge
+
+Every scan row and the scan detail header carry a badge derived from the two
+columns the dispatcher reads:
+
+| Badge | Meaning |
+| --- | --- |
+| **Monitoring** | Time column and schedule both set. Collects metric points on a schedule. |
+| **Catalog only** | No schedule. Adds events to your plan; no metrics, no anomalies, no alerts. |
+| **No metrics collected** | A schedule but **no time column**. The dispatcher never selects it, so it never runs and never collects anything. Add a time column to fix it. This is the same finding the CLI reports as `scan_config_not_dispatchable`. |
+
+The **Monitoring** tile at the top of the Scans page counts only the first of
+these.
 
 ### Scan runs
 

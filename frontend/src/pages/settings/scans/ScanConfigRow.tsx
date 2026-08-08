@@ -8,6 +8,7 @@ import { SCAN_RUN_STATUS } from '@/lib/statusLexicon'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { SrcIcon } from './scanLayout'
 import { type RunPillStatus } from './scanRunStatus'
+import { SCAN_MODE_BADGE, scanModeOf } from './scanMode'
 import type { ScanRunInfo } from './scanUtils'
 
 // Icon + spin are presentation; the word + colour come from the status lexicon.
@@ -37,7 +38,21 @@ export function RunStatusPill({ status, title }: { status: RunPillStatus; title?
   )
 }
 
-// Config badges on the detail header (⏱ interval, lookback, caps, JSON, etc.).
+/**
+ * What this scan actually does, derived from the two columns the dispatcher
+ * filters on. It leads every badge strip because a config that collects nothing
+ * used to look identical to one that collects everything (tripl-3y7z.1).
+ */
+export function ScanModeBadge({ sc }: { sc: ScanConfig }) {
+  const { label, tone, title } = SCAN_MODE_BADGE[scanModeOf(sc)]
+  return (
+    <Chip size="xs" tone={tone} title={title}>
+      {label}
+    </Chip>
+  )
+}
+
+// Config badges on the detail header (mode, ⏱ interval, lookback, caps, JSON, etc.).
 export function ScanBadges({
   sc,
   intervalLabel,
@@ -58,9 +73,9 @@ export function ScanBadges({
   }
   if (sc.event_group_rules.length) items.push(`Groups ${sc.event_group_rules.length}`)
 
-  if (items.length === 0) return null
   return (
     <div className="flex flex-wrap gap-1.5">
+      <ScanModeBadge sc={sc} />
       {items.map((label, i) => (
         <Chip key={i} size="xs" variant="outline">{label}</Chip>
       ))}
@@ -148,7 +163,13 @@ export function ScanListRow({
         <div className="flex items-center gap-2.5">
           <SrcIcon dbType={dataSource?.db_type ?? null} size={28} />
           <div className="min-w-0">
-            <div className="truncate text-[13px] font-semibold">{sc.name}</div>
+            <div className="flex items-center gap-2">
+              <span className="truncate text-[13px] font-semibold">{sc.name}</span>
+              {/* The list is where a never-monitoring config has to announce
+                  itself: its runs go green and its row otherwise reads exactly
+                  like a healthy monitoring scan. */}
+              <ScanModeBadge sc={sc} />
+            </div>
             <div className="truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
               {dataSource?.name ?? 'Unknown source'} · {cadenceLabel}
             </div>

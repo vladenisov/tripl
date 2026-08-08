@@ -17,6 +17,7 @@ import { Search } from "lucide-react"
 import { RunStatusPill, ScanListRow } from "./scans/ScanConfigRow"
 import { runPillStatus } from "./scans/scanRunStatus"
 import { ScanCreatePage } from "./scans/ScanConfigForm"
+import { scanModeOf } from "./scans/scanMode"
 import { StatCard, SurfPanel } from "./scans/scanLayout"
 import { INTERVAL_LABEL, formatCount } from "./scans/scanLayoutConstants"
 import { LOADING_SCAN_RUN_INFO, deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, summarizeScanChanges, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
@@ -190,7 +191,11 @@ export function ScansTab({ slug }: { slug: string }) {
     return <ScanCreatePage slug={slug} onBack={() => setView('list')} />
   }
 
-  const scheduledCount = scanConfigs.filter((sc: ScanConfig) => sc.interval).length
+  // Counting `interval` alone counted the broken quadrant — a schedule with no
+  // time column is never dispatched, so it monitors nothing (tripl-3y7z.1).
+  const monitoringCount = scanConfigs.filter(
+    (sc: ScanConfig) => scanModeOf(sc) === 'monitoring',
+  ).length
 
   return (
     <div className="flex flex-col gap-[18px]">
@@ -215,7 +220,7 @@ export function ScansTab({ slug }: { slug: string }) {
 
       <div className="grid grid-cols-3 gap-3">
         <StatCard label="Scan configs" value={scanConfigs.length} />
-        <StatCard label="Monitoring" value={scheduledCount} />
+        <StatCard label="Monitoring" value={monitoringCount} />
         <StatCard
           label="Warehouse rows read · 24h"
           value={formatCount(rowsScanned24h)}

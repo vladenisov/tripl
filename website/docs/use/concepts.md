@@ -163,6 +163,24 @@ value lists automatically**. Two ways to use it:
 - **Keeping in step** — you have a plan; a scan tells you where reality has
   moved on without it.
 
+### Monitoring scan vs catalog-only scan
+
+Every scan is one of two things, and you choose which when you create it:
+
+- A **monitoring scan** ingests events into your plan **and** records metric
+  points on a schedule. It needs a **time column** (what tripl buckets the
+  counts by) and a **schedule** (how often it runs). Both are required, because
+  without either one the scheduler never picks the scan up.
+- A **catalog-only scan** discovers events and fields and stops there. It records
+  no metric points.
+
+**Only a monitoring scan produces metric points, and metric points are what
+everything downstream is built on** — no points means no [signals](#monitor--signal),
+and no signals means no [alerts](#alert-rule). A catalog-only scan is a perfectly
+good choice when you only want to keep the plan honest; it is a bad surprise when
+you expected to be watched. The badge on each scan's row tells you which one you
+have.
+
 ### Event counts
 
 Behind monitoring, every scan rolls your raw events up into **counts over slices

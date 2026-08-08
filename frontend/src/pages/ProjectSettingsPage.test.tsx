@@ -1172,17 +1172,17 @@ describe('ProjectSettingsPage', () => {
     fireEvent.change(selects[0], { target: { value: 'ds-1' } })
 
     fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
+    expect(await screen.findByRole('button', { name: 'Reload preview' })).toBeInTheDocument()
 
-    expect(await screen.findByText('JSON values to keep as-is')).toBeInTheDocument()
+    // Catalog + monitoring is the default, and it will not create a scan until
+    // both of the columns the dispatcher reads are answered.
+    fireEvent.change(screen.getByLabelText('Time column'), { target: { value: 'created_at' } })
+    fireEvent.change(screen.getByLabelText('Schedule'), { target: { value: '1h' } })
 
-    const updatedSelects = screen.getAllByRole('combobox')
-    fireEvent.change(updatedSelects[3], { target: { value: 'created_at' } })
-
+    fireEvent.click(screen.getByRole('button', { name: /Event names and grouping/ }))
     // JSON keys are discovered on demand via a separate job, not by the fast preview.
     fireEvent.click(screen.getByRole('button', { name: 'Discover JSON keys' }))
     fireEvent.click(await screen.findByText('extra.key'))
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Breakdown by event_name' }))
-    fireEvent.change(screen.getByPlaceholderText('Unlimited'), { target: { value: '2' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add Group Rule' }))
     fireEvent.change(screen.getByPlaceholderText('button events'), {
       target: { value: 'product pages' },
@@ -1190,6 +1190,11 @@ describe('ProjectSettingsPage', () => {
     fireEvent.change(screen.getByPlaceholderText('^button:'), {
       target: { value: '^product:' },
     })
+
+    fireEvent.click(screen.getByRole('button', { name: /Metric breakdowns and drift/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Breakdown by event_name' }))
+    fireEvent.change(screen.getByPlaceholderText('Unlimited'), { target: { value: '2' } })
+
     fireEvent.click(screen.getByRole('button', { name: 'Create scan' }))
 
     await waitFor(() => {
@@ -1217,7 +1222,7 @@ describe('ProjectSettingsPage', () => {
         app_version_active_share_min: null,
         platform_column: null,
         cardinality_threshold: 100,
-        interval: null,
+        interval: '1h',
         replay_chunk_interval: null,
         scan_lookback_hours: 24,
         scan_row_limit: null,
@@ -1365,7 +1370,11 @@ describe('ProjectSettingsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
     await screen.findByText('Column pickers use the sample rows. JSON paths are discovered on demand to keep the preview fast.')
 
-    fireEvent.change(screen.getByLabelText('App Version Column (optional)'), {
+    // App version is orthogonal to monitoring, so this scan is catalog-only —
+    // which is exactly the mode where leaving the schedule empty is legitimate.
+    fireEvent.click(screen.getByRole('radio', { name: 'Catalog only' }))
+    fireEvent.click(screen.getByRole('button', { name: /App version/ }))
+    fireEvent.change(screen.getByLabelText('App version column'), {
       target: { value: 'app_version' },
     })
     expect(screen.queryByLabelText('Releases to keep')).not.toBeInTheDocument()

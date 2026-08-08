@@ -21,6 +21,7 @@ import {
 } from './scans/scanLayout'
 import { RunStatusPill } from './scans/ScanConfigRow'
 import { runPillStatus } from './scans/scanRunStatus'
+import { SCAN_MODE_DETAIL_LABEL, scanModeOf } from './scans/scanMode'
 import { consecutiveFailedRuns, jobDurationSeconds, jobMetricPoints, jobRowsScanned, scanJobsHaveActiveWork } from './scans/scanUtils'
 import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
 
@@ -318,6 +319,7 @@ export function ScanDetail({
             style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)', color: 'var(--fg)' }}
           >{scanConfig.base_query}</pre>
         </div>
+        <KV label="Mode" value={SCAN_MODE_DETAIL_LABEL[scanModeOf(scanConfig)]} />
         <KV label="Time column" value={scanConfig.time_column || <NoneTag />} mono={!!scanConfig.time_column} />
         <KV label="Event name format" value={scanConfig.event_name_format || <NoneTag />} mono={!!scanConfig.event_name_format} />
       </SurfPanel>

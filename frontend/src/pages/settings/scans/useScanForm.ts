@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query'
 import { scansApi } from '@/api/scans'
 import type { EventGroupRule, IntervalCode, ScanConfig, ScanConfigPreview } from '@/types'
 import { type UiEventGroupRule, stripUiIds, withUiIds } from './scanFormTypes'
+import { type ScanFormMode, formModeOf } from './scanMode'
 import { eligibleChunkIntervals, parseOptionalPositiveInt, parseOptionalShare } from './scanUtils'
 
 // Shape of the create/update payload shared by both API calls. Built once from
@@ -32,6 +33,12 @@ export interface ScanFormPayload {
 }
 
 export interface ScanFormState {
+  /**
+   * Form state only — never sent to the backend, never stored. It decides which
+   * fields the form asks for and how `toBackendPayload` resolves the two columns
+   * the dispatcher reads (see scanMode.ts).
+   */
+  mode: ScanFormMode
   dataSourceId: string
   name: string
   baseQuery: string
@@ -58,6 +65,7 @@ export interface ScanFormState {
 
 function initialState(scanConfig: ScanConfig | null): ScanFormState {
   return {
+    mode: formModeOf(scanConfig),
     dataSourceId: scanConfig?.data_source_id ?? '',
     name: scanConfig?.name ?? '',
     baseQuery: scanConfig?.base_query ?? '',
@@ -89,6 +97,72 @@ function initialState(scanConfig: ScanConfig | null): ScanFormState {
     scanRowLimit: scanConfig?.scan_row_limit == null ? '' : String(scanConfig.scan_row_limit),
     metricsRowLimit: scanConfig?.metrics_row_limit == null ? '' : String(scanConfig.metrics_row_limit),
   }
+}
+
+/**
+ * The time column as the backend will see it. In Catalog only the field does not
+ * exist, so a value left over from a previous Catalog + monitoring selection must
+ * not leak into the payload — or into the preview's windowing.
+ */
+export function effectiveTimeColumn(state: ScanFormState): string | null {
+  return state.mode === 'monitoring' ? state.timeColumn || null : null
+}
+
+/**
+ * Assembles the create/update payload from form state.
+ *
+ * Catalog only forces the three monitoring columns to null regardless of what the
+ * (now hidden) inputs still hold: the mode is the user's answer, not the leftover
+ * state behind it. Monitoring keeps both — `canSubmitScanForm` refuses to submit
+ * until they are set, so the silently-never-monitoring config this whole change
+ * exists to kill cannot be created.
+ */
+export function toBackendPayload(state: ScanFormState): ScanFormPayload {
+  const monitoring = state.mode === 'monitoring'
+  return {
+    name: state.name,
+    base_query: state.baseQuery,
+    event_type_id: state.eventTypeId || null,
+    event_type_column: state.eventTypeColumn || null,
+    time_column: effectiveTimeColumn(state),
+    event_name_format: state.eventNameFormat || null,
+    json_value_paths: state.jsonValuePaths,
+    event_group_rules: stripUiIds(state.eventGroupRules),
+    metric_breakdown_columns: state.metricBreakdownColumns,
+    metric_breakdown_values_limit: state.metricBreakdownValuesLimit
+      ? Number(state.metricBreakdownValuesLimit)
+      : null,
+    distribution_drift_fields: state.distributionDriftFields,
+    app_version_column: state.appVersionColumn || null,
+    app_version_prerelease_pattern: state.appVersionColumn
+      ? state.appVersionPrereleasePattern.trim() || null
+      : null,
+    app_version_active_share_min: state.appVersionColumn
+      ? parseOptionalShare(state.appVersionActiveShareMin)
+      : null,
+    platform_column: state.platformColumn || null,
+    cardinality_threshold: state.cardinalityThreshold,
+    interval: monitoring ? state.interval || null : null,
+    replay_chunk_interval: monitoring ? state.chunkInterval || null : null,
+    scan_lookback_hours: parseOptionalPositiveInt(state.scanLookbackHours),
+    scan_row_limit: parseOptionalPositiveInt(state.scanRowLimit),
+    metrics_row_limit: parseOptionalPositiveInt(state.metricsRowLimit),
+  }
+}
+
+/** Hover text on the disabled save/create button in Catalog + monitoring. */
+export const MONITORING_INCOMPLETE_TITLE =
+  'Catalog + monitoring needs a time column and a schedule.'
+
+/**
+ * Save gate shared by create and edit. In Catalog only, empty is a deliberate
+ * answer; in Catalog + monitoring both columns are required, because a config
+ * missing either one is never dispatched and collects nothing, forever.
+ */
+export function canSubmitScanForm(state: ScanFormState): boolean {
+  if (!state.dataSourceId || !state.name.trim() || !state.baseQuery.trim()) return false
+  if (state.mode === 'catalog') return true
+  return Boolean(state.timeColumn && state.interval)
 }
 
 export interface UseScanFormResult {
@@ -135,7 +209,7 @@ export function useScanForm(
         data_source_id: state.dataSourceId,
         base_query: state.baseQuery,
         limit: 10,
-        time_column: state.timeColumn || null,
+        time_column: effectiveTimeColumn(state),
         scan_lookback_hours: parseOptionalPositiveInt(state.scanLookbackHours),
       }),
     onSuccess: data => {
@@ -174,7 +248,7 @@ export function useScanForm(
         data_source_id: state.dataSourceId,
         base_query: state.baseQuery,
         json_value_paths: state.jsonValuePaths,
-        time_column: state.timeColumn || null,
+        time_column: effectiveTimeColumn(state),
         scan_lookback_hours: parseOptionalPositiveInt(state.scanLookbackHours),
         include_json_paths: true,
       }),
@@ -269,38 +343,6 @@ export function useScanForm(
         : [...current.distributionDriftFields, field],
     }))
 
-  const toBackendPayload = (): ScanFormPayload => {
-    return {
-      name: state.name,
-      base_query: state.baseQuery,
-      event_type_id: state.eventTypeId || null,
-      event_type_column: state.eventTypeColumn || null,
-      time_column: state.timeColumn || null,
-      event_name_format: state.eventNameFormat || null,
-      json_value_paths: state.jsonValuePaths,
-      event_group_rules: stripUiIds(state.eventGroupRules),
-      metric_breakdown_columns: state.metricBreakdownColumns,
-      metric_breakdown_values_limit: state.metricBreakdownValuesLimit
-        ? Number(state.metricBreakdownValuesLimit)
-        : null,
-      distribution_drift_fields: state.distributionDriftFields,
-      app_version_column: state.appVersionColumn || null,
-      app_version_prerelease_pattern: state.appVersionColumn
-        ? state.appVersionPrereleasePattern.trim() || null
-        : null,
-      app_version_active_share_min: state.appVersionColumn
-        ? parseOptionalShare(state.appVersionActiveShareMin)
-        : null,
-      platform_column: state.platformColumn || null,
-      cardinality_threshold: state.cardinalityThreshold,
-      interval: state.interval || null,
-      replay_chunk_interval: state.chunkInterval || null,
-      scan_lookback_hours: parseOptionalPositiveInt(state.scanLookbackHours),
-      scan_row_limit: parseOptionalPositiveInt(state.scanRowLimit),
-      metrics_row_limit: parseOptionalPositiveInt(state.metricsRowLimit),
-    }
-  }
-
   return {
     state,
     set,
@@ -318,6 +360,6 @@ export function useScanForm(
     toggleJsonValuePath,
     toggleMetricBreakdownColumn,
     toggleDistributionDriftField,
-    toBackendPayload,
+    toBackendPayload: () => toBackendPayload(state),
   }
 }

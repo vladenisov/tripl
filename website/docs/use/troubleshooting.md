@@ -65,10 +65,11 @@ monitoring charts stay empty and no anomalies or alerts ever show up.
 
 **Likely causes.**
 
-1. **The scan config has no `interval` or no `time_column`.** The dispatcher
-   (`check_metrics_due`) only ever selects configs where **both**
-   `interval` and `time_column` are set. A config missing either is silently
-   skipped — it will never collect metrics, only catalog events.
+1. **The scan is not a monitoring scan.** The dispatcher (`check_metrics_due`)
+   only ever selects configs where **both** `interval` and `time_column` are set.
+   A config missing either is silently skipped — it will never collect metrics,
+   only catalog events. Its runs still succeed, which is why this looks like
+   nothing is wrong.
 2. **`celery-beat` is not running.** Metric collection is triggered by the
    beat schedule entry `check-metrics-due`, which fires every 300 seconds. With
    no beat container, `collect_metrics` is never dispatched.
@@ -89,9 +90,16 @@ monitoring charts stay empty and no anomalies or alerts ever show up.
 
 **Fix.**
 
-- Open the scan config and confirm both an **interval** and a **time column**
-  are set. Save, then wait one beat cycle (≤ 5 minutes) or trigger a collection
-  manually from the UI.
+- Open **Govern → Scans** and look at the badge on the scan's row. **Catalog
+  only** or **No metrics collected** means this scan was never going to produce a
+  metric point, and the fix is in the form, not in the infrastructure.
+- Open the scan and check **What this scan does** at the top of the form. Choose
+  **Catalog + monitoring**, then fill in the **Time column** and **Schedule** it
+  asks for — the form refuses to save until both are answered. Save, then wait
+  one beat cycle (≤ 5 minutes) or trigger a collection manually from the UI.
+- If the scan is deliberately **Catalog only**, nothing is broken: that mode
+  records no metric points by design, so it raises no anomalies and sends no
+  alerts.
 - Confirm beat is alive:
 
   ```bash

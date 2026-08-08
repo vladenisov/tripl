@@ -13,12 +13,12 @@ import { ReplayDialog } from './ReplayDialog'
 import { SCard } from './scanLayout'
 import {
   AppVersionSection,
-  EventMappingSection,
+  EventNamingSection,
+  LimitsSection,
   MetricsDriftSection,
-  ScheduleLimitsSection,
-  SourceQuerySection,
+  ScanEssentialsSection,
 } from './ScanFormSections'
-import { useScanForm } from './useScanForm'
+import { MONITORING_INCOMPLETE_TITLE, canSubmitScanForm, useScanForm } from './useScanForm'
 import { dataSourcesKey } from '@/lib/queryKeys'
 
 // ─── Configuration tab (page-style edit, each SCard has its own Save footer) ───
@@ -68,6 +68,8 @@ export function ScanConfigurationTab({
 
   const canReplay = Boolean(scanConfig.time_column && scanConfig.interval)
 
+  const canSave = canSubmitScanForm(form.state)
+
   const footerFor = () => (
     <>
       <span role="status" className="flex-1 text-xs" style={{ color: 'var(--fg-subtle)' }}>
@@ -77,7 +79,8 @@ export function ScanConfigurationTab({
         type="button"
         size="sm"
         onClick={() => updateMut.mutate()}
-        disabled={updateMut.isPending}
+        disabled={updateMut.isPending || !canSave}
+        title={canSave ? undefined : MONITORING_INCOMPLETE_TITLE}
       >
         {updateMut.isPending ? 'Saving…' : 'Save'}
       </Button>
@@ -102,11 +105,11 @@ export function ScanConfigurationTab({
           <ErrorState compact title="Could not save scan config" error={updateMut.error} />
         </div>
       )}
-      <SourceQuerySection {...sectionProps} />
-      <EventMappingSection {...sectionProps} />
+      <ScanEssentialsSection {...sectionProps} />
+      <EventNamingSection {...sectionProps} />
       <AppVersionSection {...sectionProps} />
       <MetricsDriftSection {...sectionProps} />
-      <ScheduleLimitsSection {...sectionProps} />
+      <LimitsSection {...sectionProps} />
 
       <SCard title="Danger zone" tone="danger">
         <div
@@ -191,7 +194,7 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
   })
 
   const loaded = Boolean(form.preview)
-  const canCreate = Boolean(form.state.dataSourceId && form.state.name.trim() && form.state.baseQuery.trim())
+  const canCreate = canSubmitScanForm(form.state)
 
   const sectionProps = {
     form,
@@ -220,17 +223,11 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
         Point a warehouse query at tripl to ingest events and roll up metrics.
       </p>
 
-      <SourceQuerySection {...sectionProps} />
-
-      {loaded && (
-        <>
-          <EventMappingSection {...sectionProps} />
-          <AppVersionSection {...sectionProps} />
-          <MetricsDriftSection {...sectionProps} />
-        </>
-      )}
-
-      <ScheduleLimitsSection {...sectionProps} />
+      <ScanEssentialsSection {...sectionProps} />
+      <EventNamingSection {...sectionProps} />
+      <AppVersionSection {...sectionProps} />
+      <MetricsDriftSection {...sectionProps} />
+      <LimitsSection {...sectionProps} />
 
       {createMut.isError && (
         <div className="mb-5">
@@ -240,9 +237,13 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
 
       <div className="mt-1 flex items-center gap-2.5">
         <span className="flex-1 text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          {/* In Catalog + monitoring the preview is not optional: the time column
+              is chosen from the columns it returns. */}
           {loaded
             ? 'Creates the config and runs the first scan.'
-            : 'Load a preview to map columns (optional).'}
+            : form.state.mode === 'monitoring'
+              ? 'Load a preview to choose a time column.'
+              : 'Load a preview to map columns (optional).'}
         </span>
         <Button type="button" variant="ghost" size="sm" onClick={onBack}>
           Cancel
@@ -251,6 +252,7 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
           type="button"
           size="sm"
           disabled={!canCreate || createMut.isPending}
+          title={canCreate ? undefined : MONITORING_INCOMPLETE_TITLE}
           onClick={() => createMut.mutate()}
         >
           <Plus className="size-3" />
