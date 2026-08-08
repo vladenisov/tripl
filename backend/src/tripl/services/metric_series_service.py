@@ -38,6 +38,7 @@ from tripl.core.analyzers.anomaly_detector import (
 )
 from tripl.core.intervals import get_interval
 from tripl.metric_grid import metric_grid_stmt, metric_grids
+from tripl.metric_monitoring import is_metric_monitored
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.fact_table import FactTable
 from tripl.models.metric_anomaly import MetricAnomaly
@@ -372,18 +373,18 @@ async def get_metric_series(
     metric = await _resolve_metric(session, project, metric_id)
     interval, scan_config_id = await _resolve_metric_interval(session, metric)
 
-    # "Detection off" is off on EVERY surface. Turning the metric's switch off
-    # stops new rows being scored but leaves the stored ones in place, and both
-    # project-wide surfaces already drop a disabled metric
-    # (``metrics_insights_service._get_active_metric_signals`` and
-    # ``_count_active_metric_signals_by_project`` filter on the flag), so this
-    # page reporting an open signal from those leftovers made the four surfaces
-    # disagree the moment the switch was flipped. Only the SIGNAL is retracted:
-    # the stored anomalies still render as chart markers, because the history is
-    # real and the switch speaks about what is watched, not about what happened.
+    # "Not monitored" is not monitored on EVERY surface. A metric stops being
+    # scored either by its own detection switch or by leaving ``active``
+    # (``tripl.metric_monitoring``), and both leave the already-stored rows in
+    # place, so this page reporting an open signal off those leftovers made the
+    # four surfaces disagree the moment the metric was archived or switched off.
+    # Only the SIGNAL is retracted: the stored anomalies still render as chart
+    # markers, because the history is real and neither switch speaks about what
+    # happened — only about what is watched.
+    monitored = is_metric_monitored(metric)
     recent_window: timedelta | None = None
     series_from = time_from
-    if metric.anomaly_detection_enabled:
+    if monitored:
         recent_window = await _get_project_recent_signal_window(session, project.id)
         anomalies, series_from = await _load_anomalies_reaching_open_anchor(
             session,
@@ -413,7 +414,7 @@ async def get_metric_series(
         metric_id=metric.id,
         scan_config_id=scan_config_id,
         interval=interval,
-        # Same switch as the reach-back above.
+        # Same predicate as the reach-back above.
         latest_signal=(
             _latest_signal(
                 data=data,
@@ -421,7 +422,7 @@ async def get_metric_series(
                 interval=interval,
                 recent_window=recent_window,
             )
-            if metric.anomaly_detection_enabled
+            if monitored
             else None
         ),
         data=data,

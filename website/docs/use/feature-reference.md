@@ -376,13 +376,15 @@ then reveals kind-specific config:
 
 Shared fields are name, display name, description, color, unit, owner/review,
 status, breakdown columns/limit, optional version/platform columns, and the
-anomaly-detection toggle. Turning that toggle off stops the metric being scored
-and closes its signal on every surface at once — the catalog row, the metric's
-own detail page, the Anomalies page and the sidebar badge; anomalies already
+anomaly-detection toggle. A metric is monitored only while it is **active** and
+its anomaly-detection toggle is on. Turning that toggle off — or moving the
+metric out of `active` — stops it being scored and closes its signal on every
+surface at once: the catalog row, the metric's own detail page, the Anomalies
+page and the sidebar badge, and it also stops being a candidate for alert rules,
+so any alert already open on it closes on the next check. Anomalies already
 recorded stay on the chart as history rather than being deleted. A metric is
-collected only while
-**active**; `draft` metrics are saved but not collected, and `archived` metrics
-stop collecting.
+collected only while **active**; `draft` metrics are saved but not collected,
+and `archived` metrics stop collecting.
 
 ### Fact tables
 

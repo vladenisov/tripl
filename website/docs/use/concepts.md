@@ -103,8 +103,11 @@ time bucket**. A metric is one of three kinds:
   count, a ratio of one event to another, or an event per distinct user.
 
 Each metric has a lifecycle — **draft**, **active**, **archived** — and once
-active it is monitored exactly like an event. Unlike the rest of the plan, metrics
-are **project-wide and aren't branched**.
+active it is monitored exactly like an event. Only an active metric is monitored:
+archiving one (or putting it back in draft) stops its collection, closes any open
+signal on every surface and withdraws it from alerting, while the anomalies it
+already recorded stay on its chart as history. Unlike the rest of the plan,
+metrics are **project-wide and aren't branched**.
 
 ---
 

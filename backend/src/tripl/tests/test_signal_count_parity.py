@@ -736,6 +736,7 @@ async def _seed_catalog_metric_signal(
     *,
     bucket: datetime,
     detection_enabled: bool = True,
+    status: MetricStatus = MetricStatus.active,
     recent_signal_window_hours: int | None = None,
 ) -> str:
     """Seed one anomalous DAILY ``fact`` metric and return its id.
@@ -772,7 +773,7 @@ async def _seed_catalog_metric_signal(
                 config={},
                 data_source_id=uuid.UUID(data_source_id),
                 interval="1d",
-                status=MetricStatus.active.value,
+                status=status.value,
                 anomaly_detection_enabled=detection_enabled,
             )
         )
@@ -878,6 +879,43 @@ async def test_metric_with_detection_disabled_is_closed_on_every_surface(
         slug,
         bucket=_DAILY_BUCKET,
         detection_enabled=False,
+    )
+
+    surfaces = await _metric_signal_surfaces(client, slug, metric_id)
+
+    assert surfaces == {
+        "page": 0,
+        "page_state": None,
+        "badge": 0,
+        "list": False,
+        "drilldown": False,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parked", [MetricStatus.archived, MetricStatus.draft])
+async def test_a_metric_that_left_active_is_closed_on_every_surface(
+    client: AsyncClient,
+    parked: MetricStatus,
+) -> None:
+    """Leaving ``active`` is as final as the toggle, on all four surfaces.
+
+    Detection scores only ``active`` metrics, but all four display surfaces
+    filtered on ``anomaly_detection_enabled`` alone, so an archived metric kept
+    reporting the open signal it froze with — collection stops, the newest value
+    bucket stops advancing, and the last anomaly stays on the settled head until
+    the wall-clock horizon max(24h, 3 x interval) closes it (three days on this
+    daily grid, three weeks on a weekly one).
+
+    Same seed and same daily bucket as the detection-off case above, so the only
+    thing under test is the status half of the predicate (tripl-l429.25).
+    """
+    slug = f"metric-{parked.value}"
+    metric_id = await _seed_catalog_metric_signal(
+        client,
+        slug,
+        bucket=_DAILY_BUCKET,
+        status=parked,
     )
 
     surfaces = await _metric_signal_surfaces(client, slug, metric_id)

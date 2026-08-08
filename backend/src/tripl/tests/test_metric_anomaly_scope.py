@@ -133,6 +133,7 @@ def _add_metric(
     composition: MetricComposition | None = None,
     anomaly_enabled: bool = True,
     interval: str | None = "1h",
+    status: MetricStatus = MetricStatus.active,
 ) -> MetricDefinition:
     metric = MetricDefinition(
         id=uuid.uuid4(),
@@ -145,7 +146,7 @@ def _add_metric(
         config={},
         data_source_id=config.data_source_id,
         interval=interval,
-        status=MetricStatus.active.value,
+        status=status.value,
         anomaly_detection_enabled=anomaly_enabled,
     )
     session.add(metric)
@@ -974,3 +975,73 @@ def test_metric_alert_candidacy_ignores_which_scan_dispatches(
 
     assert set(under_daily) == {("metric", str(metric.id))}
     assert set(under_hourly) == set(under_daily)
+
+
+# A settled head on the hourly grid: value and anomaly share a bucket two hours
+# back, so the head test (anomaly_bucket >= latest_value_bucket - emission_lag)
+# holds by construction and only the freshness horizon max(24h, 3 * 1h) could
+# close it. That is exactly the state a metric freezes in when it stops
+# collecting, which is why archiving it had to be what closes it.
+_SETTLED_HEAD = _BASE + timedelta(hours=10)
+
+
+@pytest.mark.parametrize("parked", [MetricStatus.archived, MetricStatus.draft])
+def test_a_metric_that_left_active_stops_being_an_alert_candidate(
+    sync_session_factory: sessionmaker[Session],
+    parked: MetricStatus,
+) -> None:
+    """Archiving a metric must switch its alerts off, not merely age them out.
+
+    Detection has always required ``status == active`` AND the flag; alert
+    candidacy required only the flag, so the consumer was WIDER than its own
+    producer. That is not harmless dead code, because leaving ``active`` deletes
+    nothing: ``_purge_project_metric_anomalies`` runs only when PROJECT-level
+    detection is off, ``_age_out_config_anomalies`` matches on ``scan_config_id``
+    and metric-scope rows are NULL there, and the catalog's bulk archive is a
+    bare ``UPDATE ... SET status``. Collection stops as well, so the metric's
+    newest value bucket freezes and its last anomaly keeps testing as the settled
+    head — leaving a live alert candidate that could NEWLY send to Telegram or
+    Slack about a metric the user had just archived, for up to
+    max(recent_window, 3 x interval) afterwards (three weeks on a 1w grid).
+
+    ``draft`` answers the same way: ``check_metric_definitions_due`` dispatches
+    only ``active``, so a metric parked in draft is just as frozen as an
+    archived one (tripl-l429.25).
+    """
+    with sync_session_factory() as session:
+        config = _seed_project(session)
+        metric = _add_metric(
+            session,
+            config,
+            kind=MetricKind.fact,
+            aggregation=MetricAggregation.count,
+            name="checkout_completed",
+        )
+        _seed_values_at(session, metric, {_SETTLED_HEAD: 99.0})
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=None,
+                scope_type=SCOPE_METRIC,
+                scope_ref=str(metric.id),
+                event_id=None,
+                event_type_id=None,
+                bucket=_SETTLED_HEAD,
+                actual_count=99,
+                expected_count=40,
+                stddev=5,
+                z_score=8,
+                direction="spike",
+            )
+        )
+        session.commit()
+
+        # Non-vacuous: while active this really is an open alert candidate.
+        while_active = metrics_signals._get_active_metric_anomaly_candidates(session, config)
+
+        metric.status = parked.value
+        session.commit()
+        after_parking = metrics_signals._get_active_metric_anomaly_candidates(session, config)
+
+    assert set(while_active) == {(SCOPE_METRIC, str(metric.id))}
+    assert set(after_parking) == set()

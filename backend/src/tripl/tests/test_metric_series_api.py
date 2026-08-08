@@ -13,7 +13,7 @@ import pytest
 from httpx import AsyncClient
 
 from tripl.models.data_source import DataSource
-from tripl.models.domain_enums import MetricComposition, MetricKind
+from tripl.models.domain_enums import MetricComposition, MetricKind, MetricStatus
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
@@ -78,6 +78,13 @@ async def _create_sql_metric(
         "data_source_id": data_source_id,
         "interval": "1h",
         "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+        # ACTIVE, because these tests seed values and anomalies and then assert a
+        # SIGNAL. ``MetricDefinitionCreate.status`` defaults to ``draft``, and a
+        # draft metric is neither collected (``check_metric_definitions_due``
+        # dispatches only ``active``) nor scored, so a draft metric holding a
+        # fresh anomaly is a state the pipeline cannot produce — and one that is
+        # deliberately signal-less on every surface (tripl-l429.25).
+        "status": "active",
         **extra,
     }
     resp = await client.post(_metrics_url(slug), json=payload)
@@ -150,6 +157,9 @@ async def _seed_event_composition_metric(
                 config={},
                 interval=None,
                 app_version_column=app_version_column,
+                # Same reason as _create_sql_metric: the column default is
+                # ``draft``, which is not a monitored metric.
+                status=MetricStatus.active.value,
             )
         )
         await session.commit()

@@ -19,6 +19,7 @@ from tripl.core.analyzers.anomaly_detector import (
 )
 from tripl.core.intervals import get_interval
 from tripl.metric_grid import metric_grid_stmt, metric_grids
+from tripl.metric_monitoring import monitored_metric_criteria
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.domain_enums import MetricBreakdownAnomalyKind
 from tripl.models.event_metric import EventMetric
@@ -202,7 +203,10 @@ async def _get_active_metric_signals(
     project_id: uuid.UUID,
     recent_window: timedelta | None = None,
 ) -> list[MetricSignalResponse]:
-    """Open ``metric``-scope signals for a project's catalog metrics.
+    """Open ``metric``-scope signals for a project's MONITORED catalog metrics.
+
+    Monitored is ``active`` AND ``anomaly_detection_enabled``
+    (``tripl.metric_monitoring``), the same predicate detection scores on.
 
     Catalog metric anomalies carry a NULL ``scan_config_id`` and are keyed by
     ``scope_ref = str(metric_definition_id)``, so they are loaded on their own
@@ -226,7 +230,7 @@ async def _get_active_metric_signals(
             await session.execute(
                 metric_grid_stmt(
                     MetricDefinition.project_id == project_id,
-                    MetricDefinition.anomaly_detection_enabled.is_(True),
+                    *monitored_metric_criteria(),
                 )
             )
         ).all()
@@ -328,7 +332,7 @@ async def _count_active_metric_signals_by_project(
             await session.execute(
                 metric_grid_stmt(
                     MetricDefinition.project_id.in_(project_ids),
-                    MetricDefinition.anomaly_detection_enabled.is_(True),
+                    *monitored_metric_criteria(),
                 )
             )
         ).all()

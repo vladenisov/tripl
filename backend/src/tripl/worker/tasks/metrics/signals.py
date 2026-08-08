@@ -46,6 +46,7 @@ from tripl.core.analyzers.anomaly_detector import (
     settling_buckets_for,
 )
 from tripl.metric_grid import metric_grid_stmt, metric_grids
+from tripl.metric_monitoring import monitored_metric_criteria
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
@@ -352,7 +353,16 @@ def _get_active_metric_anomaly_candidates(
     session: Session,
     config: ScanConfig,
 ) -> dict[tuple[str, str], MetricAnomaly]:
-    """Latest active ``metric``-scope anomaly per catalog metric in the project.
+    """Latest active ``metric``-scope anomaly per MONITORED catalog metric.
+
+    Monitored is ``active`` AND ``anomaly_detection_enabled``
+    (``tripl.metric_monitoring``) — the same predicate detection scores on. This
+    pass used to require only the flag, which made it WIDER than its own
+    producer: an archived metric stops collecting but keeps its stored anomalies,
+    so its frozen last anomaly stayed on the settled head and remained a live
+    alert candidate — able to newly fire a Telegram/Slack message about a metric
+    the user had just archived — until the wall-clock horizon closed it up to
+    three weeks later on a weekly grid (tripl-l429.25).
 
     Catalog metric anomalies are project-global (NULL ``scan_config_id``), so —
     unlike event scopes — they are not picked up by the config-partitioned
@@ -378,7 +388,7 @@ def _get_active_metric_anomaly_candidates(
             session.execute(
                 metric_grid_stmt(
                     MetricDefinition.project_id == config.project_id,
-                    MetricDefinition.anomaly_detection_enabled.is_(True),
+                    *monitored_metric_criteria(),
                 )
             ).all()
         ).items()
