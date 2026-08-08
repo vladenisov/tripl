@@ -222,8 +222,38 @@ a real answer, not a broken panel. Four causes, in the order worth checking:
    event fields, and their absence from the plan is intentional.
 
 If the events list is present but prefixed with **at least**, nothing is wrong —
-the sample hit its cap, and the count is a floor rather than a total. See
-[Scans → The dry run](feature-reference.md#the-dry-run--what-this-scan-would-create).
+the sample hit its cap, and the count is a floor rather than a total. That case
+has its own entry below.
+
+---
+
+## The preview says "would create **at least** N events"
+
+**Symptom.** The preview names events, but hedges the count.
+
+Nothing is wrong. The dry run does not read your whole table; it reads the most
+common column combinations inside the scan's lookback window, up to a cap of
+5,000. When it hits that cap, more distinct events exist than it looked at, so N
+is a **floor**: the scan would create at least that many, possibly more. Saying a
+flat *N* there would be the one claim the panel is built not to make.
+
+The panel also prints *More distinct events exist than this preview looked at.*
+Two ways to turn the floor into a firm number:
+
+- **Narrow the base query.** Fewer columns means fewer combinations, so the same
+  cap covers more of your data. Dropping a high-cardinality column you were not
+  going to name events from is usually enough.
+- **Widen or narrow the window.** **Limits → Lookback (hours)** decides how much
+  data the dry run reads at all. A shorter window with the same cap is more
+  likely to be complete — but remember it is then a statement about less of your
+  data, not about more of it.
+
+A count with no *at least* is exact **for what it read**: every distinct event in
+the sample, with the exact number of sampled rows behind each one. It is still
+not a table-wide total, because the lookback window is a separate bound. The
+panel always names the window it used.
+
+See [Scans → The dry run](feature-reference.md#the-dry-run--what-this-scan-would-create).
 
 ---
 

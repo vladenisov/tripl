@@ -1,7 +1,14 @@
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { scansApi } from '@/api/scans'
-import type { EventGroupRule, IntervalCode, ScanConfig, ScanConfigPreview } from '@/types'
+import type {
+  EventGroupRule,
+  IntervalCode,
+  ScanConfig,
+  ScanConfigPreview,
+  ScanDryRunRequest,
+  ScanDryRunResponse,
+} from '@/types'
 import { type UiEventGroupRule, stripUiIds, withUiIds } from './scanFormTypes'
 import { type ScanFormMode, formModeOf } from './scanMode'
 import { eligibleChunkIntervals, parseOptionalPositiveInt, parseOptionalShare } from './scanUtils'
@@ -150,6 +157,34 @@ export function toBackendPayload(state: ScanFormState): ScanFormPayload {
   }
 }
 
+/**
+ * The draft a dry run is computed from, derived from the SAME payload the save
+ * button would send.
+ *
+ * Building it out of `toBackendPayload` is the point: "what would this scan
+ * create?" has to be answered for the config that would actually be saved, not
+ * for a second reading of form state that could drift from it. Catalog only
+ * therefore drops the time column here too, so the dry run reports the whole
+ * table rather than a window the saved scan would not apply.
+ */
+export function toDryRunRequest(state: ScanFormState): ScanDryRunRequest {
+  const payload = toBackendPayload(state)
+  return {
+    data_source_id: state.dataSourceId,
+    base_query: payload.base_query,
+    event_type_id: payload.event_type_id,
+    event_type_column: payload.event_type_column,
+    time_column: payload.time_column,
+    event_name_format: payload.event_name_format,
+    event_group_rules: payload.event_group_rules,
+    json_value_paths: payload.json_value_paths,
+    cardinality_threshold: payload.cardinality_threshold,
+    app_version_column: payload.app_version_column,
+    platform_column: payload.platform_column,
+    scan_lookback_hours: payload.scan_lookback_hours,
+  }
+}
+
 /** Hover text on the disabled save/create button in Catalog + monitoring. */
 export const MONITORING_INCOMPLETE_TITLE =
   'Catalog + monitoring needs a time column and a schedule.'
@@ -170,9 +205,23 @@ export interface UseScanFormResult {
   set: <K extends keyof ScanFormState>(key: K, value: ScanFormState[K]) => void
   preview: ScanConfigPreview | null
   setPreview: (preview: ScanConfigPreview | null) => void
+  /** "What this scan would create", or null before the first check. */
+  dryRun: ScanDryRunResponse | null
+  /**
+   * True when the form has changed since the displayed answer was computed. A
+   * dry run is a statement about a specific draft; once the draft moves, the
+   * answer is stale, and a stale "would create 3 events: A, B, C" is worse than
+   * no answer at all.
+   */
+  dryRunStale: boolean
   // Preview/discovery mutations (real warehouse-backed jobs).
   previewMut: ReturnType<typeof useMutation<ScanConfigPreview, unknown, void>>
   discoverJsonMut: ReturnType<typeof useMutation<ScanConfigPreview, unknown, void>>
+  dryRunMut: ReturnType<typeof useMutation<ScanDryRunResponse, unknown, ScanDryRunRequest>>
+  /** Load the sample rows and the dry run together — one button, one answer. */
+  loadPreview: () => void
+  /** Re-answer "what would this scan create?" for the draft as it stands now. */
+  runDryRun: () => void
   // Field-aware handlers that drop now-invalid column references.
   setBaseQuery: (value: string) => void
   setDataSourceId: (value: string) => void
@@ -196,6 +245,12 @@ export function useScanForm(
 ): UseScanFormResult {
   const [state, setState] = useState<ScanFormState>(() => initialState(scanConfig))
   const [preview, setPreview] = useState<ScanConfigPreview | null>(null)
+  // The answer AND the draft it answers for, so staleness is a fact rather than
+  // a guess. Serializing the request is enough: it is exactly the set of inputs
+  // the backend planner reads.
+  const [dryRunResult, setDryRunResult] = useState<
+    { answer: ScanDryRunResponse; requestKey: string } | null
+  >(null)
 
   const set = <K extends keyof ScanFormState>(key: K, value: ScanFormState[K]) =>
     setState(current => ({ ...current, [key]: value }))
@@ -242,6 +297,18 @@ export function useScanForm(
     },
   })
 
+  // Keyed off the mutation's own variables, not off a closure: React Query keeps
+  // the LATEST options object, so an onSuccess that read the current render's
+  // request would stamp an in-flight answer with a draft it was not computed
+  // from — and silently call a stale answer fresh.
+  const dryRunMut = useMutation<ScanDryRunResponse, unknown, ScanDryRunRequest>({
+    mutationFn: request => scansApi.dryRun(slug, request),
+    onSuccess: (answer, request) =>
+      setDryRunResult({ answer, requestKey: JSON.stringify(request) }),
+  })
+
+  const runDryRun = () => dryRunMut.mutate(toDryRunRequest(state))
+
   const discoverJsonMut = useMutation<ScanConfigPreview, unknown, void>({
     mutationFn: () =>
       scansApi.preview(slug, {
@@ -262,6 +329,23 @@ export function useScanForm(
     setPreview(null)
     setMany({ distributionDriftFields: [] })
     discoverJsonMut.reset()
+    // A new source or a new query invalidates the answer outright — not merely
+    // stales it. Keeping it on screen would attribute events to a query that no
+    // longer exists.
+    setDryRunResult(null)
+    dryRunMut.reset()
+  }
+
+  /**
+   * One button, both warehouse jobs. The sample rows populate the column pickers
+   * and the dry run says what the config would create; splitting them into two
+   * controls would make "what would this create?" an optional extra, which is
+   * how the promise in the docs went unbuilt in the first place.
+   */
+  const loadPreview = () => {
+    discoverJsonMut.reset()
+    previewMut.mutate()
+    runDryRun()
   }
 
   const setBaseQuery = (value: string) => {
@@ -348,8 +432,13 @@ export function useScanForm(
     set,
     preview,
     setPreview,
+    dryRun: dryRunResult?.answer ?? null,
+    dryRunStale: dryRunResult != null && dryRunResult.requestKey !== JSON.stringify(toDryRunRequest(state)),
     previewMut,
     discoverJsonMut,
+    dryRunMut,
+    loadPreview,
+    runDryRun,
     setBaseQuery,
     setDataSourceId,
     setEventTypeColumn,

@@ -168,8 +168,22 @@ monitored tracking plan.
      points, so no anomalies and no alerts.
 3. Point it at your data: pick the **data source** and give the **base query** —
    typically just selecting from the table where your events land.
-4. **Preview** the scan. The preview shows exactly which events, fields, and
-   values tripl would create from the real data — before anything is written.
+4. **Load the preview.** It leads with **What this scan would create**: the event
+   names tripl would add to your plan and the fields it would add with them,
+   worked out by pushing the sampled rows through the *same* planner a real run
+   uses. Nothing is written. The sample warehouse rows are kept underneath, under
+   **Show sample rows** — they are the evidence, not the answer.
+
+   The answer is bounded, and says which bound it is under. It reads the scan's
+   lookback window and at most the 5,000 most common column combinations, so when
+   it hits that cap it reads *Would create **at least** N events* rather than a
+   flat count. It never projects a table-wide total.
+
+   Change the form afterwards — a different event name format, a different
+   cardinality threshold — and the panel says the answer no longer describes this
+   scan; **Check again** re-runs it. If your **Event name format** references a
+   key the rows cannot supply, the preview says so here: that format would fail
+   *every* run of the config, so this is the cheapest place to find out.
 5. In Catalog + monitoring, choose the **Time column** (the timestamp tripl
    buckets counts by) and the **Schedule** — every 15 minutes, hourly, every 6
    hours, daily, or weekly. The form will not let you create the scan until both

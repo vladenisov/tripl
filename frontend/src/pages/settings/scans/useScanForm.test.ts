@@ -4,6 +4,7 @@ import {
   canSubmitScanForm,
   effectiveTimeColumn,
   toBackendPayload,
+  toDryRunRequest,
 } from './useScanForm'
 
 function formState(overrides: Partial<ScanFormState> = {}): ScanFormState {
@@ -63,6 +64,40 @@ describe('toBackendPayload', () => {
   it('keeps the preview windowed by the same time column the payload carries', () => {
     expect(effectiveTimeColumn(formState())).toBe('received_at')
     expect(effectiveTimeColumn(formState({ mode: 'catalog' }))).toBeNull()
+  })
+})
+
+describe('toDryRunRequest (tripl-3y7z.6)', () => {
+  // "What would this scan create?" has to be answered for the config that would
+  // actually be SAVED. Reading form state a second time is how the answer and
+  // the saved scan drift apart, so the request is derived from the save payload:
+  // catalog-only drops the time column here too, and the dry run therefore reads
+  // the whole table rather than a window the saved scan would never apply.
+  it('asks about the config that would be saved, not about leftover form state', () => {
+    const request = toDryRunRequest(formState({
+      mode: 'catalog',
+      timeColumn: 'received_at',
+      interval: '1h',
+    }))
+
+    expect(request.time_column).toBeNull()
+    expect(request.data_source_id).toBe('ds-1')
+    expect(request.base_query).toBe('SELECT * FROM analytics.events')
+  })
+
+  it('carries the naming inputs the planner reads, so the names it reports are the names a run writes', () => {
+    const request = toDryRunRequest(formState({
+      eventTypeColumn: 'event_name',
+      eventNameFormat: '{action}:{category}',
+      cardinalityThreshold: 25,
+      scanLookbackHours: '48',
+    }))
+
+    expect(request.event_type_column).toBe('event_name')
+    expect(request.event_name_format).toBe('{action}:{category}')
+    expect(request.cardinality_threshold).toBe(25)
+    expect(request.scan_lookback_hours).toBe(48)
+    expect(request.time_column).toBe('received_at')
   })
 })
 

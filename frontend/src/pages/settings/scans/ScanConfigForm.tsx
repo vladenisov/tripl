@@ -219,8 +219,13 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
         </button>
       </div>
       <h1 className="m-0 mb-1 text-[19px] font-semibold tracking-tight">New scan config</h1>
+      {/* "…to ingest events and roll up metrics" promised monitoring before the
+          user had chosen it, and read as a contradiction with Catalog only two
+          lines below. What the scan does is now the first question, and the note
+          under the radio answers it — this line only says what you are pointing
+          at what. */}
       <p className="mb-[18px] text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
-        Point a warehouse query at tripl to ingest events and roll up metrics.
+        Point a warehouse query at tripl, and choose what it does with the rows.
       </p>
 
       <ScanEssentialsSection {...sectionProps} />
@@ -238,12 +243,14 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
       <div className="mt-1 flex items-center gap-2.5">
         <span className="flex-1 text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
           {/* In Catalog + monitoring the preview is not optional: the time column
-              is chosen from the columns it returns. */}
+              is chosen from the columns it returns. In Catalog only it is not
+              "optional" either any more — it is how you find out what this scan
+              would put in your plan before you create it (tripl-3y7z.6). */}
           {loaded
             ? 'Creates the config and runs the first scan.'
             : form.state.mode === 'monitoring'
-              ? 'Load a preview to choose a time column.'
-              : 'Load a preview to map columns (optional).'}
+              ? 'Load a preview to choose a time column and see what this scan would create.'
+              : 'Load a preview to see what this scan would create.'}
         </span>
         <Button type="button" variant="ghost" size="sm" onClick={onBack}>
           Cancel

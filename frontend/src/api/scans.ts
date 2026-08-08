@@ -4,6 +4,9 @@ import type {
   PlatformPresenceResponse,
   ScanConfig,
   ScanConfigPreview,
+  ScanDryRunJob,
+  ScanDryRunRequest,
+  ScanDryRunResponse,
   ScanJob,
   ScanPreviewJob,
 } from '../types'
@@ -12,6 +15,40 @@ const PREVIEW_POLL_INTERVAL_MS = 1500
 const PREVIEW_POLL_TIMEOUT_MS = 5 * 60 * 1000
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+/** Shape shared by the preview and dry-run poll loops (202 + poll). */
+interface PollableJob<T> {
+  id: string
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  result_summary: T | null
+  error_message: string | null
+}
+
+/**
+ * Poll a 202-and-poll worker job until it resolves, returning its payload.
+ *
+ * Preview and dry-run are both warehouse round trips the request path refuses to
+ * hold open, and both answer with the same envelope. One loop, so a timeout or a
+ * cancelled job cannot mean two different things on two screens.
+ */
+async function pollJob<T>(
+  job: PollableJob<T>,
+  fetchJob: (jobId: string) => Promise<PollableJob<T>>,
+  timedOutMessage: string,
+  failedMessage: string,
+): Promise<T> {
+  const deadline = Date.now() + PREVIEW_POLL_TIMEOUT_MS
+  let current = job
+  while (current.status === 'pending' || current.status === 'running') {
+    if (Date.now() > deadline) throw new Error(timedOutMessage)
+    await sleep(PREVIEW_POLL_INTERVAL_MS)
+    current = await fetchJob(job.id)
+  }
+  if (current.status !== 'completed' || !current.result_summary) {
+    throw new Error(current.error_message || failedMessage)
+  }
+  return current.result_summary
+}
 
 export const scansApi = {
   list: (slug: string) =>
@@ -77,17 +114,32 @@ export const scansApi = {
     include_json_paths?: boolean
   }): Promise<ScanConfigPreview> => {
     const job = await scansApi.startPreview(slug, data)
-    const deadline = Date.now() + PREVIEW_POLL_TIMEOUT_MS
-    let current = job
-    while (current.status === 'pending' || current.status === 'running') {
-      if (Date.now() > deadline) throw new Error('Preview timed out')
-      await sleep(PREVIEW_POLL_INTERVAL_MS)
-      current = await scansApi.getPreviewJob(slug, job.id)
-    }
-    if (current.status === 'failed' || !current.result_summary) {
-      throw new Error(current.error_message || 'Preview failed')
-    }
-    return current.result_summary
+    return pollJob(
+      job,
+      jobId => scansApi.getPreviewJob(slug, jobId),
+      'Preview timed out',
+      'Preview failed',
+    )
+  },
+
+  // The dry run answers "what would this config create?" by pushing sampled
+  // warehouse rows through the same planner a real run uses. It groups the whole
+  // window rather than reading ten rows, so it is strictly slower than the
+  // preview and gets the same 202-and-poll treatment.
+  startDryRun: (slug: string, data: ScanDryRunRequest) =>
+    api.post<ScanDryRunJob>(`/projects/${slug}/scans/dry-run`, data),
+
+  getDryRunJob: (slug: string, jobId: string) =>
+    api.get<ScanDryRunJob>(`/projects/${slug}/scans/dry-run-jobs/${jobId}`),
+
+  dryRun: async (slug: string, data: ScanDryRunRequest): Promise<ScanDryRunResponse> => {
+    const job = await scansApi.startDryRun(slug, data)
+    return pollJob(
+      job,
+      jobId => scansApi.getDryRunJob(slug, jobId),
+      'Dry run timed out',
+      'Dry run failed',
+    )
   },
 
   update: (slug: string, scanId: string, data: {

@@ -154,9 +154,9 @@ export function ScanEssentialsSection({
   footerFor,
 }: SectionProps) {
   const {
-    state, set, preview,
+    state, set, preview, dryRun, dryRunStale,
     setBaseQuery, setDataSourceId, setTimeColumn, setInterval,
-    previewMut, discoverJsonMut,
+    previewMut, dryRunMut, loadPreview, runDryRun,
   } = form
   const monitoring = state.mode === 'monitoring'
   const selectedSource = dataSources.find(ds => ds.id === state.dataSourceId)
@@ -254,14 +254,17 @@ export function ScanEssentialsSection({
           tables={schemaData?.tables}
         />
       </Field>
-      <Field label="Preview" hint="Load sample rows, then pick columns from the result.">
+      <Field
+        label="Preview"
+        hint="Shows what this scan would create, and the sample rows the column pickers use."
+      >
         <div className="flex flex-col gap-2">
           <Button
             type="button"
             variant="outline"
             size="sm"
             className="self-start"
-            onClick={() => { discoverJsonMut.reset(); previewMut.mutate() }}
+            onClick={loadPreview}
             disabled={previewMut.isPending || !state.dataSourceId || !state.baseQuery.trim()}
           >
             <Play className="size-3" />
@@ -272,7 +275,14 @@ export function ScanEssentialsSection({
       </Field>
       {preview && (
         <div className="border-b px-[18px] py-4" style={{ borderColor: 'var(--border-subtle)' }}>
-          <ScanPreviewPanel preview={preview} />
+          <ScanPreviewPanel
+            preview={preview}
+            dryRun={dryRun}
+            dryRunStale={dryRunStale}
+            dryRunPending={dryRunMut.isPending}
+            dryRunError={dryRunMut.isError ? dryRunMut.error : null}
+            onRecheck={runDryRun}
+          />
         </div>
       )}
 

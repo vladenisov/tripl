@@ -585,8 +585,8 @@ raise a signal or send an alert. See
 [Concepts](concepts.md#monitoring-scan-vs-catalog-only-scan) for the definitions.
 
 **Always visible (the essentials):** the mode choice, **Name**, **Data source**,
-**Base query** (used as a subquery), the **Load preview** button and its sample
-rows, **Event type** (or auto-detect), and — in Catalog + monitoring only —
+**Base query** (used as a subquery), the **Load preview** button and the preview
+panel, **Event type** (or auto-detect), and — in Catalog + monitoring only —
 **Time column** and **Schedule**. The schedule is one of *Every 15 min* (`15m`),
 *Every hour* (`1h`), *Every 6 hours* (`6h`), *Every day* (`1d`), or *Every week*
 (`1w`).
@@ -607,6 +607,23 @@ say so. The shared number of releases to retain lives under **Settings → Proje
 → General**. The platform column powers the platform-presence matrix. Reserved
 role columns (event type, time, version, platform) cannot simultaneously be
 selected as scalar breakdown/drift fields.
+
+#### The preview panel
+
+**Where:** the scan form, under **Load preview**. One button, two halves.
+
+1. **What this scan would create** — the dry run, described below. Event names,
+   field names and the bounds the answer is under. This is what the panel leads
+   with.
+2. **Show sample rows** — the raw warehouse rows the query returned, collapsed.
+   They are what the column pickers read, and they are useful evidence when the
+   answer above surprises you, but they name neither an event nor a field, so
+   they are no longer the headline.
+
+The dry run describes one specific draft. Change the form after it ran — a
+different event name format, a new group rule, a different cardinality threshold
+— and the panel says the answer no longer describes this scan and offers
+**Check again**, rather than leaving a stale list of event names on screen.
 
 #### The dry run — what this scan would create
 
