@@ -1,0 +1,200 @@
+import type { ScanJob, ScanJobResultSummary } from '@/types'
+import type { ScanMode } from './scanMode'
+import { jobMetricPoints, jobRowsScanned } from './scanUtils'
+
+/**
+ * Which population a run's "Rows read" figure counts.
+ *
+ * `scan_rows_processed` (what the catalog analyzer read, bounded by the scan row
+ * cap) and `query_rows_scanned` (what metrics collection read across its chunks,
+ * bounded by the metrics row cap) are two different numbers that have always
+ * shared one label. A table header cannot vary per row, so the distinction is
+ * carried in a per-cell title instead.
+ */
+export type RunRowsKind = 'catalog' | 'metrics'
+
+export const ROWS_READ_TITLE: Record<RunRowsKind, string> = {
+  catalog: 'Warehouse rows the catalog analyzer read this run (capped by the row cap).',
+  metrics: 'Warehouse rows read across every metrics chunk (capped by the metrics row cap).',
+}
+
+/**
+ * The counter `jobRowsScanned` actually returned for this run, or null when the
+ * run reported neither. The precedence MUST match `jobRowsScanned`, or a cell
+ * would be labelled as the population it is not.
+ */
+export function jobRowsKind(job: ScanJob | null): RunRowsKind | null {
+  const summary = job?.result_summary
+  if (!summary) return null
+  if (summary.query_rows_scanned != null) return 'metrics'
+  if (summary.scan_rows_processed != null) return 'catalog'
+  return null
+}
+
+export function jobRowsReadTitle(job: ScanJob | null): string | undefined {
+  const kind = jobRowsKind(job)
+  return kind ? ROWS_READ_TITLE[kind] : undefined
+}
+
+/** A surface that holds the things a report line counts. */
+export type RunReportTarget = 'anomalies' | 'alerts'
+
+/** One plain sentence about what a run did to the user's data. */
+export interface RunReportLine {
+  /** Stable identity — React key, and the handle a test takes hold of. */
+  id: string
+  text: string
+  /** Hover text, where one number covers two populations. */
+  title?: string
+  /** A second, quieter line under `text`. */
+  hint?: string
+  /** When set, the sentence links out to the surface holding what it counts. */
+  target?: RunReportTarget
+}
+
+/**
+ * `signals_added` is this RUN's delta — the scan's open signals after the run
+ * minus before it. The Anomalies page counts what is OPEN NOW across the whole
+ * project. They are different questions with legitimately different answers, and
+ * readers have taken the pair for a contradiction (tripl-jfm3.27). The rule was
+ * written down in `activity_service._scan_job_detail` and in feature-reference,
+ * and stated nowhere a user could see it.
+ */
+export const RUN_VS_OPEN_SIGNALS_HINT =
+  'Signals this run raised. The Anomalies page counts what is open now, so the two numbers differ — both are correct.'
+
+/**
+ * A scan with no schedule collects no metric points, so it can raise no signal
+ * and send no alert. Said out loud, once, on the run that proves it: a green run
+ * that produced nothing downstream otherwise reads as a silent failure.
+ */
+export const CATALOG_ONLY_RUN_LINE =
+  'Catalog-only scan — no metric points, so no signals and no alerts.'
+
+function count(value: number, singular: string, plural: string): string {
+  return `${value.toLocaleString()} ${value === 1 ? singular : plural}`
+}
+
+/**
+ * Chunks this run has actually read, for the replay wording. `null` for an
+ * ordinary run, and for a replay that has not finished a chunk yet — "across 0
+ * chunks" is not a sentence worth printing.
+ */
+function chunksRead(summary: ScanJobResultSummary): number | null {
+  if (!summary.replay_chunks_total) return null
+  const read = summary.replay_chunks_completed ?? summary.replay_chunks_total
+  return read > 0 ? read : null
+}
+
+/**
+ * Turn a run's result summary into plain sentences about the user's data.
+ *
+ * Pure: no JSX, no React, no routing. `target` names a surface; the caller
+ * resolves it to a route, so this module stays testable as data.
+ *
+ * The eight raw counters are NOT replaced by this — `JobDetails` keeps every one
+ * of them, verbatim, behind a disclosure. This is what leads.
+ */
+export function buildRunReport(job: ScanJob | null, mode: ScanMode): RunReportLine[] {
+  const summary = job?.result_summary
+  if (!summary) return []
+
+  const lines: RunReportLine[] = []
+
+  const rows = jobRowsScanned(job)
+  if (rows != null) {
+    const chunks = chunksRead(summary)
+    const rowsText = count(rows, 'warehouse row', 'warehouse rows')
+    lines.push({
+      id: 'rows-read',
+      text: chunks == null
+        ? `Read ${rowsText}.`
+        : `Read ${rowsText} across ${count(chunks, 'chunk', 'chunks')}.`,
+      title: jobRowsReadTitle(job),
+    })
+  }
+
+  const eventsCreated = summary.events_created ?? null
+  const eventsSkipped = summary.events_skipped ?? 0
+  if (eventsCreated != null && eventsCreated > 0) {
+    lines.push({
+      id: 'events-created',
+      text: `Added ${count(eventsCreated, 'event', 'events')} to your tracking plan.`,
+    })
+  }
+  // "Events skipped: 340" read as data loss. It is the opposite: those events
+  // were recognised, so nothing was created for them. Both branches below give
+  // the number its reason, and which branch fires depends on whether the run
+  // discovered anything at all.
+  if (eventsCreated === 0 && eventsSkipped > 0) {
+    lines.push({
+      id: 'events-none-new',
+      text: `No new events — all ${eventsSkipped.toLocaleString()} were already in your plan.`,
+    })
+  }
+  if (eventsSkipped > 0 && eventsCreated != null && eventsCreated > 0) {
+    lines.push({
+      id: 'events-skipped',
+      text: eventsSkipped === 1
+        ? '1 event was already in your plan and was left as it is.'
+        : `${eventsSkipped.toLocaleString()} events were already in your plan and were left as they are.`,
+    })
+  }
+
+  const variablesCreated = summary.variables_created ?? 0
+  if (variablesCreated > 0) {
+    lines.push({
+      id: 'variables-created',
+      text: `Added ${count(variablesCreated, 'variable', 'variables')}.`,
+    })
+  }
+
+  // "Columns analyzed: 17" read as a queue of work. It is coverage: how much of
+  // the query the run looked at.
+  const columnsAnalyzed = summary.columns_analyzed
+  if (columnsAnalyzed != null) {
+    lines.push({
+      id: 'columns-analyzed',
+      text: `Looked at ${count(columnsAnalyzed, 'column', 'columns')} in your query.`,
+    })
+  }
+
+  const metricPoints = jobMetricPoints(job) ?? 0
+  if (metricPoints > 0) {
+    lines.push({
+      id: 'metric-points',
+      text: `Recorded ${count(metricPoints, 'metric point', 'metric points')}.`,
+    })
+  }
+
+  const signalsAdded = summary.signals_added ?? 0
+  if (signalsAdded > 0) {
+    lines.push({
+      id: 'signals-added',
+      text: `Raised ${count(signalsAdded, 'anomaly signal', 'anomaly signals')}.`,
+      hint: RUN_VS_OPEN_SIGNALS_HINT,
+      target: 'anomalies',
+    })
+  }
+
+  const alertsQueued = summary.alerts_queued ?? 0
+  if (alertsQueued > 0) {
+    lines.push({
+      id: 'alerts-queued',
+      text: `Queued ${count(alertsQueued, 'alert', 'alerts')}.`,
+      target: 'alerts',
+    })
+  }
+
+  // `misconfigured` is included deliberately: a schedule without a time column
+  // is never dispatched, so its runs collect exactly as much as a catalog-only
+  // scan's do — nothing. The scan's badge and causal note carry the fix; this
+  // line only has to stop the run reading as a silent failure. The detail
+  // panel already calls that state "Catalog only — schedule set but no time
+  // column", so the vocabulary matches.
+  if (mode !== 'monitoring' && metricPoints === 0) {
+    lines.push({ id: 'catalog-only', text: CATALOG_ONLY_RUN_LINE })
+  }
+
+  return lines
+}

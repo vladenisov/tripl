@@ -325,6 +325,10 @@ describe('ProjectSettingsPage', () => {
     const expandButton = within(jobsTable).getAllByRole('button').slice(-1)[0]
     fireEvent.click(expandButton)
 
+    // The run leads with what it did; the raw counters sit behind a disclosure
+    // (tripl-3y7z.3). This case is about the counters, so open them.
+    fireEvent.click(await screen.findByRole('button', { name: 'Show raw counters' }))
+
     expect(await screen.findByText('Signals added')).toBeInTheDocument()
     expect(screen.getByText('Alerts queued')).toBeInTheDocument()
   })

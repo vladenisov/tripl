@@ -247,6 +247,52 @@ describe('ScanDetail', () => {
     expect(screen.queryByText('Metric rows')).toBeNull()
   })
 
+  it('says which population each "Rows read" figure counted', async () => {
+    // `Rows read` is one label over two numbers: the catalog analyzer's
+    // scan_rows_processed and metrics collection's query_rows_scanned, each
+    // bounded by its own cap. The column header cannot vary per run, so the
+    // stat card and the cell carry it as a title.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([
+          {
+            id: 'job-metrics',
+            scan_config_id: 'scan-1',
+            status: 'completed',
+            started_at: '2026-01-01T00:00:00Z',
+            completed_at: '2026-01-01T00:00:10Z',
+            result_summary: { query_rows_scanned: 900 },
+            error_message: null,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:10Z',
+          },
+        ])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+      </QueryClientProvider>,
+    )
+
+    // The "Rows read · last run" card and the run's own cell, both explained.
+    const explained = await screen.findAllByTitle(
+      'Warehouse rows read across every metrics chunk (capped by the metrics row cap).',
+    )
+    expect(explained).toHaveLength(2)
+    // The catalog wording must not be what a metrics run gets.
+    expect(
+      screen.queryByTitle('Warehouse rows the catalog analyzer read this run (capped by the row cap).'),
+    ).toBeNull()
+  })
+
   // A scan's output reaches the user as anomalies and Telegram alerts, and the
   // run report used to print those two counts as dead numbers — the owner got
   // "Scan: Snowplow Events (iOS)" in Telegram and could reach nothing from it
@@ -284,6 +330,9 @@ describe('ScanDetail', () => {
       </QueryClientProvider>,
     )
     fireEvent.click(await screen.findByRole('button', { name: 'Expand run details' }))
+    // The raw counters are demoted behind a disclosure (tripl-3y7z.3); the run
+    // report leads instead. These cases are about the cards, so open them.
+    fireEvent.click(screen.getByRole('button', { name: 'Show raw counters' }))
   }
 
   it('links Signals added and Alerts queued to this scan on the surfaces that hold them', async () => {

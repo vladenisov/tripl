@@ -651,7 +651,41 @@ breakdown variants), so the list and the detail page always show the same number
 for the same run.
 
 **Rows read** counts warehouse rows a run read — bounded by the row caps below —
-not rows written into your plan.
+not rows written into your plan. It is **one label over two populations**: a
+catalog run reports the rows the catalog analyzer read (bounded by **Row cap per
+run**), a metrics run reports the rows read across every metrics chunk (bounded
+by **Row cap per metrics run**). A column header cannot vary per row, so each
+figure — the stat card and each cell in the run table — carries a hover title
+saying which of the two it is.
+
+#### What a run report says
+
+Expanding a run leads with **What this run did**: plain sentences about your
+data, in this order, each omitted when the run has nothing to report for it.
+
+| Line | What it means |
+| --- | --- |
+| *Read N warehouse rows.* | Rows the run read from your warehouse. A replay adds *across N chunks*. Hover for which cap applied. |
+| *Added N events to your tracking plan.* | Events that did not exist in the plan and now do. |
+| *No new events — all N were already in your plan.* | The run discovered nothing new. Normal on an established catalog, not a failure. |
+| *N events were already in your plan and were left as they are.* | The old "Events skipped" counter, with its reason. Nothing was lost or overwritten; their field values were refreshed. |
+| *Added N variables.* | Variables the run created from the values it saw. |
+| *Looked at N columns in your query.* | Coverage, not a to-do list: how much of your query the run analyzed. |
+| *Recorded N metric points.* | Time-series points written. Only a monitoring scan produces these. |
+| *Raised N anomaly signals.* | Signals **this run** added. Links to [Anomalies](#anomalies) filtered to this scan. |
+| *Queued N alerts.* | Alerts **this run** queued. Links to [Alerting](#alerting) filtered to this scan. |
+| *Catalog-only scan — no metric points, so no signals and no alerts.* | Shown on a scan that collects no metrics, so a green run that produced nothing downstream does not read as a silent failure. It also appears on a scan with a schedule but no time column, which is never dispatched and so collects just as little. |
+
+*Raised N anomaly signals* is that run's **delta** — signals the run added. The
+**Anomalies** page counts what is **open now** across the project. The two
+answer different questions and routinely disagree; both are correct, and the run
+report says so on screen, under the sentence. The same holds for the activity
+feed's "N new signals" on a scan card.
+
+Every counter the run reported is still there, verbatim, behind **Show raw
+counters**: *Events created*, *Variables created*, *Events skipped*, *Columns
+analyzed*, *Event breakdowns*, *Distribution rows*, *Signals added*, *Alerts
+queued*. Nothing was removed — the sentences lead, the counters follow.
 
 ### Audit log
 

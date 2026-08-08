@@ -484,6 +484,37 @@ a settings tab). Both `/p/<slug>/settings/scans` and
 `/p/<slug>/settings/scans/<scan-id>` redirect to the new paths, so bookmarks,
 older docs, and the deep links in already-delivered alerts keep working.
 
+**How do I read a scan run?**
+Open the scan, expand the run, and read **What this run did** — plain sentences
+about your data, not internal counters. It tells you how many warehouse rows the
+run read, which events it added to your plan, how many were already there (and
+that they were left alone, not lost), how many metric points it recorded, and
+whether anything it produced raised a signal or queued an alert. A catalog-only
+scan says outright that it collects no metric points, so nothing downstream can
+fire.
+
+Every raw counter the run reported is still there under **Show raw counters** —
+*Events created*, *Variables created*, *Events skipped*, *Columns analyzed*,
+*Event breakdowns*, *Distribution rows*, *Signals added*, *Alerts queued*.
+Nothing was removed; it is one click further down.
+
+**The run says it raised 2 signals but Anomalies shows a different number. Which
+is wrong?**
+Neither. *Raised N anomaly signals* is that run's **delta** — what this run
+added. The **Anomalies** page counts what is **open now** across the project:
+signals from earlier runs that have not aged out, signals from other scans, and
+catalog-metric signals that belong to the project rather than to any scan. Two
+different questions, two legitimately different answers. The run report says so
+in a line under the count, and the activity feed's "N new signals" on a scan
+card is the same delta. Do not expect the two numbers to agree.
+
+**Two runs both say "Rows read" but the numbers look unrelated.**
+Because they count different populations. A catalog run reports the rows the
+catalog analyzer read, bounded by **Row cap per run**; a metrics run reports the
+rows read across every metrics chunk, bounded by **Row cap per metrics run**. The
+column header cannot say which, so hover the figure — the stat card and every
+cell in the run table carry a title naming the population and its cap.
+
 **Do I need to run scans on a schedule to get metrics?**
 No. A scan fills the catalog. Metrics, anomalies, and alerts come from the
 scheduled `collect_metrics` job, which runs automatically for any scan config
