@@ -15294,7 +15294,7 @@
         "type": "object"
       },
       "ScanDryRunEvent": {
-        "description": "One event name the config would produce, and how much of the sample it is.",
+        "description": "One event the config would produce, and how much of the sample it is.\n\nAn event is identified by ``(event_type, source_name)``, not by the name\nalone: a run writes one Event per event type, so a grouped scan whose name\nformat collapses to the same string under two event types creates two\nEvents. Listing them as one would undercount the answer this panel exists to\ngive.",
         "properties": {
           "approx_row_count": {
             "title": "Approx Row Count",
@@ -15306,6 +15306,10 @@
               "sampled"
             ],
             "title": "Count Confidence",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
             "type": "string"
           },
           "grouped_by_rule": {
@@ -15343,6 +15347,7 @@
         "required": [
           "name",
           "source_name",
+          "event_type",
           "approx_row_count",
           "share_of_sample",
           "status",
@@ -15468,7 +15473,7 @@
         "type": "object"
       },
       "ScanDryRunRequest": {
-        "description": "Inputs for \"what would this scan create?\".\n\nTwo callers, two shapes. The scan FORM has no saved config, so it sends the\ndraft; the scan DETAIL page has no draft, so it sends ``scan_config_id`` and\nevery draft field below is ignored. Exactly one of the two must be supplied.",
+        "description": "Inputs for \"what would this scan create?\".\n\nTwo shapes, and exactly one of them must be supplied. The scan form has no\nsaved config, so it sends the draft \u2014 that is the only shape the UI sends.\n``scan_config_id`` is the API/agent shape (``integrate/agent-api-guide.md``):\na caller that already has a stored config asks about it by id instead of\nre-serialising twenty fields it did not author, and every draft field below\nis then ignored. Nothing in the frontend uses it today; it is a documented\ncapability of the HTTP API, not unfinished UI.",
         "properties": {
           "app_version_column": {
             "anyOf": [

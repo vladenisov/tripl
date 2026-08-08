@@ -318,6 +318,7 @@ On `completed` it holds:
     {
       "name": "Purchase Completed",
       "source_name": "Purchase Completed",
+      "event_type": "Purchase",
       "approx_row_count": 3120,
       "share_of_sample": 0.648,
       "status": "new",
@@ -335,6 +336,12 @@ On `completed` it holds:
   "errors": []
 }
 ```
+
+An event is identified by `event_type` **and** `source_name`, never by the name
+alone: a run writes one event per event type, so a grouped scan
+(`event_type_column`) whose name format collapses to the same string under two
+event types produces two entries here — and `status` is resolved against that
+event type's plan, not against a union.
 
 Read it honestly. `sample_is_complete: false` means more distinct events exist
 than the pass examined, so report "at least N", never N. `count_confidence` is

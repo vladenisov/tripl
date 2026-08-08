@@ -105,7 +105,13 @@ function EventList({ events }: { events: ScanDryRunResponse['events'] }) {
     <>
       <ul className="m-0 mt-1.5 list-none space-y-1 p-0">
         {shown.map(event => (
-          <li key={event.source_name} className="flex items-baseline gap-2 text-xs">
+          // An event is identified by its event type AND its name: a grouped
+          // scan can produce the same name under two event types, and a run
+          // creates both.
+          <li
+            key={`${event.event_type}.${event.source_name}`}
+            className="flex items-baseline gap-2 text-xs"
+          >
             <span className="min-w-0 flex-1 truncate font-medium" style={{ color: 'var(--fg)' }}>
               {event.name}
             </span>

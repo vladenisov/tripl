@@ -230,11 +230,22 @@ export interface ScanJob {
 // below are the names a run would write — never a second implementation of
 // generation in TypeScript.
 
-/** One event name the config would produce, and how much of the sample it is. */
+/**
+ * One event the config would produce, and how much of the sample it is.
+ *
+ * Identified by `(event_type, source_name)`, never by the name alone: a run
+ * writes one Event per event type, so a grouped scan whose name format collapses
+ * to the same string under two event types creates two events.
+ */
 export interface ScanDryRunEvent {
   name: string
   /** The name before group rules merged it; equal to `name` when nothing merged. */
   source_name: string
+  /**
+   * The event type this event lands under — the group value on the
+   * `event_type_column` path, the chosen event type's name otherwise.
+   */
+  event_type: string
   /**
    * Sampled warehouse rows behind this name — an EXACT count of the rows the dry
    * run looked at, never an estimate of the whole table.

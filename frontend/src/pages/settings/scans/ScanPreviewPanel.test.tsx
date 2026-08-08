@@ -32,6 +32,7 @@ function dryRun(over: Partial<ScanDryRunResponse> = {}): ScanDryRunResponse {
       {
         name: 'Purchase Completed',
         source_name: 'Purchase Completed',
+        event_type: 'Purchase',
         approx_row_count: 648,
         share_of_sample: 0.648,
         status: 'new',

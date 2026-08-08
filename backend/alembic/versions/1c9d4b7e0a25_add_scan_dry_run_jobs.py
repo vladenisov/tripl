@@ -4,12 +4,22 @@ Revision ID: 1c9d4b7e0a25
 Revises: 25bcc996297f
 Create Date: 2026-08-08 10:00:00.000000
 
+``status`` reuses the existing ``scan_job_status`` PostgreSQL enum, so it is
+declared with ``create_type=False``: the type was created by
+e4f5a6b7c8d9 and already carries ``cancelled`` (c3d4e5f6a7b8). Letting Alembic
+emit its own CREATE TYPE would fail on a populated database, and declaring the
+column as VARCHAR would leave production disagreeing with the model — which maps
+it to ``db_enum(ScanJobStatus, "scan_job_status")`` exactly as ``ScanJob`` does.
+The test suite builds its schema from ``Base.metadata``, so only production
+would have seen the divergence.
+
 """
 
 from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "1c9d4b7e0a25"
 down_revision: str | None = "25bcc996297f"
@@ -36,7 +46,11 @@ def upgrade() -> None:
         sa.Column("platform_column", sa.String(length=255), nullable=True),
         sa.Column("scan_lookback_hours", sa.Integer(), nullable=True),
         sa.Column("sample_row_limit", sa.Integer(), nullable=False),
-        sa.Column("status", sa.String(length=20), nullable=False),
+        sa.Column(
+            "status",
+            postgresql.ENUM(name="scan_job_status", create_type=False),
+            nullable=False,
+        ),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("result_summary", sa.JSON(), nullable=True),

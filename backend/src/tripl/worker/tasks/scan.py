@@ -627,10 +627,17 @@ def build_dry_run_payload(
         row_limit=sample_row_limit,
     )
 
-    counts_by_identity: dict[str, int] = {}
-    rule_by_identity: dict[str, str] = {}
-    display_by_identity: dict[str, str] = {}
-    existing_identities: set[str] = set()
+    # Keyed on ``(event type name, scan identity)``, never on the identity alone.
+    # A run creates one Event PER EVENT TYPE — ``generate_events`` dedups inside
+    # an ``existing_by_identity`` scoped to a single ``event_type_id`` — so two
+    # groups that both produce the name ``home`` are two Events, not one. Merging
+    # them here would undercount the headline and, worse, union the two event
+    # types' existing identities, labelling a genuinely new event "already in
+    # your plan".
+    counts_by_identity: dict[tuple[str, str], int] = {}
+    rule_by_identity: dict[tuple[str, str], str] = {}
+    display_by_identity: dict[tuple[str, str], str] = {}
+    existing_identities: set[tuple[str, str]] = set()
     fields: list[dict[str, object]] = []
     templated: dict[str, dict[str, object]] = {}
     warnings: list[str] = []
@@ -700,16 +707,20 @@ def build_dry_run_payload(
             }
 
         if target.event_type is not None:
-            existing_identities |= _existing_event_identities(
-                session, config.project_id, target.event_type.id
-            )
+            existing_identities |= {
+                (target.name, identity)
+                for identity in _existing_event_identities(
+                    session, config.project_id, target.event_type.id
+                )
+            }
         for planned in plan.events:
-            counts_by_identity[planned.name] = counts_by_identity.get(planned.name, 0) + (
+            key = (target.name, planned.name)
+            counts_by_identity[key] = counts_by_identity.get(key, 0) + (
                 planned.row_count if planned.row_count is not None else 1
             )
-            display_by_identity.setdefault(planned.name, planned.name)
+            display_by_identity.setdefault(key, planned.name)
             if planned.matched_rule_name is not None:
-                rule_by_identity.setdefault(planned.name, planned.matched_rule_name)
+                rule_by_identity.setdefault(key, planned.matched_rule_name)
 
     breakdown_combinations = sum(len(t.analysis.rows) for t in targets)
     sampled_rows = sum(
@@ -723,17 +734,16 @@ def build_dry_run_payload(
 
     events = [
         {
-            "name": display_by_identity[identity],
-            "source_name": identity,
+            "name": display_by_identity[key],
+            "source_name": key[1],
+            "event_type": key[0],
             "approx_row_count": count,
             "share_of_sample": (count / sampled_rows) if sampled_rows else 0.0,
-            "status": "existing" if identity in existing_identities else "new",
-            "grouped_by_rule": rule_by_identity.get(identity),
+            "status": "existing" if key in existing_identities else "new",
+            "grouped_by_rule": rule_by_identity.get(key),
             "count_confidence": count_confidence,
         }
-        for identity, count in sorted(
-            counts_by_identity.items(), key=lambda item: (-item[1], item[0])
-        )
+        for key, count in sorted(counts_by_identity.items(), key=lambda item: (-item[1], item[0]))
     ]
 
     return {

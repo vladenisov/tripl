@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { ScanDryRunEvent, ScanDryRunResponse } from '@/types'
 
@@ -9,6 +9,7 @@ function event(name: string, rows: number, over: Partial<ScanDryRunEvent> = {}):
   return {
     name,
     source_name: name,
+    event_type: 'Purchase',
     approx_row_count: rows,
     share_of_sample: rows / 1000,
     status: 'new',
@@ -57,6 +58,32 @@ describe('ScanDryRunSummary — the panel names events, not rows (tripl-3y7z.6)'
     expect(screen.getByText('Cart Viewed')).toBeInTheDocument()
     // Two of the three are new; the split has to account for all three.
     expect(screen.getByText('· 2 new · 1 already in your plan')).toBeInTheDocument()
+  })
+
+  // A grouped scan can produce the same event name under two event types, and a
+  // run creates both. Keying the list on the name alone collapsed them into one
+  // React child, so the second row lost its identity across re-renders.
+  it('keeps one name under two event types as two distinct rows', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      render(
+        <ScanDryRunSummary
+          dryRun={dryRun({
+            events: [
+              event('home', 50, { event_type: 'click', status: 'existing' }),
+              event('home', 30, { event_type: 'view' }),
+            ],
+          })}
+        />,
+      )
+
+      expect(screen.getAllByText('home')).toHaveLength(2)
+      expect(screen.getByText('· 1 new · 1 already in your plan')).toBeInTheDocument()
+      const logged = consoleError.mock.calls.map(call => call.join(' ')).join('\n')
+      expect(logged).not.toMatch(/same key/i)
+    } finally {
+      consoleError.mockRestore()
+    }
   })
 
   // The honesty assertion. The sample is the most common column combinations,

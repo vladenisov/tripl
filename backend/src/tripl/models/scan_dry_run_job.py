@@ -27,14 +27,17 @@ class ScanDryRunJob(UUIDMixin, TimestampMixin, Base):
     Every draft input lives on the row and the computed answer lives in
     ``result_summary`` (a ``ScanDryRunResponse`` payload), same shape as
     ``ScanPreviewJob``. When ``scan_config_id`` is set the worker reads the saved
-    config instead and every draft column below is ignored.
+    config instead and every draft column below is ignored — the shape
+    ``integrate/agent-api-guide.md`` documents for API and agent callers that
+    already hold a stored config. The scan form always sends a draft, so no
+    frontend code takes the saved-config path.
     """
 
     __tablename__ = "scan_dry_run_jobs"
     __table_args__ = (Index("ix_scan_dry_run_job_project", "project_id"),)
 
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
-    # Saved-config path (the scan detail page). NULL for a draft from the form.
+    # Saved-config path (API/agent callers). NULL for a draft from the form.
     scan_config_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("scan_configs.id", ondelete="CASCADE"), nullable=True
     )

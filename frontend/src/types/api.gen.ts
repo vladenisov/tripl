@@ -8691,7 +8691,13 @@ export interface components {
         };
         /**
          * ScanDryRunEvent
-         * @description One event name the config would produce, and how much of the sample it is.
+         * @description One event the config would produce, and how much of the sample it is.
+         *
+         *     An event is identified by ``(event_type, source_name)``, not by the name
+         *     alone: a run writes one Event per event type, so a grouped scan whose name
+         *     format collapses to the same string under two event types creates two
+         *     Events. Listing them as one would undercount the answer this panel exists to
+         *     give.
          */
         ScanDryRunEvent: {
             /** Approx Row Count */
@@ -8701,6 +8707,8 @@ export interface components {
              * @enum {string}
              */
             count_confidence: "exact" | "sampled";
+            /** Event Type */
+            event_type: string;
             /** Grouped By Rule */
             grouped_by_rule?: string | null;
             /** Name */
@@ -8769,9 +8777,13 @@ export interface components {
          * ScanDryRunRequest
          * @description Inputs for "what would this scan create?".
          *
-         *     Two callers, two shapes. The scan FORM has no saved config, so it sends the
-         *     draft; the scan DETAIL page has no draft, so it sends ``scan_config_id`` and
-         *     every draft field below is ignored. Exactly one of the two must be supplied.
+         *     Two shapes, and exactly one of them must be supplied. The scan form has no
+         *     saved config, so it sends the draft — that is the only shape the UI sends.
+         *     ``scan_config_id`` is the API/agent shape (``integrate/agent-api-guide.md``):
+         *     a caller that already has a stored config asks about it by id instead of
+         *     re-serialising twenty fields it did not author, and every draft field below
+         *     is then ignored. Nothing in the frontend uses it today; it is a documented
+         *     capability of the HTTP API, not unfinished UI.
          */
         ScanDryRunRequest: {
             /** App Version Column */

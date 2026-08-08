@@ -661,6 +661,12 @@ format, the group rules and the cardinality collapse are all applied for real.
 Nothing is written: the planner is a pure function and the dry run holds no
 transaction open on your plan.
 
+It counts events the way a run creates them: one per **event type**, not one per
+name. A scan that groups on an **Event type column** runs the planner once per
+group, exactly as the real scan does, so if two event types both produce the
+name `home` you get two entries — and each is labelled *new* or *already in your
+plan* against its own event type.
+
 It is deliberately bounded, and says so rather than rounding up. Three separate
 partialities are reported independently:
 

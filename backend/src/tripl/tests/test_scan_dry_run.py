@@ -161,6 +161,89 @@ def _seed(
     return job_id, project_id
 
 
+def _seed_grouped(session_factory) -> tuple[uuid.UUID, uuid.UUID]:
+    """A grouped (``event_type_column``) scan whose two groups collide on one name.
+
+    ``event_name_format='{screen}'`` names every row after its screen, and both
+    ``click`` and ``view`` see ``screen='home'`` — so a real run writes TWO
+    Events, one under each event type. ``home`` already exists under ``click``
+    only, which is what makes the per-event-type status labelling observable.
+    """
+    project_id = uuid.uuid4()
+    data_source_id = uuid.uuid4()
+    click_id = uuid.uuid4()
+    view_id = uuid.uuid4()
+    scan_config_id = uuid.uuid4()
+    job_id = uuid.uuid4()
+
+    with session_factory() as session:
+        session.add_all(
+            [
+                Project(id=project_id, name="G", slug="g", description=""),
+                DataSource(
+                    id=data_source_id,
+                    name="DS",
+                    db_type="clickhouse",
+                    host="localhost",
+                    port=8123,
+                    database_name="default",
+                    username="default",
+                    password_encrypted="",
+                ),
+                EventType(
+                    id=click_id,
+                    project_id=project_id,
+                    name="click",
+                    display_name="Click",
+                    description="",
+                ),
+                EventType(
+                    id=view_id,
+                    project_id=project_id,
+                    name="view",
+                    display_name="View",
+                    description="",
+                ),
+            ]
+        )
+        session.flush()
+        session.add(
+            Event(
+                id=uuid.uuid4(),
+                project_id=project_id,
+                event_type_id=click_id,
+                name="home",
+                source_name="home",
+                description="",
+                order=0,
+                status="in_review",
+            )
+        )
+        session.add(
+            ScanConfig(
+                id=scan_config_id,
+                project_id=project_id,
+                data_source_id=data_source_id,
+                name="grouped",
+                base_query="SELECT * FROM events",
+                event_type_column="action",
+                event_name_format="{screen}",
+                cardinality_threshold=100,
+            )
+        )
+        session.add(
+            ScanDryRunJob(
+                id=job_id,
+                project_id=project_id,
+                scan_config_id=scan_config_id,
+                sample_row_limit=5000,
+                status="pending",
+            )
+        )
+        session.commit()
+    return job_id, project_id
+
+
 def _run(monkeypatch, session_factory, adapter: _FakeAdapter, job_id: uuid.UUID) -> dict:
     monkeypatch.setitem(
         scan_tasks.dry_run_scan_config_async.run.__globals__,
@@ -290,6 +373,51 @@ class TestDryRunWorker:
             assert result["events_truncated"] is True
             assert result["events"], "a truncated sample still names what it saw"
             assert all(event["count_confidence"] == "sampled" for event in result["events"])
+        finally:
+            engine.dispose()
+
+    def test_one_name_under_two_event_types_is_two_events_not_one(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """An event is ``(event type, name)`` — the same key a real run writes on.
+
+        ``generate_events`` runs once per event type and dedups inside a set
+        scoped to that one ``event_type_id``, so ``home`` under ``click`` and
+        ``home`` under ``view`` are two Events. Accumulating the dry run on the
+        bare name merged them: the panel promised one event for work that
+        creates two, and unioning the two event types' existing identities
+        labelled the genuinely new one "already in your plan".
+        """
+        engine = create_engine(f"sqlite:///{tmp_path / 'dry_grouped.db'}")
+        try:
+            Base.metadata.create_all(engine)
+            factory = sessionmaker(engine, expire_on_commit=False)
+            job_id, project_id = _seed_grouped(factory)
+
+            adapter = _FakeAdapter([("home", "click", 50), ("home", "view", 30)])
+            result = _run(monkeypatch, factory, adapter, job_id)
+
+            assert [(e["event_type"], e["source_name"]) for e in result["events"]] == [
+                ("click", "home"),
+                ("view", "home"),
+            ], "one name under two event types must stay two events"
+            assert [e["approx_row_count"] for e in result["events"]] == [50, 30]
+            # ``home`` exists under ``click`` only. Unioning the two event types'
+            # identities is what used to hide the new one.
+            assert [e["status"] for e in result["events"]] == ["existing", "new"]
+
+            with factory() as session:
+                written = (
+                    session.execute(
+                        select(Event).where(Event.project_id == project_id, Event.description != "")
+                    )
+                    .scalars()
+                    .all()
+                )
+                assert written == [], f"dry run persisted {len(written)} events"
+
+            validated = ScanDryRunResponse.model_validate(result)
+            assert [event.event_type for event in validated.events] == ["click", "view"]
         finally:
             engine.dispose()
 
