@@ -1,9 +1,23 @@
 """Signal-state and "latest active anomalies" helpers.
 
 The pieces collect_metrics consults to decide which anomaly rows are still
-visible (i.e. show up as monitoring signals on the UI) live here. None of
-these are monkey-patched by tests, and they only call sibling helpers from
-this module, so the bindings inside this file can stay local.
+visible (i.e. show up as monitoring signals on the UI) live here.
+
+The classification RULE itself does not. It lives in
+``tripl.services.monitoring_utils`` and is imported, because the same rule has to
+answer for the Anomalies page and for alert dispatch, and while it was two
+hand-maintained copies it drifted twice inside one PR — tripl-l429.14 widened
+only the display copy's freshness horizon, tripl-l429.19 only its recent branch
+— each time making the UI render a signal open while this path acted as though
+it were closed. This file used to justify the copies with "the worker must not
+import the async request-path services layer"; that was never true of
+``monitoring_utils``, which imports no ``tripl`` module at all (pinned by
+``test_monitors_summary.test_monitoring_utils_is_a_pure_leaf``), and the worker
+already imports ``tripl.services`` from a dozen sibling task modules.
+
+What stays local is what is session- and model-bound and therefore cannot live
+in a pure leaf: ``_scan_config_freshness_inputs``, ``_ingestion_settling_delay``
+and ``_emission_lag``, which resolve this path's INPUTS to that shared rule.
 """
 
 from __future__ import annotations
@@ -48,8 +62,13 @@ from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
 from tripl.models.variable import Variable
 from tripl.models.variable_value_drift import VariableValueDrift
+from tripl.services.monitoring_utils import (
+    classify_signal_state,
+    recent_signal_window_from_hours,
+    scan_interval_to_timedelta,
+)
 
-from ._helpers import RECENT_SIGNAL_WINDOW, SCOPE_SCHEMA_DRIFT
+from ._helpers import SCOPE_SCHEMA_DRIFT
 from .urls import _trim_alert_text
 
 
@@ -73,47 +92,6 @@ def _mover_float(value: object) -> float:
     return 0.0
 
 
-# Mirror of tripl.services.monitoring_utils; kept local so the worker's signal
-# helpers do not import the async request-path services layer (see module docstring).
-# See that module for the rationale behind the wall-clock freshness cap.
-LATEST_SCAN_STALE_INTERVALS = 3
-
-_SCAN_INTERVAL_DELTAS: dict[str, timedelta] = {
-    "15m": timedelta(minutes=15),
-    "1h": timedelta(hours=1),
-    "6h": timedelta(hours=6),
-    "1d": timedelta(days=1),
-    "1w": timedelta(weeks=1),
-}
-
-
-def _scan_interval_delta(interval: str | None) -> timedelta | None:
-    if interval is None:
-        return None
-    return _SCAN_INTERVAL_DELTAS.get(str(interval))
-
-
-def _bucket_is_recent(bucket: datetime, cutoff: datetime) -> bool:
-    if bucket.tzinfo is None:
-        cutoff = cutoff.replace(tzinfo=None)
-    return bucket >= cutoff
-
-
-def _freshness_horizon(interval: timedelta | None, recent_window: timedelta) -> timedelta:
-    """Mirror of ``monitoring_utils._freshness_horizon``; see there for the rationale.
-
-    Shared by BOTH branches of ``_classify_signal_state``, exactly as in the
-    display copy. It used to be inlined in the latest-scan branch alone while the
-    "recent" branch measured the bare window, so on a grid coarser than the
-    window the two copies answered differently for the same anomaly
-    (tripl-l429.19). ``test_monitors_summary`` now pins the two answers, not just
-    the constant they share.
-    """
-    if interval is None:
-        return recent_window
-    return max(recent_window, LATEST_SCAN_STALE_INTERVALS * interval)
-
-
 def _scan_config_freshness_inputs(
     session: Session,
     scan_config_id: uuid.UUID,
@@ -123,7 +101,7 @@ def _scan_config_freshness_inputs(
     Both are needed together: the latest-scan horizon is
     ``max(window, 3 × interval)``, so resolving the window without the interval
     would drop the floor that keeps a long-interval (daily/weekly) scan's signal
-    open. ``None`` for either leaves ``_classify_signal_state`` on its default.
+    open. ``None`` for either leaves ``classify_signal_state`` on its default.
     One query per scan, never per signal. Only the display path resolves this —
     alert candidates stay on the fixed window (see ``_get_latest_active_anomalies``).
     """
@@ -139,8 +117,8 @@ def _scan_config_freshness_inputs(
         return None, None
     interval, hours = row
     return (
-        _scan_interval_delta(interval),
-        None if hours is None else timedelta(hours=int(hours)),
+        scan_interval_to_timedelta(interval),
+        recent_signal_window_from_hours(hours),
     )
 
 
@@ -185,43 +163,6 @@ def _emission_lag(interval: timedelta | None, settling_delay: timedelta) -> time
     if interval is None:
         return timedelta(0)
     return settling_buckets_for(interval, settling_delay) * interval
-
-
-def _classify_signal_state(
-    *,
-    anomaly_bucket: datetime,
-    latest_metric_bucket: datetime | None,
-    now: datetime | None = None,
-    interval: timedelta | None = None,
-    recent_window: timedelta | None = None,
-    emission_lag: timedelta = timedelta(0),
-) -> str | None:
-    # No stored metric values -> no live scan to anchor recency on; treat as closed.
-    if latest_metric_bucket is None:
-        return None
-
-    reference = now if now is not None else datetime.now(UTC)
-    window = recent_window if recent_window is not None else RECENT_SIGNAL_WINDOW
-    horizon = _freshness_horizon(interval, window)
-
-    # The settled head, not the raw one: buckets newer than this were withheld
-    # from emission, so no anomaly can exist there. See ``_emission_lag``.
-    # A stopped scan's final anomaly stays at max(bucket) forever, so being on
-    # the head is not enough on its own — it must also still be fresh in
-    # wall-clock terms, or the row falls through to the checks below.
-    if anomaly_bucket >= latest_metric_bucket - emission_lag and _bucket_is_recent(
-        anomaly_bucket, reference - horizon
-    ):
-        return "latest_scan"
-
-    # The same horizon, and for the same reason as in the display copy: an
-    # anomaly on a daily or weekly grid is already at least a bucket behind the
-    # head, so measuring this branch against a bare 24 hours closed it while the
-    # API still rendered it open.
-    if _bucket_is_recent(anomaly_bucket, reference - horizon):
-        return "recent"
-
-    return None
 
 
 def _get_latest_metric_buckets(
@@ -291,8 +232,9 @@ def _get_visible_signal_scope_keys(
       can name a scope the page still lists.
 
     Within its own scan's event scopes it classifies by exactly the page's rule,
-    interval floor included (``test_monitors_summary`` pins the two classifiers
-    to the same answer on every grid).
+    interval floor included — literally the same function, since it calls
+    ``monitoring_utils.classify_signal_state`` with the same arguments the API
+    passes rather than a copy that has to be kept in step.
     """
     latest_metrics = _get_latest_metric_buckets(session, scan_config_id)
     latest_anomalies: dict[tuple[str, str], MetricAnomaly] = {}
@@ -317,7 +259,7 @@ def _get_visible_signal_scope_keys(
     return {
         key
         for key, anomaly in latest_anomalies.items()
-        if _classify_signal_state(
+        if classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_metrics.get(key),
             interval=interval,
@@ -345,7 +287,7 @@ def _get_latest_active_anomalies(
         key = (anomaly.scope_type, anomaly.scope_ref)
         latest_anomalies.setdefault(key, anomaly)
 
-    interval = _scan_interval_delta(config.interval)
+    interval = scan_interval_to_timedelta(config.interval)
     emission_lag = _emission_lag(interval, _ingestion_settling_delay(session, config.project_id))
     # Deliberately NOT narrowed by the project's open-signal window: this feeds
     # alert dispatch, which closes AlertRuleState rows for scopes that drop out.
@@ -354,7 +296,7 @@ def _get_latest_active_anomalies(
     return {
         key: anomaly
         for key, anomaly in latest_anomalies.items()
-        if _classify_signal_state(
+        if classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_metrics.get(key),
             interval=interval,
@@ -426,15 +368,20 @@ def _get_active_metric_anomaly_candidates(
 
     settling_delay = _ingestion_settling_delay(session, config.project_id)
     intervals = {
-        scope_ref: _scan_interval_delta(grid.interval)
+        scope_ref: scan_interval_to_timedelta(grid.interval)
         for scope_ref, grid in metric_grids_by_ref.items()
     }
     # See _get_latest_active_anomalies: alert candidates stay on the fixed
     # window so the presentation setting cannot close alert state.
+    #
+    # No outage re-check here, unlike _get_latest_active_anomalies: a catalog
+    # metric has no scan to prove its collector is alive, and a fractional
+    # series' 0.0 is a value rather than silence, so passing the two arguments
+    # would pin a ratio metric's legitimate zero open forever and alert on it.
     return {
         (SCOPE_METRIC, scope_ref): anomaly
         for scope_ref, anomaly in latest_anomalies.items()
-        if _classify_signal_state(
+        if classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_value_buckets.get(scope_ref),
             interval=intervals.get(scope_ref),

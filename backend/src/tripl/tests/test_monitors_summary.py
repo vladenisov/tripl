@@ -14,6 +14,33 @@ from tripl.services.monitoring_utils import (
     summarize_monitor_states,
 )
 
+_HorizonCase = tuple[timedelta | None, timedelta | None, datetime, datetime, datetime]
+
+
+def _horizon_grid() -> list[_HorizonCase]:
+    """``(interval, recent_window, anomaly_bucket, metric_head, now)`` over every boundary.
+
+    Every grid the product supports, every configured open-signal window, and
+    ages straddling each boundary either branch of ``classify_signal_state`` can
+    have: the head itself, the 24h window, three days (the daily floor), a week
+    and three weeks (the weekly floor).
+    """
+    head = datetime(2026, 8, 6, tzinfo=UTC)
+    now = head + timedelta(minutes=30)
+    offset_hours = (-1, 0, 1, 5, 23, 24, 25, 47, 48, 71, 72, 73, 167, 168, 169, 503, 504, 505)
+    return [
+        (
+            scan_interval_to_timedelta(interval),
+            recent_signal_window_from_hours(window_hours),
+            head - timedelta(hours=hours),
+            head,
+            now,
+        )
+        for interval in (None, "15m", "1h", "6h", "1d", "1w")
+        for window_hours in (None, 6, 24, 72)
+        for hours in offset_hours
+    ]
+
 
 class TestFreshnessHorizon:
     """The window an open signal is measured against, and the copies of it."""
@@ -137,77 +164,139 @@ class TestFreshnessHorizon:
             is None
         )
 
-    def test_the_workers_copy_of_the_constant_matches(self) -> None:
-        """``signals.py`` keeps its own copy so the worker does not import the
-        request-path services layer. Nothing pinned the two together, and that
-        is how the alerting and display paths were free to disagree."""
-        from tripl.services import monitoring_utils
-        from tripl.worker.tasks.metrics import signals as worker_signals
+    def test_the_worker_uses_the_shared_objects_rather_than_copies(self) -> None:
+        """The worker's signal helpers must BE the display ones, not equal them.
 
-        assert (
-            worker_signals.LATEST_SCAN_STALE_INTERVALS
-            == monitoring_utils.LATEST_SCAN_STALE_INTERVALS
-        )
-        for interval in ("15m", "1h", "6h", "1d", "1w"):
-            assert worker_signals._scan_interval_delta(interval) == scan_interval_to_timedelta(
-                interval
-            )
+        ``signals.py`` used to keep its own copy of the constant, the interval
+        table, the two predicates and the classifier, on the stated grounds that
+        the worker must not import the request-path services layer. That reason
+        was false (see ``test_monitoring_utils_is_a_pure_leaf`` below) and the
+        copies drifted twice inside one PR — tripl-l429.14 widened only the
+        display copy's freshness horizon, tripl-l429.19 only its recent branch —
+        each time making the UI show a signal open while the alerting path acted
+        as though it were closed.
 
-    def test_the_workers_copy_answers_identically_on_every_grid(self) -> None:
-        """Pinning the constant was not enough: pin the ANSWER.
-
-        ``signals._classify_signal_state`` is the worker's copy of
-        ``classify_signal_state``. It carries exactly two deliberate extras, and
-        both are neutral here — ``emission_lag`` defaults to zero, which makes
-        its latest-scan test the display copy's ``anomaly_bucket >=
-        latest_metric_bucket``, and the display copy's outage re-check needs
-        ``anomaly_actual_count``/``scan_latest_bucket``, which this call does not
-        pass. With both neutral the two must agree on every input, on every grid,
-        for every configured window.
-
-        They did not. tripl-l429.14 widened only the display copy's "recent"
-        branch to the interval-floored horizon and left the worker measuring that
-        branch against the bare window, so on a daily or weekly grid an anomaly
-        older than 24 hours read "recent" to the API and closed to the worker.
-        ``_get_visible_signal_scope_keys`` — the worker's DISPLAY set, which keeps
-        either state and feeds the run summary's signals_added/signals_removed —
-        therefore disagreed with the page it is meant to describe.
+        Equality was what the previous version of this test asserted, and
+        equality is exactly what a fresh copy also satisfies on the day it is
+        written. Identity is the property that cannot be re-broken by copying:
+        re-introducing a local definition fails here immediately.
         """
+        from tripl.services import monitoring_utils
+        from tripl.worker.tasks.metrics import _helpers as worker_helpers
         from tripl.worker.tasks.metrics import signals as worker_signals
 
-        head = datetime(2026, 8, 6, tzinfo=UTC)
-        now = head + timedelta(minutes=30)
-        # Ages straddling every boundary either copy can have: the head itself,
-        # the 24h window, three days (the daily floor), a week and three weeks
-        # (the weekly floor).
-        offset_hours = (-1, 0, 1, 5, 23, 24, 25, 47, 48, 71, 72, 73, 167, 168, 169, 503, 504, 505)
+        assert worker_signals.classify_signal_state is monitoring_utils.classify_signal_state, (
+            "the worker re-declared the classifier instead of importing it"
+        )
+        assert (
+            worker_signals.scan_interval_to_timedelta is monitoring_utils.scan_interval_to_timedelta
+        )
+        # ``LATEST_SCAN_STALE_INTERVALS`` is deliberately NOT re-imported: the
+        # only thing in the worker that ever read it was the duplicated horizon
+        # function, so a live reference here would be a re-export kept alive by
+        # its own test rather than by a caller.
+        assert not hasattr(worker_signals, "LATEST_SCAN_STALE_INTERVALS")
+        # The third copy of the 24h window: nothing pinned this one at all.
+        assert worker_helpers.RECENT_SIGNAL_WINDOW is monitoring_utils.RECENT_SIGNAL_WINDOW
 
-        for interval in (None, "15m", "1h", "6h", "1d", "1w"):
-            delta = scan_interval_to_timedelta(interval)
-            for window_hours in (None, 6, 24, 72):
-                window = recent_signal_window_from_hours(window_hours)
-                for hours in offset_hours:
-                    bucket = head - timedelta(hours=hours)
-                    display = classify_signal_state(
-                        anomaly_bucket=bucket,
-                        latest_metric_bucket=head,
-                        now=now,
-                        interval=delta,
-                        recent_window=window,
-                    )
-                    worker = worker_signals._classify_signal_state(
-                        anomaly_bucket=bucket,
-                        latest_metric_bucket=head,
-                        now=now,
-                        interval=delta,
-                        recent_window=window,
-                    )
-                    assert worker == display, (
-                        f"worker copy disagrees at interval={interval}, "
-                        f"recent_signal_window_hours={window_hours}, "
-                        f"anomaly {hours}h before head: "
-                        f"worker={worker!r} display={display!r}"
-                    )
+    def test_monitoring_utils_is_a_pure_leaf(self) -> None:
+        """The precondition that makes the import above legal, enforced not asserted.
+
+        ``signals.py`` justified its copies with "the worker must not import the
+        async request-path services layer". ``monitoring_utils`` imports no
+        ``tripl`` module at all — no models, no SQLAlchemy, no FastAPI — so
+        importing it from the worker costs an empty ``services/__init__.py`` and
+        nothing else, and the worker already imports ``tripl.services`` in a
+        dozen other task modules.
+
+        Read with ``ast`` rather than by importing, the way
+        ``test_core_does_not_import_worker`` reads its rule: this must fail on
+        the line that WOULD create the coupling, not only once something at
+        import time happens to be slow or circular.
+        """
+        import ast
+        from pathlib import Path
+
+        from tripl.services import monitoring_utils
+
+        assert monitoring_utils.__file__ is not None
+        source = Path(monitoring_utils.__file__).read_text(encoding="utf-8")
+        imported: set[str] = set()
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                # A relative import inside services/ is a services import.
+                imported.add(node.module or "tripl.services")
+
+        offenders = sorted(
+            name for name in imported if name == "tripl" or name.startswith("tripl.")
+        )
+        assert offenders == [], (
+            f"monitoring_utils must stay importable from the worker; it now pulls in {offenders}"
+        )
+
+    def test_the_alert_paths_extra_argument_is_inert_for_the_display_path(self) -> None:
+        """``emission_lag`` is what the worker's copy carried that the page's did not.
+
+        Folding the two copies into one function is only safe if the parameter
+        that came with the worker's version changes nothing when it is absent.
+        Asserted over every grid, every configured window and every age
+        straddling a boundary either branch can have — the exhaustive table the
+        two-implementation parity test used to run, repointed at the surviving
+        function now that there is only one.
+
+        This is the proof that the merge did not move the API: a default of zero
+        makes the latest-scan test ``anomaly_bucket >= latest_metric_bucket``
+        exactly as it read before.
+        """
+        for interval, window, bucket, head, now in _horizon_grid():
+            assert classify_signal_state(
+                anomaly_bucket=bucket,
+                latest_metric_bucket=head,
+                now=now,
+                interval=interval,
+                recent_window=window,
+            ) == classify_signal_state(
+                anomaly_bucket=bucket,
+                latest_metric_bucket=head,
+                now=now,
+                interval=interval,
+                recent_window=window,
+                emission_lag=timedelta(0),
+            ), f"emission_lag=0 moved the answer at interval={interval}, bucket={bucket}"
+
+    def test_the_emission_lag_is_exactly_a_shift_of_the_metric_head(self) -> None:
+        """And nothing else — it must not touch the wall-clock freshness tests.
+
+        The alert path measures against the SETTLED head because detection
+        withholds the newest ``settling_buckets`` from emission, so a still-alive
+        scope can never carry an anomaly at or after its raw head. That is a
+        statement about which bucket counts as "the head", not about how old a
+        signal may be: a lag that also relaxed the recency check would keep a
+        dead scan's final anomaly firing past the horizon the cap exists to
+        enforce.
+
+        Pinned as an equivalence rather than a table of expected strings so it
+        cannot be satisfied by copying whatever the implementation happens to
+        return.
+        """
+        for interval, window, bucket, head, now in _horizon_grid():
+            for lag in (timedelta(hours=1), timedelta(hours=2), timedelta(days=1)):
+                assert classify_signal_state(
+                    anomaly_bucket=bucket,
+                    latest_metric_bucket=head,
+                    now=now,
+                    interval=interval,
+                    recent_window=window,
+                    emission_lag=lag,
+                ) == classify_signal_state(
+                    anomaly_bucket=bucket,
+                    latest_metric_bucket=head - lag,
+                    now=now,
+                    interval=interval,
+                    recent_window=window,
+                ), f"emission_lag={lag} is not a head shift at interval={interval}, {bucket=}"
 
 
 def _state(*, is_active: bool, last_anomaly_bucket=None, last_notified_at=None) -> SimpleNamespace:

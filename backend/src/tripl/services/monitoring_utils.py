@@ -22,9 +22,11 @@ RECENT_SIGNAL_WINDOW = timedelta(hours=24)
 #     against a window shorter than one of its own buckets.
 #
 # Both are ``max(recent_window, N * interval)``, so sub-daily scans keep exactly
-# the configured window and only long grids move. A duplicate of this constant
-# lives in ``worker.tasks.metrics.signals``; ``test_monitors_summary`` pins the
-# two together, because nothing did before and the two paths drifted.
+# the configured window and only long grids move. ``worker.tasks.metrics.signals``
+# IMPORTS this rather than keeping its own copy: it used to mirror it, and the
+# mirror drifted twice (tripl-l429.14, tripl-l429.19). ``test_monitors_summary``
+# pins the two as the same object, not merely as equal values — equality is what
+# a fresh copy also satisfies on the day it is written.
 LATEST_SCAN_STALE_INTERVALS = 3
 
 # ScanInterval enum string (e.g. "1d") -> wall-clock duration. Keyed by string so
@@ -176,7 +178,35 @@ def classify_signal_state(
     recent_window: timedelta | None = None,
     anomaly_actual_count: float | None = None,
     scan_latest_bucket: datetime | None = None,
+    emission_lag: timedelta = timedelta(0),
 ) -> str | None:
+    """Classify one anomaly as ``"latest_scan"``, ``"recent"`` or closed (``None``).
+
+    The single classifier for BOTH signal paths — the request path that renders
+    the Anomalies page, the badge, the catalog and the drilldown, and the
+    worker's alert-candidacy pass in ``worker.tasks.metrics.signals``. It used to
+    be two hand-maintained copies, on the stated grounds that the worker must not
+    import the services layer; this module imports no ``tripl`` module at all, so
+    that never applied, and the copies drifted twice inside one PR
+    (tripl-l429.14, tripl-l429.19), each time showing a signal open on the page
+    while the alerting path treated it as closed.
+
+    The three optional inputs are the ones only some callers can answer, and each
+    defaults to the value that reproduces the behaviour of a caller that cannot:
+
+    * ``emission_lag`` — how far behind the metric head the newest EMITTABLE
+      anomaly can sit. Detection withholds the newest ``settling_buckets`` of a
+      series from emission, so a scope that is still emitting can never carry an
+      anomaly at or after its own head; the alert path measures the head that far
+      back so a live scope can reach the latest-scan branch at all. It is exactly
+      a shift of the head, i.e. ``emission_lag=L`` answers what
+      ``latest_metric_bucket - L`` would. The display path passes nothing, keeping
+      the raw head and the classification the API has always rendered;
+    * ``anomaly_actual_count`` / ``scan_latest_bucket`` — the outage re-check, see
+      ``_outage_is_still_running``. Callers that cannot answer both (a catalog
+      metric has no scan to probe, and a fractional series' ``0.0`` is a value
+      rather than silence) pass neither and land where they did before.
+    """
     # No stored metric values means there is no live scan to anchor recency on, so
     # there is nothing to keep open — treat the signal as closed.
     if latest_metric_bucket is None:
@@ -188,7 +218,7 @@ def classify_signal_state(
     window = recent_window if recent_window is not None else RECENT_SIGNAL_WINDOW
     horizon = _freshness_horizon(interval, window)
 
-    if anomaly_bucket >= latest_metric_bucket:
+    if anomaly_bucket >= latest_metric_bucket - emission_lag:
         latest_scan_cutoff = reference - horizon
         if _bucket_is_recent(anomaly_bucket, latest_scan_cutoff):
             return "latest_scan"

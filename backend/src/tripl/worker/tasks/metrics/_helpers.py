@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from tripl.models.domain_enums import MetricScopeType
 from tripl.models.scan_job import ScanJob, ScanJobStatus
+from tripl.services import monitoring_utils
 from tripl.worker.db import _build_adapter, _get_sync_session
 
 __all__ = [
@@ -48,7 +49,12 @@ ACTIVE_SCAN_JOB_STATUSES = (
 # progress is visible to ``_get_scan_job_activity_at``. A genuinely dead job
 # (worker OOM/redeploy, no heartbeat) is still cleaned up after this window.
 STALE_ACTIVE_SCAN_JOB_TIMEOUT = timedelta(minutes=75)
-RECENT_SIGNAL_WINDOW = timedelta(hours=24)
+# Re-export, not a third copy. The value has to be the one
+# ``services.monitoring_utils.classify_signal_state`` falls back to, or the
+# worker's run summary would age signals out on a different window than the page
+# that renders them. ``worker.tasks.metrics`` re-exports this name, so it stays
+# here rather than moving every consumer to the services import.
+RECENT_SIGNAL_WINDOW = monitoring_utils.RECENT_SIGNAL_WINDOW
 MAX_BREAKDOWN_VALUE_LENGTH = 500
 SCOPE_SCHEMA_DRIFT = MetricScopeType.schema.value
 
