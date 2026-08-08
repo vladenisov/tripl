@@ -669,8 +669,14 @@ export function LimitsSection({ form, footerFor }: SectionProps) {
   // A create-page lookback of "24" is this form's own default, not a user choice,
   // so it must not spring the section open on every edit of a fresh config.
   const lookbackIsCustom = state.scanLookbackHours !== '' && state.scanLookbackHours !== '24'
+  // Only count the two monitoring-only fields when they are on screen: a saved
+  // chunk interval or metrics cap survives a switch to Catalog only (by design —
+  // see toBackendPayload), and springing the section open to show neither of them
+  // is a section that opens on nothing.
   const defaultOpen = Boolean(
-    state.chunkInterval || lookbackIsCustom || state.scanRowLimit || state.metricsRowLimit,
+    lookbackIsCustom
+    || state.scanRowLimit
+    || (monitoring && (state.chunkInterval || state.metricsRowLimit)),
   )
 
   return (
@@ -728,7 +734,7 @@ export function LimitsSection({ form, footerFor }: SectionProps) {
           </p>
         </Field>
       )}
-      <Field label="Row cap per run" id="scan-row-limit">
+      <Field label="Row cap per run" id="scan-row-limit" last={!monitoring}>
         <Input
           id="scan-row-limit"
           type="number"
@@ -739,17 +745,26 @@ export function LimitsSection({ form, footerFor }: SectionProps) {
           placeholder="Default"
         />
       </Field>
-      <Field label="Row cap per metrics run" id="scan-metrics-row-limit" last>
-        <Input
-          id="scan-metrics-row-limit"
-          type="number"
-          min={1}
-          value={state.metricsRowLimit}
-          onChange={e => set('metricsRowLimit', e.target.value)}
-          className="font-mono max-w-[280px]"
-          placeholder="Default"
-        />
-      </Field>
+      {/* A metrics run is `collect_metrics`, which the scheduler dispatches only
+          for a config with both a schedule and a time column, so in Catalog only
+          there are no metrics runs to cap — the same reason the breakdown section
+          above is hidden outright rather than asked and ignored. Hidden, not
+          cleared: `toBackendPayload` still sends `metrics_row_limit`, so a cap
+          saved while monitoring survives a switch to Catalog only and comes back
+          the moment monitoring does. */}
+      {monitoring && (
+        <Field label="Row cap per metrics run" id="scan-metrics-row-limit" last>
+          <Input
+            id="scan-metrics-row-limit"
+            type="number"
+            min={1}
+            value={state.metricsRowLimit}
+            onChange={e => set('metricsRowLimit', e.target.value)}
+            className="font-mono max-w-[280px]"
+            placeholder="Default"
+          />
+        </Field>
+      )}
     </CollapsibleSection>
   )
 }

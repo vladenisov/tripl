@@ -446,6 +446,45 @@ describe('ScanFormSections — the mode choice', () => {
     expect(screen.getByLabelText('Lookback (hours)')).toHaveValue(24)
   })
 
+  // "Row cap per metrics run" caps `collect_metrics`, which the scheduler
+  // dispatches only for a config with both a schedule and a time column. In
+  // Catalog only there is no metrics run to cap, so the field asked for a bound
+  // on something that never happens — and a value entered there came back as a
+  // "Metrics cap" badge on a header that says no metric points are recorded.
+  //
+  // Hidden, not cleared: the value has to survive the round trip, the same way
+  // the time column does, or a mode switch would silently destroy a saved cap.
+  it('hides the metrics row cap in Catalog only without discarding a saved one', async () => {
+    setupFetch()
+    renderConfigurationTab({
+      id: 'sc-1',
+      data_source_id: 'ds-1',
+      name: 'Nightly',
+      base_query: 'SELECT * FROM analytics.events',
+      event_type_column: 'event_name',
+      time_column: 'event_ts',
+      interval: '1h',
+      metrics_row_limit: 50000,
+      cardinality_threshold: 100,
+    } as unknown as ScanConfig)
+
+    // A saved cap opens the Limits section by itself, so the field is on screen.
+    await waitFor(() =>
+      expect(screen.getByLabelText('Row cap per metrics run')).toHaveValue(50000),
+    )
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Catalog only' }))
+    await waitFor(() => expect(screen.queryByLabelText('Row cap per metrics run')).toBeNull())
+    // The cap that a catalog run really does apply is untouched.
+    expect(screen.getByLabelText('Row cap per run')).toBeInTheDocument()
+
+    // Switching back proves the 50,000 was kept in state, not thrown away.
+    fireEvent.click(screen.getByRole('radio', { name: 'Catalog + monitoring' }))
+    await waitFor(() =>
+      expect(screen.getByLabelText('Row cap per metrics run')).toHaveValue(50000),
+    )
+  })
+
   // Breakdowns and drift only shape metric series; in Catalog only there are no
   // series, so the section is a question with no meaning.
   it('hides the metric breakdown section entirely in Catalog only', async () => {

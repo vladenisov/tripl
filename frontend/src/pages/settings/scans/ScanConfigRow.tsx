@@ -64,6 +64,15 @@ export function ScanBadges({
   sc: ScanConfig
   intervalLabel: Record<string, string>
 }) {
+  // Three of the badges below describe `collect_metrics` and nothing else, and
+  // only a monitoring scan is ever dispatched to it — the scheduler selects on
+  // `interval IS NOT NULL AND time_column IS NOT NULL`
+  // (worker/tasks/metrics/schedule.py:349-350). A manual run reads
+  // `scan_row_limit` and never the metrics bounds (worker/tasks/scan.py:184), so
+  // on Catalog only (and on the misconfigured pair) those three state limits
+  // nothing applies. Saved values survive: the form keeps them across a mode
+  // switch on purpose, this only stops the header advertising them.
+  const monitoring = scanModeOf(sc) === 'monitoring'
   const items: string[] = []
   if (sc.interval) items.push(`⏱ ${intervalLabel[sc.interval] ?? sc.interval}`)
   // A lookback is the predicate `<time column> >= now() - N`, so with no time
@@ -72,10 +81,14 @@ export function ScanBadges({
   // badge as the only surface still claiming a bound the run does not apply.
   if (sc.scan_lookback_hours && sc.time_column) items.push(`Lookback ${sc.scan_lookback_hours}h`)
   if (sc.scan_row_limit) items.push(`Scan cap ${sc.scan_row_limit.toLocaleString()}`)
-  if (sc.metrics_row_limit) items.push(`Metrics cap ${sc.metrics_row_limit.toLocaleString()}`)
+  if (monitoring && sc.metrics_row_limit) items.push(`Metrics cap ${sc.metrics_row_limit.toLocaleString()}`)
   if (sc.json_value_paths.length) items.push(`JSON keep ${sc.json_value_paths.length}`)
-  if (sc.metric_breakdown_columns.length) items.push(`Breakdowns ${sc.metric_breakdown_columns.length}`)
-  if (sc.distribution_drift_fields.length) items.push(`Distribution ${sc.distribution_drift_fields.length}`)
+  if (monitoring && sc.metric_breakdown_columns.length) {
+    items.push(`Breakdowns ${sc.metric_breakdown_columns.length}`)
+  }
+  if (monitoring && sc.distribution_drift_fields.length) {
+    items.push(`Distribution ${sc.distribution_drift_fields.length}`)
+  }
   if (sc.app_version_column) {
     items.push(`Version ${sc.app_version_column}`)
   }
