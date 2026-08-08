@@ -52,8 +52,14 @@ STALE_ACTIVE_SCAN_JOB_TIMEOUT = timedelta(minutes=75)
 # Re-export, not a third copy. The value has to be the one
 # ``services.monitoring_utils.classify_signal_state`` falls back to, or the
 # worker's run summary would age signals out on a different window than the page
-# that renders them. ``worker.tasks.metrics`` re-exports this name, so it stays
-# here rather than moving every consumer to the services import.
+# that renders them.
+#
+# It has NO production consumer left — only ``__all__``, the package re-export
+# and a test read it, which is the same state that got
+# ``LATEST_SCAN_STALE_INTERVALS`` deleted alongside it. The difference is not the
+# usage count: ``__all__`` on ``worker.tasks.metrics`` is a published surface,
+# and removing a name from it is a wider change than this refactor, so it is
+# left to one that owns that surface. Do not read the two as a precedent.
 RECENT_SIGNAL_WINDOW = monitoring_utils.RECENT_SIGNAL_WINDOW
 MAX_BREAKDOWN_VALUE_LENGTH = 500
 SCOPE_SCHEMA_DRIFT = MetricScopeType.schema.value

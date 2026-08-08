@@ -13200,7 +13200,14 @@
             "title": "Absolute Delta"
           },
           "percent_delta": {
-            "type": "number",
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Percent Delta"
           },
           "details_path": {

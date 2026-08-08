@@ -3383,7 +3383,7 @@ export interface components {
             /** Monitoring Path */
             monitoring_path: string | null;
             /** Percent Delta */
-            percent_delta: number;
+            percent_delta: number | null;
             /** Sample Value */
             sample_value: string | null;
             /** Scope Name */

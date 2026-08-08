@@ -32,7 +32,7 @@ from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
-from tripl.schemas.alerting import SimulatedRuleFiring
+from tripl.schemas.alerting import AlertDeliveryItemResponse, SimulatedRuleFiring
 from tripl.services.alerting_rendering import render_firing_item
 from tripl.worker.tasks.alerts_messages import (
     TELEGRAM_MESSAGE_MAX_CHARS,
@@ -406,6 +406,37 @@ def test_the_zero_baseline_label_survives_markdownv2_escaping() -> None:
 
     assert "\\(no baseline\\)" in text
     assert "0\\.0%" not in text
+
+
+def test_the_typed_api_item_reports_no_percentage_rather_than_zero() -> None:
+    """One delivery must not answer the same question two ways.
+
+    ``AlertDeliveryDetailResponse`` carries BOTH ``payload_snapshot`` (where the
+    percent has been null at a zero baseline since tripl-l429.27) and the typed
+    ``items[]`` array, which used to be a bare float served straight off the
+    NOT NULL column — so a single JSON body said ``null`` and ``0.0`` about the
+    same number, and the typed half is the one an external consumer reads off
+    the OpenAPI spec.
+
+    The stored column is untouched: a delivery is frozen history. Only the
+    outbound encoding changes, and it is enforced on the model so no future call
+    site can construct the response without it.
+    """
+    serialized = AlertDeliveryItemResponse.model_validate(_zero_baseline_item())
+
+    assert serialized.percent_delta is None, (
+        "a zero baseline has no ratio to report; 0.0 is indistinguishable from "
+        "'no change' for a consumer testing percent_delta > threshold"
+    )
+    assert serialized.expected_count == 0
+    assert serialized.absolute_delta == 137, "the number that does mean something stays"
+
+
+def test_the_typed_api_item_keeps_a_real_percentage() -> None:
+    """The guard must not swallow the ordinary case."""
+    serialized = AlertDeliveryItemResponse.model_validate(_item(0))
+
+    assert serialized.percent_delta == 51.9
 
 
 def test_an_ordinary_item_still_renders_its_percentage_unchanged() -> None:

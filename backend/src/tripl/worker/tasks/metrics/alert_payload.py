@@ -176,6 +176,14 @@ def _build_delivery_snapshot(
         )
         expected = anomaly.expected_count
         absolute_delta = abs(anomaly.actual_count - expected)
+        # Gate and output must read the SAME number. Rounding the emitted field
+        # while gating the percent on the unrounded value let an anomaly with
+        # 0 < expected < 0.5 emit ``expected_count: 0`` beside a non-null
+        # percent — precisely the pair alerting.md tells consumers is impossible,
+        # and the pair it tells them to disambiguate on. Reachable for
+        # ratio-shaped catalog metrics and sparse count series whose rolling
+        # expectation is fractional.
+        rounded_expected = round(expected)
         items.append(
             {
                 "scope_type": anomaly.scope_type,
@@ -183,7 +191,7 @@ def _build_delivery_snapshot(
                 "scope_name": scope_names[(anomaly.scope_type, anomaly.scope_ref)],
                 "direction": anomaly.direction,
                 "actual_count": anomaly.actual_count,
-                "expected_count": round(expected),
+                "expected_count": rounded_expected,
                 "absolute_delta": round(absolute_delta),
                 # ``null`` rather than the stored 0.0 placeholder when there was
                 # no baseline: this blob is read as JSON (the Inbox, the audit
@@ -194,7 +202,7 @@ def _build_delivery_snapshot(
                 # historical deliveries disambiguates on ``expected_count == 0``.
                 "percent_delta": percent_delta_or_none(
                     absolute_delta / expected * 100 if expected > 0 else 0.0,
-                    expected,
+                    rounded_expected,
                 ),
                 "details_path": details_path,
                 "monitoring_path": monitoring_path,

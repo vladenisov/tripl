@@ -17,11 +17,20 @@
 /** What the percentage is called when there is nothing to divide by. */
 export const NO_BASELINE_LABEL = 'no baseline'
 
-export function formatPercentDelta(percentDelta: number, expectedCount: number): string {
+export function formatPercentDelta(
+  percentDelta: number | null,
+  expectedCount: number,
+): string {
   // `expectedCount > 0` is the exact condition under which the backend computed
   // the stored number, so the label and the number cannot disagree about
   // whether there was a baseline.
-  if (expectedCount > 0) return `${percentDelta.toFixed(1)}%`
+  //
+  // `null` is accepted because the API now sends it: `AlertDeliveryItemResponse
+  // .percent_delta` is `float | None`, null exactly when there was no baseline
+  // (tripl-l429.27). The two guards agree by construction, but a delivery
+  // recorded before that change still carries the stored 0.0 beside
+  // `expected_count: 0`, so both conditions must be handled.
+  if (percentDelta !== null && expectedCount > 0) return `${percentDelta.toFixed(1)}%`
   return NO_BASELINE_LABEL
 }
 

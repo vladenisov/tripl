@@ -115,7 +115,9 @@ drift. There is no ratio to report for those, and reporting `0` would tell a
 consumer testing `percent_delta > threshold` that nothing changed about the
 anomalies that changed the most. Use `"absolute_delta"` for that class; it is
 the number that means something. The same rule applies to the item list inside a
-delivery's `payload_snapshot` in the API and the Inbox.
+delivery's `payload_snapshot` and to the typed `items[]` array of
+`GET /projects/{slug}/alert-deliveries/{id}` — one delivery cannot answer the
+same question two ways.
 
 Deliveries recorded **before this behaviour shipped** still carry `0.0` in their
 stored `payload_snapshot` — a delivery is a frozen record and is not rewritten.

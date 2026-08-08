@@ -775,8 +775,15 @@
             "title": "Monitoring Path"
           },
           "percent_delta": {
-            "title": "Percent Delta",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Percent Delta"
           },
           "sample_value": {
             "anyOf": [
