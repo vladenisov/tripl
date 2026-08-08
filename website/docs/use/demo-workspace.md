@@ -58,7 +58,7 @@ synthetic source:
   as a real project and show up in **Govern → Audit log**. The recipe writes the
   seeded plan directly rather than through those paths, so it also backfills a
   matching trail: one entry per authored event type, field, meta field, variable,
-  data source, scan config, alert destination and rule, attributed to whoever
+  data source, scan, alert destination and rule, attributed to whoever
   generated the demo and back‑dated so the log reads as a build‑up. Those entries
   are marked `demo_seed` in their payload.
 - **Semantic search** — the demo bundles precomputed embedding vectors for its

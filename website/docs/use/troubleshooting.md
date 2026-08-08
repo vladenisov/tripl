@@ -17,10 +17,11 @@ happening" reports:
   tasks on the `celery-worker` container, dispatched on a schedule by
   `celery-beat`. If either container is down, the UI stays up but nothing
   progresses.
-- **Scanning the catalog and collecting metrics are two different jobs.** A
-  scan (`run_scan`) discovers events and fills the tracking plan. Metrics,
-  anomalies, and alerts come from a separate, scheduled `collect_metrics` job.
-  Running a scan does **not** produce time-series metrics by itself.
+- **Filling the catalog and collecting metric points are two different things.**
+  A run of a scan (`run_scan`) discovers events and fills the tracking plan.
+  Metric points, anomalies, and alerts come from a separate, scheduled
+  `collect_metrics` task, dispatched only for scans that have both a schedule and
+  a time column. Starting a run does **not** record metric points by itself.
 
 A quick health check for a Docker deployment:
 
@@ -85,8 +86,8 @@ monitoring charts stay empty and no anomalies or alerts ever show up.
    bucketed on `time_column`. If the column isn't a usable timestamp in the
    warehouse, the windowed query returns nothing to bucket.
 5. **The worker can't reach the warehouse.** `collect_metrics` connects to your
-   data source the same way a scan does; a broken connection fails the job (see
-   [A scan job fails](#a-scan-job-fails--a-data-source-connection-test-fails)).
+   data source the same way a scan does; a broken connection fails the run (see
+   [A scan run fails](#a-scan-run-fails--a-data-source-connection-test-fails)).
 
 **Fix.**
 
@@ -96,7 +97,9 @@ monitoring charts stay empty and no anomalies or alerts ever show up.
 - Open the scan and check **What this scan does** at the top of the form. Choose
   **Catalog + monitoring**, then fill in the **Time column** and **Schedule** it
   asks for — the form refuses to save until both are answered. Save, then wait
-  one beat cycle (≤ 5 minutes) or trigger a collection manually from the UI.
+  one beat cycle (≤ 5 minutes) for the first collection, or fill a past window
+  right away with **Run a one-off replay** on the scan's Configuration tab (it
+  needs the same time column and schedule, so it unlocks with them).
 - If the scan is deliberately **Catalog only**, nothing is broken: that mode
   records no metric points by design, so it raises no anomalies and sends no
   alerts.
@@ -113,11 +116,10 @@ monitoring charts stay empty and no anomalies or alerts ever show up.
   interval before expecting a second data point.
 
 :::note
-Each scan config runs at most one active collection job at a time. If a previous
-job is genuinely stuck (worker OOM/redeploy with no heartbeat), the dispatcher
-marks it failed after **75 minutes** without progress and lets the next run
-proceed — so a wedged job self-heals within that window rather than blocking
-collection forever.
+Each scan runs at most one active collection at a time. If a previous run is
+genuinely stuck (worker OOM/redeploy with no heartbeat), the dispatcher marks it
+failed after **75 minutes** without progress and lets the next run proceed — so a
+wedged run self-heals within that window rather than blocking collection forever.
 :::
 
 ---
@@ -279,14 +281,14 @@ See [Scans → The dry run](feature-reference.md#the-dry-run--what-this-scan-wou
 
 ---
 
-## A scan job fails / a data-source connection test fails
+## A scan run fails / a data-source connection test fails
 
-**Symptom.** A scan job ends in `failed`, or the **Test connection** button on a
+**Symptom.** A scan run ends in `failed`, or the **Test connection** button on a
 data source returns an error.
 
 **How errors are surfaced.** Raw driver/ORM exceptions embed hostnames, ports,
 and library names, so tripl never shows them verbatim. User-facing fields get a
-sanitized summary instead. A failed **scan job** reads:
+sanitized summary instead. A failed **scan run** reads:
 
 - *"Scan failed: the data source did not respond in time."* — a timeout.
 - *"Scan failed: could not connect to the data source."* — connection refused,
@@ -378,7 +380,7 @@ reads the same way whichever one ran.
 The scan detail shows this curated error beside the failed run. Identical recent
 failures collapse into a **failed last N runs** streak; expand it when you need
 the individual attempts. After fixing the source/query/configuration, use **Run
-again** on the failed config. This creates a new job and preserves the earlier
+again** on the failed scan. This starts a new run and preserves the earlier
 failure history.
 
 :::note A config that keeps failing slows down on its own
@@ -617,12 +619,18 @@ column header cannot say which, so hover the figure — the stat card and every
 cell in the run table carry a title naming the population and its cap.
 
 **Do I need to run scans on a schedule to get metrics?**
-No. A scan fills the catalog. Metrics, anomalies, and alerts come from the
-scheduled `collect_metrics` job, which runs automatically for any scan config
-that has both an interval and a time column — driven by `celery-beat`, no manual
-trigger needed.
+**Yes** — the schedule is what makes a scan a monitoring scan. A scan with no
+schedule is **Catalog only**: it fills your tracking plan when you run it and
+records no metric points, so nothing downstream of them can fire. Metric points
+come from `collect_metrics`, and the dispatcher only ever selects scans that set
+**both** a schedule and a time column — the pair **Catalog + monitoring** asks
+for. What you never have to do is trigger that collection: pick the mode, and
+`celery-beat` dispatches it from then on. Starting a run by hand adds events and
+fields to your plan and writes no metric point — and the one manual metrics path,
+**Run a one-off replay** on the scan's Configuration tab, is itself disabled
+until the scan has both.
 
-**Why is my brand-new scan config not flagging any anomalies?**
+**Why is my brand-new scan not flagging any anomalies?**
 Anomaly detection needs history. Until enough buckets accumulate, the detector
 uses a rolling fallback and skips low-volume series; with very little data it
 will correctly report nothing. Give it time, and check the project's anomaly

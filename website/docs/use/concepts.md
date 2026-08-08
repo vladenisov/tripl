@@ -189,10 +189,11 @@ have.
 
 ### Event counts
 
-Behind monitoring, every scan rolls your raw events up into **counts over slices
-of time** — "how many `checkout_completed` events happened each hour". tripl
-collects these on a schedule and stores them, building up the history that
-monitoring — and event-composition [metrics](#metric) — needs.
+Behind monitoring, a **monitoring** scan rolls your raw events up into **counts
+over slices of time** — "how many `checkout_completed` events happened each
+hour". tripl collects these on that scan's schedule and stores them, building up
+the history that monitoring — and event-composition [metrics](#metric) — needs.
+A catalog-only scan has no schedule, so it contributes none of this history.
 
 ---
 

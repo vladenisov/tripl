@@ -343,7 +343,7 @@ to say.
 
 | Finding | What it means | What to do |
 |---------|---------------|------------|
-| `data_source_probe_failed` (fail) | The last connection test on a referenced source failed. | Start here — it explains the scan failures below it. `evidence.last_test_message` carries the warehouse's own error. If `message_redacted` is `true`, re-run with an **owner**-role key to see the text. Then see [Troubleshooting → A scan job fails](../use/troubleshooting.md#a-scan-job-fails--a-data-source-connection-test-fails). |
+| `data_source_probe_failed` (fail) | The last connection test on a referenced source failed. | Start here — it explains the scan failures below it. `evidence.last_test_message` carries the warehouse's own error. If `message_redacted` is `true`, re-run with an **owner**-role key to see the text. Then see [Troubleshooting → A scan run fails](../use/troubleshooting.md#a-scan-run-fails--a-data-source-connection-test-fails). |
 | `data_source_probe_stale` (warn) | The source last tested **OK**, but that test predates the moment its scan config started failing. | Do not trust the green. Press **Re-test connection** on that data source in the app and read the fresh result. `evidence.streak_started_at` is when the failures began. |
 
 ### 5. `scans` — scheduled metrics collection

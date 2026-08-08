@@ -136,13 +136,13 @@ one of them, and an action that carries no note **leaves the stored note alone**
 resolution to annotate.
 
 Accepting a `missing_field` drift **deletes the declared field** from the event
-type. tripl refuses that with a `409 Conflict` when a scan config on that event
+type. tripl refuses that with a `409 Conflict` when a scan on that event
 type builds its event names from the column — the plan cannot name its events
 without it, and deleting the field would fail every subsequent collection with
 *"the event name format references unknown keys"*. The message names the
-column, the scan config and its format. Fix it by editing the scan's
+column, the scan and its format. Fix it by editing the scan's
 [**Event name format**](#event-detail--editing) so it no longer references the column, then
-accept the drift. A project-wide scan config (one with no bound event type)
+accept the drift. A project-wide scan (one with no bound event type)
 counts too, because it can produce events for any event type in the project.
 
 A placeholder is matched on its **base column**. A format of `{event.category}`
@@ -152,7 +152,7 @@ field definition for `event`, and a `missing_field` drift on `event` is refused
 exactly as one on `action` is.
 
 **Why the refusal exists.** A `missing_field` drift for the column `action` was
-accepted in good faith on production, on an event type whose scan config named
+accepted in good faith on production, on an event type whose scan named
 its events `{action}`. The field went away, every collection after it failed
 behind the generic *"Scan failed due to an internal error"*, and that scan
 collected nothing for four days before anyone connected the two. The 409 is a
@@ -165,7 +165,7 @@ repair that works in both worlds, which is why it is the only one offered.
 The drift action route
 (`POST /api/v1/projects/{slug}/event-types/drifts/{drift_id}/actions`) accepts
 `"force": true`, which skips the check and deletes the field. It exists for one
-honest case: a **project-wide** scan config names the column in its format but
+honest case: a **project-wide** scan names the column in its format but
 never actually produces events for this event type, so the guard fires on a scan
 that was never going to break. It is **API-only by design** — no button in the
 app, no flag in the [CLI](../run/cli.md#tripl-drifts). A warning next to an
@@ -175,7 +175,7 @@ is not something anyone does by accident.
 
 A `force` request **must** carry a `note` (a blank one is a `422`), and that note
 is stored on the drift as its resolution note, so the record of who overrode the
-guard and why survives in the audit trail. If you are not sure the scan config is
+guard and why survives in the audit trail. If you are not sure the scan is
 harmless, fix the event name format instead — that costs one edit, and being
 wrong here costs a silent collection outage.
 :::
@@ -295,13 +295,13 @@ Distinct from per-event history and the workspace audit log.
 `/p/<slug>/overview`). Panels: a 14-day **new events** KPI series (events added to
 the plan per day on the main branch — not a history of the active-events stat
 beside it) and a plan-coverage stat, a **volume** card charted from a single scan
-config and titled with that config's name, top events over the last 48h summed
-across every scan config, active anomaly signals, recent activity, and source
+and titled with that scan's name, top events over the last 48h summed
+across every scan, active anomaly signals, recent activity, and source
 health. Recent activity reads the **main branch** too, like the KPI series: an
 open working branch holds its own copy of every event, and those copies are not
 listed as separate entries. A row whose target has since been deleted is shown
 without a link rather than linking to a page that no longer resolves. The volume card and the Events page's "&lt;Tab&gt; Dynamics" chart both
-resolve the same default scan config — the most recently *created* one, so
+resolve the same default scan — the most recently *created* one, so
 editing an unrelated scan never re-points them. A new project also shows a **Get started**
 checklist (Plan → Observe → Govern) that ticks steps off automatically from real
 project state and hides itself once you are set up. It is role-aware: connecting a
@@ -325,7 +325,7 @@ not from a monitor row.
 **Where:** reached from an event, an event signal, or a catalog row. Renders
 per-scope metrics for an `event`, `event_type`, or `project_total` scope, with
 tabs: **Volume** (series plus the latest signal — bucket / actual / expected /
-band), **By version** with version-adoption (only when the scan config defines an
+band), **By version** with version-adoption (only when the scan defines an
 app-version column), **Heatmap** (7×24 seasonality), **Distribution** (drift
 bands), and **Breakdowns**. The page also surfaces top movers and release
 regressions, plus chart annotations on the Volume tab. For an `event` scope it
@@ -745,9 +745,9 @@ uses elsewhere and never expects to have a plan field. Repeated identical failur
 a streak with an expander, and **Run again** retries the config without losing
 its history.
 
-The scan list heads three figures: **Scan configs**, **Monitoring** (configs that
-have both a time column and a schedule, so the dispatcher actually picks them
-up), and **Warehouse rows read · 24h**. The detail page adds **Rows read · last
+The scan list heads three figures: **Scans**, **Monitoring** (scans that have
+both a time column and a schedule, so the dispatcher actually picks them up), and
+**Warehouse rows read · 24h**. The detail page adds **Rows read · last
 run**, **Events written**, and **Metric points**.
 
 **Metric points**, not "metric rows": these are points on a metric time series —
