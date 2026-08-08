@@ -48,6 +48,14 @@ class AlertDeliveryItem(UUIDMixin, Base):
         db_enum(AlertDriftType, "alert_drift_type"), nullable=True
     )
     sample_value: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Start of the window this item's comparison was measured over; ``bucket``
+    # is its end. NULL for every scope whose window IS the bucket — only
+    # release regressions, measured over the activation-anchored rollout
+    # overlap, set it. Snapshotted here rather than read back from
+    # ReleaseRegression at render time because those rows are deleted and
+    # rewritten on every scan, so a delivery retried from the Inbox would find
+    # nothing and silently render an unqualified line.
+    window_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Items that fired in the same bucket+direction inside one delivery share
     # this id. NULL when the item is a singleton (no co-firing peers). The UI
     # uses it to render a "correlated" chip and group the rows visually.

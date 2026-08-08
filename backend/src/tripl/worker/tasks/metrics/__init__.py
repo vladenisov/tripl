@@ -55,7 +55,9 @@ from tripl.worker.tasks.metrics.schema_drift import (
 )
 from tripl.worker.tasks.metrics.tasks import collect_metrics
 from tripl.worker.tasks.metrics.urls import (
+    _build_alert_audit_url,
     _build_event_details_url,
+    _build_item_paths,
     _build_monitoring_url,
     _get_project_slug,
     _trim_alert_text,
@@ -70,8 +72,10 @@ __all__ = [
     "SCOPE_SCHEMA_DRIFT",
     "STALE_ACTIVE_SCAN_JOB_TIMEOUT",
     "_build_adapter",
+    "_build_alert_audit_url",
     "_build_event_details_url",
     "_build_event_name_from_row",
+    "_build_item_paths",
     "_build_monitoring_url",
     "_ceil_to_interval",
     "_bump_event_last_seen",

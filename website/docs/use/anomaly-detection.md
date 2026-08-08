@@ -265,6 +265,30 @@ The test is deliberately careful about young releases:
    reported: a different mix of users cannot manufacture those.
 5. **Verdict.** The ratio of observed to expected decides the outcome. If an event has nearly disappeared (observed far below expected — under ~5% of expected) it is classed as **missing**; if it merely dropped substantially (roughly half or less of expected) *and* the shortfall is also large in statistical terms — observed below `expected − 3 × √expected` — it is classed as a **volume drop**. Anything in between is not flagged. Only deficits are tested; an event firing *more* in the new release is not a regression.
 
+### Where to see it
+
+Two surfaces, and they answer different questions.
+
+**The By version tab** on an event's or event type's monitoring page shows the
+check for the **current latest release**: every regressed scope in the scan,
+with the comparability verdict and the reason when a comparison is withheld.
+These rows are recomputed from scratch on every scan, so the tab always
+describes the newest rollout and never keeps a history.
+
+**An alert's own row** in Settings → Alerting → Audit log shows a *past*
+regression exactly as it was reported: scope, actual, expected and percentage,
+frozen at delivery time. That is where a release-regression alert's `details:`
+link goes — deliberately, because the numbers it quotes cannot be reproduced
+anywhere else once the next release ships. See
+[Release-regression items](alerting.md#release-regression-items).
+
+Note that the window is not the chart's window. The comparison is measured over
+the **rollout overlap** — from the point the new release became active (or 14
+days back, whichever is later) up to the latest bucket — which is typically
+hours or days, not the 7 days a monitoring chart shows by default. Two different
+windows over two different populations is why the event chart cannot corroborate
+a release-regression alert.
+
 ## Metrics
 
 User-defined **metrics** are watched by the very same detector, at a dedicated **metric scope**. The one twist is the *shape* of the series. Each metric is classified as either **count-shaped** (a count or sum — it behaves just like an event volume) or **fractional** (a ratio, an average, or a free-form SQL value).

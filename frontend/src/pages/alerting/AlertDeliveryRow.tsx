@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ChevronDown, Loader2, RotateCcw } from "lucide-react"
 import type { AlertDelivery, AlertDeliveryItem } from "@/types"
@@ -51,8 +51,50 @@ function emptyItemsNotice(matchedCount: number): string {
   return `No per-scope rows were stored with this attempt — its ${matched} recorded on the attempt that carried the same incident.`
 }
 
-export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: AlertDelivery }) {
-  const [open, setOpen] = useState(false)
+// What `expected` means for a release regression, in the reader's words. The
+// alert message carries the same sentence; this is the page it links to, so
+// showing the bare pair here would re-create the misreading the message just
+// removed ("actual 345 / expected 715.7" reads as two counts of one thing).
+//
+// The numbers are read from the delivery's own frozen record, so this row can
+// never disagree with the message that pointed at it — which is why the link
+// lands here rather than on the monitoring panel, whose release-regression
+// rows are deleted and recomputed on every scan.
+function expectedBasisNote(item: AlertDeliveryItem): string | null {
+  if (item.scope_type !== 'release_regression' || item.expected_count <= 0) return null
+  const version = item.drift_field || 'the new release'
+  const previous = item.sample_value || 'the previous release'
+  return `Adoption-adjusted: ${previous}'s share of this scope at ${version}'s own volume, so the % is share-for-share, not a raw count drop.`
+}
+
+// The identity an alert message uses to name ONE item of a delivery, mirroring
+// `_alert_audit_item_anchor` (backend worker/tasks/metrics/urls.py).
+//
+// The pair, not the bare `scope_ref`: a release regression's scope_ref IS its
+// event id, and a rule can carry `include_events` and
+// `include_release_regressions` together, so both items can sit in one delivery
+// under the same ref. Keying on the ref alone would highlight two rows.
+function alertItemKey(item: Pick<AlertDeliveryItem, 'scope_type' | 'scope_ref'>): string {
+  return `${item.scope_type}:${item.scope_ref}`
+}
+
+export function AlertDeliveryRow({
+  slug,
+  delivery,
+  focusDeliveryId,
+  focusItemKey,
+}: {
+  slug: string
+  delivery: AlertDelivery
+  focusDeliveryId?: string
+  focusItemKey?: string
+}) {
+  const isFocused = focusDeliveryId === delivery.id
+  // Deep-linked rows arrive expanded: the link exists to show one delivery's
+  // per-scope numbers, and landing on a collapsed row hides exactly those.
+  const [open, setOpen] = useState(isFocused)
+  const focusRef = useRef<HTMLTableRowElement>(null)
+  const focusItemRef = useRef<HTMLTableRowElement>(null)
   const qc = useQueryClient()
   const { data: detail } = useQuery({
     queryKey: ['alertDelivery', slug, delivery.id],
@@ -79,9 +121,27 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
     [detail],
   )
 
+  // Which row the message line the reader clicked was actually about. Only
+  // meaningful inside the delivery the link named — an anchor left over from a
+  // different delivery must not tint a same-scope row here.
+  const anchoredItemKey = isFocused ? focusItemKey : undefined
+  const anchoredItemFound = !!anchoredItemKey
+    && !!detail?.items.some(item => alertItemKey(item) === anchoredItemKey)
+  // A delivery carries up to 8 items, so landing on the delivery is not landing
+  // on the row. Scroll to the row when we can find it, and fall back to the
+  // delivery when the anchor is stale (an item can be gone, or the link may
+  // predate anchors entirely) rather than leaving the reader wherever they were.
+  useEffect(() => {
+    if (anchoredItemFound) {
+      focusItemRef.current?.scrollIntoView({ block: 'center' })
+    } else if (isFocused) {
+      focusRef.current?.scrollIntoView({ block: 'center' })
+    }
+  }, [isFocused, anchoredItemFound])
+
   return (
     <>
-      <TableRow>
+      <TableRow ref={focusRef} className={isFocused ? 'bg-primary/5' : undefined}>
         <TableCell className="text-xs">{formatDateTime(delivery.created_at)}</TableCell>
         <TableCell>
           <div className="flex flex-wrap items-center gap-1.5">
@@ -187,8 +247,15 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
                         const groupLabel = item.correlation_group_id
                           ? correlationLabels.get(item.correlation_group_id)
                           : null
+                        const basisNote = expectedBasisNote(item)
+                        const isAnchored = anchoredItemFound && alertItemKey(item) === anchoredItemKey
                         return (
-                          <TableRow key={item.id}>
+                          <TableRow
+                            key={item.id}
+                            ref={isAnchored ? focusItemRef : undefined}
+                            aria-current={isAnchored ? 'true' : undefined}
+                            className={isAnchored ? 'bg-primary/10' : undefined}
+                          >
                             <TableCell className="text-xs">
                               {groupLabel && (
                                 <Badge
@@ -201,12 +268,29 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
                               )}
                             </TableCell>
                             <TableCell className="text-xs">
-                              <div className="font-medium">{item.scope_name}</div>
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="font-medium">{item.scope_name}</span>
+                                {/* A tint alone is easy to miss among 8 rows and
+                                    says nothing to a screen reader, so the row
+                                    the message quoted names itself. */}
+                                {isAnchored && (
+                                  <Badge variant="outline" className="border-primary/50 text-primary text-[10px]">
+                                    from your alert
+                                  </Badge>
+                                )}
+                              </div>
                               <div className="text-muted-foreground">{item.scope_type}</div>
                             </TableCell>
                             <TableCell className="text-xs">{item.direction}</TableCell>
                             <TableCell className="text-xs">{item.actual_count}</TableCell>
-                            <TableCell className="text-xs">{item.expected_count}</TableCell>
+                            <TableCell className="text-xs">
+                              <div>{item.expected_count}</div>
+                              {basisNote && (
+                                <div className="mt-0.5 max-w-64 text-[10px] leading-snug text-muted-foreground">
+                                  {basisNote}
+                                </div>
+                              )}
+                            </TableCell>
                             <TableCell className="text-xs">{item.absolute_delta}</TableCell>
                             <TableCell className="text-xs">
                               {formatPercentDelta(item.percent_delta, item.expected_count)}

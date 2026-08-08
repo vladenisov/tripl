@@ -203,7 +203,10 @@ footer tells you how many matches are still hidden.
 
 Variable-value drift carries its affected `event_id`, so event filters apply;
 its alert item uses the variable name as `drift_field` and a bounded novel-value
-sample as `sample_value`.
+sample as `sample_value`. That same `event_id` is what `details:` links to: the
+event's monitoring page carries the **Value drift** panel, which lists the full
+set of observed values the message could only sample, and lets you accept,
+snooze or dismiss the drift from there.
 
 **Cooldown** suppresses repeats. Default **1440 minutes (24h)**, tracked
 separately per *(rule, scan, scope)* and measured from the last message that was
@@ -241,6 +244,7 @@ variable is rejected, so a typo fails fast rather than sending a broken message)
   `${items_count}`, `${items_text}`.
 - **Per matched item:** `${scope_name}`, `${scope_type}`, `${scope_label}`,
   `${direction}`, `${direction_label}`, `${actual_count}`, `${expected_count}`,
+  `${expected_basis}`,
   `${absolute_delta}`, `${percent_delta}`, `${percent_delta_label}`,
   `${bucket}`, `${details_url}`,
   `${monitoring_url}`, `${drift_field}`, `${drift_type}`, `${sample_value}`,
@@ -252,6 +256,14 @@ variable is rejected, so a typo fails fast rather than sending a broken message)
   own `%` sign and says `no baseline` when the expected count was zero, where a
   bare `${percent_delta}%` would print the undefined ratio as `0.0%`. Use
   `${percent_delta}` only if you want the raw number.
+
+  `${expected_basis}` is empty for almost every item. It exists because one
+  scope computes its expectation differently from all the others: a **release
+  regression** compares shares, not counts, so its `${expected_count}` is
+  followed by `(adoption-adjusted)`. If you write a custom item template and
+  drop this variable, release-regression items lose that qualifier — see
+  [Release-regression items](#release-regression-items) below for why it is
+  there.
 - **Email subject** supports a smaller set: `${project_name}`, `${project_slug}`,
   `${rule_name}`, `${destination_name}`, `${matched_count}`.
 
@@ -294,10 +306,57 @@ an alert that is already in the chat. If every item had in fact gone out and onl
 the recording of it failed, Retry sends nothing and simply marks the delivery
 **sent**.
 
-Release-regression items carry no recent-trend sparkline. The numbers on those
-lines describe one release's cohort over the rollout window, and the only trend
-available is the event's all-versions volume over a different window — a glyph
-that would rise while the line above it says the event dropped.
+### Release-regression items
+
+Release-regression items read differently from every other alert line, and the
+difference is deliberate.
+
+Their `expected` is **not a count of the same thing as `actual`**. It is the
+previous release's *share* of that scope applied to the new release's *own*
+volume over the rollout-overlap window — so the message writes it as
+`expected=715.7 (adoption-adjusted)` and spells the arithmetic out underneath:
+
+```
+- Release regression spot:open:wind:: down, actual=345, expected=715.7 (adoption-adjusted), delta=370.7 (51.8%)
+  release: dropped in 15.7.5 vs 15.7.4 over the 51h rollout overlap; 715.7 is 15.7.4's share of this event at 15.7.5's own volume, so 51.8% is share-for-share
+  details: https://your-tripl/p/windy-ios/settings/alerting/<delivery-id>?item=release_regression:<scope-ref>
+```
+
+This answers the obvious objection before you raise it: *"the release only just
+rolled out, of course the count is lower."* Low adoption is already priced in.
+If only a tenth of your users are on 15.7.5, the new release's total volume is a
+tenth as large, and `expected` shrinks by the same tenth. The percentage is a
+share-against-share comparison, which is why the line calls it
+*share-for-share*.
+
+Two consequences follow from measuring one release's cohort over the rollout
+window rather than a scope over a bucket:
+
+- **The link goes to the delivery, not to a monitoring page.** There is no
+  monitoring view that can reproduce these numbers: the event's chart shows all
+  versions over its own range, scored against the seasonal baseline — a
+  different numerator, denominator, window and estimator. So `details:` opens
+  this delivery's own row in **Settings → Alerting → Audit log**, expanded, with
+  the exact scope, actual, expected and percentage the message quoted. Those are
+  read back from the delivery's frozen record, so the page can never drift from
+  the message, and the link keeps working after the next release ships. Release
+  regression is the only item type that links there — every other scope has a
+  page that shows *more* than its alert line did, and gets sent to that instead.
+- **Each line links to its own row, not just to the delivery.** One delivery
+  carries up to 8 items, so the `?item=` on the end of the link names the scope
+  that line was about: the audit table scrolls to that row and marks it **from
+  your alert**. Without it, eight lines of one message would carry the same URL
+  and you would land on eight rows with nothing saying which one you clicked.
+  The rest of the delivery stays on screen, so the co-firing scopes are still
+  there to read. An older link, or one whose row no longer exists, still opens
+  the delivery — it just marks nothing.
+- **There is no recent-trend sparkline.** The only trend available is the
+  event's all-versions volume over a different window — a glyph that would rise
+  while the line above it says the event dropped.
+
+The **By version** tab on an event's monitoring page shows the same check for
+the *current* latest release, with the comparability verdict; see
+[Release regression](anomaly-detection.md#release-regression).
 
 The **Inbox** is one row per **incident** — a rule firing in one direction on one
 scope of a scan — over the last 30 days. An incident stays the same row for as

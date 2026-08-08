@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { Link, Navigate, useParams } from 'react-router-dom'
+import { Link, Navigate, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowUpRight } from 'lucide-react'
 import { AuditTab } from './settings/AuditTab'
 import { BranchesTab } from './settings/BranchesTab'
@@ -50,6 +50,11 @@ const ProjectAlertingTab = lazy(() => import('@/pages/ProjectAlertingTab'))
 
 export default function ProjectSettingsPage() {
   const { slug, tab: urlTab, itemId } = useParams<{ slug: string; tab?: string; itemId?: string }>()
+  // `?item=<scope_type>:<scope_ref>` names ONE row inside the delivery `itemId`
+  // points at. A delivery carries up to 8 items, so the path segment alone
+  // identifies the page but not the line the alert message quoted.
+  const [searchParams] = useSearchParams()
+  const focusItemKey = searchParams.get('item') ?? undefined
 
   if (!slug) return null
 
@@ -77,7 +82,10 @@ export default function ProjectSettingsPage() {
       {tab === 'monitoring' && <MonitoringTab slug={slug} />}
       {tab === 'alerting' && (
         <Suspense fallback={<p className="text-sm text-muted-foreground">Loading alerting settings…</p>}>
-          <ProjectAlertingTab slug={slug} />
+          {/* `itemId` focuses one delivery and `?item=` one row inside it —
+              together the target of the deep link an alert message carries for
+              scopes with no monitoring page. */}
+          <ProjectAlertingTab slug={slug} focusDeliveryId={itemId} focusItemKey={focusItemKey} />
         </Suspense>
       )}
       {tab === 'scans' && itemId && <ScanConfigDetail slug={slug} scanConfigId={itemId} />}

@@ -30,8 +30,7 @@ from tripl.worker.tasks.metrics.signals import (
     _get_latest_active_anomalies,
 )
 from tripl.worker.tasks.metrics.urls import (
-    _build_event_details_url,
-    _build_monitoring_url,
+    _build_item_paths,
     _get_project_slug,
 )
 
@@ -510,14 +509,6 @@ def _prepare_alert_deliveries(
                 continue
 
             for chunk in _delivery_chunks(anomalies_to_send, channel=destination.type):
-                payload_snapshot = _build_delivery_snapshot(
-                    config,
-                    project_slug=project_slug,
-                    rule=rule,
-                    destination=destination,
-                    anomalies=chunk,
-                    scope_names=scope_names,
-                )
                 delivery = AlertDelivery(
                     project_id=config.project_id,
                     scan_config_id=config.id,
@@ -527,10 +518,23 @@ def _prepare_alert_deliveries(
                     status=AlertDeliveryStatus.pending.value,
                     channel=destination.type,
                     matched_count=len(chunk),
-                    payload_snapshot=payload_snapshot,
+                    payload_snapshot=None,
                 )
                 session.add(delivery)
                 session.flush()
+                # The snapshot is built AFTER the flush because it now contains
+                # links back to this delivery's own audit row, and those need
+                # the id. Whole-object assignment (not in-place mutation) so
+                # SQLAlchemy sees the JSON column change.
+                delivery.payload_snapshot = _build_delivery_snapshot(
+                    config,
+                    project_slug=project_slug,
+                    rule=rule,
+                    destination=destination,
+                    anomalies=chunk,
+                    scope_names=scope_names,
+                    delivery_id=delivery.id,
+                )
 
                 for anomaly in chunk:
                     absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
@@ -549,6 +553,13 @@ def _prepare_alert_deliveries(
                         if anomaly.expected_count > 0
                         else 0.0
                     )
+                    details_path, monitoring_path = _build_item_paths(
+                        project_slug,
+                        scope_type=anomaly.scope_type,
+                        scope_ref=anomaly.scope_ref,
+                        event_id=anomaly.event_id,
+                        delivery_id=delivery.id,
+                    )
                     session.add(
                         AlertDeliveryItem(
                             delivery_id=delivery.id,
@@ -563,18 +574,17 @@ def _prepare_alert_deliveries(
                             expected_count=anomaly.expected_count,
                             absolute_delta=absolute_delta,
                             percent_delta=percent_delta,
-                            details_path=_build_event_details_url(
-                                project_slug,
-                                anomaly.event_id,
-                            ),
-                            monitoring_path=_build_monitoring_url(
-                                project_slug,
-                                scope_type=anomaly.scope_type,
-                                scope_ref=anomaly.scope_ref,
-                            ),
+                            details_path=details_path,
+                            monitoring_path=monitoring_path,
                             drift_field=getattr(anomaly, "drift_field", None),
                             drift_type=getattr(anomaly, "drift_type", None),
                             sample_value=getattr(anomaly, "sample_value", None),
+                            # Only release regressions carry one (see
+                            # signals.py). It is snapshotted here rather than
+                            # read back at render time because the source rows
+                            # are deleted on every recalculation, so an Inbox
+                            # retry would otherwise render an unqualified line.
+                            window_from=getattr(anomaly, "window_from", None),
                             correlation_group_id=correlation_by_anomaly.get(id(anomaly)),
                         )
                     )
