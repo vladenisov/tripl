@@ -293,7 +293,7 @@ async def trigger_dry_run(
     await session.commit()
     await session.refresh(job)
 
-    from tripl.worker.tasks.scan import dry_run_scan_config_async
+    from tripl.worker.tasks.scan_dry_run import dry_run_scan_config_async
 
     try:
         dry_run_scan_config_async.delay(str(job.id))

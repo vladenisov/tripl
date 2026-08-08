@@ -6,6 +6,8 @@ keeping that promise: the answer comes out of the real planner, and it never
 claims to be more complete than the sample it looked at.
 """
 
+import ast
+import pathlib
 import uuid
 from datetime import datetime
 
@@ -21,7 +23,11 @@ from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.scan_dry_run_job import ScanDryRunJob
 from tripl.schemas.scan_config import ScanDryRunResponse
-from tripl.worker.tasks import scan as scan_tasks
+from tripl.worker import celery_app as celery_app_module
+from tripl.worker import db as worker_db
+from tripl.worker.tasks import scan_dry_run as dry_run_tasks
+
+DRY_RUN_TASK_NAME = "tripl.worker.tasks.scan.dry_run_scan_config_async"
 
 
 @pytest.fixture
@@ -246,16 +252,16 @@ def _seed_grouped(session_factory) -> tuple[uuid.UUID, uuid.UUID]:
 
 def _run(monkeypatch, session_factory, adapter: _FakeAdapter, job_id: uuid.UUID) -> dict:
     monkeypatch.setitem(
-        scan_tasks.dry_run_scan_config_async.run.__globals__,
+        dry_run_tasks.dry_run_scan_config_async.run.__globals__,
         "_get_sync_session",
         session_factory,
     )
     monkeypatch.setitem(
-        scan_tasks.dry_run_scan_config_async.run.__globals__,
+        dry_run_tasks.dry_run_scan_config_async.run.__globals__,
         "_build_adapter",
         lambda ds: adapter,
     )
-    return scan_tasks.dry_run_scan_config_async.run(str(job_id))
+    return dry_run_tasks.dry_run_scan_config_async.run(str(job_id))
 
 
 class TestDryRunWorker:
@@ -471,7 +477,9 @@ class TestDryRunAPI:
     ) -> None:
         dispatched: list[str] = []
         monkeypatch.setattr(
-            scan_tasks.dry_run_scan_config_async, "delay", lambda job_id: dispatched.append(job_id)
+            dry_run_tasks.dry_run_scan_config_async,
+            "delay",
+            lambda job_id: dispatched.append(job_id),
         )
 
         resp = await client.post(
@@ -515,7 +523,7 @@ class TestDryRunAPI:
         which reached the user as ``Scan failed: Either event_type_id or
         event_type_column must be specified``. Unanswerable is a 422 before any
         warehouse query, not a failed job."""
-        monkeypatch.setattr(scan_tasks.dry_run_scan_config_async, "delay", lambda job_id: None)
+        monkeypatch.setattr(dry_run_tasks.dry_run_scan_config_async, "delay", lambda job_id: None)
 
         resp = await client.post(
             f"/api/v1/projects/{project['slug']}/scans/dry-run",
@@ -562,3 +570,60 @@ class TestDryRunAPI:
             "00000000-0000-0000-0000-000000000000"
         )
         assert resp.status_code == 404
+
+
+class TestDryRunTaskWiring:
+    """What the tripl-28g7 module split could have broken silently.
+
+    None of it shows up as a failing assertion elsewhere: a renamed task still
+    runs when you call ``.run()`` directly, an unregistered task still imports
+    fine, and a function-local ``_build_adapter`` still returns a real adapter.
+    Every one of them surfaces first in production, so each gets an explicit pin.
+    """
+
+    def test_the_task_name_still_says_tasks_scan_after_the_module_moved(self) -> None:
+        """The broker routes on this string, so it is a wire identifier, not a
+        module path. Renaming it to match ``tasks.scan_dry_run`` would leave every
+        dry-run job already queued by the running deployment unroutable."""
+        assert dry_run_tasks.dry_run_scan_config_async.name == DRY_RUN_TASK_NAME
+
+    def test_the_celery_app_imports_this_module_so_the_worker_registers_the_task(self) -> None:
+        """Read at the SOURCE level on purpose.
+
+        ``celery_app.tasks`` cannot answer this question, and a test that asks it
+        passes whether or not the registration line exists — importing this test
+        module already imports ``scan_dry_run``, and the decorator registers the
+        task as a side effect. The worker process imports only
+        ``tripl.worker.celery_app``, so that file's import list IS the mechanism,
+        and it is invisible to every runtime assertion the suite can make. Drop
+        the line and the API dispatches dry-run messages a worker answers
+        ``NotRegistered`` to.
+        """
+        module_source = pathlib.Path(celery_app_module.__file__ or "").read_text()
+        imported = {
+            alias.name
+            for node in ast.parse(module_source).body
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+        assert "tripl.worker.tasks.scan_dry_run" in imported, sorted(
+            name for name in imported if name.startswith("tripl.worker.tasks")
+        )
+
+    def test_the_db_helpers_are_module_level_in_the_module_that_owns_the_task(self) -> None:
+        """``_get_sync_session``/``_build_adapter`` are patched through
+        ``run.__globals__`` (see ``_run`` above). Deferring either to a
+        function-local import would leave the patch pointing at nothing, and the
+        whole worker half of this file would quietly open real connections
+        instead of the sqlite factory and the fake adapter it was handed."""
+        task_globals = dry_run_tasks.dry_run_scan_config_async.run.__globals__
+        absent = [
+            name for name in ("_get_sync_session", "_build_adapter") if name not in task_globals
+        ]
+        assert not absent, (
+            f"{absent} left the module namespace the task closes over — "
+            "monkeypatching run.__globals__ now silently no-ops and the worker "
+            "half of this file opens real connections"
+        )
+        assert task_globals["_get_sync_session"] is worker_db._get_sync_session
+        assert task_globals["_build_adapter"] is worker_db._build_adapter

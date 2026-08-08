@@ -440,9 +440,11 @@ If the task is about data sources or scans:
 - `backend/src/tripl/services/datasource_service.py`
 - `backend/src/tripl/services/scan_service.py`
 - `backend/src/tripl/worker/tasks/scan.py`
+- `backend/src/tripl/worker/tasks/scan_dry_run.py`
 - `backend/src/tripl/core/adapters/clickhouse.py`
 - `backend/src/tripl/tests/test_data_sources.py`
 - `backend/src/tripl/tests/test_scans.py`
+- `backend/src/tripl/tests/test_scan_dry_run.py`
 - `frontend/src/pages/DataSourcesPage.tsx`
 - `frontend/src/pages/ProjectSettingsPage.tsx`
 
