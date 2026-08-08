@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 
 import pytest
-from httpx import AsyncClient
+from httpx import AsyncClient, Response
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
@@ -28,6 +28,24 @@ from tripl.worker import db as worker_db
 from tripl.worker.tasks import scan_dry_run as dry_run_tasks
 
 DRY_RUN_TASK_NAME = "tripl.worker.tasks.scan.dry_run_scan_config_async"
+
+
+def user_visible_422(resp: Response) -> str:
+    """The part of a 422 body a person is actually shown.
+
+    ``formatValidationDetail`` in ``frontend/src/api/client.ts`` builds the
+    message from each error's ``loc`` (minus the ``body``/``query`` prefix) and
+    its ``msg``; nothing else in the pydantic error dict reaches a screen. In
+    particular FastAPI's default handler echoes the whole submitted body back in
+    each error's ``input``, so asserting a name is absent from ``resp.text``
+    proves only that the *test's own request* omitted that key — not that the
+    error stopped naming it. Assert against this string instead.
+    """
+    parts = []
+    for item in resp.json()["detail"]:
+        path = ".".join(str(seg) for seg in item["loc"] if seg not in ("body", "query"))
+        parts.append(f"{path}: {item['msg']}" if path else item["msg"])
+    return "; ".join(parts)
 
 
 @pytest.fixture
@@ -533,13 +551,34 @@ class TestDryRunAPI:
             },
         )
         assert resp.status_code == 422, resp.text
-        # The 422 body is read by a person — the CLI and the agent API surface it
-        # verbatim — so it names the CONTROLS, never the columns behind them.
-        # Naming `event_type_id` here would reintroduce, one layer down, exactly
-        # the string this guard was added to stop reaching a user.
-        detail = resp.text
-        assert "Event type column" in detail, detail
-        assert "event_type_id" not in detail, detail
+        # The 422 is read by a person, so the message names the CONTROLS, never
+        # the columns behind them. Naming `event_type_id` here would reintroduce,
+        # one layer down, exactly the string this guard was added to stop
+        # reaching a user.
+        shown = user_visible_422(resp)
+        assert "Event type column" in shown, shown
+        assert "event_type_id" not in shown, shown
+
+        # The body shape the product actually posts. `toDryRunRequest`
+        # (frontend/src/pages/settings/scans/useScanForm.ts) emits every key
+        # unconditionally, so an unanswered form sends `event_type_id: null`
+        # rather than omitting it — and any client generated from the OpenAPI
+        # schema does the same. The request above omits the key, which is why the
+        # earlier `"event_type_id" not in resp.text` form of this assertion held
+        # for reasons that had nothing to do with the message.
+        as_the_form_sends_it = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans/dry-run",
+            json={
+                "data_source_id": data_source["id"],
+                "base_query": "SELECT * FROM events",
+                "event_type_id": None,
+                "event_type_column": None,
+            },
+        )
+        assert as_the_form_sends_it.status_code == 422, as_the_form_sends_it.text
+        shown = user_visible_422(as_the_form_sends_it)
+        assert "Event type column" in shown, shown
+        assert "event_type_id" not in shown, shown
 
         with_column = await client.post(
             f"/api/v1/projects/{project['slug']}/scans/dry-run",

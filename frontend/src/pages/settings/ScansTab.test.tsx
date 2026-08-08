@@ -189,8 +189,22 @@ describe('ScansTab', () => {
     renderTab()
 
     expect(await screen.findByText('Main events scan')).toBeInTheDocument()
-    // "Scans" appears as the heading, a KPI label and the panel title.
-    expect(screen.getAllByText('Scans').length).toBeGreaterThanOrEqual(1)
+    // "Scans" names three separate surfaces now that the KPI label and panel
+    // title were renamed off "Scan configs": the page heading, the KPI tile and
+    // the list panel. The heading renders in every state — zero scans, error,
+    // still loading — so a bare `getAllByText('Scans').length >= 1` was
+    // satisfied by it alone and deleting the tile or renaming the panel left
+    // this test green. Pin each surface by the text around it instead.
+    const scansSurfaces = screen
+      .getAllByText('Scans')
+      .map((el) => el.parentElement?.textContent)
+    // The KPI tile: the label sits directly over the config count.
+    expect(scansSurfaces).toContain('Scans1')
+    // The list panel: the title sits directly over its "<n> scans" subtitle.
+    expect(scansSurfaces).toContain('Scans1 scans')
+    // Heading, tile, panel and nothing else — a fourth would make the two
+    // assertions above ambiguous again.
+    expect(scansSurfaces).toHaveLength(3)
     // "Monitoring" is both the KPI label and this row's mode badge.
     expect(screen.getAllByText('Monitoring')).toHaveLength(2)
     // "Rows scanned" said nothing about which rows; these are warehouse rows the

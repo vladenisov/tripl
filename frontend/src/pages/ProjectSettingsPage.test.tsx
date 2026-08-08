@@ -1168,8 +1168,12 @@ describe('ProjectSettingsPage', () => {
     await waitFor(() => expect(addScanButton).not.toBeDisabled())
     fireEvent.click(addScanButton)
 
-    // Create flow is an in-place page (no dialog).
-    await screen.findByText('New scan')
+    // Create flow is an in-place page (no dialog). Scoped to the heading here
+    // and at the three sibling call sites below: the list's own "New scan"
+    // BUTTON carries the same words, so `findByText('New scan')` resolves
+    // against the still-mounted list and passes even if the create page never
+    // opens. Same reasoning as ScansTab.test.tsx.
+    await screen.findByRole('heading', { name: 'New scan' })
     const textboxes = screen.getAllByRole('textbox')
     fireEvent.change(textboxes[0], { target: { value: 'Main scan' } })
     fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
@@ -1370,7 +1374,7 @@ describe('ProjectSettingsPage', () => {
     await waitFor(() => expect(addScanButton).not.toBeDisabled())
     fireEvent.click(addScanButton)
 
-    await screen.findByText('New scan')
+    await screen.findByRole('heading', { name: 'New scan' })
     const textboxes = screen.getAllByRole('textbox')
     fireEvent.change(textboxes[0], { target: { value: 'Versioned scan' } })
     fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
@@ -1622,7 +1626,7 @@ describe('ProjectSettingsPage', () => {
     await waitFor(() => expect(addScanButton).not.toBeDisabled())
     fireEvent.click(addScanButton)
 
-    await screen.findByText('New scan')
+    await screen.findByRole('heading', { name: 'New scan' })
     const textboxes = screen.getAllByRole('textbox')
     fireEvent.change(textboxes[0], { target: { value: 'Main scan' } })
     fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
@@ -1871,7 +1875,7 @@ describe('ProjectSettingsPage', () => {
     await waitFor(() => expect(addScanButton).not.toBeDisabled())
     fireEvent.click(addScanButton)
 
-    await screen.findByText('New scan')
+    await screen.findByRole('heading', { name: 'New scan' })
     const textboxes = screen.getAllByRole('textbox')
     fireEvent.change(textboxes[0], { target: { value: 'Versioned scan' } })
     fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
