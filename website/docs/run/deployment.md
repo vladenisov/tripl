@@ -22,6 +22,7 @@ For tuning individual settings (logging, rate limits, metrics, AI/search feature
 - **Docker Engine** with the Compose v2 plugin (`docker compose`, not the legacy `docker-compose`).
 - **A TLS terminator in front of the app.** The production stack forces secure session cookies on and refuses dev-default credentials, so it expects to sit behind HTTPS. Terminate TLS in front of port `8000` (reverse proxy, load balancer, or platform ingress) and use an `https://` `APP_BASE_URL`. To preview the app over plain HTTP locally, use the dev stack instead (see [Local preview](#local-preview)).
 - **Files on the deploy host:** `compose.yaml`, your `.env`, and the `infra/rabbitmq/` directory (the RabbitMQ service mounts `infra/rabbitmq/rabbitmq.conf`). `tripl install` writes all three; place them by hand only on the "Without the CLI" path. The `rabbitmq.conf` is not optional — Docker's answer to a missing bind-mount source is to create a *directory* there, after which RabbitMQ fails to start with an error naming neither tripl nor the mount.
+- **[`uv`](https://docs.astral.sh/uv/getting-started/installation/) on the deploy host — only if you take the CLI path.** `uvx tripl install` fetches the CLI from PyPI at run time and brings its own Python, so `uv` is the whole prerequisite; `pip install tripl` needs Python 3.12+ instead. The **"Without the CLI"** paths below need neither, only Docker.
 - **Outbound access to GHCR** (`ghcr.io`) to pull the image. If the package is private you must `docker login ghcr.io` first; see [Registry access](#registry-access).
 - **A data warehouse to monitor** — ClickHouse, BigQuery, or PostgreSQL. This is connected from the UI after the stack is up, not via environment variables (see [Connecting a warehouse](#connecting-a-warehouse)).
 
@@ -50,7 +51,7 @@ Released tags are `X.Y.Z`, `X.Y`, `latest` (stable only), and `sha-<short>`. Mul
 
 ## Install with the CLI
 
-One command writes the stack and starts it. `uvx` fetches the CLI from PyPI on the spot, so nothing has to be installed on the host first:
+One command writes the stack and starts it. `uvx` fetches the CLI from PyPI at run time and brings its own Python, so [`uv`](https://docs.astral.sh/uv/getting-started/installation/) is the only thing you install on the host — or `pip install tripl` and drop the `uvx` prefix:
 
 ```bash
 uvx tripl install --app-url https://tripl.example.com --version 1.4.0 --dir /srv/tripl
