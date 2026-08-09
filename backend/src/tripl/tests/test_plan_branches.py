@@ -2297,19 +2297,21 @@ async def test_photo_comment_does_not_void_an_approval(client: AsyncClient) -> N
     await _seed_plan(client, "branch-photo-talk")
     events = await client.get("/api/v1/projects/branch-photo-talk/events")
     main_event_id = events.json()["items"][0]["id"]
-    await _attach_main_figma(
-        client,
-        "branch-photo-talk",
-        main_event_id,
-        "https://www.figma.com/file/abc/Spec",
-        "Spec",
-    )
+    # TWO photos, deliberately: the snapshot orders them by canonical JSON of
+    # the whole photo dict, in which "comments" sorts first, so a single photo
+    # would not exercise the case where a new comment REORDERS the list and
+    # changes the hash even after the field itself is stripped.
+    for url, title in (
+        ("https://www.figma.com/file/abc/Spec", "Spec"),
+        ("https://www.figma.com/file/bcd/Flow", "Flow"),
+    ):
+        await _attach_main_figma(client, "branch-photo-talk", main_event_id, url, title)
 
     branch_id = await _create_branch(client, "branch-photo-talk")
     await _transition(client, "branch-photo-talk", branch_id, "submit")
     await _transition(client, "branch-photo-talk", branch_id, "approve")
 
-    # The branch holds its own deep copies of the event and its photo.
+    # The branch holds its own deep copies of the event and both photos.
     async with TestSessionLocal() as session:
         branch_event = (
             (await session.execute(select(Event).where(Event.branch_id == uuid.UUID(branch_id))))
@@ -2317,18 +2319,24 @@ async def test_photo_comment_does_not_void_an_approval(client: AsyncClient) -> N
             .first()
         )
         assert branch_event is not None
-        branch_photo = (
+        branch_photos = (
             (
                 await session.execute(
-                    select(EventPhoto).where(EventPhoto.event_id == branch_event.id)
+                    select(EventPhoto)
+                    .where(EventPhoto.event_id == branch_event.id)
+                    .order_by(EventPhoto.external_url)
                 )
             )
             .scalars()
-            .first()
+            .all()
         )
-        assert branch_photo is not None
+        assert len(branch_photos) == 2
         branch_event_id = str(branch_event.id)
-        branch_photo_id = str(branch_photo.id)
+        # The .../abc/... photo, i.e. the one that sorts FIRST while both have
+        # empty comment lists — `external_url` is the first key that differs.
+        # Commenting on it pushes it behind the other under the unstripped sort
+        # key, so this is the photo whose comment actually reorders the list.
+        branch_photo_id = str(branch_photos[0].id)
 
     posted = await client.post(
         f"/api/v1/projects/branch-photo-talk/events/{branch_event_id}"

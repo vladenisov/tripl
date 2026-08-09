@@ -96,17 +96,23 @@ def _approval_relevant_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(photos, list):
             projected.append(event)
             continue
-        projected.append(
-            {
-                **event,
-                "photos": [
-                    {key: value for key, value in photo.items() if key != "comments"}
-                    if isinstance(photo, dict)
-                    else photo
-                    for photo in photos
-                ],
-            }
+        stripped = [
+            {key: value for key, value in photo.items() if key != "comments"}
+            if isinstance(photo, dict)
+            else photo
+            for photo in photos
+        ]
+        # Re-sort AFTER stripping, or the removal leaks through the ORDER.
+        # ``serialize_photos`` sorts by canonical JSON of the whole photo dict,
+        # and "comments" sorts first among a photo's keys — so with two or more
+        # photos a new comment can swap their positions, and dropping the field
+        # afterwards leaves that reordering in place, changing the hash exactly
+        # as before. Sorting the stripped dicts makes the order depend only on
+        # what an approval actually covers.
+        stripped.sort(
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"), default=str)
         )
+        projected.append({**event, "photos": stripped})
     return {**payload, "events": projected}
 
 
