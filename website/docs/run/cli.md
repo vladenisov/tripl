@@ -75,7 +75,9 @@ This is the one invocation that surfaces them.
 
 ## Install
 
-**Requires Python 3.12 or newer.** The only runtime dependency is `httpx`.
+The only runtime dependency is `httpx`. **Python 3.12 or newer is required for
+the `pip` and checkout paths only** — `uvx` fetches a suitable interpreter
+itself, so a host carrying `uv` and no Python still runs the CLI.
 
 **From PyPI.** `tripl` is published, so this is the ordinary path:
 
