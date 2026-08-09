@@ -232,7 +232,9 @@ points are what anomaly detection and alerts are built on:
 - **Catalog + monitoring** — the scan adds events to your tracking plan on every
   run, and records metric points on its schedule. Anomaly detection reads those
   points and raises signals; alerts are sent from signals. **Run now** fills the
-  plan; only the schedule records metric points.
+  plan and writes no metric point; the one manual metrics path is **Run a
+  one-off replay** on the scan's Configuration tab, which fills a past window and
+  unlocks with the same time column and schedule.
 - **Catalog only** — the scan adds events and fields to your tracking plan. It
   records no metric points, so it raises no anomalies and sends no alerts.
 

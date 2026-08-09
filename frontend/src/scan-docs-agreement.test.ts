@@ -93,6 +93,77 @@ describe('the scan docs describe the product this branch ships', () => {
     }
   })
 
+  /**
+   * The correction that took metric points off "every run" is right — `run_scan`
+   * writes no `EventMetric` row — but it is one word away from a second false
+   * claim, and quick-start.md shipped it: "only the schedule records metric
+   * points". The Configuration tab ships a manual metrics path next to that
+   * sentence. **Run a one-off replay** posts to `/metrics/replay` →
+   * `scan_service.trigger_metrics_replay`, which dispatches `collect_metrics`
+   * for an explicit window — the same task beat dispatches, and the one that
+   * UPSERTs `event_metrics` rows. troubleshooting.md sends a user with an empty
+   * chart to press exactly that button, so the absolute costs them an interval
+   * of waiting with the fix on screen.
+   */
+  it('never makes the schedule the only path to a metric point', () => {
+    const form = readFileSync(join(SRC, 'pages', 'settings', 'scans', 'ScanConfigForm.tsx'), 'utf8')
+    const CONTROL = 'Run a one-off replay'
+
+    expect(
+      form,
+      `The Configuration tab no longer offers "${CONTROL}". If the manual metrics path is gone, `
+        + 'the docs may say the schedule is the only one — retire this guard with it.',
+    ).toContain(CONTROL)
+    expect(
+      form,
+      'The replay control is no longer gated on time_column && interval, the pair '
+        + 'trigger_metrics_replay 400s without. The docs describe it as unlocking with both.',
+    ).toMatch(/canReplay = Boolean\(scanConfig\.time_column && scanConfig\.interval\)/)
+
+    // Only the exclusive shape is banned. "records metric points on its
+    // schedule" is the true claim and must stay sayable.
+    const EXCLUSIVE = [
+      /only the schedule\b[^.\n]*metric points?/i,
+      /metric points?[^.\n]* only (?:on|from) (?:its|the) schedule/i,
+    ]
+    for (const relative of SCAN_DOCS) {
+      const offenders = readDoc(relative)
+        .split('\n')
+        .map((line, index) => ({ line, number: index + 1 }))
+        .filter(({ line }) => EXCLUSIVE.some((pattern) => pattern.test(line)))
+        .map(({ line, number }) => `${relative}:${number}: ${line.trim()}`)
+
+      expect(
+        offenders,
+        `${relative} says the schedule is the only thing that records metric points, but `
+          + `"${CONTROL}" on the scan's Configuration tab replays a past window through `
+          + 'collect_metrics. Say Run now records none — not that nothing else can.',
+      ).toEqual([])
+    }
+
+    // And wherever quick-start denies Run now the points, it must name the
+    // control that does produce them; a bare denial is what sat the user out.
+    const denials = readDoc('quick-start.md')
+      .split(/\n(?=- \*\*)/)
+      .filter((bullet) => /Run now/.test(bullet) && /metric point/.test(bullet))
+
+    expect(
+      denials.length,
+      'quick-start.md no longer has the bullet telling the reader what Run now does about metric '
+        + 'points. Restore it, or update this guard to the passage that replaced it.',
+    ).toBeGreaterThan(0)
+
+    for (const bullet of denials) {
+      expect(
+        bullet.replace(/\s+/g, ' '),
+        `quick-start.md tells the reader Run now records no metric point without naming `
+          + `"${CONTROL}", the control that does. That reader waits out a whole interval with the `
+          + 'button on screen — the FAQ and the "No metrics appear after a scan" fix both send '
+          + 'them to it.',
+      ).toContain(CONTROL)
+    }
+  })
+
   it('no scan-facing doc calls a scan a "scan config"', () => {
     // Settled vocabulary: the web UI (and the docs describing it) say "scan".
     // "job" and "scan_config" stay on the wire, so the API/CLI references
