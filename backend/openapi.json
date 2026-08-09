@@ -3511,6 +3511,10 @@
             "title": "Approved At",
             "type": "string"
           },
+          "stale": {
+            "title": "Stale",
+            "type": "boolean"
+          },
           "user_id": {
             "anyOf": [
               {
@@ -3526,7 +3530,8 @@
         },
         "required": [
           "user_id",
-          "approved_at"
+          "approved_at",
+          "stale"
         ],
         "title": "BranchApprovalResponse",
         "type": "object"

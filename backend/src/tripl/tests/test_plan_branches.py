@@ -2282,6 +2282,38 @@ async def test_stale_approval_blocks_merge_until_reapproved(client: AsyncClient)
 
 
 @pytest.mark.asyncio
+async def test_branch_detail_reports_approval_staleness(client: AsyncClient) -> None:
+    """The detail response carries the freshness the merge gate scores on.
+
+    Without it a client can only count rows, which is how a branch with one
+    voided approval showed a green "Approvals 1/1" and then failed to merge
+    with ``current=0`` — the contradiction that made the Approve button look
+    broken when it was working correctly.
+    """
+    await _seed_plan(client, "branch-stale-detail")
+    branch_id = await _create_branch(client, "branch-stale-detail")
+    await _transition(client, "branch-stale-detail", branch_id, "submit")
+    approved = await _transition(client, "branch-stale-detail", branch_id, "approve")
+    assert [a["stale"] for a in approved["approvals"]] == [False]
+
+    # Same edit as the merge-gate test above: the approval now describes content
+    # the branch has moved past.
+    await _touch_branch_event_type(branch_id)
+
+    detail = await client.get(f"/api/v1/projects/branch-stale-detail/branches/{branch_id}")
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    # Status still reads "approved" — staleness is the only signal that the
+    # review no longer covers the branch.
+    assert body["status"] == "approved"
+    assert [a["stale"] for a in body["approvals"]] == [True]
+
+    # Re-approving clears it, matching what the merge gate then allows.
+    refreshed = await _transition(client, "branch-stale-detail", branch_id, "approve")
+    assert [a["stale"] for a in refreshed["approvals"]] == [False]
+
+
+@pytest.mark.asyncio
 async def test_merge_discards_author_approval_when_self_approval_blocked(
     client: AsyncClient,
 ) -> None:

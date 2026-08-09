@@ -4322,6 +4322,8 @@ export interface components {
              * Format: date-time
              */
             approved_at: string;
+            /** Stale */
+            stale: boolean;
             /** User Id */
             user_id: string | null;
         };

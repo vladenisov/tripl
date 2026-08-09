@@ -724,7 +724,7 @@ describe('BranchesTab', () => {
     vi.mocked(planBranchesApi.get).mockResolvedValue({
       ...FEATURE,
       reviewers: [],
-      approvals: [{ user_id: 'u-1', approved_at: '2026-01-01T00:00:00Z' }],
+      approvals: [{ user_id: 'u-1', approved_at: '2026-01-01T00:00:00Z', stale: false }],
     })
     vi.mocked(branchSettingsApi.get).mockResolvedValue(makeSettings({ min_approvals: 2 }))
 
@@ -732,6 +732,33 @@ describe('BranchesTab', () => {
 
     fireEvent.click(await screen.findByText('checkout-v2'))
     expect(await screen.findByText('Approvals 1/2')).toBeInTheDocument()
+  })
+
+  // The bug this pins: the chip used to count approval ROWS, so this exact
+  // fixture rendered a green "Approvals 1/1" while the merge endpoint scored
+  // the branch at current=0 and refused with insufficient_approvals. The chip
+  // has to agree with the gate, or the Approve button looks broken.
+  it('excludes a stale approval from the quota and labels it', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+    vi.mocked(planBranchesApi.get).mockResolvedValue({
+      ...FEATURE,
+      reviewers: [],
+      approvals: [{ user_id: 'u-1', approved_at: '2026-01-01T00:00:00Z', stale: true }],
+    })
+    vi.mocked(branchSettingsApi.get).mockResolvedValue(makeSettings({ min_approvals: 1 }))
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    expect(await screen.findByText(/Approvals 0\/1/)).toBeInTheDocument()
+    expect(screen.getByText(/1 stale/)).toBeInTheDocument()
   })
 
   it('explains an insufficient-approvals merge rejection', async () => {

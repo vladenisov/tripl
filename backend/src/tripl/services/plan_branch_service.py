@@ -313,10 +313,35 @@ async def _to_detail(session: AsyncSession, branch: PlanBranch) -> PlanBranchDet
     reviewers = await _load_reviewers(session, branch.id)
     approvals = await _load_approvals(session, branch.id)
     base = _to_response(branch)
+    # Staleness has to travel with the approval, because it is the only thing
+    # the merge gate actually counts (plan_branch_merge_service.
+    # _load_fresh_approver_ids). While this flag did not exist the UI could do
+    # no better than count rows — so a branch whose single approval had gone
+    # stale showed a green "Approvals 1/1" and then failed to merge with
+    # current=0, and no screen in the product explained the contradiction.
+    #
+    # The snapshot build is the expensive part of this call, so it is skipped
+    # entirely when there is nothing to compare: an unapproved branch cannot
+    # have a stale approval.
+    current_hash: str | None = None
+    if approvals:
+        current_hash = plan_snapshot_hash(
+            await build_plan_snapshot(session, branch.project_id, branch_id=branch.id)
+        )
     return PlanBranchDetailResponse(
         **base.model_dump(),
         reviewers=[BranchReviewerResponse.model_validate(r) for r in reviewers],
-        approvals=[{"user_id": a.user_id, "approved_at": a.approved_at} for a in approvals],
+        approvals=[
+            {
+                "user_id": a.user_id,
+                "approved_at": a.approved_at,
+                # A NULL plan_hash (approved before f8a9b0c1d2e3) never equals a
+                # digest, so legacy rows report stale — exactly how the merge
+                # gate scores them.
+                "stale": a.plan_hash != current_hash,
+            }
+            for a in approvals
+        ],
     )
 
 
