@@ -71,14 +71,65 @@ def _public_snapshot_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return sanitized
 
 
+def _approval_relevant_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """The snapshot minus discussion — what an approval actually answers for.
+
+    Photo comment threads are in the snapshot because a *revision* records the
+    whole branch, but an approval answers a narrower question: "is this plan
+    still the one I reviewed?". A reply typed under a spec screenshot changes
+    no plan content, and it voided every approval on the branch (tripl-zjmo) —
+    merge then refused with ``current=0`` while author and reviewer both
+    correctly insisted nobody had touched the plan.
+
+    Projected here rather than in ``build_plan_snapshot`` so revision payloads,
+    their diffs and the merge base keep the comments they are supposed to
+    record. Photos themselves stay in: attaching or removing a spec screenshot
+    changes what a reviewer is being asked to approve, while talking about one
+    does not.
+    """
+    events = payload.get("events")
+    if not isinstance(events, list):
+        return payload
+    projected: list[Any] = []
+    for event in events:
+        photos = event.get("photos") if isinstance(event, dict) else None
+        if not isinstance(photos, list):
+            projected.append(event)
+            continue
+        stripped = [
+            {key: value for key, value in photo.items() if key != "comments"}
+            if isinstance(photo, dict)
+            else photo
+            for photo in photos
+        ]
+        # Re-sort AFTER stripping, or the removal leaks through the ORDER.
+        # ``serialize_photos`` sorts by canonical JSON of the whole photo dict,
+        # and "comments" sorts first among a photo's keys — so with two or more
+        # photos a new comment can swap their positions, and dropping the field
+        # afterwards leaves that reordering in place, changing the hash exactly
+        # as before. Sorting the stripped dicts makes the order depend only on
+        # what an approval actually covers.
+        stripped.sort(
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"), default=str)
+        )
+        projected.append({**event, "photos": stripped})
+    return {**payload, "events": projected}
+
+
 def plan_snapshot_hash(payload: dict[str, Any]) -> str:
-    """Stable sha256 of a plan snapshot payload.
+    """Stable sha256 of the plan content a branch approval covers.
 
     Used to pin a branch approval to the exact content it reviewed
     (PlanBranchApproval.plan_hash): the snapshot builder is deterministic
     (name-ordered queries), so canonical JSON of equal content hashes equal.
+
+    Hashes ``_approval_relevant_payload``, not the raw snapshot, so commenting
+    on a photo cannot invalidate a review. Every caller of this function is an
+    approval-freshness check; nothing else stores or compares this digest.
     """
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    canonical = json.dumps(
+        _approval_relevant_payload(payload), sort_keys=True, separators=(",", ":"), default=str
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
