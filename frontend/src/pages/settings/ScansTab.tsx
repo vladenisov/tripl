@@ -24,6 +24,7 @@ import { LOADING_SCAN_RUN_INFO, deriveScanRunInfo, jobDurationSeconds, jobRowsSc
 import { useAdaptiveRefetchIntervalFn } from "@/realtime/streamContext"
 import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
+import { countOf, pluralize } from "@/lib/plural"
 import { dataSourcesKey } from '@/lib/queryKeys'
 
 interface RecentRun {
@@ -240,7 +241,10 @@ export function ScansTab({ slug }: { slug: string }) {
         />
       )}
 
-      <SurfPanel title="Scans" subtitle={`${scanConfigs.length} scans`}>
+      {/* A project has exactly one scan the moment it finishes the onboarding
+          checklist's "Run a scan" step, so "1 scans" was the first thing a new
+          user read on the page this epic exists to make comprehensible. */}
+      <SurfPanel title="Scans" subtitle={countOf(scanConfigs.length, 'scan', 'scans')}>
         {scanConfigsLoading ? (
           <div className="space-y-2 px-4 py-4" aria-busy="true" aria-label="Loading scans">
             {[0, 1, 2].map((index) => (
@@ -364,7 +368,12 @@ export function ScansTab({ slug }: { slug: string }) {
                     ) : (
                       <>
                         <span className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-                          {run.rows == null ? '—' : `${formatCount(run.rows)} rows`}
+                          {/* `formatCount` compacts (1.8M), so the noun agrees
+                              with the raw count rather than the printed text —
+                              a run that read a single row said "1 rows". */}
+                          {run.rows == null
+                            ? '—'
+                            : `${formatCount(run.rows)} ${pluralize(run.rows, 'row', 'rows')}`}
                         </span>
                         <span className="mono w-[52px] text-right text-[11px]" style={{ color: 'var(--fg-faint)' }}>
                           {run.durationSec == null ? '—' : `${run.durationSec.toFixed(1)}s`}

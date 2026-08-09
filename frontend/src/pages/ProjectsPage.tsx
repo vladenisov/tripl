@@ -39,6 +39,7 @@ import { useConfirm } from '@/hooks/useConfirm'
 import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
 import { formatDate, formatDateTime } from '@/lib/datetime'
 import { getMonitoringPath } from '@/lib/monitoring'
+import { pluralize } from '@/lib/plural'
 import { friendlyScanError } from '@/lib/scanError'
 import type {
   Project,
@@ -991,9 +992,4 @@ function describeScanJobTiming(job: ProjectLatestScanJob) {
     return `Started ${formatDateTime(job.started_at)}`
   }
   return `Queued ${formatDateTime(job.created_at)}`
-}
-
-/** Count-aware copy: returns `singular` when `count` is exactly 1, otherwise `plural`. */
-function pluralize(count: number, singular: string, plural: string): string {
-  return count === 1 ? singular : plural
 }

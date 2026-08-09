@@ -1,5 +1,6 @@
 import type { ScanJob, ScanJobResultSummary } from '@/types'
 import type { ScanMode } from './scanMode'
+import { countOf } from '@/lib/plural'
 import { jobMetricPoints, jobRowsScanned } from './scanUtils'
 
 /**
@@ -95,10 +96,6 @@ const NEVER_SCHEDULED_RUN_LINE =
   'This scan has a schedule but no time column, so the scheduler never runs it — no metric'
   + ' points, so no signals and no alerts. Add a time column to fix it.'
 
-function count(value: number, singular: string, plural: string): string {
-  return `${value.toLocaleString()} ${value === 1 ? singular : plural}`
-}
-
 /**
  * Chunks this run has actually read, for the replay wording. `null` for an
  * ordinary run, and for a replay that has not finished a chunk yet — "across 0
@@ -137,12 +134,12 @@ export function buildRunReport(
   const rows = jobRowsScanned(job)
   if (rows != null) {
     const chunks = chunksRead(summary)
-    const rowsText = count(rows, 'warehouse row', 'warehouse rows')
+    const rowsText = countOf(rows, 'warehouse row', 'warehouse rows')
     lines.push({
       id: 'rows-read',
       text: chunks == null
         ? `Read ${rowsText}.`
-        : `Read ${rowsText} across ${count(chunks, 'chunk', 'chunks')}.`,
+        : `Read ${rowsText} across ${countOf(chunks, 'chunk', 'chunks')}.`,
       title: jobRowsReadTitle(job),
     })
   }
@@ -152,7 +149,7 @@ export function buildRunReport(
   if (eventsCreated != null && eventsCreated > 0) {
     lines.push({
       id: 'events-created',
-      text: `Added ${count(eventsCreated, 'event', 'events')} to your tracking plan.`,
+      text: `Added ${countOf(eventsCreated, 'event', 'events')} to your tracking plan.`,
     })
   }
   // "Events skipped: 340" read as data loss. It is the opposite: those events
@@ -178,7 +175,7 @@ export function buildRunReport(
   if (variablesCreated > 0) {
     lines.push({
       id: 'variables-created',
-      text: `Added ${count(variablesCreated, 'variable', 'variables')}.`,
+      text: `Added ${countOf(variablesCreated, 'variable', 'variables')}.`,
     })
   }
 
@@ -188,7 +185,7 @@ export function buildRunReport(
   if (columnsAnalyzed != null) {
     lines.push({
       id: 'columns-analyzed',
-      text: `Looked at ${count(columnsAnalyzed, 'column', 'columns')} in your query.`,
+      text: `Looked at ${countOf(columnsAnalyzed, 'column', 'columns')} in your query.`,
     })
   }
 
@@ -196,7 +193,7 @@ export function buildRunReport(
   if (metricPoints > 0) {
     lines.push({
       id: 'metric-points',
-      text: `Recorded ${count(metricPoints, 'metric point', 'metric points')}.`,
+      text: `Recorded ${countOf(metricPoints, 'metric point', 'metric points')}.`,
     })
   }
 
@@ -204,7 +201,7 @@ export function buildRunReport(
   if (signalsAdded > 0) {
     lines.push({
       id: 'signals-added',
-      text: `Raised ${count(signalsAdded, 'anomaly signal', 'anomaly signals')}.`,
+      text: `Raised ${countOf(signalsAdded, 'anomaly signal', 'anomaly signals')}.`,
       hint:
         openSignals != null && openSignals !== signalsAdded
           ? openSignalsLine(openSignals)
@@ -217,7 +214,7 @@ export function buildRunReport(
   if (alertsQueued > 0) {
     lines.push({
       id: 'alerts-queued',
-      text: `Queued ${count(alertsQueued, 'alert', 'alerts')}.`,
+      text: `Queued ${countOf(alertsQueued, 'alert', 'alerts')}.`,
       target: 'alerts',
     })
   }

@@ -17,6 +17,7 @@ import { activityApi } from '@/api/activity'
 import { Dot } from '@/components/primitives/dot'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import { formatRelativeTime } from '@/lib/datetime'
+import { countOf } from '@/lib/plural'
 import type { ActivityItem, ActivityItemSeverity, ActivityItemType } from '@/types'
 
 const ACTIVITY_LIMIT = 20
@@ -261,7 +262,7 @@ export function ActivityPanel({ open, slug }: { open: boolean; slug?: string }) 
         >
           <Zap className="h-3 w-3" />
           <span className="mono">
-            last 7 days · {items.length} {items.length === 1 ? 'item' : 'items'}
+            last 7 days · {countOf(items.length, 'item', 'items')}
           </span>
         </div>
       )}

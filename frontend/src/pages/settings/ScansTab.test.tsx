@@ -200,8 +200,11 @@ describe('ScansTab', () => {
       .map((el) => el.parentElement?.textContent)
     // The KPI tile: the label sits directly over the config count.
     expect(scansSurfaces).toContain('Scans1')
-    // The list panel: the title sits directly over its "<n> scans" subtitle.
-    expect(scansSurfaces).toContain('Scans1 scans')
+    // The list panel: the title sits directly over its count subtitle, and the
+    // count agrees with its noun. This fixture has ONE scan on purpose — the
+    // state every project is in the moment it finishes the onboarding
+    // checklist's "Run a scan" step — so "1 scans" would fail here.
+    expect(scansSurfaces).toContain('Scans1 scan')
     // Heading, tile, panel and nothing else — a fourth would make the two
     // assertions above ambiguous again.
     expect(scansSurfaces).toHaveLength(3)
@@ -214,6 +217,30 @@ describe('ScansTab', () => {
     // to a faint secondary line rather than its own prominent column.
     expect(screen.getByText(/Web Production · Every 15 min/)).toBeInTheDocument()
     expect(screen.getByText(/SELECT \* FROM analytics\.events_v2/)).toBeInTheDocument()
+  })
+
+  // The recent-runs rail prints its count through `formatCount`, which compacts
+  // (1.8M) — so the noun has to agree with the raw number, not with the string
+  // that reaches the screen. A run that read a single warehouse row said
+  // "1 rows" (tripl-3y7z).
+  it('agrees with the count on a run that read exactly one row', async () => {
+    setupFetchWithJobs([
+      {
+        id: 'job-one-row',
+        scan_config_id: 'scan-1',
+        status: 'completed',
+        started_at: '2026-02-01T00:00:00Z',
+        completed_at: '2026-02-01T00:00:05Z',
+        result_summary: { query_rows_scanned: 1 },
+        error_message: null,
+        created_at: '2026-02-01T00:00:00Z',
+        updated_at: '2026-02-01T00:00:05Z',
+      },
+    ])
+    renderTab()
+
+    expect(await screen.findByText('1 row')).toBeInTheDocument()
+    expect(screen.queryByText('1 rows')).not.toBeInTheDocument()
   })
 
   // The per-scan job queries used to be coerced to `[]` while in flight, so

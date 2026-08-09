@@ -1,5 +1,6 @@
 import type { ScanDryRunResponse } from '@/types'
 import { formatDateTime } from '@/lib/datetime'
+import { countOf } from '@/lib/plural'
 
 /**
  * "What this scan would create" — the answer the quick-start guide has promised
@@ -104,10 +105,6 @@ const ALL_MAPPED_LINE = 'No new fields — every column is already mapped.'
  */
 const NO_EVENT_TYPE_LABEL = '(no event type)'
 
-function count(value: number, singular: string, plural: string): string {
-  return `${value.toLocaleString()} ${value === 1 ? singular : plural}`
-}
-
 /** `48%` — the share of the sample behind one event name. */
 function share(value: number): string {
   const percent = value * 100
@@ -206,7 +203,7 @@ function EventList({ events }: { events: ScanDryRunResponse['events'] }) {
               style={{ color: 'var(--fg-subtle)' }}
               title="Sampled warehouse rows behind this name."
             >
-              {count(event.approx_row_count, 'row', 'rows')} · {share(event.share_of_sample)}
+              {countOf(event.approx_row_count, 'row', 'rows')} · {share(event.share_of_sample)}
             </span>
           </li>
         ))}
@@ -257,8 +254,8 @@ export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
   // combinations, capped; when the cap was hit, the count is a floor and saying
   // a flat N would be the one lie this whole feature exists to avoid.
   const eventsHeadline = dryRun.sample_is_complete
-    ? `Would create ${count(events.length, 'event', 'events')}`
-    : `Would create at least ${count(events.length, 'event', 'events')}`
+    ? `Would create ${countOf(events.length, 'event', 'events')}`
+    : `Would create at least ${countOf(events.length, 'event', 'events')}`
 
   const windowed = Boolean(dryRun.window_from && dryRun.window_to)
   // Not "no events" — no ANSWER. With no rows the grouped analysis returns no
@@ -266,7 +263,7 @@ export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
   // run would write.
   const readNothing = dryRun.sampled_rows === 0
   const sampleSentence =
-    `${count(dryRun.sampled_rows, 'row', 'rows')} in the`
+    `${countOf(dryRun.sampled_rows, 'row', 'rows')} in the`
     + ` ${dryRun.breakdown_combinations.toLocaleString()} most common column combinations.`
 
   return (
@@ -330,7 +327,7 @@ export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
           <div>
             <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
               {newFields.length > 0
-                ? `Would add ${count(newFields.length, 'field', 'fields')}`
+                ? `Would add ${countOf(newFields.length, 'field', 'fields')}`
                 : dryRun.unmapped_columns.length > 0
                   ? UNDECLARED_COLUMNS_LINE
                   : ALL_MAPPED_LINE}
