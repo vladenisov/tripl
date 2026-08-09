@@ -173,7 +173,10 @@ describe('ProjectsPage', () => {
     expect(screen.getByText('Automation')).toBeInTheDocument()
     // UX-10: action-needed metrics each appear once, distinct from STATE metrics.
     expect(screen.getByText('Review queue')).toBeInTheDocument()
-    expect(screen.getByText('Failed jobs')).toBeInTheDocument()
+    // Settled vocabulary: an execution is a "run" on every web-UI surface, and
+    // /projects is the first screen after login (tripl-3y7z).
+    expect(screen.getByText('Failed runs')).toBeInTheDocument()
+    expect(screen.queryByText('Failed jobs')).not.toBeInTheDocument()
     expect(screen.getByText('Signals')).toBeInTheDocument()
   })
 
@@ -296,9 +299,10 @@ describe('ProjectsPage', () => {
     expect(screen.getByText('99.1% implemented')).toBeInTheDocument()
     expect(screen.getAllByText('99.1%').length).toBeGreaterThan(0)
     expect(screen.queryByText('99% implemented')).not.toBeInTheDocument()
-    // L1 + M10: singular, unit-aware copy. The rollup counts failing scan
-    // CONFIGS (per-config latest run), not just the single newest job (tripl-7l83.3).
-    expect(screen.getByText('1 scan config failing across 1 project')).toBeInTheDocument()
+    // L1 + M10: singular, unit-aware copy. The rollup counts failing scans
+    // (per-scan latest run), not just the single newest run (tripl-7l83.3).
+    // The UI noun is "scan", never "scan config" (tripl-3y7z).
+    expect(screen.getByText('1 scan failing across 1 project')).toBeInTheDocument()
     expect(screen.getByText('across 1 project')).toBeInTheDocument()
     expect(screen.getByText('1 scan configured')).toBeInTheDocument()
     expect(screen.getByText('1 open signal')).toBeInTheDocument()
@@ -427,7 +431,7 @@ describe('ProjectsPage', () => {
     expect(rowsLine.textContent?.replace(/[^0-9]/g, '')).toBe('12345')
   })
 
-  it('surfaces a failing scan config even when the newest job overall succeeded (tripl-7l83.3)', async () => {
+  it('surfaces a failing scan even when the newest run overall succeeded (tripl-7l83.3)', async () => {
     // The project's single newest job (latest_scan_job) COMPLETED, but two other
     // scan configs fail every run. The old rollup keyed off latest_scan_job would
     // report "healthy" and hide them; failing_scan_config_count must not.
@@ -488,12 +492,12 @@ describe('ProjectsPage', () => {
     renderProjectsPage('owner')
 
     expect(await screen.findByText('Delta')).toBeInTheDocument()
-    // Workspace rollup counts the failing configs, not "healthy".
-    expect(screen.getByText('2 scan configs failing across 1 project')).toBeInTheDocument()
-    expect(screen.queryByText('Latest scan jobs are healthy')).not.toBeInTheDocument()
-    // The project card surfaces the failing configs even though the latest job
+    // Workspace rollup counts the failing scans, not "healthy".
+    expect(screen.getByText('2 scans failing across 1 project')).toBeInTheDocument()
+    expect(screen.queryByText('Latest scan runs are healthy')).not.toBeInTheDocument()
+    // The project card surfaces the failing scans even though the latest run
     // shown in its Latest scan panel succeeded.
-    expect(screen.getByText('2 scan configs failing')).toBeInTheDocument()
+    expect(screen.getByText('2 scans failing')).toBeInTheDocument()
     expect(screen.getByText('Hourly success')).toBeInTheDocument()
   })
 

@@ -162,7 +162,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const handleDelete = async (ds: DataSource) => {
     const ok = await confirm({
       title: 'Delete data source',
-      message: `Delete "${ds.name}"? All associated scan configs and jobs will be removed.`,
+      message: `Delete "${ds.name}"? All associated scans and their runs will be removed.`,
       confirmLabel: 'Delete',
       variant: 'danger',
     })

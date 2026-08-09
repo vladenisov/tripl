@@ -105,7 +105,7 @@ export const TEMPLATE_VARIABLE_OPTIONS = [
   { name: 'channel', description: 'Destination channel' },
   { name: 'destination_name', description: 'Destination name' },
   { name: 'rule_name', description: 'Rule name' },
-  { name: 'scan_name', description: 'Scan config name' },
+  { name: 'scan_name', description: 'Scan name' },
   { name: 'matched_count', description: 'Number of matched alert items' },
   { name: 'items_count', description: 'Alias for matched_count' },
   { name: 'items_text', description: 'Preformatted list of all matched alert items' },

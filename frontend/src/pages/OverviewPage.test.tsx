@@ -167,8 +167,8 @@ describe('OverviewPage', () => {
     expect(screen.getByText('Coverage')).toBeInTheDocument()
   })
 
-  it('names the scan config the volume card charts, not "project total" (tripl-jfm3.20)', async () => {
-    // The card plots ONE scan config. Labelled "Volume · project total" it read
+  it('names the scan the volume card charts, not "project total" (tripl-jfm3.20)', async () => {
+    // The card plots ONE scan. Labelled "Volume · project total" it read
     // as the project's whole volume while showing 2.4 % of it — with a "Top
     // events · 48h" row 12x larger directly beneath.
     mockFetch()
@@ -179,13 +179,13 @@ describe('OverviewPage', () => {
     ).toBeInTheDocument()
     expect(screen.queryByText('Volume · project total')).not.toBeInTheDocument()
     expect(
-      screen.getByText('One scan config — not the project’s combined volume across all scans.'),
+      screen.getByText('One scan — not the project’s combined volume across all scans.'),
     ).toBeInTheDocument()
     // latest bucket count = 25
     expect(await screen.findByText('25')).toBeInTheDocument()
   })
 
-  it('falls back to a bare "Volume" title when no scan config is resolved', async () => {
+  it('falls back to a bare "Volume" title when no scan is resolved', async () => {
     mockFetch({ scanConfigName: null })
     renderOverview()
 
@@ -193,7 +193,7 @@ describe('OverviewPage', () => {
     expect(screen.queryByText('Volume · project total')).not.toBeInTheDocument()
   })
 
-  it('says the top-events panel spans every scan config (tripl-jfm3.20)', async () => {
+  it('says the top-events panel spans every scan (tripl-jfm3.20)', async () => {
     // Top events sums ALL scans while the volume card above charts one, so an
     // event's 48h count can exceed the card's total. Saying so is what keeps
     // the two panels from reading as a contradiction.
@@ -201,7 +201,7 @@ describe('OverviewPage', () => {
     renderOverview()
 
     expect(
-      await screen.findByText('Across every scan config in this project.'),
+      await screen.findByText('Across every scan in this project.'),
     ).toBeInTheDocument()
   })
 

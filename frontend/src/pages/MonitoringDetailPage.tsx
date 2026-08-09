@@ -795,7 +795,7 @@ export default function MonitoringDetailPage() {
   })()
   const headerDescription = (() => {
     if (scope === 'metric') return metricDefinition?.description || 'Catalog metric monitoring detail.'
-    if (scope === 'project_total') return 'Canonical total event volume for the selected scan config.'
+    if (scope === 'project_total') return 'Canonical total event volume for the selected scan.'
     if (scope === 'event_type') return eventType?.description || 'Aggregated volume for the event type.'
     return event?.description || 'Monitoring detail for the selected event.'
   })()
@@ -1371,7 +1371,7 @@ export default function MonitoringDetailPage() {
           ) : (
             <Card>
               <CardContent className="p-6 text-sm text-muted-foreground">
-                No scan config found for this scope yet — run a scan to populate
+                No scan found for this scope yet — run a scan to populate
                 the heatmap.
               </CardContent>
             </Card>

@@ -408,15 +408,15 @@ export default function MainPage() {
               />
               <AttentionStat
                 icon={AlertTriangle}
-                label="Failed jobs"
+                label="Failed runs"
                 value={String(projectsWithFailedScan)}
                 unit={pluralize(projectsWithFailedScan, 'project', 'projects')}
                 hint={
                   projectsWithFailedScan > 0
                     ? `${pluralize(
                         failingScanConfigCount,
-                        '1 scan config failing',
-                        `${failingScanConfigCount} scan configs failing`,
+                        '1 scan failing',
+                        `${failingScanConfigCount} scans failing`,
                       )} across ${pluralize(
                         projectsWithFailedScan,
                         '1 project',
@@ -429,7 +429,7 @@ export default function MainPage() {
                           `${projectsWithRunningScan} projects are currently running scans`,
                         )
                       : projectsWithLatestScanJob > 0
-                        ? 'Latest scan jobs are healthy'
+                        ? 'Latest scan runs are healthy'
                         : 'No project has run a scan yet'
                 }
                 tone={projectsWithFailedScan > 0 ? 'danger' : projectsWithRunningScan > 0 ? 'info' : 'success'}
@@ -720,8 +720,8 @@ function ProjectCard({
             <Chip tone="danger" size="xs">
               {pluralize(
                 project.summary.failing_scan_config_count,
-                '1 scan config failing',
-                `${project.summary.failing_scan_config_count} scan configs failing`,
+                '1 scan failing',
+                `${project.summary.failing_scan_config_count} scans failing`,
               )}
             </Chip>
           )}
@@ -847,7 +847,7 @@ function LatestScanJobSummary({
   if (!job) {
     return (
       <div className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-        No scan jobs have run yet. Configure a scan and run it once to start surfacing execution
+        No scan runs yet. Configure a scan and run it once to start surfacing execution
         history here.
       </div>
     )

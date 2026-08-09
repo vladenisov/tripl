@@ -45,7 +45,7 @@ export function ConnectionSettingsFields({
             />
             <p className={HELP_CLASS}>
               The region or multi-region the datasets live in. Leave empty to let BigQuery infer it —
-              a job started in the wrong location fails.
+              a query started in the wrong location fails.
             </p>
           </div>
           <div className="grid gap-2">

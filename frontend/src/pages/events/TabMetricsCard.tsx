@@ -108,13 +108,13 @@ export function TabMetricsCard({
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5">
           <div className="min-w-0">
             <h2 className="text-[13px] font-semibold leading-tight">{activeTabLabel} Dynamics</h2>
-            {/* The series is scoped to ONE scan config — summing every scan
+            {/* The series is scoped to ONE scan — summing every scan
                 double-counts the events a legacy/backfill scan also collected —
                 so name it here rather than let "All Events Dynamics" imply the
                 project's whole volume (tripl-jfm3.20). */}
             <p className="text-[11px] leading-tight text-muted-foreground">
               Last {rangeDays} days, grouped by {granularity}
-              {tabMetrics?.scan_config_name ? ` · scan config: ${tabMetrics.scan_config_name}` : ''}.
+              {tabMetrics?.scan_config_name ? ` · scan: ${tabMetrics.scan_config_name}` : ''}.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
