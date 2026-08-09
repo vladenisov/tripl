@@ -288,7 +288,14 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
         {isLoading ? (
           <p className="text-sm text-muted-foreground">Loading branches…</p>
         ) : (
-          <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-[300px_1fr]">
+          // `minmax(0,1fr)`, not `1fr`: a bare `1fr` track is `minmax(auto,1fr)`,
+          // so its MINIMUM is the detail column's min-content width and the
+          // track grows past the viewport rather than the content wrapping. One
+          // long event description then widened the whole page, which pushed the
+          // panel header's right edge — and the Merge button on it — off-screen.
+          // Making the header wrap does not help when the page itself is wider
+          // than the window.
+          <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-[300px_minmax(0,1fr)]">
             <BranchList
               items={items}
               defaultCount={defaultCount}
@@ -600,7 +607,11 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
       : null
 
   return (
-    <div className="flex flex-col gap-3">
+    // min-w-0 completes the `minmax(0,1fr)` on the parent grid track: capping
+    // the TRACK's minimum lets the column be narrower than its content, but a
+    // grid ITEM still defaults to `min-width:auto` and would overflow the track
+    // instead of shrinking. Both are needed for the page to stop widening.
+    <div className="flex min-w-0 flex-col gap-3">
       <Panel
         title={branch.name}
         subtitle={`Opened by ${branchAuthor(branch, usersById)} · updated ${formatRelativeTime(branch.updated_at)}`}
@@ -924,7 +935,15 @@ function ChangeRow({ slug, branchId, entry, onRevert, reverting }: ChangeRowProp
         <span className="mono min-w-0 truncate text-[12.5px]" style={{ color: 'var(--fg)' }}>
           {entry.name}
         </span>
-        <span className="flex-1 text-right text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+        {/* min-w-0 for the same reason the entity name beside it has one: a
+            flex item defaults to `min-width:auto` and refuses to shrink below
+            its content, so an entry touching many fields stretched this row —
+            and with it the panel and the page. `truncate` keeps the collapsed
+            summary to one line; the full before/after is a click away. */}
+        <span
+          className="min-w-0 flex-1 truncate text-right text-[11.5px]"
+          style={{ color: 'var(--fg-subtle)' }}
+        >
           {diffEntryDetail(entry)}
         </span>
         <Chip tone={meta.tone} size="xs">
@@ -1138,7 +1157,14 @@ function isFlatRecord(value: unknown): value is Record<string, unknown> {
 /** Renders a diff value the way a reviewer reads it: scalars plain, lists
  * comma-joined, flat records as inline `key: value` pairs, and nested records
  * one per line. Pretty-printed JSON is the last resort, not the default.
- * `tone` colours the before (danger) / after (success) sides of a diff. */
+ * `tone` colours the before (danger) / after (success) sides of a diff.
+ *
+ * `wrap-anywhere` (overflow-wrap: anywhere) rather than `break-words`
+ * (overflow-wrap: break-word): only the former reduces the element's
+ * MIN-CONTENT width. `break-words` wraps once the box is already constrained,
+ * but it still reports a long unbroken token as the minimum the box needs, so
+ * inside an auto-minimum track it grows the column instead of wrapping — which
+ * is how one long event description made the whole page scroll sideways. */
 function DiffValue({ value, tone }: { value: unknown; tone?: ChipTone }) {
   const color = tone ? `var(--${tone})` : 'var(--fg)'
   const isEmpty =
@@ -1153,7 +1179,7 @@ function DiffValue({ value, tone }: { value: unknown; tone?: ChipTone }) {
   if (Array.isArray(value)) {
     if (value.every((item) => typeof item !== 'object' || item === null)) {
       return (
-        <span className="mono break-words text-[11.5px]" style={{ color }}>
+        <span className="mono wrap-anywhere text-[11.5px]" style={{ color }}>
           {value.map((item) => String(item)).join(', ')}
         </span>
       )
@@ -1164,7 +1190,7 @@ function DiffValue({ value, tone }: { value: unknown; tone?: ChipTone }) {
           {value.map((item, idx) => (
             <span
               key={idx}
-              className="mono break-words text-[11.5px]"
+              className="mono wrap-anywhere text-[11.5px]"
               style={{ color }}
             >
               {inlineRecord(item)}
@@ -1176,7 +1202,7 @@ function DiffValue({ value, tone }: { value: unknown; tone?: ChipTone }) {
   }
   if (isFlatRecord(value)) {
     return (
-      <span className="mono break-words text-[11.5px]" style={{ color }}>
+      <span className="mono wrap-anywhere text-[11.5px]" style={{ color }}>
         {inlineRecord(value)}
       </span>
     )
@@ -1192,7 +1218,7 @@ function DiffValue({ value, tone }: { value: unknown; tone?: ChipTone }) {
     )
   }
   return (
-    <span className="mono break-words text-[11.5px]" style={{ color }}>
+    <span className="mono wrap-anywhere text-[11.5px]" style={{ color }}>
       {String(value)}
     </span>
   )
