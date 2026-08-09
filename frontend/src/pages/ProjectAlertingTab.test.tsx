@@ -236,6 +236,12 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
     expect(await screen.findByText('1 delivery')).toBeInTheDocument()
     expect(screen.queryByText('1 groups')).toBeNull()
     expect(screen.queryByText('1 deliveries')).toBeNull()
+    // The group ROW, eight lines under the subtitle the sweep fixed. Scoping
+    // that sweep to Panel/SurfPanel subtitles left this one rendering "1 items"
+    // directly beneath a correct "1 group" — both counts describe the same
+    // group, so the disagreement is visible in a single glance.
+    expect(await screen.findByText('1 item')).toBeInTheDocument()
+    expect(screen.queryByText('1 items')).toBeNull()
   })
 })
 

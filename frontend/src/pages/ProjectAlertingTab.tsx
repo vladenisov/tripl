@@ -495,7 +495,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
                             <Badge variant={group.status === 'false_positive' ? 'destructive' : group.status === 'resolved' ? 'secondary' : 'outline'} className="text-[10px]">
                               {group.status}
                             </Badge>
-                            <span className="font-medium">{group.item_count} items</span>
+                            <span className="font-medium">{countOf(group.item_count, 'item', 'items')}</span>
                             <span className="text-muted-foreground">
                               {formatDateTime(group.latest_delivery_at)}
                             </span>
