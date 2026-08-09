@@ -3,8 +3,9 @@ name = "tripl-mcp"
 # 0.2.0, not 0.1.1: 0.1.0 is already on PyPI and the index never accepts a
 # re-upload, so the repo could not publish at all (tripl-yh8t). A minor rather
 # than a patch because the client extraction (tripl-ey6j.1) added a runtime
-# dependency the published 0.1.0 does not carry — `tripl>=0.1,<0.2` — and
-# `get_scan` is a new tool, so consumers get more than a bug fix.
+# dependency on `tripl` that the published 0.1.0 does not carry at all, and
+# `get_scan` is a new tool — consumers get more than a bug fix. The version
+# range that dependency pins is declared once, below; it is not repeated here.
 version = "0.2.0"
 description = "Standalone MCP server exposing a curated agent toolset over the tripl REST API"
 readme = "README.md"
@@ -89,8 +90,8 @@ dev = [
 # Development and CI only: resolve `tripl` from the sibling checkout rather than
 # from the published release, so an edit in ../cli is picked up with no install
 # step and both suites exercise the same source. uv strips this table from
-# published metadata, so the wheel keeps the plain ">=0.1,<0.2" constraint
-# declared above and consumers resolve `tripl` from PyPI. `../cli` is
+# published metadata, so the wheel keeps the plain version constraint declared
+# above and consumers resolve `tripl` from PyPI. `../cli` is
 # also the only thing named `tripl` in the repo now — backend/ used to declare
 # that distribution name too and is `tripl-server` since tripl-ey6j.6.
 tripl = { path = "../cli" }
