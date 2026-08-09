@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import ProjectSettingsPage from './ProjectSettingsPage'
+import ProjectScansPage from './ProjectScansPage'
 
 // CodeMirror needs real layout measurement that jsdom can't provide and
 // tokenizes SQL across many spans. Stub it with a plain textarea that exposes
@@ -307,12 +308,10 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -325,6 +324,10 @@ describe('ProjectSettingsPage', () => {
     const jobsTable = startedCell.closest('table')!
     const expandButton = within(jobsTable).getAllByRole('button').slice(-1)[0]
     fireEvent.click(expandButton)
+
+    // The run leads with what it did; the raw counters sit behind a disclosure
+    // (tripl-3y7z.3). This case is about the counters, so open them.
+    fireEvent.click(await screen.findByRole('button', { name: 'Show raw counters' }))
 
     expect(await screen.findByText('Signals added')).toBeInTheDocument()
     expect(screen.getByText('Alerts queued')).toBeInTheDocument()
@@ -450,11 +453,10 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -463,7 +465,7 @@ describe('ProjectSettingsPage', () => {
     fireEvent.click(await screen.findByText('Main scan'))
     fireEvent.click(await screen.findByRole('button', { name: 'Apply groups' }))
 
-    expect(await screen.findByText('Group apply job queued.')).toBeInTheDocument()
+    expect(await screen.findByText('Group apply queued.')).toBeInTheDocument()
     expect(calls).toContain('POST /api/v1/projects/demo/scans/scan-1/event-groups/apply')
   })
 
@@ -581,11 +583,10 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -1098,12 +1099,14 @@ describe('ProjectSettingsPage', () => {
           result_summary: {
             columns: [
               { name: 'event_name', type_name: 'String', is_nullable: false },
+              { name: 'screen', type_name: 'String', is_nullable: false },
               { name: 'created_at', type_name: 'DateTime', is_nullable: false },
               { name: 'payload', type_name: 'JSON', is_nullable: true },
             ],
             rows: [
               {
                 event_name: 'purchase',
+                screen: 'checkout',
                 created_at: '2026-04-12T10:30:00',
                 payload: { extra: { key: 'TASK-123' }, locale: 'en' },
               },
@@ -1152,11 +1155,10 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -1166,8 +1168,12 @@ describe('ProjectSettingsPage', () => {
     await waitFor(() => expect(addScanButton).not.toBeDisabled())
     fireEvent.click(addScanButton)
 
-    // Create flow is an in-place page (no dialog).
-    await screen.findByText('New scan config')
+    // Create flow is an in-place page (no dialog). Scoped to the heading here
+    // and at the three sibling call sites below: the list's own "New scan"
+    // BUTTON carries the same words, so `findByText('New scan')` resolves
+    // against the still-mounted list and passes even if the create page never
+    // opens. Same reasoning as ScansTab.test.tsx.
+    await screen.findByRole('heading', { name: 'New scan' })
     const textboxes = screen.getAllByRole('textbox')
     fireEvent.change(textboxes[0], { target: { value: 'Main scan' } })
     fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
@@ -1176,17 +1182,20 @@ describe('ProjectSettingsPage', () => {
     fireEvent.change(selects[0], { target: { value: 'ds-1' } })
 
     fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
+    expect(await screen.findByRole('button', { name: 'Reload preview' })).toBeInTheDocument()
 
-    expect(await screen.findByText('JSON values to keep as-is')).toBeInTheDocument()
+    // Every scan must say where its event names come from, in both modes, so
+    // this one names the column it reads them from.
+    fireEvent.change(screen.getByLabelText('Event type column'), { target: { value: 'screen' } })
+    // Catalog + monitoring is the default, and it will not create a scan until
+    // both of the columns the dispatcher reads are answered.
+    fireEvent.change(screen.getByLabelText('Time column'), { target: { value: 'created_at' } })
+    fireEvent.change(screen.getByLabelText('Schedule'), { target: { value: '1h' } })
 
-    const updatedSelects = screen.getAllByRole('combobox')
-    fireEvent.change(updatedSelects[3], { target: { value: 'created_at' } })
-
+    fireEvent.click(screen.getByRole('button', { name: /Event names and grouping/ }))
     // JSON keys are discovered on demand via a separate job, not by the fast preview.
     fireEvent.click(screen.getByRole('button', { name: 'Discover JSON keys' }))
     fireEvent.click(await screen.findByText('extra.key'))
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Breakdown by event_name' }))
-    fireEvent.change(screen.getByPlaceholderText('Unlimited'), { target: { value: '2' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add Group Rule' }))
     fireEvent.change(screen.getByPlaceholderText('button events'), {
       target: { value: 'product pages' },
@@ -1194,6 +1203,11 @@ describe('ProjectSettingsPage', () => {
     fireEvent.change(screen.getByPlaceholderText('^button:'), {
       target: { value: '^product:' },
     })
+
+    fireEvent.click(screen.getByRole('button', { name: /Metric breakdowns and drift/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Breakdown by event_name' }))
+    fireEvent.change(screen.getByPlaceholderText('Unlimited'), { target: { value: '2' } })
+
     fireEvent.click(screen.getByRole('button', { name: 'Create scan' }))
 
     await waitFor(() => {
@@ -1202,7 +1216,7 @@ describe('ProjectSettingsPage', () => {
         name: 'Main scan',
         base_query: 'SELECT * FROM analytics.events',
         event_type_id: null,
-        event_type_column: null,
+        event_type_column: 'screen',
         time_column: 'created_at',
         event_name_format: null,
         json_value_paths: ['payload.extra.key'],
@@ -1221,7 +1235,7 @@ describe('ProjectSettingsPage', () => {
         app_version_active_share_min: null,
         platform_column: null,
         cardinality_threshold: 100,
-        interval: null,
+        interval: '1h',
         replay_chunk_interval: null,
         scan_lookback_hours: 24,
         scan_row_limit: null,
@@ -1347,11 +1361,10 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -1361,16 +1374,23 @@ describe('ProjectSettingsPage', () => {
     await waitFor(() => expect(addScanButton).not.toBeDisabled())
     fireEvent.click(addScanButton)
 
-    await screen.findByText('New scan config')
+    await screen.findByRole('heading', { name: 'New scan' })
     const textboxes = screen.getAllByRole('textbox')
     fireEvent.change(textboxes[0], { target: { value: 'Versioned scan' } })
     fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
     fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'ds-1' } })
 
     fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
-    await screen.findByText('Column pickers use the sample rows. JSON paths are discovered on demand to keep the preview fast.')
+    await screen.findByTestId('scan-preview-panel')
 
-    fireEvent.change(screen.getByLabelText('App Version Column (optional)'), {
+    // Catalog-only scans still have to say where their event names come from.
+    fireEvent.change(screen.getByLabelText('Event type column'), { target: { value: 'event_name' } })
+
+    // App version is orthogonal to monitoring, so this scan is catalog-only —
+    // which is exactly the mode where leaving the schedule empty is legitimate.
+    fireEvent.click(screen.getByRole('radio', { name: 'Catalog only' }))
+    fireEvent.click(screen.getByRole('button', { name: /App version/ }))
+    fireEvent.change(screen.getByLabelText('App version column'), {
       target: { value: 'app_version' },
     })
     expect(screen.queryByLabelText('Releases to keep')).not.toBeInTheDocument()
@@ -1387,7 +1407,13 @@ describe('ProjectSettingsPage', () => {
     })
   })
 
-  it('creates missing event type fields from scan preview columns', async () => {
+  // Three components, one screen, one answer. The dry-run panel, the unmapped
+  // column list inside it and the "Create N fields" offer under it used to be
+  // computed from two different reserved-column sets and printed contradicting
+  // claims about the same data: "No new fields — every column is already mapped"
+  // directly above "Unmapped columns: created_at, payload" and a button offering
+  // to create those very fields.
+  it('offers to create exactly the columns the dry run says a run would skip', async () => {
     const bulkBodies: unknown[] = []
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -1489,6 +1515,51 @@ describe('ProjectSettingsPage', () => {
         })
       }
 
+      // The authoritative answer: `unmapped_columns` comes out of the backend's
+      // full reserved_catalog_columns set, and the button under the panel is
+      // driven by it rather than by a second reading of the preview columns.
+      if (url.endsWith('/api/v1/projects/demo/scans/dry-run') && init?.method === 'POST') {
+        return mockJsonResponse({
+          id: 'dry-run-job-1',
+          status: 'completed',
+          started_at: '2026-04-12T00:00:00Z',
+          completed_at: '2026-04-12T00:00:00Z',
+          error_message: null,
+          created_at: '2026-04-12T00:00:00Z',
+          updated_at: '2026-04-12T00:00:00Z',
+          result_summary: {
+            window_from: null,
+            window_to: null,
+            sampled_rows: 1,
+            sample_row_limit: 5000,
+            sample_is_complete: true,
+            breakdown_combinations: 1,
+            events: [
+              {
+                name: 'purchase',
+                source_name: 'purchase',
+                event_type: 'Purchase',
+                approx_row_count: 1,
+                share_of_sample: 1,
+                status: 'new',
+                grouped_by_rule: null,
+                count_confidence: 'exact',
+              },
+            ],
+            events_truncated: false,
+            max_events_reached: false,
+            // Empty on the explicit-event-type path, always: a run writes only
+            // into the fields "Purchase" already declares.
+            fields: [],
+            templated_columns: [],
+            reserved_columns: [],
+            unmapped_columns: ['created_at', 'payload'],
+            warnings: [],
+            errors: [],
+          },
+        })
+      }
+
       if (
         url.endsWith('/api/v1/projects/demo/event-types/type-1/fields/bulk')
         && init?.method === 'POST'
@@ -1542,11 +1613,10 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -1556,7 +1626,7 @@ describe('ProjectSettingsPage', () => {
     await waitFor(() => expect(addScanButton).not.toBeDisabled())
     fireEvent.click(addScanButton)
 
-    await screen.findByText('New scan config')
+    await screen.findByRole('heading', { name: 'New scan' })
     const textboxes = screen.getAllByRole('textbox')
     fireEvent.change(textboxes[0], { target: { value: 'Main scan' } })
     fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
@@ -1565,16 +1635,27 @@ describe('ProjectSettingsPage', () => {
     fireEvent.change(selects[0], { target: { value: 'ds-1' } })
     fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
 
-    expect(
-      await screen.findByText(
-        'Column pickers use the sample rows. JSON paths are discovered on demand to keep the preview fast.',
-      ),
-    ).toBeInTheDocument()
+    await screen.findByTestId('scan-preview-panel')
 
     const updatedSelects = screen.getAllByRole('combobox')
     fireEvent.change(updatedSelects[1], { target: { value: 'type-1' } })
 
-    expect(await screen.findByText(/2 preview columns have no matching field/)).toBeInTheDocument()
+    // Nothing is asked of the warehouse until the draft can name its events, so
+    // the answer is one click away once the event type is picked.
+    fireEvent.click(await screen.findByRole('button', { name: 'Check' }))
+
+    // The headline that used to be false on this exact path.
+    expect(
+      await screen.findByText(
+        'No new fields — a run only fills the fields this event type already declares.'
+        + ' The columns it does not declare are listed below.',
+      ),
+    ).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/every column is already mapped/)
+    expect(
+      screen.getByText(/created_at, payload — no field matches them/),
+    ).toBeInTheDocument()
+
     fireEvent.click(screen.getByRole('button', { name: 'Create 2 fields' }))
 
     await waitFor(() => {
@@ -1592,6 +1673,258 @@ describe('ProjectSettingsPage', () => {
           },
         ],
       })
+    })
+  })
+
+  // The case above cannot tell the two implementations apart: with no app
+  // version, platform or time column named, the reserved set the button used to
+  // build in TypeScript ({event type column, time column}) and the backend's
+  // `reserved_catalog_columns` happen to agree, so both produce "Create 2
+  // fields". This one is the case where they DISAGREE, which is the only kind
+  // that can catch the defect coming back.
+  //
+  // The draft names `app_version` as its app version column and `platform` as
+  // its platform column. Those are metric dimensions: the backend reserves them
+  // and leaves them out of `unmapped_columns`, and the panel says so out loud.
+  // The old local recomputation subtracted neither, so it offered "Create 4
+  // fields" — app_version and platform included — one line under a panel
+  // listing those very columns as reserved. Accepting that offer gives them
+  // FieldDefinitions, and `plan_column_meta` then folds them into event
+  // identity on every subsequent run.
+  //
+  // So this asserts the whole screen agrees: whatever the panel calls reserved,
+  // the button does not offer, and the request carries only what the dry run
+  // called unmapped. It fails if anyone reintroduces a second answer at the
+  // call site, which a unit test on the component alone cannot see.
+  it('never offers a column the dry run reserved, even though a local reserved set would', async () => {
+    const bulkBodies: unknown[] = []
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({
+          tables: [
+            { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+          ],
+        })
+      }
+
+      if (url.endsWith('/api/v1/data-sources')) {
+        return mockJsonResponse([
+          {
+            id: 'ds-1',
+            name: 'Main DS',
+            db_type: 'clickhouse',
+            host: 'localhost',
+            port: 8123,
+            database_name: 'default',
+            username: 'default',
+            password_set: false,
+            connection_settings: {
+              location: null,
+              maximum_bytes_billed: null,
+              dataset_allowlist: null,
+              sslmode: null,
+              sslrootcert: null,
+              sslcert: null,
+              search_path: null,
+              sslkey_set: false,
+            },
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+        ])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/event-types')) {
+        return mockJsonResponse([
+          {
+            id: 'type-1',
+            project_id: 'project-1',
+            name: 'purchase',
+            display_name: 'Purchase',
+            description: '',
+            color: '#0ea5e9',
+            order: 0,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+            field_definitions: [
+              {
+                id: 'field-1',
+                event_type_id: 'type-1',
+                name: 'event_name',
+                display_name: 'Event name',
+                field_type: 'string',
+                is_required: false,
+                enum_options: null,
+                description: '',
+                order: 0,
+                sensitivity: 'none',
+              },
+            ],
+          },
+        ])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/scans') && (!init || !init.method || init.method === 'GET')) {
+        return mockJsonResponse([])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/scans/preview') && init?.method === 'POST') {
+        return mockJsonResponse({
+          id: 'preview-job-1',
+          scan_config_id: null,
+          status: 'completed',
+          error_message: null,
+          created_at: '2026-04-12T00:00:00Z',
+          started_at: '2026-04-12T00:00:00Z',
+          completed_at: '2026-04-12T00:00:00Z',
+          result_summary: {
+            columns: [
+              { name: 'event_name', type_name: 'String', is_nullable: false },
+              { name: 'created_at', type_name: 'DateTime', is_nullable: false },
+              { name: 'app_version', type_name: 'String', is_nullable: true },
+              { name: 'platform', type_name: 'String', is_nullable: true },
+              { name: 'payload', type_name: 'JSON', is_nullable: true },
+            ],
+            rows: [
+              {
+                event_name: 'purchase',
+                created_at: '2026-04-12T10:30:00',
+                app_version: '2.10.0',
+                platform: 'ios',
+                payload: { total: 42 },
+              },
+            ],
+            json_columns: [],
+          },
+        })
+      }
+
+      // What `build_dry_run_payload` returns for this draft. The explicit event
+      // type makes may_create_fields False, so `fields` is empty; the app
+      // version and platform columns land in `reserved_catalog_columns`, so
+      // `unmapped_columns` is the rest minus the one field "Purchase" declares.
+      if (url.endsWith('/api/v1/projects/demo/scans/dry-run') && init?.method === 'POST') {
+        return mockJsonResponse({
+          id: 'dry-run-job-1',
+          status: 'completed',
+          started_at: '2026-04-12T00:00:00Z',
+          completed_at: '2026-04-12T00:00:00Z',
+          error_message: null,
+          created_at: '2026-04-12T00:00:00Z',
+          updated_at: '2026-04-12T00:00:00Z',
+          result_summary: {
+            window_from: null,
+            window_to: null,
+            sampled_rows: 1,
+            sample_row_limit: 5000,
+            sample_is_complete: true,
+            breakdown_combinations: 1,
+            events: [
+              {
+                name: 'purchase',
+                source_name: 'purchase',
+                event_type: 'Purchase',
+                approx_row_count: 1,
+                share_of_sample: 1,
+                status: 'new',
+                grouped_by_rule: null,
+                count_confidence: 'exact',
+              },
+            ],
+            events_truncated: false,
+            max_events_reached: false,
+            fields: [],
+            templated_columns: [],
+            reserved_columns: ['app_version', 'platform'],
+            unmapped_columns: ['created_at', 'payload'],
+            warnings: [],
+            errors: [],
+          },
+        })
+      }
+
+      if (
+        url.endsWith('/api/v1/projects/demo/event-types/type-1/fields/bulk')
+        && init?.method === 'POST'
+      ) {
+        bulkBodies.push(JSON.parse(String(init.body)))
+        return mockJsonResponse([])
+      }
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
+          <Routes>
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    const addScanButton = await screen.findByRole('button', { name: /New scan/i })
+    await waitFor(() => expect(addScanButton).not.toBeDisabled())
+    fireEvent.click(addScanButton)
+
+    await screen.findByRole('heading', { name: 'New scan' })
+    const textboxes = screen.getAllByRole('textbox')
+    fireEvent.change(textboxes[0], { target: { value: 'Versioned scan' } })
+    fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
+
+    const selects = screen.getAllByRole('combobox')
+    fireEvent.change(selects[0], { target: { value: 'ds-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
+
+    await screen.findByTestId('scan-preview-panel')
+
+    const updatedSelects = screen.getAllByRole('combobox')
+    fireEvent.change(updatedSelects[1], { target: { value: 'type-1' } })
+
+    // Named before the check runs, so the answer the panel renders is the answer
+    // for a draft that reserves them — not a stale one the button would hide for.
+    fireEvent.click(screen.getByRole('button', { name: /App version/ }))
+    fireEvent.change(screen.getByLabelText('App version column'), {
+      target: { value: 'app_version' },
+    })
+    fireEvent.change(screen.getByLabelText('Platform column'), {
+      target: { value: 'platform' },
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Check' }))
+
+    // The panel's two lists, which the button must not contradict.
+    expect(
+      await screen.findByText(
+        /app_version, platform — tripl already uses these, so they never become event fields/,
+      ),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/created_at, payload — no field matches them/),
+    ).toBeInTheDocument()
+
+    // Two, not four. The old TS reserved set held only the event type column and
+    // the time column, neither of which this draft names, so it would have
+    // counted every preview column without a field definition.
+    expect(screen.getByRole('button', { name: 'Create 2 fields' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Create 4 fields' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create 2 fields' }))
+
+    await waitFor(() => expect(bulkBodies).toHaveLength(1))
+    expect(bulkBodies[0]).toEqual({
+      fields: [
+        { name: 'created_at', display_name: 'created_at', field_type: 'string' },
+        { name: 'payload', display_name: 'payload', field_type: 'json' },
+      ],
     })
   })
 
@@ -1726,11 +2059,10 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,

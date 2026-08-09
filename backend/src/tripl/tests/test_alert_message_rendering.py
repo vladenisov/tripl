@@ -32,7 +32,7 @@ from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
-from tripl.schemas.alerting import SimulatedRuleFiring
+from tripl.schemas.alerting import AlertDeliveryItemResponse, SimulatedRuleFiring
 from tripl.services.alerting_rendering import render_firing_item
 from tripl.worker.tasks.alerts_messages import (
     TELEGRAM_MESSAGE_MAX_CHARS,
@@ -41,9 +41,11 @@ from tripl.worker.tasks.alerts_messages import (
     _is_telegram_markdown_parse_error,
     _is_telegram_message_too_long_error,
     _render_delivery_message,
+    _webhook_item_payload,
     split_telegram_messages,
     telegram_message_length,
 )
+from tripl.worker.tasks.metrics.alert_payload import _build_delivery_snapshot
 
 
 @pytest.fixture
@@ -406,6 +408,37 @@ def test_the_zero_baseline_label_survives_markdownv2_escaping() -> None:
     assert "0\\.0%" not in text
 
 
+def test_the_typed_api_item_reports_no_percentage_rather_than_zero() -> None:
+    """One delivery must not answer the same question two ways.
+
+    ``AlertDeliveryDetailResponse`` carries BOTH ``payload_snapshot`` (where the
+    percent has been null at a zero baseline since tripl-l429.27) and the typed
+    ``items[]`` array, which used to be a bare float served straight off the
+    NOT NULL column — so a single JSON body said ``null`` and ``0.0`` about the
+    same number, and the typed half is the one an external consumer reads off
+    the OpenAPI spec.
+
+    The stored column is untouched: a delivery is frozen history. Only the
+    outbound encoding changes, and it is enforced on the model so no future call
+    site can construct the response without it.
+    """
+    serialized = AlertDeliveryItemResponse.model_validate(_zero_baseline_item())
+
+    assert serialized.percent_delta is None, (
+        "a zero baseline has no ratio to report; 0.0 is indistinguishable from "
+        "'no change' for a consumer testing percent_delta > threshold"
+    )
+    assert serialized.expected_count == 0
+    assert serialized.absolute_delta == 137, "the number that does mean something stays"
+
+
+def test_the_typed_api_item_keeps_a_real_percentage() -> None:
+    """The guard must not swallow the ordinary case."""
+    serialized = AlertDeliveryItemResponse.model_validate(_item(0))
+
+    assert serialized.percent_delta == 51.9
+
+
 def test_an_ordinary_item_still_renders_its_percentage_unchanged() -> None:
     """Nothing moves for the case that has a baseline — byte for byte."""
     plain = _render_in(_item(0), ALERT_MESSAGE_FORMAT_PLAIN)
@@ -446,3 +479,148 @@ def test_the_preview_says_the_same_thing_as_the_send() -> None:
 
     assert previewed == _render_in(item, ALERT_MESSAGE_FORMAT_PLAIN)
     assert "no baseline" in previewed
+
+
+def test_a_saved_custom_template_still_prints_the_bare_number() -> None:
+    """``${percent_delta}`` is documented as a raw number and stays one.
+
+    An operator's saved ``items_template`` is their content: no code rewrites it,
+    so a rule that wrote ``${percent_delta}%`` before ``${percent_delta_label}``
+    existed goes on printing ``0.0%`` at a zero baseline. Pinned here so the
+    behaviour is a deliberate contract rather than an oversight — the way out is
+    the operator swapping the variable, which
+    ``website/docs/use/alerting.md`` ("Message templates") tells them to do.
+    """
+    item = _zero_baseline_item()
+
+    raw = _build_items_text(
+        [item],
+        message_format=ALERT_MESSAGE_FORMAT_PLAIN,
+        items_template="${scope_name}: ${percent_delta}%",
+    )
+    labelled = _build_items_text(
+        [item],
+        message_format=ALERT_MESSAGE_FORMAT_PLAIN,
+        items_template="${scope_name}: ${percent_delta_label}",
+    )
+
+    assert raw == "checkout:completed: 0.0%"
+    assert labelled == "checkout:completed: no baseline"
+
+
+# --- the machine encodings of the same fact (tripl-l429.27) -----------------
+#
+# Humans are told "no baseline"; programs are handed JSON null. What neither may
+# be handed is the stored 0.0 placeholder, which a consumer cannot tell apart
+# from a real "no change".
+
+
+def test_the_webhook_body_says_null_rather_than_zero_at_a_zero_baseline() -> None:
+    payload = _webhook_item_payload(_zero_baseline_item())
+
+    assert payload["percent_delta"] is None, (
+        "0.0 in the webhook body reads as 'no change' on the anomaly that "
+        "moved the most; expected_count sits beside it but a consumer testing "
+        "percent_delta alone has no way to know that"
+    )
+    # The numbers that do mean something are untouched.
+    assert payload["expected_count"] == 0
+    assert payload["actual_count"] == 137
+    assert payload["absolute_delta"] == 137
+
+
+def test_the_webhook_body_still_carries_the_number_when_there_was_a_baseline() -> None:
+    payload = _webhook_item_payload(_item(0))
+
+    assert payload["percent_delta"] == 51.9
+    assert payload["expected_count"] == 32048
+
+
+def _snapshot_items(expected_count: float) -> list[dict[str, object]]:
+    """``payload_snapshot["items"]`` for one anomaly with the given baseline."""
+    from tripl.models.metric_anomaly import MetricAnomaly
+
+    anomaly = MetricAnomaly(
+        id=uuid.uuid4(),
+        scan_config_id=uuid.uuid4(),
+        scope_type="event",
+        scope_ref="event-1",
+        event_id=None,
+        event_type_id=None,
+        bucket=datetime(2026, 8, 4, 19, tzinfo=UTC),
+        direction="spike",
+        actual_count=137,
+        expected_count=expected_count,
+        stddev=1.0,
+        z_score=9.9,
+    )
+    snapshot = _build_delivery_snapshot(
+        ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=uuid.uuid4(),
+            project_id=uuid.uuid4(),
+            name="Hourly scan",
+            base_query="SELECT 1",
+            time_column="created_at",
+            cardinality_threshold=100,
+            interval="1h",
+        ),
+        project_slug="checkout",
+        rule=AlertRule(id=uuid.uuid4(), destination_id=uuid.uuid4(), name="Volume drops"),
+        destination=AlertDestination(
+            id=uuid.uuid4(),
+            project_id=uuid.uuid4(),
+            type=AlertDestinationType.webhook.value,
+            name="Ops Webhook",
+        ),
+        anomalies=[anomaly],
+        scope_names={("event", "event-1"): "checkout:completed"},
+        delivery_id=uuid.uuid4(),
+    )
+    items = snapshot["items"]
+    assert isinstance(items, list)
+    return items
+
+
+def test_the_frozen_delivery_snapshot_says_null_at_a_zero_baseline() -> None:
+    """The audit/Inbox blob is read as JSON too, so it gets the same encoding."""
+    (item,) = _snapshot_items(0.0)
+
+    assert item["percent_delta"] is None
+    assert item["expected_count"] == 0
+    assert item["absolute_delta"] == 137
+
+
+def test_the_frozen_delivery_snapshot_keeps_the_ratio_when_there_was_one() -> None:
+    (item,) = _snapshot_items(100.0)
+
+    assert item["percent_delta"] == pytest.approx(37.0)
+    assert item["expected_count"] == 100
+
+
+def test_a_fractional_baseline_survives_the_snapshot_intact() -> None:
+    """A baseline below 1 is a real baseline, not a missing one.
+
+    The snapshot used to round ``expected_count`` for output. Rounding the
+    percent GATE to match it — the obvious way to stop ``expected_count: 0``
+    appearing beside a non-null percent — silently reclassified every fractional
+    baseline as "no baseline": 0.2 became ``expected_count: 0, percent_delta:
+    null`` here, while ``AlertDeliveryItemResponse`` and the webhook kept 0.2
+    and the real percentage off the same stored row. One delivery answered the
+    same question two ways, which is the defect the null encoding exists to
+    prevent.
+
+    0.2 is not a contrived value: ``test_a_fractional_baseline_below_one_keeps_
+    its_full_percent`` pins it as a 350% move that must clear a 300% threshold.
+    Ratio-shaped catalog metrics live down here.
+    """
+    (item,) = _snapshot_items(0.2)
+
+    assert item["expected_count"] == pytest.approx(0.2), (
+        "a fractional baseline must survive as itself; rounding it to 0 tells "
+        "every consumer there was no baseline at all"
+    )
+    assert item["percent_delta"] is not None, "there WAS a baseline, so there is a ratio to report"
+    # |137 - 0.2| / 0.2 * 100
+    assert item["percent_delta"] == pytest.approx(68400.0)
+    assert item["absolute_delta"] == pytest.approx(136.8)

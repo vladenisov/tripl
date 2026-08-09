@@ -17,12 +17,14 @@ import { Search } from "lucide-react"
 import { RunStatusPill, ScanListRow } from "./scans/ScanConfigRow"
 import { runPillStatus } from "./scans/scanRunStatus"
 import { ScanCreatePage } from "./scans/ScanConfigForm"
+import { scanModeOf } from "./scans/scanMode"
 import { StatCard, SurfPanel } from "./scans/scanLayout"
 import { INTERVAL_LABEL, formatCount } from "./scans/scanLayoutConstants"
 import { LOADING_SCAN_RUN_INFO, deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, summarizeScanChanges, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
 import { useAdaptiveRefetchIntervalFn } from "@/realtime/streamContext"
 import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
+import { countOf, pluralize } from "@/lib/plural"
 import { dataSourcesKey } from '@/lib/queryKeys'
 
 interface RecentRun {
@@ -190,16 +192,24 @@ export function ScansTab({ slug }: { slug: string }) {
     return <ScanCreatePage slug={slug} onBack={() => setView('list')} />
   }
 
-  const scheduledCount = scanConfigs.filter((sc: ScanConfig) => sc.interval).length
+  // Counting `interval` alone counted the broken quadrant — a schedule with no
+  // time column is never dispatched, so it monitors nothing (tripl-3y7z.1).
+  const monitoringCount = scanConfigs.filter(
+    (sc: ScanConfig) => scanModeOf(sc) === 'monitoring',
+  ).length
 
   return (
     <div className="flex flex-col gap-[18px]">
       <div className="flex items-end justify-between gap-4">
         <div className="min-w-0">
           <h2 className="text-lg font-semibold">Scans</h2>
+          {/* The mechanical description said what a scan IS; this one says what
+              it PRODUCES and what consumes it, because a scan's output reaches
+              the user as anomalies and alerts (tripl-3y7z.2). */}
           <p className="mt-1 max-w-[560px] text-sm" style={{ color: 'var(--fg-subtle)' }}>
-            Warehouse queries tripl runs on a schedule to ingest events and roll up metrics from
-            your data sources.
+            Scans read your warehouse. Every run adds events and fields to your tracking plan; a
+            monitoring scan also runs on a schedule and records metric points, and those points are
+            what anomaly detection and alerts are built on.
           </p>
         </div>
         <Button
@@ -214,22 +224,29 @@ export function ScansTab({ slug }: { slug: string }) {
       </div>
 
       <div className="grid grid-cols-3 gap-3">
-        <StatCard label="Scan configs" value={scanConfigs.length} />
-        <StatCard label="Scheduled" value={scheduledCount} />
-        <StatCard label="Rows scanned · 24h" value={formatCount(rowsScanned24h)} />
+        <StatCard label="Scans" value={scanConfigs.length} />
+        <StatCard label="Monitoring" value={monitoringCount} />
+        <StatCard
+          label="Warehouse rows read · 24h"
+          value={formatCount(rowsScanned24h)}
+          title="Rows read across every catalog and metrics run in the last 24 hours."
+        />
       </div>
 
       {dataSources.length === 0 && (
         <EmptyState
           icon={Search}
           title="No data sources"
-          description="Add a data source connection first (via the global Data Sources page) to create scan configs."
+          description="Add a data source connection first (via the global Data Sources page) to create a scan."
         />
       )}
 
-      <SurfPanel title="Scan configs" subtitle={`${scanConfigs.length} configs`}>
+      {/* A project has exactly one scan the moment it finishes the onboarding
+          checklist's "Run a scan" step, so "1 scans" was the first thing a new
+          user read on the page this epic exists to make comprehensible. */}
+      <SurfPanel title="Scans" subtitle={countOf(scanConfigs.length, 'scan', 'scans')}>
         {scanConfigsLoading ? (
-          <div className="space-y-2 px-4 py-4" aria-busy="true" aria-label="Loading scan configs">
+          <div className="space-y-2 px-4 py-4" aria-busy="true" aria-label="Loading scans">
             {[0, 1, 2].map((index) => (
               <Skeleton key={index} className="h-10 w-full" />
             ))}
@@ -238,7 +255,7 @@ export function ScansTab({ slug }: { slug: string }) {
           <div className="p-4">
             <ErrorState
               compact
-              title="Couldn't load scan configs"
+              title="Couldn't load scans"
               error={scanConfigsErrorObj}
               onRetry={() => {
                 void refetchScanConfigs()
@@ -247,7 +264,7 @@ export function ScansTab({ slug }: { slug: string }) {
           </div>
         ) : scanConfigs.length === 0 ? (
           <p className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
-            No scan configs yet.
+            No scans yet.
           </p>
         ) : (
           <table className="w-full border-collapse">
@@ -273,7 +290,7 @@ export function ScansTab({ slug }: { slug: string }) {
                   dataSource={dsMap.get(sc.data_source_id) ?? null}
                   runInfo={runInfoById.get(sc.id) ?? LOADING_SCAN_RUN_INFO}
                   intervalLabel={INTERVAL_LABEL}
-                  onNavigate={() => navigate(`/p/${slug}/settings/scans/${sc.id}`)}
+                  onNavigate={() => navigate(`/p/${slug}/scans/${sc.id}`)}
                   onRun={() => runScan.mutate(sc.id)}
                   runPending={pendingScanId === sc.id}
                   // The step-1 CTA opens this list; point the coach at the first
@@ -288,7 +305,7 @@ export function ScansTab({ slug }: { slug: string }) {
       </SurfPanel>
 
       {recentRuns.length > 0 && (
-        <SurfPanel title="Recent runs" subtitle="Latest jobs across all scans">
+        <SurfPanel title="Recent runs" subtitle="Latest runs across all scans">
           <div>
             {recentRuns.map(run => {
               const isFailed = run.status === 'failed'
@@ -351,7 +368,12 @@ export function ScansTab({ slug }: { slug: string }) {
                     ) : (
                       <>
                         <span className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-                          {run.rows == null ? '—' : `${formatCount(run.rows)} rows`}
+                          {/* `formatCount` compacts (1.8M), so the noun agrees
+                              with the raw count rather than the printed text —
+                              a run that read a single row said "1 rows". */}
+                          {run.rows == null
+                            ? '—'
+                            : `${formatCount(run.rows)} ${pluralize(run.rows, 'row', 'rows')}`}
                         </span>
                         <span className="mono w-[52px] text-right text-[11px]" style={{ color: 'var(--fg-faint)' }}>
                           {run.durationSec == null ? '—' : `${run.durationSec.toFixed(1)}s`}

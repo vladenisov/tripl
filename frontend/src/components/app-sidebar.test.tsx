@@ -216,7 +216,7 @@ describe('AppSidebar', () => {
       Alerting: '/p/demo/settings/alerting',
       Reconciliation: '/p/demo/reconciliation',
       Coverage: '/p/demo/coverage',
-      Scans: '/p/demo/settings/scans',
+      Scans: '/p/demo/scans',
       'Audit log': '/p/demo/settings/audit',
     }
     for (const [label, href] of Object.entries(expected)) {

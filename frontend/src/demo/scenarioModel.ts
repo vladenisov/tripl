@@ -544,7 +544,7 @@ export function buildChapterSteps(
   state: ScenarioState,
 ): ScenarioStep[] {
   const base = `/p/${slug}`
-  const scans = `${base}/settings/scans`
+  const scans = `${base}/scans`
   switch (chapterId) {
     case 'live-loop': {
       const scan = scenarioScanArtifact(state)

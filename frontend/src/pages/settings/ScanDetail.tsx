@@ -4,14 +4,13 @@ import { Ban, ChevronDown, GitMerge, RotateCcw, XCircle } from "lucide-react"
 import { scansApi } from "@/api/scans"
 import { useDemoScenarioActions, useScenarioArtifacts } from "@/demo/demoScenarioContext"
 import { ScenarioCoachMark } from "@/demo/ScenarioCoachMark"
-import type { DataSource, EventType, ScanConfig, ScanJob, ScanJobResultSummary } from "@/types"
+import type { DataSource, EventType, ScanConfig, ScanJob } from "@/types"
 import { Button } from "@/components/ui/button"
-import { Card } from "@/components/ui/card"
 import { Chip } from "@/components/primitives/chip"
 import { ErrorState } from "@/components/error-state"
 import { getErrorMessage } from '@/lib/utils'
 import { friendlyScanError } from '@/lib/scanError'
-import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
+import { formatRelativeTime } from '@/lib/datetime'
 import {
   KV,
   NoneTag,
@@ -21,74 +20,12 @@ import {
 } from './scans/scanLayout'
 import { RunStatusPill } from './scans/ScanConfigRow'
 import { runPillStatus } from './scans/scanRunStatus'
-import { consecutiveFailedRuns, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork } from './scans/scanUtils'
+import { JobDetails } from './scans/JobDetails'
+import { ReplayChunkProgress } from './scans/ReplayChunkProgress'
+import { jobRowsReadTitle } from './scans/runReport'
+import { SCAN_MODE_DETAIL_LABEL, type ScanMode, scanModeOf } from './scans/scanMode'
+import { consecutiveFailedRuns, jobDurationSeconds, jobMetricPoints, jobRowsScanned, scanJobsHaveActiveWork } from './scans/scanUtils'
 import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max)
-}
-
-function getReplayProgress(summary: ScanJobResultSummary | null) {
-  if (!summary || summary.mode !== 'metrics_replay' || !summary.replay_chunks_total) {
-    return null
-  }
-  const total = Math.max(summary.replay_chunks_total, 0)
-  if (total === 0) return null
-  const completed = clamp(summary.replay_chunks_completed ?? 0, 0, total)
-  const percent = clamp(summary.replay_progress_percent ?? (completed / total) * 100, 0, 100)
-  const current = summary.replay_current_chunk_index
-    ? clamp(summary.replay_current_chunk_index, 1, total)
-    : null
-  return {
-    completed,
-    total,
-    current,
-    percent,
-    phase: summary.replay_progress_phase,
-    currentFrom: summary.replay_current_chunk_from,
-    currentTo: summary.replay_current_chunk_to,
-  }
-}
-
-function ReplayChunkProgress({ summary, compact = false }: { summary: ScanJobResultSummary; compact?: boolean }) {
-  const progress = getReplayProgress(summary)
-  if (!progress) return null
-
-  const chunkLabel = `${progress.completed}/${progress.total} chunks`
-  const phaseLabel = progress.phase === 'collecting' && progress.current
-    ? `processing ${progress.current}/${progress.total}`
-    : progress.phase
-
-  return (
-    <div className={compact ? 'w-44 max-w-full space-y-1' : 'space-y-2'}>
-      <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-        <span className="font-medium text-foreground">Replay chunks</span>
-        <span>{chunkLabel}</span>
-      </div>
-      <div
-        aria-label="Replay chunks"
-        aria-valuemax={100}
-        aria-valuemin={0}
-        aria-valuenow={Math.round(progress.percent)}
-        className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
-        role="progressbar"
-      >
-        <div className="h-full bg-primary transition-[width]" style={{ width: `${progress.percent}%` }} />
-      </div>
-      {!compact && (
-        <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          {phaseLabel && <span>{phaseLabel}</span>}
-          {progress.currentFrom && progress.currentTo && (
-            <span>
-              {formatDateTime(progress.currentFrom)} - {formatDateTime(progress.currentTo)}
-            </span>
-          )}
-        </div>
-      )}
-      {compact && phaseLabel && <div className="text-[10px] text-muted-foreground">{phaseLabel}</div>}
-    </div>
-  )
-}
 
 function chipList(values: string[]) {
   if (values.length === 0) return <NoneTag />
@@ -218,7 +155,7 @@ export function ScanDetail({
     mutationFn: () => scansApi.applyEventGroups(slug, scanConfig.id),
     onMutate: () => setApplyGroupsMessage(''),
     onSuccess: () => {
-      setApplyGroupsMessage('Group apply job queued.')
+      setApplyGroupsMessage('Group apply queued.')
       qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] })
       qc.invalidateQueries({ queryKey: ['scans', slug] })
       qc.invalidateQueries({ queryKey: ['events', slug] })
@@ -244,9 +181,10 @@ export function ScanDetail({
   const lastJob = jobs[0] ?? null
   const lastRows = jobRowsScanned(lastJob)
   const lastEvents = lastJob?.result_summary?.events_created ?? null
-  const lastMetricRows = lastJob?.result_summary?.breakdown_event_metrics
-    ?? lastJob?.result_summary?.event_metrics
-    ?? null
+  // One formula, shared with the list chip (scanUtils.jobMetricPoints). The old
+  // `breakdown_event_metrics ?? event_metrics` fallback disagreed with the chip
+  // for every scan that had breakdowns.
+  const lastMetricPoints = jobMetricPoints(lastJob)
 
   // Last-good timestamp: when the most recent run failed, surface when the scan
   // last succeeded so a red row is never the only signal.
@@ -254,7 +192,7 @@ export function ScanDetail({
   const lastGoodAt = lastGoodJob ? (lastGoodJob.completed_at ?? lastGoodJob.started_at) : null
   const recentJobsSubtitle = lastGoodAt
     ? `Last succeeded ${formatRelativeTime(lastGoodAt)}`
-    : 'Latest scan runs'
+    : 'Latest runs of this scan'
 
   // A scan that fails every run produces a wall of identical failed rows. Collapse
   // that into one "failed last N runs" streak banner with the reason and a single
@@ -267,10 +205,14 @@ export function ScanDetail({
   const collapseStreak = failingStreak >= 2
   const streakJobs = collapseStreak ? jobs.slice(0, failingStreak) : []
   const restJobs = collapseStreak ? jobs.slice(failingStreak) : jobs
+  const mode = scanModeOf(scanConfig)
   const renderJobRow = (job: ScanJob) => (
     <JobRow
       key={job.id}
       job={job}
+      slug={slug}
+      scanConfigId={scanConfig.id}
+      mode={mode}
       watched={job.id === scanJobId}
       expanded={expandedJobId === job.id}
       onToggle={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}
@@ -289,9 +231,19 @@ export function ScanDetail({
           label="Last run"
           value={lastJob ? formatRelativeTime(lastJob.completed_at ?? lastJob.started_at ?? lastJob.created_at) : 'never'}
         />
-        <StatCard label="Rows · last run" value={lastRows == null ? '—' : lastRows.toLocaleString()} />
+        {/* One label, two populations: a catalog run reports scan_rows_processed
+            and a metrics run reports query_rows_scanned. The card cannot say
+            which, so the title does. */}
+        <StatCard
+          label="Rows read · last run"
+          value={lastRows == null ? '—' : lastRows.toLocaleString()}
+          title={jobRowsReadTitle(lastJob)}
+        />
         <StatCard label="Events written" value={lastEvents == null ? '—' : lastEvents.toLocaleString()} />
-        <StatCard label="Metric rows" value={lastMetricRows == null ? '—' : lastMetricRows.toLocaleString()} />
+        {/* "Metric points", not "Metric rows": these are time-series points on a
+            metric, and "Metrics" is the name of a different surface (Observe ›
+            Metrics, the user-defined catalog). */}
+        <StatCard label="Metric points" value={lastMetricPoints == null ? '—' : lastMetricPoints.toLocaleString()} />
       </div>
 
       {/* Source & query */}
@@ -314,6 +266,7 @@ export function ScanDetail({
             style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)', color: 'var(--fg)' }}
           >{scanConfig.base_query}</pre>
         </div>
+        <KV label="Mode" value={SCAN_MODE_DETAIL_LABEL[scanModeOf(scanConfig)]} />
         <KV label="Time column" value={scanConfig.time_column || <NoneTag />} mono={!!scanConfig.time_column} />
         <KV label="Event name format" value={scanConfig.event_name_format || <NoneTag />} mono={!!scanConfig.event_name_format} />
       </SurfPanel>
@@ -321,9 +274,18 @@ export function ScanDetail({
       {/* Mapping + metrics grid */}
       <div className="grid items-start gap-3 lg:grid-cols-2">
         <SurfPanel title="Event mapping">
+          {/* "Auto-detect" claimed a detection that never happened: with no
+              event type AND no event type column a scan cannot name anything,
+              and every run of it fails. The form asks the two together now, so
+              this row says which of the two answers the config gave. */}
           <KV
             label="Event type"
-            value={etName ?? <span style={{ color: 'var(--fg-faint)' }}>Auto-detect</span>}
+            value={
+              etName
+              ?? (scanConfig.event_type_column
+                ? <span style={{ color: 'var(--fg-faint)' }}>Named from a column</span>
+                : <NoneTag />)
+            }
           />
           <KV label="Event type column" value={scanConfig.event_type_column || <NoneTag />} mono={!!scanConfig.event_type_column} />
           <KV
@@ -360,9 +322,9 @@ export function ScanDetail({
       {/* Platform presence matrix */}
       <PlatformPresencePanel slug={slug} scanConfigId={scanConfig.id} />
 
-      {/* Recent jobs */}
+      {/* Recent runs */}
       <SurfPanel
-        title="Recent jobs"
+        title="Recent runs"
         subtitle={recentJobsSubtitle}
         right={
           <Button
@@ -424,8 +386,8 @@ export function ScanDetail({
             )}
           </div>
         )}
-        {isLoading && <p className="px-4 py-3 text-sm text-muted-foreground">Loading jobs…</p>}
-        {/* A failed jobs fetch previously fell through to "No jobs yet" — surface
+        {isLoading && <p className="px-4 py-3 text-sm text-muted-foreground">Loading runs…</p>}
+        {/* A failed jobs fetch previously fell through to "No runs yet" — surface
             the error with a retry instead of a false empty (tripl-2su6.9). */}
         {jobsError && !isLoading && (
           <div className="p-4">
@@ -440,7 +402,7 @@ export function ScanDetail({
           </div>
         )}
         {jobs.length === 0 && !isLoading && !jobsError && (
-          <p className="px-4 py-3 text-sm text-muted-foreground">No jobs yet. Use “Run now” to start.</p>
+          <p className="px-4 py-3 text-sm text-muted-foreground">No runs yet. Use “Run now” to start.</p>
         )}
         {jobs.length > 0 && (
           <table className="w-full border-collapse">
@@ -448,7 +410,7 @@ export function ScanDetail({
               <tr style={{ background: 'var(--bg-sunken)' }}>
                 <th className="px-4 py-2 text-left text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Started</th>
                 <th className="px-4 py-2 text-right text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Duration</th>
-                <th className="px-4 py-2 text-right text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Rows scanned</th>
+                <th className="px-4 py-2 text-right text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Rows read</th>
                 <th className="px-4 py-2 text-right text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Events</th>
                 <th className="px-4 py-2 text-left text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Status</th>
                 <th className="w-8" />
@@ -484,6 +446,9 @@ export function ScanDetail({
 
 function JobRow({
   job,
+  slug,
+  scanConfigId,
+  mode,
   watched,
   expanded,
   onToggle,
@@ -493,6 +458,11 @@ function JobRow({
   retryPending,
 }: {
   job: ScanJob
+  /** Both only reach JobDetails, which links its Signals/Alerts counters out. */
+  slug: string
+  scanConfigId: string
+  /** The config's mode, forwarded to the run report's catalog-only line. */
+  mode: ScanMode
   /** This is the run the coached demo scenario is following — at most one row. */
   watched: boolean
   expanded: boolean
@@ -523,7 +493,12 @@ function JobRow({
             {job.started_at ? formatRelativeTime(job.started_at) : '—'}
           </td>
           <td className="mono px-4 py-2.5 text-right text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>{duration}</td>
-          <td className="mono tnum px-4 py-2.5 text-right text-[11.5px]">{rows == null ? '—' : rows.toLocaleString()}</td>
+          {/* The header says "Rows read" for every row, but a catalog run and a
+              metrics run count different populations under different caps. Per
+              cell is the only place that distinction fits. */}
+          <td className="mono tnum px-4 py-2.5 text-right text-[11.5px]" title={jobRowsReadTitle(job)}>
+            {rows == null ? '—' : rows.toLocaleString()}
+          </td>
           <td className="mono tnum px-4 py-2.5 text-right text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
             {events == null ? '—' : events.toLocaleString()}
           </td>
@@ -537,8 +512,8 @@ function JobRow({
                   variant="ghost"
                   size="icon"
                   className="size-6 text-muted-foreground hover:text-[var(--danger)]"
-                  title="Stop job"
-                  aria-label="Stop job"
+                  title="Stop run"
+                  aria-label="Stop run"
                   disabled={cancelPending}
                   onClick={onCancel}
                 >
@@ -563,7 +538,7 @@ function JobRow({
                   variant="ghost"
                   size="icon"
                   className="size-6"
-                  aria-label={expanded ? 'Collapse job details' : 'Expand job details'}
+                  aria-label={expanded ? 'Collapse run details' : 'Expand run details'}
                   aria-expanded={expanded}
                   onClick={onToggle}
                 >
@@ -586,67 +561,10 @@ function JobRow({
       {expanded && (
         <tr>
           <td colSpan={6} className="p-0">
-            <JobDetails job={job} />
+            <JobDetails job={job} slug={slug} scanConfigId={scanConfigId} mode={mode} />
           </td>
         </tr>
       )}
     </Fragment>
-  )
-}
-
-function JobDetails({ job }: { job: ScanJob }) {
-  const summary = job.result_summary
-  return (
-    <div className="space-y-3 bg-muted/30 p-4">
-      <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Job details</h4>
-      {job.error_message && (
-        <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-xs text-destructive">
-          {friendlyScanError(job.error_message).message}
-        </div>
-      )}
-      {summary && (
-        <>
-          {(summary.time_from || summary.time_to) && (
-            <div className="rounded-md border bg-background p-3 text-xs text-muted-foreground">
-              <span className="font-medium text-foreground">
-                {summary.mode === 'metrics_replay' ? 'Replay period' : 'Collection period'}
-              </span>
-              {summary.time_from && summary.time_to && (
-                <span> · {formatDateTime(summary.time_from)} - {formatDateTime(summary.time_to)}</span>
-              )}
-            </div>
-          )}
-          <ReplayChunkProgress summary={summary} />
-          <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-3 xl:grid-cols-5">
-            <Card className="p-3 text-center"><div className="text-lg font-bold" style={{ color: 'var(--success)' }}>{summary.events_created ?? 0}</div><div className="text-muted-foreground">Events created</div></Card>
-            <Card className="p-3 text-center"><div className="text-lg font-bold" style={{ color: 'var(--info)' }}>{summary.variables_created ?? 0}</div><div className="text-muted-foreground">Variables created</div></Card>
-            <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.events_skipped ?? 0}</div><div className="text-muted-foreground">Events skipped</div></Card>
-            <Card className="p-3 text-center"><div className="text-lg font-bold" style={{ color: 'var(--accent)' }}>{summary.columns_analyzed ?? 0}</div><div className="text-muted-foreground">Columns analyzed</div></Card>
-            {summary.breakdown_event_metrics != null && (
-              <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.breakdown_event_metrics}</div><div className="text-muted-foreground">Event breakdowns</div></Card>
-            )}
-            {summary.distribution_drifts != null && (
-              <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.distribution_drifts}</div><div className="text-muted-foreground">Distribution rows</div></Card>
-            )}
-            {summary.signals_added != null && (
-              <Card className="p-3 text-center"><div className="text-lg font-bold" style={{ color: 'var(--danger)' }}>{summary.signals_added}</div><div className="text-muted-foreground">Signals added</div></Card>
-            )}
-            {summary.alerts_queued != null && (
-              <Card className="p-3 text-center"><div className="text-lg font-bold" style={{ color: 'var(--warning)' }}>{summary.alerts_queued}</div><div className="text-muted-foreground">Alerts queued</div></Card>
-            )}
-          </div>
-          {summary.details && summary.details.length > 0 && (
-            <div>
-              <h5 className="mb-1 text-xs font-semibold text-muted-foreground">Log</h5>
-              <div className="max-h-48 overflow-y-auto rounded-lg border bg-background p-2">
-                {summary.details.map((detail, i) => (
-                  <div key={i} className="mono border-b border-border/50 py-0.5 text-xs text-muted-foreground last:border-0">{detail}</div>
-                ))}
-              </div>
-            </div>
-          )}
-        </>
-      )}
-    </div>
   )
 }

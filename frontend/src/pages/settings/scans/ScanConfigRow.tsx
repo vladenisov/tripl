@@ -8,6 +8,7 @@ import { SCAN_RUN_STATUS } from '@/lib/statusLexicon'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { SrcIcon } from './scanLayout'
 import { type RunPillStatus } from './scanRunStatus'
+import { SCAN_MODE_BADGE, scanModeOf } from './scanMode'
 import type { ScanRunInfo } from './scanUtils'
 
 // Icon + spin are presentation; the word + colour come from the status lexicon.
@@ -37,7 +38,25 @@ export function RunStatusPill({ status, title }: { status: RunPillStatus; title?
   )
 }
 
-// Config badges on the detail header (⏱ interval, lookback, caps, JSON, etc.).
+/**
+ * What this scan actually does, derived from the two columns the dispatcher
+ * filters on. It leads every badge strip because a config that collects nothing
+ * used to look identical to one that collects everything (tripl-3y7z.1).
+ *
+ * Module-private on purpose: `ScanBadges` already renders it, and `ScanBadges`
+ * IS the public entry point. An outside caller reaching for the badge directly
+ * would mount it beside the strip that already contains it.
+ */
+function ScanModeBadge({ sc }: { sc: ScanConfig }) {
+  const { label, tone, title } = SCAN_MODE_BADGE[scanModeOf(sc)]
+  return (
+    <Chip size="xs" tone={tone} title={title}>
+      {label}
+    </Chip>
+  )
+}
+
+// Config badges on the detail header (mode, ⏱ interval, lookback, caps, JSON, etc.).
 export function ScanBadges({
   sc,
   intervalLabel,
@@ -45,22 +64,39 @@ export function ScanBadges({
   sc: ScanConfig
   intervalLabel: Record<string, string>
 }) {
+  // Three of the badges below describe `collect_metrics` and nothing else, and
+  // only a monitoring scan is ever dispatched to it — the scheduler selects on
+  // `interval IS NOT NULL AND time_column IS NOT NULL`
+  // (worker/tasks/metrics/schedule.py:349-350). A manual run reads
+  // `scan_row_limit` and never the metrics bounds (worker/tasks/scan.py:184), so
+  // on Catalog only (and on the misconfigured pair) those three state limits
+  // nothing applies. Saved values survive: the form keeps them across a mode
+  // switch on purpose, this only stops the header advertising them.
+  const monitoring = scanModeOf(sc) === 'monitoring'
   const items: string[] = []
   if (sc.interval) items.push(`⏱ ${intervalLabel[sc.interval] ?? sc.interval}`)
-  if (sc.scan_lookback_hours) items.push(`Lookback ${sc.scan_lookback_hours}h`)
+  // A lookback is the predicate `<time column> >= now() - N`, so with no time
+  // column it bounds nothing. Showing it anyway put "Lookback 24h" on the header
+  // of a scan whose Source & query panel reads "Time column: None" — leaving the
+  // badge as the only surface still claiming a bound the run does not apply.
+  if (sc.scan_lookback_hours && sc.time_column) items.push(`Lookback ${sc.scan_lookback_hours}h`)
   if (sc.scan_row_limit) items.push(`Scan cap ${sc.scan_row_limit.toLocaleString()}`)
-  if (sc.metrics_row_limit) items.push(`Metrics cap ${sc.metrics_row_limit.toLocaleString()}`)
+  if (monitoring && sc.metrics_row_limit) items.push(`Metrics cap ${sc.metrics_row_limit.toLocaleString()}`)
   if (sc.json_value_paths.length) items.push(`JSON keep ${sc.json_value_paths.length}`)
-  if (sc.metric_breakdown_columns.length) items.push(`Breakdowns ${sc.metric_breakdown_columns.length}`)
-  if (sc.distribution_drift_fields.length) items.push(`Distribution ${sc.distribution_drift_fields.length}`)
+  if (monitoring && sc.metric_breakdown_columns.length) {
+    items.push(`Breakdowns ${sc.metric_breakdown_columns.length}`)
+  }
+  if (monitoring && sc.distribution_drift_fields.length) {
+    items.push(`Distribution ${sc.distribution_drift_fields.length}`)
+  }
   if (sc.app_version_column) {
     items.push(`Version ${sc.app_version_column}`)
   }
   if (sc.event_group_rules.length) items.push(`Groups ${sc.event_group_rules.length}`)
 
-  if (items.length === 0) return null
   return (
     <div className="flex flex-wrap gap-1.5">
+      <ScanModeBadge sc={sc} />
       {items.map((label, i) => (
         <Chip key={i} size="xs" variant="outline">{label}</Chip>
       ))}
@@ -68,7 +104,7 @@ export function ScanBadges({
   )
 }
 
-// One row in the "Scan configs" table.
+// One row in the "Scans" table.
 export function ScanListRow({
   sc,
   dataSource,
@@ -135,7 +171,7 @@ export function ScanListRow({
     <tr
       role="button"
       tabIndex={0}
-      aria-label={`View scan config ${sc.name}`}
+      aria-label={`View scan ${sc.name}`}
       className="cursor-pointer border-t transition-colors hover:bg-[var(--surface-hover)]"
       style={{ borderColor: 'var(--border-subtle)' }}
       onClick={onNavigate}
@@ -148,7 +184,13 @@ export function ScanListRow({
         <div className="flex items-center gap-2.5">
           <SrcIcon dbType={dataSource?.db_type ?? null} size={28} />
           <div className="min-w-0">
-            <div className="truncate text-[13px] font-semibold">{sc.name}</div>
+            <div className="flex items-center gap-2">
+              <span className="truncate text-[13px] font-semibold">{sc.name}</span>
+              {/* The list is where a never-monitoring config has to announce
+                  itself: its runs go green and its row otherwise reads exactly
+                  like a healthy monitoring scan. */}
+              <ScanModeBadge sc={sc} />
+            </div>
             <div className="truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
               {dataSource?.name ?? 'Unknown source'} · {cadenceLabel}
             </div>

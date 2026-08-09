@@ -211,6 +211,49 @@ describe('App', () => {
     })
   })
 
+  it('redirects the legacy /p/:slug/settings/scans URL to the top-level Scans surface', async () => {
+    // Scans moved out of the settings tab strip to `/p/:slug/scans`. The legacy
+    // path must NOT fall through to ProjectSettingsPage: `scans` is no longer a
+    // functional tab there, so that page would bounce the user to
+    // `/p/demo/events` and the bookmark would land on the wrong surface.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = urlOf(input)
+      if (url.endsWith('/api/v1/auth/me')) return Promise.resolve(jsonResponse(OWNER))
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([makeProject('demo', 'Demo')]))
+      }
+      // The Scans surface itself needs a config list; everything else may 404.
+      if (url.includes('/scans')) return Promise.resolve(jsonResponse([]))
+      return Promise.resolve(jsonResponse({ detail: 'Not found' }, 404))
+    })
+
+    renderApp('/p/demo/settings/scans')
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/p/demo/scans')
+    })
+    // …and the Scans surface really mounted, rather than the redirect merely
+    // rewriting the URL under a different page.
+    expect(await screen.findByRole('heading', { name: 'Scans' })).toBeInTheDocument()
+  })
+
+  it('redirects the legacy /p/:slug/settings/scans/:id URL and keeps the scan id', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = urlOf(input)
+      if (url.endsWith('/api/v1/auth/me')) return Promise.resolve(jsonResponse(OWNER))
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([makeProject('demo', 'Demo')]))
+      }
+      return Promise.resolve(jsonResponse({ detail: 'Not found' }, 404))
+    })
+
+    renderApp('/p/demo/settings/scans/scan-1')
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/p/demo/scans/scan-1')
+    })
+  })
+
   it('redirects "/" into the single project when exactly one exists', async () => {
     // UX-11 / UX-25: one project ⇒ "/" is a redundant hop, so land directly in
     // that project's overview. Post-redirect page data is irrelevant to the

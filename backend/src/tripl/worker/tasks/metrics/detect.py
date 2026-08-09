@@ -30,8 +30,9 @@ from tripl.core.analyzers.anomaly_detector import (
 )
 from tripl.core.intervals import get_interval
 from tripl.metric_grid import metric_grid_stmt, metric_grids
+from tripl.metric_monitoring import monitored_metric_criteria
 from tripl.models.anomaly_scope_override import AnomalyScopeOverride
-from tripl.models.domain_enums import MetricBreakdownAnomalyKind, MetricStatus
+from tripl.models.domain_enums import MetricBreakdownAnomalyKind
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
@@ -907,7 +908,12 @@ def _recalculate_project_metric_anomalies(
     covered_buckets: set[datetime] | None = None,
     settling_delay: timedelta = NO_INGESTION_SETTLING,
 ) -> int:
-    """Detect anomalies over the project's active catalog metric series.
+    """Detect anomalies over the project's MONITORED catalog metric series.
+
+    Monitored is ``active`` AND ``anomaly_detection_enabled``
+    (``tripl.metric_monitoring``) — the same predicate every consumer now applies,
+    so alert candidacy and the four display surfaces work on exactly the
+    population this pass scores.
 
     Metric anomalies are project-global: stored with ``scope_type='metric'``,
     ``scope_ref=str(metric_definition_id)`` and a NULL ``scan_config_id``.
@@ -924,8 +930,7 @@ def _recalculate_project_metric_anomalies(
         session.execute(
             select(MetricDefinition).where(
                 MetricDefinition.project_id == config.project_id,
-                MetricDefinition.status == MetricStatus.active.value,
-                MetricDefinition.anomaly_detection_enabled.is_(True),
+                *monitored_metric_criteria(),
             )
         ).scalars()
     )

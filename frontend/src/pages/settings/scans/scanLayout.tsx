@@ -103,11 +103,25 @@ export function NoneTag() {
 }
 
 // ─── KPI / stat card ───
-export function StatCard({ label, value }: { label: string; value: ReactNode }) {
+export function StatCard({
+  label,
+  value,
+  title,
+}: {
+  label: string
+  value: ReactNode
+  /**
+   * Hover text disambiguating what the number counts. Several scan cards share
+   * a label ("Rows read") across counters with different populations, and the
+   * label alone cannot carry that.
+   */
+  title?: string
+}) {
   return (
     <div
       className="rounded-[10px] border px-3.5 py-3"
       style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
+      title={title}
     >
       <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
         {label}

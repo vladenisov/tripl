@@ -66,6 +66,7 @@ const MonitorsPage = lazyRoute(() => import('./pages/MonitorsPage'))
 const MonitorDetailPage = lazyRoute(() => import('./pages/MonitorDetailPage'))
 const MonitoringDetailPage = lazyRoute(() => import('./pages/MonitoringDetailPage'))
 const ProjectSettingsPage = lazyRoute(() => import('./pages/ProjectSettingsPage'))
+const ProjectScansPage = lazyRoute(() => import('./pages/ProjectScansPage'))
 const ReconciliationPage = lazyRoute(() => import('./pages/ReconciliationPage'))
 const AnomaliesPage = lazyRoute(() => import('./pages/AnomaliesPage'))
 const MetricsPage = lazyRoute(() => import('./pages/metrics/MetricsPage'))
@@ -206,6 +207,17 @@ function EventDetailRedirect() {
 function FactTablesRedirect() {
   const { slug } = useParams<{ slug: string }>()
   return <Navigate to={`/p/${slug}/metrics/fact-tables`} replace />
+}
+
+/**
+ * Legacy `/p/:slug/settings/scans[/:itemId]` → the top-level Scans surface.
+ * Scans are an operational surface, not a settings tab. This redirect is
+ * permanent: bookmarks, the activity feed's own deep links, and every doc
+ * written before the move go through it.
+ */
+function ScansRedirect() {
+  const { slug, itemId } = useParams<{ slug: string; itemId?: string }>()
+  return <Navigate to={itemId ? `/p/${slug}/scans/${itemId}` : `/p/${slug}/scans`} replace />
 }
 
 function FactTablesNewRedirect() {
@@ -392,6 +404,17 @@ export default function App() {
             <Route path="/p/:slug/fact-tables" element={<FactTablesRedirect />} />
             <Route path="/p/:slug/coverage" element={withSuspense(<CoveragePage />)} />
             <Route path="/p/:slug/concepts" element={withSuspense(<ConceptsPage />)} />
+            {/* Govern › Scans — a top-level operational surface, not a settings tab. */}
+            <Route path="/p/:slug/scans/:scanId" element={withSuspense(<ProjectScansPage />)} />
+            <Route path="/p/:slug/scans" element={withSuspense(<ProjectScansPage />)} />
+            {/* Legacy Govern › Scans paths. Declared before /p/:slug/settings/:tab
+                so the pair reads in precedence order; the router ranks the static
+                `scans` segment above `:tab` regardless, so DELETING these lines —
+                not reordering them — is what drops a bookmark onto
+                ProjectSettingsPage, which no longer knows the tab and bounces to
+                /p/:slug/events (App.test.tsx pins this). */}
+            <Route path="/p/:slug/settings/scans/:itemId" element={<ScansRedirect />} />
+            <Route path="/p/:slug/settings/scans" element={<ScansRedirect />} />
             <Route path="/p/:slug/settings/:tab/:itemId" element={withSuspense(<ProjectSettingsPage />)} />
             <Route path="/p/:slug/settings/:tab" element={withSuspense(<ProjectSettingsPage />)} />
             <Route path="/p/:slug/settings" element={withSuspense(<ProjectSettingsPage />)} />

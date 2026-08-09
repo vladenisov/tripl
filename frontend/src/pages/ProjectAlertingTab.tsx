@@ -29,6 +29,7 @@ import {
 } from './alerting/constants'
 import { getErrorMessage } from '@/lib/utils'
 import { formatDateTime } from '@/lib/datetime'
+import { countOf } from '@/lib/plural'
 
 // Channel catalogue — drives both the per-channel sections and the compact
 // add-channel affordance, so every type stays addable from one place.
@@ -41,7 +42,7 @@ const CHANNEL_META: { channel: DestinationChannel; label: string; Icon: LucideIc
   { channel: 'linear', label: 'Linear', Icon: ClipboardList },
 ]
 
-export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey }: { slug: string; focusDeliveryId?: string; focusItemKey?: string }) {
+export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey, focusScanId }: { slug: string; focusDeliveryId?: string; focusItemKey?: string; focusScanId?: string }) {
   const qc = useQueryClient()
   const { confirm, dialog } = useConfirm()
   const [createType, setCreateType] = useState<DestinationChannel | null>(null)
@@ -58,8 +59,20 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     channel: '',
     destination_id: '',
     rule_id: '',
-    scan_config_id: '',
+    // Seeded from `?scan=` so a scan run's "Alerts queued" counter can hand the
+    // audit log over already narrowed to that scan (tripl-3y7z.2).
+    scan_config_id: focusScanId ?? '',
   })
+  // `?scan=` can change without remounting (the alerting route is one page, and
+  // navigating from a deep link back to plain /alerting only swaps the query
+  // string), so the seed above fires once and would then go stale. Adjusting
+  // during render is React's documented way to follow a prop; an effect would
+  // fire one request against the old filter first.
+  const [appliedScanFocus, setAppliedScanFocus] = useState(focusScanId)
+  if (focusScanId !== appliedScanFocus) {
+    setAppliedScanFocus(focusScanId)
+    setDeliveryFilters(current => ({ ...current, scan_config_id: focusScanId ?? '' }))
+  }
 
   const { data: destinations = [] } = useQuery({
     queryKey: ['alertDestinations', slug],
@@ -73,19 +86,29 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     queryKey: ['eventTypes', slug],
     queryFn: () => eventTypesApi.list(slug),
   })
-  const { data: scans = [] } = useQuery({
+  const { data: scans = [], isSuccess: scansLoaded } = useQuery({
     queryKey: ['scans', slug],
     queryFn: () => scansApi.list(slug),
   })
+  // A `?scan=` naming a scan this project does not have (deleted since the link
+  // was written, or hand-edited) reads as "All" rather than as a permanently
+  // empty audit log — the same degradation AnomaliesPage applies to its facet.
+  // Gated on `scansLoaded` so a valid filter is not dropped during the in-flight
+  // window when `scans` is still the `[]` default.
+  const scanFilterIsKnown =
+    !scansLoaded || scans.some(scan => scan.id === deliveryFilters.scan_config_id)
+  const activeDeliveryFilters = scanFilterIsKnown
+    ? deliveryFilters
+    : { ...deliveryFilters, scan_config_id: '' }
   const { data: deliveries } = useQuery({
-    queryKey: ['alertDeliveries', slug, deliveryFilters],
+    queryKey: ['alertDeliveries', slug, activeDeliveryFilters],
     queryFn: () => alertingApi.listDeliveries(slug, {
-      ...deliveryFilters,
-      status: deliveryFilters.status || undefined,
-      channel: deliveryFilters.channel || undefined,
-      destination_id: deliveryFilters.destination_id || undefined,
-      rule_id: deliveryFilters.rule_id || undefined,
-      scan_config_id: deliveryFilters.scan_config_id || undefined,
+      ...activeDeliveryFilters,
+      status: activeDeliveryFilters.status || undefined,
+      channel: activeDeliveryFilters.channel || undefined,
+      destination_id: activeDeliveryFilters.destination_id || undefined,
+      rule_id: activeDeliveryFilters.rule_id || undefined,
+      scan_config_id: activeDeliveryFilters.scan_config_id || undefined,
       limit: 50,
       offset: 0,
     }),
@@ -456,7 +479,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
 
         <div className="min-w-0 space-y-4">
           {hasRules && (
-          <Panel title="Inbox" subtitle={`${inbox?.total ?? 0} groups`}>
+          <Panel title="Inbox" subtitle={countOf(inbox?.total ?? 0, 'group', 'groups')}>
             <div className="space-y-3 p-4">
               {!inbox || inbox.items.length === 0 ? (
                 <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
@@ -472,7 +495,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
                             <Badge variant={group.status === 'false_positive' ? 'destructive' : group.status === 'resolved' ? 'secondary' : 'outline'} className="text-[10px]">
                               {group.status}
                             </Badge>
-                            <span className="font-medium">{group.item_count} items</span>
+                            <span className="font-medium">{countOf(group.item_count, 'item', 'items')}</span>
                             <span className="text-muted-foreground">
                               {formatDateTime(group.latest_delivery_at)}
                             </span>
@@ -553,7 +576,9 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           </Panel>
           )}
 
-          <Panel title="Audit" subtitle={`${deliveries?.total ?? 0} deliveries`}>
+          {/* "delivery"/"deliveries" is why countOf takes both forms rather than
+              appending an "s" — the first alert a project ever sends lands here. */}
+          <Panel title="Audit" subtitle={countOf(deliveries?.total ?? 0, 'delivery', 'deliveries')}>
             <div className="min-w-0 space-y-4 p-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="grid gap-2">
@@ -615,7 +640,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="filter-scan">Scan</Label>
-                  <Select value={deliveryFilters.scan_config_id || 'all'} onValueChange={value => setDeliveryFilters(current => ({ ...current, scan_config_id: value === 'all' ? '' : value }))}>
+                  <Select value={activeDeliveryFilters.scan_config_id || 'all'} onValueChange={value => setDeliveryFilters(current => ({ ...current, scan_config_id: value === 'all' ? '' : value }))}>
                     <SelectTrigger id="filter-scan"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All</SelectItem>

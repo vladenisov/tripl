@@ -146,7 +146,8 @@ describe('friendlyScanError', () => {
     // message so no raise site has to remember to.
     for (const msg of [
       'Scan failed: The scan query reached the configured row limit (50000); increase scan_row_limit to avoid partial generation',
-      'Scan failed: Either event_type_id or event_type_column must be specified',
+      "Scan failed: This scan has no Event type and no Event type column, so it cannot "
+        + "name any events. Set one under the scan's Configuration tab.",
       'Scan failed: The scan config has no event group rules',
       'Scan failed: Fact metric aggregate reached the metric query row limit (100000) for chunk 2026-08-01T00:00:00..2026-08-01T01:00:00; narrow the metric breakdown',
     ]) {

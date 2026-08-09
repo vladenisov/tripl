@@ -105,7 +105,7 @@ export const TEMPLATE_VARIABLE_OPTIONS = [
   { name: 'channel', description: 'Destination channel' },
   { name: 'destination_name', description: 'Destination name' },
   { name: 'rule_name', description: 'Rule name' },
-  { name: 'scan_name', description: 'Scan config name' },
+  { name: 'scan_name', description: 'Scan name' },
   { name: 'matched_count', description: 'Number of matched alert items' },
   { name: 'items_count', description: 'Alias for matched_count' },
   { name: 'items_text', description: 'Preformatted list of all matched alert items' },
@@ -125,7 +125,11 @@ export const ITEM_TEMPLATE_VARIABLE_OPTIONS = [
       'Says what the expected count was built from, when it is not a plain baseline — e.g. " (adoption-adjusted)" on a release regression. Empty for every other scope.',
   },
   { name: 'absolute_delta', description: 'Absolute delta' },
-  { name: 'percent_delta', description: 'Percent delta as a bare number (0 when there was no baseline)' },
+  // Named here rather than only in the docs because this list is what an
+  // operator with a saved custom template reads while editing it: a template
+  // written before `percent_delta_label` existed still prints "0.0%" at a zero
+  // baseline, and nothing may rewrite it for them (tripl-l429.27).
+  { name: 'percent_delta', description: 'Percent delta as a bare number. Prints 0 when there was no baseline, so prefer percent_delta_label unless you need the raw number' },
   { name: 'percent_delta_label', description: 'Percent delta with its "%" sign, or "no baseline" when expected is 0' },
   { name: 'bucket', description: 'Anomaly bucket timestamp' },
   { name: 'details_url', description: 'Details URL' },

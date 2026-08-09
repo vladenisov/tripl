@@ -37,7 +37,7 @@ export function AppVersionFields({
     <div className="grid gap-3">
       <div className="grid grid-cols-2 gap-3">
         <div className="grid gap-2">
-          <Label htmlFor="app-version-column">App Version Column (optional)</Label>
+          <Label htmlFor="app-version-column">App version column</Label>
           <select
             id="app-version-column"
             value={appVersionColumn}
@@ -55,7 +55,7 @@ export function AppVersionFields({
           </select>
         </div>
         <div className="grid gap-2">
-          <Label htmlFor="platform-column">Platform Column (optional)</Label>
+          <Label htmlFor="platform-column">Platform column</Label>
           <select
             id="platform-column"
             value={platformColumn}
@@ -75,7 +75,7 @@ export function AppVersionFields({
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div className="grid gap-2">
-          <Label htmlFor="app-version-prerelease-pattern">Pre-release version pattern (regex, optional)</Label>
+          <Label htmlFor="app-version-prerelease-pattern">Pre-release version pattern</Label>
           <Input
             id="app-version-prerelease-pattern"
             type="text"
@@ -84,9 +84,12 @@ export function AppVersionFields({
             disabled={!appVersionColumn}
             placeholder={appVersionColumn ? 'e.g. -(beta|rc)' : 'Select version column'}
           />
+          <p className="text-xs text-muted-foreground">
+            Regex marking beta builds, e.g. -(beta|rc). Matching versions stay out of release comparisons.
+          </p>
         </div>
         <div className="grid gap-2">
-          <Label htmlFor="app-version-active-share">Activation traffic share (0–1 exclusive, optional)</Label>
+          <Label htmlFor="app-version-active-share">Traffic share that counts as released</Label>
           <Input
             id="app-version-active-share"
             type="number"
@@ -98,6 +101,9 @@ export function AppVersionFields({
             disabled={!appVersionColumn}
             placeholder={appVersionColumn ? 'Default 0.05' : 'Select version column'}
           />
+          <p className="text-xs text-muted-foreground">
+            A version counts as released once it carries this share of traffic. Default 0.05 (5%).
+          </p>
         </div>
       </div>
     </div>

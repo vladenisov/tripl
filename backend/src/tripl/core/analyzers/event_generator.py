@@ -4,16 +4,21 @@ Takes breakdown analysis (per-column cardinality stats + raw GROUP BY ALL rows)
 and produces deduplicated Event + EventFieldValue records.  Each breakdown row
 maps to one event, preserving actual column correlations from the data.
 
-Implementation is split across two private sibling modules:
+Implementation is split across three sibling modules:
 
+* ``event_plan``                  — the PURE half: which events a breakdown
+  would produce, and under which names. Shared verbatim with the dry-run so a
+  preview cannot drift from what a real run does
 * ``_event_generator_variables``  — variable detection, creation, context ops
 * ``_event_generator_merge``      — grouping rules, merge/consolidation logic
+
+What is left here is exactly the part that needs a ``Session``: turning the plan
+into rows, ensuring variables exist, recording variable contexts, and merging.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -55,105 +60,59 @@ from tripl.core.analyzers._event_generator_variables import (
 from tripl.core.analyzers._event_generator_variables import (
     resolve_main_branch_id as _resolve_main_branch_id,
 )
-from tripl.core.analyzers._event_generator_variables import (
-    sample_variable_values as _sample_variable_values,
-)
 from tripl.core.analyzers._variable_value_drift import (
     detect_variable_value_drifts as _detect_variable_value_drifts,
 )
 from tripl.core.analyzers.cardinality import BreakdownAnalysis
-from tripl.core.analyzers.variable_detector import (
-    DetectedPattern,
-    detect_variables,
-)
-from tripl.core.name_template import NAME_FORMAT_PATTERN, NameFormatError, format_keys
-from tripl.json_paths import (
-    build_json_value,
-    decode_json_path_value,
-    format_json_path_value,
+from tripl.core.analyzers.event_plan import (
+    _NAME_FORMAT_ERROR_BUDGET,
+    DEFAULT_MAX_EVENTS,
+    EventPlan,
+    PlannedEvent,
+    VariableNeed,
+    _apply_name_format,
+    _format_value,
+    event_name_format_columns,
+    name_format_base_columns,
+    plan_column_meta,
+    plan_events,
 )
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.field_definition import FieldDefinition
-from tripl.models.variable_value import VariableValueKind
 
 logger = logging.getLogger(__name__)
 
 VARIABLE_VALUE_SAMPLE_LIMIT = 20
 
-# How many available column names a NameFormatError lists before summarising.
-# ``user_facing_error`` truncates a curated message at 500 chars from the RIGHT,
-# so an uncapped list on a wide table pushes the missing key — the only
-# actionable part — out of the persisted message (tripl-3mmh).
-_AVAILABLE_KEYS_IN_ERROR = 10
-
-# The same 500 chars, as a character budget rather than a name count. A count
-# alone is not enough: ten 60-character column names still overrun the cap, and
-# the truncation lands mid-token and eats the "… and N more" tail that tells the
-# operator the list was summarised at all.
-#
-# Declared here rather than imported: this is ``core``, which must never import
-# ``worker`` (``test_core_does_not_import_worker``). The mirror is pinned by
-# ``test_name_format_errors.test_error_budget_mirrors_the_curated_cap``.
-_NAME_FORMAT_ERROR_BUDGET = 500
-
 # Re-export public names that callers import directly from this module.
+#
+# ``_apply_name_format`` / ``_format_value`` / ``_NAME_FORMAT_ERROR_BUDGET`` now
+# live in ``event_plan`` (they are pure and the planner needs them), but
+# ``worker.tasks.metrics.metric_rows`` and ``test_name_format_errors`` import
+# them from here. Re-binding keeps those imports working and keeps ONE
+# definition, which is the whole point of the split.
 __all__ = [
+    "DEFAULT_MAX_EVENTS",
     "EventGroupMatch",
+    "EventPlan",
     "GenerationResult",
+    "PlannedEvent",
+    "VariableNeed",
     "VariableObservation",
+    "_NAME_FORMAT_ERROR_BUDGET",
+    "_apply_name_format",
     "_ensure_variable",
+    "_format_value",
     "_resolve_main_branch_id",
     "apply_event_group_rules",
     "event_name_format_columns",
     "generate_events",
     "merge_existing_events_for_group_rules",
     "name_format_base_columns",
+    "plan_column_meta",
+    "plan_events",
 ]
-
-# The ``{key}`` grammar has exactly one definition, in ``core.name_template``.
-# It used to be re-declared here and in worker/tasks/metrics/generation.py, held
-# in step by a comment in name_template's docstring saying the three "MUST stay
-# identical" — which is the drift this repo keeps paying for (Copilot, PR #74).
-_FMT_PATTERN = NAME_FORMAT_PATTERN
-
-
-def event_name_format_columns(event_name_format: str | None) -> set[str]:
-    """Columns an ``event_name_format`` builds the event name from.
-
-    Shared with ``worker.utils.reserved_columns`` and the replay path in
-    ``worker.tasks.metrics.generation`` so none of them can disagree about what
-    a placeholder is: a column named here is the event's identity, which makes
-    it both something to enumerate (see ``name_columns`` below) and something
-    that must never be reserved away — reserving it skips its FieldDefinition,
-    and the name format is then evaluated without it (tripl-lpin).
-    """
-    return set(format_keys(event_name_format)) if event_name_format else set()
-
-
-def name_format_base_columns(event_name_format: str | None) -> set[str]:
-    """Warehouse columns a name format needs a FieldDefinition for.
-
-    Placeholders come from ``event_name_format_columns`` — the one ``{key}``
-    grammar — and are then reduced to their BASE column. A dotted placeholder
-    like ``{event.category}`` is resolved by walking JSON out of the ``event``
-    column, and the ``col.path`` keys below are assembled only from ``col_meta``
-    entries, which every column enters through ``field_definitions.get(col_name)``.
-    So deleting the FieldDefinition for ``event`` kills ``{event.category}``
-    exactly as it kills ``{action}`` (tripl-3mmh), and reserving ``event`` away
-    from ``catalog_sync`` does the same thing by another route (tripl-lpin).
-
-    The base column is also the only thing a ``missing_field`` drift can name:
-    the detector builds those from ``{fd.name for fd in field_definitions}``,
-    which are always top-level column names, never dotted paths.
-
-    Lives beside ``event_name_format_columns`` because both consumers already
-    import from here — ``services.scan_config_lookup`` (which guards field
-    deletion) and ``worker.utils.reserved_columns`` (which guards reservation).
-    Putting it in ``services`` would make the sync worker import an async-session
-    module for one pure string helper.
-    """
-    return {key.split(".", 1)[0] for key in event_name_format_columns(event_name_format)}
 
 
 @dataclass
@@ -184,7 +143,7 @@ def generate_events(
     event_name_format: str | None = None,
     event_group_rules: Sequence[Mapping[str, object]] | None = None,
     reserved_columns: Collection[str] | None = None,
-    max_events: int = 10000,
+    max_events: int = DEFAULT_MAX_EVENTS,
     scan_config_id: uuid.UUID | None = None,
 ) -> GenerationResult:
     """Generate events from breakdown analysis.
@@ -193,6 +152,11 @@ def generate_events(
     Low-cardinality columns use actual values from the row,
     high-cardinality columns use detected templates with ${var} placeholders,
     JSON columns use their actual path combo from the row.
+
+    Which events those are, and what they are called, is decided by
+    ``event_plan.plan_events`` — the same function the dry-run calls, so a
+    preview cannot promise names a run would not produce. Everything below the
+    plan is persistence.
     """
     result = GenerationResult()
     # The scan writes to the project's main branch (Variable inserts default
@@ -203,140 +167,39 @@ def generate_events(
     # source_name or user-editable binding), context attribution and token
     # normalization all resolve through it.
     variable_index = _build_variable_index(session, project_id=project_id, branch_id=main_branch_id)
-    # Columns referenced by the event-name format are the event's identity, so they must be
-    # enumerated (one event per distinct value) even when high-cardinality — otherwise they
-    # collapse into a single ${col} template and every row dedups to one event.
-    name_columns: set[str] = event_name_format_columns(event_name_format)
-    cardinality_results = analysis.results
-    reg_index = {name: i for i, name in enumerate(analysis.reg_names)}
-    json_index = {name: i for i, name in enumerate(analysis.json_names)}
-    n_reg = len(analysis.reg_names)
-    json_value_index = {
-        name: n_reg + len(analysis.json_names) + idx
-        for idx, name in enumerate(analysis.json_value_names)
-    }
 
-    # Pre-compute per-column metadata
-    col_meta: dict[str, dict[str, Any]] = {}
-    # Membership is tested once per column; a list argument would make the loop
-    # quadratic on a wide table.
-    reserved = frozenset(reserved_columns or ())
-
-    for col_name, card_result in cardinality_results.items():
-        if col_name == event_type_column:
-            continue
-        if col_name == time_column:
-            continue
-
-        fd = field_definitions.get(col_name)
-        if fd is None:
-            # A grouped scan reads one flat table, so this pass sees every
-            # column of the query even when the event type in hand uses only a
-            # few. Staying silent about a column that held NOTHING for these
-            # rows keeps the warning meaningful: an undeclared column that DOES
-            # carry data is a real plan gap and still reports (tripl-jfm3.57).
-            # ``count`` excludes NULLs, so 0 means no value in any row here.
-            #
-            # A RESERVED column is the other false positive: app_version,
-            # platform and the event-group-rule columns are metric dimensions or
-            # identity inputs, and ``reserved_catalog_columns`` is precisely what
-            # kept them from ever getting a FieldDefinition. Reporting that as a
-            # plan gap sent a fresh demo's first scan out claiming six missing
-            # fields when one was missing (tripl-jfm3.90). Only the MESSAGE is
-            # suppressed — a reserved column that does carry a FieldDefinition
-            # (an older project, declared before the column was reserved) falls
-            # through to the normal path and collects values exactly as before.
-            if card_result.count > 0 and col_name not in reserved:
-                result.details.append(f"Skipped column {col_name!r}: no matching field definition")
-            continue
-
-        result.columns_analyzed += 1
-        meta: dict[str, Any] = {"fd_id": fd.id, "col_name": col_name}
-
-        if card_result.json_path_combos is not None:
-            meta["is_json"] = True
-            all_paths: set[str] = set()
-            passthrough_paths: list[str] = []
-            variable_observations: list[VariableObservation] = []
-            for combo in card_result.json_path_combos:
-                for path in combo:
-                    all_paths.add(path)
-            for path in sorted(all_paths):
-                full_path = f"{col_name}.{path}"
-                if full_path in json_value_index:
-                    passthrough_paths.append(full_path)
-                    continue
-                var_name = full_path
-                result.variables_created += _ensure_variable(
-                    session,
-                    project_id,
-                    var_name,
-                    "string",
-                    branch_id=main_branch_id,
-                    index=variable_index,
-                )
-                variable_observations.append(
-                    VariableObservation(
-                        name=var_name,
-                        source_column=full_path,
-                        value_kind=VariableValueKind.high.value,
-                        observed_count=0,
-                        values=[],
-                    )
-                )
-            meta["json_passthrough_paths"] = passthrough_paths
-            meta["variable_observations"] = variable_observations
-            logger.info(
-                f"  {col_name}: JSON, {len(card_result.json_path_combos)} path combos, "
-                f"{len(all_paths) - len(passthrough_paths)} variables"
-            )
-        else:
-            meta["is_json"] = False
-            # Force enumeration for event-name columns regardless of cardinality.
-            force_enumerate = col_name in name_columns
-            meta["is_low"] = card_result.is_low or force_enumerate
-            if not card_result.is_low and not force_enumerate:
-                pattern = detect_variables(
-                    col_name, card_result.sample_values, cardinality_threshold
-                )
-                if pattern is None:
-                    pattern = DetectedPattern(
-                        template=f"${{{col_name}}}",
-                        variables=[],
-                        coverage_pct=100.0,
-                    )
-                regular_variable_observations: list[VariableObservation] = []
-                for var in pattern.variables:
-                    result.variables_created += _ensure_variable(
-                        session,
-                        project_id,
-                        var.name,
-                        var.inferred_type,
-                        branch_id=main_branch_id,
-                        index=variable_index,
-                    )
-                    observed_count = var.distinct_count or len(var.values)
-                    value_kind = (
-                        VariableValueKind.low.value
-                        if observed_count > 0 and observed_count <= cardinality_threshold
-                        else VariableValueKind.high.value
-                    )
-                    regular_variable_observations.append(
-                        VariableObservation(
-                            name=var.name,
-                            source_column=col_name,
-                            value_kind=value_kind,
-                            observed_count=observed_count,
-                            values=_sample_variable_values(var.values, value_kind),
-                        )
-                    )
-                meta["template"] = pattern.template
-                meta["variable_observations"] = regular_variable_observations
-
-        col_meta[col_name] = meta
-
+    plan = plan_events(
+        analysis,
+        {name: fd.id for name, fd in field_definitions.items()},
+        cardinality_threshold=cardinality_threshold,
+        event_type_column=event_type_column,
+        time_column=time_column,
+        event_name_format=event_name_format,
+        event_group_rules=event_group_rules,
+        reserved_columns=reserved_columns,
+        # Deliberately uncapped. ``max_events`` bounds the events this function
+        # CREATES; the planner can only bound distinct names, and a re-scan whose
+        # names all exist already creates none of them. Capping in the planner
+        # would silently stop refreshing field values on row 10001 of a scan that
+        # creates nothing at all. The dry-run, which has no such distinction,
+        # passes the cap to the planner instead.
+    )
+    result.details.extend(plan.details)
+    result.columns_analyzed = plan.columns_analyzed
+    # Hoisted out of the column loop by the plan/persist split, in first-seen
+    # order — ``_ensure_variable`` creates a variable with the FIRST type it is
+    # asked for and registers it on the index, so the order is behaviour.
+    for need in plan.variables_needed:
+        result.variables_created += _ensure_variable(
+            session,
+            project_id,
+            need.name,
+            need.inferred_type,
+            branch_id=main_branch_id,
+            index=variable_index,
+        )
+    col_meta = plan.col_meta
     if not col_meta:
-        result.details.append("No columns matched field definitions")
         return result
 
     # Load existing events for dedup. Key on the stable scan identity (``source_name``),
@@ -367,114 +230,24 @@ def generate_events(
     # actually rewrote. Only those can invalidate an existing variable context.
     rewritten_fields: set[tuple[uuid.UUID, uuid.UUID]] = set()
 
-    # Iterate breakdown rows — each row is one event
-    for row in analysis.rows:
+    # Materialise the plan — one planned entry per breakdown row.
+    for planned in plan.events:
         if result.events_created >= max_events:
             result.details.append(f"Reached max_events limit ({max_events})")
             break
 
-        field_values: list[tuple[uuid.UUID, str, str]] = []
-        raw_values_by_field = _raw_values_from_row(
-            row,
-            analysis=analysis,
-            event_type_column=event_type_column,
-            time_column=time_column,
-        )
-
-        for col_name, meta in col_meta.items():
-            if meta["is_json"]:
-                j = json_index.get(col_name)
-                if j is None:
-                    continue
-                paths = row[n_reg + j]
-                if paths:
-                    if isinstance(paths, (list, tuple)):
-                        sorted_paths = sorted(str(p) for p in paths)
-                    else:
-                        sorted_paths = [str(paths)]
-                    preserved_values = {
-                        full_path: decode_json_path_value(row[json_value_index[full_path]])
-                        for full_path in meta.get("json_passthrough_paths", [])
-                        if full_path in json_value_index and full_path.startswith(f"{col_name}.")
-                    }
-                    value = build_json_value(
-                        col_name,
-                        sorted_paths,
-                        preserved_values=preserved_values,
-                    )
-                else:
-                    value = "{}"
-            elif meta["is_low"]:
-                i = reg_index.get(col_name)
-                if i is None:
-                    continue
-                raw_val = row[i]
-                value = _format_value(raw_val)
-            else:
-                value = meta["template"]
-
-            field_values.append((meta["fd_id"], col_name, value))
-
-        # Build event name
-        if event_name_format:
-            fmt_kwargs: dict[str, str] = {}
-            for _, col_name, value in field_values:
-                fmt_kwargs[col_name] = value
-            for col_name, meta in col_meta.items():
-                if not meta["is_json"]:
-                    continue
-                j = json_index.get(col_name)
-                if j is None:
-                    continue
-                paths = row[n_reg + j]
-                if not paths:
-                    continue
-                if isinstance(paths, (list, tuple)):
-                    sorted_paths = sorted(str(path) for path in paths)
-                else:
-                    sorted_paths = [str(paths)]
-                for path in sorted_paths:
-                    full_path = f"{col_name}.{path}"
-                    if full_path in json_value_index:
-                        fmt_kwargs[full_path] = format_json_path_value(
-                            row[json_value_index[full_path]]
-                        )
-                    else:
-                        fmt_kwargs[full_path] = f"${{{full_path}}}"
-            event_name = _apply_name_format(event_name_format, fmt_kwargs)
-        else:
-            parts = []
-            for _, col_name, value in field_values:
-                display = value if len(value) <= 80 else value[:77] + "..."
-                parts.append(f"{col_name}={display}")
-            event_name = " | ".join(parts)
-
-        # Truncate event_name to respect VARCHAR(500) database limit
-        if len(event_name) > 500:
-            event_name = event_name[:497] + "..."
-
-        raw_values_by_field["__event_name"] = event_name
-        raw_values_by_field.setdefault("event_name", event_name)
-        group_match = apply_event_group_rules(
-            event_name,
-            raw_values_by_field,
-            event_group_rules,
-        )
-        if group_match.matched_rule_name is not None:
+        event_name = planned.name
+        if planned.matched_rule_name is not None:
             result.events_grouped += 1
-            event_name = group_match.event_name
-            if group_match.field_value_overrides:
-                field_values = [
-                    (fd_id, col_name, group_match.field_value_overrides.get(col_name, value))
-                    for fd_id, col_name, value in field_values
-                ]
 
         # Rewrite raw path tokens to the bound variables' display names AFTER
         # the event name is built: event identity (source_name) must stay keyed
         # on raw tokens so bindings/renames don't duplicate existing events.
+        # This is also why it is not in ``plan_events`` — it needs the session's
+        # variable index, and nothing about the name depends on it.
         field_values = [
             (fd_id, col_name, _normalize_variable_tokens(value, variable_index))
-            for fd_id, col_name, value in field_values
+            for fd_id, col_name, value in planned.field_values
         ]
 
         existing = existing_by_identity.get(event_name)
@@ -567,15 +340,6 @@ def generate_events(
     return result
 
 
-def _format_value(raw_val: object) -> str:
-    """Format a value for display, showing ints without decimal point."""
-    if raw_val is None:
-        return ""
-    if isinstance(raw_val, float) and raw_val.is_integer():
-        return str(int(raw_val))
-    return str(raw_val)
-
-
 def _upsert_field_values(
     event: Event,
     field_values: Sequence[tuple[uuid.UUID, str, str]],
@@ -614,104 +378,3 @@ def _upsert_field_values(
         fv_by_fd[fd_id] = new_fv
         rewritten.add((event.id, fd_id))
     return rewritten
-
-
-def _raw_values_from_row(
-    row: tuple[object, ...],
-    *,
-    analysis: BreakdownAnalysis,
-    event_type_column: str | None,
-    time_column: str | None,
-) -> dict[str, str]:
-    values: dict[str, str] = {}
-    n_reg = len(analysis.reg_names)
-    json_value_index = {
-        name: n_reg + len(analysis.json_names) + idx
-        for idx, name in enumerate(analysis.json_value_names)
-    }
-
-    for idx, col_name in enumerate(analysis.reg_names):
-        if col_name == time_column:
-            continue
-        values[col_name] = _format_value(row[idx])
-
-    for idx, col_name in enumerate(analysis.json_names):
-        if col_name in (event_type_column, time_column):
-            continue
-        paths = row[n_reg + idx]
-        if isinstance(paths, (list, tuple)):
-            values[col_name] = ",".join(sorted(str(path) for path in paths))
-        elif paths:
-            values[col_name] = str(paths)
-        for full_path, value_idx in json_value_index.items():
-            if full_path.startswith(f"{col_name}."):
-                values[full_path] = format_json_path_value(row[value_idx])
-
-    return values
-
-
-def _summarize_keys(kwargs: dict[str, str], budget: int) -> str:
-    """The available keys, capped so the missing key AND the tail survive truncation.
-
-    Two caps, both load-bearing. ``_AVAILABLE_KEYS_IN_ERROR`` keeps the list
-    readable; ``budget`` keeps it inside what ``user_facing_error`` will persist.
-    A count alone is not enough — ten long column names still overrun 500 chars,
-    and because that truncation cuts from the RIGHT it lands mid-name and takes
-    the "… and N more" tail with it, so the operator cannot tell the list was
-    summarised (tripl-3mmh).
-    """
-    names = sorted(kwargs)
-    if not names:
-        # "Available keys: " with nothing after it reads like a formatting bug.
-        return "(none)"
-
-    def rendered(shown: list[str]) -> str:
-        remaining = len(names) - len(shown)
-        tail = f" … and {remaining} more" if remaining else ""
-        return f"{', '.join(shown)}{tail}"
-
-    shown: list[str] = []
-    for name in names[:_AVAILABLE_KEYS_IN_ERROR]:
-        # A single name wider than the budget is kept anyway: a truncated first
-        # name still beats "Available keys: " with nothing after it.
-        if shown and len(rendered([*shown, name])) > budget:
-            break
-        shown.append(name)
-    return rendered(shown)
-
-
-def _apply_name_format(fmt: str, kwargs: dict[str, str]) -> str:
-    """Replace {key} placeholders, supporting keys with dots like {event.category}.
-
-    Raises :class:`NameFormatError` when the row cannot supply a placeholder;
-    ``worker.tasks._errors.user_facing_error`` surfaces that message verbatim,
-    so no caller needs a wrapper (tripl-3mmh).
-    """
-    missing: list[str] = []
-
-    def _replacer(m: re.Match[str]) -> str:
-        key = m.group(1)
-        if key in kwargs:
-            return kwargs[key]
-        missing.append(key)
-        return m.group(0)
-
-    result = _FMT_PATTERN.sub(_replacer, fmt)
-    if missing:
-        # The message MUST start with "Scan failed" — frontend/src/lib/scanError.ts
-        # only passes a backend message through verbatim when it does, and without
-        # the prefix this self-diagnosing line degrades to a bare "Scan failed."
-        # in the UI, which is the outage this fixes (tripl-3mmh). Missing keys come
-        # first and the available list is capped because ``user_facing_error``
-        # truncates from the right at 500 chars, and a wide warehouse table can
-        # supply hundreds of column names.
-        #
-        # De-duplicated in first-seen order: "{action} / {action}" is one broken
-        # column, and naming it twice reads as two separate problems.
-        unique_missing = list(dict.fromkeys(missing))
-        head = (
-            f"Scan failed: the event name format references unknown keys: "
-            f"{', '.join(unique_missing)}. Available keys: "
-        )
-        raise NameFormatError(head + _summarize_keys(kwargs, _NAME_FORMAT_ERROR_BUDGET - len(head)))
-    return result

@@ -150,29 +150,113 @@ per-warehouse permissions and setup requirements.
 
 ## Step 5 — Create your first scan
 
-A **scan** reads a warehouse table on a schedule and does two jobs at once: it
-**drafts your plan** (proposing events, fields, and value lists from what it
-actually finds) and it **collects the volume counts** that power monitoring.
+A **scan** reads a warehouse table. Every run **drafts your plan** — proposing
+events, fields, and value lists from what it actually finds. A *monitoring* scan
+also runs on a schedule and **collects the volume counts** that power monitoring;
+a *Catalog only* scan has no schedule and collects none.
 It is the fastest way to turn an existing events table into a written,
 monitored tracking plan.
 
-1. Open **Govern → Scans** in your project and create a scan config.
-2. Point it at your data: pick the **data source** and give the **base query** —
+1. Open **Govern → Scans** in your project (route: `/p/<slug>/scans`) and create
+   a scan.
+2. Answer **What this scan does** — it is the first question on the form, and it
+   decides everything else:
+   - **Catalog + monitoring** — adds events and fields to your tracking plan
+     *and* records metric points, so anomalies and alerts can fire. This is the
+     default, and it needs a **time column** and a **schedule**. Pick this one if
+     you are following this guide; Step 6 depends on it.
+   - **Catalog only** — adds events and fields to your tracking plan when you
+     run it, nothing more. No schedule, so no metric points, no anomalies and no
+     alerts. It can still take a **time column**, which bounds each run to the
+     lookback window rather than reading the whole query.
+3. Point it at your data: pick the **data source** and give the **base query** —
    typically just selecting from the table where your events land.
-3. Map the columns: which column holds the **event name**, which holds the
-   **timestamp**, and (optionally) which hold the **app version** and
-   **platform**. Version and platform unlock release-regression tracking and
-   per-platform breakdowns later, so set them if you have them.
-4. **Preview** the scan. The preview shows exactly which events, fields, and
-   values tripl would create from the real data — before anything is written.
-5. Run it, then open **Review events** and triage the draft: keep what makes
+4. **Load the preview.** It reads a few rows from your query so the pickers
+   below it can offer your real columns instead of a blank box. Nothing is
+   written.
+5. Answer the questions those columns unlock, top to bottom:
+   - **Event type** — give every row the same event type, or leave it on *Name
+     events from a column* and pick the **Event type column** whose values are
+     the event names. One of the two is required: a scan with neither cannot name
+     a single event, and **Create scan** stays disabled until you answer.
+   - **Time column** — the timestamp tripl buckets counts by, and what bounds
+     each run to the lookback window.
+   - **Schedule** (Catalog + monitoring only) — every 15 minutes, hourly, every
+     6 hours, daily, or weekly.
+
+   In Catalog + monitoring the form will not let you create the scan until the
+   time column and the schedule are both set, because a monitoring scan missing
+   either one is never scheduled and collects nothing. In Catalog only the time
+   column is optional; leaving it empty means every run reads everything the base
+   query returns.
+6. **Read what this scan would create.** At the foot of that same block —
+   *after* the fields it is computed from, so answering them cannot invalidate
+   it — the preview panel leads with **What this scan would create**: the event
+   names tripl would add to your plan and the fields it would add with them,
+   worked out by pushing the sampled rows through the *same* planner a real run
+   uses. The sample warehouse rows are kept underneath, under **Show sample
+   rows** — they are the evidence, not the answer.
+
+   The answer is bounded, and says which bound it is under. It reads the scan's
+   lookback window — or, if the scan has no time column to window on, everything
+   the base query returns, which the panel states — and at most the 5,000 most
+   common column combinations, so when it hits that cap it reads *Would create
+   **at least** N events* rather than a flat count. It never projects a
+   table-wide total.
+
+   Change the form afterwards — a different event name format, a different
+   cardinality threshold — and the panel says the answer no longer describes this
+   scan; **Check again** re-runs it. If your **Event name format** references a
+   key the rows cannot supply, the preview says so here: that format would fail
+   *every* run of the config, so this is the cheapest place to find out.
+7. Open **Event names and grouping** and **App version** if you need them. These
+   sections start collapsed on purpose: leaving them alone gives sensible
+   behaviour, and each says what that behaviour is. Version and platform columns
+   unlock release-regression tracking and per-platform breakdowns later, so set
+   them if you have them.
+8. Run it, then open **Review events** and triage the draft: keep what makes
    sense, fix descriptions and types, flag fields that carry personal data,
    and delete the noise.
-6. Once the results look right, set the **Schedule** (every 15 minutes, hourly,
-   every 6 hours, daily, or weekly) so scans keep running without you.
 
-A running scan creates a **job** — watch its status and progress under the scan,
+Starting a scan creates a **run** — watch its status and progress under the scan,
 and use **Run again** if one fails.
+
+### What happens after a scan runs
+
+Every run adds events and fields to your tracking plan. A **Catalog +
+monitoring** scan also records **metric points** on its schedule, and those
+points are what anomaly detection and alerts are built on:
+
+**events → metric points → signals → alerts**
+
+- **Catalog + monitoring** — the scan adds events to your tracking plan on every
+  run, and records metric points on its schedule. Anomaly detection reads those
+  points and raises signals; alerts are sent from signals. **Run now** fills the
+  plan and writes no metric point; the one manual metrics path is **Run a
+  one-off replay** on the scan's Configuration tab, which fills a past window and
+  unlocks with the same time column and schedule.
+- **Catalog only** — the scan adds events and fields to your tracking plan. It
+  records no metric points, so it raises no anomalies and sends no alerts.
+
+Each scan restates its own half of that chain: the scans list says it once, the
+scan form says it under the mode you have selected, and a scan's own page says
+what *that* scan does today. A scan with a schedule but no time column is never
+picked up by the scheduler, and says so — its badge reads **Needs a time
+column**, and its page adds that runs you start by hand still add events to your
+plan.
+
+The chain also runs backwards, which is how you get from an alert to its cause.
+An alert names the scan it came from, so **Govern → Scans** is where you start:
+open that scan, expand the run in **Recent runs**, and its **Run details** puts
+you one click from the rest. **Signals added** opens
+[Anomalies](./use/feature-reference.md) filtered to that scan, and **Alerts
+queued** opens the alerting audit log filtered the same way. A counter of `0` is
+plain text, not a link, because there would be nothing on the other side.
+
+Those two pages answer *what is open now*, while the run counts *what that run
+raised* — so an older run can link to a page with nothing on it. When that
+happens the page says so, and keeps the scan selected rather than quietly
+showing you a different scan's anomalies.
 
 :::note Scanning is optional — you can also write the plan by hand
 Events, event types, fields, and variables can all be created manually under

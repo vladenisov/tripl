@@ -23,7 +23,8 @@ describe('buildNavGroups', () => {
       alerting: '/p/demo/settings/alerting',
       reconciliation: '/p/demo/reconciliation',
       coverage: '/p/demo/coverage',
-      scans: '/p/demo/settings/scans',
+      // Scans is a top-level operational surface, not a settings tab.
+      scans: '/p/demo/scans',
       audit: '/p/demo/settings/audit',
     })
   })
@@ -255,7 +256,8 @@ describe('resolveNavLocation', () => {
     ['/p/demo/settings/alerting', 'Observe', 'Alerting'],
     ['/p/demo/reconciliation', 'Govern', 'Reconciliation'],
     ['/p/demo/coverage', 'Govern', 'Coverage'],
-    ['/p/demo/settings/scans', 'Govern', 'Scans'],
+    ['/p/demo/scans', 'Govern', 'Scans'],
+    ['/p/demo/scans/scan-1', 'Govern', 'Scans'],
     ['/p/demo/settings/audit', 'Govern', 'Audit log'],
   ])('maps %s to %s › %s', (path, area, label) => {
     expect(resolveNavLocation('demo', path)).toEqual({ area, label })

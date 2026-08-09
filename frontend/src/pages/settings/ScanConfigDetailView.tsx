@@ -17,10 +17,11 @@ import { ErrorState } from '@/components/error-state'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getErrorMessage } from '@/lib/utils'
 import { ScanDetail } from './ScanDetail'
+import { ScanCausalNote } from './scans/ScanCausalNote'
 import { ScanConfigurationTab } from './scans/ScanConfigForm'
 import { ScanBadges } from './scans/ScanConfigRow'
 import { BackLink, SrcIcon } from './scans/scanLayout'
-import { INTERVAL_LABEL, STATUS_META } from './scans/scanLayoutConstants'
+import { INTERVAL_LABEL, SCAN_STATUS_LABEL, STATUS_META } from './scans/scanLayoutConstants'
 import { deriveScanRunInfo } from './scans/scanUtils'
 import { dataSourcesKey } from '@/lib/queryKeys'
 
@@ -76,7 +77,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
     },
   })
 
-  const goBack = () => navigate(`/p/${slug}/settings/scans`)
+  const goBack = () => navigate(`/p/${slug}/scans`)
 
   // Loading the config list errored — surface it with a retry instead of a
   // blank screen (tripl-2su6.9).
@@ -99,14 +100,14 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
     return (
       <div className="space-y-4">
         <BackLink onClick={goBack} />
-        <p className="text-sm text-muted-foreground">Scan config not found.</p>
+        <p className="text-sm text-muted-foreground">Scan not found.</p>
       </div>
     )
   }
   // Still loading — a skeleton, never a blank render (tripl-2su6.9).
   if (!sc) {
     return (
-      <div className="space-y-4" aria-busy="true" aria-label="Loading scan config">
+      <div className="space-y-4" aria-busy="true" aria-label="Loading scan">
         <BackLink onClick={goBack} />
         <Skeleton className="h-8 w-64" />
         <Skeleton className="h-40 w-full" />
@@ -130,13 +131,24 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
             <span className="inline-flex items-center gap-1.5">
               <Dot tone={meta.tone} pulse={runInfo.status === 'running'} size={6} />
               <span className="text-xs" style={{ color: `var(--${meta.tone === 'neutral' ? 'fg-subtle' : meta.tone})` }}>
-                {meta.label}
+                {SCAN_STATUS_LABEL[runInfo.status]}
               </span>
             </span>
           </div>
           <p className="mt-1 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
-            Ingests from <span style={{ color: 'var(--fg-muted)' }}>{dataSource?.name ?? 'Unknown source'}</span>
+            {/* "Reads from", not "Ingests from": the causal note directly below
+                says what a run DOES ("adds events to your tracking plan"), and
+                two verbs for one act, one line apart, is the vocabulary drift
+                this epic opened with. "Reads" is what concepts.md already uses
+                for the warehouse side. */}
+            Reads from <span style={{ color: 'var(--fg-muted)' }}>{dataSource?.name ?? 'Unknown source'}</span>
           </p>
+          {/* One line under the header saying what this scan produces and what
+              reads it. Mounted here rather than inside ScanDetail so it sits
+              above the tab strip and holds for both tabs (tripl-3y7z.2). */}
+          <div className="mt-1">
+            <ScanCausalNote variant="config" config={sc} />
+          </div>
         </div>
         <ScenarioCoachMark step="live-loop/run-scan">
           <Button variant="secondary" size="sm" disabled={runMut.isPending} onClick={() => runMut.mutate()}>

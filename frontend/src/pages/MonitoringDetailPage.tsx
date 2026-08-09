@@ -43,6 +43,7 @@ import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/met
 import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, defaultGranularityForRange, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { formatSignalSeverity, resolveDetailScope } from '@/lib/monitoring'
+import { NO_BASELINE_LABEL, formatRatioDelta, ratioDelta } from '@/lib/percentDelta'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type {
   AppVersionSeriesResponse,
@@ -794,7 +795,7 @@ export default function MonitoringDetailPage() {
   })()
   const headerDescription = (() => {
     if (scope === 'metric') return metricDefinition?.description || 'Catalog metric monitoring detail.'
-    if (scope === 'project_total') return 'Canonical total event volume for the selected scan config.'
+    if (scope === 'project_total') return 'Canonical total event volume for the selected scan.'
     if (scope === 'event_type') return eventType?.description || 'Aggregated volume for the event type.'
     return event?.description || 'Monitoring detail for the selected event.'
   })()
@@ -1370,7 +1371,7 @@ export default function MonitoringDetailPage() {
           ) : (
             <Card>
               <CardContent className="p-6 text-sm text-muted-foreground">
-                No scan config found for this scope yet — run a scan to populate
+                No scan found for this scope yet — run a scan to populate
                 the heatmap.
               </CardContent>
             </Card>
@@ -1815,11 +1816,13 @@ function DistributionDriftPanel({
       <Card>
         <CardContent className="flex h-56 flex-col items-center justify-center gap-1 text-center text-sm text-muted-foreground">
           <p>No distribution drift data available</p>
+          {/* "the scan" is the one resolved above (`scanConfigId`) — this scope's
+              samples come from that scan and no other, so "run a scan" pointed the
+              reader at the wrong control as well as at the wire's noun. */}
           <p className="max-w-md text-xs">
             Add fields to{' '}
-            <span className="font-mono">distribution_drift_fields</span> on the scan
-            configuration, then run a scan to start collecting distribution samples
-            for this scope.
+            <span className="font-mono">distribution_drift_fields</span> on the scan,
+            then run it to start collecting distribution samples for this scope.
           </p>
         </CardContent>
       </Card>
@@ -2188,9 +2191,11 @@ function EventActionOverflow() {
 }
 
 function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: 'danger' | 'warning' }) {
-  const delta = signal.expected_count > 0
-    ? ((signal.actual_count - signal.expected_count) / signal.expected_count) * 100
-    : null
+  // No baseline is a fact about the signal, not a missing value: dropping the
+  // clause left the banner silently shorter on exactly the anomalies that moved
+  // the most — an event firing where nothing was expected, a scope resuming
+  // after an outage — so it says so instead (tripl-l429.27).
+  const delta = ratioDelta(signal.actual_count, signal.expected_count)
   const Arrow = signal.direction === 'drop' ? ArrowDown : ArrowUp
   return (
     <div
@@ -2203,7 +2208,9 @@ function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: '
       <Arrow size={15} style={{ color: `var(--${tone})` }} />
       <span className="text-[12.5px]" style={{ color: 'var(--fg-muted)' }}>
         {signal.direction === 'drop' ? 'Volume drop' : 'Volume spike'} detected
-        {delta != null && ` — ${delta > 0 ? '+' : ''}${delta.toFixed(0)}% vs. baseline`}
+        {delta === null
+          ? ` — ${NO_BASELINE_LABEL} to compare against`
+          : ` — ${formatRatioDelta(delta)} vs. baseline`}
         {` (${formatSignalSeverity(signal)}).`}
       </span>
       <div className="flex-1" />

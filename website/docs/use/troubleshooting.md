@@ -17,10 +17,11 @@ happening" reports:
   tasks on the `celery-worker` container, dispatched on a schedule by
   `celery-beat`. If either container is down, the UI stays up but nothing
   progresses.
-- **Scanning the catalog and collecting metrics are two different jobs.** A
-  scan (`run_scan`) discovers events and fills the tracking plan. Metrics,
-  anomalies, and alerts come from a separate, scheduled `collect_metrics` job.
-  Running a scan does **not** produce time-series metrics by itself.
+- **Filling the catalog and collecting metric points are two different things.**
+  A run of a scan (`run_scan`) discovers events and fills the tracking plan.
+  Metric points, anomalies, and alerts come from a separate, scheduled
+  `collect_metrics` task, dispatched only for scans that have both a schedule and
+  a time column. Starting a run does **not** record metric points by itself.
 
 A quick health check for a Docker deployment:
 
@@ -65,10 +66,11 @@ monitoring charts stay empty and no anomalies or alerts ever show up.
 
 **Likely causes.**
 
-1. **The scan config has no `interval` or no `time_column`.** The dispatcher
-   (`check_metrics_due`) only ever selects configs where **both**
-   `interval` and `time_column` are set. A config missing either is silently
-   skipped — it will never collect metrics, only catalog events.
+1. **The scan is not a monitoring scan.** The dispatcher (`check_metrics_due`)
+   only ever selects configs where **both** `interval` and `time_column` are set.
+   A config missing either is silently skipped — it will never collect metrics,
+   only catalog events. Its runs still succeed, which is why this looks like
+   nothing is wrong.
 2. **`celery-beat` is not running.** Metric collection is triggered by the
    beat schedule entry `check-metrics-due`, which fires every 300 seconds. With
    no beat container, `collect_metrics` is never dispatched.
@@ -84,14 +86,23 @@ monitoring charts stay empty and no anomalies or alerts ever show up.
    bucketed on `time_column`. If the column isn't a usable timestamp in the
    warehouse, the windowed query returns nothing to bucket.
 5. **The worker can't reach the warehouse.** `collect_metrics` connects to your
-   data source the same way a scan does; a broken connection fails the job (see
-   [A scan job fails](#a-scan-job-fails--a-data-source-connection-test-fails)).
+   data source the same way a scan does; a broken connection fails the run (see
+   [A scan run fails](#a-scan-run-fails--a-data-source-connection-test-fails)).
 
 **Fix.**
 
-- Open the scan config and confirm both an **interval** and a **time column**
-  are set. Save, then wait one beat cycle (≤ 5 minutes) or trigger a collection
-  manually from the UI.
+- Open **Govern → Scans** and look at the badge on the scan's row. **Catalog
+  only** or **Needs a time column** means this scan was never going to produce a
+  metric point, and the fix is in the form, not in the infrastructure.
+- Open the scan and check **What this scan does** at the top of the form. Choose
+  **Catalog + monitoring**, then fill in the **Time column** and **Schedule** it
+  asks for — the form refuses to save until both are answered. Save, then wait
+  one beat cycle (≤ 5 minutes) for the first collection, or fill a past window
+  right away with **Run a one-off replay** on the scan's Configuration tab (it
+  needs the same time column and schedule, so it unlocks with them).
+- If the scan is deliberately **Catalog only**, nothing is broken: that mode
+  records no metric points by design, so it raises no anomalies and sends no
+  alerts.
 - Confirm beat is alive:
 
   ```bash
@@ -105,11 +116,10 @@ monitoring charts stay empty and no anomalies or alerts ever show up.
   interval before expecting a second data point.
 
 :::note
-Each scan config runs at most one active collection job at a time. If a previous
-job is genuinely stuck (worker OOM/redeploy with no heartbeat), the dispatcher
-marks it failed after **75 minutes** without progress and lets the next run
-proceed — so a wedged job self-heals within that window rather than blocking
-collection forever.
+Each scan runs at most one active collection at a time. If a previous run is
+genuinely stuck (worker OOM/redeploy with no heartbeat), the dispatcher marks it
+failed after **75 minutes** without progress and lets the next run proceed — so a
+wedged run self-heals within that window rather than blocking collection forever.
 :::
 
 ---
@@ -178,14 +188,107 @@ match live either.
 
 ---
 
-## A scan job fails / a data-source connection test fails
+## The scan preview names no events
 
-**Symptom.** A scan job ends in `failed`, or the **Test connection** button on a
+**Symptom.** The preview loads, but **What this scan would create** lists zero
+events, or far fewer than you expected.
+
+The dry run is the same planner a real run uses, so "it would create nothing" is
+a real answer, not a broken panel. Five causes, in the order worth checking:
+
+1. **Nothing tells the scan how to name events.** A scan names its events one of
+   two ways: an **Event type**, which makes every row the same event, or an
+   **Event type column**, whose values become the event names. With neither, the
+   panel says so — *Nothing tells this scan how to name events yet* — and asks
+   nothing of your warehouse, because there is nothing it could answer. This is
+   also why **Create scan** stays disabled: a config with neither cannot ingest a
+   single event, so a scan that has it would fail every run. Both controls sit
+   together in the form's always-visible block; the column is picked from your
+   query's columns, so load a preview first.
+
+2. **The window is empty.** When the scan has a **Time column**, the dry run only
+   reads rows inside its lookback (**Limits → Lookback (hours)**, default 24). If
+   your table has no rows in that window — a staging table, a backfill that
+   stopped, a timestamp column in the wrong unit — there is nothing to name. The
+   summary prints the window it used; widen the lookback or clear the time column
+   to check. With no time column there is no window at all: the summary says *No
+   time window — the whole base query was read*, and an empty answer is then
+   about your whole query, not about a window.
+
+3. **The event name format is broken.** If the panel shows *Event name format
+   error*, that is the whole answer: a format referencing a key the rows cannot
+   supply fails **every** run of the config, not just the preview. The message
+   names the missing key and lists the keys that are available. Fix the format
+   before creating the scan — this is exactly the failure the dry run exists to
+   catch early.
+
+4. **Cardinality collapsed everything into one event.** A column with more
+   distinct values than the **Cardinality threshold** becomes a `${column}`
+   template rather than one event per value, so thousands of rows can legitimately
+   produce one event. The panel names each collapsed column and its distinct
+   count. Raise the threshold, or name the column in **Event name format** — a
+   column the name is built from is always enumerated regardless of cardinality.
+
+5. **The columns are unmapped or reserved.** With an explicit **Event type**, a
+   scan only uses columns that event type already declares; the rest are listed
+   as **unmapped** and are skipped by a real run too. Columns filling a reserved
+   role (event type, time, app version, platform, or an event-group-rule column)
+   are listed as **reserved**: tripl already uses these, so they never become
+   event fields, and their absence from the plan is intentional.
+
+If the events list is present but prefixed with **at least**, nothing is wrong —
+the sample hit its cap, and the count is a floor rather than a total. That case
+has its own entry below.
+
+---
+
+## The preview says "would create **at least** N events"
+
+**Symptom.** The preview names events, but hedges the count.
+
+Nothing is wrong. The dry run reads the most common column combinations inside
+the scan's lookback window — or across the whole base query, if the scan has no
+time column to window on — up to a cap of 5,000. When it hits that cap, more
+distinct events exist than it looked at, so N is a **floor**: the scan would
+create at least that many, possibly more. Saying a flat *N* there would be the
+one claim the panel is built not to make.
+
+The panel also prints *More distinct events exist than this preview looked at*,
+followed by the remedies that apply to your scan. There are two, and the panel
+names the second one only when your scan actually has a window to shorten:
+
+- **Narrow the base query.** Fewer columns means fewer combinations, so the same
+  cap covers more of your data. Dropping a high-cardinality column you were not
+  going to name events from is usually enough.
+- **Shorten the window.** **Limits → Lookback (hours)** decides how much data the
+  dry run reads at all. A shorter window with the same cap is more likely to be
+  complete — but remember it is then a statement about less of your data, not
+  about more of it. The lookback needs a **Time column**: it is the predicate the
+  window is expressed on, so the form asks for the column before it offers the
+  field. Without one there is no window, the cap is the only bound, and the panel
+  does not offer this remedy at all.
+
+There is deliberately no third remedy. The sample cap itself (`sample_row_limit`)
+is an API-only field with no control in the product, so the panel never suggests
+raising it.
+
+A count with no *at least* is exact **for what it read**: every distinct event in
+the sample, with the exact number of sampled rows behind each one. It is still
+not a table-wide total, because the lookback window is a separate bound. The
+panel always says which window it used, including when there was none.
+
+See [Scans → The dry run](feature-reference.md#the-dry-run--what-this-scan-would-create).
+
+---
+
+## A scan run fails / a data-source connection test fails
+
+**Symptom.** A scan run ends in `failed`, or the **Test connection** button on a
 data source returns an error.
 
 **How errors are surfaced.** Raw driver/ORM exceptions embed hostnames, ports,
 and library names, so tripl never shows them verbatim. User-facing fields get a
-sanitized summary instead. A failed **scan job** reads:
+sanitized summary instead. A failed **scan run** reads:
 
 - *"Scan failed: the data source did not respond in time."* — a timeout.
 - *"Scan failed: could not connect to the data source."* — connection refused,
@@ -220,15 +323,21 @@ to every curated message rather than leaving each raise site to remember it:
 - **Row limit reached.** *"Scan failed: The scan query reached the configured row
   limit (50000); increase scan_row_limit to avoid partial generation."* The default cap is
   50,000 rows for scans (100,000 for metrics). Narrow the base query, set a
-  time column + lookback so less data is scanned, or raise the per-config row
-  limit. Catalog-metric collection reports the same condition as *"… reached the
+  time column + lookback so less data is scanned (the **Time column** field is on
+  the form in both modes — a Catalog only scan can be windowed too), or raise the
+  per-config row limit. Catalog-metric collection reports the same condition as *"… reached the
   metric query row limit (100000) for chunk …"* and **fails the chunk on
   purpose**: collection replaces a window by deleting it and re-inserting, so
   writing a capped result would erase the tail of the window rather than leave
   it as it was. Narrow the metric's breakdown or replay in shorter chunks.
-- **Misconfigured event typing.** *"Scan failed: Either event_type_id or
-  event_type_column must be specified."* Pick a single event type for the
-  config, or set the column that splits rows into event types.
+- **Misconfigured event typing.** *"Scan failed: This scan has no Event type and
+  no Event type column, so it cannot name any events. Set one under the scan's
+  Configuration tab."* The config names neither, so it cannot name a single event. The scan form no
+  longer lets one be created or saved — **Event type** and **Event type column**
+  are asked for together in the always-visible block, and **Create scan** stays
+  disabled until one of them is answered — so a config in this state was made
+  through the API or predates that gate. Open it under **Govern → Scans**, answer
+  the question, and save.
 - **Event name format references a column that is gone.** *"Scan failed: the
   event name format references unknown keys: `action`. Available keys: …"* The
   scan's **Event name format** names a column the query no longer supplies —
@@ -271,7 +380,7 @@ reads the same way whichever one ran.
 The scan detail shows this curated error beside the failed run. Identical recent
 failures collapse into a **failed last N runs** streak; expand it when you need
 the individual attempts. After fixing the source/query/configuration, use **Run
-again** on the failed config. This creates a new job and preserves the earlier
+again** on the failed scan. This starts a new run and preserves the earlier
 failure history.
 
 :::note A config that keeps failing slows down on its own
@@ -470,17 +579,79 @@ problems degrade performance, they don't stop scans, metrics, or alerts.
 
 ## FAQ
 
-**Do I need to run scans on a schedule to get metrics?**
-No. A scan fills the catalog. Metrics, anomalies, and alerts come from the
-scheduled `collect_metrics` job, which runs automatically for any scan config
-that has both an interval and a time column — driven by `celery-beat`, no manual
-trigger needed.
+**An old link or bookmark points at `/p/<slug>/settings/scans` — is it broken?**
+No. Scans moved to `/p/<slug>/scans` (Govern › Scans is a top-level surface, not
+a settings tab). Both `/p/<slug>/settings/scans` and
+`/p/<slug>/settings/scans/<scan-id>` redirect to the new paths, so bookmarks,
+older docs, and the deep links in already-delivered alerts keep working.
 
-**Why is my brand-new scan config not flagging any anomalies?**
+**How do I read a scan run?**
+Open the scan, expand the run, and read **What this run did** — plain sentences
+about your data, not internal counters. It tells you how many warehouse rows the
+run read, which events it added to your plan, how many were already there (and
+that they were left alone, not lost), how many metric points it recorded, and
+whether anything it produced raised a signal or queued an alert. A catalog-only
+scan says outright that it collects no metric points, so nothing downstream can
+fire.
+
+Every raw counter the run reported is still there under **Show raw counters** —
+*Events created*, *Variables created*, *Events skipped*, *Columns analyzed*,
+*Event breakdowns*, *Distribution rows*, *Signals added*, *Alerts queued*.
+Nothing was removed; it is one click further down.
+
+**The run says it raised 2 signals but Anomalies shows a different number. Which
+is wrong?**
+Neither. *Raised N anomaly signals* is that run's **delta** — what this run
+added. The **Anomalies** page counts what is **open now**: signals from earlier
+runs that have not closed, and — unfiltered — signals from other scans and
+catalog-metric signals that belong to the project rather than to any scan. Two
+different questions, two legitimately different answers. Where the two disagree
+the run report prints the scan's current count under the sentence (*5 signals
+from this scan are open now*), so you are not left comparing a number here
+against a number on another page. The activity feed's "N new signals" on a scan
+card is the same delta.
+
+**Two runs both say "Rows read" but the numbers look unrelated.**
+Because they count different populations. A catalog run reports the rows the
+catalog analyzer read, bounded by **Row cap per run**; a metrics run reports the
+rows read across every metrics chunk, bounded by **Row cap per metrics run**. The
+column header cannot say which, so hover the figure — the stat card and every
+cell in the run table carry a title naming the population and its cap.
+
+**Do I need to run scans on a schedule to get metrics?**
+**Yes** — the schedule is what makes a scan a monitoring scan. A scan with no
+schedule is **Catalog only**: it fills your tracking plan when you run it and
+records no metric points, so nothing downstream of them can fire. Metric points
+come from `collect_metrics`, and the dispatcher only ever selects scans that set
+**both** a schedule and a time column — the pair **Catalog + monitoring** asks
+for. What you never have to do is trigger that collection: pick the mode, and
+`celery-beat` dispatches it from then on. Starting a run by hand adds events and
+fields to your plan and writes no metric point — and the one manual metrics path,
+**Run a one-off replay** on the scan's Configuration tab, is itself disabled
+until the scan has both.
+
+**Why is my brand-new scan not flagging any anomalies?**
 Anomaly detection needs history. Until enough buckets accumulate, the detector
 uses a rolling fallback and skips low-volume series; with very little data it
 will correctly report nothing. Give it time, and check the project's anomaly
 settings (sigma threshold, minimum expected count, baseline window).
+
+To look at just this scan instead of the whole project, open the scan, expand a
+run, and click **Signals added** — it opens Anomalies filtered to that scan
+(`/p/<slug>/anomalies?scan=<scan-config-id>`). On a busy project one large scan
+can supply most of the page, so per-scan is often the only readable view. If the
+counter reads `0` it is not a link: that run raised nothing, which is itself the
+answer. If the link opens on *No open anomalies from &lt;scan&gt;*, the signals
+that run raised have closed since — the scan stays selected so you can see that
+is what happened, and **Show all scans** widens the view.
+
+Also check the scan's mode. **Catalog only** scans record no metric points, so
+they raise no anomalies by design — the scan's own page says so in one line under
+its name, and its row carries a **Catalog only** badge. A scan badged **Needs a
+time column** has a schedule but no time column, so the scheduler never runs it
+and it collects no metric points — runs you start by hand still add events to
+your plan, which is why that scan can have green runs and no anomalies at the
+same time.
 
 **A scan failed with a generic "internal error" — where's the real reason?**
 User-facing fields are sanitized to avoid leaking host/port/driver details. The

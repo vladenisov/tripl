@@ -540,14 +540,19 @@ def _prepare_alert_deliveries(
                     absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
                     # 0.0 at a zero baseline is a PLACEHOLDER, not a measurement:
                     # the ratio is undefined and the column is NOT NULL. Nothing
-                    # may print it as a percentage — every reader goes through
+                    # may emit it as it stands. Readers go through one of two
+                    # encodings of the same gate: humans get the words via
                     # ``alert_templates.format_percent_delta`` (the message's
                     # ${percent_delta_label}, the AI prompt) or the frontend's
-                    # ``lib/percentDelta`` mirror, both of which say "no baseline"
-                    # for exactly this case. The percent gate admits the class on
-                    # purpose (tripl-l429.12); printing the placeholder reported
-                    # the largest possible relative move as the smallest
-                    # (tripl-l429.24).
+                    # ``lib/percentDelta`` mirror; machines get JSON ``null`` via
+                    # ``alert_templates.percent_delta_or_none`` (the generic
+                    # webhook body, ``payload_snapshot``). The percent gate admits
+                    # the class on purpose (tripl-l429.12); printing the
+                    # placeholder reported the largest possible relative move as
+                    # the smallest (tripl-l429.24, tripl-l429.27).
+                    # The one deliberate exception is the raw ${percent_delta}
+                    # template variable, whose documented contract is a bare
+                    # number; see ``alerts_messages._build_item_template_context``.
                     percent_delta = (
                         absolute_delta / anomaly.expected_count * 100
                         if anomaly.expected_count > 0

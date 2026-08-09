@@ -1,4 +1,10 @@
-"""Celery task for running data source scans."""
+"""Celery tasks for running data source scans.
+
+The dry-run half ("what would this scan create?") lives in the sibling
+``scan_dry_run`` module — split out for size in tripl-28g7, no behaviour change.
+Its Celery task is still named ``tripl.worker.tasks.scan.dry_run_scan_config_async``
+because the broker routes on that string.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +17,10 @@ from sqlalchemy.orm import Session
 
 from tripl import cache, realtime
 from tripl.core.adapters.base import BaseAdapter, ColumnInfo
-from tripl.core.analyzers.cardinality import analyze_cardinality, analyze_cardinality_grouped
+from tripl.core.analyzers.cardinality import (
+    analyze_cardinality,
+    analyze_cardinality_grouped,
+)
 from tripl.core.analyzers.event_generator import (
     GenerationResult,
     generate_events,
@@ -32,7 +41,7 @@ from tripl.worker.celery_app import celery_app
 from tripl.worker.db import _build_adapter, _get_sync_session
 from tripl.worker.plan_scope import main_branch_id
 from tripl.worker.search_reindex import reindex_main_branch_from_worker
-from tripl.worker.tasks._errors import ScanError, user_facing_error
+from tripl.worker.tasks._errors import NO_EVENT_NAMING_MSG, ScanError, user_facing_error
 from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 from tripl.worker.utils.reserved_columns import reserved_catalog_columns
 
@@ -242,8 +251,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             scan_rows_processed = len(analysis.rows)
             scan_truncated = analysis.row_limit_reached
         else:
-            msg = "Either event_type_id or event_type_column must be specified"
-            raise ScanError(msg)
+            raise ScanError(NO_EVENT_NAMING_MSG)
 
         session.commit()
         reindex_main_branch_from_worker(session, config.project_id)

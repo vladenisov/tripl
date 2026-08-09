@@ -18,6 +18,7 @@ from tripl.core.bucketing import floor_to_bucket, to_utc
 from tripl.core.collection_progress import collection_progress_to
 from tripl.core.intervals import get_interval
 from tripl.metric_grid import metric_grid_stmt, metric_grids
+from tripl.metric_monitoring import is_metric_monitored
 from tripl.models.data_source import DataSource
 from tripl.models.domain_enums import MetricComposition, MetricKind, MetricScopeType, MetricStatus
 from tripl.models.event import Event
@@ -620,21 +621,21 @@ async def _build_list_enrichment(
     """Latest value, sparkline and open signal for one page of listed metrics.
 
     Takes the listed ROWS rather than their ids because the signal half is gated
-    on ``anomaly_detection_enabled``, which the caller already holds — reading it
-    off the rows keeps the enrichment at its three batched queries.
+    on ``status`` and ``anomaly_detection_enabled``, which the caller already
+    holds — reading them off the rows keeps the enrichment at its three batched
+    queries.
     """
     metric_ids = [metric.id for metric in metrics]
     latest_values = await _load_latest_values(session, metric_ids)
-    # "Detection off" is off on EVERY surface. The switch stops new rows being
-    # scored but leaves the stored ones in place, and both project-wide surfaces
-    # already drop a disabled metric
-    # (``metrics_insights_service._get_active_metric_signals`` and
-    # ``_count_active_metric_signals_by_project`` filter on the flag), so a row
-    # here reporting an open signal off those leftovers made the metrics list
-    # disagree with the Anomalies page and the badge the moment it was flipped.
+    # "Not monitored" is not monitored on EVERY surface. A metric stops being
+    # scored either by its own detection switch or by leaving ``active``
+    # (``tripl.metric_monitoring``), and both leave the already-stored rows in
+    # place, so a row here reporting an open signal off those leftovers made the
+    # metrics list disagree with the Anomalies page and the badge the moment the
+    # metric was archived or switched off.
     latest_anomalies = await _load_latest_metric_anomalies(
         session,
-        [metric.id for metric in metrics if metric.anomaly_detection_enabled],
+        [metric.id for metric in metrics if is_metric_monitored(metric)],
     )
     # Each metric is scored on its OWN grid, so the freshness window has to be
     # measured on that grid too — a daily metric judged against a bare 24h window

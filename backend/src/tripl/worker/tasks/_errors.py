@@ -66,6 +66,19 @@ _MAX_CURATED_LEN = 500
 # function is the funnel every one of them already passes through.
 SCAN_FAILED_PREFIX = "Scan failed"
 
+# A scan names its events one of two ways: one event type for every row, or the
+# values of one column. With neither there is nothing to name anything after, so
+# no run of the config can create a single event.
+#
+# Surfaced verbatim, which is why it is written in the vocabulary of the scan
+# form's own controls. It used to read "Either event_type_id or
+# event_type_column must be specified" — two database columns no screen in the
+# product shows, in a run report whose reader is looking for something to click.
+NO_EVENT_NAMING_MSG = (
+    "This scan has no Event type and no Event type column, so it cannot name "
+    "any events. Set one under the scan's Configuration tab."
+)
+
 # Substrings that identify the failure category from an exception's text without
 # echoing the (host/port/library-laden) text itself back to the user. Celery's
 # soft/hard time-limit exceptions carry no "timeout" word, so match them here too

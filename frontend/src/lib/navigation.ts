@@ -216,8 +216,8 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           id: 'scans',
           label: 'Scans',
           icon: Search,
-          href: `${base}/settings/scans`,
-          match: (p) => p.startsWith(`${base}/settings/scans`),
+          href: `${base}/scans`,
+          match: (p) => p.startsWith(`${base}/scans`),
         },
         {
           id: 'audit',

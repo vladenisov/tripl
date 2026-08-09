@@ -9,6 +9,7 @@ from tripl.core.adapters.measure_validator import validate_select_sql_safety
 from tripl.core.intervals import get_interval
 from tripl.json_paths import normalize_json_value_paths
 from tripl.models.domain_enums import ScanInterval
+from tripl.models.scan_job import ScanJobStatus
 
 
 class EventGroupCondition(BaseModel):
@@ -346,6 +347,185 @@ class ScanConfigPreviewResponse(BaseModel):
     columns: list[ScanPreviewColumnResponse]
     rows: list[dict[str, object]]
     json_columns: list[ScanPreviewJsonColumnResponse]
+
+
+class ScanDryRunRequest(BaseModel):
+    """Inputs for "what would this scan create?".
+
+    Two shapes, and exactly one of them must be supplied. The scan form has no
+    saved config, so it sends the draft — that is the only shape the UI sends.
+    ``scan_config_id`` is the API/agent shape (``integrate/agent-api-guide.md``):
+    a caller that already has a stored config asks about it by id instead of
+    re-serialising twenty fields it did not author, and every draft field below
+    is then ignored. Nothing in the frontend uses it today; it is a documented
+    capability of the HTTP API, not unfinished UI.
+    """
+
+    scan_config_id: uuid.UUID | None = None
+    data_source_id: uuid.UUID | None = None
+    base_query: str | None = Field(default=None, min_length=1)
+    event_type_id: uuid.UUID | None = None
+    event_type_column: str | None = None
+    time_column: str | None = None
+    event_name_format: str | None = None
+    event_group_rules: list[EventGroupRule] = Field(default_factory=list)
+    json_value_paths: list[str] = Field(default_factory=list)
+    cardinality_threshold: int = Field(default=100, ge=1)
+    app_version_column: str | None = Field(default=None, min_length=1, max_length=255)
+    platform_column: str | None = Field(default=None, min_length=1, max_length=255)
+    scan_lookback_hours: int | None = Field(default=None, ge=1)
+    # How many breakdown combinations the dry-run may examine. Bounded at both
+    # ends: below 100 the answer is noise, above 20000 it is a production scan.
+    sample_row_limit: int = Field(default=5000, ge=100, le=20000)
+
+    @field_validator("base_query")
+    @classmethod
+    def validate_base_query(cls, value: str | None) -> str | None:
+        # The same gate ScanConfigCreate applies. Reused, never re-implemented:
+        # this endpoint executes free-text SQL against a stored credential.
+        return value if value is None else validate_select_sql_safety(value)
+
+    @field_validator("json_value_paths")
+    @classmethod
+    def validate_json_value_paths(cls, value: list[str]) -> list[str]:
+        normalized = normalize_json_value_paths(value)
+        invalid = sorted(set(value) - set(normalized))
+        if invalid:
+            raise ValueError("json_value_paths must use <json_column>.<nested.path> format")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_target(self) -> ScanDryRunRequest:
+        if self.scan_config_id is not None:
+            return self
+        if self.data_source_id is None or not self.base_query:
+            raise ValueError(
+                "either scan_config_id, or both data_source_id and base_query, must be provided"
+            )
+        # A draft that names neither is unanswerable, not merely empty: the
+        # planner resolves event types exactly the way a real run does, and both
+        # abort on this. Rejecting it here turns what was a dispatched job that
+        # failed with the worker's internal precondition into a 422 the caller
+        # can act on before any warehouse query is issued.
+        if self.event_type_id is None and not self.event_type_column:
+            # Named after the CONTROLS, not the columns behind them. The worker's
+            # sibling message (``_errors.NO_EVENT_NAMING_MSG``) was rewritten the
+            # same way in this change, and a 422 body is read by a person — the
+            # agent API and the CLI surface it verbatim. "event_type_id" is the
+            # exact vocabulary this epic exists to keep off a user's screen.
+            raise ValueError(
+                "set either Event type or Event type column, so the preview "
+                "knows how this scan names its events"
+            )
+        return self
+
+
+class ScanDryRunEvent(BaseModel):
+    """One event the config would produce, and how much of the sample it is.
+
+    An event is identified by ``(event_type, source_name)``, not by the name
+    alone: a run writes one Event per event type, so a grouped scan whose name
+    format collapses to the same string under two event types creates two
+    Events. Listing them as one would undercount the answer this panel exists to
+    give.
+    """
+
+    name: str
+    source_name: str
+    # The event type this event would be written under. On the grouped
+    # (``event_type_column``) path this is the group value; with an explicit
+    # ``event_type_id`` every row shares the one event type's name.
+    event_type: str
+    approx_row_count: int
+    share_of_sample: float
+    # Only two values are emitted. "merged" is carried by ``grouped_by_rule``
+    # instead: a grouped event is ALSO either new or already in the plan, and a
+    # three-way status would make "N new · M already in your plan" fail to
+    # account for every event in the list.
+    status: Literal["new", "existing"]
+    grouped_by_rule: str | None = None
+    count_confidence: Literal["exact", "sampled"]
+
+
+class ScanDryRunField(BaseModel):
+    """A field the config would add to the plan.
+
+    ``type`` is "json" or "string" and nothing else — that is the ENTIRE
+    inference the scan performs (``worker.tasks.metrics.generation``). Promising
+    integer/timestamp here would be a lie about what the scan creates.
+    """
+
+    name: str
+    type: Literal["json", "string"]
+    status: Literal["new", "exists"]
+    event_type: str
+
+
+class ScanDryRunTemplatedColumn(BaseModel):
+    """A column collapsed into a ``${column}`` template by the cardinality rule.
+
+    Surfaced so the user can see WHY they got 3 events instead of 3000 — it is a
+    step function of a threshold they are editing in the same form, not a
+    property of their data.
+    """
+
+    column: str
+    distinct_values: int
+    threshold: int
+
+
+class ScanDryRunResponse(BaseModel):
+    """What a scan would create, bounded by three separate partialities.
+
+    1. the lookback window (``window_from`` / ``window_to``) — an event absent
+       from 24h is not an event that will not be created;
+    2. the sample (``sample_is_complete``) — when false the caller must say
+       "at least N", never "N";
+    3. the event cap (``max_events_reached``) — the real scan stops there too.
+
+    Never extrapolate any of these to a table-wide total. ``share_of_sample``
+    exists so the caller does not have to invent one.
+    """
+
+    window_from: datetime | None = None
+    window_to: datetime | None = None
+    # Warehouse rows the examined combinations cover (the sum of each row's
+    # ``_cnt``), NOT the number of combinations — that is
+    # ``breakdown_combinations``.
+    sampled_rows: int = 0
+    sample_row_limit: int = 0
+    sample_is_complete: bool = True
+    breakdown_combinations: int = 0
+    events: list[ScanDryRunEvent] = Field(default_factory=list)
+    events_truncated: bool = False
+    max_events_reached: bool = False
+    fields: list[ScanDryRunField] = Field(default_factory=list)
+    templated_columns: list[ScanDryRunTemplatedColumn] = Field(default_factory=list)
+    reserved_columns: list[str] = Field(default_factory=list)
+    unmapped_columns: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    # Name-format failures land here rather than failing the job: catching an
+    # unknown-key format in a dry-run, instead of after 200 failed production
+    # runs, is the single highest-value thing this endpoint does (tripl-lpin).
+    errors: list[str] = Field(default_factory=list)
+
+
+class ScanDryRunJobResponse(BaseModel):
+    id: uuid.UUID
+    status: ScanJobStatus
+    started_at: datetime | None
+    completed_at: datetime | None
+    # Typed, unlike ``ScanPreviewJobResponse``'s bare dict: the payload is the
+    # whole point of the endpoint, and typing it here is what puts
+    # ``ScanDryRunResponse`` in the OpenAPI components so the frontend codegens
+    # the shape instead of hand-copying it. Null while pending/running or on
+    # failure.
+    result_summary: ScanDryRunResponse | None
+    error_message: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class ScanMetricsReplayRequest(BaseModel):

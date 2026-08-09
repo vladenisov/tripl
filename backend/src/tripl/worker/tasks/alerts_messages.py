@@ -24,6 +24,7 @@ from tripl.alert_templates import (
     get_default_items_template,
     get_default_message_template,
     normalize_message_template,
+    percent_delta_or_none,
     render_alert_template,
 )
 from tripl.alerting_matching import (
@@ -314,6 +315,15 @@ def _build_item_template_context(
         "absolute_delta": escape_alert_value(
             format_metric_alert_value(item.absolute_delta, metric_unit), message_format
         ),
+        # ${percent_delta} stays a BARE NUMBER on purpose, including the "0.0"
+        # placeholder at a zero baseline. Its documented contract is a number the
+        # operator composes with their own units and separators, so emitting
+        # prose here would break arithmetic-shaped custom templates mid-string.
+        # The default templates therefore use ${percent_delta_label} instead,
+        # which is the variable that names the undefined ratio. A rule whose
+        # operator SAVED a custom items_template before that switch still prints
+        # "0.0%" and no code may rewrite their string — that is documented for
+        # operators in website/docs/use/alerting.md ("Message templates").
         "percent_delta": escape_alert_value(f"{item.percent_delta:.1f}", message_format),
         "percent_delta_label": escape_alert_value(
             format_percent_delta(item.percent_delta, item.expected_count), message_format
@@ -814,6 +824,17 @@ def _is_telegram_message_too_long_error(error: Exception) -> bool:
 
 
 def _webhook_item_payload(item: AlertDeliveryItem) -> dict[str, object]:
+    """One matched item as outbound JSON.
+
+    ``percent_delta`` is ``null`` — not ``0.0`` — when there was no baseline to
+    divide by. The stored column is NOT NULL and holds the ``0.0`` placeholder,
+    but shipping that placeholder made the payload say "no change" about the one
+    class of anomaly that moved the most, and a consumer writing the obvious
+    ``percent_delta > threshold`` had no way to tell the two apart
+    (tripl-l429.27). ``expected_count: 0`` still travels beside it as
+    corroboration; it is no longer the only thing standing between a consumer
+    and a wrong number.
+    """
     return {
         "scope_type": item.scope_type,
         "scope_ref": item.scope_ref,
@@ -822,7 +843,7 @@ def _webhook_item_payload(item: AlertDeliveryItem) -> dict[str, object]:
         "actual_count": item.actual_count,
         "expected_count": item.expected_count,
         "absolute_delta": item.absolute_delta,
-        "percent_delta": item.percent_delta,
+        "percent_delta": percent_delta_or_none(item.percent_delta, item.expected_count),
         "bucket": item.bucket.isoformat() if item.bucket else None,
         "details_url": item.details_path,
         "monitoring_url": item.monitoring_path,

@@ -2389,6 +2389,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/scans/dry-run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dry Run Scan Config
+         * @description Enqueue a dry-run; poll GET /dry-run-jobs/{job_id} for the result.
+         *
+         *     Owner-only for the same reason preview is: the SQL is free text from a
+         *     draft, executed verbatim against a stored warehouse credential.
+         */
+        post: operations["dry_run_scan_config_api_v1_projects__slug__scans_dry_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/scans/dry-run-jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Scan Dry Run Job */
+        get: operations["get_scan_dry_run_job_api_v1_projects__slug__scans_dry_run_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/scans/preview": {
         parameters: {
             query?: never;
@@ -3343,7 +3383,7 @@ export interface components {
             /** Monitoring Path */
             monitoring_path: string | null;
             /** Percent Delta */
-            percent_delta: number;
+            percent_delta: number | null;
             /** Sample Value */
             sample_value: string | null;
             /** Scope Name */
@@ -8648,6 +8688,217 @@ export interface components {
             scan_row_limit?: number | null;
             /** Time Column */
             time_column?: string | null;
+        };
+        /**
+         * ScanDryRunEvent
+         * @description One event the config would produce, and how much of the sample it is.
+         *
+         *     An event is identified by ``(event_type, source_name)``, not by the name
+         *     alone: a run writes one Event per event type, so a grouped scan whose name
+         *     format collapses to the same string under two event types creates two
+         *     Events. Listing them as one would undercount the answer this panel exists to
+         *     give.
+         */
+        ScanDryRunEvent: {
+            /** Approx Row Count */
+            approx_row_count: number;
+            /**
+             * Count Confidence
+             * @enum {string}
+             */
+            count_confidence: "exact" | "sampled";
+            /** Event Type */
+            event_type: string;
+            /** Grouped By Rule */
+            grouped_by_rule?: string | null;
+            /** Name */
+            name: string;
+            /** Share Of Sample */
+            share_of_sample: number;
+            /** Source Name */
+            source_name: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "new" | "existing";
+        };
+        /**
+         * ScanDryRunField
+         * @description A field the config would add to the plan.
+         *
+         *     ``type`` is "json" or "string" and nothing else — that is the ENTIRE
+         *     inference the scan performs (``worker.tasks.metrics.generation``). Promising
+         *     integer/timestamp here would be a lie about what the scan creates.
+         */
+        ScanDryRunField: {
+            /** Event Type */
+            event_type: string;
+            /** Name */
+            name: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "new" | "exists";
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "json" | "string";
+        };
+        /** ScanDryRunJobResponse */
+        ScanDryRunJobResponse: {
+            /** Completed At */
+            completed_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Error Message */
+            error_message: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            result_summary: components["schemas"]["ScanDryRunResponse"] | null;
+            /** Started At */
+            started_at: string | null;
+            status: components["schemas"]["ScanJobStatus"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * ScanDryRunRequest
+         * @description Inputs for "what would this scan create?".
+         *
+         *     Two shapes, and exactly one of them must be supplied. The scan form has no
+         *     saved config, so it sends the draft — that is the only shape the UI sends.
+         *     ``scan_config_id`` is the API/agent shape (``integrate/agent-api-guide.md``):
+         *     a caller that already has a stored config asks about it by id instead of
+         *     re-serialising twenty fields it did not author, and every draft field below
+         *     is then ignored. Nothing in the frontend uses it today; it is a documented
+         *     capability of the HTTP API, not unfinished UI.
+         */
+        ScanDryRunRequest: {
+            /** App Version Column */
+            app_version_column?: string | null;
+            /** Base Query */
+            base_query?: string | null;
+            /**
+             * Cardinality Threshold
+             * @default 100
+             */
+            cardinality_threshold: number;
+            /** Data Source Id */
+            data_source_id?: string | null;
+            /** Event Group Rules */
+            event_group_rules?: components["schemas"]["EventGroupRule"][];
+            /** Event Name Format */
+            event_name_format?: string | null;
+            /** Event Type Column */
+            event_type_column?: string | null;
+            /** Event Type Id */
+            event_type_id?: string | null;
+            /** Json Value Paths */
+            json_value_paths?: string[];
+            /** Platform Column */
+            platform_column?: string | null;
+            /**
+             * Sample Row Limit
+             * @default 5000
+             */
+            sample_row_limit: number;
+            /** Scan Config Id */
+            scan_config_id?: string | null;
+            /** Scan Lookback Hours */
+            scan_lookback_hours?: number | null;
+            /** Time Column */
+            time_column?: string | null;
+        };
+        /**
+         * ScanDryRunResponse
+         * @description What a scan would create, bounded by three separate partialities.
+         *
+         *     1. the lookback window (``window_from`` / ``window_to``) — an event absent
+         *        from 24h is not an event that will not be created;
+         *     2. the sample (``sample_is_complete``) — when false the caller must say
+         *        "at least N", never "N";
+         *     3. the event cap (``max_events_reached``) — the real scan stops there too.
+         *
+         *     Never extrapolate any of these to a table-wide total. ``share_of_sample``
+         *     exists so the caller does not have to invent one.
+         */
+        ScanDryRunResponse: {
+            /**
+             * Breakdown Combinations
+             * @default 0
+             */
+            breakdown_combinations: number;
+            /** Errors */
+            errors?: string[];
+            /** Events */
+            events?: components["schemas"]["ScanDryRunEvent"][];
+            /**
+             * Events Truncated
+             * @default false
+             */
+            events_truncated: boolean;
+            /** Fields */
+            fields?: components["schemas"]["ScanDryRunField"][];
+            /**
+             * Max Events Reached
+             * @default false
+             */
+            max_events_reached: boolean;
+            /** Reserved Columns */
+            reserved_columns?: string[];
+            /**
+             * Sample Is Complete
+             * @default true
+             */
+            sample_is_complete: boolean;
+            /**
+             * Sample Row Limit
+             * @default 0
+             */
+            sample_row_limit: number;
+            /**
+             * Sampled Rows
+             * @default 0
+             */
+            sampled_rows: number;
+            /** Templated Columns */
+            templated_columns?: components["schemas"]["ScanDryRunTemplatedColumn"][];
+            /** Unmapped Columns */
+            unmapped_columns?: string[];
+            /** Warnings */
+            warnings?: string[];
+            /** Window From */
+            window_from?: string | null;
+            /** Window To */
+            window_to?: string | null;
+        };
+        /**
+         * ScanDryRunTemplatedColumn
+         * @description A column collapsed into a ``${column}`` template by the cardinality rule.
+         *
+         *     Surfaced so the user can see WHY they got 3 events instead of 3000 — it is a
+         *     step function of a threshold they are editing in the same form, not a
+         *     property of their data.
+         */
+        ScanDryRunTemplatedColumn: {
+            /** Column */
+            column: string;
+            /** Distinct Values */
+            distinct_values: number;
+            /** Threshold */
+            threshold: number;
         };
         /**
          * ScanInterval
@@ -15303,6 +15554,73 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScanConfigResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dry_run_scan_config_api_v1_projects__slug__scans_dry_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScanDryRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScanDryRunJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_scan_dry_run_job_api_v1_projects__slug__scans_dry_run_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScanDryRunJobResponse"];
                 };
             };
             /** @description Validation Error */

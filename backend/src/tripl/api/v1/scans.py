@@ -12,6 +12,7 @@ from tripl.api.deps import (
     get_owner_user,
 )
 from tripl.models.scan_config import ScanConfig
+from tripl.models.scan_dry_run_job import ScanDryRunJob
 from tripl.models.scan_job import ScanJob
 from tripl.models.scan_preview_job import ScanPreviewJob
 from tripl.schemas.event_metric import PlatformPresenceResponse
@@ -20,6 +21,8 @@ from tripl.schemas.scan_config import (
     ScanConfigPreviewRequest,
     ScanConfigResponse,
     ScanConfigUpdate,
+    ScanDryRunJobResponse,
+    ScanDryRunRequest,
     ScanMetricsReplayRequest,
 )
 from tripl.schemas.scan_job import ScanJobResponse, ScanPreviewJobResponse
@@ -104,6 +107,38 @@ async def get_scan_preview_job(
     job_id: uuid.UUID,
 ) -> ScanPreviewJob:
     return await scan_service.get_preview_job(session, slug, job_id)
+
+
+@router.post(
+    "/dry-run",
+    response_model=ScanDryRunJobResponse,
+    status_code=202,
+    dependencies=_owner_required,
+)
+async def dry_run_scan_config(
+    session: SessionDep,
+    slug: str,
+    data: ScanDryRunRequest,
+) -> ScanDryRunJob:  # serialized through ScanDryRunJobResponse
+    """Enqueue a dry-run; poll GET /dry-run-jobs/{job_id} for the result.
+
+    Owner-only for the same reason preview is: the SQL is free text from a
+    draft, executed verbatim against a stored warehouse credential.
+    """
+    return await scan_service.trigger_dry_run(session, slug, data)
+
+
+@router.get(
+    "/dry-run-jobs/{job_id}",
+    response_model=ScanDryRunJobResponse,
+    dependencies=_owner_required,
+)
+async def get_scan_dry_run_job(
+    session: SessionDep,
+    slug: str,
+    job_id: uuid.UUID,
+) -> ScanDryRunJob:
+    return await scan_service.get_dry_run_job(session, slug, job_id)
 
 
 @router.get("/{scan_id}", response_model=ScanConfigResponse)

@@ -10,16 +10,20 @@ import { MetaFieldsTab } from './settings/MetaFieldsTab'
 import { RelationsTab } from './settings/RelationsTab'
 import { VariablesTab } from './settings/VariablesTab'
 import { MonitoringTab } from './settings/MonitoringTab'
-import { ScansTab } from './settings/ScansTab'
-import { ScanConfigDetail } from './settings/ScanConfigDetailView'
 
 /**
  * Functional project surfaces (event types, schema & fields, monitoring,
- * alerting, scans, branches, audit, history). The redesign collapsed the old
+ * alerting, branches, audit, history). The redesign collapsed the old
  * 11-tab settings strip: these surfaces are now first-class sidebar pages, so
  * this page renders the requested one full-width at its existing route with no
  * tab strip. The `general` config tab moved into the full-takeover Settings
  * area, so requests for it (and the bare /settings index) redirect there.
+ *
+ * `scans` is deliberately absent: it moved to the top-level `/p/:slug/scans`
+ * route, and the legacy `/p/:slug/settings/scans[/:itemId]` paths are claimed by
+ * `ScansRedirect` in App.tsx — a more specific match than `/settings/:tab`, so
+ * this component never sees the tab. Re-adding it here would only create
+ * branches nothing can reach.
  */
 type FunctionalTab =
   | 'event-types'
@@ -28,7 +32,6 @@ type FunctionalTab =
   | 'variables'
   | 'monitoring'
   | 'alerting'
-  | 'scans'
   | 'branches'
   | 'history'
   | 'audit'
@@ -40,7 +43,6 @@ const FUNCTIONAL_TABS: FunctionalTab[] = [
   'variables',
   'monitoring',
   'alerting',
-  'scans',
   'branches',
   'history',
   'audit',
@@ -55,6 +57,9 @@ export default function ProjectSettingsPage() {
   // identifies the page but not the line the alert message quoted.
   const [searchParams] = useSearchParams()
   const focusItemKey = searchParams.get('item') ?? undefined
+  // `?scan=<scan_config_id>` narrows the alerting audit log to one scan — the
+  // target of the "Alerts queued" counter on a scan run (tripl-3y7z.2).
+  const focusScanId = searchParams.get('scan') ?? undefined
 
   if (!slug) return null
 
@@ -85,11 +90,14 @@ export default function ProjectSettingsPage() {
           {/* `itemId` focuses one delivery and `?item=` one row inside it —
               together the target of the deep link an alert message carries for
               scopes with no monitoring page. */}
-          <ProjectAlertingTab slug={slug} focusDeliveryId={itemId} focusItemKey={focusItemKey} />
+          <ProjectAlertingTab
+            slug={slug}
+            focusDeliveryId={itemId}
+            focusItemKey={focusItemKey}
+            focusScanId={focusScanId}
+          />
         </Suspense>
       )}
-      {tab === 'scans' && itemId && <ScanConfigDetail slug={slug} scanConfigId={itemId} />}
-      {tab === 'scans' && !itemId && <ScansTab slug={slug} />}
       {tab === 'branches' && <BranchesTab slug={slug} branchId={itemId} />}
       {tab === 'history' && <HistoryTab slug={slug} />}
       {tab === 'audit' && <AuditTab slug={slug} />}

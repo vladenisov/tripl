@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from tripl.alert_templates import percent_delta_or_none
 from tripl.alerting_validation import (
     normalize_optional_secret,
     normalize_required_text,
@@ -492,7 +493,16 @@ class AlertDeliveryItemResponse(BaseModel):
     actual_count: float
     expected_count: float
     absolute_delta: float
-    percent_delta: float
+    # ``None``, not the stored 0.0, when there was no baseline — the same
+    # encoding ``payload_snapshot`` and the webhook already use. This response
+    # carries BOTH: ``AlertDeliveryDetailResponse`` inherits ``payload_snapshot``
+    # and adds ``items``, so leaving this one a bare float made a single JSON
+    # body answer the same question two ways, and the typed array is the half an
+    # external consumer reads off the OpenAPI spec (tripl-l429.27).
+    #
+    # ``AlertDeliveryItem.percent_delta`` stays NOT NULL: the row is frozen
+    # history and is not rewritten. Only the outbound encoding changes.
+    percent_delta: float | None
     details_path: str | None
     monitoring_path: str | None
     drift_field: str | None
@@ -507,6 +517,23 @@ class AlertDeliveryItemResponse(BaseModel):
     correlation_group_id: uuid.UUID | None = None
 
     model_config = {"from_attributes": True}
+
+    @model_validator(mode="after")
+    def blank_percent_delta_without_a_baseline(self) -> AlertDeliveryItemResponse:
+        """Enforce the encoding here rather than at the call site.
+
+        The one construction site reads ORM rows straight through
+        (``_alerting_deliveries.get_delivery``), so a rule applied there would be
+        one edit away from being lost. Applying it on the model means any future
+        caller gets it too, and the invariant this response advertises —
+        ``percent_delta`` is null exactly when ``expected_count`` is 0 — cannot
+        be broken by a new code path.
+        """
+        self.percent_delta = percent_delta_or_none(
+            self.percent_delta if self.percent_delta is not None else 0.0,
+            self.expected_count,
+        )
+        return self
 
 
 class AlertDeliveryResponse(BaseModel):

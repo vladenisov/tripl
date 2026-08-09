@@ -136,13 +136,13 @@ one of them, and an action that carries no note **leaves the stored note alone**
 resolution to annotate.
 
 Accepting a `missing_field` drift **deletes the declared field** from the event
-type. tripl refuses that with a `409 Conflict` when a scan config on that event
+type. tripl refuses that with a `409 Conflict` when a scan on that event
 type builds its event names from the column — the plan cannot name its events
 without it, and deleting the field would fail every subsequent collection with
 *"the event name format references unknown keys"*. The message names the
-column, the scan config and its format. Fix it by editing the scan's
+column, the scan and its format. Fix it by editing the scan's
 [**Event name format**](#event-detail--editing) so it no longer references the column, then
-accept the drift. A project-wide scan config (one with no bound event type)
+accept the drift. A project-wide scan (one with no bound event type)
 counts too, because it can produce events for any event type in the project.
 
 A placeholder is matched on its **base column**. A format of `{event.category}`
@@ -152,7 +152,7 @@ field definition for `event`, and a `missing_field` drift on `event` is refused
 exactly as one on `action` is.
 
 **Why the refusal exists.** A `missing_field` drift for the column `action` was
-accepted in good faith on production, on an event type whose scan config named
+accepted in good faith on production, on an event type whose scan named
 its events `{action}`. The field went away, every collection after it failed
 behind the generic *"Scan failed due to an internal error"*, and that scan
 collected nothing for four days before anyone connected the two. The 409 is a
@@ -165,7 +165,7 @@ repair that works in both worlds, which is why it is the only one offered.
 The drift action route
 (`POST /api/v1/projects/{slug}/event-types/drifts/{drift_id}/actions`) accepts
 `"force": true`, which skips the check and deletes the field. It exists for one
-honest case: a **project-wide** scan config names the column in its format but
+honest case: a **project-wide** scan names the column in its format but
 never actually produces events for this event type, so the guard fires on a scan
 that was never going to break. It is **API-only by design** — no button in the
 app, no flag in the [CLI](../run/cli.md#tripl-drifts). A warning next to an
@@ -175,7 +175,7 @@ is not something anyone does by accident.
 
 A `force` request **must** carry a `note` (a blank one is a `422`), and that note
 is stored on the drift as its resolution note, so the record of who overrode the
-guard and why survives in the audit trail. If you are not sure the scan config is
+guard and why survives in the audit trail. If you are not sure the scan is
 harmless, fix the event name format instead — that costs one edit, and being
 wrong here costs a silent collection outage.
 :::
@@ -295,13 +295,13 @@ Distinct from per-event history and the workspace audit log.
 `/p/<slug>/overview`). Panels: a 14-day **new events** KPI series (events added to
 the plan per day on the main branch — not a history of the active-events stat
 beside it) and a plan-coverage stat, a **volume** card charted from a single scan
-config and titled with that config's name, top events over the last 48h summed
-across every scan config, active anomaly signals, recent activity, and source
+and titled with that scan's name, top events over the last 48h summed
+across every scan, active anomaly signals, recent activity, and source
 health. Recent activity reads the **main branch** too, like the KPI series: an
 open working branch holds its own copy of every event, and those copies are not
 listed as separate entries. A row whose target has since been deleted is shown
 without a link rather than linking to a page that no longer resolves. The volume card and the Events page's "&lt;Tab&gt; Dynamics" chart both
-resolve the same default scan config — the most recently *created* one, so
+resolve the same default scan — the most recently *created* one, so
 editing an unrelated scan never re-points them. A new project also shows a **Get started**
 checklist (Plan → Observe → Govern) that ticks steps off automatically from real
 project state and hides itself once you are set up. It is role-aware: connecting a
@@ -325,7 +325,7 @@ not from a monitor row.
 **Where:** reached from an event, an event signal, or a catalog row. Renders
 per-scope metrics for an `event`, `event_type`, or `project_total` scope, with
 tabs: **Volume** (series plus the latest signal — bucket / actual / expected /
-band), **By version** with version-adoption (only when the scan config defines an
+band), **By version** with version-adoption (only when the scan defines an
 app-version column), **Heatmap** (7×24 seasonality), **Distribution** (drift
 bands), and **Breakdowns**. The page also surfaces top movers and release
 regressions, plus chart annotations on the Volume tab. For an `event` scope it
@@ -376,13 +376,15 @@ then reveals kind-specific config:
 
 Shared fields are name, display name, description, color, unit, owner/review,
 status, breakdown columns/limit, optional version/platform columns, and the
-anomaly-detection toggle. Turning that toggle off stops the metric being scored
-and closes its signal on every surface at once — the catalog row, the metric's
-own detail page, the Anomalies page and the sidebar badge; anomalies already
+anomaly-detection toggle. A metric is monitored only while it is **active** and
+its anomaly-detection toggle is on. Turning that toggle off — or moving the
+metric out of `active` — stops it being scored and closes its signal on every
+surface at once: the catalog row, the metric's own detail page, the Anomalies
+page and the sidebar badge, and it also stops being a candidate for alert rules,
+so any alert already open on it closes on the next check. Anomalies already
 recorded stay on the chart as history rather than being deleted. A metric is
-collected only while
-**active**; `draft` metrics are saved but not collected, and `archived` metrics
-stop collecting.
+collected only while **active**; `draft` metrics are saved but not collected,
+and `archived` metrics stop collecting.
 
 ### Fact tables
 
@@ -468,6 +470,16 @@ more events; catalog metrics are project-wide rather than scan-bound and get
 their own option. Both filters narrow the list already in memory — no extra
 request — and the counts on the scan options are taken from the whole stream, so
 raising the magnitude cannot make the option you are standing on disappear. The
+scan filter is **deep-linkable**: `?scan=<scan_config_id>` opens the page already
+narrowed to that scan, and picking an option writes the parameter back (choosing
+**All scans** removes it), so a narrowed view can be shared or bookmarked. This
+is where a scan run's **Signals added** counter links to. A scan with nothing
+open right now keeps its selection and says *No open anomalies from &lt;scan&gt;* —
+a signal closes once the metric comes back to normal, so an older run's link
+lands here — with **Show all scans** one click away. Only an id this project does
+not have — a deleted scan, a stale bookmark, a hand-edited URL — degrades to
+**All scans** and shows the full list. Neither case ever swaps a different
+scan's anomalies in for the one you asked for. The
 sidebar and top-bar badge, the Overview **Open signals** stat, and this page all
 report the **same** number — open signals across every scope that clear the
 Significant threshold — so the badge agrees with the list rather than reading
@@ -499,7 +511,14 @@ and are enabled by the rule editor's **Metrics** box (`include_metrics`). A rule
 **simulated/replayed** over the last N days (default 7), optionally overriding
 the saved cooldown. The **Inbox** groups correlated deliveries; the **Audit**
 view lists deliveries filterable by status (pending / sent / failed) with retry
-on failures.
+on failures, plus channel, destination, rule, and **scan**.
+
+The scan filter is deep-linkable the same way Anomalies' is:
+`/p/<slug>/settings/alerting?scan=<scan_config_id>` opens the audit log already
+narrowed to one scan, which is where a scan run's **Alerts queued** counter
+links. As on Anomalies, an id this project does not have degrades to **All**
+once the scan list resolves, so a link to a since-deleted scan shows the full
+audit log rather than a permanently empty one.
 
 ---
 
@@ -539,37 +558,245 @@ every non-archived status and therefore reports a larger total.
 
 ### Scans
 
-**Where:** Govern › Scans (requires a data source). A scan config covers: source
-& query (name, data source, base query used as a subquery, with async preview);
-event mapping (event type or auto-detect, event-type column, time column,
-event-name format); optional app-version and platform columns; metrics & drift
-(breakdown columns, distribution-drift fields, JSON paths); ordered
-**event-group rules** that can rename/group matching values; and a **Schedule**
-— one of *No schedule
-(manual)*, *Every 15 min* (`15m`), *Every hour* (`1h`), *Every 6 hours* (`6h`),
-*Every day* (`1d`), or *Every week* (`1w`).
+**Where:** Govern › Scans (route `/p/<slug>/scans`; requires a data source). The
+legacy `/p/<slug>/settings/scans` path still resolves — it redirects here, so old
+bookmarks and links keep working.
 
-Advanced controls bound catalog/metrics row counts and scan lookback, choose a
-replay chunk interval, and cap breakdown cardinality. Version monitoring also
-exposes the active-traffic share gate and an optional prerelease pattern; the
-shared number of releases to retain lives under **Settings → Project → General**.
-The platform column powers the platform-presence matrix. Reserved role columns
-(event type, time, version, platform) cannot simultaneously be selected as
-scalar breakdown/drift fields.
+Every scan surface states the chain a scan feeds, because a scan's output reaches
+you as anomalies and alerts and nothing on these screens used to say so. The list
+says it once for all scans; the form says it under the mode you have selected;
+and a scan's own page says what *that* scan does today — including the case where
+it has a schedule but no time column, so the scheduler never runs it and it
+collects no metrics. A run's
+**Signals added** and **Alerts queued** counters are links back out to the
+[Anomalies](#anomalies) and [Alerting](#alerting) surfaces filtered to that scan
+(`?scan=<scan_config_id>` on both). The link filters by **scan**, not by run — a
+run's stored summary carries counts only, no signal or delivery ids — so the
+tooltips read "from this scan". A counter of `0` renders as plain text: linking
+to a page guaranteed to be empty is worse than not linking at all.
 
-### Scan jobs
+#### What the scan form asks
 
-Running a scan creates a job. From a config you can run a scan, apply event
-groups, jump directly to **Review events**, or replay metrics over historical
-chunks (replay requires a time column and an interval). Jobs expose status,
-progress, and curated failure detail. A job's **details** list flags warehouse
+The first question is **What this scan does**, and it decides the shape of the
+rest of the form:
+
+- **Catalog + monitoring** — adds events and fields to your tracking plan *and*
+  records metric points, so anomalies and alerts can fire. A **Time column** and a
+  **Schedule** are both required; the form will not save without them.
+- **Catalog only** — adds events and fields to your tracking plan when you run
+  it. No schedule, so no metric points, no anomalies and no alerts.
+
+The difference between the two is the **schedule**, and only the schedule: a
+config with no interval is never dispatched, which is exactly what catalog-only
+means. The **Time column** is asked for in both modes because it does a second
+job that has nothing to do with monitoring — it bounds every run to
+**Limits → Lookback (hours)**. In Catalog only it is optional and unflagged
+(*No time column — read the whole query* is a legitimate answer); leaving it
+empty means each run reads everything the base query returns, which the Limits
+section says in place of the lookback field. Choosing **Catalog only** never
+clears a time column you already saved.
+
+Only a monitoring scan produces metric points, so only a monitoring scan can
+raise a signal or send an alert. See
+[Concepts](concepts.md#monitoring-scan-vs-catalog-only-scan) for the definitions.
+
+**Always visible (the essentials), in the order they appear:** the mode choice,
+**Name**, **Data source**, **Base query** (used as a subquery), the **Load
+preview** button, **Event type** and **Event type column**, **Time column**
+(required in Catalog + monitoring, an optional run bound in Catalog only), — in
+Catalog + monitoring only — **Schedule**, and finally the preview panel. The schedule is one of *Every 15 min* (`15m`),
+*Every hour* (`1h`), *Every 6 hours* (`6h`), *Every day* (`1d`), or *Every week*
+(`1w`).
+
+**Event type** and **Event type column** are one question — where the name of
+each event comes from — so they are asked together. Choose an event type and
+every row becomes that event; leave it on *Name events from a column* and each
+distinct value of the chosen column becomes its own event type. One of the two is
+required in both modes: a config with neither cannot name anything, so no run of
+it can ingest an event. **Create scan** and **Save** stay disabled until it is
+answered, and the preview panel says the same thing rather than asking your
+warehouse a question with no answer.
+
+**Everything else is a collapsed section.** Each carries one line saying what it
+is for and what happens if you leave it alone. Editing a saved config opens any
+section that already holds a non-default value.
+
+| Section | What it is for | Contains |
+| --- | --- | --- |
+| **Event names and grouping** | Reshape the names tripl derives from the essentials — rewrite them from a template, collapse high-cardinality values, or merge several into one. Leave it alone and each name is used as it is. | Event name format · Cardinality threshold · Event groups · JSON values to keep as-is |
+| **App version** | Attach an app release and platform to every event. Leave it alone if you do not ship versioned apps. | App version column · Platform column · Pre-release version pattern · Traffic share that counts as released |
+| **Metric breakdowns and drift** *(Catalog + monitoring only)* | Extra columns to split metrics by, and columns whose value mix you want watched for drift. Leave it alone to collect one series per event. | Metric breakdowns · Value limit · Distribution drift |
+| **Limits** | Caps on how much warehouse data each run reads. Leave them alone unless runs are slow or expensive. | Replay chunk size *(Catalog + monitoring only)* · Lookback (hours) *(needs a time column — with none, the section says each run reads the whole base query instead of offering the field)* · Row cap per run · Row cap per metrics run *(Catalog + monitoring only — a Catalog only scan has no metrics runs to cap; a cap set while monitoring is kept, not cleared, and returns if you switch back)* |
+
+Sections that need your query's columns stay empty until a preview is loaded and
+say so. The shared number of releases to retain lives under **Settings → Project
+→ General**. The platform column powers the platform-presence matrix. Reserved
+role columns (event type, time, version, platform) cannot simultaneously be
+selected as scalar breakdown/drift fields.
+
+#### The preview panel
+
+**Where:** the scan form, at the foot of the always-visible block — after the
+fields the answer is computed from. One button, two halves.
+
+1. **What this scan would create** — the dry run, described below. Event names,
+   field names and the bounds the answer is under. This is what the panel leads
+   with.
+2. **Show sample rows** — the raw warehouse rows the query returned, collapsed.
+   They are what the column pickers read, and they are useful evidence when the
+   answer above surprises you, but they name neither an event nor a field, so
+   they are no longer the headline.
+
+The dry run describes one specific draft. Change the form after it ran — a
+different event name format, a new group rule, a different cardinality threshold
+— and the panel says the answer no longer describes this scan and offers
+**Check again**, rather than leaving a stale list of event names on screen.
+
+A brand-new scan picks its **Event type column** from the very rows this button
+loads, so on the first click there is often nothing yet that says how events are
+named. The panel says so and asks nothing of your warehouse — *Nothing tells this
+scan how to name events yet* — and once you answer, with an **Event type** or
+that column, a **Check** button turns the same rows into the answer.
+
+#### The dry run — what this scan would create
+
+Loading a preview also asks the backend "what would this config create?" and
+answers with **event names and field names**, not raw rows. The answer is
+computed by pushing the sampled warehouse rows through the *same* planner a real
+run uses, so the names you see are the names a run would write — the event name
+format, the group rules and the cardinality collapse are all applied for real.
+Nothing is written: the planner is a pure function and the dry run holds no
+transaction open on your plan.
+
+It counts events the way a run creates them: one per **event type**, not one per
+name. A scan that groups on an **Event type column** runs the planner once per
+group, exactly as the real scan does, so if two event types both produce the
+name `home` you get two entries — and each is labelled *new* or *already in your
+plan* against its own event type.
+
+It is deliberately bounded, and says so rather than rounding up. Three separate
+partialities are reported independently:
+
+| Bound | What it means | How it reads |
+| --- | --- | --- |
+| **Lookback window** | With a **Time column**, only rows inside the scan's lookback were read — an event absent from the last 24 hours is not an event that will not be created. With none there is no window, and the whole base query was read. | The summary names the window it used, or says *No time window — the whole base query was read*. |
+| **Sample** | The dry run examines at most a fixed number of the *most common* column combinations (5,000 by default, `sample_row_limit`). If it hit that cap, more distinct events exist than it looked at. | "Would create **at least** N events", never a flat N. |
+| **Event cap** | Generation stops at 10,000 events per pass. The real scan stops there too. | An explicit note when the cap was reached. |
+
+It never projects a table-wide total. Each event carries its share of the sample
+and an exact count of the sampled rows behind it — not an estimate of how many
+rows exist in your warehouse.
+
+Three more things it reports, each answering a question the raw rows could not:
+
+- **Templated columns.** A column with more distinct values than the
+  **Cardinality threshold** collapses into a `${column}` template, so you get one
+  event instead of thousands. The dry run names the column and its distinct
+  count, because that is a step function of a threshold you are editing on the
+  same form, not a property of your data.
+- **Event name format errors.** A format referencing a key the rows cannot supply
+  fails *every* run of that config. Catching it here, instead of after two
+  hundred failed production runs, is the single most valuable thing this feature
+  does. The error is reported, not raised — the dry run still completes.
+- **Fields.** A field is either `json` or `string`. That is the entire type
+  inference a scan performs; claiming `integer` or `timestamp` would be a claim
+  about something the scan does not do. Fields are only reported as "would be
+  added" on the event type column path, which is the path that
+  creates them; with an explicit event type, columns the event type does not
+  declare are listed as **unmapped** instead, because a run would skip them.
+  The panel says so in those words — *a run only fills the fields this event
+  type already declares* — and reserves *every column is already mapped* for the
+  case where nothing is unmapped. When something is, a **Create N fields** button
+  sits directly under the panel and declares exactly the columns it just listed
+  on that event type; it never offers a reserved column, because it is driven by
+  the same `unmapped_columns` answer rather than by a second reading of the
+  preview.
+
+Like the preview, the dry run runs free-text SQL against a stored credential, so
+it is **owner-only**.
+
+#### The mode badge
+
+Every scan row and the scan detail header carry a badge derived from the two
+columns the dispatcher reads:
+
+| Badge | Meaning |
+| --- | --- |
+| **Monitoring** | Time column and schedule both set. Collects metric points on a schedule. |
+| **Catalog only** | No schedule. Adds events and fields to your tracking plan; no metric points, no anomalies, no alerts. |
+| **Needs a time column** | A schedule but **no time column**. The dispatcher never selects it, so the scheduler never runs it and it collects no metric points. Runs you start by hand still add events to your plan. Add a time column to fix it. This is the same finding the CLI reports as `scan_config_not_dispatchable`. |
+
+The **Monitoring** tile at the top of the Scans page counts only the first of
+these.
+
+### Scan runs
+
+Starting a scan creates a **run**. (The API and the CLI call the same record a
+`job` — `tripl scans jobs`, `scan_job.*` stream events — but every screen in the
+web UI says *run*.) From a config you can run a scan, apply event groups, jump
+directly to **Review events**, or replay metrics over historical chunks (replay
+requires a time column and an interval). Runs expose status, progress, and
+curated failure detail. A run's **details** list flags warehouse
 columns that carried data but had no matching field in the plan — a real
 coverage gap worth fixing. It stays quiet about columns that were empty for
 those rows, and about reserved role columns (event type, time, version,
-platform, and any column an event-group rule matches on), which are collected as
-metric dimensions or identity and are never expected to have a plan field. Repeated identical failures collapse into
+platform, and any column an event-group rule matches on), which tripl already
+uses elsewhere and never expects to have a plan field. Repeated identical failures collapse into
 a streak with an expander, and **Run again** retries the config without losing
 its history.
+
+The scan list heads three figures: **Scans**, **Monitoring** (scans that have
+both a time column and a schedule, so the dispatcher actually picks them up), and
+**Warehouse rows read · 24h**. The detail page adds **Rows read · last
+run**, **Events written**, and **Metric points**.
+
+**Metric points**, not "metric rows": these are points on a metric time series —
+what anomaly detection and alerts are built on — and *Metrics* is the name of a
+different surface (Observe › Metrics, the catalog of user-defined metrics). The
+figure sums all four counters a run reports (per-event, per-type, and their
+breakdown variants), so the list and the detail page always show the same number
+for the same run.
+
+**Rows read** counts warehouse rows a run read — bounded by the row caps below —
+not rows written into your plan. It is **one label over two populations**: a
+catalog run reports the rows the catalog analyzer read (bounded by **Row cap per
+run**), a metrics run reports the rows read across every metrics chunk (bounded
+by **Row cap per metrics run**). A column header cannot vary per row, so each
+figure — the stat card and each cell in the run table — carries a hover title
+saying which of the two it is.
+
+#### What a run report says
+
+Expanding a run leads with **What this run did**: plain sentences about your
+data, in this order, each omitted when the run has nothing to report for it.
+
+| Line | What it means |
+| --- | --- |
+| *Read N warehouse rows.* | Rows the run read from your warehouse. A replay adds *across N chunks*. Hover for which cap applied. |
+| *Added N events to your tracking plan.* | Events that did not exist in the plan and now do. |
+| *No new events — all N were already in your plan.* | The run discovered nothing new. Normal on an established catalog, not a failure. |
+| *N events were already in your plan and were left as they are.* | The old "Events skipped" counter, with its reason. Nothing was lost or overwritten; their field values were refreshed. |
+| *Added N variables.* | Variables the run created from the values it saw. |
+| *Looked at N columns in your query.* | Coverage, not a to-do list: how much of your query the run analyzed. |
+| *Recorded N metric points.* | Time-series points written. Only a monitoring scan produces these. |
+| *Raised N anomaly signals.* | Signals **this run** added. Links to [Anomalies](#anomalies) filtered to this scan. |
+| *Queued N alerts.* | Alerts **this run** queued. Links to [Alerting](#alerting) filtered to this scan. |
+| *Catalog-only scan — no metric points, so no signals and no alerts.* | Shown on a scan with no schedule, so a green run that produced nothing downstream does not read as a silent failure. |
+| *This scan has a schedule but no time column, so the scheduler never runs it — no metric points, so no signals and no alerts. Add a time column to fix it.* | The same silence for the opposite reason: the run you are reading is a manual one, and the schedule above it is never dispatched. It gets its own sentence because calling it a catalog-only scan would name a mode its owner never picked. |
+
+*Raised N anomaly signals* is that run's **delta** — signals the run added. The
+**Anomalies** page it links to counts what is **open now** for that scan. The two
+answer different questions and routinely disagree; both are correct. Where they
+disagree the report puts the other number under the sentence — *5 signals from
+this scan are open now*, or *None from this scan are open now* once they have
+closed — and where they agree it says nothing, because there is nothing to
+reconcile. The same delta is what the activity feed's "N new signals" reports on
+a scan card.
+
+Every counter the run reported is still there, verbatim, behind **Show raw
+counters**: *Events created*, *Variables created*, *Events skipped*, *Columns
+analyzed*, *Event breakdowns*, *Distribution rows*, *Signals added*, *Alerts
+queued*. Nothing was removed — the sentences lead, the counters follow.
 
 ### Audit log
 

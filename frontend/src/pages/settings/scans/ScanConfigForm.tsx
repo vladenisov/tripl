@@ -13,12 +13,12 @@ import { ReplayDialog } from './ReplayDialog'
 import { SCard } from './scanLayout'
 import {
   AppVersionSection,
-  EventMappingSection,
+  EventNamingSection,
+  LimitsSection,
   MetricsDriftSection,
-  ScheduleLimitsSection,
-  SourceQuerySection,
+  ScanEssentialsSection,
 } from './ScanFormSections'
-import { useScanForm } from './useScanForm'
+import { scanFormBlocker, useScanForm } from './useScanForm'
 import { dataSourcesKey } from '@/lib/queryKeys'
 
 // ─── Configuration tab (page-style edit, each SCard has its own Save footer) ───
@@ -58,8 +58,8 @@ export function ScanConfigurationTab({
 
   const handleDelete = async () => {
     const ok = await confirm({
-      title: 'Delete scan config',
-      message: `Delete "${scanConfig.name}"? Stops ingestion from this query. Ingested events are kept.`,
+      title: 'Delete scan',
+      message: `Delete "${scanConfig.name}"? Stops adding events from this query. Events already in your plan are kept.`,
       confirmLabel: 'Delete',
       variant: 'danger',
     })
@@ -67,6 +67,10 @@ export function ScanConfigurationTab({
   }
 
   const canReplay = Boolean(scanConfig.time_column && scanConfig.interval)
+
+  // The reason, not just the fact: a disabled Save with no explanation is how a
+  // user ends up believing the form is broken.
+  const saveBlocker = scanFormBlocker(form.state)
 
   const footerFor = () => (
     <>
@@ -77,7 +81,8 @@ export function ScanConfigurationTab({
         type="button"
         size="sm"
         onClick={() => updateMut.mutate()}
-        disabled={updateMut.isPending}
+        disabled={updateMut.isPending || saveBlocker !== null}
+        title={saveBlocker ?? undefined}
       >
         {updateMut.isPending ? 'Saving…' : 'Save'}
       </Button>
@@ -99,14 +104,14 @@ export function ScanConfigurationTab({
       {dialog}
       {updateMut.isError && (
         <div className="mb-5">
-          <ErrorState compact title="Could not save scan config" error={updateMut.error} />
+          <ErrorState compact title="Could not save scan" error={updateMut.error} />
         </div>
       )}
-      <SourceQuerySection {...sectionProps} />
-      <EventMappingSection {...sectionProps} />
+      <ScanEssentialsSection {...sectionProps} />
+      <EventNamingSection {...sectionProps} />
       <AppVersionSection {...sectionProps} />
       <MetricsDriftSection {...sectionProps} />
-      <ScheduleLimitsSection {...sectionProps} />
+      <LimitsSection {...sectionProps} />
 
       <SCard title="Danger zone" tone="danger">
         <div
@@ -141,10 +146,10 @@ export function ScanConfigurationTab({
         <div className="flex items-center gap-[18px] px-[18px] py-3.5">
           <div className="flex-1">
             <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-              Delete scan config
+              Delete scan
             </div>
             <div className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
-              Stops ingestion from this query. Ingested events are kept.
+              Stops adding events from this query. Events already in your plan are kept.
             </div>
           </div>
           <Button
@@ -191,7 +196,7 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
   })
 
   const loaded = Boolean(form.preview)
-  const canCreate = Boolean(form.state.dataSourceId && form.state.name.trim() && form.state.baseQuery.trim())
+  const createBlocker = scanFormBlocker(form.state)
 
   const sectionProps = {
     form,
@@ -215,34 +220,39 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
           <span aria-hidden>←</span> Scans
         </button>
       </div>
-      <h1 className="m-0 mb-1 text-[19px] font-semibold tracking-tight">New scan config</h1>
+      <h1 className="m-0 mb-1 text-[19px] font-semibold tracking-tight">New scan</h1>
+      {/* "…to ingest events and roll up metrics" promised monitoring before the
+          user had chosen it, and read as a contradiction with Catalog only two
+          lines below. What the scan does is now the first question, and the note
+          under the radio answers it, so this line only has to say what you are
+          pointing at what. */}
       <p className="mb-[18px] text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
-        Point a warehouse query at tripl to ingest events and roll up metrics.
+        Point a warehouse query at tripl, and choose what it does with the rows.
       </p>
 
-      <SourceQuerySection {...sectionProps} />
-
-      {loaded && (
-        <>
-          <EventMappingSection {...sectionProps} />
-          <AppVersionSection {...sectionProps} />
-          <MetricsDriftSection {...sectionProps} />
-        </>
-      )}
-
-      <ScheduleLimitsSection {...sectionProps} />
+      <ScanEssentialsSection {...sectionProps} />
+      <EventNamingSection {...sectionProps} />
+      <AppVersionSection {...sectionProps} />
+      <MetricsDriftSection {...sectionProps} />
+      <LimitsSection {...sectionProps} />
 
       {createMut.isError && (
         <div className="mb-5">
-          <ErrorState compact title="Could not create scan config" error={createMut.error} />
+          <ErrorState compact title="Could not create scan" error={createMut.error} />
         </div>
       )}
 
       <div className="mt-1 flex items-center gap-2.5">
         <span className="flex-1 text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          {/* In Catalog + monitoring the preview is not optional: the time column
+              is chosen from the columns it returns. In Catalog only it is not
+              "optional" either any more — it is how you find out what this scan
+              would put in your plan before you create it (tripl-3y7z.6). */}
           {loaded
-            ? 'Creates the config and runs the first scan.'
-            : 'Load a preview to map columns (optional).'}
+            ? 'Creates the scan. Run it from its page when you are ready.'
+            : form.state.mode === 'monitoring'
+              ? 'Load a preview to choose a time column and see what this scan would create.'
+              : 'Load a preview to see what this scan would create.'}
         </span>
         <Button type="button" variant="ghost" size="sm" onClick={onBack}>
           Cancel
@@ -250,7 +260,8 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
         <Button
           type="button"
           size="sm"
-          disabled={!canCreate || createMut.isPending}
+          disabled={createBlocker !== null || createMut.isPending}
+          title={createBlocker ?? undefined}
           onClick={() => createMut.mutate()}
         >
           <Plus className="size-3" />

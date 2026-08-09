@@ -154,6 +154,14 @@ async def test_project_activity_feed_uses_real_backend_records(client: AsyncClie
     )
     assert not any("/events/detail/" in (item["target_path"] or "") for item in items)
 
+    # Scans moved to the top-level `/p/<slug>/scans` route. The feed's own deep
+    # link has to follow, or every scan row in the activity rail lands on the
+    # legacy path and has to be bounced through a redirect.
+    scan_items = [item for item in items if item["type"] == "scan"]
+    assert scan_items, "expected a scan activity item"
+    assert all(item["target_path"] == f"/p/{slug}/scans" for item in scan_items)
+    assert not any("/settings/scans" in (item["target_path"] or "") for item in items)
+
 
 @pytest.mark.asyncio
 async def test_activity_feed_excludes_stale_anomalies(client: AsyncClient):
@@ -582,4 +590,27 @@ class TestScanJobDetail:
         assert detail == "no new events discovered"
 
     def test_running_job_without_summary_reports_status(self):
-        assert _scan_job_detail("running", None, None) == "Scan job status changed"
+        assert _scan_job_detail("running", None, None) == "Run status changed"
+
+    def test_no_fallback_uses_the_api_spelling_job(self):
+        """The activity rail is a web-UI surface, so it says *run* (tripl-3y7z).
+
+        feature-reference.md states the `job` spelling lives in the API and the
+        CLI only, and activity-panel.tsx renders `detail` verbatim.
+        """
+        for status in ("pending", "running", "completed", "cancelled", "failed"):
+            detail = _scan_job_detail(status, None, None)
+            assert "job" not in detail.lower(), f"{status!r} detail still says job: {detail!r}"
+
+    def test_completed_fallback_does_not_claim_a_metrics_collection(self):
+        """A completed metrics collection ALWAYS carries ``events_created``
+        (collect_metrics writes it unconditionally), so this branch is never one.
+        It is reached by an event-groups apply, which the old wording
+        "Metrics collection job updated" mislabelled as metrics work."""
+        detail = _scan_job_detail(
+            "completed",
+            {"mode": "event_groups_apply", "events_merged": 0, "event_types_processed": 4},
+            None,
+        )
+        assert detail == "Run finished with no counts to report"
+        assert "Metrics collection" not in detail

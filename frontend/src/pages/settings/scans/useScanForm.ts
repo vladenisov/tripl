@@ -1,8 +1,16 @@
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { scansApi } from '@/api/scans'
-import type { EventGroupRule, IntervalCode, ScanConfig, ScanConfigPreview } from '@/types'
+import type {
+  EventGroupRule,
+  IntervalCode,
+  ScanConfig,
+  ScanConfigPreview,
+  ScanDryRunRequest,
+  ScanDryRunResponse,
+} from '@/types'
 import { type UiEventGroupRule, stripUiIds, withUiIds } from './scanFormTypes'
+import { type ScanFormMode, formModeOf } from './scanMode'
 import { eligibleChunkIntervals, parseOptionalPositiveInt, parseOptionalShare } from './scanUtils'
 
 // Shape of the create/update payload shared by both API calls. Built once from
@@ -32,6 +40,13 @@ export interface ScanFormPayload {
 }
 
 export interface ScanFormState {
+  /**
+   * Form state only — never sent to the backend, never stored. It decides which
+   * fields the form asks for and whether the payload carries a schedule (see
+   * scanMode.ts). It does NOT decide the time column: that is a query bound in
+   * both modes and is the user's to set or clear.
+   */
+  mode: ScanFormMode
   dataSourceId: string
   name: string
   baseQuery: string
@@ -58,6 +73,7 @@ export interface ScanFormState {
 
 function initialState(scanConfig: ScanConfig | null): ScanFormState {
   return {
+    mode: formModeOf(scanConfig),
     dataSourceId: scanConfig?.data_source_id ?? '',
     name: scanConfig?.name ?? '',
     baseQuery: scanConfig?.base_query ?? '',
@@ -91,14 +107,156 @@ function initialState(scanConfig: ScanConfig | null): ScanFormState {
   }
 }
 
+/**
+ * Assembles the create/update payload from form state.
+ *
+ * Catalog only is the absence of a SCHEDULE, and nothing else. The dispatcher
+ * selects on `time_column IS NOT NULL AND interval IS NOT NULL`
+ * (worker/tasks/metrics/schedule.py:349-350), so a null interval alone already
+ * makes a config catalog-only; nulling the time column with it bought nothing
+ * and cost the per-run bound, because `resolve_lookback_window` returns None
+ * without a time column and the run then reads the whole base query. That is why
+ * only `interval` and `replay_chunk_interval` are mode-gated here: a saved time
+ * column must survive an edit made in Catalog only, and a catalog scan bounded
+ * to the last 24h is a config a user is entitled to keep.
+ *
+ * Monitoring additionally REQUIRES the time column — `canSubmitScanForm` refuses
+ * to submit without it, so the silently-never-monitoring config this whole change
+ * exists to kill cannot be created.
+ */
+export function toBackendPayload(state: ScanFormState): ScanFormPayload {
+  const monitoring = state.mode === 'monitoring'
+  return {
+    name: state.name,
+    base_query: state.baseQuery,
+    event_type_id: state.eventTypeId || null,
+    event_type_column: state.eventTypeColumn || null,
+    time_column: state.timeColumn || null,
+    event_name_format: state.eventNameFormat || null,
+    json_value_paths: state.jsonValuePaths,
+    event_group_rules: stripUiIds(state.eventGroupRules),
+    metric_breakdown_columns: state.metricBreakdownColumns,
+    metric_breakdown_values_limit: state.metricBreakdownValuesLimit
+      ? Number(state.metricBreakdownValuesLimit)
+      : null,
+    distribution_drift_fields: state.distributionDriftFields,
+    app_version_column: state.appVersionColumn || null,
+    app_version_prerelease_pattern: state.appVersionColumn
+      ? state.appVersionPrereleasePattern.trim() || null
+      : null,
+    app_version_active_share_min: state.appVersionColumn
+      ? parseOptionalShare(state.appVersionActiveShareMin)
+      : null,
+    platform_column: state.platformColumn || null,
+    cardinality_threshold: state.cardinalityThreshold,
+    interval: monitoring ? state.interval || null : null,
+    replay_chunk_interval: monitoring ? state.chunkInterval || null : null,
+    scan_lookback_hours: parseOptionalPositiveInt(state.scanLookbackHours),
+    scan_row_limit: parseOptionalPositiveInt(state.scanRowLimit),
+    metrics_row_limit: parseOptionalPositiveInt(state.metricsRowLimit),
+  }
+}
+
+/**
+ * The draft a dry run is computed from, derived from the SAME payload the save
+ * button would send.
+ *
+ * Building it out of `toBackendPayload` is the point: "what would this scan
+ * create?" has to be answered for the config that would actually be saved, not
+ * for a second reading of form state that could drift from it. The window the
+ * dry run reads is therefore the window the saved scan would read — including
+ * the case with no time column, where both read everything the base query
+ * returns and the panel says so.
+ */
+export function toDryRunRequest(state: ScanFormState): ScanDryRunRequest {
+  const payload = toBackendPayload(state)
+  return {
+    data_source_id: state.dataSourceId,
+    base_query: payload.base_query,
+    event_type_id: payload.event_type_id,
+    event_type_column: payload.event_type_column,
+    time_column: payload.time_column,
+    event_name_format: payload.event_name_format,
+    event_group_rules: payload.event_group_rules,
+    json_value_paths: payload.json_value_paths,
+    cardinality_threshold: payload.cardinality_threshold,
+    app_version_column: payload.app_version_column,
+    platform_column: payload.platform_column,
+    scan_lookback_hours: payload.scan_lookback_hours,
+  }
+}
+
+/** Hover text on the disabled save/create button in Catalog + monitoring. */
+export const MONITORING_INCOMPLETE_TITLE =
+  'Catalog + monitoring needs a time column and a schedule.'
+
+/** Hover text when the scan has no answer to "where do event names come from?". */
+export const EVENT_NAMING_INCOMPLETE_TITLE =
+  'Pick an Event type, or the Event type column your event names are in.'
+
+/** Hover text before the three fields every scan needs are filled in. */
+export const ESSENTIALS_INCOMPLETE_TITLE =
+  'A scan needs a name, a data source and a base query.'
+
+/**
+ * Whether the config says how its events are named — an event type for every
+ * row, or the column each row's event name is read from.
+ *
+ * Neither is not a configuration: `run_scan` and the dry-run planner both abort
+ * on it, in both modes, so a scan that answers this question with nothing cannot
+ * ingest a single event. That makes it a save gate rather than a warning, and it
+ * is why nothing asks the warehouse anything until one of the two is set.
+ */
+export function hasEventTarget(state: ScanFormState): boolean {
+  return Boolean(state.eventTypeId || state.eventTypeColumn)
+}
+
+/**
+ * The first unmet requirement, in the order the form asks for them, or null when
+ * the config can be saved. Doubles as the disabled button's hover text, so the
+ * reason is never "the button is off and I do not know why".
+ */
+export function scanFormBlocker(state: ScanFormState): string | null {
+  if (!state.dataSourceId || !state.name.trim() || !state.baseQuery.trim()) {
+    return ESSENTIALS_INCOMPLETE_TITLE
+  }
+  if (!hasEventTarget(state)) return EVENT_NAMING_INCOMPLETE_TITLE
+  // In Catalog only, an empty time column and an empty schedule are deliberate
+  // answers; in Catalog + monitoring a config missing either one is never
+  // dispatched and collects nothing, forever.
+  if (state.mode === 'monitoring' && !(state.timeColumn && state.interval)) {
+    return MONITORING_INCOMPLETE_TITLE
+  }
+  return null
+}
+
+/** Save gate shared by create and edit. */
+export function canSubmitScanForm(state: ScanFormState): boolean {
+  return scanFormBlocker(state) === null
+}
+
 export interface UseScanFormResult {
   state: ScanFormState
   set: <K extends keyof ScanFormState>(key: K, value: ScanFormState[K]) => void
   preview: ScanConfigPreview | null
   setPreview: (preview: ScanConfigPreview | null) => void
+  /** "What this scan would create", or null before the first check. */
+  dryRun: ScanDryRunResponse | null
+  /**
+   * True when the form has changed since the displayed answer was computed. A
+   * dry run is a statement about a specific draft; once the draft moves, the
+   * answer is stale, and a stale "would create 3 events: A, B, C" is worse than
+   * no answer at all.
+   */
+  dryRunStale: boolean
   // Preview/discovery mutations (real warehouse-backed jobs).
   previewMut: ReturnType<typeof useMutation<ScanConfigPreview, unknown, void>>
   discoverJsonMut: ReturnType<typeof useMutation<ScanConfigPreview, unknown, void>>
+  dryRunMut: ReturnType<typeof useMutation<ScanDryRunResponse, unknown, ScanDryRunRequest>>
+  /** Load the sample rows and the dry run together — one button, one answer. */
+  loadPreview: () => void
+  /** Re-answer "what would this scan create?" for the draft as it stands now. */
+  runDryRun: () => void
   // Field-aware handlers that drop now-invalid column references.
   setBaseQuery: (value: string) => void
   setDataSourceId: (value: string) => void
@@ -122,6 +280,12 @@ export function useScanForm(
 ): UseScanFormResult {
   const [state, setState] = useState<ScanFormState>(() => initialState(scanConfig))
   const [preview, setPreview] = useState<ScanConfigPreview | null>(null)
+  // The answer AND the draft it answers for, so staleness is a fact rather than
+  // a guess. Serializing the request is enough: it is exactly the set of inputs
+  // the backend planner reads.
+  const [dryRunResult, setDryRunResult] = useState<
+    { answer: ScanDryRunResponse; requestKey: string } | null
+  >(null)
 
   const set = <K extends keyof ScanFormState>(key: K, value: ScanFormState[K]) =>
     setState(current => ({ ...current, [key]: value }))
@@ -168,6 +332,29 @@ export function useScanForm(
     },
   })
 
+  // Keyed off the mutation's own variables, not off a closure: React Query keeps
+  // the LATEST options object, so an onSuccess that read the current render's
+  // request would stamp an in-flight answer with a draft it was not computed
+  // from — and silently call a stale answer fresh.
+  const dryRunMut = useMutation<ScanDryRunResponse, unknown, ScanDryRunRequest>({
+    mutationFn: request => scansApi.dryRun(slug, request),
+    onSuccess: (answer, request) =>
+      setDryRunResult({ answer, requestKey: JSON.stringify(request) }),
+  })
+
+  /**
+   * A dry run is only asked for once the draft can answer "how are events
+   * named?". Firing it without an event type or an event type column made the
+   * worker abort on its own internal precondition, and the panel reported that
+   * as `Scan failed: …` — on the first click of every scan created on the
+   * defaults. The form says what is missing instead; nothing is asked of the
+   * warehouse until it can be answered.
+   */
+  const runDryRun = () => {
+    if (!hasEventTarget(state)) return
+    dryRunMut.mutate(toDryRunRequest(state))
+  }
+
   const discoverJsonMut = useMutation<ScanConfigPreview, unknown, void>({
     mutationFn: () =>
       scansApi.preview(slug, {
@@ -188,6 +375,28 @@ export function useScanForm(
     setPreview(null)
     setMany({ distributionDriftFields: [] })
     discoverJsonMut.reset()
+    // A new source or a new query invalidates the answer outright — not merely
+    // stales it. Keeping it on screen would attribute events to a query that no
+    // longer exists.
+    setDryRunResult(null)
+    dryRunMut.reset()
+  }
+
+  /**
+   * One button, both warehouse jobs. The sample rows populate the column pickers
+   * and the dry run says what the config would create; splitting them into two
+   * controls would make "what would this create?" an optional extra, which is
+   * how the promise in the docs went unbuilt in the first place.
+   *
+   * The dry run is the half that can be unanswerable: on a brand-new scan the
+   * column that names events is picked FROM these sample rows, so the first
+   * click loads rows only and `runDryRun` no-ops until the draft names its
+   * events.
+   */
+  const loadPreview = () => {
+    discoverJsonMut.reset()
+    previewMut.mutate()
+    runDryRun()
   }
 
   const setBaseQuery = (value: string) => {
@@ -269,45 +478,18 @@ export function useScanForm(
         : [...current.distributionDriftFields, field],
     }))
 
-  const toBackendPayload = (): ScanFormPayload => {
-    return {
-      name: state.name,
-      base_query: state.baseQuery,
-      event_type_id: state.eventTypeId || null,
-      event_type_column: state.eventTypeColumn || null,
-      time_column: state.timeColumn || null,
-      event_name_format: state.eventNameFormat || null,
-      json_value_paths: state.jsonValuePaths,
-      event_group_rules: stripUiIds(state.eventGroupRules),
-      metric_breakdown_columns: state.metricBreakdownColumns,
-      metric_breakdown_values_limit: state.metricBreakdownValuesLimit
-        ? Number(state.metricBreakdownValuesLimit)
-        : null,
-      distribution_drift_fields: state.distributionDriftFields,
-      app_version_column: state.appVersionColumn || null,
-      app_version_prerelease_pattern: state.appVersionColumn
-        ? state.appVersionPrereleasePattern.trim() || null
-        : null,
-      app_version_active_share_min: state.appVersionColumn
-        ? parseOptionalShare(state.appVersionActiveShareMin)
-        : null,
-      platform_column: state.platformColumn || null,
-      cardinality_threshold: state.cardinalityThreshold,
-      interval: state.interval || null,
-      replay_chunk_interval: state.chunkInterval || null,
-      scan_lookback_hours: parseOptionalPositiveInt(state.scanLookbackHours),
-      scan_row_limit: parseOptionalPositiveInt(state.scanRowLimit),
-      metrics_row_limit: parseOptionalPositiveInt(state.metricsRowLimit),
-    }
-  }
-
   return {
     state,
     set,
     preview,
     setPreview,
+    dryRun: dryRunResult?.answer ?? null,
+    dryRunStale: dryRunResult != null && dryRunResult.requestKey !== JSON.stringify(toDryRunRequest(state)),
     previewMut,
     discoverJsonMut,
+    dryRunMut,
+    loadPreview,
+    runDryRun,
     setBaseQuery,
     setDataSourceId,
     setEventTypeColumn,
@@ -318,6 +500,6 @@ export function useScanForm(
     toggleJsonValuePath,
     toggleMetricBreakdownColumn,
     toggleDistributionDriftField,
-    toBackendPayload,
+    toBackendPayload: () => toBackendPayload(state),
   }
 }

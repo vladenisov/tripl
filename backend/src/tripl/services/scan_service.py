@@ -9,12 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tripl.models.data_source import DataSource, DBType
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
+from tripl.models.scan_dry_run_job import ScanDryRunJob
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.scan_preview_job import ScanPreviewJob
 from tripl.schemas.scan_config import (
     ScanConfigCreate,
     ScanConfigPreviewRequest,
     ScanConfigUpdate,
+    ScanDryRunRequest,
     ScanMetricsReplayRequest,
     check_replay_chunk_against_interval,
     check_scalar_columns_unreserved,
@@ -232,6 +234,92 @@ async def get_preview_job(
     job = result.scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=404, detail="Scan preview job not found")
+    return job
+
+
+async def trigger_dry_run(
+    session: AsyncSession,
+    slug: str,
+    data: ScanDryRunRequest,
+) -> ScanDryRunJob:
+    """Create a ScanDryRunJob and dispatch the worker task.
+
+    A dry-run runs the same ``GROUP BY ALL`` a real scan runs, so it is strictly
+    slower than the preview that already needed a worker job — hence 202 + poll
+    rather than an in-request answer.
+    """
+    project_id = await get_project_id_by_slug(session, slug)
+
+    if data.scan_config_id is not None:
+        # Saved-config path. Scoping the config to the project is the check that
+        # keeps a dry-run from executing another project's SQL.
+        config = await get_scan_config(session, slug, data.scan_config_id)
+        job = ScanDryRunJob(
+            project_id=project_id,
+            scan_config_id=config.id,
+            sample_row_limit=data.sample_row_limit,
+            status=ScanJobStatus.pending.value,
+        )
+    elif data.data_source_id is None or not data.base_query:
+        # Unreachable through the API — ``ScanDryRunRequest.validate_target``
+        # already rejects this as 422. Spelled as a real check rather than an
+        # ``assert`` so it survives ``python -O`` and so a future direct caller
+        # gets an error instead of a NULL base_query reaching the worker.
+        raise HTTPException(
+            status_code=422,
+            detail="either scan_config_id, or both data_source_id and base_query, must be provided",
+        )
+    else:
+        await _verify_data_source(session, data.data_source_id, project_id)
+        job = ScanDryRunJob(
+            project_id=project_id,
+            data_source_id=data.data_source_id,
+            base_query=data.base_query,
+            event_type_id=data.event_type_id,
+            event_type_column=data.event_type_column,
+            time_column=data.time_column,
+            event_name_format=data.event_name_format,
+            event_group_rules=[rule.model_dump() for rule in data.event_group_rules],
+            json_value_paths=list(data.json_value_paths),
+            cardinality_threshold=data.cardinality_threshold,
+            app_version_column=data.app_version_column,
+            platform_column=data.platform_column,
+            scan_lookback_hours=data.scan_lookback_hours,
+            sample_row_limit=data.sample_row_limit,
+            status=ScanJobStatus.pending.value,
+        )
+
+    session.add(job)
+    await session.commit()
+    await session.refresh(job)
+
+    from tripl.worker.tasks.scan_dry_run import dry_run_scan_config_async
+
+    try:
+        dry_run_scan_config_async.delay(str(job.id))
+    except Exception:
+        job.status = ScanJobStatus.failed.value
+        job.error_message = "Failed to dispatch task to worker (broker unavailable)"
+        await session.commit()
+        await session.refresh(job)
+    return job
+
+
+async def get_dry_run_job(
+    session: AsyncSession,
+    slug: str,
+    job_id: uuid.UUID,
+) -> ScanDryRunJob:
+    project_id = await get_project_id_by_slug(session, slug)
+    result = await session.execute(
+        select(ScanDryRunJob).where(
+            ScanDryRunJob.id == job_id,
+            ScanDryRunJob.project_id == project_id,
+        )
+    )
+    job = result.scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Scan dry-run job not found")
     return job
 
 

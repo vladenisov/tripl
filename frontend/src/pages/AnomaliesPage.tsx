@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Activity, ArrowDown, ArrowUp, Settings2 } from 'lucide-react'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
@@ -115,7 +115,23 @@ export default function AnomaliesPage() {
   const { slug } = useParams<{ slug: string }>()
   const branchId = useActiveBranchId()
   const [level, setLevel] = useState<MagnitudeLevel>(DEFAULT_MAGNITUDE_LEVEL)
-  const [scanId, setScanId] = useState<string>(ALL_SCANS)
+  // The scan facet lives in the URL, not in component state, so a scan can hand
+  // its own anomalies over: the "Signals added" counter on a scan run links to
+  // `?scan=<id>` (tripl-3y7z.2). Same idiom as MetricsCatalog's `?kind=`.
+  // `replace` — a filter flip is not a place the Back button should stop.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const scanId = searchParams.get('scan') ?? ALL_SCANS
+  const setScanId = (next: string) => {
+    setSearchParams(
+      (previous) => {
+        const params = new URLSearchParams(previous)
+        if (next === ALL_SCANS) params.delete('scan')
+        else params.set('scan', next)
+        return params
+      },
+      { replace: true },
+    )
+  }
 
   // expanded: surface every flagged scope — project_total, each event_type and
   // each event — instead of collapsing an incident's fan-out into one total row.
@@ -207,15 +223,31 @@ export default function AnomaliesPage() {
     const key = facetKey(signal.scan_config_id)
     scanTotals.set(key, (scanTotals.get(key) ?? 0) + 1)
   }
+  // `?scan=` naming a real scan with nothing open is the ordinary case, not a
+  // dead link: a run from last week reports "Raised 2 anomaly signals", links
+  // here, and by now both have closed. Dropping the filter then answers a
+  // question nobody asked — a full list of some OTHER scan's anomalies, with no
+  // control showing that a filter was discarded (tripl-3y7z.2).
+  //
+  // So the selection survives for any scan this project has, and only an id the
+  // project does not have falls back to "all". While the scan list is still in
+  // flight nothing is known to be missing, so the selection is kept then too
+  // rather than flipped to "all" and back.
+  const scanIsInProject =
+    scanId === CATALOG_METRICS || scanNames.has(scanId) || !scansQuery.data
+  const activeScanId = scanTotals.has(scanId) || scanIsInProject ? scanId : ALL_SCANS
   const scanOptions = [...scanTotals.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([id]) => ({
       id,
       label: `${facetLabel(id, scanNames)} ${countsAtLevel.get(id) ?? 0}`,
     }))
-  // A selection the current data no longer contains (the scan stopped firing,
-  // or a refetch dropped it) reads as "all" rather than as an empty page.
-  const activeScanId = scanTotals.has(scanId) ? scanId : ALL_SCANS
+  // A kept selection with nothing open still needs its own option, or the
+  // control would render with no segment active and the page would look like it
+  // had lost track of what the user asked for.
+  if (activeScanId !== ALL_SCANS && !scanTotals.has(activeScanId)) {
+    scanOptions.push({ id: activeScanId, label: `${facetLabel(activeScanId, scanNames)} 0` })
+  }
 
   // Magnitude first, then scan, then rank most-severe first (largest |z|).
   const filtered =
@@ -238,6 +270,11 @@ export default function AnomaliesPage() {
   const allFiltered = !isEmpty && total > 0 && visibleCount === 0
   // Which filter emptied the list decides which one the hint offers to drop.
   const emptiedByScan = allFiltered && byMagnitude.length > 0
+  // ...and "this scan has nothing open at ALL" is not "nothing at this level":
+  // lowering the magnitude filter cannot help, and the user arrived from a run
+  // that counted signals which have since closed. Say that instead.
+  const scanHasNothingOpen =
+    allFiltered && activeScanId !== ALL_SCANS && (scanTotals.get(activeScanId) ?? 0) === 0
   const activeScanLabel =
     activeScanId === CATALOG_METRICS ? 'Catalog metrics' : (scanNames.get(activeScanId) ?? 'this scan')
 
@@ -368,24 +405,38 @@ export default function AnomaliesPage() {
                 <EmptyState
                   icon={Activity}
                   title={
-                    emptiedByScan
-                      ? `Nothing in ${activeScanLabel} at this level`
-                      : `Nothing at the ${activePreset.label.toLowerCase()} level`
+                    scanHasNothingOpen
+                      ? `No open anomalies from ${activeScanLabel}`
+                      : emptiedByScan
+                        ? `Nothing in ${activeScanLabel} at this level`
+                        : `Nothing at the ${activePreset.label.toLowerCase()} level`
                   }
                   description={
-                    emptiedByScan
-                      ? 'Other scans still have open signals at this magnitude.'
-                      : 'Every open signal is smaller than this threshold. Lower the filter to see the smaller anomalies.'
+                    scanHasNothingOpen
+                      ? 'A signal closes once the metric comes back to normal, so the ones an earlier run raised may already be gone.'
+                      : emptiedByScan
+                        ? 'Other scans still have open signals at this magnitude.'
+                        : 'Every open signal is smaller than this threshold. Lower the filter to see the smaller anomalies.'
                   }
                   action={
                     <button
                       type="button"
-                      onClick={() => (emptiedByScan ? setScanId(ALL_SCANS) : setLevel('all'))}
+                      onClick={() => {
+                        if (!scanHasNothingOpen && !emptiedByScan) {
+                          setLevel('all')
+                          return
+                        }
+                        setScanId(ALL_SCANS)
+                        // Nothing open here at any level and nothing above the
+                        // threshold elsewhere either — clearing one filter would
+                        // hand back a second empty page.
+                        if (byMagnitude.length === 0) setLevel('all')
+                      }}
                       className="rounded-md border px-3 py-1.5 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
                       style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
                     >
-                      {emptiedByScan
-                        ? `Show all scans (${byMagnitude.length.toLocaleString()})`
+                      {scanHasNothingOpen || emptiedByScan
+                        ? `Show all scans (${(byMagnitude.length || total).toLocaleString()})`
                         : `Show all ${total.toLocaleString()}`}
                     </button>
                   }

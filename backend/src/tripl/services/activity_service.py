@@ -182,7 +182,7 @@ async def _scan_job_items(
                 title=f"Scan {status}: {row.scan_name}",
                 detail=_scan_job_detail(status, row.result_summary, row.error_message),
                 occurred_at=row.occurred_at,
-                target_path=f"/p/{row.slug}/settings/scans",
+                target_path=f"/p/{row.slug}/scans",
             )
         )
     return items
@@ -474,7 +474,16 @@ def _scan_job_detail(
 
     if parts:
         return " · ".join(parts)
-    return "Metrics collection job updated" if status == "completed" else "Scan job status changed"
+    # The activity rail is a web-UI surface, so it says *run*, never the API/CLI
+    # spelling "job" (tripl-3y7z). Neither fallback may name a run TYPE it cannot
+    # know either: a completed metrics collection always carries "events_created"
+    # (collect_metrics writes it unconditionally), so the completed branch is
+    # never a metrics collection — it is reached by an event-groups apply, or by
+    # a run whose summary is missing. The old "Metrics collection job updated"
+    # mislabelled both.
+    if status == "completed":
+        return "Run finished with no counts to report"
+    return "Run status changed"
 
 
 def _alert_delivery_severity(status: str) -> str:

@@ -397,10 +397,10 @@ describe('buildChapterSteps and the seeded deep links', () => {
   it('deep-links live-loop steps against the collected artifacts', () => {
     const fresh = buildChapterSteps(SLUG, 'live-loop', initialScenarioState())
     expect(fresh.map((s) => s.id)).toEqual([...CHAPTER_STEP_IDS['live-loop']])
-    expect(fresh[0].to).toBe('/p/acme/settings/scans')
+    expect(fresh[0].to).toBe('/p/acme/scans')
 
     const run = buildChapterSteps(SLUG, 'live-loop', watching())
-    expect(run[1].to).toBe('/p/acme/settings/scans/sc-1')
+    expect(run[1].to).toBe('/p/acme/scans/sc-1')
 
     const ready = scenarioReducer(collecting(), { type: 'collectSettled', outcome: 'success' })
     expect(buildChapterSteps(SLUG, 'live-loop', ready)[3].to).toBe('/p/acme/monitoring/metric/m-1')
@@ -441,7 +441,7 @@ describe('buildChapterSteps and the seeded deep links', () => {
     expect(list.map((entry) => entry.id)).toEqual([...CHAPTER_IDS])
     expect(list[0].status).toBe('active')
     expect(list[1].status).toBe('not_started')
-    expect(list[0].to).toBe('/p/acme/settings/scans')
+    expect(list[0].to).toBe('/p/acme/scans')
   })
 })
 

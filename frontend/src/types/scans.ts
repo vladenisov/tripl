@@ -223,3 +223,109 @@ export interface ScanJob {
   created_at: string
   updated_at: string
 }
+
+// ─── Dry run: "what would this scan create?" ──────────────────────────────────
+// Mirrors the backend's ScanDryRun* Pydantic models (schemas/scan_config.py).
+// The payload is computed by the SAME planner a real run uses, so the names
+// below are the names a run would write — never a second implementation of
+// generation in TypeScript.
+
+/**
+ * One event the config would produce, and how much of the sample it is.
+ *
+ * Identified by `(event_type, source_name)`, never by the name alone: a run
+ * writes one Event per event type, so a grouped scan whose name format collapses
+ * to the same string under two event types creates two events.
+ */
+export interface ScanDryRunEvent {
+  name: string
+  /** The name before group rules merged it; equal to `name` when nothing merged. */
+  source_name: string
+  /**
+   * The event type this event lands under — the group value on the
+   * `event_type_column` path, the chosen event type's name otherwise.
+   */
+  event_type: string
+  /**
+   * Sampled warehouse rows behind this name — an EXACT count of the rows the dry
+   * run looked at, never an estimate of the whole table.
+   */
+  approx_row_count: number
+  share_of_sample: number
+  status: 'new' | 'existing'
+  /** The event group rule that merged this name, when one did. */
+  grouped_by_rule: string | null
+  count_confidence: 'exact' | 'sampled'
+}
+
+/**
+ * A field the config would add to the plan. `type` is json-or-string and nothing
+ * else — that is the entire type inference a scan performs, and promising
+ * `integer`/`timestamp` would be a claim about something it does not do.
+ */
+export interface ScanDryRunField {
+  name: string
+  type: 'json' | 'string'
+  status: 'new' | 'exists'
+  event_type: string
+}
+
+/** A column the cardinality rule collapsed into a `{column}` template. */
+export interface ScanDryRunTemplatedColumn {
+  column: string
+  distinct_values: number
+  threshold: number
+}
+
+/**
+ * What a scan would create, bounded by three separate partialities the UI must
+ * report rather than round away: the lookback window, the sample cap
+ * (`sample_is_complete === false` ⇒ say "at least N"), and the event cap.
+ */
+export interface ScanDryRunResponse {
+  window_from: string | null
+  window_to: string | null
+  sampled_rows: number
+  sample_row_limit: number
+  sample_is_complete: boolean
+  breakdown_combinations: number
+  events: ScanDryRunEvent[]
+  events_truncated: boolean
+  max_events_reached: boolean
+  fields: ScanDryRunField[]
+  templated_columns: ScanDryRunTemplatedColumn[]
+  reserved_columns: string[]
+  unmapped_columns: string[]
+  warnings: string[]
+  /** Name-format failures: reported, not raised — the job still completes. */
+  errors: string[]
+}
+
+/** The draft a dry run is computed from. Mirrors ScanDryRunRequest. */
+export interface ScanDryRunRequest {
+  data_source_id: string
+  base_query: string
+  event_type_id?: string | null
+  event_type_column?: string | null
+  time_column?: string | null
+  event_name_format?: string | null
+  event_group_rules?: EventGroupRule[]
+  json_value_paths?: string[]
+  cardinality_threshold?: number
+  app_version_column?: string | null
+  platform_column?: string | null
+  scan_lookback_hours?: number | null
+  sample_row_limit?: number
+}
+
+export interface ScanDryRunJob {
+  id: string
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  started_at: string | null
+  completed_at: string | null
+  /** Holds a ScanDryRunResponse when status === 'completed'; null otherwise. */
+  result_summary: ScanDryRunResponse | null
+  error_message: string | null
+  created_at: string
+  updated_at: string
+}

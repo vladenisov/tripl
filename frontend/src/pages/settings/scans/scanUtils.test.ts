@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { ScanJob } from '@/types'
-import { STATUS_META } from './scanLayoutConstants'
+import { SCAN_STATUS_LABEL } from './scanLayoutConstants'
 import {
   LOADING_SCAN_RUN_INFO,
   consecutiveFailedRuns,
   deriveScanRunInfo,
   eligibleChunkIntervals,
   jobDurationSeconds,
+  jobMetricPoints,
   jobRowsScanned,
   summarizeScanChanges,
 } from './scanUtils'
@@ -66,7 +67,7 @@ describe('deriveScanRunInfo', () => {
     expect(deriveScanRunInfo(undefined)).toEqual(LOADING_SCAN_RUN_INFO)
     expect(deriveScanRunInfo(undefined).status).toBe('unknown')
     expect(deriveScanRunInfo(undefined).lastRunLabel).not.toBe('never')
-    expect(STATUS_META[deriveScanRunInfo(undefined).status].label).not.toBe('Never run')
+    expect(SCAN_STATUS_LABEL[deriveScanRunInfo(undefined).status]).not.toBe('Never run')
   })
 
   it('reports running for an in-flight latest job', () => {
@@ -91,6 +92,47 @@ describe('jobRowsScanned', () => {
     expect(jobRowsScanned(job({ result_summary: { scan_rows_processed: 7 } }))).toBe(7)
     expect(jobRowsScanned(job({ result_summary: {} }))).toBeNull()
     expect(jobRowsScanned(null)).toBeNull()
+  })
+})
+
+describe('jobMetricPoints', () => {
+  // The detail stat card used to read `breakdown_event_metrics ?? event_metrics`
+  // while the list chip summed all four counters, so the same run reported two
+  // different metric-point totals on two screens. There is now one formula.
+  it('sums all four metric counters — they are disjoint populations', () => {
+    const run = job({
+      result_summary: {
+        event_metrics: 2,
+        type_metrics: 3,
+        breakdown_event_metrics: 5,
+        breakdown_type_metrics: 7,
+      },
+    })
+    // The old `breakdown_event_metrics ?? event_metrics` fallback returns 5.
+    expect(jobMetricPoints(run)).toBe(17)
+  })
+
+  it('counts the counters that are present and treats the absent ones as zero', () => {
+    expect(jobMetricPoints(job({ result_summary: { event_metrics: 4 } }))).toBe(4)
+  })
+
+  it('is null when the run reported no metric counters at all', () => {
+    expect(jobMetricPoints(job({ result_summary: { events_created: 3 } }))).toBeNull()
+    expect(jobMetricPoints(job({ result_summary: null }))).toBeNull()
+    expect(jobMetricPoints(null)).toBeNull()
+  })
+
+  it('is the same number the list chip renders', () => {
+    const run = job({
+      result_summary: {
+        event_metrics: 2,
+        type_metrics: 3,
+        breakdown_event_metrics: 5,
+        breakdown_type_metrics: 7,
+      },
+    })
+    const chip = summarizeScanChanges(run).find((change) => change.label.includes('metric point'))
+    expect(chip?.label).toBe(`+${jobMetricPoints(run)} metric points`)
   })
 })
 

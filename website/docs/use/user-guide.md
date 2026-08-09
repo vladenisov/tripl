@@ -203,8 +203,9 @@ commonly — do a bit of both.
 ### Option A — let a scan draft it
 
 1. Create a **scan** that points at the warehouse table where your events land.
-2. **Preview** it to see what tripl would create from the real columns and
-   values, then run it.
+2. **Load the preview** to see the event names and fields tripl would create
+   from the real data — worked out by the same planner a real run uses, and
+   bounded by the window and sample it says it read — then run it.
 3. The scan proposes **events, fields, and value lists** from what it actually
    found. Keep what makes sense and adjust the rest.
 

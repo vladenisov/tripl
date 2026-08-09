@@ -189,14 +189,58 @@ describe('ScansTab', () => {
     renderTab()
 
     expect(await screen.findByText('Main events scan')).toBeInTheDocument()
-    // "Scan configs" appears both as a KPI label and the panel title.
-    expect(screen.getAllByText('Scan configs').length).toBeGreaterThanOrEqual(1)
-    expect(screen.getByText('Scheduled')).toBeInTheDocument()
-    expect(screen.getByText('Rows scanned · 24h')).toBeInTheDocument()
+    // "Scans" names three separate surfaces now that the KPI label and panel
+    // title were renamed off "Scan configs": the page heading, the KPI tile and
+    // the list panel. The heading renders in every state — zero scans, error,
+    // still loading — so a bare `getAllByText('Scans').length >= 1` was
+    // satisfied by it alone and deleting the tile or renaming the panel left
+    // this test green. Pin each surface by the text around it instead.
+    const scansSurfaces = screen
+      .getAllByText('Scans')
+      .map((el) => el.parentElement?.textContent)
+    // The KPI tile: the label sits directly over the config count.
+    expect(scansSurfaces).toContain('Scans1')
+    // The list panel: the title sits directly over its count subtitle, and the
+    // count agrees with its noun. This fixture has ONE scan on purpose — the
+    // state every project is in the moment it finishes the onboarding
+    // checklist's "Run a scan" step — so "1 scans" would fail here.
+    expect(scansSurfaces).toContain('Scans1 scan')
+    // Heading, tile, panel and nothing else — a fourth would make the two
+    // assertions above ambiguous again.
+    expect(scansSurfaces).toHaveLength(3)
+    // "Monitoring" is both the KPI label and this row's mode badge.
+    expect(screen.getAllByText('Monitoring')).toHaveLength(2)
+    // "Rows scanned" said nothing about which rows; these are warehouse rows the
+    // runs read, not rows written to the plan.
+    expect(screen.getByText('Warehouse rows read · 24h')).toBeInTheDocument()
     // Rows lead with a human summary (source · cadence); the raw SQL is demoted
     // to a faint secondary line rather than its own prominent column.
     expect(screen.getByText(/Web Production · Every 15 min/)).toBeInTheDocument()
     expect(screen.getByText(/SELECT \* FROM analytics\.events_v2/)).toBeInTheDocument()
+  })
+
+  // The recent-runs rail prints its count through `formatCount`, which compacts
+  // (1.8M) — so the noun has to agree with the raw number, not with the string
+  // that reaches the screen. A run that read a single warehouse row said
+  // "1 rows" (tripl-3y7z).
+  it('agrees with the count on a run that read exactly one row', async () => {
+    setupFetchWithJobs([
+      {
+        id: 'job-one-row',
+        scan_config_id: 'scan-1',
+        status: 'completed',
+        started_at: '2026-02-01T00:00:00Z',
+        completed_at: '2026-02-01T00:00:05Z',
+        result_summary: { query_rows_scanned: 1 },
+        error_message: null,
+        created_at: '2026-02-01T00:00:00Z',
+        updated_at: '2026-02-01T00:00:05Z',
+      },
+    ])
+    renderTab()
+
+    expect(await screen.findByText('1 row')).toBeInTheDocument()
+    expect(screen.queryByText('1 rows')).not.toBeInTheDocument()
   })
 
   // The per-scan job queries used to be coerced to `[]` while in flight, so
@@ -349,12 +393,44 @@ describe('ScansTab', () => {
     expect(runCalls[0].url).toContain('/projects/demo/scans/scan-1/run')
   })
 
+  // A schedule with no time column is never dispatched, so it collects no metric
+  // point, raises no anomaly and sends no alert — but every run still goes green.
+  // Counting it as Monitoring was the list agreeing with that lie (tripl-3y7z.1).
+  it('excludes a scheduled scan with no time column from the Monitoring count and flags it on its row', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({ tables: [] })
+      }
+      if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
+      if (url.endsWith('/api/v1/projects/demo/scans')) {
+        return mockJsonResponse([{ ...scanConfig, time_column: null, interval: '1h' }])
+      }
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
+      if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderTab()
+
+    expect(await screen.findByText('Main events scan')).toBeInTheDocument()
+    // The badge has to name the fault, not restate what a healthy "Catalog only"
+    // row also does — in a list holding both, "No metrics collected" left the
+    // reader with the tone and a hover title to tell a choice from a defect.
+    expect(screen.getByText('Needs a time column')).toBeInTheDocument()
+    expect(screen.queryByText('No metrics collected')).toBeNull()
+
+    // The KPI grid is [Scans, Monitoring, Warehouse rows read · 24h]; the
+    // Monitoring tile must read 0, not 1.
+    const monitoringLabel = screen.getByText('Monitoring')
+    expect(monitoringLabel.parentElement?.textContent).toBe('Monitoring0')
+  })
+
   it('navigates to detail by URL (not the in-place create view)', async () => {
     setupFetch()
     renderTab()
 
     fireEvent.click(await screen.findByText('Main events scan'))
-    expect(navigateMock).toHaveBeenCalledWith('/p/demo/settings/scans/scan-1')
+    expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans/scan-1')
   })
 
   it('opens the create page in place and gates column mapping behind preview', async () => {
@@ -370,16 +446,20 @@ describe('ScansTab', () => {
 
     // In-place page view — no router navigation occurred.
     expect(navigateMock).not.toHaveBeenCalled()
-    expect(await screen.findByText('New scan config')).toBeInTheDocument()
-    expect(screen.getByText('Source & query')).toBeInTheDocument()
-    // Schedule is always visible; mapping cards are gated behind preview.
-    expect(screen.getByText('Schedule & limits')).toBeInTheDocument()
-    expect(screen.queryByText('Event mapping')).not.toBeInTheDocument()
+    // Scoped to the heading: the list's own "New scan" BUTTON now carries the
+    // same words, so a bare text query would match it and pass either way.
+    expect(await screen.findByRole('heading', { name: 'New scan' })).toBeInTheDocument()
+    // The essentials block is always visible; everything else is a collapsed
+    // section whose fields are not mounted until it is opened.
+    expect(screen.getByLabelText('Name')).toBeInTheDocument()
+    expect(screen.getByLabelText('Data source')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Limits/ })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Row cap per run')).toBeNull()
 
     // Cancel returns to the list without navigation.
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.getByText('Main events scan')).toBeInTheDocument())
-    expect(screen.queryByText('New scan config')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'New scan' })).not.toBeInTheDocument()
     expect(navigateMock).not.toHaveBeenCalled()
   })
 })
@@ -438,7 +518,7 @@ describe('ScansTab — coached demo scenario', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     return render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[`/p/${SLUG}/settings/scans`]}>
+        <MemoryRouter initialEntries={[`/p/${SLUG}/scans`]}>
           <DemoScenarioProvider project={project} pollIntervalMs={10}>
             <ScansTab slug={SLUG} />
           </DemoScenarioProvider>

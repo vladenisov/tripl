@@ -343,7 +343,7 @@ to say.
 
 | Finding | What it means | What to do |
 |---------|---------------|------------|
-| `data_source_probe_failed` (fail) | The last connection test on a referenced source failed. | Start here — it explains the scan failures below it. `evidence.last_test_message` carries the warehouse's own error. If `message_redacted` is `true`, re-run with an **owner**-role key to see the text. Then see [Troubleshooting → A scan job fails](../use/troubleshooting.md#a-scan-job-fails--a-data-source-connection-test-fails). |
+| `data_source_probe_failed` (fail) | The last connection test on a referenced source failed. | Start here — it explains the scan failures below it. `evidence.last_test_message` carries the warehouse's own error. If `message_redacted` is `true`, re-run with an **owner**-role key to see the text. Then see [Troubleshooting → A scan run fails](../use/troubleshooting.md#a-scan-run-fails--a-data-source-connection-test-fails). |
 | `data_source_probe_stale` (warn) | The source last tested **OK**, but that test predates the moment its scan config started failing. | Do not trust the green. Press **Re-test connection** on that data source in the app and read the fresh result. `evidence.streak_started_at` is when the failures began. |
 
 ### 5. `scans` — scheduled metrics collection
@@ -370,7 +370,7 @@ now** in the app can neither trigger the backoff nor clear it.
 
 | Finding | What it means | What to do |
 |---------|---------------|------------|
-| `scan_config_not_dispatchable` (fail) | The config has an interval but **no time column**, so the scheduler's query never selects it. It is not failing; it is invisible. | Open the scan's configuration in the app and set a time column. Nothing will ever collect until you do. |
+| `scan_config_not_dispatchable` (fail) | The config has an interval but **no time column**, so the scheduler's query never selects it. It is not failing; it is invisible. The app shows the same config with a **Needs a time column** badge on its row in **Govern → Scans**. | Open the scan's configuration in the app and set a time column. Nothing will ever collect until you do. |
 | `scan_config_failing` (fail) | *N* consecutive scheduled runs failed. | See the walkthrough below. |
 | `scan_backoff_active` (warn) | The scheduler has **deliberately** deferred the next attempt. | Nothing. This is expected behaviour — see [The retry backoff is not a hang](#the-retry-backoff-is-not-a-hang). |
 | `scan_watermark_stale` (warn) | Collection is *succeeding*, but the last run only wrote data through `evidence.time_to`, more than three intervals behind now. | The query works and the source table is producing no rows in the scan window. Check the upstream pipeline that fills that table, and the scan's filters. This is the shape of "events frozen with no error". |
@@ -1087,7 +1087,7 @@ time column, both set, so `not scheduled (no time column)` names a config that
 is not failing — it is invisible, and nothing will ever collect for it. That is
 the same condition doctor reports as `scan_config_not_dispatchable`, evaluated
 by the predicate doctor itself uses to decide whose job history is even worth
-reading.
+reading — and the same one the web UI badges as **Needs a time column**.
 
 `base_query` and roughly twenty tuning knobs are **omitted**. Free-text SQL runs
 to kilobytes and answers no operational question; read the full configuration in

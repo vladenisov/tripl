@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -27,7 +27,8 @@ const scanConfig: ScanConfig = {
   event_type_id: null,
   name: 'Main scan',
   base_query: 'SELECT * FROM analytics.events',
-  event_type_column: null,
+  // A scan names its events one of two ways; this one uses the column.
+  event_type_column: 'event_name',
   time_column: 'created_at',
   event_name_format: null,
   json_value_paths: [],
@@ -140,10 +141,11 @@ describe('ScanDetail', () => {
     expect(screen.getByText('Metrics & drift')).toBeInTheDocument()
     expect(screen.getByText('Last run')).toBeInTheDocument()
     expect(screen.getByText('SELECT * FROM analytics.events')).toBeInTheDocument()
-    // The mocked config has time_column set and no event type → Auto-detect.
+    // The mocked config has time_column set and no event type, so the name
+    // comes from the event type column instead — which is what the row says.
     expect(screen.getByText('created_at')).toBeInTheDocument()
-    expect(screen.getByText('Auto-detect')).toBeInTheDocument()
-    expect(await screen.findByText(/No jobs yet/)).toBeInTheDocument()
+    expect(screen.getByText('Named from a column')).toBeInTheDocument()
+    expect(await screen.findByText(/No runs yet/)).toBeInTheDocument()
   })
 
   it('labels a failed job, offers a retry, and never shows raw scan internals', async () => {
@@ -188,12 +190,180 @@ describe('ScanDetail', () => {
     // Raw host/port never reaches the DOM, collapsed or expanded.
     expect(screen.queryByText(/clickhouse\.internal/)).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Expand job details' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Expand run details' }))
     expect(
       screen.getByText('Scan failed: the data source did not respond in time.'),
     ).toBeInTheDocument()
     expect(screen.queryByText(/clickhouse\.internal/)).not.toBeInTheDocument()
     expect(screen.queryByText(/8443/)).not.toBeInTheDocument()
+  })
+
+  it('counts metric points the same way the list chip does, and never calls them "Metric rows"', async () => {
+    // The stat card used to read `breakdown_event_metrics ?? event_metrics`,
+    // so a run with breakdowns reported 5 here and 17 on the scan list — two
+    // numbers for one run. Both now call scanUtils.jobMetricPoints.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([
+          {
+            id: 'job-metrics',
+            scan_config_id: 'scan-1',
+            status: 'completed',
+            started_at: '2026-01-01T00:00:00Z',
+            completed_at: '2026-01-01T00:00:10Z',
+            result_summary: {
+              event_metrics: 2,
+              type_metrics: 3,
+              breakdown_event_metrics: 5,
+              breakdown_type_metrics: 7,
+            },
+            error_message: null,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:10Z',
+          },
+        ])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+      </QueryClientProvider>,
+    )
+
+    // 2 + 3 + 5 + 7. The old fallback rendered 5.
+    await waitFor(() => {
+      const card = screen.getByText('Metric points').parentElement!
+      expect(card).toHaveTextContent('17')
+    })
+    // "Metric rows" collided with Observe › Metrics, the user-defined catalog.
+    expect(screen.queryByText('Metric rows')).toBeNull()
+  })
+
+  it('says which population each "Rows read" figure counted', async () => {
+    // `Rows read` is one label over two numbers: the catalog analyzer's
+    // scan_rows_processed and metrics collection's query_rows_scanned, each
+    // bounded by its own cap. The column header cannot vary per run, so the
+    // stat card and the cell carry it as a title.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([
+          {
+            id: 'job-metrics',
+            scan_config_id: 'scan-1',
+            status: 'completed',
+            started_at: '2026-01-01T00:00:00Z',
+            completed_at: '2026-01-01T00:00:10Z',
+            result_summary: { query_rows_scanned: 900 },
+            error_message: null,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:10Z',
+          },
+        ])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+      </QueryClientProvider>,
+    )
+
+    // The "Rows read · last run" card and the run's own cell, both explained.
+    const explained = await screen.findAllByTitle(
+      'Warehouse rows read across every metrics chunk (capped by the metrics row cap).',
+    )
+    expect(explained).toHaveLength(2)
+    // The catalog wording must not be what a metrics run gets.
+    expect(
+      screen.queryByTitle('Warehouse rows the catalog analyzer read this run (capped by the row cap).'),
+    ).toBeNull()
+  })
+
+  // A scan's output reaches the user as anomalies and Telegram alerts, and the
+  // run report used to print those two counts as dead numbers — the owner got
+  // "Scan: Snowplow Events (iOS)" in Telegram and could reach nothing from it
+  // (tripl-3y7z.2).
+  async function renderExpandedRun(summary: Record<string, number>) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([
+          {
+            id: 'job-signals',
+            scan_config_id: 'scan-1',
+            status: 'completed',
+            started_at: '2026-01-01T00:00:00Z',
+            completed_at: '2026-01-01T00:00:10Z',
+            result_summary: summary,
+            error_message: null,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:10Z',
+          },
+        ])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/scans/scan-1']}>
+          <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand run details' }))
+    // The raw counters are demoted behind a disclosure (tripl-3y7z.3); the run
+    // report leads instead. These cases are about the cards, so open them.
+    fireEvent.click(screen.getByRole('button', { name: 'Show raw counters' }))
+  }
+
+  it('links Signals added and Alerts queued to this scan on the surfaces that hold them', async () => {
+    await renderExpandedRun({ signals_added: 3, alerts_queued: 2 })
+
+    // The counter is the only affordance connecting a run to its anomalies.
+    const signalsCard = screen.getByText('Signals added').parentElement!
+    const signalsLink = within(signalsCard).getByRole('link')
+    expect(signalsLink).toHaveAttribute('href', '/p/demo/anomalies?scan=scan-1')
+    expect(signalsLink).toHaveAttribute('title', 'View anomalies from this scan')
+    expect(signalsLink).toHaveTextContent('3')
+
+    // ...and the same for the alert that actually reached Telegram.
+    const alertsCard = screen.getByText('Alerts queued').parentElement!
+    const alertsLink = within(alertsCard).getByRole('link')
+    expect(alertsLink).toHaveAttribute('href', '/p/demo/settings/alerting?scan=scan-1')
+    expect(alertsLink).toHaveAttribute('title', 'View alerts from this scan')
+    expect(alertsLink).toHaveTextContent('2')
+  })
+
+  it('leaves a zero counter as plain text — a link to a guaranteed-empty page is worse than none', async () => {
+    await renderExpandedRun({ signals_added: 0, alerts_queued: 0 })
+
+    const signalsCard = screen.getByText('Signals added').parentElement!
+    expect(within(signalsCard).queryByRole('link')).toBeNull()
+    expect(signalsCard).toHaveTextContent('0')
+
+    const alertsCard = screen.getByText('Alerts queued').parentElement!
+    expect(within(alertsCard).queryByRole('link')).toBeNull()
   })
 
   it('renders the platform presence grid from a mocked response', async () => {
@@ -371,7 +541,7 @@ describe('ScanDetail — coached demo scenario', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     return render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[`/p/${SLUG}/settings/scans/scan-1`]}>
+        <MemoryRouter initialEntries={[`/p/${SLUG}/scans/scan-1`]}>
           <DemoScenarioProvider project={project} pollIntervalMs={10}>
             <ScanDetail slug={SLUG} scanConfig={scanConfig} eventTypes={[]} branchId={null} />
           </DemoScenarioProvider>
@@ -419,7 +589,7 @@ describe('ScanDetail — coached demo scenario', () => {
     )
     renderInScenario(demoProject())
 
-    expect(await screen.findByText('Recent jobs')).toBeInTheDocument()
+    expect(await screen.findByText('Recent runs')).toBeInTheDocument()
     expect(screen.queryByRole('note')).not.toBeInTheDocument()
   })
 
@@ -429,7 +599,7 @@ describe('ScanDetail — coached demo scenario', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Retry scan' }))
 
-    await waitFor(() => expect(screen.getByText('Recent jobs')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Recent runs')).toBeInTheDocument())
     expect(screen.queryByRole('note')).not.toBeInTheDocument()
     expect(window.localStorage.getItem(`tripl-demo-scenario:${SLUG}`)).toBeNull()
   })

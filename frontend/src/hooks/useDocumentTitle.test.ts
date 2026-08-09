@@ -71,8 +71,23 @@ describe('resolveTitleFromPath', () => {
       label: 'Page not found',
       slug: 'acme',
     })
-    expect(resolveTitleFromPath('/p/acme/scans')).toEqual({
+    expect(resolveTitleFromPath('/p/acme/no-such-surface-either')).toEqual({
       label: 'Page not found',
+      slug: 'acme',
+    })
+  })
+
+  it('titles the top-level Scans surface and its detail pages', () => {
+    // Scans moved out of `/settings` and is a real surface segment now; without
+    // an entry in PROJECT_SURFACE_LABELS the tab would read "Page not found" on
+    // a page that renders perfectly.
+    expect(resolveTitleFromPath('/p/acme/scans')).toEqual({ label: 'Scans', slug: 'acme' })
+    // A scan id is not a sub-surface, so the detail page inherits "Scans".
+    expect(resolveTitleFromPath('/p/acme/scans/scan-1')).toEqual({ label: 'Scans', slug: 'acme' })
+    // The legacy path still resolves — it redirects, and the frame before the
+    // redirect commits must not flash not-found.
+    expect(resolveTitleFromPath('/p/acme/settings/scans')).toEqual({
+      label: 'Scans',
       slug: 'acme',
     })
   })

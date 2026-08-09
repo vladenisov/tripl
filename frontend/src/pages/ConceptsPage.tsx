@@ -163,10 +163,16 @@ const AREAS: readonly Area[] = [
         surface: 'Reconciliation',
       },
       {
+        // The glossary is where someone who does not understand scans arrives on
+        // purpose — often straight off a Telegram alert naming one. It has to
+        // carry the same chain the scans list, the scan form and a scan's own
+        // page carry, in the same words (tripl-3y7z.2). The old definition named
+        // plan coverage and dead events and nothing downstream, and called every
+        // scan "scheduled" — which a catalog-only scan is not.
         term: 'Scans',
         definition:
-          'Background jobs that inspect your data sources, compute plan coverage, and discover shadow and dead events.',
-        path: '/settings/scans',
+          'Warehouse queries that add events and fields to your tracking plan. A monitoring scan also records metric points on a schedule, and those points are what anomaly detection and alerts are built on.',
+        path: '/scans',
       },
       {
         term: 'Audit log',

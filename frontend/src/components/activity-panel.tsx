@@ -17,6 +17,7 @@ import { activityApi } from '@/api/activity'
 import { Dot } from '@/components/primitives/dot'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import { formatRelativeTime } from '@/lib/datetime'
+import { countOf } from '@/lib/plural'
 import type { ActivityItem, ActivityItemSeverity, ActivityItemType } from '@/types'
 
 const ACTIVITY_LIMIT = 20
@@ -44,9 +45,13 @@ const KIND_ICON: Record<ActivityItemType, LucideIcon> = {
   event: Check,
 }
 
+// The noun a collapsed burst counts. A `scan` item is one scan RUN, not one
+// scan, so three completed runs of one nightly scan must read "3 runs
+// completed" — "3 scans completed" claimed the project had three scans
+// (tripl-3y7z). The title stem already carries the scan noun ("Scan completed").
 const TYPE_PLURAL: Record<ActivityItemType, string> = {
   anomaly: 'anomalies',
-  scan: 'scans',
+  scan: 'runs',
   alert: 'alerts',
   event: 'events',
 }
@@ -257,7 +262,7 @@ export function ActivityPanel({ open, slug }: { open: boolean; slug?: string }) 
         >
           <Zap className="h-3 w-3" />
           <span className="mono">
-            last 7 days · {items.length} {items.length === 1 ? 'item' : 'items'}
+            last 7 days · {countOf(items.length, 'item', 'items')}
           </span>
         </div>
       )}

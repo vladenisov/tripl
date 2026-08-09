@@ -338,7 +338,7 @@ export default function OverviewPage() {
         title={volumeScanName ? `Volume · ${volumeScanName}` : 'Volume'}
         subtitle={
           volumeScanName
-            ? 'One scan config — not the project’s combined volume across all scans.'
+            ? 'One scan — not the project’s combined volume across all scans.'
             : undefined
         }
       >
@@ -387,7 +387,7 @@ export default function OverviewPage() {
       {/* Top events by volume — summed across EVERY scan config, unlike the
           volume card above it, which charts one. Saying so is what stops the
           two panels reading as a contradiction (tripl-jfm3.20). */}
-      <Panel title="Top events · 48h" subtitle="Across every scan config in this project.">
+      <Panel title="Top events · 48h" subtitle="Across every scan in this project.">
         <div className="p-4">
         {topEventsQuery.isError && (
           <ErrorState
@@ -552,10 +552,10 @@ export default function OverviewPage() {
 
 // Text alternative for the volume sparkline (issue M8): the SVG itself is
 // aria-hidden, so the surrounding role="img" needs an accessible summary. Names
-// the scan config the series is scoped to rather than calling it the project
+// the scan the series is scoped to rather than calling it the project
 // total, which it never was (tripl-jfm3.20).
 function volumeChartLabel(counts: number[], scanName: string | null): string {
-  const scope = scanName ? `Volume sparkline for scan config ${scanName}` : 'Volume sparkline'
+  const scope = scanName ? `Volume sparkline for scan ${scanName}` : 'Volume sparkline'
   if (counts.length === 0) return scope
   const latest = counts[counts.length - 1]!
   const min = Math.min(...counts)

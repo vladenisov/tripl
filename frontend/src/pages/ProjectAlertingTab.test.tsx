@@ -75,10 +75,61 @@ function makeDestination(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function makeInboxGroup(overrides: Record<string, unknown> = {}) {
+  return {
+    correlation_group_id: 'grp-1',
+    status: 'open',
+    muted_until: null,
+    note: null,
+    false_positive_count: 0,
+    item_count: 1,
+    delivery_count: 1,
+    latest_bucket: '2026-06-13T10:00:00Z',
+    latest_delivery_at: '2026-06-13T10:05:00Z',
+    direction: 'spike',
+    scope_names: ['payment_failed'],
+    destination_names: ['Main Slack'],
+    rule_names: ['payment_failed spike'],
+    scan_names: ['prod events'],
+    acted_at: null,
+    acted_by: null,
+    ...overrides,
+  }
+}
+
+function makeDelivery(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'del-1',
+    project_id: 'proj-1',
+    scan_config_id: 'scan-1',
+    scan_job_id: null,
+    destination_id: 'dest-1',
+    rule_id: 'rule-1',
+    destination_name: 'Main Slack',
+    rule_name: 'payment_failed spike',
+    scan_name: 'prod events',
+    status: 'sent',
+    channel: 'slack',
+    matched_count: 1,
+    payload_snapshot: null,
+    error_message: null,
+    is_local: false,
+    is_simulated: false,
+    created_at: '2026-06-13T10:05:00Z',
+    updated_at: '2026-06-13T10:05:00Z',
+    sent_at: '2026-06-13T10:05:00Z',
+    ...overrides,
+  }
+}
+
 // Empty-state payloads for every endpoint the tab (and RoutingRulesPanel) hits,
 // so the component renders without firing real network requests. Pass
-// `destinations` to exercise the populated / partially-configured layouts.
-function mockAlertingFetch(destinations: unknown[] = [], { isDemo = false } = {}) {
+// `destinations` to exercise the populated / partially-configured layouts, and
+// `inbox` / `deliveries` when a test cares what the Inbox and Audit panels count.
+function mockAlertingFetch(
+  destinations: unknown[] = [],
+  { isDemo = false, inbox = [] as unknown[], deliveries = [] as unknown[] } = {},
+) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input)
     // The tab reads the project to know whether it is a zero-egress demo.
@@ -86,8 +137,10 @@ function mockAlertingFetch(destinations: unknown[] = [], { isDemo = false } = {}
       return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: isDemo })
     }
     if (url.includes('/alert-destinations')) return jsonResponse(destinations)
-    if (url.includes('/alert-deliveries')) return jsonResponse({ items: [], total: 0 })
-    if (url.includes('/alert-inbox')) return jsonResponse({ items: [], total: 0 })
+    if (url.includes('/alert-deliveries')) {
+      return jsonResponse({ items: deliveries, total: deliveries.length })
+    }
+    if (url.includes('/alert-inbox')) return jsonResponse({ items: inbox, total: inbox.length })
     if (url.includes('/monitors-summary')) {
       return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
     }
@@ -165,6 +218,30 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
     expect(screen.getByText('Signals route to destinations via rules.')).toBeInTheDocument()
     expect(screen.getByText('Audit')).toBeInTheDocument()
     expect(screen.queryByText('Set up alerting')).toBeNull()
+  })
+
+  it('counts one group and one delivery in the singular, not "1 groups" / "1 deliveries"', async () => {
+    // Found sweeping for the shape behind "1 scans" (tripl-3y7z): both panel
+    // subtitles interpolated a bare plural. The very first alert a project ever
+    // sends is what puts a 1 in each of them, so the defect greeted every
+    // operator exactly once — on the delivery they were watching for.
+    mockAlertingFetch([makeDestination({ rules: [makeRule()] })], {
+      inbox: [makeInboxGroup()],
+      deliveries: [makeDelivery()],
+    })
+    renderTab()
+
+    await screen.findByText('Inbox')
+    expect(await screen.findByText('1 group')).toBeInTheDocument()
+    expect(await screen.findByText('1 delivery')).toBeInTheDocument()
+    expect(screen.queryByText('1 groups')).toBeNull()
+    expect(screen.queryByText('1 deliveries')).toBeNull()
+    // The group ROW, eight lines under the subtitle the sweep fixed. Scoping
+    // that sweep to Panel/SurfPanel subtitles left this one rendering "1 items"
+    // directly beneath a correct "1 group" — both counts describe the same
+    // group, so the disagreement is visible in a single glance.
+    expect(await screen.findByText('1 item')).toBeInTheDocument()
+    expect(screen.queryByText('1 items')).toBeNull()
   })
 })
 
@@ -378,5 +455,86 @@ describe('ProjectAlertingTab — Add Email destination', () => {
     expect(placeholder).not.toContain("'$'")
     expect(placeholder).toContain('${project_name}')
     expect(placeholder).toContain('${rule_name}')
+  })
+})
+
+describe('ProjectAlertingTab — per-scan focus via ?scan= (tripl-3y7z.2)', () => {
+  // A scan run's "Alerts queued" counter links here with `?scan=<id>`. Without
+  // the seed the link lands on an unfiltered audit log — which does not close
+  // the finding: the owner still cannot get from a Telegram message back to the
+  // scan that produced it.
+  function mockWithDeliveryUrls(scans: unknown[]) {
+    const deliveryUrls: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/alert-deliveries')) {
+        deliveryUrls.push(url)
+        return jsonResponse({ items: [], total: 0 })
+      }
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: false })
+      }
+      if (url.includes('/alert-destinations')) {
+        return jsonResponse([makeDestination({ rules: [makeRule()] })])
+      }
+      if (url.includes('/alert-inbox')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.includes('/events')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/scans')) return jsonResponse(scans)
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    return deliveryUrls
+  }
+
+  function renderWithFocus(focusScanId?: string) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting']}>
+          <ProjectAlertingTab slug="demo" focusScanId={focusScanId} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('seeds the delivery scan filter, so the audit log opens already narrowed', async () => {
+    const deliveryUrls = mockWithDeliveryUrls([{ id: 'scan-1', name: 'Snowplow Events (iOS)' }])
+    renderWithFocus('scan-1')
+
+    // Every request the tab makes for deliveries carries the scan — not just
+    // eventually, but from the first one, so no unfiltered page is ever shown.
+    await waitFor(() => expect(deliveryUrls.length).toBeGreaterThan(0))
+    for (const url of deliveryUrls) {
+      expect(url).toContain('scan_config_id=scan-1')
+    }
+  })
+
+  it('asks for nothing scan-specific when no ?scan= was given', async () => {
+    const deliveryUrls = mockWithDeliveryUrls([{ id: 'scan-1', name: 'Snowplow Events (iOS)' }])
+    renderWithFocus(undefined)
+
+    await waitFor(() => expect(deliveryUrls.length).toBeGreaterThan(0))
+    for (const url of deliveryUrls) {
+      expect(url).not.toContain('scan_config_id')
+    }
+  })
+
+  it('degrades an unknown ?scan= to All once the scan list resolves', async () => {
+    // A deleted scan or a stale link must not pin the audit log to a filter that
+    // can never match, leaving a permanently empty page with no explanation.
+    const deliveryUrls = mockWithDeliveryUrls([{ id: 'scan-1', name: 'Snowplow Events (iOS)' }])
+    renderWithFocus('scan-that-was-deleted')
+
+    // The first request may still carry the id (the scan list is in flight and
+    // dropping a filter on a `[]` default would discard VALID ones); what must
+    // not survive is the settled state.
+    await screen.findByText('Audit')
+    await waitFor(() => {
+      expect(deliveryUrls.length).toBeGreaterThan(0)
+      expect(deliveryUrls.at(-1)).not.toContain('scan_config_id')
+    })
   })
 })

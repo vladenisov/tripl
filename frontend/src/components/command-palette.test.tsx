@@ -152,7 +152,9 @@ describe('CommandPalette', () => {
     expect(screen.getByText('Variable settings')).toBeInTheDocument()
     expect(screen.getByText('Monitoring settings')).toBeInTheDocument()
     expect(screen.getByText('Alerting settings')).toBeInTheDocument()
-    expect(screen.getByText('Scan settings')).toBeInTheDocument()
+    // Not "Scan settings": scans are an operational surface with its own
+    // top-level route, not a settings tab.
+    expect(screen.getByText('Scans')).toBeInTheDocument()
 
     fireEvent.click(screen.getByText('Project settings'))
 

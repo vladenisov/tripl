@@ -6582,6 +6582,111 @@
         }
       }
     },
+    "/api/v1/projects/{slug}/scans/dry-run": {
+      "post": {
+        "tags": [
+          "scans"
+        ],
+        "summary": "Dry Run Scan Config",
+        "description": "Enqueue a dry-run; poll GET /dry-run-jobs/{job_id} for the result.\n\nOwner-only for the same reason preview is: the SQL is free text from a\ndraft, executed verbatim against a stored warehouse credential.",
+        "operationId": "dry_run_scan_config_api_v1_projects__slug__scans_dry_run_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScanDryRunRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanDryRunJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/scans/dry-run-jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "scans"
+        ],
+        "summary": "Get Scan Dry Run Job",
+        "operationId": "get_scan_dry_run_job_api_v1_projects__slug__scans_dry_run_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanDryRunJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{slug}/scans/{scan_id}": {
       "get": {
         "tags": [
@@ -13095,7 +13200,14 @@
             "title": "Absolute Delta"
           },
           "percent_delta": {
-            "type": "number",
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Percent Delta"
           },
           "details_path": {
@@ -27656,6 +27768,472 @@
         },
         "type": "object",
         "title": "ScanConfigUpdate"
+      },
+      "ScanDryRunEvent": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "source_name": {
+            "type": "string",
+            "title": "Source Name"
+          },
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "approx_row_count": {
+            "type": "integer",
+            "title": "Approx Row Count"
+          },
+          "share_of_sample": {
+            "type": "number",
+            "title": "Share Of Sample"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "new",
+              "existing"
+            ],
+            "title": "Status"
+          },
+          "grouped_by_rule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grouped By Rule"
+          },
+          "count_confidence": {
+            "type": "string",
+            "enum": [
+              "exact",
+              "sampled"
+            ],
+            "title": "Count Confidence"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "source_name",
+          "event_type",
+          "approx_row_count",
+          "share_of_sample",
+          "status",
+          "count_confidence"
+        ],
+        "title": "ScanDryRunEvent",
+        "description": "One event the config would produce, and how much of the sample it is.\n\nAn event is identified by ``(event_type, source_name)``, not by the name\nalone: a run writes one Event per event type, so a grouped scan whose name\nformat collapses to the same string under two event types creates two\nEvents. Listing them as one would undercount the answer this panel exists to\ngive."
+      },
+      "ScanDryRunField": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "json",
+              "string"
+            ],
+            "title": "Type"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "new",
+              "exists"
+            ],
+            "title": "Status"
+          },
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "type",
+          "status",
+          "event_type"
+        ],
+        "title": "ScanDryRunField",
+        "description": "A field the config would add to the plan.\n\n``type`` is \"json\" or \"string\" and nothing else \u2014 that is the ENTIRE\ninference the scan performs (``worker.tasks.metrics.generation``). Promising\ninteger/timestamp here would be a lie about what the scan creates."
+      },
+      "ScanDryRunJobResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ScanJobStatus"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "result_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanDryRunResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "started_at",
+          "completed_at",
+          "result_summary",
+          "error_message",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ScanDryRunJobResponse"
+      },
+      "ScanDryRunRequest": {
+        "properties": {
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
+          "data_source_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Source Id"
+          },
+          "base_query": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Query"
+          },
+          "event_type_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type Id"
+          },
+          "event_type_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type Column"
+          },
+          "time_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Column"
+          },
+          "event_name_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Name Format"
+          },
+          "event_group_rules": {
+            "items": {
+              "$ref": "#/components/schemas/EventGroupRule"
+            },
+            "type": "array",
+            "title": "Event Group Rules"
+          },
+          "json_value_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Json Value Paths"
+          },
+          "cardinality_threshold": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Cardinality Threshold",
+            "default": 100
+          },
+          "app_version_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Column"
+          },
+          "platform_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Column"
+          },
+          "scan_lookback_hours": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Lookback Hours"
+          },
+          "sample_row_limit": {
+            "type": "integer",
+            "maximum": 20000.0,
+            "minimum": 100.0,
+            "title": "Sample Row Limit",
+            "default": 5000
+          }
+        },
+        "type": "object",
+        "title": "ScanDryRunRequest",
+        "description": "Inputs for \"what would this scan create?\".\n\nTwo shapes, and exactly one of them must be supplied. The scan form has no\nsaved config, so it sends the draft \u2014 that is the only shape the UI sends.\n``scan_config_id`` is the API/agent shape (``integrate/agent-api-guide.md``):\na caller that already has a stored config asks about it by id instead of\nre-serialising twenty fields it did not author, and every draft field below\nis then ignored. Nothing in the frontend uses it today; it is a documented\ncapability of the HTTP API, not unfinished UI."
+      },
+      "ScanDryRunResponse": {
+        "properties": {
+          "window_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window From"
+          },
+          "window_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window To"
+          },
+          "sampled_rows": {
+            "type": "integer",
+            "title": "Sampled Rows",
+            "default": 0
+          },
+          "sample_row_limit": {
+            "type": "integer",
+            "title": "Sample Row Limit",
+            "default": 0
+          },
+          "sample_is_complete": {
+            "type": "boolean",
+            "title": "Sample Is Complete",
+            "default": true
+          },
+          "breakdown_combinations": {
+            "type": "integer",
+            "title": "Breakdown Combinations",
+            "default": 0
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/ScanDryRunEvent"
+            },
+            "type": "array",
+            "title": "Events"
+          },
+          "events_truncated": {
+            "type": "boolean",
+            "title": "Events Truncated",
+            "default": false
+          },
+          "max_events_reached": {
+            "type": "boolean",
+            "title": "Max Events Reached",
+            "default": false
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/ScanDryRunField"
+            },
+            "type": "array",
+            "title": "Fields"
+          },
+          "templated_columns": {
+            "items": {
+              "$ref": "#/components/schemas/ScanDryRunTemplatedColumn"
+            },
+            "type": "array",
+            "title": "Templated Columns"
+          },
+          "reserved_columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reserved Columns"
+          },
+          "unmapped_columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unmapped Columns"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Errors"
+          }
+        },
+        "type": "object",
+        "title": "ScanDryRunResponse",
+        "description": "What a scan would create, bounded by three separate partialities.\n\n1. the lookback window (``window_from`` / ``window_to``) \u2014 an event absent\n   from 24h is not an event that will not be created;\n2. the sample (``sample_is_complete``) \u2014 when false the caller must say\n   \"at least N\", never \"N\";\n3. the event cap (``max_events_reached``) \u2014 the real scan stops there too.\n\nNever extrapolate any of these to a table-wide total. ``share_of_sample``\nexists so the caller does not have to invent one."
+      },
+      "ScanDryRunTemplatedColumn": {
+        "properties": {
+          "column": {
+            "type": "string",
+            "title": "Column"
+          },
+          "distinct_values": {
+            "type": "integer",
+            "title": "Distinct Values"
+          },
+          "threshold": {
+            "type": "integer",
+            "title": "Threshold"
+          }
+        },
+        "type": "object",
+        "required": [
+          "column",
+          "distinct_values",
+          "threshold"
+        ],
+        "title": "ScanDryRunTemplatedColumn",
+        "description": "A column collapsed into a ``${column}`` template by the cardinality rule.\n\nSurfaced so the user can see WHY they got 3 events instead of 3000 \u2014 it is a\nstep function of a threshold they are editing in the same form, not a\nproperty of their data."
       },
       "ScanInterval": {
         "type": "string",

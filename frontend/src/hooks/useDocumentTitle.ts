@@ -58,6 +58,7 @@ const PROJECT_SURFACE_LABELS: Record<string, string> = {
   coverage: 'Coverage',
   metrics: 'Metrics',
   'fact-tables': 'Fact tables',
+  scans: 'Scans',
   concepts: 'Concepts',
   settings: 'Project settings',
 }
@@ -94,6 +95,9 @@ const PROJECT_SUBSURFACE_LABELS: Record<string, Record<string, string>> = {
     relations: 'Relations',
     branches: 'Plan branches',
     alerting: 'Alerting',
+    // `settings/scans` is redirect-only since Scans moved to `/p/:slug/scans`.
+    // It stays named here for the same reason `alerting` does: the redirect
+    // renders for a frame, and that frame must not flash "Page not found".
     scans: 'Scans',
     audit: 'Audit log',
   },

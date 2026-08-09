@@ -133,7 +133,7 @@ describe('DemoScenarioProvider — watching the scan the user started', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     client.setQueryData(['scanJobs', SLUG, 'sc-1'], [scanJob('running')])
     vi.mocked(scansApi.getJob).mockResolvedValue(scanJob('completed'))
-    renderProvider(demoProject(), `/p/${SLUG}/settings/scans`, client)
+    renderProvider(demoProject(), `/p/${SLUG}/scans`, client)
 
     fireEvent.click(screen.getByText('run'))
     await waitFor(() => expect(step()).toBe('live-loop/collect-metric'))
@@ -148,7 +148,7 @@ describe('DemoScenarioProvider — watching the scan the user started', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const invalidateSpy = vi.spyOn(client, 'invalidateQueries')
     vi.mocked(scansApi.getJob).mockResolvedValue(scanJob('completed'))
-    renderProvider(demoProject(), `/p/${SLUG}/settings/scans`, client)
+    renderProvider(demoProject(), `/p/${SLUG}/scans`, client)
 
     fireEvent.click(screen.getByText('run'))
     await waitFor(() => expect(step()).toBe('live-loop/collect-metric'))
