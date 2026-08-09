@@ -2282,6 +2282,82 @@ async def test_stale_approval_blocks_merge_until_reapproved(client: AsyncClient)
 
 
 @pytest.mark.asyncio
+async def test_photo_comment_does_not_void_an_approval(client: AsyncClient) -> None:
+    """Discussion is not a plan change (tripl-zjmo).
+
+    A comment typed under a spec screenshot used to change the branch's
+    snapshot hash and void every approval on it, so merge answered
+    ``current=0, stale=1`` while author and reviewer both correctly insisted
+    nobody had touched the plan.
+
+    The complement is asserted too, because it is the line this fix draws:
+    attaching a screenshot DOES change what a reviewer is being asked to
+    approve, so it still voids the review.
+    """
+    await _seed_plan(client, "branch-photo-talk")
+    events = await client.get("/api/v1/projects/branch-photo-talk/events")
+    main_event_id = events.json()["items"][0]["id"]
+    await _attach_main_figma(
+        client,
+        "branch-photo-talk",
+        main_event_id,
+        "https://www.figma.com/file/abc/Spec",
+        "Spec",
+    )
+
+    branch_id = await _create_branch(client, "branch-photo-talk")
+    await _transition(client, "branch-photo-talk", branch_id, "submit")
+    await _transition(client, "branch-photo-talk", branch_id, "approve")
+
+    # The branch holds its own deep copies of the event and its photo.
+    async with TestSessionLocal() as session:
+        branch_event = (
+            (await session.execute(select(Event).where(Event.branch_id == uuid.UUID(branch_id))))
+            .scalars()
+            .first()
+        )
+        assert branch_event is not None
+        branch_photo = (
+            (
+                await session.execute(
+                    select(EventPhoto).where(EventPhoto.event_id == branch_event.id)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        assert branch_photo is not None
+        branch_event_id = str(branch_event.id)
+        branch_photo_id = str(branch_photo.id)
+
+    posted = await client.post(
+        f"/api/v1/projects/branch-photo-talk/events/{branch_event_id}"
+        f"/photos/{branch_photo_id}/comments",
+        json={"body": "is this the final copy?"},
+    )
+    assert posted.status_code == 201, posted.text
+
+    detail = await client.get(f"/api/v1/projects/branch-photo-talk/branches/{branch_id}")
+    assert [a["stale"] for a in detail.json()["approvals"]] == [False]
+
+    # Attaching another screenshot is a change to what is under review, and
+    # must still void it.
+    await _attach_main_figma(
+        client,
+        "branch-photo-talk",
+        branch_event_id,
+        "https://www.figma.com/file/def/Second",
+        "Second",
+    )
+    after_upload = await client.get(f"/api/v1/projects/branch-photo-talk/branches/{branch_id}")
+    assert [a["stale"] for a in after_upload.json()["approvals"]] == [True]
+
+    await _transition(client, "branch-photo-talk", branch_id, "approve")
+    merged = await client.post(f"/api/v1/projects/branch-photo-talk/branches/{branch_id}/merge")
+    assert merged.status_code == 200, merged.text
+
+
+@pytest.mark.asyncio
 async def test_branch_detail_reports_approval_staleness(client: AsyncClient) -> None:
     """The detail response carries the freshness the merge gate scores on.
 
