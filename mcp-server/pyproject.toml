@@ -1,6 +1,12 @@
 [project]
 name = "tripl-mcp"
-version = "0.1.0"
+# 0.2.0, not 0.1.1: 0.1.0 is already on PyPI and the index never accepts a
+# re-upload, so the repo could not publish at all (tripl-yh8t). A minor rather
+# than a patch because the client extraction (tripl-ey6j.1) added a runtime
+# dependency on `tripl` that the published 0.1.0 does not carry at all, and
+# `get_scan` is a new tool — consumers get more than a bug fix. The version
+# range that dependency pins is declared once, below; it is not repeated here.
+version = "0.2.0"
 description = "Standalone MCP server exposing a curated agent toolset over the tripl REST API"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -47,13 +53,19 @@ dependencies = [
     # four ways, the event-name regex three, plus security headers and the
     # signal significance gate.
     #
-    # `tripl` 0.1.0 is on PyPI since tripl-ey6j.6, so this constraint resolves
-    # from an index like any other dependency. [tool.uv.sources] below still
-    # points development and CI at the sibling checkout, so an edit in ../cli
-    # needs no install step; uv strips that table from PUBLISHED metadata, so
-    # the wheel carries this plain constraint alone (verified against the built
-    # artifact, not assumed) and a consumer resolves it from the index.
-    "tripl>=0.1,<0.2",
+    # `>=0.2`, NOT `>=0.1`: this package imports `page_items` / `page_total`
+    # from `tripl_cli.api`, and the published tripl 0.1.0 does not export them —
+    # they were added after it shipped. A wheel declaring `>=0.1` therefore
+    # resolves happily and then dies on import with ImportError, which is what
+    # the clean-venv smoke test in publish-mcp.yml caught (tripl-yh8t). Bump
+    # this floor whenever a symbol is imported that an older `tripl` lacks.
+    #
+    # [tool.uv.sources] below still points development and CI at the sibling
+    # checkout, so an edit in ../cli needs no install step; uv strips that table
+    # from PUBLISHED metadata, so the wheel carries this plain constraint alone
+    # (verified against the built artifact, not assumed) and a consumer resolves
+    # it from the index.
+    "tripl>=0.2,<0.3",
 ]
 
 [project.urls]
@@ -78,8 +90,8 @@ dev = [
 # Development and CI only: resolve `tripl` from the sibling checkout rather than
 # from the published release, so an edit in ../cli is picked up with no install
 # step and both suites exercise the same source. uv strips this table from
-# published metadata, so the wheel keeps the plain ">=0.1,<0.2" constraint
-# declared above and consumers resolve `tripl` from PyPI. `../cli` is
+# published metadata, so the wheel keeps the plain version constraint declared
+# above and consumers resolve `tripl` from PyPI. `../cli` is
 # also the only thing named `tripl` in the repo now — backend/ used to declare
 # that distribution name too and is `tripl-server` since tripl-ey6j.6.
 tripl = { path = "../cli" }
