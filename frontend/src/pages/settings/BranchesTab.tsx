@@ -39,6 +39,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { formatRelativeTime } from '@/lib/datetime'
+import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
 import type {
   ImplementationTicket,
@@ -662,7 +663,7 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
 
       <ImplementationTicketsPanel slug={slug} branch={branch} />
 
-      <Panel title="Changes" subtitle={`${entries.length} changes`}>
+      <Panel title="Changes" subtitle={countOf(entries.length, 'change', 'changes')}>
         {entries.length === 0 ? (
           <p className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
             No changes in this branch.

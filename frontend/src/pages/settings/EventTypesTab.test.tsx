@@ -92,6 +92,22 @@ describe('EventTypesTab list', () => {
     expect(within(row).getByText('2')).toBeInTheDocument() // 2 fields
   })
 
+  it('heads a single-type project "1 type", not "1 types"', async () => {
+    // A project has exactly one event type for as long as onboarding takes, so
+    // "All types / 1 types" greeted every new project. The suite already
+    // rendered this one-item list above without asserting the subtitle, which is
+    // how it survived. `countOf` from @/lib/plural, same as the Scans list
+    // (tripl-3y7z).
+    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    expect(await screen.findByText('1 type')).toBeInTheDocument()
+    expect(screen.queryByText('1 types')).not.toBeInTheDocument()
+  })
+
   it('opens a page-style create view instead of a dialog', async () => {
     renderWithRoutes('/p/demo/settings/event-types', async (input) => {
       const url = String(input)

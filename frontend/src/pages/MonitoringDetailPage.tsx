@@ -1816,11 +1816,13 @@ function DistributionDriftPanel({
       <Card>
         <CardContent className="flex h-56 flex-col items-center justify-center gap-1 text-center text-sm text-muted-foreground">
           <p>No distribution drift data available</p>
+          {/* "the scan" is the one resolved above (`scanConfigId`) — this scope's
+              samples come from that scan and no other, so "run a scan" pointed the
+              reader at the wrong control as well as at the wire's noun. */}
           <p className="max-w-md text-xs">
             Add fields to{' '}
-            <span className="font-mono">distribution_drift_fields</span> on the scan
-            configuration, then run a scan to start collecting distribution samples
-            for this scope.
+            <span className="font-mono">distribution_drift_fields</span> on the scan,
+            then run it to start collecting distribution samples for this scope.
           </p>
         </CardContent>
       </Card>

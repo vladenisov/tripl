@@ -27,6 +27,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
 import { Chip } from '@/components/primitives/chip'
 import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
+import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
 
 const FIELD_TYPES = ['string', 'number', 'boolean', 'json', 'enum', 'url']
@@ -118,7 +119,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
         </Button>
       </div>
 
-      <SurfPanel title="All types" subtitle={`${sorted.length} types`}>
+      <SurfPanel title="All types" subtitle={countOf(sorted.length, 'type', 'types')}>
         {sorted.length === 0 ? (
           <p className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
             No event types yet. Create one to categorize your events.

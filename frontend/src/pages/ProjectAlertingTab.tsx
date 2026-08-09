@@ -29,6 +29,7 @@ import {
 } from './alerting/constants'
 import { getErrorMessage } from '@/lib/utils'
 import { formatDateTime } from '@/lib/datetime'
+import { countOf } from '@/lib/plural'
 
 // Channel catalogue — drives both the per-channel sections and the compact
 // add-channel affordance, so every type stays addable from one place.
@@ -478,7 +479,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
 
         <div className="min-w-0 space-y-4">
           {hasRules && (
-          <Panel title="Inbox" subtitle={`${inbox?.total ?? 0} groups`}>
+          <Panel title="Inbox" subtitle={countOf(inbox?.total ?? 0, 'group', 'groups')}>
             <div className="space-y-3 p-4">
               {!inbox || inbox.items.length === 0 ? (
                 <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
@@ -575,7 +576,9 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           </Panel>
           )}
 
-          <Panel title="Audit" subtitle={`${deliveries?.total ?? 0} deliveries`}>
+          {/* "delivery"/"deliveries" is why countOf takes both forms rather than
+              appending an "s" — the first alert a project ever sends lands here. */}
+          <Panel title="Audit" subtitle={countOf(deliveries?.total ?? 0, 'delivery', 'deliveries')}>
             <div className="min-w-0 space-y-4 p-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="grid gap-2">

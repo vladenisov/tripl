@@ -75,10 +75,61 @@ function makeDestination(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function makeInboxGroup(overrides: Record<string, unknown> = {}) {
+  return {
+    correlation_group_id: 'grp-1',
+    status: 'open',
+    muted_until: null,
+    note: null,
+    false_positive_count: 0,
+    item_count: 1,
+    delivery_count: 1,
+    latest_bucket: '2026-06-13T10:00:00Z',
+    latest_delivery_at: '2026-06-13T10:05:00Z',
+    direction: 'spike',
+    scope_names: ['payment_failed'],
+    destination_names: ['Main Slack'],
+    rule_names: ['payment_failed spike'],
+    scan_names: ['prod events'],
+    acted_at: null,
+    acted_by: null,
+    ...overrides,
+  }
+}
+
+function makeDelivery(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'del-1',
+    project_id: 'proj-1',
+    scan_config_id: 'scan-1',
+    scan_job_id: null,
+    destination_id: 'dest-1',
+    rule_id: 'rule-1',
+    destination_name: 'Main Slack',
+    rule_name: 'payment_failed spike',
+    scan_name: 'prod events',
+    status: 'sent',
+    channel: 'slack',
+    matched_count: 1,
+    payload_snapshot: null,
+    error_message: null,
+    is_local: false,
+    is_simulated: false,
+    created_at: '2026-06-13T10:05:00Z',
+    updated_at: '2026-06-13T10:05:00Z',
+    sent_at: '2026-06-13T10:05:00Z',
+    ...overrides,
+  }
+}
+
 // Empty-state payloads for every endpoint the tab (and RoutingRulesPanel) hits,
 // so the component renders without firing real network requests. Pass
-// `destinations` to exercise the populated / partially-configured layouts.
-function mockAlertingFetch(destinations: unknown[] = [], { isDemo = false } = {}) {
+// `destinations` to exercise the populated / partially-configured layouts, and
+// `inbox` / `deliveries` when a test cares what the Inbox and Audit panels count.
+function mockAlertingFetch(
+  destinations: unknown[] = [],
+  { isDemo = false, inbox = [] as unknown[], deliveries = [] as unknown[] } = {},
+) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input)
     // The tab reads the project to know whether it is a zero-egress demo.
@@ -86,8 +137,10 @@ function mockAlertingFetch(destinations: unknown[] = [], { isDemo = false } = {}
       return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: isDemo })
     }
     if (url.includes('/alert-destinations')) return jsonResponse(destinations)
-    if (url.includes('/alert-deliveries')) return jsonResponse({ items: [], total: 0 })
-    if (url.includes('/alert-inbox')) return jsonResponse({ items: [], total: 0 })
+    if (url.includes('/alert-deliveries')) {
+      return jsonResponse({ items: deliveries, total: deliveries.length })
+    }
+    if (url.includes('/alert-inbox')) return jsonResponse({ items: inbox, total: inbox.length })
     if (url.includes('/monitors-summary')) {
       return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
     }
@@ -165,6 +218,24 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
     expect(screen.getByText('Signals route to destinations via rules.')).toBeInTheDocument()
     expect(screen.getByText('Audit')).toBeInTheDocument()
     expect(screen.queryByText('Set up alerting')).toBeNull()
+  })
+
+  it('counts one group and one delivery in the singular, not "1 groups" / "1 deliveries"', async () => {
+    // Found sweeping for the shape behind "1 scans" (tripl-3y7z): both panel
+    // subtitles interpolated a bare plural. The very first alert a project ever
+    // sends is what puts a 1 in each of them, so the defect greeted every
+    // operator exactly once — on the delivery they were watching for.
+    mockAlertingFetch([makeDestination({ rules: [makeRule()] })], {
+      inbox: [makeInboxGroup()],
+      deliveries: [makeDelivery()],
+    })
+    renderTab()
+
+    await screen.findByText('Inbox')
+    expect(await screen.findByText('1 group')).toBeInTheDocument()
+    expect(await screen.findByText('1 delivery')).toBeInTheDocument()
+    expect(screen.queryByText('1 groups')).toBeNull()
+    expect(screen.queryByText('1 deliveries')).toBeNull()
   })
 })
 

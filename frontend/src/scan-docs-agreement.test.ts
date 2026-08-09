@@ -36,6 +36,22 @@ const SCAN_DOCS = [
   'use/troubleshooting.md',
 ]
 
+/**
+ * The wire's noun for a scan, in both spellings a writer reaches for.
+ *
+ * This started life as `/\bscan configs?\b/i` in two places, and the abbreviated
+ * spelling is not the one that survives a sweep: `\b` after "config" is not a
+ * boundary before the "u" of "configuration", so the Monitoring distribution
+ * empty state kept saying "on the scan configuration" through two passes of this
+ * very guard. One exported constant, because two copies of a rule is how the
+ * rule ends up enforcing two different things.
+ *
+ * The space between the words is load-bearing and stays literal: `scan_config`,
+ * `scan-config-id` and `ScanConfigurationTab` are wire identifiers and React
+ * component names, and this guard never reads identifiers — only prose.
+ */
+const SCAN_CONFIG_NOUN = /\bscan config(?:uration)?s?\b/i
+
 describe('the scan docs describe the product this branch ships', () => {
   it('feature-reference names the three tiles the Scans page renders', () => {
     const page = readFileSync(join(SRC, 'pages', 'settings', 'ScansTab.tsx'), 'utf8')
@@ -166,15 +182,25 @@ describe('the scan docs describe the product this branch ships', () => {
 
   it('no scan-facing doc calls a scan a "scan config"', () => {
     // Settled vocabulary: the web UI (and the docs describing it) say "scan".
-    // "job" and "scan_config" stay on the wire, so the API/CLI references
-    // (run/cli.md, integrate/agent-api-guide.md) are deliberately not in scope,
-    // and identifiers like `scan-config-id` or `scan_config_not_dispatchable`
-    // are not matched here.
+    // "job" and "scan_config" stay on the wire, so the API/CLI references are
+    // deliberately not in scope, and identifiers like `scan-config-id` or
+    // `scan_config_not_dispatchable` are not matched here.
+    //
+    // Checked when SCAN_CONFIG_NOUN grew the "configuration" spelling — every
+    // doc outside SCAN_DOCS that the wider pattern now hits describes the wire,
+    // and each is out of scope on purpose, not by accident:
+    //   run/cli.md               — the CLI reference; `tripl scans list` prints
+    //                              "scan configs" and doctor's own summaries are
+    //                              quoted verbatim.
+    //   integrate/agent-api-guide.md — the API guide, written in wire nouns.
+    //   run/security.md          — enumerates API scopes (`preview-jobs`,
+    //                              `dry-run-jobs`) against permissions.
+    //   develop/architecture.md  — the `ScanJob` row in the data-model table.
     for (const relative of SCAN_DOCS) {
       const offenders = readDoc(relative)
         .split('\n')
         .map((line, index) => ({ line, number: index + 1 }))
-        .filter(({ line }) => /scan configs?\b/i.test(line))
+        .filter(({ line }) => SCAN_CONFIG_NOUN.test(line))
         .map(({ line, number }) => `${relative}:${number}: ${line.trim()}`)
 
       expect(
@@ -240,16 +266,24 @@ function stripComments(source: string): string {
  * carrying code punctuation is dropped rather than guessed at — `>` also closes
  * an arrow and a comparison, and no UI sentence this guard protects needs
  * brackets.
+ *
+ * Runs of whitespace collapse to one space, because that is what the browser
+ * does to a JSX text node and this guard reads what the user reads. Skipping
+ * that step is the second reason "on the scan\n            configuration"
+ * survived: the source holds a newline and twelve spaces where the rendered
+ * sentence holds one, so a two-word phrase split across the line wrap matched
+ * nothing, however the pattern was spelled.
  */
 function userFacingText(source: string): { text: string, line: number }[] {
   const found: { text: string, line: number }[] = []
   const at = (index: number) => source.slice(0, index).split('\n').length
+  const asRendered = (text: string) => text.replace(/\s+/g, ' ')
   for (const m of source.matchAll(/(['"`])((?:\\.|(?!\1)[^\\])*)\1/gs)) {
-    found.push({ text: m[2].replace(/\$\{[^{}]*\}/g, ' '), line: at(m.index) })
+    found.push({ text: asRendered(m[2].replace(/\$\{[^{}]*\}/g, ' ')), line: at(m.index) })
   }
   for (const m of source.matchAll(/>([^<>{}]+)</gs)) {
     if (/[;=()[\]]/.test(m[1])) continue
-    found.push({ text: m[1], line: at(m.index) })
+    found.push({ text: asRendered(m[1]), line: at(m.index) })
   }
   return found.filter(({ text }) => / /.test(text) && /[a-z]/.test(text))
 }
@@ -286,7 +320,7 @@ describe('the web UI speaks the settled vocabulary feature-reference promises', 
     const JOBS_TO_BE_DONE = /Three jobs turn a tracking plan/
 
     const banned: [RegExp, string][] = [
-      [/\bscan configs?\b/i, 'calls a scan a "scan config"; the web UI noun is "scan"'],
+      [SCAN_CONFIG_NOUN, 'calls a scan a "scan config"; the web UI noun is "scan"'],
       [/\bjobs?\b/i, 'calls a run a "job"; the web UI noun is "run"'],
     ]
 

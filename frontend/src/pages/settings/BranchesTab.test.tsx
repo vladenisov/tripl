@@ -313,6 +313,40 @@ describe('BranchesTab', () => {
     expect(screen.getByText('Removed')).toBeInTheDocument()
   })
 
+  it('heads a single-change branch "1 change", not "1 changes"', async () => {
+    // A branch that renames one field is the ordinary case, not a corner: the
+    // Changes panel is the first thing a reviewer opens, and it read
+    // "Changes / 1 changes". Same defect the Scans list shipped as "1 scans"
+    // (tripl-3y7z) — `countOf` exists so this is not the fourth hand-rolled copy.
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 1 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'changed',
+          name: 'payment_failed',
+          parent: null,
+          changes: ['Added field error_code'],
+          field_changes: [],
+          before: null,
+          after: null,
+        },
+      ],
+    })
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    await waitFor(() => expect(planBranchesApi.diff).toHaveBeenCalledWith('demo', 'feat-1'))
+
+    expect(await screen.findByText('1 change')).toBeInTheDocument()
+    expect(screen.queryByText('1 changes')).not.toBeInTheDocument()
+  })
+
   it('selects the branch named in the route without a click', async () => {
     vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
     vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
