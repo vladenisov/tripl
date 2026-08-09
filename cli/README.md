@@ -21,7 +21,9 @@ anywhere else.
 
 ## Install
 
-Python 3.12+; the only runtime dependency is `httpx`.
+The only runtime dependency is `httpx`. **Python 3.12+ is required for the
+`pip` path only** — `uvx` downloads a suitable interpreter itself, so a host
+with `uv` and no Python at all can still run the CLI.
 
 From PyPI — `tripl` is published, so this is the ordinary path:
 
