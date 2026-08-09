@@ -596,3 +596,31 @@ def test_the_frozen_delivery_snapshot_keeps_the_ratio_when_there_was_one() -> No
 
     assert item["percent_delta"] == pytest.approx(37.0)
     assert item["expected_count"] == 100
+
+
+def test_a_fractional_baseline_survives_the_snapshot_intact() -> None:
+    """A baseline below 1 is a real baseline, not a missing one.
+
+    The snapshot used to round ``expected_count`` for output. Rounding the
+    percent GATE to match it — the obvious way to stop ``expected_count: 0``
+    appearing beside a non-null percent — silently reclassified every fractional
+    baseline as "no baseline": 0.2 became ``expected_count: 0, percent_delta:
+    null`` here, while ``AlertDeliveryItemResponse`` and the webhook kept 0.2
+    and the real percentage off the same stored row. One delivery answered the
+    same question two ways, which is the defect the null encoding exists to
+    prevent.
+
+    0.2 is not a contrived value: ``test_a_fractional_baseline_below_one_keeps_
+    its_full_percent`` pins it as a 350% move that must clear a 300% threshold.
+    Ratio-shaped catalog metrics live down here.
+    """
+    (item,) = _snapshot_items(0.2)
+
+    assert item["expected_count"] == pytest.approx(0.2), (
+        "a fractional baseline must survive as itself; rounding it to 0 tells "
+        "every consumer there was no baseline at all"
+    )
+    assert item["percent_delta"] is not None, "there WAS a baseline, so there is a ratio to report"
+    # |137 - 0.2| / 0.2 * 100
+    assert item["percent_delta"] == pytest.approx(68400.0)
+    assert item["absolute_delta"] == pytest.approx(136.8)

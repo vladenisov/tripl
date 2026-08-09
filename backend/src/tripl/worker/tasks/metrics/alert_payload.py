@@ -176,14 +176,23 @@ def _build_delivery_snapshot(
         )
         expected = anomaly.expected_count
         absolute_delta = abs(anomaly.actual_count - expected)
-        # Gate and output must read the SAME number. Rounding the emitted field
-        # while gating the percent on the unrounded value let an anomaly with
-        # 0 < expected < 0.5 emit ``expected_count: 0`` beside a non-null
-        # percent — precisely the pair alerting.md tells consumers is impossible,
-        # and the pair it tells them to disambiguate on. Reachable for
-        # ratio-shaped catalog metrics and sparse count series whose rolling
-        # expectation is fractional.
-        rounded_expected = round(expected)
+        # NOT rounded. Gate and output must read the same number, and the number
+        # they must both read is the true one.
+        #
+        # This blob used to round while gating the percent on the unrounded
+        # value, so 0 < expected < 0.5 emitted ``expected_count: 0`` beside a
+        # non-null percent — the pair alerting.md calls impossible. Rounding the
+        # GATE instead fixed that pair and broke a worse one: a real fractional
+        # baseline (0.2 is ordinary for a ratio-shaped catalog metric — see
+        # ``test_a_fractional_baseline_below_one_keeps_its_full_percent``, where
+        # it is a 350% move) became ``expected_count: 0, percent_delta: null``
+        # here while the typed ``items[]`` and the webhook kept 0.2 and the real
+        # percentage. One delivery, three machine-readable encodings, two
+        # answers. Dropping the rounding is what makes all three agree.
+        #
+        # Nothing on screen regresses: the audit row renders the TYPED items, and
+        # the only thing the UI reads from this blob is ``items.length``
+        # (AlertDeliveryRow.tsx). The rounding served no reader.
         items.append(
             {
                 "scope_type": anomaly.scope_type,
@@ -191,8 +200,8 @@ def _build_delivery_snapshot(
                 "scope_name": scope_names[(anomaly.scope_type, anomaly.scope_ref)],
                 "direction": anomaly.direction,
                 "actual_count": anomaly.actual_count,
-                "expected_count": rounded_expected,
-                "absolute_delta": round(absolute_delta),
+                "expected_count": expected,
+                "absolute_delta": absolute_delta,
                 # ``null`` rather than the stored 0.0 placeholder when there was
                 # no baseline: this blob is read as JSON (the Inbox, the audit
                 # API, anything reading ``AlertDelivery.payload_snapshot``), and
@@ -202,7 +211,7 @@ def _build_delivery_snapshot(
                 # historical deliveries disambiguates on ``expected_count == 0``.
                 "percent_delta": percent_delta_or_none(
                     absolute_delta / expected * 100 if expected > 0 else 0.0,
-                    rounded_expected,
+                    expected,
                 ),
                 "details_path": details_path,
                 "monitoring_path": monitoring_path,
