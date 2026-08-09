@@ -47,13 +47,12 @@ dependencies = [
     # four ways, the event-name regex three, plus security headers and the
     # signal significance gate.
     #
-    # `tripl` is not on PyPI yet, so this constraint cannot resolve from an
-    # index today; [tool.uv.sources] below points development and CI at the
-    # sibling checkout. uv strips that table from PUBLISHED metadata, so the
-    # wheel carries this plain constraint alone (verified against the built
-    # artifact, not assumed). Until tripl-ey6j.6 publishes `tripl`, a bare
-    # `uvx tripl-mcp` or a git install of this subdirectory cannot resolve it —
-    # see README.
+    # `tripl` 0.1.0 is on PyPI since tripl-ey6j.6, so this constraint resolves
+    # from an index like any other dependency. [tool.uv.sources] below still
+    # points development and CI at the sibling checkout, so an edit in ../cli
+    # needs no install step; uv strips that table from PUBLISHED metadata, so
+    # the wheel carries this plain constraint alone (verified against the built
+    # artifact, not assumed) and a consumer resolves it from the index.
     "tripl>=0.1,<0.2",
 ]
 
@@ -77,8 +76,10 @@ dev = [
 
 [tool.uv.sources]
 # Development and CI only: resolve `tripl` from the sibling checkout rather than
-# an index it is not on yet. uv strips this table from published metadata, so
-# the wheel keeps the plain ">=0.1,<0.2" constraint declared above. `../cli` is
+# from the published release, so an edit in ../cli is picked up with no install
+# step and both suites exercise the same source. uv strips this table from
+# published metadata, so the wheel keeps the plain ">=0.1,<0.2" constraint
+# declared above and consumers resolve `tripl` from PyPI. `../cli` is
 # also the only thing named `tripl` in the repo now — backend/ used to declare
 # that distribution name too and is `tripl-server` since tripl-ey6j.6.
 tripl = { path = "../cli" }

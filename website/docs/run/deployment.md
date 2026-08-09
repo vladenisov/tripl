@@ -50,10 +50,10 @@ Released tags are `X.Y.Z`, `X.Y`, `latest` (stable only), and `sha-<short>`. Mul
 
 ## Install with the CLI
 
-One command writes the stack and starts it:
+One command writes the stack and starts it. `uvx` fetches the CLI from PyPI on the spot, so nothing has to be installed on the host first:
 
 ```bash
-tripl install --app-url https://tripl.example.com --version 1.4.0 --dir /srv/tripl
+uvx tripl install --app-url https://tripl.example.com --version 1.4.0 --dir /srv/tripl
 ```
 
 It writes three files into `--dir` (default `./tripl`) — `compose.yaml` and `infra/rabbitmq/rabbitmq.conf` verbatim, and a generated `0600` `.env` — then runs `docker compose pull` and `docker compose up -d` in that directory and polls `<--app-url>/health` until it answers. `--dry-run` prints exactly what a real run would do and writes nothing; it is worth typing first.
@@ -78,7 +78,7 @@ Warehouse credentials and alert-destination secrets are encrypted with `ENCRYPTI
 
 ### Without the CLI: placing the files and generating the secrets
 
-The CLI is not on PyPI yet, so on a host where you cannot install it from git, do the same three things by hand. Put `compose.yaml` and `infra/rabbitmq/rabbitmq.conf` on the host from a checkout of this repository, then generate the secrets — start from the example file and append, since appended lines win over the blanks in `.env.example`:
+On a host where you cannot run the CLI at all — no Python 3.12, or no route to PyPI — do the same three things by hand. Put `compose.yaml` and `infra/rabbitmq/rabbitmq.conf` on the host from a checkout of this repository, then generate the secrets — start from the example file and append, since appended lines win over the blanks in `.env.example`:
 
 ```bash
 cp .env.example .env

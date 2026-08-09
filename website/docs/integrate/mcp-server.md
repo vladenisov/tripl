@@ -47,14 +47,13 @@ Stdio is the default transport: the MCP client launches `tripl-mcp` as a child
 process and the key comes from the environment.
 
 :::note Which install paths work
-`uvx tripl-mcp` works — version 0.1.0 is on PyPI and needs only `mcp` and
-`httpx`.
+All of them. `tripl-mcp` is on PyPI, and so is the `tripl` distribution it takes
+its HTTP client from, so `uvx tripl-mcp` and the `uvx --from git+…` form below
+each resolve from the index with no checkout involved.
 
-The copy in the repository is ahead of that release: it takes its HTTP client
-from the `tripl` distribution, which is not published yet, so a checkout
-resolves `tripl` from the sibling `cli/` directory. If you install from git with
-`uvx --from` as shown below and it cannot find `tripl`, use a local checkout
-instead — that form is not verified to reach the sibling directory.
+They are not the same version. PyPI has **0.1.0**, which predates the client
+extraction and exposes 17 tools; the copy in the repository has 18 — `get_scan`
+landed after that release. Install from git to get the newer one.
 
 The **container** image is published either way —
 `ghcr.io/vladenisov/tripl-mcp`, built alongside the app image on every release —
@@ -67,8 +66,12 @@ and is what `docker compose --profile mcp up` pulls.
 claude mcp add tripl \
   -e TRIPL_BASE_URL=https://tripl.example.com \
   -e TRIPL_API_KEY=tk_r_... \
-  -- uvx --from 'git+https://github.com/vladenisov/tripl.git#subdirectory=mcp-server' tripl-mcp
+  -- uvx tripl-mcp
 ```
+
+Replace `uvx tripl-mcp` with
+`uvx --from 'git+https://github.com/vladenisov/tripl.git#subdirectory=mcp-server' tripl-mcp`
+to run the repository copy rather than the release.
 
 Or check a `.mcp.json` into the project (put the key itself in your shell
 environment, not in the file):
@@ -78,11 +81,7 @@ environment, not in the file):
   "mcpServers": {
     "tripl": {
       "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/vladenisov/tripl.git#subdirectory=mcp-server",
-        "tripl-mcp"
-      ],
+      "args": ["tripl-mcp"],
       "env": {
         "TRIPL_BASE_URL": "https://tripl.example.com",
         "TRIPL_API_KEY": "${TRIPL_API_KEY}"
@@ -101,11 +100,7 @@ Add the same block under `mcpServers` in `claude_desktop_config.json`:
   "mcpServers": {
     "tripl": {
       "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/vladenisov/tripl.git#subdirectory=mcp-server",
-        "tripl-mcp"
-      ],
+      "args": ["tripl-mcp"],
       "env": {
         "TRIPL_BASE_URL": "https://tripl.example.com",
         "TRIPL_API_KEY": "tk_r_..."

@@ -96,11 +96,12 @@ jobs:
           # turning the one gate that catches what a lockfile hides into a gate
           # that hides it too.
           #
-          # Consequence, and it is the correct one: while `tripl` is unpublished
-          # (tripl-ey6j.6) this step FAILS, because tripl-mcp now declares
-          # `tripl>=0.1,<0.2` and a released wheel with an unresolvable
-          # dependency is broken for everyone who installs it. Publish `tripl`
-          # first; do not silence this by re-adding a local link.
+          # `tripl` 0.1.0 is on PyPI (tripl-ey6j.6), so the `tripl>=0.1,<0.2`
+          # constraint this wheel declares resolves here exactly as it will for
+          # a user. Should a future tripl-mcp ever need an unreleased `tripl`,
+          # this step FAILS — the correct outcome, because a released wheel with
+          # an unresolvable dependency is broken for everyone who installs it.
+          # Publish `tripl` first; do not silence this by re-adding a local link.
           uv pip install --python /tmp/smoke/bin/python dist/*.whl
           /tmp/smoke/bin/tripl-mcp --help
 
