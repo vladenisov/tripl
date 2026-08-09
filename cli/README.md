@@ -23,19 +23,23 @@ anywhere else.
 
 Python 3.12+; the only runtime dependency is `httpx`.
 
-> **Not on PyPI.** There is no `tripl` package on the index yet, so a bare
-> `uvx tripl` will not resolve. Install from git or from a checkout.
+From PyPI — `tripl` is published, so this is the ordinary path:
 
-From a local checkout — the form verified against this revision:
+```bash
+uvx tripl --version
+# tripl 0.1.0
+
+pip install tripl
+```
+
+From a local checkout, when you are working on the CLI itself:
 
 ```bash
 uv run --project /path/to/tripl/cli tripl --version
-# tripl 0.1.0
 ```
 
-From git without a checkout. This package depends only on `httpx`, so it is
-expected to resolve (unlike `tripl-mcp`, which needs the unpublished `tripl`),
-but it is not exercised by CI:
+From git without a checkout — how you get a revision that is not released yet.
+It resolves, but it is not exercised by CI:
 
 ```bash
 uvx --from "git+https://github.com/vladenisov/tripl.git#subdirectory=cli" tripl --version
@@ -289,6 +293,7 @@ uv run --group dev ruff format --check
 uv run --group dev mypy src
 ```
 
-`mcp-server` resolves this package from `../cli` via `[tool.uv.sources]` while
-it is unpublished, so a change here is picked up by `cd mcp-server && uv sync`
-without any install step. Run **both** suites after touching `client.py`.
+`mcp-server` resolves this package from `../cli` via `[tool.uv.sources]` rather
+than from the published release, so a change here is picked up by
+`cd mcp-server && uv sync` without any install step — and both suites test the
+same source. Run **both** after touching `client.py`.

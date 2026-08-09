@@ -61,6 +61,12 @@ export interface PlanBranchReviewer {
 export interface PlanBranchApproval {
   user_id: string | null
   approved_at: string
+  /**
+   * The branch changed after this approval, so the merge gate does not count
+   * it. Counting rows without checking this shows a quota the merge endpoint
+   * rejects — see the approvals chip in BranchesTab.
+   */
+  stale: boolean
 }
 
 export type ResolutionChoice = 'ours' | 'theirs'

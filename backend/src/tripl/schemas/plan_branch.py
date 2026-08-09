@@ -73,6 +73,12 @@ class BranchReviewerResponse(BaseModel):
 class BranchApprovalResponse(BaseModel):
     user_id: uuid.UUID | None
     approved_at: datetime
+    # Whether the branch changed since this approval was given, i.e. the row's
+    # plan_hash no longer matches the branch's content (tripl-d8v6). A stale
+    # approval does NOT count toward the merge quota, so a client that cannot
+    # see this flag necessarily renders a green quota the merge endpoint then
+    # rejects with insufficient_approvals. Legacy NULL-hash rows read stale.
+    stale: bool
 
     model_config = {"from_attributes": True}
 

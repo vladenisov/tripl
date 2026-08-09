@@ -19,19 +19,34 @@ mounted into the FastAPI app.
 
 ## stdio (Claude Code / Claude Desktop)
 
-> **`uvx tripl-mcp` works today.** The published 0.1.0 predates the client
-> extraction and depends only on `mcp` and `httpx`.
->
-> The version *in this repository* is not the published one: it takes its HTTP
-> client from `tripl`, which is not on the index yet (tripl-ey6j.6). A checkout
-> therefore resolves `tripl` from the sibling `cli/` directory via
-> `[tool.uv.sources]`, and the next release of `tripl-mcp` has to wait for
-> `tripl` to be published — otherwise the wheel would carry a dependency nobody
-> can install. Whether the `git+…#subdirectory=mcp-server` form below also
-> reaches that sibling directory is **untested**; use a local checkout if it
-> fails.
+Both `tripl-mcp` and the `tripl` distribution it takes its HTTP client from are
+on PyPI, so every form below resolves from the index — including the
+`git+…#subdirectory=mcp-server` one, which no longer needs the sibling `cli/`
+directory to find `tripl`.
 
-From git — no clone needed:
+> **The published release trails this repository.** PyPI has 0.1.0, uploaded
+> before the client extraction (tripl-ey6j.1). It exposes 17 of the 18 tools
+> listed above — `get_scan` landed after it. Install from git for the version
+> this README describes.
+
+From PyPI — the released version:
+
+```json
+{
+  "mcpServers": {
+    "tripl": {
+      "command": "uvx",
+      "args": ["tripl-mcp"],
+      "env": {
+        "TRIPL_BASE_URL": "https://tripl.example.com",
+        "TRIPL_API_KEY": "tk_r_..."
+      }
+    }
+  }
+}
+```
+
+From git — no clone needed, and the way to run what is in this repository:
 
 ```json
 {

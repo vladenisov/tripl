@@ -43,6 +43,7 @@ import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
 import type {
   ImplementationTicket,
+  PlanBranchApproval,
   PlanBranchConflictEntity,
   PlanBranchConflictField,
   PlanBranchDiffSummary,
@@ -572,16 +573,31 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
   // Mirror the backend gate: distinct non-null approvers, minus the author
   // when self-approval is blocked — a raw row count can show a green quota
   // that the merge endpoint would still reject.
-  const approvalsCount = new Set(
-    (detail?.approvals ?? [])
-      .map((a) => a.user_id)
-      .filter(
-        (id): id is string =>
-          id !== null && !(policy?.block_self_approval && id === branch.created_by),
-      ),
-  ).size
+  //
+  // `stale` is the half that used to be missing, and it is the half that made
+  // this screen lie: an approval the branch has since moved past does not count
+  // (plan_branch_merge_service._load_fresh_approver_ids), so a branch with one
+  // outdated approval rendered a green "Approvals 1/1" and then failed to merge
+  // reporting current=0. Anyone reading the chip concluded the Approve button
+  // was broken, because from the outside it was indistinguishable from one.
+  const countedApprovals = (detail?.approvals ?? []).filter(
+    (a): a is PlanBranchApproval & { user_id: string } =>
+      a.user_id !== null && !(policy?.block_self_approval && a.user_id === branch.created_by),
+  )
+  const approvalsCount = new Set(countedApprovals.filter((a) => !a.stale).map((a) => a.user_id))
+    .size
+  const staleApprovals = new Set(countedApprovals.filter((a) => a.stale).map((a) => a.user_id)).size
   const requiredApprovals = policy?.min_approvals ?? 0
   const actionError = actionMut.isError ? describeBranchActionError(actionMut.error) : null
+  // Approve is the one action that can change nothing visible: on an already
+  // `approved` branch it only restamps the approval's plan_hash, so the status
+  // chip, the counts and the button row all render identically before and
+  // after. A 200 that repaints zero pixels is indistinguishable from a dead
+  // button — which is how it was reported. Say it happened.
+  const actionSuccess =
+    actionMut.isSuccess && actionMut.variables === 'approve'
+      ? 'Approved against the branch as it stands now.'
+      : null
 
   return (
     <div className="flex flex-col gap-3">
@@ -592,10 +608,22 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
           <div className="flex items-center gap-1.5">
             {requiredApprovals > 0 && branch.status !== 'merged' ? (
               <Chip
-                tone={approvalsCount >= requiredApprovals ? 'success' : 'neutral'}
+                tone={
+                  approvalsCount >= requiredApprovals
+                    ? 'success'
+                    : staleApprovals > 0
+                      ? 'warning'
+                      : 'neutral'
+                }
                 size="xs"
+                title={
+                  staleApprovals > 0
+                    ? `${staleApprovals} approval(s) no longer match this branch's contents and do not count. Approve again to refresh the review.`
+                    : undefined
+                }
               >
                 Approvals {approvalsCount}/{requiredApprovals}
+                {staleApprovals > 0 ? ` · ${staleApprovals} stale` : ''}
               </Chip>
             ) : null}
             <Chip tone={STATUS_TONE[branch.status]} size="xs">
@@ -657,6 +685,14 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
             style={{ borderColor: 'var(--border-subtle)', color: 'var(--danger)' }}
           >
             {actionError}
+          </p>
+        ) : null}
+        {actionSuccess ? (
+          <p
+            className="border-t px-4 py-2.5 text-[11.5px]"
+            style={{ borderColor: 'var(--border-subtle)', color: 'var(--success)' }}
+          >
+            {actionSuccess}
           </p>
         ) : null}
       </Panel>
@@ -1361,22 +1397,36 @@ function Panel({ title, subtitle, subtitleTone, right, children }: PanelProps) {
       className="overflow-hidden rounded-lg border"
       style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
     >
+      {/* Wraps instead of pinning the right slot — the same fix the shared kit
+          Panel carries (components/settings/kit.tsx, tripl-jfm3.43), which this
+          local copy predates. The branch panel's right slot holds the approvals
+          chip, the status chip, "Merge to main" and the delete button; with a
+          non-wrapping header and this section's `overflow-hidden`, Merge is the
+          last item and was laid out past the right edge and clipped — invisible
+          and unclickable on a narrow viewport or with a long branch name. */}
       <header
-        className="flex items-center gap-2 border-b px-4 py-2.5"
+        className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5"
         style={{ borderColor: 'var(--border-subtle)' }}
       >
-        <span className="text-[12.5px] font-semibold" style={{ color: 'var(--fg)' }}>
+        <span
+          className="min-w-0 shrink text-[12.5px] font-semibold"
+          style={{ color: 'var(--fg)' }}
+        >
           {title}
         </span>
         {subtitle ? (
           <span
-            className="text-[11.5px]"
+            className="min-w-0 shrink text-[11.5px]"
             style={{ color: subtitleTone ? `var(--${subtitleTone})` : 'var(--fg-subtle)' }}
           >
             {subtitle}
           </span>
         ) : null}
-        {right ? <div className="ml-auto">{right}</div> : null}
+        {right ? (
+          <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5">
+            {right}
+          </div>
+        ) : null}
       </header>
       {children}
     </section>

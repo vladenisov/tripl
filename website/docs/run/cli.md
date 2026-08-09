@@ -77,13 +77,14 @@ This is the one invocation that surfaces them.
 
 **Requires Python 3.12 or newer.** The only runtime dependency is `httpx`.
 
-:::warning `tripl` is not on PyPI yet
-A bare `uvx tripl` / `pip install tripl` **will not resolve** — the distribution
-has not been published to the index. Until it is, install from git or from a
-checkout.
-:::
+**From PyPI.** `tripl` is published, so this is the ordinary path:
 
-**From a checkout.** This is the form verified against the current revision:
+```bash
+uvx tripl doctor      # run it without installing anything permanently
+pip install tripl     # or put it on PATH for good
+```
+
+**From a checkout.** The form to use when you are working on the CLI itself:
 
 ```bash
 git clone https://github.com/vladenisov/tripl.git
@@ -91,9 +92,8 @@ uv run --project tripl/cli tripl --version
 # tripl 0.1.0
 ```
 
-**From git, without a checkout.** Both forms below are *expected* to work —
-`cli/` depends on nothing but `httpx`, unlike `tripl-mcp`, which needs the
-still-unpublished `tripl` — but neither is exercised by CI yet:
+**From git, without a checkout.** How you get a revision that is not released
+yet. Both forms below resolve, but neither is exercised by CI:
 
 ```bash
 uvx --from 'git+https://github.com/vladenisov/tripl.git#subdirectory=cli' tripl doctor
@@ -105,8 +105,7 @@ pip install 'git+https://github.com/vladenisov/tripl.git#subdirectory=cli'
 This section is about getting the `tripl` **command** onto your machine.
 [`tripl install`](#tripl-install) is a *subcommand* of it that provisions a
 **tripl server** on a host. You need the first before you can run the second —
-and since the distribution is not on PyPI yet, that currently means the git or
-checkout forms above, on the deploy host.
+`uvx tripl install ...` on the deploy host does both in one step.
 :::
 
 :::tip Distribution name vs import name
@@ -2542,7 +2541,7 @@ exit 1
   env:
     TRIPL_BASE_URL: https://tripl.example.com
     TRIPL_API_KEY: ${{ secrets.TRIPL_READ_ONLY_KEY }}
-  run: uvx --from 'git+https://github.com/vladenisov/tripl.git#subdirectory=cli' tripl doctor --strict
+  run: uvx tripl doctor --strict
 ```
 
 Use `--strict` in a gate you watch every run, and plain `doctor` in an
