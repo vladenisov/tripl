@@ -24,10 +24,19 @@ import { type ScanFormMode, scanModeOf } from './scanMode'
  * the rendered output, which is the only place it matters.
  */
 
+/**
+ * "Every run" would be false, and falsified by the button next to this note.
+ * `run_scan` (backend/src/tripl/worker/tasks/scan.py) generates events and
+ * variables and writes no `EventMetric` row; metric points come from
+ * `collect_metrics`, which ONLY `check_metrics_due` dispatches, once a config's
+ * own interval bucket closes. So `Run now` fills the plan and records nothing,
+ * and both notes tie the points to the schedule instead of to the run.
+ */
 const FORM_NOTE: Record<ScanFormMode, string> = {
   monitoring:
-    'This scan will add events to your tracking plan and record metric points every run.'
-    + ' Anomaly detection reads those points and raises signals; alerts are sent from signals.',
+    'This scan will add events to your tracking plan on every run, and record metric points on'
+    + ' its schedule. Anomaly detection reads those points and raises signals; alerts are sent'
+    + ' from signals.',
   catalog:
     'This scan will add events and fields to your tracking plan.'
     + ' It records no metric points, so it raises no anomalies and sends no alerts.',
@@ -60,8 +69,10 @@ function configNote(config: Pick<ScanConfig, 'time_column' | 'interval'>): strin
     return 'Runs when you start it. Adds events and fields to your tracking plan only — no'
       + ' metric points, no anomalies, no alerts.'
   }
-  return `Runs ${cadencePhrase(config.interval)}. Each run adds events to your tracking plan and`
-    + ' records metric points for anomaly detection.'
+  // `Run now` sits on this same page, so "each run records metric points" is a
+  // promise the user can disprove in one click — see the note above FORM_NOTE.
+  return `Runs ${cadencePhrase(config.interval)}. Each run adds events to your tracking plan;`
+    + ' metric points for anomaly detection are collected on that schedule, not by Run now.'
 }
 
 type ScanCausalNoteProps =

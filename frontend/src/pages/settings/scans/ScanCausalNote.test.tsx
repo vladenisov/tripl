@@ -30,6 +30,19 @@ describe('ScanCausalNote — a scan says what it produces (tripl-3y7z.2)', () =>
     expect(note).toContain('Runs every hour.')
   })
 
+  // `run_scan` (backend/src/tripl/worker/tasks/scan.py) writes events and
+  // variables and no `EventMetric`; metric points come from `collect_metrics`,
+  // dispatched only by the scheduled `check_metrics_due`. The note sits directly
+  // above a `Run now` button, so promising points "every run" is a promise the
+  // user disproves in one click — and the run report for that run names none.
+  it('ties metric points to the schedule, not to a run the user starts', () => {
+    const note = noteText(<ScanCausalNote variant="config" config={config('created_at', '1h')} />)
+
+    expect(note).toContain('collected on that schedule')
+    expect(note).toContain('not by Run now')
+    expect(note).not.toMatch(/(each|every) run[^.;]*metric points/i)
+  })
+
   it('states the consequences a catalog-only scan does NOT have', () => {
     // Catalog only is a legitimate choice, so the note is not a warning — but it
     // must still say that no anomaly and no alert will ever come from this scan,
@@ -66,7 +79,11 @@ describe('ScanCausalNote — a scan says what it produces (tripl-3y7z.2)', () =>
   it('promises the whole chain in the form note for Catalog + monitoring', () => {
     const note = noteText(<ScanCausalNote variant="form" mode="monitoring" />)
 
-    expect(note).toContain('record metric points every run')
+    // Per-run for the plan, per-schedule for the points — the split the backend
+    // makes, and the one the config note above makes too.
+    expect(note).toContain('add events to your tracking plan on every run')
+    expect(note).toContain('record metric points on its schedule')
+    expect(note).not.toMatch(/metric points every run/)
     expect(note).toContain('raises signals; alerts are sent from signals')
   })
 

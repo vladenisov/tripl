@@ -224,14 +224,15 @@ and use **Run again** if one fails.
 ### What happens after a scan runs
 
 Every run adds events and fields to your tracking plan. A **Catalog +
-monitoring** scan also records **metric points**, and those points are what
-anomaly detection and alerts are built on:
+monitoring** scan also records **metric points** on its schedule, and those
+points are what anomaly detection and alerts are built on:
 
 **events → metric points → signals → alerts**
 
-- **Catalog + monitoring** — the scan adds events to your tracking plan and
-  records metric points every run. Anomaly detection reads those points and
-  raises signals; alerts are sent from signals.
+- **Catalog + monitoring** — the scan adds events to your tracking plan on every
+  run, and records metric points on its schedule. Anomaly detection reads those
+  points and raises signals; alerts are sent from signals. **Run now** fills the
+  plan; only the schedule records metric points.
 - **Catalog only** — the scan adds events and fields to your tracking plan. It
   records no metric points, so it raises no anomalies and sends no alerts.
 
