@@ -19,10 +19,16 @@ mounted into the FastAPI app.
 
 ## stdio (Claude Code / Claude Desktop)
 
-Every form below resolves from PyPI with no checkout involved. Both this package
-and `tripl` — the distribution it imports its HTTP client from (tripl-ey6j.1) —
-are published, so the `git+…#subdirectory=mcp-server` form finds `tripl` on the
-index rather than needing the sibling `cli/` directory.
+No form below needs a checkout of your own, but the first two get `tripl` — the
+distribution this package imports its HTTP client from (tripl-ey6j.1) — from
+different places, and the difference is worth knowing:
+
+- `uvx tripl-mcp` installs the release from PyPI and resolves `tripl` from the
+  index, as an ordinary dependency of the published wheel.
+- The `git+…#subdirectory=mcp-server` form clones the **whole** repository, so
+  the sibling `cli/` arrives with it and the `[tool.uv.sources]` table below
+  points `tripl` at that directory. Server and client are therefore built from
+  one commit, and the form does not care what the index currently serves.
 
 > **This README describes `main`, which between releases can be ahead of what
 > PyPI serves.** Deliberately no version numbers or tool counts here: they were

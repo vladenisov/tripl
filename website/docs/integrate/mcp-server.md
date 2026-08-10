@@ -47,10 +47,13 @@ Stdio is the default transport: the MCP client launches `tripl-mcp` as a child
 process and the key comes from the environment.
 
 :::note Which install paths work
-All of them, with no checkout involved. `uvx tripl-mcp` installs the current
-release; the `uvx --from git+…` form installs the repository copy. Both import
-the HTTP client from the `tripl` distribution and resolve it from the index,
-which is why neither needs a local `cli/` directory.
+All of them, with no checkout of your own — but they get the HTTP client from
+different places. `uvx tripl-mcp` installs the current release and resolves the
+`tripl` distribution from the index, as an ordinary dependency of the published
+wheel. The `uvx --from git+…` form clones the whole repository, so the sibling
+`cli/` arrives with it and `tripl` is built from the same commit as the server
+rather than from the index — that form pins the two halves together and does not
+depend on what PyPI currently serves.
 
 Between releases the repository can be ahead of what PyPI serves — take the git
 form when you need something that has landed but not yet shipped. This page

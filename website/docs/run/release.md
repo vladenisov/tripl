@@ -132,8 +132,8 @@ release, and neither forces a version bump on the other.
 package by bumping its own `pyproject.toml` and pushing the matching tag.
 
 ```bash
-# after bumping cli/pyproject.toml to 0.1.1
-git tag -a cli-v0.1.1 -m "tripl 0.1.1" && git push origin cli-v0.1.1
+# after bumping cli/pyproject.toml to the new version
+git tag -a cli-v<version> -m "tripl <version>" && git push origin cli-v<version>
 ```
 
 Both workflows gate before they publish: lint, type-check and the full test
@@ -152,11 +152,19 @@ Pointing the step at a sibling `dist/` would turn that gate into a gate that
 hides the problem too.
 :::
 
-:::warning `tripl` must be published before the next `tripl-mcp` release
-`tripl-mcp` declares `tripl>=0.1,<0.2` and imports its HTTP client from that
-distribution, so until `tripl` is on the index, `publish-mcp.yml`'s smoke test
-**fails on purpose** — a released wheel with an unresolvable dependency is
-broken for everyone who installs it.
+:::warning Publish `cli-v*` before `mcp-v*`
+`tripl-mcp` imports its HTTP client from the `tripl` distribution and declares a
+version floor on it. That floor is stated once, in `mcp-server/pyproject.toml`,
+and deliberately not repeated here — a range copied into prose is a range that
+goes stale.
+
+Whenever the floor moves ahead of what the index serves, `publish-mcp.yml`'s
+smoke test **fails on purpose**: it installs the built wheel from the index into
+a clean virtualenv, so a wheel whose dependency cannot resolve is caught before
+upload instead of by the first person to install it. The 0.2.0 release hit this
+for real — `tripl-mcp` had begun importing `page_items` / `page_total`, which the
+published `tripl` 0.1.0 does not export, so the mcp job failed until `tripl`
+0.2.0 was on the index. Raise the floor and release `cli-v*` first.
 :::
 
 ### Authentication: Trusted Publishing
