@@ -19,19 +19,16 @@ mounted into the FastAPI app.
 
 ## stdio (Claude Code / Claude Desktop)
 
-Every form below resolves from PyPI, but for two different reasons, and the
-difference is worth one sentence each:
+Every form below resolves from PyPI with no checkout involved. Both this package
+and `tripl` — the distribution it imports its HTTP client from (tripl-ey6j.1) —
+are published, so the `git+…#subdirectory=mcp-server` form finds `tripl` on the
+index rather than needing the sibling `cli/` directory.
 
-- **`uvx tripl-mcp`** installs the published **0.1.0**, which predates the
-  client extraction and therefore depends on nothing but `mcp` and `httpx` —
-  the `tripl` distribution never enters the picture.
-- **The git form** installs *this* revision, which imports its HTTP client from
-  `tripl` (tripl-ey6j.1). That resolves from the index too, now that `tripl`
-  0.1.0 is published, so it no longer needs the sibling `cli/` directory.
-
-> **The published release trails this repository.** 0.1.0 exposes 17 of the 18
-> tools listed above — `get_scan` landed after it. Install from git for the
-> version this README describes.
+> **This README describes `main`, which between releases can be ahead of what
+> PyPI serves.** Deliberately no version numbers or tool counts here: they were
+> hand-maintained and went stale the moment a release shipped. `uvx tripl-mcp`
+> gives you the current release; the git form gives you what has landed but not
+> yet shipped. `git log mcp-server/` is the honest diff between them.
 
 From PyPI — the released version:
 

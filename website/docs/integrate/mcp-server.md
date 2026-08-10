@@ -47,17 +47,15 @@ Stdio is the default transport: the MCP client launches `tripl-mcp` as a child
 process and the key comes from the environment.
 
 :::note Which install paths work
-All of them — with no checkout involved — though for two different reasons.
+All of them, with no checkout involved. `uvx tripl-mcp` installs the current
+release; the `uvx --from git+…` form installs the repository copy. Both import
+the HTTP client from the `tripl` distribution and resolve it from the index,
+which is why neither needs a local `cli/` directory.
 
-`uvx tripl-mcp` installs the published **0.1.0**, which predates the client
-extraction and so depends on nothing but `mcp` and `httpx`; `tripl` is not part
-of that install at all. The `uvx --from git+…` form installs the repository
-copy, which *does* import its HTTP client from the `tripl` distribution — and
-that resolves from the index too, now that `tripl` is published.
-
-They are not the same version: PyPI's 0.1.0 exposes 17 tools, the repository
-copy 18 — `get_scan` landed after that release. Install from git for the newer
-one.
+Between releases the repository can be ahead of what PyPI serves — take the git
+form when you need something that has landed but not yet shipped. This page
+names no version numbers on purpose: they were hand-maintained and went stale on
+the first release that followed.
 
 The **container** image is published either way —
 `ghcr.io/vladenisov/tripl-mcp`, built alongside the app image on every release —
@@ -169,7 +167,7 @@ treat them as safe to auto-approve.
 | `reconciliation_status` | `slug` | Reconciliation coverage + dead/shadow event counts |
 | `list_projects` | — | `GET /api/v1/projects` |
 
-:::warning `list_scans` changed shape after 0.1.0
+:::warning `list_scans` changed shape in 0.2.0
 It used to return the whole `ScanConfigResponse` for every config — 30-odd
 fields including the raw `base_query` SQL and every tuning knob — which is a
 large payload to spend an agent's context on when the question is usually "which
