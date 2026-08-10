@@ -47,7 +47,9 @@
 # back after it was purged from history on 2026-08-03. The exports are
 # gitignored for the same reason: exporting locally is fine, publishing is not.
 backup:
-  git-push: false
+    git-push: false
+sync:
+    remote: "git+ssh://git@github.com/vladenisov/tripl.git"
 
 # Integration settings (access with 'bd config get/set')
 # Non-secret keys (stored in the database):
