@@ -60,11 +60,12 @@ dependencies = [
     # the clean-venv smoke test in publish-mcp.yml caught (tripl-yh8t). Bump
     # this floor whenever a symbol is imported that an older `tripl` lacks.
     #
-    # [tool.uv.sources] below still points development and CI at the sibling
-    # checkout, so an edit in ../cli needs no install step; uv strips that table
-    # from PUBLISHED metadata, so the wheel carries this plain constraint alone
-    # (verified against the built artifact, not assumed) and a consumer resolves
-    # it from the index.
+    # [tool.uv.sources] below points `tripl` at the sibling checkout for anything
+    # that BUILDS from this source tree — see the note there, it is broader than
+    # local development. uv strips that table from PUBLISHED metadata, so the
+    # wheel carries this plain constraint alone (verified against the built
+    # artifact, not assumed) and a consumer of the release resolves it from the
+    # index.
     "tripl>=0.2,<0.3",
 ]
 
@@ -87,13 +88,23 @@ dev = [
 ]
 
 [tool.uv.sources]
-# Development and CI only: resolve `tripl` from the sibling checkout rather than
-# from the published release, so an edit in ../cli is picked up with no install
-# step and both suites exercise the same source. uv strips this table from
-# published metadata, so the wheel keeps the plain version constraint declared
-# above and consumers resolve `tripl` from PyPI. `../cli` is
-# also the only thing named `tripl` in the repo now — backend/ used to declare
-# that distribution name too and is `tripl-server` since tripl-ey6j.6.
+# Resolve `tripl` from the sibling checkout rather than from the published
+# release, so an edit in ../cli is picked up with no install step and both suites
+# exercise the same source.
+#
+# NOT just development and CI — this applies to every install that BUILDS from
+# this source tree. `uvx --from git+…#subdirectory=mcp-server` clones the WHOLE
+# repository, so ../cli comes with it and uv resolves `tripl` from that path;
+# uv's own resolution line says `tripl==… (from git+…#subdirectory=cli)`. That
+# is a feature — the git form pins server and client to one commit and needs
+# nothing from the index — but do not write that the git form fetches `tripl`
+# from PyPI. The docs claimed exactly that and were wrong (PR #102).
+#
+# What uv DOES strip is this table from published metadata, so the wheel keeps
+# the plain version constraint declared above and consumers of the PyPI release
+# resolve `tripl` from the index. `../cli` is also the only thing named `tripl`
+# in the repo now — backend/ used to declare that distribution name too and is
+# `tripl-server` since tripl-ey6j.6.
 tripl = { path = "../cli" }
 
 [build-system]
