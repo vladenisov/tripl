@@ -216,6 +216,11 @@ merging. Working surfaces are scoped to the active branch via a `?branch=`
 context. Merging an owned event type re-checks ownership (see
 [Event types](#event-types)).
 
+The list is split into **Active** and **Merged** tabs, each showing its count, so
+landed work stops burying branches still in flight. `main` stays on Active — it
+is the base you work from, notwithstanding that it is stored as a merged branch.
+Opening a link to a merged branch selects the Merged tab for you.
+
 The selected branch is part of the route (`/p/:slug/settings/branches/:branchId`),
 so a review is linkable. Each diff row expands to its field-level changes;
 collection-valued fields (an event's field values and meta values, its tags, a

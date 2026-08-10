@@ -215,7 +215,6 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
   // (they seed useQueries, which must not be rebuilt on every render).
   const items = useMemo(() => data?.items ?? [], [data])
   const mainBranch = items.find((b) => b.kind === 'main')
-  const defaultCount = items.filter((b) => b.kind === 'main').length
   // An unknown id in the URL (deleted or merged-away branch) falls back to main
   // rather than rendering an empty detail pane.
   const selected = branchId
@@ -298,7 +297,6 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
           <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-[300px_minmax(0,1fr)]">
             <BranchList
               items={items}
-              defaultCount={defaultCount}
               selectedId={selected?.id ?? null}
               countsByBranch={countsByBranch}
               usersById={usersById}
@@ -335,28 +333,87 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
 
 interface BranchListProps {
   items: PlanBranchSummary[]
-  defaultCount: number
   selectedId: string | null
   countsByBranch: Map<string, { ahead: number; behind: number }>
   usersById: Map<string, string>
   onSelect: (branch: PlanBranchSummary) => void
 }
 
+type BranchListTab = 'active' | 'merged'
+
+const LANDED_STATUSES = new Set(['merged', 'closed'])
+
+/**
+ * Landed work — merged or closed — as opposed to a branch still in flight.
+ *
+ * The `kind` test is load-bearing rather than defensive: **main is created with
+ * status `merged`**. A status-only predicate therefore files the production plan
+ * under "Merged" and leaves the active tab with no base branch, which is also
+ * why this split stays client-side — `BranchSwitcher` reads the very same
+ * `planBranchesKey(slug)` cache entry, so filtering server-side would empty it
+ * too.
+ */
+function isLandedBranch(branch: PlanBranchSummary): boolean {
+  return branch.kind !== 'main' && LANDED_STATUSES.has(branch.status)
+}
+
 function BranchList({
   items,
-  defaultCount,
   selectedId,
   countsByBranch,
   usersById,
   onSelect,
 }: BranchListProps) {
+  // null means "follow the selection"; clicking a tab pins it. That way a deep
+  // link straight to a merged branch opens on the tab that actually contains it
+  // instead of an empty-looking list.
+  const [pickedTab, setPickedTab] = useState<BranchListTab | null>(null)
+
+  const activeBranches = items.filter((branch) => !isLandedBranch(branch))
+  const landedBranches = items.filter(isLandedBranch)
+
+  const selectedIsLanded = landedBranches.some((branch) => branch.id === selectedId)
+  const tab: BranchListTab = pickedTab ?? (selectedIsLanded ? 'merged' : 'active')
+  const shown = tab === 'merged' ? landedBranches : activeBranches
+
   return (
-    <Panel title="Branches" subtitle={`${items.length} · ${defaultCount} default`}>
+    <Panel
+      title="Branches"
+      right={
+        <div
+          className="flex items-center gap-0.5 rounded-md border p-0.5"
+          style={{ borderColor: 'var(--border-subtle)' }}
+        >
+          {(
+            [
+              ['active', 'Active', activeBranches.length],
+              ['merged', 'Merged', landedBranches.length],
+            ] as const
+          ).map(([value, label, count]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={tab === value}
+              onClick={() => setPickedTab(value)}
+              className="rounded px-2 py-0.5 text-[11px] transition-colors"
+              style={{
+                background: tab === value ? 'var(--surface-hover)' : 'transparent',
+                color: tab === value ? 'var(--fg)' : 'var(--fg-subtle)',
+              }}
+            >
+              {label} {count}
+            </button>
+          ))}
+        </div>
+      }
+    >
       <div className="py-1">
-        {items.length === 0 && (
-          <p className="px-4 py-3 text-sm text-muted-foreground">No branches yet.</p>
+        {shown.length === 0 && (
+          <p className="px-4 py-3 text-sm text-muted-foreground">
+            {tab === 'merged' ? 'No merged branches yet.' : 'No active branches.'}
+          </p>
         )}
-        {items.map((branch) => {
+        {shown.map((branch) => {
           const isActive = branch.id === selectedId
           const isMain = branch.kind === 'main'
           const Icon = isMain ? GitBranch : GitCompare
