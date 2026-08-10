@@ -80,6 +80,13 @@ fields that validates and saves canonical JSON while preserving complete
 For a series of similar events, **Save and add another** creates the current
 event and keeps the entered form values in place for the next one.
 
+Setting an event to `archived` takes it out of circulation on both sides:
+`GET /projects/{slug}/events` leaves it out unless you ask for it by name
+(`?status=archived`), so the CLI, the MCP `list_events` tool and any direct API
+call agree with the app rather than each hiding it their own way; and metrics
+collection skips it, so no new volume is recorded and its `last_seen_at` stops
+moving. Archiving is reversible — set another status and collection resumes.
+
 When a scan targeting the selected event type defines an **Event name format**,
 new manual events use that same template. The form renders a live name preview
 from field values, locks the name input, and blocks save until every referenced

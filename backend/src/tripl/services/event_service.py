@@ -14,7 +14,7 @@ from tripl.alerting_matching import rule_covers_event
 from tripl.core.name_template import apply_name_format, resolve_dotted_keys
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
-from tripl.models.event import Event
+from tripl.models.event import Event, EventStatus
 from tripl.models.event_change import EventChange, create_event_change
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_meta_value import EventMetaValue
@@ -258,6 +258,17 @@ async def list_events(
     if status:
         query = query.where(Event.status.in_(status))
         count_query = count_query.where(Event.status.in_(status))
+    else:
+        # Archiving an event is the user asking for it to be out of the way, so
+        # an unfiltered listing must not carry it. Only the web app used to
+        # honour that, and by accident: it sends an explicit six-status filter,
+        # which happens to omit `archived`. Every other consumer of this
+        # endpoint — the CLI, the MCP server's `list_events` tool, any direct
+        # API call — still got archived events back, so "archived" meant
+        # "hidden in one client" rather than a property of the plan (tripl-mhhi).
+        # Asking for them explicitly (`?status=archived`) still works.
+        query = query.where(Event.status != EventStatus.archived)
+        count_query = count_query.where(Event.status != EventStatus.archived)
     if tag:
         tag_filter = select(EventTag.event_id).where(EventTag.name == tag).correlate(None)
         query = query.where(Event.id.in_(tag_filter))
