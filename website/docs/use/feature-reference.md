@@ -301,8 +301,14 @@ health. Recent activity reads the **main branch** too, like the KPI series: an
 open working branch holds its own copy of every event, and those copies are not
 listed as separate entries. A row whose target has since been deleted is shown
 without a link rather than linking to a page that no longer resolves. The volume card and the Events page's "&lt;Tab&gt; Dynamics" chart both
-resolve the same default scan — the most recently *created* one, so
-editing an unrelated scan never re-points them. A new project also shows a **Get started**
+start from the same default scan — the most recently *created* one, so
+editing an unrelated scan never re-points them. The Dynamics chart departs from
+it in exactly one case: when the tab's event type has no volume under that scan,
+it charts the scan that *does* have volume for that tab rather than rendering an
+empty card. A project whose event types are split across several scans — one per
+event type is a common shape — would otherwise show nothing on every tab but the
+default scan's own. Either way the chart names the scan it charted, so the two
+surfaces never disagree silently. A new project also shows a **Get started**
 checklist (Plan → Observe → Govern) that ticks steps off automatically from real
 project state and hides itself once you are set up. It is role-aware: connecting a
 data source is owner-only, so for an editor that step is shown as **Owner only**
