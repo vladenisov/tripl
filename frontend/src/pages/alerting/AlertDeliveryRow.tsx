@@ -25,6 +25,28 @@ function isAlertingPagePath(path: string): boolean {
   return path.includes('/settings/alerting')
 }
 
+/**
+ * What the derived link actually opens, so the label does not promise an event
+ * when the route is a project total or a catalog metric.
+ *
+ * The default is honest rather than lazy: the scopes not listed here (schema and
+ * distribution drift, release regression, variable-value drift) have no page of
+ * their own, and `getScopeMonitoringPath` routes them to the EVENT they were
+ * detected on — which is exactly what "event" says.
+ */
+function scopeLinkLabel(scopeType: string): string {
+  switch (scopeType) {
+    case 'event_type':
+      return 'event type'
+    case 'project_total':
+      return 'project total'
+    case 'metric':
+      return 'metric'
+    default:
+      return 'event'
+  }
+}
+
 // Maps correlation_group_id -> a stable short label ("A", "B", ...). The
 // concrete ids are UUIDs and aren't worth showing; the per-delivery letter is
 // enough for the eye to spot rows that co-fired.
@@ -263,6 +285,7 @@ export function AlertDeliveryRow({
                           : null
                         const basisNote = expectedBasisNote(item)
                         const isAnchored = anchoredItemFound && alertItemKey(item) === anchoredItemKey
+                        const scopePath = getScopeMonitoringPath(slug, item)
                         return (
                           <TableRow
                             key={item.id}
@@ -311,13 +334,13 @@ export function AlertDeliveryRow({
                             </TableCell>
                             <TableCell className="text-xs">
                               <div className="flex gap-3">
-                                {getScopeMonitoringPath(slug, item) && (
+                                {scopePath && (
                                   <Link
-                                    to={getScopeMonitoringPath(slug, item)!}
+                                    to={scopePath}
                                     aria-label={`Open ${item.scope_name}`}
                                     className="text-primary underline"
                                   >
-                                    event
+                                    {scopeLinkLabel(item.scope_type)}
                                   </Link>
                                 )}
                                 {/* Stored paths, kept for rows written before
@@ -329,12 +352,16 @@ export function AlertDeliveryRow({
                                     details
                                   </a>
                                 )}
-                                {item.monitoring_path && (
+                                {/* Only when nothing was derived: `monitoring_path`
+                                    is the stored form of the same destination, so
+                                    rendering both puts two links to one page in a
+                                    cell three characters wide. */}
+                                {!scopePath && item.monitoring_path && (
                                   <a href={item.monitoring_path} aria-label={`Monitoring for ${item.scope_name}`} className="text-primary underline" target="_blank" rel="noreferrer">
                                     monitoring
                                   </a>
                                 )}
-                                {!getScopeMonitoringPath(slug, item) &&
+                                {!scopePath &&
                                   !item.monitoring_path &&
                                   (!item.details_path || isAlertingPagePath(item.details_path)) &&
                                   '—'}

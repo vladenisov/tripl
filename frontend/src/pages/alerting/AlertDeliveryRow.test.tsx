@@ -206,6 +206,59 @@ describe('AlertDeliveryRow items table', () => {
     expect(link).toHaveAttribute('href', '/p/demo/monitoring/event/checkout_completed')
   })
 
+  it('labels the link by what it opens, not always "event"', async () => {
+    expandRow({
+      ...mockDelivery({ status: 'sent', error_message: null }),
+      items: [
+        mockItem({
+          scope_type: 'event_type',
+          scope_ref: 'type-1',
+          scope_name: 'checkout',
+          event_id: null,
+        }),
+      ],
+    })
+
+    const link = await screen.findByRole('link', { name: 'Open checkout' })
+    expect(link).toHaveTextContent('event type')
+    expect(link).toHaveAttribute('href', '/p/demo/monitoring/event-type/type-1')
+  })
+
+  it('offers one link, not the derived route and its stored twin', async () => {
+    expandRow({
+      ...mockDelivery({ status: 'sent', error_message: null }),
+      items: [
+        mockItem({
+          // The stored path is the same destination the derived route builds, so
+          // rendering both would put two links to one page in one cell.
+          monitoring_path: 'https://tripl.example.com/p/demo/monitoring/event/checkout_completed',
+        }),
+      ],
+    })
+
+    await screen.findByRole('link', { name: 'Open checkout_completed' })
+    expect(screen.queryByRole('link', { name: /^Monitoring for/ })).toBeNull()
+  })
+
+  it('falls back to the stored monitoring path when nothing can be derived', async () => {
+    expandRow({
+      ...mockDelivery({ status: 'sent', error_message: null }),
+      items: [
+        mockItem({
+          scope_type: 'schema',
+          scope_name: 'missing_field',
+          event_id: null,
+          monitoring_path: 'https://tripl.example.com/p/demo/monitoring/event/legacy',
+        }),
+      ],
+    })
+
+    expect(
+      await screen.findByRole('link', { name: 'Monitoring for missing_field' }),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /^Open / })).toBeNull()
+  })
+
   it('does not offer a link back to the page the reader is already on', async () => {
     expandRow({
       ...mockDelivery({ status: 'sent', error_message: null }),
