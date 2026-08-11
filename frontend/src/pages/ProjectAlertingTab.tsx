@@ -19,6 +19,7 @@ import type { AlertDestination, AlertInboxGroup } from '@/types'
 
 import { AlertDeliveryRow } from './alerting/AlertDeliveryRow'
 import { AlertingGuidedSetup } from './alerting/AlertingGuidedSetup'
+import { IncidentDeliveries } from './alerting/IncidentDeliveries'
 import { DestinationCard } from './alerting/DestinationCard'
 import { RoutingRulesPanel } from './alerting/RoutingRulesPanel'
 import { PageHead, Panel } from '@/components/settings/kit'
@@ -42,7 +43,7 @@ const CHANNEL_META: { channel: DestinationChannel; label: string; Icon: LucideIc
   { channel: 'linear', label: 'Linear', Icon: ClipboardList },
 ]
 
-export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey, focusScanId }: { slug: string; focusDeliveryId?: string; focusItemKey?: string; focusScanId?: string }) {
+export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey, focusScanId, focusIncidentId }: { slug: string; focusDeliveryId?: string; focusItemKey?: string; focusScanId?: string; focusIncidentId?: string }) {
   const qc = useQueryClient()
   const { confirm, dialog } = useConfirm()
   const [createType, setCreateType] = useState<DestinationChannel | null>(null)
@@ -271,6 +272,19 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // unreachable, so an operator had no way to record WHY they acked something
   // (tripl-jfm3.91). Omitting the key leaves the stored note untouched.
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({})
+  // An alert link names its incident, so the card it points at opens with its
+  // deliveries already showing — the reader lands on the alert AND the actions
+  // for it, instead of on a delivery whose incident is in another list further
+  // up the page (tripl-pq97). Seeded once: collapsing it must stick.
+  const [expandedIncidents, setExpandedIncidents] = useState<Set<string>>(
+    () => new Set(focusIncidentId ? [focusIncidentId] : []),
+  )
+  const toggleIncident = (correlationGroupId: string) =>
+    setExpandedIncidents(current => {
+      const next = new Set(current)
+      if (!next.delete(correlationGroupId)) next.add(correlationGroupId)
+      return next
+    })
 
   const inboxActionMut = useMutation({
     mutationFn: ({
@@ -565,6 +579,26 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
                         }
                         className="mt-2 h-7 text-[11px]"
                       />
+                      {/* "What was sent" belongs to the incident, not to a
+                          second list: the message a reader is holding and the
+                          buttons that act on it are now the same card. */}
+                      <button
+                        type="button"
+                        aria-expanded={expandedIncidents.has(group.correlation_group_id)}
+                        onClick={() => toggleIncident(group.correlation_group_id)}
+                        className="mt-2 text-[10.5px] underline underline-offset-2 text-muted-foreground hover:text-foreground"
+                      >
+                        {expandedIncidents.has(group.correlation_group_id) ? 'Hide' : 'Show'} what was
+                        sent ({countOf(group.delivery_count, 'delivery', 'deliveries')})
+                      </button>
+                      {expandedIncidents.has(group.correlation_group_id) && (
+                        <IncidentDeliveries
+                          slug={slug}
+                          correlationGroupId={group.correlation_group_id}
+                          focusDeliveryId={focusDeliveryId}
+                          focusItemKey={focusItemKey}
+                        />
+                      )}
                     </div>
                   ))}
                 </div>

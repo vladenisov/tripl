@@ -942,6 +942,153 @@ async def test_alerting_webhook_destination_crud_and_validation(client: AsyncCli
 
 
 @pytest.mark.asyncio
+async def test_alert_deliveries_filter_by_incident_and_reach_the_ungrouped(
+    client: AsyncClient,
+) -> None:
+    """Deliveries are listed under the incident they belong to, and the ones with
+    no incident stay reachable.
+
+    The alerting page folds "what was sent" into the incident card so the actions
+    sit next to the alert instead of in a second panel further up (tripl-pq97).
+    That needs a per-incident query — and, because ``correlation_group_id`` is
+    nullable, a way to ask for the rows no incident id can select. Without the
+    second filter, nesting would quietly drop every ungrouped delivery (rows that
+    predate correlation, at minimum) and the audit trail would be incomplete
+    while looking complete.
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Incident Nesting", "slug": "incident-nesting", "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = project_resp.json()["id"]
+    group_id = uuid.uuid4()
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="Nesting DS",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=uuid.UUID(project_id),
+            name="Nesting Scan",
+            base_query="SELECT * FROM events",
+            time_column="created_at",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        destination = AlertDestination(
+            id=uuid.uuid4(),
+            project_id=uuid.UUID(project_id),
+            type="slack",
+            name="Nesting Slack",
+            enabled=True,
+            webhook_url_encrypted="secret",
+        )
+        rule = AlertRule(
+            id=uuid.uuid4(),
+            destination_id=destination.id,
+            name="Nesting Rule",
+            enabled=True,
+        )
+
+        # The incident lives on the ITEM, not the delivery — one message can carry
+        # rows from several incidents — so each fixture is a delivery plus the one
+        # item that places it.
+        def _delivery(preview: str) -> AlertDelivery:
+            return AlertDelivery(
+                id=uuid.uuid4(),
+                project_id=uuid.UUID(project_id),
+                scan_config_id=scan_config.id,
+                destination_id=destination.id,
+                rule_id=rule.id,
+                channel="slack",
+                status="sent",
+                matched_count=1,
+                payload_snapshot={"preview": preview},
+                sent_at=datetime(2026, 4, 11, 10, tzinfo=UTC),
+            )
+
+        def _item(
+            delivery: AlertDelivery, correlation_group_id: uuid.UUID | None
+        ) -> AlertDeliveryItem:
+            return AlertDeliveryItem(
+                id=uuid.uuid4(),
+                delivery_id=delivery.id,
+                scope_type="event",
+                scope_ref="event-1",
+                scope_name="purchase:success",
+                event_id=None,
+                event_type_id=None,
+                bucket=datetime(2026, 4, 11, 9, tzinfo=UTC),
+                direction="drop",
+                actual_count=10,
+                expected_count=20,
+                absolute_delta=10,
+                percent_delta=50,
+                correlation_group_id=correlation_group_id,
+            )
+
+        grouped = _delivery("belongs to the incident")
+        other_incident = _delivery("a different incident")
+        orphan = _delivery("no incident at all")
+
+        session.add_all([data_source, scan_config, destination, rule])
+        await session.flush()
+        session.add_all([grouped, other_incident, orphan])
+        await session.flush()
+        session.add_all(
+            [
+                _item(grouped, group_id),
+                _item(other_incident, uuid.uuid4()),
+                # Pre-tripl-jfm3.91 shape: an item with no incident at all.
+                _item(orphan, None),
+            ]
+        )
+        await session.commit()
+
+    unfiltered = await client.get("/api/v1/projects/incident-nesting/alert-deliveries")
+    assert unfiltered.status_code == 200
+    assert unfiltered.json()["total"] == 3
+
+    scoped = await client.get(
+        "/api/v1/projects/incident-nesting/alert-deliveries",
+        params={"correlation_group_id": str(group_id)},
+    )
+    assert scoped.status_code == 200
+    scoped_body = scoped.json()
+    assert scoped_body["total"] == 1
+    assert scoped_body["items"][0]["payload_snapshot"]["preview"] == "belongs to the incident"
+
+    ungrouped = await client.get(
+        "/api/v1/projects/incident-nesting/alert-deliveries",
+        params={"ungrouped": "true"},
+    )
+    assert ungrouped.status_code == 200
+    ungrouped_body = ungrouped.json()
+    assert ungrouped_body["total"] == 1
+    assert ungrouped_body["items"][0]["payload_snapshot"]["preview"] == "no incident at all"
+
+    # Asking for both is contradictory — a delivery in the group necessarily has
+    # a grouped item, which `ungrouped` excludes — so it can only ever match zero
+    # rows. Say so, rather than returning an empty list a caller would read as
+    # "this incident sent nothing".
+    conflicting = await client.get(
+        "/api/v1/projects/incident-nesting/alert-deliveries",
+        params={"correlation_group_id": str(group_id), "ungrouped": "true"},
+    )
+    assert conflicting.status_code == 422
+    assert "mutually exclusive" in str(conflicting.json()["detail"])
+
+
 async def test_alert_delivery_list_and_detail(client: AsyncClient) -> None:
     project_resp = await client.post(
         "/api/v1/projects",

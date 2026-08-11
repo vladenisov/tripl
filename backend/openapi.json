@@ -20182,6 +20182,33 @@
           },
           {
             "in": "query",
+            "name": "correlation_group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Correlation Group Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ungrouped",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Ungrouped",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
             "name": "date_from",
             "required": false,
             "schema": {

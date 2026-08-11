@@ -226,11 +226,26 @@ async def list_alert_deliveries(
     destination_id: uuid.UUID | None = None,
     rule_id: uuid.UUID | None = None,
     scan_config_id: uuid.UUID | None = None,
+    # The page nests deliveries under their incident, so it fetches them one
+    # incident at a time; `ungrouped` reaches the rows that have no incident,
+    # which no value of `correlation_group_id` can select (tripl-pq97).
+    correlation_group_id: uuid.UUID | None = None,
+    ungrouped: bool = False,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
 ) -> AlertDeliveryListResponse:
+    # Contradictory by construction: a delivery with an item in the group
+    # necessarily has an item WITH a group, which `ungrouped` excludes, so the
+    # pair can only ever return zero rows. Rejecting it is the difference between
+    # "you asked for something impossible" and "there is nothing here" — which
+    # read identically to a caller holding an empty list.
+    if correlation_group_id is not None and ungrouped:
+        raise HTTPException(
+            status_code=422,
+            detail="correlation_group_id and ungrouped are mutually exclusive",
+        )
     return await alerting_service.list_deliveries(
         session,
         slug,
@@ -239,6 +254,8 @@ async def list_alert_deliveries(
         destination_id=destination_id,
         rule_id=rule_id,
         scan_config_id=scan_config_id,
+        correlation_group_id=correlation_group_id,
+        ungrouped=ungrouped,
         date_from=date_from,
         date_to=date_to,
         offset=offset,

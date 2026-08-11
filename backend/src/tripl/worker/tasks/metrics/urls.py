@@ -105,6 +105,12 @@ def _build_event_details_url(project_slug: str, event_id: uuid.UUID | None) -> s
 # ``useSearchParams``, and nothing in the app reads ``location.hash``.
 ALERT_AUDIT_ITEM_PARAM = "item"
 
+# Query parameter naming the INCIDENT the alert belongs to — the thing the page
+# can act on. Same convention as above, and separate from ``item`` on purpose:
+# the item picks the row a message line quoted, the incident picks the card that
+# holds the actions, and one delivery can carry items from more than one.
+ALERT_INCIDENT_PARAM = "incident"
+
 
 def _alert_audit_item_anchor(scope_type: str, scope_ref: str) -> str:
     """Identity of one item within a delivery, as a URL query value.
@@ -136,6 +142,7 @@ def _build_alert_audit_url(
     *,
     scope_type: str,
     scope_ref: str,
+    correlation_group_id: uuid.UUID | None = None,
 ) -> str | None:
     """Deep link to one ITEM of one delivery's own audit row.
 
@@ -159,9 +166,19 @@ def _build_alert_audit_url(
         return None
     base = app_base_url.rstrip("/")
     anchor = _alert_audit_item_anchor(scope_type, scope_ref)
-    return (
+    url = (
         f"{base}/p/{project_slug}/settings/alerting/{delivery_id}?{ALERT_AUDIT_ITEM_PARAM}={anchor}"
     )
+    # The incident is what the page acts on — Ack / Resolve / Mute / False
+    # positive all key on it — so the link carries it and the page can open the
+    # right card with its actions in view. Without it the reader landed on the
+    # delivery and had to find the matching incident in a second list further up
+    # the page (tripl-pq97). The delivery id and item anchor stay in the URL:
+    # they still pick the exact row the message quoted, and links sent before
+    # this change keep working.
+    if correlation_group_id is not None:
+        url = f"{url}&{ALERT_INCIDENT_PARAM}={correlation_group_id}"
+    return url
 
 
 def _build_item_paths(
@@ -171,6 +188,7 @@ def _build_item_paths(
     scope_ref: str,
     event_id: uuid.UUID | None,
     delivery_id: uuid.UUID | None,
+    correlation_group_id: uuid.UUID | None = None,
 ) -> tuple[str | None, str | None]:
     """``(details_path, monitoring_path)`` for one alert item.
 
@@ -180,6 +198,27 @@ def _build_item_paths(
     which for an event-scoped release regression meant the event page, the one
     page guaranteed to contradict the alert.
     """
+    # One destination for every alert, whatever fired it: the incident, where the
+    # actions are. Previously only release regressions came here and everything
+    # else was sent to the event/monitoring page — which shows neither what was
+    # sent nor Ack / Resolve / Mute, so acting on an anomaly alert meant finding
+    # the incident by hand on a different page (tripl-pq97). ``monitoring_path``
+    # stays empty to keep the message to one link; the incident card carries the
+    # link onward to the chart.
+    if correlation_group_id is not None:
+        return (
+            _build_alert_audit_url(
+                project_slug,
+                delivery_id,
+                scope_type=scope_type,
+                scope_ref=scope_ref,
+                correlation_group_id=correlation_group_id,
+            ),
+            None,
+        )
+    # No incident to point at — pre-tripl-jfm3.91 rows, and anything the inbox
+    # cannot act on. Keep the old behaviour rather than emitting a link to a card
+    # that will not be there.
     if scope_type in _SCOPES_LINKED_TO_ALERT_AUDIT:
         # ``details`` rather than ``monitoring``: the destination is this
         # alert's own detail, not a monitoring page. Leaving monitoring_path

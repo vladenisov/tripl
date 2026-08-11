@@ -564,6 +564,7 @@ def _prepare_alert_deliveries(
                         scope_ref=anomaly.scope_ref,
                         event_id=anomaly.event_id,
                         delivery_id=delivery.id,
+                        correlation_group_id=correlation_by_anomaly.get(id(anomaly)),
                     )
                     session.add(
                         AlertDeliveryItem(

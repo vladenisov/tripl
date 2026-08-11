@@ -159,6 +159,14 @@ export const alertingApi = {
       destination_id?: string
       rule_id?: string
       scan_config_id?: string
+      /** One incident's deliveries — what the incident card lists under it. */
+      correlation_group_id?: string
+      /**
+       * Deliveries belonging to no incident. Not expressible through
+       * `correlation_group_id`, and without it they would vanish from a page
+       * that lists deliveries under incidents.
+       */
+      ungrouped?: boolean
       date_from?: string
       date_to?: string
       offset?: number
@@ -171,6 +179,8 @@ export const alertingApi = {
     if (params?.destination_id) sp.set('destination_id', params.destination_id)
     if (params?.rule_id) sp.set('rule_id', params.rule_id)
     if (params?.scan_config_id) sp.set('scan_config_id', params.scan_config_id)
+    if (params?.correlation_group_id) sp.set('correlation_group_id', params.correlation_group_id)
+    if (params?.ungrouped) sp.set('ungrouped', 'true')
     if (params?.date_from) sp.set('date_from', params.date_from)
     if (params?.date_to) sp.set('date_to', params.date_to)
     if (params?.offset !== undefined) sp.set('offset', String(params.offset))
