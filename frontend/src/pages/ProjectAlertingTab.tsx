@@ -1,38 +1,32 @@
-import { useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ClipboardList, Globe, Mail, Send, Ticket, Trash2, Webhook, type LucideIcon } from 'lucide-react'
 
 import { alertingApi } from '@/api/alerting'
 import { eventTypesApi } from '@/api/eventTypes'
 import { projectsApi } from '@/api/projects'
 import { scansApi } from '@/api/scans'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Table, TableBody, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useConfirm } from '@/hooks/useConfirm'
 import type { AlertDestination, AlertInboxGroup } from '@/types'
 
-import { AlertDeliveryRow } from './alerting/AlertDeliveryRow'
+import { AlertAuditPanel, type DeliveryFilters } from './alerting/AlertAuditPanel'
 import { AlertingGuidedSetup } from './alerting/AlertingGuidedSetup'
-import { IncidentDeliveries } from './alerting/IncidentDeliveries'
-import { DestinationCard } from './alerting/DestinationCard'
-import { RoutingRulesPanel } from './alerting/RoutingRulesPanel'
+import { AlertingInbox, type InboxAction } from './alerting/AlertingInbox'
+import { DestinationsSection } from './alerting/DestinationsSection'
+import { CHANNEL_META } from './alerting/channelMeta'
 import { PageHead, Panel } from '@/components/settings/kit'
 import {
   defaultDestinationForm,
   type DestinationChannel,
   type DestinationFormState,
 } from './alerting/constants'
-import { getScopeMonitoringPath } from '@/lib/monitoring'
 import { getErrorMessage } from '@/lib/utils'
-import { formatDateTime } from '@/lib/datetime'
-import { countOf } from '@/lib/plural'
 
 // The page does three unrelated jobs — configure routing, triage incidents,
 // audit delivery — and stacking them on one scroll made each of them harder to
@@ -48,30 +42,13 @@ const SECTION_LABELS: Record<AlertingSection, string> = {
   audit: 'Audit',
 }
 
-// Channel catalogue — drives both the per-channel sections and the compact
-// add-channel affordance, so every type stays addable from one place.
-const CHANNEL_META: { channel: DestinationChannel; label: string; Icon: LucideIcon }[] = [
-  { channel: 'slack', label: 'Slack', Icon: Webhook },
-  { channel: 'telegram', label: 'Telegram', Icon: Send },
-  { channel: 'webhook', label: 'Webhook', Icon: Globe },
-  { channel: 'email', label: 'Email', Icon: Mail },
-  { channel: 'jira', label: 'Jira', Icon: Ticket },
-  { channel: 'linear', label: 'Linear', Icon: ClipboardList },
-]
-
 export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey, focusScanId, focusIncidentId }: { slug: string; focusDeliveryId?: string; focusItemKey?: string; focusScanId?: string; focusIncidentId?: string }) {
   const qc = useQueryClient()
   const { confirm, dialog } = useConfirm()
   const [createType, setCreateType] = useState<DestinationChannel | null>(null)
   const [destinationForm, setDestinationForm] = useState<DestinationFormState>(defaultDestinationForm('slack'))
   const [editingDestination, setEditingDestination] = useState<AlertDestination | null>(null)
-  const [deliveryFilters, setDeliveryFilters] = useState<{
-    status: string
-    channel: string
-    destination_id: string
-    rule_id: string
-    scan_config_id: string
-  }>({
+  const [deliveryFilters, setDeliveryFilters] = useState<DeliveryFilters>({
     status: '',
     channel: '',
     destination_id: '',
@@ -91,6 +68,39 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     setDeliveryFilters(current => ({ ...current, scan_config_id: focusScanId ?? '' }))
   }
 
+  // Section lives in a QUERY param, not a path segment. The second segment of
+  // /p/:slug/settings/:tab/:itemId is the delivery id an alert link carries, and
+  // it is the only linkable shape the backend can emit — urls.py returns no link
+  // at all without one — so a section name there would collide with every link
+  // already sitting in someone's Telegram history.
+  //
+  // Declared above the queries because several of them are gated on it: a
+  // section that is not on screen should not cost a request.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedSection = searchParams.get('section')
+  const section: AlertingSection = (ALERTING_SECTIONS as readonly string[]).includes(
+    requestedSection ?? '',
+  )
+    ? (requestedSection as AlertingSection)
+    // No explicit section: land where the link can actually be answered. An
+    // alert names its incident; an older one names only its delivery. An
+    // unknown value degrades to the default rather than rendering nothing,
+    // matching how `?scan=` is already treated below.
+    : focusIncidentId
+      ? 'inbox'
+      : focusDeliveryId || focusScanId
+        ? 'audit'
+        : 'inbox'
+  const selectSection = (next: AlertingSection) =>
+    setSearchParams(
+      current => {
+        const params = new URLSearchParams(current)
+        params.set('section', next)
+        return params
+      },
+      { replace: true },
+    )
+
   const { data: destinations = [] } = useQuery({
     queryKey: ['alertDestinations', slug],
     queryFn: () => alertingApi.listDestinations(slug),
@@ -102,6 +112,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   const { data: eventTypes = [] } = useQuery({
     queryKey: ['eventTypes', slug],
     queryFn: () => eventTypesApi.list(slug),
+    // Read only by the rule editor inside a destination card.
+    enabled: section === 'destinations',
   })
   const { data: scans = [], isSuccess: scansLoaded } = useQuery({
     queryKey: ['scans', slug],
@@ -130,6 +142,18 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       offset: 0,
     }),
   })
+  // Has this project EVER delivered, asked WITHOUT the audit filters.
+  //
+  // The gate below decides whether the whole page collapses into guided setup,
+  // and reading it off the filtered query made that a trap: on a project whose
+  // destinations were deleted but whose delivery history remains, an audit
+  // filter matching nothing drove `total` to 0, the page replaced itself with
+  // the setup checklist — and the filter bar that caused it went with it, so
+  // there was nothing left to undo. One row is enough to answer the question.
+  const { data: everDelivered } = useQuery({
+    queryKey: ['alertDeliveriesAny', slug],
+    queryFn: () => alertingApi.listDeliveries(slug, { limit: 1 }),
+  })
   // A deep link from an alert message names ONE delivery, and that delivery
   // may be older than the 50 rows the audit list carries or excluded by the
   // active filters. Fetching it by id and pinning it above the list is what
@@ -138,7 +162,9 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   const { data: focusedDelivery } = useQuery({
     queryKey: ['alertDelivery', slug, focusDeliveryId],
     queryFn: () => alertingApi.getDelivery(slug, focusDeliveryId!),
-    enabled: !!focusDeliveryId,
+    // Audit is the only section that renders it, so it is not worth a request
+    // while the reader is on another one.
+    enabled: !!focusDeliveryId && section === 'audit',
   })
   const pinnedDelivery = focusedDelivery
     && !deliveries?.items.some(item => item.id === focusedDelivery.id)
@@ -147,26 +173,10 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   const { data: inbox } = useQuery({
     queryKey: ['alertInbox', slug],
     queryFn: () => alertingApi.listInbox(slug, { limit: 20 }),
+    // Only the Inbox section reads this. Splitting the page is what makes the
+    // saving possible — before it, every section was on screen at once.
+    enabled: section === 'inbox',
   })
-
-  // A demo's local sink has no entry in CHANNEL_META (it is not a channel anyone
-  // can add), so it fell straight through the per-channel grouping below and its
-  // card was never rendered: a demo's Destinations panel showed only the
-  // permanently-disabled Slack example, while the sink that actually receives the
-  // seeded deliveries stayed invisible — even though its rules did appear under
-  // Routing rules. It gets its own group (tripl-2su6.20).
-  const localSinks = useMemo(
-    () => destinations.filter((destination) => destination.type === 'demo_sink'),
-    [destinations],
-  )
-  const groupedDestinations = useMemo(() => ({
-    slack: destinations.filter(destination => destination.type === 'slack'),
-    telegram: destinations.filter(destination => destination.type === 'telegram'),
-    webhook: destinations.filter(destination => destination.type === 'webhook'),
-    email: destinations.filter(destination => destination.type === 'email'),
-    jira: destinations.filter(destination => destination.type === 'jira'),
-    linear: destinations.filter(destination => destination.type === 'linear'),
-  }), [destinations])
 
   const allRules = destinations.flatMap(destination =>
     destination.rules.map(rule => ({
@@ -288,35 +298,6 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // unreachable, so an operator had no way to record WHY they acked something
   // (tripl-jfm3.91). Omitting the key leaves the stored note untouched.
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({})
-  // Section lives in a QUERY param, not a path segment. The second segment of
-  // /p/:slug/settings/:tab/:itemId is the delivery id an alert link carries, and
-  // it is the only linkable shape the backend can emit — urls.py returns no link
-  // at all without one — so a section name there would collide with every link
-  // already sitting in someone's Telegram history.
-  const [searchParams, setSearchParams] = useSearchParams()
-  const requestedSection = searchParams.get('section')
-  const section: AlertingSection = (ALERTING_SECTIONS as readonly string[]).includes(
-    requestedSection ?? '',
-  )
-    ? (requestedSection as AlertingSection)
-    // No explicit section: land where the link can actually be answered. An
-    // alert names its incident; an older one names only its delivery. An
-    // unknown value degrades to the default rather than rendering nothing,
-    // matching how `?scan=` is already treated below.
-    : focusIncidentId
-      ? 'inbox'
-      : focusDeliveryId || focusScanId
-        ? 'audit'
-        : 'inbox'
-  const selectSection = (next: AlertingSection) =>
-    setSearchParams(
-      current => {
-        const params = new URLSearchParams(current)
-        params.set('section', next)
-        return params
-      },
-      { replace: true },
-    )
   // An alert link names its incident, so the card it points at opens with its
   // deliveries already showing — the reader lands on the alert AND the actions
   // for it, instead of on a delivery whose incident is in another list further
@@ -337,7 +318,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       action,
     }: {
       group: AlertInboxGroup
-      action: 'acknowledge' | 'resolve' | 'mute' | 'reopen' | 'false_positive'
+      action: InboxAction
     }) => {
       const mutedUntil = new Date(Date.now() + 7 * 86_400_000).toISOString()
       const draft = (noteDrafts[group.correlation_group_id] ?? '').trim()
@@ -367,7 +348,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // Delivery history means alerts have fired before, so the project is NOT a
   // blank slate even if its destinations/rules were later removed — keep the
   // normal view (with the Audit log) rather than collapsing to guided setup.
-  const hasDeliveries = (deliveries?.total ?? 0) > 0
+  const hasDeliveries = (everDelivered?.total ?? 0) > 0
   // Before anything is configured, collapse the three empty boxes (routing
   // rules, destinations, inbox) into one guided flow. The Inbox card also stays
   // hidden until a rule exists, so it never shows an empty group before the
@@ -377,20 +358,6 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // demo sink, so offering the channel buttons would only walk the user into a
   // rejection. Say why instead (tripl-2su6.12).
   const isDemo = project?.is_demo === true
-  // One source of truth for the channel buttons so the zero-state CTA and the
-  // populated-state "add another" row stay in sync.
-  const channelButtons = CHANNEL_META.map(({ channel, label, Icon }) => (
-    <Button key={channel} variant="outline" size="sm" onClick={() => openCreate(channel)}>
-      <Icon className="mr-2 h-4 w-4" />
-      {label}
-    </Button>
-  ))
-  const demoChannelNotice = (
-    <p className="text-xs text-muted-foreground">
-      This demo is local-only: alerts render to a built-in sink and are never sent to Slack,
-      Telegram, a webhook, email, Jira or Linear. Create a real project to connect a channel.
-    </p>
-  )
 
   return (
     <div className="space-y-6">
@@ -455,404 +422,51 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       ) : (
       <>
       {section === 'destinations' && (
-      <>
-      {/* The read-only monitor → destination table is the verification half of
-          configuring a route ("did I actually wire this up?"), so it belongs
-          with the destinations rather than on its own. */}
-      <RoutingRulesPanel slug={slug} />
-
-      <div className="grid gap-6">
-        <div className="min-w-0 space-y-4">
-          <div className="space-y-1">
-            <h3 className="text-sm font-semibold">Destinations</h3>
-            <p className="text-xs text-muted-foreground">
-              Signals route to destinations via rules.
-            </p>
-          </div>
-
-          {!hasDestinations && (
-            // Inlined empty state with trimmed vertical padding (py-8 vs the shared
-            // EmptyState's py-16) so the heading, message, and channel buttons read as
-            // one connected block instead of floating below an awkward void.
-            <div className="flex flex-col items-center justify-center py-8 text-center">
-              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                <Webhook className="h-6 w-6 text-muted-foreground" />
-              </div>
-              <h3 className="text-sm font-semibold text-foreground">No alert destinations</h3>
-              <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-                Create a Slack webhook, Telegram bot, or generic webhook destination, then attach rules to it.
-              </p>
-              {isDemo ? (
-                <div className="mt-4 max-w-sm">{demoChannelNotice}</div>
-              ) : (
-                <div className="mt-4 flex flex-col items-center gap-2">
-                  <span className="text-xs font-medium text-muted-foreground">Add a channel</span>
-                  <div className="flex flex-wrap items-center justify-center gap-2">
-                    {channelButtons}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {localSinks.length > 0 && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <h4 className="text-sm font-medium">Local sink</h4>
-                <Badge variant="outline" className="text-[10px]">
-                  {localSinks.length}
-                </Badge>
-              </div>
-              {/* No delete affordance: the sink is part of the demo scenario and
-                  owns its seeded rules and deliveries. Reset re-creates it. */}
-              {localSinks.map((destination) => (
-                <DestinationCard
-                  key={destination.id}
-                  slug={slug}
-                  destination={destination}
-                  eventTypes={eventTypes}
-                  scans={scans}
-                  onEditDestination={openEdit}
-                />
-              ))}
-            </div>
-          )}
-
-          {CHANNEL_META
-            .filter(({ channel }) => groupedDestinations[channel].length > 0)
-            .map(({ channel, label }) => (
-              <div key={channel} className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <h4 className="text-sm font-medium">{label}</h4>
-                  <Badge variant="outline" className="text-[10px]">
-                    {groupedDestinations[channel].length}
-                  </Badge>
-                </div>
-                {groupedDestinations[channel].map(destination => (
-                  <div key={destination.id}>
-                    <DestinationCard
-                      slug={slug}
-                      destination={destination}
-                      eventTypes={eventTypes}
-                      scans={scans}
-                      onEditDestination={openEdit}
-                    />
-                    <div className="mt-2 flex justify-end">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-muted-foreground hover:text-destructive"
-                        onClick={() => handleDeleteDestination(destination)}
-                      >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete destination
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ))}
-
-          {/* Once at least one destination exists, empty channels collapse into this
-              compact row instead of rendering bare headers — every type stays one click
-              away without taking vertical space for nothing. The zero-state CTA lives in
-              the EmptyState above, so this "add another" row is for the populated view. */}
-          {hasDestinations && (
-            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed p-3">
-              {isDemo ? (
-                demoChannelNotice
-              ) : (
-                <>
-                  <span className="text-xs font-medium text-muted-foreground">Add another channel</span>
-                  {channelButtons}
-                </>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-      </>
+        <DestinationsSection
+          slug={slug}
+          destinations={destinations}
+          eventTypes={eventTypes}
+          scans={scans}
+          isDemo={isDemo}
+          onCreateDestination={openCreate}
+          onEditDestination={openEdit}
+          onDeleteDestination={handleDeleteDestination}
+        />
       )}
 
       {section === 'inbox' && (
-        <div className="min-w-0 space-y-4">
-          {/* Without a rule nothing can correlate, so an empty list here would
-              read as "no incidents" when the truth is "nothing can produce
-              one". Say which, and where to fix it. */}
-          {!hasRules && (
-            <Panel title="Inbox" subtitle="0 groups">
-              <p className="p-4 text-sm text-muted-foreground">
-                No rules yet, so nothing can raise an incident. Add one under{' '}
-                <button
-                  type="button"
-                  onClick={() => selectSection('destinations')}
-                  className="underline underline-offset-2"
-                >
-                  Destinations &amp; rules
-                </button>
-                .
-              </p>
-            </Panel>
-          )}
-          {hasRules && (
-          <Panel title="Inbox" subtitle={countOf(inbox?.total ?? 0, 'group', 'groups')}>
-            <div className="space-y-3 p-4">
-              {!inbox || inbox.items.length === 0 ? (
-                <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                  No correlated alert groups.
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {inbox.items.map(group => (
-                    <div key={group.correlation_group_id} className="rounded-md border p-3 text-xs">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Badge variant={group.status === 'false_positive' ? 'destructive' : group.status === 'resolved' ? 'secondary' : 'outline'} className="text-[10px]">
-                              {group.status}
-                            </Badge>
-                            <span className="font-medium">{countOf(group.item_count, 'item', 'items')}</span>
-                            <span className="text-muted-foreground">
-                              {formatDateTime(group.latest_delivery_at)}
-                            </span>
-                          </div>
-                          <div className="mt-1 truncate text-muted-foreground" title={group.scope_names.join(', ')}>
-                            {/* Linked, not just named: the card told you WHAT
-                                fired and gave you no way to go look at it, so
-                                answering "is this real" meant leaving for the
-                                events page and finding it by hand. */}
-                            {getScopeMonitoringPath(slug, group) ? (
-                              <Link
-                                to={getScopeMonitoringPath(slug, group)!}
-                                className="underline hover:text-foreground"
-                              >
-                                {group.scope_names.join(', ')}
-                              </Link>
-                            ) : (
-                              group.scope_names.join(', ')
-                            )}
-                          </div>
-                          <div className="mt-1 truncate text-[10px] text-muted-foreground">
-                            {group.rule_names.join(', ')} · {group.scan_names.join(', ')}
-                          </div>
-                        </div>
-                        <div className="flex shrink-0 flex-wrap justify-end gap-1">
-                          {group.status === 'resolved' || group.status === 'false_positive' ? (
-                            <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={inboxActionMut.isPending} onClick={() => inboxActionMut.mutate({ group, action: 'reopen' })}>
-                              Reopen
-                            </Button>
-                          ) : (
-                            <>
-                              {group.status === 'open' && (
-                                <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={inboxActionMut.isPending} onClick={() => inboxActionMut.mutate({ group, action: 'acknowledge' })}>
-                                  Ack
-                                </Button>
-                              )}
-                              <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={inboxActionMut.isPending} onClick={() => inboxActionMut.mutate({ group, action: 'resolve' })}>
-                                Resolve
-                              </Button>
-                              <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={inboxActionMut.isPending} onClick={() => inboxActionMut.mutate({ group, action: 'mute' })}>
-                                Mute
-                              </Button>
-                              {/* One click permanently desensitises the scopes
-                                  this incident fired on — and nothing else.
-                                  There is deliberately no confirm step, so the
-                                  tooltip has to carry what it does and where to
-                                  undo it. */}
-                              <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={inboxActionMut.isPending} title="Closes this incident and permanently makes detection stricter on its scopes only. Undo under Settings › Monitoring › Scope overrides." onClick={() => inboxActionMut.mutate({ group, action: 'false_positive' })}>
-                                False positive
-                              </Button>
-                              {group.status !== 'open' && (
-                                <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={inboxActionMut.isPending} onClick={() => inboxActionMut.mutate({ group, action: 'reopen' })}>
-                                  Reopen
-                                </Button>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      </div>
-                      {group.muted_until && (
-                        <div className="mt-2 text-[10px] text-muted-foreground">
-                          muted until {formatDateTime(group.muted_until)}
-                        </div>
-                      )}
-                      {group.note && (
-                        <p className="mt-2 rounded border-l-2 border-muted-foreground/30 bg-muted/40 px-2 py-1 text-[11px] leading-5">
-                          {group.note}
-                        </p>
-                      )}
-                      <Input
-                        aria-label={`Note for alert group ${group.correlation_group_id}`}
-                        placeholder={group.note ? 'Replace the note…' : 'Add a note (sent with the next action)'}
-                        maxLength={2000}
-                        value={noteDrafts[group.correlation_group_id] ?? ''}
-                        onChange={event =>
-                          setNoteDrafts(current => ({
-                            ...current,
-                            [group.correlation_group_id]: event.target.value,
-                          }))
-                        }
-                        className="mt-2 h-7 text-[11px]"
-                      />
-                      {/* "What was sent" belongs to the incident, not to a
-                          second list: the message a reader is holding and the
-                          buttons that act on it are now the same card. */}
-                      <button
-                        type="button"
-                        aria-expanded={expandedIncidents.has(group.correlation_group_id)}
-                        onClick={() => toggleIncident(group.correlation_group_id)}
-                        className="mt-2 text-[10.5px] underline underline-offset-2 text-muted-foreground hover:text-foreground"
-                      >
-                        {expandedIncidents.has(group.correlation_group_id) ? 'Hide' : 'Show'} what was
-                        sent ({countOf(group.delivery_count, 'delivery', 'deliveries')})
-                      </button>
-                      {expandedIncidents.has(group.correlation_group_id) && (
-                        <IncidentDeliveries
-                          slug={slug}
-                          correlationGroupId={group.correlation_group_id}
-                          focusDeliveryId={focusDeliveryId}
-                          focusItemKey={focusItemKey}
-                        />
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {inboxActionMut.isError && (
-                <p role="alert" className="text-xs text-destructive">{getErrorMessage(inboxActionMut.error)}</p>
-              )}
-            </div>
-          </Panel>
-          )}
-        </div>
+        <AlertingInbox
+          slug={slug}
+          inbox={inbox}
+          hasRules={hasRules}
+          noteDrafts={noteDrafts}
+          setNoteDrafts={setNoteDrafts}
+          expandedIncidents={expandedIncidents}
+          toggleIncident={toggleIncident}
+          onAction={inboxActionMut.mutate}
+          isActionPending={inboxActionMut.isPending}
+          isActionError={inboxActionMut.isError}
+          actionError={inboxActionMut.error}
+          onGoToDestinations={() => selectSection('destinations')}
+          focusDeliveryId={focusDeliveryId}
+          focusItemKey={focusItemKey}
+        />
       )}
 
       {section === 'audit' && (
-        <div className="min-w-0 space-y-4">
-          {/* "delivery"/"deliveries" is why countOf takes both forms rather than
-              appending an "s" — the first alert a project ever sends lands here. */}
-          <Panel title="Audit" subtitle={countOf(deliveries?.total ?? 0, 'delivery', 'deliveries')}>
-            <div className="min-w-0 space-y-4 p-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="grid gap-2">
-                  <Label htmlFor="filter-status">Status</Label>
-                  <Select value={deliveryFilters.status || 'all'} onValueChange={value => setDeliveryFilters(current => ({ ...current, status: value === 'all' ? '' : value }))}>
-                    <SelectTrigger id="filter-status"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All</SelectItem>
-                      <SelectItem value="pending">Pending</SelectItem>
-                      <SelectItem value="sent">Sent</SelectItem>
-                      <SelectItem value="failed">Failed</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="filter-channel">Channel</Label>
-                  <Select value={deliveryFilters.channel || 'all'} onValueChange={value => setDeliveryFilters(current => ({ ...current, channel: value === 'all' ? '' : value }))}>
-                    <SelectTrigger id="filter-channel"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All</SelectItem>
-                      <SelectItem value="slack">Slack</SelectItem>
-                      <SelectItem value="telegram">Telegram</SelectItem>
-                      <SelectItem value="webhook">Webhook</SelectItem>
-                      <SelectItem value="email">Email</SelectItem>
-                      <SelectItem value="jira">Jira</SelectItem>
-                      <SelectItem value="linear">Linear</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="filter-destination">Destination</Label>
-                  <Select value={deliveryFilters.destination_id || 'all'} onValueChange={value => setDeliveryFilters(current => ({ ...current, destination_id: value === 'all' ? '' : value, rule_id: '' }))}>
-                    <SelectTrigger id="filter-destination"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All</SelectItem>
-                      {destinations.map(destination => (
-                        <SelectItem key={destination.id} value={destination.id}>
-                          {destination.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="filter-rule">Rule</Label>
-                  <Select value={deliveryFilters.rule_id || 'all'} onValueChange={value => setDeliveryFilters(current => ({ ...current, rule_id: value === 'all' ? '' : value }))}>
-                    <SelectTrigger id="filter-rule"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All</SelectItem>
-                      {allRules
-                        .filter(rule => !deliveryFilters.destination_id || rule.destination_id === deliveryFilters.destination_id)
-                        .map(rule => (
-                          <SelectItem key={rule.id} value={rule.id}>
-                            {rule.destination_name} / {rule.name}
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="filter-scan">Scan</Label>
-                  <Select value={activeDeliveryFilters.scan_config_id || 'all'} onValueChange={value => setDeliveryFilters(current => ({ ...current, scan_config_id: value === 'all' ? '' : value }))}>
-                    <SelectTrigger id="filter-scan"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All</SelectItem>
-                      {scans.map(scan => (
-                        <SelectItem key={scan.id} value={scan.id}>
-                          {scan.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              {(!deliveries || deliveries.items.length === 0) && !pinnedDelivery ? (
-                <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                  No deliveries yet.
-                </div>
-              ) : (
-                <div className="rounded-lg border">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Time</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead>Destination</TableHead>
-                        <TableHead>Rule</TableHead>
-                        <TableHead>Scan</TableHead>
-                        <TableHead>Count</TableHead>
-                        <TableHead>Channel</TableHead>
-                        <TableHead>Error / Preview</TableHead>
-                        <TableHead className="w-8"></TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {pinnedDelivery && (
-                        <AlertDeliveryRow
-                          key={pinnedDelivery.id}
-                          slug={slug}
-                          delivery={pinnedDelivery}
-                          focusDeliveryId={focusDeliveryId}
-                          focusItemKey={focusItemKey}
-                        />
-                      )}
-                      {deliveries?.items.map(delivery => (
-                        <AlertDeliveryRow
-                          key={delivery.id}
-                          slug={slug}
-                          delivery={delivery}
-                          focusDeliveryId={focusDeliveryId}
-                          focusItemKey={focusItemKey}
-                        />
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </div>
-          </Panel>
-        </div>
+        <AlertAuditPanel
+          slug={slug}
+          deliveries={deliveries}
+          pinnedDelivery={pinnedDelivery}
+          focusDeliveryId={focusDeliveryId}
+          focusItemKey={focusItemKey}
+          deliveryFilters={deliveryFilters}
+          setDeliveryFilters={setDeliveryFilters}
+          activeScanFilter={activeDeliveryFilters.scan_config_id}
+          destinations={destinations}
+          allRules={allRules}
+          scans={scans}
+        />
       )}
       </>
       )}

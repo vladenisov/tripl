@@ -816,6 +816,55 @@ describe('ProjectSettingsPage', () => {
     expect(screen.getByText('Message: custom (slack_mrkdwn)')).toBeInTheDocument()
   })
 
+  it('does not collapse into setup when an audit filter matches nothing', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+
+      // A project whose destinations were deleted but whose delivery history
+      // remains — the only shape where this can bite.
+      if (url.endsWith('/api/v1/projects/demo/alert-destinations')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events?')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([])
+      if (url.includes('/alert-inbox')) return mockJsonResponse({ items: [], total: 0 })
+      // The unfiltered probe (limit=1) says deliveries exist; the filtered audit
+      // list says this filter matches none. Reading the gate off the FILTERED
+      // one replaced the page with the setup checklist — taking the filter bar
+      // that caused it along, so there was nothing left to undo.
+      if (url.includes('/alert-deliveries')) {
+        return url.includes('limit=1')
+          ? mockJsonResponse({ items: [], total: 3 })
+          : mockJsonResponse({ items: [], total: 0 })
+      }
+      if (url.endsWith('/api/v1/projects/demo')) {
+        return mockJsonResponse({ id: 'project-1', slug: 'demo', name: 'Demo' })
+      }
+      return mockJsonResponse({})
+    })
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=audit&status=failed']}>
+          <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    // Still the real page: tabs present, and the Audit filter bar still there to
+    // undo the filter with.
+    expect(await screen.findByRole('tab', { name: 'Audit' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.getByLabelText('Status')).toBeInTheDocument()
+    expect(screen.queryByText('Set up alerting')).toBeNull()
+  })
+
   it('lands an alert deep link on the Inbox, not on the configuration tab', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
