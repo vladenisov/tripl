@@ -1077,6 +1077,17 @@ async def test_alert_deliveries_filter_by_incident_and_reach_the_ungrouped(
     assert ungrouped_body["total"] == 1
     assert ungrouped_body["items"][0]["payload_snapshot"]["preview"] == "no incident at all"
 
+    # Asking for both is contradictory — a delivery in the group necessarily has
+    # a grouped item, which `ungrouped` excludes — so it can only ever match zero
+    # rows. Say so, rather than returning an empty list a caller would read as
+    # "this incident sent nothing".
+    conflicting = await client.get(
+        "/api/v1/projects/incident-nesting/alert-deliveries",
+        params={"correlation_group_id": str(group_id), "ungrouped": "true"},
+    )
+    assert conflicting.status_code == 422
+    assert "mutually exclusive" in str(conflicting.json()["detail"])
+
 
 async def test_alert_delivery_list_and_detail(client: AsyncClient) -> None:
     project_resp = await client.post(
