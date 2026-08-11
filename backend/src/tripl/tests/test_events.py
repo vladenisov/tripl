@@ -359,6 +359,52 @@ async def test_list_events(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_list_events_hides_archived_unless_asked_for(client: AsyncClient):
+    """An unfiltered listing must not carry archived events.
+
+    Archiving is the user saying "put this out of the way", but only the web app
+    honoured that, and by accident — it sends an explicit six-status filter that
+    happens to omit `archived`. The CLI, the MCP server's `list_events` tool and
+    any direct API call all still received archived events, so the property lived
+    in one client rather than in the plan (tripl-mhhi).
+    """
+    et_id, field_id, _ = await _setup_events(client, "ev-archived-hidden")
+
+    async def _make(name: str, status: str) -> str:
+        resp = await client.post(
+            "/api/v1/projects/ev-archived-hidden/events",
+            json={
+                "event_type_id": et_id,
+                "name": name,
+                "status": status,
+                "field_values": [{"field_definition_id": field_id, "value": "screen"}],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        return str(resp.json()["id"])
+
+    await _make("Still Live", "live")
+    await _make("Put Away", "archived")
+
+    default = await client.get("/api/v1/projects/ev-archived-hidden/events")
+
+    assert default.status_code == 200
+    body = default.json()
+    assert [item["name"] for item in body["items"]] == ["Still Live"]
+    # `total` drives pagination, so it has to agree with the rows or the UI
+    # renders a page count for events it will never show.
+    assert body["total"] == 1
+
+    # Asking for them explicitly still works — this hides them, it does not
+    # make them unreachable.
+    archived = await client.get(
+        "/api/v1/projects/ev-archived-hidden/events", params={"status": "archived"}
+    )
+
+    assert archived.status_code == 200
+    assert [item["name"] for item in archived.json()["items"]] == ["Put Away"]
+
+
 async def test_list_events_volume_sort_orders_by_24h_metrics(client: AsyncClient):
     """`order_by=volume` ranks events by their summed EventMetric.count over the
     last 24h (busiest first). Metrics outside the 24h window are ignored, and the

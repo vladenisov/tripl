@@ -308,6 +308,70 @@ async def _resolve_scope_scan_config_id(
     return scan_config_id
 
 
+async def _resolve_events_metrics_scan_config(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    conditions: list[ColumnElement[bool]],
+) -> ScanConfig | None:
+    """The single scan the "<Tab> Dynamics" series is charted from.
+
+    Scoping to ONE scan is deliberate: summing EventMetric rows across every
+    scan_config double-counts events that a legacy/backfill scan (an "Old events"
+    config) also collected, and one inflated bucket then dominated the chart's
+    y-axis (tripl-jfm3.20).
+
+    Picking WHICH one cannot be ``_get_default_scan_config`` alone, though. That
+    answers "newest configured scan in the project" — right for the project-wide
+    sparkline, wrong for a tab. windy-ios collects its ``se`` event type with
+    "Snowplow Events (iOS)" while the newest config is "Snowplow Pageviews (iOS)",
+    so the tab queried a scan that had never written a row for it and charted
+    nothing at all, under 366 live events (tripl-g77e).
+
+    So: keep the default whenever it has rows for these filters — the tab and the
+    project total agreeing is the point of tripl-jfm3.20 — and only fall back to
+    whichever scan does have them, most recent data first. The created_at/id
+    tiebreak mirrors the default resolver, so the pick can never hang on Postgres
+    row order (tripl-jfm3.21).
+    """
+    default = await _get_default_scan_config(session, project_id)
+
+    if default is not None:
+        default_row = (
+            await session.execute(
+                select(EventMetric.bucket)
+                .join(Event, EventMetric.event_id == Event.id)
+                .where(*conditions, EventMetric.scan_config_id == default.id)
+                .limit(1)
+            )
+        ).first()
+        if default_row is not None:
+            return default
+
+    owners = (
+        select(
+            EventMetric.scan_config_id.label("scan_config_id"),
+            func.max(EventMetric.bucket).label("last_bucket"),
+        )
+        .join(Event, EventMetric.event_id == Event.id)
+        .where(*conditions)
+        .group_by(EventMetric.scan_config_id)
+        .subquery()
+    )
+    result = await session.execute(
+        select(ScanConfig)
+        .join(owners, ScanConfig.id == owners.c.scan_config_id)
+        .order_by(
+            owners.c.last_bucket.desc(),
+            ScanConfig.created_at.desc(),
+            ScanConfig.id.desc(),
+        )
+        .limit(1)
+    )
+    # Falling back to the default when nothing matched keeps the empty state
+    # honest: "this scan has no volume here", not "no scan is configured".
+    return result.scalar_one_or_none() or default
+
+
 def _scope_metric_filters(
     *,
     scope: str,
@@ -1614,15 +1678,29 @@ async def get_events_metrics(
     time_to: datetime | None = None,
 ) -> EventMetricsResponse:
     project = await _resolve_project(session, slug)
-    # Scope the "<Tab> Dynamics" series to a single scan — the same default
-    # scan the project-total volume sparkline resolves — rather than summing
-    # EventMetric rows across every scan_config. An unscoped cross-scan sum
-    # double-counts events that a legacy/backfill scan (e.g. an "Old events" scan)
-    # also collected, which inflated one bucket into the outlier that dominated the
-    # chart's y-axis. Mirrors get_project_total_metrics / _get_metric_rows scoping.
-    # The scan's identity travels with the series so the chart can NAME the scope
-    # instead of implying it covers the whole project (tripl-jfm3.20).
-    config = await _get_default_scan_config(session, project.id)
+
+    # Every filter the series is built from, collected once: the scan resolution
+    # below has to see EXACTLY the rows the sum will see, or it can pick a scan
+    # that turns out to have nothing for this tab.
+    conditions = [
+        Event.project_id == project.id,
+        EventMetric.event_id.is_not(None),
+    ]
+    if event_type_id:
+        conditions.append(Event.event_type_id == event_type_id)
+    if search:
+        conditions.append(Event.name.ilike(f"%{search}%"))
+    if status:
+        conditions.append(Event.status.in_(status))
+    if tag:
+        tagged_event_ids = select(EventTag.event_id).where(EventTag.name == tag).correlate(None)
+        conditions.append(Event.id.in_(tagged_event_ids))
+    if time_from:
+        conditions.append(EventMetric.bucket >= time_from)
+    if time_to:
+        conditions.append(EventMetric.bucket < time_to)
+
+    config = await _resolve_events_metrics_scan_config(session, project.id, conditions)
     if config is None:
         return EventMetricsResponse(scope="events_total", data=[])
     scan_config_id = config.id
@@ -1630,26 +1708,8 @@ async def get_events_metrics(
     query = (
         select(EventMetric.bucket, func.sum(EventMetric.count))
         .join(Event, EventMetric.event_id == Event.id)
-        .where(
-            Event.project_id == project.id,
-            EventMetric.scan_config_id == scan_config_id,
-            EventMetric.event_id.is_not(None),
-        )
+        .where(*conditions, EventMetric.scan_config_id == scan_config_id)
     )
-
-    if event_type_id:
-        query = query.where(Event.event_type_id == event_type_id)
-    if search:
-        query = query.where(Event.name.ilike(f"%{search}%"))
-    if status:
-        query = query.where(Event.status.in_(status))
-    if tag:
-        tagged_event_ids = select(EventTag.event_id).where(EventTag.name == tag).correlate(None)
-        query = query.where(Event.id.in_(tagged_event_ids))
-    if time_from:
-        query = query.where(EventMetric.bucket >= time_from)
-    if time_to:
-        query = query.where(EventMetric.bucket < time_to)
 
     result = await session.execute(query.group_by(EventMetric.bucket).order_by(EventMetric.bucket))
     rows = [(bucket, int(count)) for bucket, count in result.all()]

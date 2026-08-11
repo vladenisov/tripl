@@ -582,6 +582,91 @@ async def test_get_events_metrics_scopes_to_default_scan_config(client: AsyncCli
 
 
 @pytest.mark.asyncio
+async def test_events_metrics_charts_the_scan_that_owns_the_tab(client: AsyncClient) -> None:
+    """A tab whose event type is collected by some scan OTHER than the
+    newest-created one must still chart.
+
+    Scoping the series to a single scan (tripl-jfm3.20) fixed cross-scan double
+    counting, but it pinned EVERY tab to the project-wide default scan. On
+    windy-ios that silently emptied two tabs out of three: the "se" tab holds 366
+    live events collected by "Snowplow Events (iOS)" (created 14:43), while
+    ``_get_default_scan_config`` returns "Snowplow Pageviews (iOS)" (created
+    15:12) — so the query asked the newest scan for rows it had never written and
+    the card rendered "No recent volume to chart" (tripl-g77e). Verified against
+    production: ``events-metrics?event_type_id=<se>`` -> 0 points, the same call
+    without the filter -> 167.
+
+    The scan is now resolved from the rows the query will actually sum, so one
+    scan still owns the series — no double counting — but it is the scan that has
+    data for THIS tab.
+    """
+    setup = await _setup_metrics_project(client, "metrics-tab-scan")
+
+    page_event = await client.post(
+        "/api/v1/projects/metrics-tab-scan/events",
+        json={
+            "event_type_id": setup["page_type_id"],
+            "name": "Home Viewed",
+            "status": "implemented",
+            "field_values": [{"field_definition_id": setup["page_field_id"], "value": "home"}],
+        },
+    )
+    track_event = await client.post(
+        "/api/v1/projects/metrics-tab-scan/events",
+        json={
+            "event_type_id": setup["track_type_id"],
+            "name": "Button Clicked",
+            "status": "implemented",
+            "field_values": [{"field_definition_id": setup["track_field_id"], "value": "home"}],
+        },
+    )
+
+    # The OLDER scan is the only one collecting the "track" type.
+    await _seed_group_metrics(
+        setup["project_id"],
+        [{"event_id": track_event.json()["id"], "counts": [7, 9]}],
+        name="Snowplow Events",
+        created_at=datetime(2026, 6, 1, 14, 43, tzinfo=UTC),
+    )
+    # The NEWEST scan collects only "page" — this is what _get_default_scan_config
+    # picks, and pinning to it is what emptied the other tab.
+    await _seed_group_metrics(
+        setup["project_id"],
+        [{"event_id": page_event.json()["id"], "counts": [10, 15]}],
+        name="Snowplow Pageviews",
+        created_at=datetime(2026, 6, 1, 15, 12, tzinfo=UTC),
+    )
+
+    tab = await client.get(
+        "/api/v1/projects/metrics-tab-scan/events-metrics",
+        params={"event_type_id": setup["track_type_id"]},
+    )
+
+    assert tab.status_code == 200
+    body = tab.json()
+    assert body["data"] == [
+        _plain_point("2026-01-01T10:00:00", 7),
+        _plain_point("2026-01-01T11:00:00", 9),
+    ]
+    # …and it names the scan it charted, which is NOT the project default.
+    assert body["scan_config_name"] == "Snowplow Events"
+
+    # Control: the tab that does belong to the newest scan is unaffected, and
+    # still sees only its own scan's counts rather than a cross-scan sum.
+    control = await client.get(
+        "/api/v1/projects/metrics-tab-scan/events-metrics",
+        params={"event_type_id": setup["page_type_id"]},
+    )
+
+    assert control.status_code == 200
+    assert control.json()["scan_config_name"] == "Snowplow Pageviews"
+    assert control.json()["data"] == [
+        _plain_point("2026-01-01T10:00:00", 10),
+        _plain_point("2026-01-01T11:00:00", 15),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_default_scan_config_ignores_updated_at_and_breaks_ties_stably(
     client: AsyncClient,
 ) -> None:

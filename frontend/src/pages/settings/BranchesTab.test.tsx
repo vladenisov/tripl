@@ -193,6 +193,43 @@ describe('BranchesTab', () => {
     expect(screen.getByText('production')).toBeInTheDocument()
   })
 
+  it('keeps merged branches out of the active list, behind their own tab', async () => {
+    mockBranchDetailQueries([MAIN, FEATURE, MERGED])
+
+    renderTab()
+
+    // Active by default: the in-flight branch is listed, the merged one is not.
+    expect(await screen.findByText('checkout-v2')).toBeInTheDocument()
+    expect(screen.queryByText('checkout-v3')).not.toBeInTheDocument()
+    // main is status 'merged' but kind 'main' — it must stay on the active tab,
+    // or the base branch disappears from the list a status-only filter produces.
+    expect(screen.getAllByText('main').length).toBeGreaterThan(0)
+
+    // Counts are on the tabs themselves: main + checkout-v2 active, one merged.
+    expect(screen.getByRole('button', { name: 'Active 2' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Merged 1' }))
+
+    expect(await screen.findByText('checkout-v3')).toBeInTheDocument()
+    expect(screen.queryByText('checkout-v2')).not.toBeInTheDocument()
+  })
+
+  it('opens on the merged tab when the route points at a merged branch', async () => {
+    mockBranchDetailQueries([MAIN, FEATURE, MERGED])
+
+    // A deep link (a bookmark, or an alert's "view branch") must not land on a
+    // tab that cannot show the branch it selected.
+    renderTab('feat-merged')
+
+    // Two matches on purpose: the list row and the detail header — which is
+    // itself the proof the row is rendered rather than only the detail pane.
+    expect((await screen.findAllByText('checkout-v3')).length).toBeGreaterThan(1)
+    expect(screen.getByRole('button', { name: 'Merged 1' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+  })
+
   it('resolves the creator id to the user name in the list row and detail header', async () => {
     vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
     vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
