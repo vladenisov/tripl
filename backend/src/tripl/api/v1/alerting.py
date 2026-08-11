@@ -226,6 +226,11 @@ async def list_alert_deliveries(
     destination_id: uuid.UUID | None = None,
     rule_id: uuid.UUID | None = None,
     scan_config_id: uuid.UUID | None = None,
+    # The page nests deliveries under their incident, so it fetches them one
+    # incident at a time; `ungrouped` reaches the rows that have no incident,
+    # which no value of `correlation_group_id` can select (tripl-pq97).
+    correlation_group_id: uuid.UUID | None = None,
+    ungrouped: bool = False,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     offset: int = Query(0, ge=0),
@@ -239,6 +244,8 @@ async def list_alert_deliveries(
         destination_id=destination_id,
         rule_id=rule_id,
         scan_config_id=scan_config_id,
+        correlation_group_id=correlation_group_id,
+        ungrouped=ungrouped,
         date_from=date_from,
         date_to=date_to,
         offset=offset,

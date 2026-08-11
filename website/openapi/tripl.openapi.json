@@ -2285,6 +2285,33 @@
             }
           },
           {
+            "name": "correlation_group_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Correlation Group Id"
+            }
+          },
+          {
+            "name": "ungrouped",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Ungrouped"
+            }
+          },
+          {
             "name": "date_from",
             "in": "query",
             "required": false,
@@ -15991,12 +16018,17 @@
             "type": "string",
             "format": "date-time",
             "title": "Approved At"
+          },
+          "stale": {
+            "type": "boolean",
+            "title": "Stale"
           }
         },
         "type": "object",
         "required": [
           "user_id",
-          "approved_at"
+          "approved_at",
+          "stale"
         ],
         "title": "BranchApprovalResponse"
       },

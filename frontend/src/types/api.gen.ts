@@ -11047,6 +11047,8 @@ export interface operations {
                 destination_id?: string | null;
                 rule_id?: string | null;
                 scan_config_id?: string | null;
+                correlation_group_id?: string | null;
+                ungrouped?: boolean;
                 date_from?: string | null;
                 date_to?: string | null;
                 offset?: number;

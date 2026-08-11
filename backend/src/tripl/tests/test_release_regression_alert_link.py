@@ -219,6 +219,10 @@ def test_every_other_scope_keeps_the_links_it_had(
 
     Asserted rather than eyeballed, because the change replaced a fallthrough
     that every one of these scopes passed through.
+
+    This is the NO-INCIDENT path — pre-tripl-jfm3.91 rows, whose items carry no
+    ``correlation_group_id``. When there is an incident to point at, every scope
+    links to it instead; see the test below.
     """
     event_id = uuid.uuid4()
     scope_ref = str(uuid.uuid4())
@@ -239,6 +243,41 @@ def test_every_other_scope_keeps_the_links_it_had(
         assert monitoring_path == prefix + expected_monitoring.format(
             event_id=event_id, scope_ref=scope_ref
         )
+
+
+@pytest.mark.parametrize(
+    "scope_type",
+    ["event", "event_type", "project_total", "schema", "distribution", "release_regression"],
+)
+def test_every_scope_links_to_the_incident_when_there_is_one(scope_type: str) -> None:
+    """One destination per alert, whatever fired it: the incident.
+
+    Only release regressions used to reach the alerting page; an anomaly alert
+    linked to the event/monitoring page, which shows neither what was sent nor
+    Ack / Resolve / Mute. Acting on a telegram alert therefore meant leaving the
+    page it opened and finding the matching incident by hand (tripl-pq97).
+
+    The delivery id and item anchor stay in the URL — they still select the exact
+    row the message quoted, out of up to 8 packed into one delivery — and
+    ``monitoring_path`` stays empty so the message keeps carrying one link.
+    """
+    delivery_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+
+    details_path, monitoring_path = _build_item_paths(
+        SLUG,
+        scope_type=scope_type,
+        scope_ref=str(uuid.uuid4()),
+        event_id=uuid.uuid4(),
+        delivery_id=delivery_id,
+        correlation_group_id=group_id,
+    )
+
+    assert details_path is not None
+    assert details_path.startswith(f"{BASE}/p/{SLUG}/settings/alerting/{delivery_id}?")
+    assert f"incident={group_id}" in details_path
+    assert "item=" in details_path
+    assert monitoring_path is None
 
 
 def test_a_catalog_metric_links_to_the_metric_drilldown_not_the_event_route() -> None:

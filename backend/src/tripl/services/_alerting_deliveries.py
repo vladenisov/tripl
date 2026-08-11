@@ -84,6 +84,8 @@ async def list_deliveries(
     destination_id: uuid.UUID | None = None,
     rule_id: uuid.UUID | None = None,
     scan_config_id: uuid.UUID | None = None,
+    correlation_group_id: uuid.UUID | None = None,
+    ungrouped: bool = False,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     limit: int = 50,
@@ -102,6 +104,33 @@ async def list_deliveries(
         filters.append(AlertDelivery.rule_id == rule_id)
     if scan_config_id is not None:
         filters.append(AlertDelivery.scan_config_id == scan_config_id)
+    # The alerting page shows deliveries UNDER the incident they belong to, so it
+    # asks for one incident's deliveries at a time (tripl-pq97).
+    #
+    # The incident is a property of the ITEM, not of the delivery: one message can
+    # carry rows from several incidents, so this matches a delivery that has at
+    # least one item in the group rather than comparing a column that does not
+    # exist on AlertDelivery.
+    if correlation_group_id is not None:
+        filters.append(
+            AlertDelivery.id.in_(
+                select(AlertDeliveryItem.delivery_id).where(
+                    AlertDeliveryItem.correlation_group_id == correlation_group_id
+                )
+            )
+        )
+    # Every item written since tripl-jfm3.91 carries an incident, so this selects
+    # the pre-tripl-jfm3.91 rows — invisible to the inbox and impossible to
+    # acknowledge. Nesting alone would drop them silently and leave an audit trail
+    # that looks complete and is not, so the page gives them their own section.
+    if ungrouped:
+        filters.append(
+            ~AlertDelivery.id.in_(
+                select(AlertDeliveryItem.delivery_id).where(
+                    AlertDeliveryItem.correlation_group_id.is_not(None)
+                )
+            )
+        )
     if date_from is not None:
         filters.append(AlertDelivery.created_at >= date_from)
     if date_to is not None:
