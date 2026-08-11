@@ -151,11 +151,17 @@ function mockAlertingFetch(
   })
 }
 
-function renderTab() {
+/**
+ * The page is three tabs now, so a test has to say which one it is looking at.
+ * No argument means no `?section=`, i.e. exactly what a bare link does — which
+ * is what the guided-setup tests want to exercise.
+ */
+function renderTab(section?: 'inbox' | 'destinations' | 'audit') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const path = `/p/demo/settings/alerting${section ? `?section=${section}` : ''}`
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/p/demo/settings/alerting']}>
+      <MemoryRouter initialEntries={[path]}>
         <ProjectAlertingTab slug="demo" />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -194,30 +200,44 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
     }
   })
 
-  it('keeps the Inbox hidden once destinations exist but no rule does yet', async () => {
+  it('explains an Inbox that cannot hold anything yet, rather than listing nothing', async () => {
     mockAlertingFetch([makeDestination({ rules: [] })])
-    renderTab()
+    renderTab('inbox')
 
-    // Destinations exist → out of guided setup, back to the normal layout.
+    // The original defect (tripl-7l83.14) was an empty Inbox box sitting beside
+    // two others before anything could fill it. Sections removed the pile; what
+    // has to hold now is that the Inbox says WHY it is empty instead of showing
+    // a group list that can never have a row, which reads as "no incidents".
+    //
+    // Awaited first: guided setup is what renders while `destinations` is still
+    // in flight, so asserting its absence before this resolves would be timing,
+    // not behaviour.
+    expect(
+      await screen.findByText(/No rules yet, so nothing can raise an incident/),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('No correlated alert groups.')).toBeNull()
+    // Destinations exist → out of guided setup.
+    expect(screen.queryByText('Set up alerting')).toBeNull()
+  })
+
+  it('offers the three sections once a destination and rule exist', async () => {
+    mockAlertingFetch([makeDestination({ rules: [makeRule()] })])
+    renderTab('destinations')
+
+    // Fully configured → the guided card gives way to the real page. It is no
+    // longer one scroll holding everything: the sections are tabs, and this one
+    // shows routing.
     expect(await screen.findByText('Routing rules')).toBeInTheDocument()
     expect(screen.getByText('Signals route to destinations via rules.')).toBeInTheDocument()
     expect(screen.queryByText('Set up alerting')).toBeNull()
 
-    // ...but with no rule yet, the Inbox card must stay hidden.
-    expect(screen.queryByText('Inbox')).toBeNull()
-  })
-
-  it('restores the full alerting layout once a destination and rule exist', async () => {
-    mockAlertingFetch([makeDestination({ rules: [makeRule()] })])
-    renderTab()
-
-    // Fully configured → the guided card gives way to the complete layout:
-    // routing rules, destinations, the now-visible Inbox, and the audit log.
-    expect(await screen.findByText('Inbox')).toBeInTheDocument()
-    expect(screen.getByText('Routing rules')).toBeInTheDocument()
-    expect(screen.getByText('Signals route to destinations via rules.')).toBeInTheDocument()
-    expect(screen.getByText('Audit')).toBeInTheDocument()
-    expect(screen.queryByText('Set up alerting')).toBeNull()
+    for (const name of ['Inbox', 'Destinations & rules', 'Audit']) {
+      expect(screen.getByRole('tab', { name })).toBeInTheDocument()
+    }
+    expect(screen.getByRole('tab', { name: 'Destinations & rules' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
   })
 
   it('counts one group and one delivery in the singular, not "1 groups" / "1 deliveries"', async () => {
@@ -229,13 +249,18 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
       inbox: [makeInboxGroup()],
       deliveries: [makeDelivery()],
     })
-    renderTab()
+    renderTab('inbox')
 
-    await screen.findByText('Inbox')
     expect(await screen.findByText('1 group')).toBeInTheDocument()
-    expect(await screen.findByText('1 delivery')).toBeInTheDocument()
     expect(screen.queryByText('1 groups')).toBeNull()
+
+    // The two subtitles now live on different tabs, so checking both means
+    // switching — which is also the cheapest proof the strip works.
+    fireEvent.click(screen.getByRole('tab', { name: 'Audit' }))
+    expect(await screen.findByText('1 delivery')).toBeInTheDocument()
     expect(screen.queryByText('1 deliveries')).toBeNull()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Inbox' }))
     // The group ROW, eight lines under the subtitle the sweep fixed. Scoping
     // that sweep to Panel/SurfPanel subtitles left this one rendering "1 items"
     // directly beneath a correct "1 group" — both counts describe the same
@@ -248,7 +273,7 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
 describe('ProjectAlertingTab — demo workspaces are zero-egress (tripl-2su6.12)', () => {
   it('offers no external channel to add, and says why', async () => {
     mockAlertingFetch([makeDestination({ rules: [makeRule()] })], { isDemo: true })
-    renderTab()
+    renderTab('destinations')
 
     expect(await screen.findByText(/never sent to Slack/i)).toBeInTheDocument()
 
@@ -280,7 +305,7 @@ describe('ProjectAlertingTab — demo workspaces are zero-egress (tripl-2su6.12)
       ],
       { isDemo: true },
     )
-    renderTab()
+    renderTab('destinations')
 
     expect(await screen.findByText('Local demo sink')).toBeInTheDocument()
     expect(screen.getByText('Local sink')).toBeInTheDocument()
@@ -289,7 +314,7 @@ describe('ProjectAlertingTab — demo workspaces are zero-egress (tripl-2su6.12)
 
   it('still offers every channel on a real project', async () => {
     mockAlertingFetch([makeDestination({ rules: [makeRule()] })], { isDemo: false })
-    renderTab()
+    renderTab('destinations')
 
     expect(await screen.findByText('Add another channel')).toBeInTheDocument()
     for (const label of ['Slack', 'Telegram', 'Webhook', 'Email', 'Jira', 'Linear']) {
@@ -332,7 +357,7 @@ describe('ProjectAlertingTab — catalog metric scope (tripl-jfm3.108)', () => {
 
   it('seeds the Metrics box from the saved rule', async () => {
     mockWithRulePatches(makeRule({ include_metrics: true }))
-    renderTab()
+    renderTab('destinations')
 
     fireEvent.click(await screen.findByRole('button', { name: /Edit rule/ }))
 
@@ -341,7 +366,7 @@ describe('ProjectAlertingTab — catalog metric scope (tripl-jfm3.108)', () => {
 
   it('sends include_metrics when the box is ticked', async () => {
     const patches = mockWithRulePatches(makeRule({ include_metrics: false }))
-    renderTab()
+    renderTab('destinations')
 
     fireEvent.click(await screen.findByRole('button', { name: /Edit rule/ }))
     fireEvent.click(await screen.findByLabelText('Metrics'))
@@ -393,19 +418,19 @@ describe('ProjectAlertingTab — narrowing a rule to one scan', () => {
 
   it('names the bound scan on the rule row, and says "all scans" when unbound', async () => {
     mockWithScans(makeRule({ scan_config_id: 'scan-ios' }))
-    const { unmount } = renderTab()
+    const { unmount } = renderTab('destinations')
     expect(await screen.findByText('Scan: Old events (iOS)')).toBeInTheDocument()
     unmount()
 
     vi.restoreAllMocks()
     mockWithScans(makeRule({ scan_config_id: null }))
-    renderTab()
+    renderTab('destinations')
     expect(await screen.findByText('Scan: all scans')).toBeInTheDocument()
   })
 
   it('seeds the Scan picker from the saved rule', async () => {
     mockWithScans(makeRule({ scan_config_id: 'scan-web' }))
-    renderTab()
+    renderTab('destinations')
 
     fireEvent.click(await screen.findByRole('button', { name: /Edit rule/ }))
 
@@ -416,7 +441,7 @@ describe('ProjectAlertingTab — narrowing a rule to one scan', () => {
     // The binding must survive a save that never touched it — otherwise editing
     // any other field would silently widen the rule back to the whole project.
     const patches = mockWithScans(makeRule({ scan_config_id: 'scan-ios', include_metrics: false }))
-    renderTab()
+    renderTab('destinations')
 
     fireEvent.click(await screen.findByRole('button', { name: /Edit rule/ }))
     fireEvent.click(await screen.findByLabelText('Metrics'))
@@ -430,7 +455,7 @@ describe('ProjectAlertingTab — narrowing a rule to one scan', () => {
     // Omitting the key would leave a previously bound rule bound: the API
     // distinguishes "not mentioned" from "widen me back to the project".
     const patches = mockWithScans(makeRule({ scan_config_id: null }))
-    renderTab()
+    renderTab('destinations')
 
     fireEvent.click(await screen.findByRole('button', { name: /Edit rule/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -504,10 +529,18 @@ describe('ProjectAlertingTab — per-scan focus via ?scan= (tripl-3y7z.2)', () =
     const deliveryUrls = mockWithDeliveryUrls([{ id: 'scan-1', name: 'Snowplow Events (iOS)' }])
     renderWithFocus('scan-1')
 
-    // Every request the tab makes for deliveries carries the scan — not just
-    // eventually, but from the first one, so no unfiltered page is ever shown.
+    // Every request for the audit LIST carries the scan — not just eventually,
+    // but from the first one, so no unfiltered page is ever shown.
+    //
+    // The `limit=1` probe is excluded on purpose: it asks "has this project ever
+    // delivered", which decides whether the page collapses into guided setup,
+    // and it must stay filter-free — reading that gate off the filtered query is
+    // what let an audit filter matching nothing replace the page with the setup
+    // checklist, taking the filter bar with it.
     await waitFor(() => expect(deliveryUrls.length).toBeGreaterThan(0))
-    for (const url of deliveryUrls) {
+    const listUrls = deliveryUrls.filter(url => !url.includes('limit=1'))
+    expect(listUrls.length).toBeGreaterThan(0)
+    for (const url of listUrls) {
       expect(url).toContain('scan_config_id=scan-1')
     }
   })
