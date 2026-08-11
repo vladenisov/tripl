@@ -336,6 +336,24 @@ An optional **AI explanation** can be appended to messages; it is off by default
 and does nothing unless an AI provider is configured — see
 [AI & search providers](../run/ai-and-search.md).
 
+## The page
+
+**Observe → Alerting** is three tabs, selected with `?section=`:
+
+| Tab | For |
+|---|---|
+| **Inbox** | Triage: incidents, their actions, and what was sent for each. The default, and where an alert link lands. |
+| **Destinations & rules** | Configuration: channels, the rules that route to them, and the monitor → destination summary. |
+| **Audit** | Every delivery in the project, filterable, for "did the message actually go out". |
+
+The section is a query parameter rather than a path segment because the second
+path segment already carries the delivery id an alert link points at — links
+already sent keep working, and one carrying `?incident=` opens the Inbox with
+that incident expanded.
+
+Rules do not get a tab of their own: a rule belongs to the destination it sends
+to, and is edited on that destination's card.
+
 ## Deliveries and the Inbox
 
 Each match creates a **delivery** that moves through `pending → sent` or
@@ -438,6 +456,12 @@ occurrence alerts and an old decision can never silence a new problem.
 
 The note is attached to the incident, survives later actions, and is only
 replaced when you write a new one.
+
+The scope name on an incident row links to the thing that fired — the event,
+event type, project-total or metric monitoring page — so you can check whether
+the alert is real without leaving for the catalog and finding it by hand. Scopes
+with no page of their own (a schema or distribution drift) link to the event they
+were detected on, or stay plain text when there is nothing to open.
 
 Each incident row also carries **what was sent** for it: expand it to see that
 incident's deliveries — destination, status, and the item lines the message

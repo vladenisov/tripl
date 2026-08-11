@@ -15,6 +15,40 @@ export function getMetricMonitoringPath(slug: string, metricId: string): string 
   return `/p/${slug}/monitoring/metric/${metricId}`
 }
 
+/** Scopes `getMonitoringPath` can route; the rest have no detail page. */
+const SCOPES_WITH_MONITORING_ROUTE = new Set<string>([
+  'project_total',
+  'event_type',
+  'event',
+  'metric',
+])
+
+/**
+ * Where to look at the thing an alert fired on, or `null` when there is nowhere
+ * to look.
+ *
+ * `getMonitoringPath` throws for the scopes with no detail route, which is right
+ * for callers that must not link to a wrong page and wrong for a table cell
+ * deciding whether to offer a link at all. This answers that question instead of
+ * making every caller wrap it in a try.
+ *
+ * The event fallback matters for drift scopes: they have no route of their own,
+ * but the event they were detected on does.
+ */
+export function getScopeMonitoringPath(
+  slug: string,
+  scope: { scope_type: string; scope_ref: string; event_id?: string | null },
+): string | null {
+  if (SCOPES_WITH_MONITORING_ROUTE.has(scope.scope_type)) {
+    return getMonitoringPath(slug, {
+      scope_type: scope.scope_type as MetricScopeType,
+      scope_ref: scope.scope_ref,
+    })
+  }
+  if (scope.event_id) return `/p/${slug}/monitoring/event/${scope.event_id}`
+  return null
+}
+
 export function getMonitoringPath(
   slug: string,
   signal: { scope_type: MetricScopeType; scope_ref: string },

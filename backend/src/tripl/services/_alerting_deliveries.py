@@ -304,6 +304,11 @@ def _build_inbox_group_response(
         latest_bucket=latest_item.bucket,
         latest_delivery_at=latest_delivery.created_at,
         direction=latest_item.direction,
+        # Routable identity of the newest item, so the incident card can offer
+        # "go look at it" without expanding its deliveries first.
+        scope_type=latest_item.scope_type,
+        scope_ref=latest_item.scope_ref,
+        event_id=latest_item.event_id,
         scope_names=scope_names[:8],
         destination_names=destination_names,
         rule_names=rule_names,

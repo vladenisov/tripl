@@ -3669,6 +3669,8 @@ export interface components {
             /** Destination Names */
             destination_names: string[];
             direction: components["schemas"]["AnomalyDirection"];
+            /** Event Id */
+            event_id?: string | null;
             /**
              * False Positive Count
              * @default 0
@@ -3696,6 +3698,9 @@ export interface components {
             scan_names: string[];
             /** Scope Names */
             scope_names: string[];
+            /** Scope Ref */
+            scope_ref: string;
+            scope_type: components["schemas"]["MetricScopeType"];
             status: components["schemas"]["AlertInboxStatus"];
         };
         /** AlertInboxListResponse */
