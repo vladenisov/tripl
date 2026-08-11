@@ -437,8 +437,12 @@ counts as "abnormal" in the project's monitoring settings.
 
 ## Alerting: get the right person notified
 
-A signal only helps if someone hears about it. Open **Observe → Alerting**. It
-has three parts: **destinations**, **rules**, and a record of what was sent.
+A signal only helps if someone hears about it. Open **Observe → Alerting**. It is
+split into three tabs: **Inbox** (incidents to triage, and where an alert link
+lands you), **Destinations & rules** (where routing is configured — a rule
+belongs to the destination it sends to, so they share one tab), and **Audit**
+(every delivery, for checking whether a message physically went out). A project
+with nothing configured yet skips the tabs and shows a setup checklist instead.
 
 ### 1. Add a destination
 

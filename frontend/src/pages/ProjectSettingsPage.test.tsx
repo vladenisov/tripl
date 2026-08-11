@@ -663,7 +663,7 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting']}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=destinations']}>
           <Routes>
             <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
@@ -713,7 +713,7 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting']}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=destinations']}>
           <Routes>
             <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
@@ -799,7 +799,7 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting']}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=destinations']}>
           <Routes>
             <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
@@ -814,6 +814,55 @@ describe('ProjectSettingsPage', () => {
     expect(screen.getByText('Direction: up')).toBeInTheDocument()
     expect(screen.getByText('Cooldown: 1d')).toBeInTheDocument()
     expect(screen.getByText('Message: custom (slack_mrkdwn)')).toBeInTheDocument()
+  })
+
+  it('lands an alert deep link on the Inbox, not on the configuration tab', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+
+      if (url.endsWith('/api/v1/projects/demo/alert-destinations')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events?')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([])
+      if (url.includes('/alert-inbox')) return mockJsonResponse({ items: [], total: 0 })
+      // Non-zero so the page is past guided setup and the tab strip exists.
+      if (url.includes('/alert-deliveries')) return mockJsonResponse({ items: [], total: 3 })
+      if (url.endsWith('/api/v1/projects/demo')) {
+        return mockJsonResponse({ id: 'project-1', slug: 'demo', name: 'Demo' })
+      }
+      return mockJsonResponse({})
+    })
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        {/* The shape an alert message carries: delivery id in the path, the
+            quoted row in `?item=`, the incident in `?incident=`. No `?section=`,
+            because the backend does not emit one — the page has to infer it. */}
+        <MemoryRouter
+          initialEntries={[
+            '/p/demo/settings/alerting/delivery-1?item=event%3Aevent-1&incident=group-1',
+          ]}
+        >
+          <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    // Inbox is where the incident can be acted on; landing on Destinations
+    // would put the reader one click from the thing the alert was about.
+    expect(await screen.findByRole('tab', { name: 'Inbox' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.getByRole('tab', { name: 'Destinations & rules' })).toHaveAttribute(
+      'aria-selected',
+      'false',
+    )
   })
 
   it('expands alert delivery audit items', async () => {
@@ -895,7 +944,7 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting']}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=audit']}>
           <Routes>
             <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />

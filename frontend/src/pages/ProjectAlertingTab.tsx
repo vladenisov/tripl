@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ClipboardList, Globe, Mail, Send, Ticket, Trash2, Webhook, type LucideIcon } from 'lucide-react'
 
@@ -33,6 +33,20 @@ import { getScopeMonitoringPath } from '@/lib/monitoring'
 import { getErrorMessage } from '@/lib/utils'
 import { formatDateTime } from '@/lib/datetime'
 import { countOf } from '@/lib/plural'
+
+// The page does three unrelated jobs — configure routing, triage incidents,
+// audit delivery — and stacking them on one scroll made each of them harder to
+// find (tripl-er99). Rules are deliberately NOT a fourth section: a rule hangs
+// off `destination.rules` and its editor lives inside DestinationCard, so
+// "rules" has no existence apart from the destination that owns it.
+const ALERTING_SECTIONS = ['inbox', 'destinations', 'audit'] as const
+type AlertingSection = (typeof ALERTING_SECTIONS)[number]
+
+const SECTION_LABELS: Record<AlertingSection, string> = {
+  inbox: 'Inbox',
+  destinations: 'Destinations & rules',
+  audit: 'Audit',
+}
 
 // Channel catalogue — drives both the per-channel sections and the compact
 // add-channel affordance, so every type stays addable from one place.
@@ -274,6 +288,35 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // unreachable, so an operator had no way to record WHY they acked something
   // (tripl-jfm3.91). Omitting the key leaves the stored note untouched.
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({})
+  // Section lives in a QUERY param, not a path segment. The second segment of
+  // /p/:slug/settings/:tab/:itemId is the delivery id an alert link carries, and
+  // it is the only linkable shape the backend can emit — urls.py returns no link
+  // at all without one — so a section name there would collide with every link
+  // already sitting in someone's Telegram history.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedSection = searchParams.get('section')
+  const section: AlertingSection = (ALERTING_SECTIONS as readonly string[]).includes(
+    requestedSection ?? '',
+  )
+    ? (requestedSection as AlertingSection)
+    // No explicit section: land where the link can actually be answered. An
+    // alert names its incident; an older one names only its delivery. An
+    // unknown value degrades to the default rather than rendering nothing,
+    // matching how `?scan=` is already treated below.
+    : focusIncidentId
+      ? 'inbox'
+      : focusDeliveryId || focusScanId
+        ? 'audit'
+        : 'inbox'
+  const selectSection = (next: AlertingSection) =>
+    setSearchParams(
+      current => {
+        const params = new URLSearchParams(current)
+        params.set('section', next)
+        return params
+      },
+      { replace: true },
+    )
   // An alert link names its incident, so the card it points at opens with its
   // deliveries already showing — the reader lands on the alert AND the actions
   // for it, instead of on a delivery whose incident is in another list further
@@ -366,6 +409,36 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
         }
       />
 
+      {/* No tab strip while nothing is configured: with no destinations, no
+          rules and no deliveries, two of the three sections are empty by
+          construction, and offering them is three doors onto one room. */}
+      {!showGuidedSetup && (
+        <div
+          className="flex flex-wrap items-center gap-1 border-b"
+          style={{ borderColor: 'var(--border-subtle)' }}
+          role="tablist"
+          aria-label="Alerting sections"
+        >
+          {ALERTING_SECTIONS.map(value => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={section === value}
+              onClick={() => selectSection(value)}
+              className="-mb-px border-b-2 px-3 py-1.5 text-[12.5px] transition-colors"
+              style={{
+                borderColor: section === value ? 'var(--accent)' : 'transparent',
+                color: section === value ? 'var(--fg)' : 'var(--fg-subtle)',
+                fontWeight: section === value ? 600 : 400,
+              }}
+            >
+              {SECTION_LABELS[value]}
+            </button>
+          ))}
+        </div>
+      )}
+
       {showGuidedSetup ? (
         <>
           <AlertingGuidedSetup channels={CHANNEL_META} onPickChannel={openCreate} />
@@ -381,6 +454,11 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
         </>
       ) : (
       <>
+      {section === 'destinations' && (
+      <>
+      {/* The read-only monitor → destination table is the verification half of
+          configuring a route ("did I actually wire this up?"), so it belongs
+          with the destinations rather than on its own. */}
       <RoutingRulesPanel slug={slug} />
 
       <div className="grid gap-6">
@@ -492,8 +570,30 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
             </div>
           )}
         </div>
+      </div>
+      </>
+      )}
 
+      {section === 'inbox' && (
         <div className="min-w-0 space-y-4">
+          {/* Without a rule nothing can correlate, so an empty list here would
+              read as "no incidents" when the truth is "nothing can produce
+              one". Say which, and where to fix it. */}
+          {!hasRules && (
+            <Panel title="Inbox" subtitle="0 groups">
+              <p className="p-4 text-sm text-muted-foreground">
+                No rules yet, so nothing can raise an incident. Add one under{' '}
+                <button
+                  type="button"
+                  onClick={() => selectSection('destinations')}
+                  className="underline underline-offset-2"
+                >
+                  Destinations &amp; rules
+                </button>
+                .
+              </p>
+            </Panel>
+          )}
           {hasRules && (
           <Panel title="Inbox" subtitle={countOf(inbox?.total ?? 0, 'group', 'groups')}>
             <div className="space-y-3 p-4">
@@ -624,7 +724,11 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
             </div>
           </Panel>
           )}
+        </div>
+      )}
 
+      {section === 'audit' && (
+        <div className="min-w-0 space-y-4">
           {/* "delivery"/"deliveries" is why countOf takes both forms rather than
               appending an "s" — the first alert a project ever sends lands here. */}
           <Panel title="Audit" subtitle={countOf(deliveries?.total ?? 0, 'delivery', 'deliveries')}>
@@ -749,7 +853,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
             </div>
           </Panel>
         </div>
-      </div>
+      )}
       </>
       )}
 
