@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AlertDelivery, AlertDeliveryDetail, AlertDeliveryItem } from '@/types'
 import { AlertDeliveryRow } from './AlertDeliveryRow'
@@ -65,18 +66,22 @@ function renderRow(delivery: AlertDelivery, focusDeliveryId?: string, focusItemK
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+  // Router, because the row links to the scope an alert fired on with <Link>
+  // for in-app navigation — in the app it is always mounted under one.
   return render(
     <QueryClientProvider client={queryClient}>
-      <table>
-        <tbody>
-          <AlertDeliveryRow
-            slug="demo"
-            delivery={delivery}
-            focusDeliveryId={focusDeliveryId}
-            focusItemKey={focusItemKey}
-          />
-        </tbody>
-      </table>
+      <MemoryRouter>
+        <table>
+          <tbody>
+            <AlertDeliveryRow
+              slug="demo"
+              delivery={delivery}
+              focusDeliveryId={focusDeliveryId}
+              focusItemKey={focusItemKey}
+            />
+          </tbody>
+        </table>
+      </MemoryRouter>
     </QueryClientProvider>,
   )
 }
@@ -188,6 +193,46 @@ describe('AlertDeliveryRow items table', () => {
     expect(screen.getByText('signup_started')).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: 'Scope' })).toBeInTheDocument()
     expect(screen.queryByText(/No per-scope rows were stored/)).toBeNull()
+  })
+
+  it('links each item to the scope it fired on', async () => {
+    expandRow({ ...mockDelivery({ status: 'sent', error_message: null }), items: [mockItem()] })
+
+    // Derived from the item's own scope rather than read from `monitoring_path`,
+    // which alerts stopped filling once they began pointing at the incident.
+    // Without this the card showed the alert and no way to look at the thing
+    // that caused it.
+    const link = await screen.findByRole('link', { name: 'Open checkout_completed' })
+    expect(link).toHaveAttribute('href', '/p/demo/monitoring/event/checkout_completed')
+  })
+
+  it('does not offer a link back to the page the reader is already on', async () => {
+    expandRow({
+      ...mockDelivery({ status: 'sent', error_message: null }),
+      items: [
+        mockItem({
+          details_path: 'https://tripl.example.com/p/demo/settings/alerting/delivery-1?item=event:x',
+        }),
+      ],
+    })
+
+    await screen.findByRole('link', { name: 'Open checkout_completed' })
+    // `details_path` is the incident deep link an alert message carries. It is
+    // useful in telegram and pointless in a cell on the page it names.
+    expect(screen.queryByRole('link', { name: /^Details for/ })).toBeNull()
+  })
+
+  it('falls back to a dash when the scope has nowhere to link', async () => {
+    expandRow({
+      ...mockDelivery({ status: 'sent', error_message: null }),
+      items: [
+        // A schema drift: no monitoring route of its own, and no event behind it.
+        mockItem({ scope_type: 'schema', scope_name: 'missing_field', event_id: null }),
+      ],
+    })
+
+    expect(await screen.findByText('missing_field')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /^Open / })).toBeNull()
   })
 
   it('shows the percentage for an item that had a baseline', async () => {

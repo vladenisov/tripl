@@ -583,6 +583,13 @@ class AlertInboxGroupResponse(BaseModel):
     latest_bucket: datetime
     latest_delivery_at: datetime
     direction: AnomalyDirection
+    # The scope of the most recent item, so the card can link straight to the
+    # thing that fired. `scope_names` is display text and cannot be routed;
+    # without these the reader could see WHAT alerted and had no way to go look
+    # at it (tripl-pq97).
+    scope_type: MetricScopeType
+    scope_ref: str
+    event_id: uuid.UUID | None = None
     scope_names: list[str]
     destination_names: list[str]
     rule_names: list[str]

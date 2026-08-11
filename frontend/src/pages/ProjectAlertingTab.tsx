@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ClipboardList, Globe, Mail, Send, Ticket, Trash2, Webhook, type LucideIcon } from 'lucide-react'
 
@@ -28,6 +29,7 @@ import {
   type DestinationChannel,
   type DestinationFormState,
 } from './alerting/constants'
+import { getScopeMonitoringPath } from '@/lib/monitoring'
 import { getErrorMessage } from '@/lib/utils'
 import { formatDateTime } from '@/lib/datetime'
 import { countOf } from '@/lib/plural'
@@ -515,7 +517,20 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
                             </span>
                           </div>
                           <div className="mt-1 truncate text-muted-foreground" title={group.scope_names.join(', ')}>
-                            {group.scope_names.join(', ')}
+                            {/* Linked, not just named: the card told you WHAT
+                                fired and gave you no way to go look at it, so
+                                answering "is this real" meant leaving for the
+                                events page and finding it by hand. */}
+                            {getScopeMonitoringPath(slug, group) ? (
+                              <Link
+                                to={getScopeMonitoringPath(slug, group)!}
+                                className="underline hover:text-foreground"
+                              >
+                                {group.scope_names.join(', ')}
+                              </Link>
+                            ) : (
+                              group.scope_names.join(', ')
+                            )}
                           </div>
                           <div className="mt-1 truncate text-[10px] text-muted-foreground">
                             {group.rule_names.join(', ')} · {group.scan_names.join(', ')}

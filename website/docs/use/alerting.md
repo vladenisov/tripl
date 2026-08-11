@@ -439,6 +439,12 @@ occurrence alerts and an old decision can never silence a new problem.
 The note is attached to the incident, survives later actions, and is only
 replaced when you write a new one.
 
+The scope name on an incident row links to the thing that fired — the event,
+event type, project-total or metric monitoring page — so you can check whether
+the alert is real without leaving for the catalog and finding it by hand. Scopes
+with no page of their own (a schema or distribution drift) link to the event they
+were detected on, or stay plain text when there is nothing to open.
+
 Each incident row also carries **what was sent** for it: expand it to see that
 incident's deliveries — destination, status, and the item lines the message
 quoted — without leaving the row whose buttons you are about to press. **The

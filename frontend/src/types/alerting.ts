@@ -211,6 +211,11 @@ export interface AlertInboxGroup {
   latest_bucket: string
   latest_delivery_at: string
   direction: string
+  // Routable identity of the newest item. `scope_names` is display text, so
+  // these are what the card links with.
+  scope_type: string
+  scope_ref: string
+  event_id: string | null
   scope_names: string[]
   destination_names: string[]
   rule_names: string[]

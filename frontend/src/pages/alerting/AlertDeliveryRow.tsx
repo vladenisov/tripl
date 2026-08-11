@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react"
+import { Link } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ChevronDown, Loader2, RotateCcw } from "lucide-react"
 import type { AlertDelivery, AlertDeliveryItem } from "@/types"
 import { alertingApi } from "@/api/alerting"
+import { getScopeMonitoringPath } from "@/lib/monitoring"
 import { getErrorMessage } from "@/lib/utils"
 import { formatDateTime } from "@/lib/datetime"
 import { formatPercentDelta } from "@/lib/percentDelta"
@@ -10,6 +12,18 @@ import { Badge } from "@/components/ui/badge"
 import { LocalDeliveryBadge } from "@/demo/capabilityBadges"
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+
+/**
+ * Does this stored path point back at the alerting page itself?
+ *
+ * Since alerts started linking to the incident (tripl-pq97), `details_path` is
+ * that link — useful in a telegram message, useless in a cell on the page it
+ * names. Matched on the route rather than on the full URL because the stored
+ * value carries whatever `app_base_url` was set to when the alert was sent.
+ */
+function isAlertingPagePath(path: string): boolean {
+  return path.includes('/settings/alerting')
+}
 
 // Maps correlation_group_id -> a stable short label ("A", "B", ...). The
 // concrete ids are UUIDs and aren't worth showing; the per-delivery letter is
@@ -297,7 +311,20 @@ export function AlertDeliveryRow({
                             </TableCell>
                             <TableCell className="text-xs">
                               <div className="flex gap-3">
-                                {item.details_path && (
+                                {getScopeMonitoringPath(slug, item) && (
+                                  <Link
+                                    to={getScopeMonitoringPath(slug, item)!}
+                                    aria-label={`Open ${item.scope_name}`}
+                                    className="text-primary underline"
+                                  >
+                                    event
+                                  </Link>
+                                )}
+                                {/* Stored paths, kept for rows written before
+                                    alerts pointed at the incident. `details_path`
+                                    now names THIS page, so rendering it would
+                                    offer a link to where the reader already is. */}
+                                {item.details_path && !isAlertingPagePath(item.details_path) && (
                                   <a href={item.details_path} aria-label={`Details for ${item.scope_name}`} className="text-primary underline" target="_blank" rel="noreferrer">
                                     details
                                   </a>
@@ -307,7 +334,10 @@ export function AlertDeliveryRow({
                                     monitoring
                                   </a>
                                 )}
-                                {!item.details_path && !item.monitoring_path && '—'}
+                                {!getScopeMonitoringPath(slug, item) &&
+                                  !item.monitoring_path &&
+                                  (!item.details_path || isAlertingPagePath(item.details_path)) &&
+                                  '—'}
                               </div>
                             </TableCell>
                           </TableRow>
