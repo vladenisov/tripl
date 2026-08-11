@@ -60,6 +60,9 @@ export default function ProjectSettingsPage() {
   // `?scan=<scan_config_id>` narrows the alerting audit log to one scan — the
   // target of the "Alerts queued" counter on a scan run (tripl-3y7z.2).
   const focusScanId = searchParams.get('scan') ?? undefined
+  // The incident an alert link points at — the card that holds Ack / Resolve /
+  // Mute. `item` still picks the row the message quoted inside it.
+  const focusIncidentId = searchParams.get('incident') ?? undefined
 
   if (!slug) return null
 
@@ -95,6 +98,7 @@ export default function ProjectSettingsPage() {
             focusDeliveryId={itemId}
             focusItemKey={focusItemKey}
             focusScanId={focusScanId}
+            focusIncidentId={focusIncidentId}
           />
         </Suspense>
       )}

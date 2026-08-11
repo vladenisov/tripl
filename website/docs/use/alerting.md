@@ -439,6 +439,19 @@ occurrence alerts and an old decision can never silence a new problem.
 The note is attached to the incident, survives later actions, and is only
 replaced when you write a new one.
 
+Each incident row also carries **what was sent** for it: expand it to see that
+incident's deliveries — destination, status, and the item lines the message
+quoted — without leaving the row whose buttons you are about to press. **The
+link in an alert opens exactly this**, whatever fired it, with the incident
+expanded and the quoted line highlighted. Previously only release regressions
+reached this page and everything else linked to the event's monitoring page,
+which shows neither the deliveries nor the actions.
+
+The **Audit** panel below stays the whole-project delivery log, filterable by
+status, channel, destination, rule and scan — the view for "did anything fail to
+go out", rather than for acting on one incident. Deliveries too old to belong to
+an incident (written before incidents existed) appear only there.
+
 :::note
 Marking a group **false positive** doesn't just hide it — it nudges the detector
 on **the scope it fired on** (raises that scope's sensitivity threshold and
