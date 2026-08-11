@@ -81,8 +81,8 @@ For a series of similar events, **Save and add another** creates the current
 event and keeps the entered form values in place for the next one.
 
 Setting an event to `archived` takes it out of circulation on both sides:
-`GET /projects/{slug}/events` leaves it out unless you ask for it by name
-(`?status=archived`), so the CLI, the MCP `list_events` tool and any direct API
+`GET /projects/{slug}/events` leaves it out unless the request asks for that
+status explicitly (`?status=archived`), so the CLI, the MCP `list_events` tool and any direct API
 call agree with the app rather than each hiding it their own way; and metrics
 collection skips it, so no new volume is recorded and its `last_seen_at` stops
 moving. Archiving is reversible — set another status and collection resumes.
