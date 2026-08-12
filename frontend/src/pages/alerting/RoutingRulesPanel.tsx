@@ -1,37 +1,29 @@
 import { useQuery } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
+
 import { alertingApi } from '@/api/alerting'
-import { Chip } from '@/components/primitives/chip'
-import { Dot } from '@/components/primitives/dot'
 import { Panel } from '@/components/settings/kit'
-import { formatRelativeTime } from '@/lib/datetime'
-import {
-  MONITOR_STATUS_LABEL as STATUS_LABEL,
-  MONITOR_STATUS_TONE as STATUS_TONE,
-} from '@/lib/statusLexicon'
+import { countOf } from '@/lib/plural'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
-import type { MonitorSummaryItem } from '@/types'
-
-
-function conditionOf(m: MonitorSummaryItem): string {
-  const directions = [
-    m.notify_on_spike ? 'spike ▲' : null,
-    m.notify_on_drop ? 'drop ▼' : null,
-  ]
-    .filter(Boolean)
-    .join(' · ')
-  return [
-    directions,
-    m.min_percent_delta > 0 ? `≥${m.min_percent_delta}%` : null,
-    `cooldown ${m.cooldown_minutes}m`,
-  ]
-    .filter(Boolean)
-    .join(' · ')
-}
 
 /**
- * The mockup's central Alerting artifact: a flat monitor → destination routing
- * matrix. Built entirely on the existing monitors-summary endpoint (rule →
- * single destination), so it's a presentation layer over data we already have.
+ * "Is anything routing, and is any of it on fire?" — answered in one line, with
+ * the way to the detail.
+ *
+ * This was a full monitor → destination table, the mockup's central Alerting
+ * artifact. It was also the Monitors list rendered a second time: the same
+ * `monitors-summary` query and cache entry, the same five columns in the same
+ * order, a copy of the condition string, and the status map that
+ * statusLexicon.ts:65 records as having already drifted across three files. The
+ * copy was strictly the poorer of the two — it never showed the `muted` chip,
+ * though `muted` sat in the payload it had already fetched, so a snoozed
+ * monitor read as fully live on the one tab whose job is "did I actually wire
+ * this up?".
+ *
+ * What the table uniquely offered was live state, and the counts keep that. The
+ * per-rule detail it showed is on this same screen in more depth, in the
+ * destination cards below — scan binding, scopes, thresholds, templates,
+ * filters — none of which the table carried.
  */
 export function RoutingRulesPanel({ slug }: { slug: string }) {
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
@@ -44,81 +36,42 @@ export function RoutingRulesPanel({ slug }: { slug: string }) {
   })
   const summary = query.data
   const monitors = summary?.monitors ?? []
+  const firingCount = summary?.firing_count ?? 0
+  const mutedCount = monitors.filter(monitor => monitor.muted).length
+  const offCount = monitors.filter(monitor => !monitor.enabled).length
   const subtitle = summary
-    ? `${summary.total} monitor${summary.total === 1 ? '' : 's'} · ${summary.firing_count} firing`
+    ? `${countOf(summary.total, 'monitor', 'monitors')} · ${firingCount} firing`
     : undefined
 
   return (
     <Panel
       title="Routing rules"
       subtitle={subtitle}
-      subtitleTone={summary && summary.firing_count > 0 ? 'danger' : undefined}
+      subtitleTone={firingCount > 0 ? 'danger' : undefined}
     >
       {monitors.length === 0 ? (
         <div className="px-4 py-6 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
           {query.isLoading ? 'Loading…' : 'No monitors route to a destination yet.'}
         </div>
       ) : (
-        <table className="w-full border-collapse">
-          <thead>
-            <tr
-              className="border-b text-[10.5px] font-semibold uppercase tracking-[0.05em]"
-              style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
-            >
-              <th scope="col" className="px-4 py-2 text-left font-semibold">Monitor</th>
-              <th scope="col" className="px-4 py-2 text-left font-semibold">Condition</th>
-              <th scope="col" className="px-4 py-2 text-left font-semibold">Routes to</th>
-              <th scope="col" className="px-4 py-2 text-left font-semibold">State</th>
-              <th scope="col" className="px-4 py-2 text-right font-semibold">Last fired</th>
-            </tr>
-          </thead>
-          <tbody>
-            {monitors.map((m) => (
-              <tr
-                key={m.rule_id}
-                className="border-b last:border-0"
-                style={{ borderColor: 'var(--border-subtle)' }}
-              >
-                <td className="px-4 py-2.5">
-                  <span className="flex min-w-0 items-center gap-2">
-                    <Dot tone={STATUS_TONE[m.status]} pulse={m.status === 'firing'} size={7} />
-                    <span className="truncate text-[12.5px] font-medium">{m.rule_name}</span>
-                    {!m.enabled && (
-                      <Chip tone="neutral" size="xs">
-                        off
-                      </Chip>
-                    )}
-                  </span>
-                </td>
-                <td className="px-4 py-2.5">
-                  <span className="mono truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-                    {conditionOf(m)}
-                  </span>
-                </td>
-                <td className="px-4 py-2.5">
-                  <span className="flex min-w-0 flex-col gap-0.5">
-                    <Chip tone="neutral" size="xs">
-                      {m.destination_type}
-                    </Chip>
-                    <span className="truncate text-[10px]" style={{ color: 'var(--fg-faint)' }}>
-                      {m.destination_name}
-                    </span>
-                  </span>
-                </td>
-                <td className="px-4 py-2.5">
-                  <Chip tone={STATUS_TONE[m.status]} size="xs">
-                    {STATUS_LABEL[m.status]}
-                  </Chip>
-                </td>
-                <td className="px-4 py-2.5 text-right">
-                  <span className="mono text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
-                    {m.last_anomaly_at ? formatRelativeTime(m.last_anomaly_at) : '—'}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
+          {/* `muted` and `off` are named rather than folded into a total:
+              both mean "configured but not delivering", which is exactly the
+              state this tab exists to catch and the one the old table hid. */}
+          <span className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+            {countOf(monitors.length, 'monitor', 'monitors')} routing
+            {firingCount > 0 ? ` · ${firingCount} firing` : ''}
+            {mutedCount > 0 ? ` · ${mutedCount} muted` : ''}
+            {offCount > 0 ? ` · ${offCount} off` : ''}
+          </span>
+          <Link
+            to={`/p/${slug}/monitors`}
+            className="text-[12px] underline underline-offset-2"
+            style={{ color: 'var(--fg-muted)' }}
+          >
+            View monitors →
+          </Link>
+        </div>
       )}
     </Panel>
   )

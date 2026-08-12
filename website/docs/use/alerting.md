@@ -343,7 +343,7 @@ and does nothing unless an AI provider is configured — see
 | Tab | For |
 |---|---|
 | **Inbox** | Triage: incidents, their actions, and what was sent for each. The default, and where an alert link lands. |
-| **Destinations & rules** | Configuration: channels, the rules that route to them, and the monitor → destination summary. |
+| **Destinations & rules** | Configuration: channels and the rules that route to them, above a one-line routing summary. |
 | **Audit** | Every delivery in the project, filterable, for "did the message actually go out". |
 
 The section is a query parameter rather than a path segment because the second
@@ -353,6 +353,14 @@ that incident expanded.
 
 Rules do not get a tab of their own: a rule belongs to the destination it sends
 to, and is edited on that destination's card.
+
+**Monitors are these same rules**, seen from the other side. A monitor is not a
+separate object — it is an alert rule plus its live firing state, which is why
+**Observe → Monitors** and this tab talk about the same things. The tab answers
+"is it wired up", so it carries a one-line routing summary (how many monitors
+route, and how many are firing, muted or off) and links to Monitors for the
+per-monitor detail, its history and the mute control. Editing a monitor brings
+you back here, to the destination card that owns the rule.
 
 ## Deliveries and the Inbox
 
