@@ -52,6 +52,11 @@ function mockProjectsFetch() {
             variable_count: 5,
             scan_count: 4,
             alert_destination_count: 1,
+            // Deliberately different from alert_destination_count: the Alerting
+            // badge used to count DESTINATIONS, so it read "1" while 52
+            // incidents sat open (tripl-oxkt.16). Two distinct values are what
+            // let the assertion below tell the two apart.
+            open_incident_count: 7,
             alert_rule_count: 0,
             // H1: monitoring_signal_count is the OPEN-SIGNAL population (anomalies
             // across project_total + event_type + event scope). It must NOT drive
@@ -265,11 +270,17 @@ describe('AppSidebar', () => {
     // once the projects query resolves the active project's summary.
     await screen.findByText('10')
 
-    // Events active count (10), event-type count (2) and alerting destinations (1)
-    // are unambiguous project-summary stats and always render as nav badges.
+    // Events active count (10) and event-type count (2) are unambiguous
+    // project-summary stats and always render as nav badges.
     expect(screen.getByText('10')).toBeInTheDocument()
     expect(screen.getByText('2')).toBeInTheDocument()
-    expect(screen.getByText('1')).toBeInTheDocument()
+
+    // Alerting badges OPEN INCIDENTS (7), not the destination count (1) it used
+    // to show — a number that said "1" while the Inbox held 52 open incidents,
+    // sitting directly under Anomalies, which does badge a real backlog.
+    const alertingLink = screen.getByRole('link', { name: /Alerting/ })
+    expect(alertingLink).toHaveTextContent('7')
+    expect(alertingLink).not.toHaveTextContent('1')
 
     // H1: the "Monitors" nav item counts MONITORS in a firing state
     // (firing_monitor_count === 3), equal to the Monitors page firing_count — so

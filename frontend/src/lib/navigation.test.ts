@@ -1,5 +1,40 @@
 import { describe, expect, it } from 'vitest'
-import { buildNavGroups, resolveNavLocation } from './navigation'
+import type { ProjectSummary } from '@/types'
+import {
+  buildNavGroups,
+  getAlertingPath,
+  resolveActivityTargetPath,
+  resolveNavLocation,
+} from './navigation'
+
+/**
+ * A project summary with every counter quiet, so each test states only the
+ * counters it is actually about. Written as a factory rather than a literal per
+ * test because the badges are bound to a growing struct — `open_incident_count`
+ * is the eighth field to arrive (tripl-oxkt.16) — and a repeated literal makes
+ * every addition a seven-place edit that hides which number a test cares about.
+ */
+function projectSummary(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
+  return {
+    event_type_count: 6,
+    event_count: 2483,
+    active_event_count: 2483,
+    implemented_event_count: 100,
+    review_pending_event_count: 8,
+    archived_event_count: 12,
+    variable_count: 40,
+    scan_count: 5,
+    alert_destination_count: 2,
+    alert_rule_count: 0,
+    monitoring_signal_count: 0,
+    firing_monitor_count: 0,
+    open_incident_count: 0,
+    failing_scan_config_count: 0,
+    latest_scan_job: null,
+    latest_signal: null,
+    ...overrides,
+  }
+}
 
 describe('buildNavGroups', () => {
   it('produces the three job-based groups in order', () => {
@@ -30,24 +65,7 @@ describe('buildNavGroups', () => {
   })
 
   it('derives counts from the project summary', () => {
-    const summary = {
-      event_type_count: 6,
-      event_count: 2483,
-      active_event_count: 2483,
-      implemented_event_count: 100,
-      review_pending_event_count: 8,
-      archived_event_count: 12,
-      variable_count: 40,
-      scan_count: 5,
-      alert_destination_count: 2,
-      alert_rule_count: 0,
-      monitoring_signal_count: 3,
-      firing_monitor_count: 0,
-      failing_scan_config_count: 0,
-      latest_scan_job: null,
-      latest_signal: null,
-    }
-    const items = buildNavGroups('demo', summary).flatMap((g) => g.items)
+    const items = buildNavGroups('demo', projectSummary()).flatMap((g) => g.items)
     expect(items.find((i) => i.id === 'events')!.count).toBe('2.5k')
     expect(items.find((i) => i.id === 'variables')!.count).toBe('40')
   })
@@ -56,23 +74,7 @@ describe('buildNavGroups', () => {
     // "Monitors" counts MONITORS in a firing state (firing_monitor_count), not the
     // open-signal population (monitoring_signal_count). Binding to the signal count
     // read "Monitors 9" next to a Monitors page showing 3 firing monitors.
-    const summary = {
-      event_type_count: 6,
-      event_count: 2483,
-      active_event_count: 2483,
-      implemented_event_count: 100,
-      review_pending_event_count: 8,
-      archived_event_count: 12,
-      variable_count: 40,
-      scan_count: 5,
-      alert_destination_count: 2,
-      alert_rule_count: 0,
-      monitoring_signal_count: 9,
-      firing_monitor_count: 3,
-      failing_scan_config_count: 0,
-      latest_scan_job: null,
-      latest_signal: null,
-    }
+    const summary = projectSummary({ monitoring_signal_count: 9, firing_monitor_count: 3 })
     const monitors = buildNavGroups('demo', summary)
       .flatMap((g) => g.items)
       .find((i) => i.id === 'monitoring')!
@@ -85,23 +87,7 @@ describe('buildNavGroups', () => {
 
   it('omits the Monitors badge when no monitors are firing (H1)', () => {
     // No firing monitors → no count and no tone (rather than a "0" badge).
-    const summary = {
-      event_type_count: 6,
-      event_count: 2483,
-      active_event_count: 2483,
-      implemented_event_count: 100,
-      review_pending_event_count: 8,
-      archived_event_count: 12,
-      variable_count: 40,
-      scan_count: 5,
-      alert_destination_count: 2,
-      alert_rule_count: 0,
-      monitoring_signal_count: 9,
-      firing_monitor_count: 0,
-      failing_scan_config_count: 0,
-      latest_scan_job: null,
-      latest_signal: null,
-    }
+    const summary = projectSummary({ monitoring_signal_count: 9, firing_monitor_count: 0 })
     const withZero = buildNavGroups('demo', summary).flatMap((g) => g.items)
     const withoutSummary = buildNavGroups('demo', undefined).flatMap((g) => g.items)
     for (const items of [withZero, withoutSummary]) {
@@ -115,23 +101,7 @@ describe('buildNavGroups', () => {
     // Anomalies lists the raw open-signal population, so its badge uses
     // monitoring_signal_count — deliberately distinct from the Monitors badge,
     // which counts firing monitors (firing_monitor_count).
-    const summary = {
-      event_type_count: 6,
-      event_count: 2483,
-      active_event_count: 2483,
-      implemented_event_count: 100,
-      review_pending_event_count: 8,
-      archived_event_count: 12,
-      variable_count: 40,
-      scan_count: 5,
-      alert_destination_count: 2,
-      alert_rule_count: 0,
-      monitoring_signal_count: 9,
-      firing_monitor_count: 3,
-      failing_scan_config_count: 0,
-      latest_scan_job: null,
-      latest_signal: null,
-    }
+    const summary = projectSummary({ monitoring_signal_count: 9, firing_monitor_count: 3 })
     const anomalies = buildNavGroups('demo', summary)
       .flatMap((g) => g.items)
       .find((i) => i.id === 'anomalies')!
@@ -140,30 +110,55 @@ describe('buildNavGroups', () => {
   })
 
   it('omits the Anomalies badge when no signals are open', () => {
-    const summary = {
-      event_type_count: 6,
-      event_count: 2483,
-      active_event_count: 2483,
-      implemented_event_count: 100,
-      review_pending_event_count: 8,
-      archived_event_count: 12,
-      variable_count: 40,
-      scan_count: 5,
-      alert_destination_count: 2,
-      alert_rule_count: 0,
-      monitoring_signal_count: 0,
-      firing_monitor_count: 0,
-      failing_scan_config_count: 0,
-      latest_scan_job: null,
-      latest_signal: null,
-    }
-    const withZero = buildNavGroups('demo', summary).flatMap((g) => g.items)
+    const withZero = buildNavGroups('demo', projectSummary()).flatMap((g) => g.items)
     const withoutSummary = buildNavGroups('demo', undefined).flatMap((g) => g.items)
     for (const items of [withZero, withoutSummary]) {
       const anomalies = items.find((i) => i.id === 'anomalies')!
       expect(anomalies.count).toBeUndefined()
       expect(anomalies.tone).toBeUndefined()
     }
+  })
+
+  it('binds the Alerting badge to the open-incident count, never the destination count (tripl-oxkt.16)', () => {
+    // The production numbers that exposed this: one telegram destination, 52
+    // incidents awaiting triage. The badge read "Alerting 1", untoned, directly
+    // under "Anomalies 68" in danger — so the one surface carrying a real queue
+    // looked like the quietest thing in the group. Destinations are
+    // configuration, not work.
+    const summary = projectSummary({
+      alert_destination_count: 1,
+      open_incident_count: 52,
+      monitoring_signal_count: 68,
+    })
+    const alerting = buildNavGroups('demo', summary)
+      .flatMap((g) => g.items)
+      .find((i) => i.id === 'alerting')!
+    expect(alerting.count).toBe('52')
+    expect(alerting.tone).toBe('danger')
+    expect(alerting.count).not.toBe('1')
+  })
+
+  it('omits the Alerting badge when the inbox is clear, even with destinations configured', () => {
+    // Nothing to triage → no count and no tone, rather than a "0" badge or a
+    // badge that quietly falls back to counting destinations again.
+    const summary = projectSummary({ alert_destination_count: 3, open_incident_count: 0 })
+    const withZero = buildNavGroups('demo', summary).flatMap((g) => g.items)
+    const withoutSummary = buildNavGroups('demo', undefined).flatMap((g) => g.items)
+    for (const items of [withZero, withoutSummary]) {
+      const alerting = items.find((i) => i.id === 'alerting')!
+      expect(alerting.count).toBeUndefined()
+      expect(alerting.tone).toBeUndefined()
+    }
+  })
+
+  it('gives Alerting the same badge treatment as the Anomalies item above it', () => {
+    // The defect was a parity one — Alerting was the only backlog surface in the
+    // Observe group whose badge was untoned — so assert the two agree in shape.
+    const summary = projectSummary({ monitoring_signal_count: 68, open_incident_count: 52 })
+    const items = buildNavGroups('demo', summary).flatMap((g) => g.items)
+    const anomalies = items.find((i) => i.id === 'anomalies')!
+    const alerting = items.find((i) => i.id === 'alerting')!
+    expect(alerting.tone).toBe(anomalies.tone)
   })
 
   it('surfaces Variables and Relations as Plan nav items (M6)', () => {
@@ -266,5 +261,108 @@ describe('resolveNavLocation', () => {
   it('returns null for routes outside the grouped nav (e.g. general settings)', () => {
     expect(resolveNavLocation('demo', '/p/demo/settings')).toBeNull()
     expect(resolveNavLocation('demo', '/p/demo/settings/general')).toBeNull()
+  })
+
+  it('still resolves an alerting deep link built by getAlertingPath', () => {
+    // The deep link adds a path segment and a query string; the nav item matches
+    // on a prefix, so the sidebar must not lose its highlight on it.
+    const path = getAlertingPath('demo', { deliveryId: 'dlv-1' })
+    expect(resolveNavLocation('demo', path)).toEqual({ area: 'Observe', label: 'Alerting' })
+  })
+})
+
+describe('getAlertingPath', () => {
+  it('is the plain page when no anchor is supplied', () => {
+    expect(getAlertingPath('demo')).toBe('/p/demo/settings/alerting')
+    expect(getAlertingPath('demo', {})).toBe('/p/demo/settings/alerting')
+  })
+
+  it('puts the delivery in the path segment the page reads it from', () => {
+    expect(getAlertingPath('demo', { deliveryId: 'dlv-1' })).toBe(
+      '/p/demo/settings/alerting/dlv-1',
+    )
+  })
+
+  it('carries the item and incident anchors as the query params the page parses', () => {
+    // Same two names the alert MESSAGE uses (ALERT_AUDIT_ITEM_PARAM /
+    // ALERT_INCIDENT_PARAM in worker/tasks/metrics/urls.py), so an in-app link
+    // and a link out of someone's telegram history land on the same row.
+    expect(
+      getAlertingPath('demo', {
+        deliveryId: 'dlv-1',
+        itemAnchor: 'event:evt-1',
+        incidentId: 'grp-1',
+      }),
+    ).toBe('/p/demo/settings/alerting/dlv-1?item=event%3Aevt-1&incident=grp-1')
+  })
+
+  it('carries an incident with no delivery', () => {
+    // The inbox card is addressable on its own; a caller holding only the
+    // incident should not be forced back to the page index.
+    expect(getAlertingPath('demo', { incidentId: 'grp-1' })).toBe(
+      '/p/demo/settings/alerting?incident=grp-1',
+    )
+  })
+
+  it('drops anchors that are null rather than emitting empty params', () => {
+    expect(
+      getAlertingPath('demo', { deliveryId: null, itemAnchor: null, incidentId: null }),
+    ).toBe('/p/demo/settings/alerting')
+  })
+})
+
+describe('resolveActivityTargetPath', () => {
+  const alertRow = {
+    id: 'alert-delivery:dlv-1',
+    type: 'alert' as const,
+    project_slug: 'demo',
+    target_path: '/p/demo/settings/alerting',
+  }
+
+  it('rebuilds the delivery deep link for an alert row (tripl-oxkt.21)', () => {
+    // The backend sends the bare page, which drops the reader at the top of a
+    // list of every delivery and every incident — strictly worse than the
+    // telegram message the same delivery sent. The delivery id was never lost:
+    // it is inside the row's own id.
+    expect(resolveActivityTargetPath(alertRow)).toBe('/p/demo/settings/alerting/dlv-1')
+  })
+
+  it('builds the link against the slug carried by the row itself', () => {
+    // The workspace-wide feed mixes projects, so the slug has to come from the row.
+    expect(resolveActivityTargetPath({ ...alertRow, project_slug: 'other' })).toBe(
+      '/p/other/settings/alerting/dlv-1',
+    )
+  })
+
+  it('leaves every non-alert row on the path the backend sent', () => {
+    // Guessing is how this defect started; only the alert rows are known to be
+    // under-specified.
+    for (const type of ['anomaly', 'scan', 'event'] as const) {
+      expect(
+        resolveActivityTargetPath({
+          id: `${type}:1`,
+          type,
+          project_slug: 'demo',
+          target_path: '/p/demo/anomalies',
+        }),
+      ).toBe('/p/demo/anomalies')
+    }
+  })
+
+  it('keeps the backend path when an alert row is not shaped as expected', () => {
+    // A differently-minted id, or a prefix with nothing after it, means we do not
+    // actually know the delivery — fall back rather than build /alerting/.
+    expect(
+      resolveActivityTargetPath({ ...alertRow, id: 'alert:dlv-1' }),
+    ).toBe('/p/demo/settings/alerting')
+    expect(
+      resolveActivityTargetPath({ ...alertRow, id: 'alert-delivery:' }),
+    ).toBe('/p/demo/settings/alerting')
+  })
+
+  it('stays null when the backend sent no path and the row cannot be repaired', () => {
+    expect(
+      resolveActivityTargetPath({ ...alertRow, id: 'alert:dlv-1', target_path: null }),
+    ).toBeNull()
   })
 })

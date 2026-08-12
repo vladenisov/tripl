@@ -1,7 +1,9 @@
 import { useState } from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
-import { History, Pencil, Plus, Trash2 } from "lucide-react"
+import { History, Pencil, Plus, Send, Trash2 } from "lucide-react"
+import { Link } from "react-router-dom"
 import type {
+  AlertDeliveryStatus,
   AlertDestination,
   AlertRule,
   EventType,
@@ -42,20 +44,55 @@ import {
   type RuleFormState,
 } from "./constants"
 import { getErrorMessage } from '@/lib/utils'
+import { formatDateTime, formatRelativeTime } from "@/lib/datetime"
+import { countOf } from "@/lib/plural"
+import { describeDeletionImpact } from "./deletionImpact"
+
+const DELIVERY_STATUS_VARIANT: Record<AlertDeliveryStatus, 'success' | 'warning' | 'destructive'> = {
+  sent: 'success',
+  pending: 'warning',
+  failed: 'destructive',
+}
+
+/**
+ * One rule setting, labelled.
+ *
+ * The whole block used to be a single wrapped run of unlabelled spans — "Scan:
+ * all scans Scopes: total, groups, events, schema, distribution, regressions,
+ * value drift / Direction: up / down Cooldown: 6h Min %: 100 …" — one line of
+ * prose in which no individual setting could be found without reading all of
+ * them (tripl-oxkt.18).
+ */
+function RuleSetting({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</dt>
+      <dd className="break-words text-xs text-foreground">{value}</dd>
+    </div>
+  )
+}
+
+interface DestinationCardProps {
+  slug: string
+  destination: AlertDestination
+  eventTypes: EventType[]
+  scans: ScanConfig[]
+  // Threaded from the section rather than read here, so one card cannot show a
+  // switch its neighbour hides. Everything it guards is an editor-only endpoint
+  // (deps.py `require_editor`) — with one deliberate exception, Replay, which
+  // the API leaves open because it saves nothing (tripl-oxkt.9).
+  canWrite: boolean
+  onEditDestination: (destination: AlertDestination) => void
+}
 
 export function DestinationCard({
   slug,
   destination,
   eventTypes,
   scans,
+  canWrite,
   onEditDestination,
-}: {
-  slug: string
-  destination: AlertDestination
-  eventTypes: EventType[]
-  scans: ScanConfig[]
-  onEditDestination: (destination: AlertDestination) => void
-}) {
+}: DestinationCardProps) {
   const qc = useQueryClient()
   const { confirm, dialog } = useConfirm()
   const { notifyStepCompleted } = useDemoScenarioActions()
@@ -101,6 +138,24 @@ export function DestinationCard({
     onSuccess: () => qc.invalidateQueries({ queryKey: ['alertDestinations', slug] }),
   })
 
+  // The rule's enable switch was `updateRule(...).then(...)` with no catch and
+  // no pending state — the one write on this page that escaped the global
+  // mutation error toast, and turning a rule off mid-storm is exactly when "I
+  // clicked it and nothing happened" costs most (tripl-oxkt.18).
+  const toggleRuleMut = useMutation({
+    mutationFn: ({ ruleId, enabled }: { ruleId: string; enabled: boolean }) =>
+      alertingApi.updateRule(slug, destination.id, ruleId, { enabled }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['alertDestinations', slug] }),
+  })
+
+  // A test send is deliberately NOT invalidating the destinations list: the
+  // backend records it in the audit log rather than as an AlertDelivery, so the
+  // counts on this card do not move and a refetch would only throw away the
+  // answer the operator is reading.
+  const testDestinationMut = useMutation({
+    mutationFn: () => alertingApi.testDestination(slug, destination.id),
+  })
+
   const openNewRule = () => {
     setEditingRule(null)
     setRuleForm(defaultRuleForm())
@@ -116,7 +171,7 @@ export function DestinationCard({
   const handleDeleteRule = async (rule: AlertRule) => {
     const ok = await confirm({
       title: 'Delete alert rule',
-      message: `Delete "${rule.name}"?`,
+      message: `Delete "${rule.name}"? ${describeDeletionImpact(rule.total_deliveries, rule.incident_count)}`,
       confirmLabel: 'Delete',
       variant: 'danger',
     })
@@ -124,15 +179,20 @@ export function DestinationCard({
   }
 
   const ruleMutation = editingRule ? updateRuleMut : createRuleMut
+  const testResult = testDestinationMut.data ?? null
 
   return (
     <>
       {dialog}
       <Card>
         <CardContent className="p-5 space-y-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            {/* `min-w-0` + `flex-wrap` on the badge row: at 390px the row used to
+                clip its own tail, and the tail is the chat id — the only value
+                that says WHICH Telegram chat this destination points at
+                (tripl-oxkt.18). */}
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="font-semibold">{destination.name}</span>
                 <Badge variant="outline" className="uppercase text-[10px]">
                   {destination.type}
@@ -152,7 +212,9 @@ export function DestinationCard({
                   <Badge variant="outline" className="text-[10px]">bot token set</Badge>
                 )}
                 {destination.type === 'telegram' && destination.chat_id && (
-                  <Badge variant="outline" className="text-[10px]">chat {destination.chat_id}</Badge>
+                  <Badge variant="outline" className="max-w-full break-all text-[10px]">
+                    chat {destination.chat_id}
+                  </Badge>
                 )}
                 {destination.type === 'webhook' && destination.target_url_set && (
                   <Badge variant="outline" className="text-[10px]">url set</Badge>
@@ -161,13 +223,43 @@ export function DestinationCard({
                   <Badge variant="outline" className="text-[10px]">header {destination.webhook_header_name}</Badge>
                 )}
               </div>
+              {/* Traffic, not just configuration. A destination that has carried
+                  nothing looks identical to a working one everywhere else on
+                  this card, and the two are opposite facts (tripl-oxkt.17). */}
               <p className="text-xs text-muted-foreground">
-                {destination.rules.length} rule{destination.rules.length === 1 ? '' : 's'}
+                {countOf(destination.rules.length, 'rule', 'rules')}
+                {' · '}
+                {countOf(destination.delivery_count, 'delivery', 'deliveries')}
+                {' · '}
+                {countOf(destination.incident_count, 'incident', 'incidents')}
               </p>
             </div>
-            <div className="flex items-center gap-2">
+            {/* The whole control cluster goes for a viewer — a test send puts a
+                message in somebody's Slack, and the switch and the pencil are
+                both 403s. The card keeps every fact it was showing. */}
+            {canWrite && (
+            <div className="flex shrink-0 items-center gap-2">
+              {/* "bot token set" and a chat id mean a value is STORED. A revoked
+                  token stores exactly as well as a live one, so the only way to
+                  answer "did I actually wire this up?" is to push a message
+                  through the real channel (tripl-oxkt.17). */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => testDestinationMut.mutate()}
+                disabled={testDestinationMut.isPending}
+                aria-label={`Send a test message through ${destination.name}`}
+              >
+                <Send aria-hidden="true" className="mr-2 h-4 w-4" />
+                {testDestinationMut.isPending ? 'Sending…' : 'Test'}
+              </Button>
+              {/* Same contract as the rule switch below: `checked` is the
+                  server's value, and the control is inert while its own write
+                  is in flight, so a second click cannot queue a write against
+                  a state that has not landed yet. */}
               <Switch
                 checked={destination.enabled}
+                disabled={updateDestinationMut.isPending}
                 onCheckedChange={checked => updateDestinationMut.mutate({ enabled: checked })}
                 aria-label={`Toggle ${destination.name}`}
               />
@@ -175,18 +267,50 @@ export function DestinationCard({
                 <Pencil aria-hidden="true" className="h-4 w-4" />
               </Button>
             </div>
+            )}
           </div>
+
+          {/* A channel refusal arrives as a 200 with `ok: false` — it is the
+              answer the button was pressed for, so it renders as a result and
+              not as a crash. Only a transport failure gets `role="alert"`. */}
+          {(testDestinationMut.isPending || testResult || testDestinationMut.isError) && (
+            <p
+              role={testDestinationMut.isError ? 'alert' : 'status'}
+              className={
+                testResult?.ok
+                  ? 'text-xs text-success'
+                  : testDestinationMut.isPending
+                    ? 'text-xs text-muted-foreground'
+                    : 'text-xs text-destructive'
+              }
+            >
+              {testDestinationMut.isPending && 'Sending a test message…'}
+              {!testDestinationMut.isPending && testResult?.ok && (
+                testResult.sent_at
+                  ? `Test message reached the channel at ${formatDateTime(testResult.sent_at)}.`
+                  : 'Test message reached the channel.'
+              )}
+              {!testDestinationMut.isPending && testResult && !testResult.ok && (
+                `The channel refused the test message: ${testResult.error ?? 'no reason given'}`
+              )}
+              {!testDestinationMut.isPending && !testResult && testDestinationMut.isError && (
+                `Test send failed: ${getErrorMessage(testDestinationMut.error)}`
+              )}
+            </p>
+          )}
 
           <div className="flex justify-between items-center">
             <Label className="text-sm">Rules</Label>
             {/* Exactly one card coaches: the local demo sink, where a delivery
                 renders locally and nothing external is touched. */}
-            <ScenarioCoachMark step="alerting/create-rule" when={!!destination.is_local}>
-              <Button size="sm" variant="outline" onClick={openNewRule}>
-                <Plus className="mr-2 h-4 w-4" />
-                Add Rule
-              </Button>
-            </ScenarioCoachMark>
+            {canWrite && (
+              <ScenarioCoachMark step="alerting/create-rule" when={!!destination.is_local}>
+                <Button size="sm" variant="outline" onClick={openNewRule}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add Rule
+                </Button>
+              </ScenarioCoachMark>
+            )}
           </div>
 
           {destination.rules.length === 0 ? (
@@ -197,71 +321,152 @@ export function DestinationCard({
             <div className="space-y-2">
               {destination.rules.map(rule => (
                 <div key={rule.id} className="rounded-lg border p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="font-medium">{rule.name}</span>
                         <Badge variant={rule.enabled ? 'default' : 'secondary'} className="text-[10px]">
                           {rule.enabled ? 'enabled' : 'disabled'}
                         </Badge>
-                      </div>
-                      <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                        <span>
-                          Scan: {rule.scan_config_id
-                            ? scans.find(scan => scan.id === rule.scan_config_id)?.name ?? 'unknown scan'
-                            : 'all scans'}
-                        </span>
-                        <span>Scopes: {scopeSummary(rule) || 'none'}</span>
-                        <span>Direction: {directionSummary(rule) || 'none'}</span>
-                        <span>Cooldown: {formatCooldown(rule.cooldown_minutes)}</span>
-                        <span>Min %: {rule.min_percent_delta}</span>
-                        <span>Min Δ: {rule.min_absolute_delta}</span>
-                        <span>Min expected: {rule.min_expected_count}</span>
-                        <span>
-                          Message: {!rule.message_template || isDefaultMessageTemplate(rule.message_template, rule.message_format)
-                            ? `default (${rule.message_format})`
-                            : `custom (${rule.message_format})`}
-                        </span>
-                        {!!rule.filters.length && (
-                          <span>{rule.filters.length} filter{rule.filters.length === 1 ? '' : 's'}</span>
+                        {/* The mute lives on the rule and is set from the monitor
+                            page. This card used to be unable to show it at all,
+                            so a snoozed rule read as fully live 200px under a
+                            panel that counted it as muted (tripl-oxkt.18). */}
+                        {rule.muted && (
+                          <Badge variant="warning" className="text-[10px]">
+                            {rule.muted_until
+                              ? `muted until ${formatDateTime(rule.muted_until)}`
+                              : 'muted'}
+                          </Badge>
                         )}
                       </div>
+
+                      {/* Delivery health. `Never delivered` is a different fact
+                          from `last sent 3h ago`, and until now the card stated
+                          neither (tripl-oxkt.17). */}
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                        {rule.total_deliveries === 0 ? (
+                          <span>Never delivered</span>
+                        ) : (
+                          <>
+                            <span>
+                              {countOf(rule.total_deliveries, 'delivery', 'deliveries')}
+                              {' · '}
+                              {countOf(rule.incident_count, 'incident', 'incidents')}
+                            </span>
+                            <span>last {formatRelativeTime(rule.last_delivery_at)}</span>
+                            {rule.last_delivery_status && (
+                              <Badge
+                                variant={DELIVERY_STATUS_VARIANT[rule.last_delivery_status]}
+                                className="text-[10px]"
+                              >
+                                {rule.last_delivery_status}
+                              </Badge>
+                            )}
+                          </>
+                        )}
+                        {/* The mute control itself is not duplicated here: one
+                            switch in two places is how the two screens started
+                            disagreeing. This points at the one that owns it. */}
+                        <Link
+                          to={`/p/${slug}/monitors/${rule.id}`}
+                          className="underline underline-offset-2 hover:text-foreground"
+                        >
+                          {rule.muted ? 'Change mute →' : 'Mute this rule →'}
+                        </Link>
+                      </div>
+
+                      <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 lg:grid-cols-4">
+                        <RuleSetting
+                          label="Scan"
+                          value={rule.scan_config_id
+                            ? scans.find(scan => scan.id === rule.scan_config_id)?.name ?? 'unknown scan'
+                            : 'all scans'}
+                        />
+                        <RuleSetting label="Scopes" value={scopeSummary(rule) || 'none'} />
+                        <RuleSetting label="Direction" value={directionSummary(rule) || 'none'} />
+                        <RuleSetting label="Cooldown" value={formatCooldown(rule.cooldown_minutes)} />
+                        <RuleSetting label="Min %" value={String(rule.min_percent_delta)} />
+                        <RuleSetting label="Min Δ" value={String(rule.min_absolute_delta)} />
+                        <RuleSetting label="Min expected" value={String(rule.min_expected_count)} />
+                        <RuleSetting
+                          label="Message"
+                          value={!rule.message_template || isDefaultMessageTemplate(rule.message_template, rule.message_format)
+                            ? `default (${rule.message_format})`
+                            : `custom (${rule.message_format})`}
+                        />
+                        {!!rule.filters.length && (
+                          <RuleSetting
+                            label="Filters"
+                            value={countOf(rule.filters.length, 'filter', 'filters')}
+                          />
+                        )}
+                      </dl>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <Switch
-                        checked={rule.enabled}
-                        onCheckedChange={checked => alertingApi.updateRule(slug, destination.id, rule.id, { enabled: checked }).then(() => qc.invalidateQueries({ queryKey: ['alertDestinations', slug] }))}
-                        aria-label={`Toggle ${rule.name}`}
-                      />
+                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                      {/* `checked` is the server's value, never local state, so
+                          a rejected write cannot leave the switch showing a
+                          position the server refused — it simply never moves,
+                          and the global mutation toast says why (tripl-oxkt.9,
+                          tripl-oxkt.18). Pending is scoped to the ONE rule being
+                          written: a card carries several, and a shared flag
+                          disables the neighbours for the duration of somebody
+                          else's request. */}
+                      {canWrite && (
+                        <Switch
+                          checked={rule.enabled}
+                          disabled={
+                            toggleRuleMut.isPending && toggleRuleMut.variables?.ruleId === rule.id
+                          }
+                          onCheckedChange={checked => toggleRuleMut.mutate({ ruleId: rule.id, enabled: checked })}
+                          aria-label={`Toggle ${rule.name}`}
+                        />
+                      )}
                       {/* Exactly one rule coaches the simulate step: the seeded
                           firing rule, whose window is guaranteed to hold anomalies. */}
                       <ScenarioCoachMark
                         step="alerting/simulate"
                         when={rule.name === SCENARIO_SEEDED.firingRuleName}
                       >
+                        {/* Labelled, not a bare 32px clock. It is the only control
+                            on this page that answers "would a stricter threshold
+                            cut the noise" without saving that threshold onto a
+                            rule that is live-routing to a real channel — and it
+                            was the least visible thing here (tripl-oxkt.17). */}
                         <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8"
+                          variant="outline"
+                          size="sm"
                           onClick={() => setReplayingRule(rule)}
-                          title="Replay last N days"
+                          title="Replay this rule over past data, without saving anything"
                           aria-label={`Replay ${rule.name}`}
                         >
-                          <History className="h-4 w-4" />
+                          <History aria-hidden="true" className="mr-2 h-4 w-4" />
+                          Replay
                         </Button>
                       </ScenarioCoachMark>
-                      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Edit rule ${rule.name}`} onClick={() => openEditRule(rule)}>
-                        <Pencil aria-hidden="true" className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                        aria-label={`Delete rule ${rule.name}`}
-                        onClick={() => handleDeleteRule(rule)}
-                      >
-                        <Trash2 aria-hidden="true" className="h-4 w-4" />
-                      </Button>
+                      {/* Replay stays above, for everyone: it is the one control
+                          in this cluster the API does not gate, because it saves
+                          nothing — a viewer asking "would a stricter threshold
+                          have cut this noise" is asking a question, not making a
+                          change (backend alerting.py has no EditorUserDep on
+                          /simulate). Edit and delete are both 403s. */}
+                      {canWrite && (
+                        <>
+                          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Edit rule ${rule.name}`} onClick={() => openEditRule(rule)}>
+                            <Pencil aria-hidden="true" className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                            aria-label={`Delete rule ${rule.name}`}
+                            title={`Deletes the rule, ${countOf(rule.total_deliveries, 'delivery', 'deliveries')} and ${countOf(rule.incident_count, 'incident', 'incidents')}`}
+                            onClick={() => handleDeleteRule(rule)}
+                          >
+                            <Trash2 aria-hidden="true" className="h-4 w-4" />
+                          </Button>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -271,7 +476,10 @@ export function DestinationCard({
         </CardContent>
       </Card>
 
-      <Dialog open={ruleDialogOpen} onOpenChange={open => { if (!open) { setRuleDialogOpen(false); setEditingRule(null) } }}>
+      {/* Gated on the role as well as on the open flag: `refresh()` can rewrite
+          the session mid-visit, and an editor form left open across a demotion
+          would still submit its Save. */}
+      <Dialog open={canWrite && ruleDialogOpen} onOpenChange={open => { if (!open) { setRuleDialogOpen(false); setEditingRule(null) } }}>
         <DialogContent className="max-w-3xl">
           <form onSubmit={event => { event.preventDefault(); ruleMutation.mutate() }}>
             <DialogHeader>

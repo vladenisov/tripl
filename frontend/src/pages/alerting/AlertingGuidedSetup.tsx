@@ -2,6 +2,7 @@ import type { LucideIcon } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Panel } from '@/components/settings/kit'
+import { useCanWrite } from '@/lib/permissions'
 
 import type { DestinationChannel } from './constants'
 
@@ -45,6 +46,11 @@ const STEPS: readonly Step[] = [
 ]
 
 export function AlertingGuidedSetup({ channels, onPickChannel }: AlertingGuidedSetupProps) {
+  // The three steps stay on screen for a viewer — they explain what alerting is
+  // on a project that has none, which is exactly the question a viewer landing
+  // here has. Only the buttons that would 403 come off, and the last step says
+  // who does it instead (tripl-oxkt.9).
+  const canWrite = useCanWrite()
   return (
     <Panel title="Set up alerting" subtitle="No destinations or rules yet">
       <div className="space-y-6 p-5">
@@ -72,17 +78,24 @@ export function AlertingGuidedSetup({ channels, onPickChannel }: AlertingGuidedS
           ))}
         </ol>
 
-        <div className="space-y-2">
-          <span className="text-xs font-medium text-muted-foreground">Start by picking a channel</span>
-          <div className="flex flex-wrap items-center gap-2">
-            {channels.map(({ channel, label, Icon }) => (
-              <Button key={channel} variant="outline" size="sm" onClick={() => onPickChannel(channel)}>
-                <Icon className="mr-2 h-4 w-4" />
-                {label}
-              </Button>
-            ))}
+        {canWrite ? (
+          <div className="space-y-2">
+            <span className="text-xs font-medium text-muted-foreground">Start by picking a channel</span>
+            <div className="flex flex-wrap items-center gap-2">
+              {channels.map(({ channel, label, Icon }) => (
+                <Button key={channel} variant="outline" size="sm" onClick={() => onPickChannel(channel)}>
+                  <Icon className="mr-2 h-4 w-4" />
+                  {label}
+                </Button>
+              ))}
+            </div>
           </div>
-        </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Your account has the viewer role, so the first destination is created by an editor or
+            owner. Once one exists, incidents and their deliveries show up here for everyone.
+          </p>
+        )}
       </div>
     </Panel>
   )

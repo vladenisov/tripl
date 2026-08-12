@@ -53,7 +53,7 @@ beforeEach(() => {
 })
 
 describe('RoutingRulesPanel', () => {
-  it('names the monitors that are configured but not delivering', async () => {
+  it('names the rules that are configured but not delivering', async () => {
     renderPanel(
       [
         monitor(),
@@ -66,19 +66,30 @@ describe('RoutingRulesPanel', () => {
 
     // `muted` and `off` both mean "wired up and silent", which is the failure
     // this tab exists to catch. The table this replaced never showed `muted` at
-    // all — it had the field in hand and dropped it — so a snoozed monitor read
+    // all — it had the field in hand and dropped it — so a snoozed rule read
     // as live on the page you visit to check your wiring.
-    // Asserted as one line rather than four fragments: "1 firing" also appears
-    // in the panel subtitle, so a loose matcher would pass on the wrong element.
+    // Asserted as one whole line: the fragments are what the panel used to
+    // stutter across two elements, and a loose matcher would not catch that
+    // coming back.
     expect(
-      await screen.findByText('4 monitors routing · 1 firing · 1 muted · 1 off'),
+      await screen.findByText('4 rules routing · 1 firing · 1 muted · 1 off'),
     ).toBeInTheDocument()
   })
 
-  it('sends you to the monitors list rather than repeating it', async () => {
+  it('states the summary once, not as a subtitle and a body line saying the same thing', async () => {
+    renderPanel([monitor(), monitor({ rule_id: 'rule-2' })])
+
+    // Subtitle "2 monitors · 0 firing" and body "2 monitors routing" were the
+    // same sentence twice — the suffixes that would have differentiated them are
+    // empty whenever nothing is firing, muted or off (tripl-oxkt.18).
+    expect(await screen.findByText('2 rules routing')).toBeInTheDocument()
+    expect(screen.queryByText(/2 monitors/)).toBeNull()
+  })
+
+  it('sends you to the surface that owns the mute rather than repeating it here', async () => {
     renderPanel([monitor()])
 
-    const link = await screen.findByRole('link', { name: /View monitors/ })
+    const link = await screen.findByRole('link', { name: /Mute or tune a rule/ })
     expect(link).toHaveAttribute('href', '/p/demo/monitors')
     // The five columns it used to duplicate from MonitorsPage are gone.
     expect(screen.queryByRole('columnheader', { name: 'Condition' })).toBeNull()
@@ -88,7 +99,7 @@ describe('RoutingRulesPanel', () => {
   it('says nothing routes yet instead of showing an empty count line', async () => {
     renderPanel([])
 
-    expect(await screen.findByText('No monitors route to a destination yet.')).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: /View monitors/ })).toBeNull()
+    expect(await screen.findByText('No rules route to a destination yet.')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Mute or tune a rule/ })).toBeNull()
   })
 })

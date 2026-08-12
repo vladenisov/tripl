@@ -1,6 +1,14 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  keepPreviousData,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+} from '@tanstack/react-query'
+import { toast } from 'sonner'
 
 import { alertingApi } from '@/api/alerting'
 import { eventTypesApi } from '@/api/eventTypes'
@@ -13,11 +21,21 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useConfirm } from '@/hooks/useConfirm'
-import type { AlertDestination, AlertInboxGroup } from '@/types'
+import {
+  falsePositiveConfirmMessage,
+  inboxActionSuccessMessage,
+  muteConfirmMessage,
+} from '@/lib/alertStatus'
+import { useCanWrite } from '@/lib/permissions'
+import type { AlertDestination, AlertInboxListResponse } from '@/types'
 
 import { AlertAuditPanel, type DeliveryFilters } from './alerting/AlertAuditPanel'
 import { AlertingGuidedSetup } from './alerting/AlertingGuidedSetup'
-import { AlertingInbox, type InboxAction } from './alerting/AlertingInbox'
+import {
+  AlertingInbox,
+  type InboxActionVariables,
+  type InboxStatusFilter,
+} from './alerting/AlertingInbox'
 import { DestinationsSection } from './alerting/DestinationsSection'
 import { CHANNEL_META } from './alerting/channelMeta'
 import { PageHead, Panel } from '@/components/settings/kit'
@@ -39,12 +57,32 @@ type AlertingSection = (typeof ALERTING_SECTIONS)[number]
 const SECTION_LABELS: Record<AlertingSection, string> = {
   inbox: 'Inbox',
   destinations: 'Destinations & rules',
-  audit: 'Audit',
+  // "Delivery log", not "Audit": the sidebar already has an "Audit log" meaning
+  // something else entirely (who changed what), and this list is the messages
+  // behind the Inbox's incidents. The section KEY stays `audit` — every alert
+  // deep link written so far carries it (tripl-oxkt.18).
+  audit: 'Delivery log',
 }
+
+// One page of incidents. 20 was not only too small to reach 37 of 57 production
+// groups — it was TIGHTER than the endpoint's own default of 50 while doing
+// identical database work, because `list_alert_inbox` pulls up to 2000 rows,
+// builds every response and sorts before it slices (tripl-oxkt.1).
+const INBOX_PAGE_SIZE = 50
+// One page of deliveries. Shared with AlertAuditPanel rather than duplicated
+// there, so the Older step and the request that answers it cannot disagree
+// about how big a page is (tripl-oxkt.12).
+const DELIVERY_PAGE_SIZE = 50
 
 export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey, focusScanId, focusIncidentId }: { slug: string; focusDeliveryId?: string; focusItemKey?: string; focusScanId?: string; focusIncidentId?: string }) {
   const qc = useQueryClient()
   const { confirm, dialog } = useConfirm()
+  // Every mutation on this page is editor-only (deps.py `require_editor`), and
+  // the sections below each hide their own write controls and say why once.
+  // The page reads the role for the one write path that is not a button of its
+  // own: this dialog, which can outlive the control that opened it
+  // (tripl-oxkt.9).
+  const canWrite = useCanWrite()
   const [createType, setCreateType] = useState<DestinationChannel | null>(null)
   const [destinationForm, setDestinationForm] = useState<DestinationFormState>(defaultDestinationForm('slack'))
   const [editingDestination, setEditingDestination] = useState<AlertDestination | null>(null)
@@ -56,7 +94,18 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     // Seeded from `?scan=` so a scan run's "Alerts queued" counter can hand the
     // audit log over already narrowed to that scan (tripl-3y7z.2).
     scan_config_id: focusScanId ?? '',
+    // The two dimensions that actually vary in a real delivery log. The backend
+    // has accepted `date_from`/`date_to` all along and the page passed neither,
+    // so five filters were on screen and none of them could narrow anything
+    // (tripl-oxkt.12). '' means unset.
+    date_from: '',
+    date_to: '',
   })
+  // Where the delivery window starts. The panel owns the Newer/Older steps and
+  // resets this on every filter write — the offset indexes INTO the filtered
+  // set, so a narrowing that shrinks the set below the offset would otherwise
+  // land the reader on a blank page of a list that has rows.
+  const [deliveryOffset, setDeliveryOffset] = useState(0)
   // `?scan=` can change without remounting (the alerting route is one page, and
   // navigating from a deep link back to plain /alerting only swaps the query
   // string), so the seed above fires once and would then go stale. Adjusting
@@ -66,6 +115,9 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   if (focusScanId !== appliedScanFocus) {
     setAppliedScanFocus(focusScanId)
     setDeliveryFilters(current => ({ ...current, scan_config_id: focusScanId ?? '' }))
+    // Same reason the panel resets it on every filter write: page 3 of the
+    // unfiltered log is not page 3 of one scan's log, and may not exist at all.
+    setDeliveryOffset(0)
   }
 
   // Section lives in a QUERY param, not a path segment. The second segment of
@@ -91,17 +143,19 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       : focusDeliveryId || focusScanId
         ? 'audit'
         : 'inbox'
+  // NOT `{ replace: true }`. Replacing meant the section a reader arrived on
+  // was overwritten the moment they moved off it: Back left the page entirely
+  // instead of returning to the previous section, and a deep link's original
+  // section was destroyed by the first click (tripl-oxkt.15). Pushing makes the
+  // strip behave like the navigation it looks like.
   const selectSection = (next: AlertingSection) =>
-    setSearchParams(
-      current => {
-        const params = new URLSearchParams(current)
-        params.set('section', next)
-        return params
-      },
-      { replace: true },
-    )
+    setSearchParams(current => {
+      const params = new URLSearchParams(current)
+      params.set('section', next)
+      return params
+    })
 
-  const { data: destinations = [] } = useQuery({
+  const { data: destinations = [], isSuccess: destinationsLoaded } = useQuery({
     queryKey: ['alertDestinations', slug],
     queryFn: () => alertingApi.listDestinations(slug),
   })
@@ -118,6 +172,10 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   const { data: scans = [], isSuccess: scansLoaded } = useQuery({
     queryKey: ['scans', slug],
     queryFn: () => scansApi.list(slug),
+    // Read by the rule editor inside a destination card and by the audit
+    // filter bar — and by nothing on the Inbox, which fired this request on
+    // every load and never looked at the answer (tripl-oxkt.20).
+    enabled: section === 'destinations' || section === 'audit',
   })
   // A `?scan=` naming a scan this project does not have (deleted since the link
   // was written, or hand-edited) reads as "All" rather than as a permanently
@@ -129,8 +187,12 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   const activeDeliveryFilters = scanFilterIsKnown
     ? deliveryFilters
     : { ...deliveryFilters, scan_config_id: '' }
-  const { data: deliveries } = useQuery({
-    queryKey: ['alertDeliveries', slug, activeDeliveryFilters],
+  const {
+    data: deliveries,
+    isLoading: deliveriesLoading,
+    isError: deliveriesFailed,
+  } = useQuery({
+    queryKey: ['alertDeliveries', slug, activeDeliveryFilters, deliveryOffset],
     queryFn: () => alertingApi.listDeliveries(slug, {
       ...activeDeliveryFilters,
       status: activeDeliveryFilters.status || undefined,
@@ -138,13 +200,19 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       destination_id: activeDeliveryFilters.destination_id || undefined,
       rule_id: activeDeliveryFilters.rule_id || undefined,
       scan_config_id: activeDeliveryFilters.scan_config_id || undefined,
-      limit: 50,
-      offset: 0,
+      date_from: activeDeliveryFilters.date_from || undefined,
+      date_to: activeDeliveryFilters.date_to || undefined,
+      limit: DELIVERY_PAGE_SIZE,
+      offset: deliveryOffset,
     }),
     // Audit is the only reader — the pinned deep-linked row and the table. It
     // was left ungated because it used to feed the guided-setup gate too; that
     // now has its own unfiltered probe below, so nothing outside Audit needs it.
     enabled: section === 'audit',
+    // Paging and filtering must not blank the table they are steering: without
+    // this the rows vanish on every step and the panel's own three-way state
+    // reports "loading" over a list the reader was reading.
+    placeholderData: keepPreviousData,
   })
   // Has this project EVER delivered, asked WITHOUT the audit filters.
   //
@@ -154,7 +222,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // filter matching nothing drove `total` to 0, the page replaced itself with
   // the setup checklist — and the filter bar that caused it went with it, so
   // there was nothing left to undo. One row is enough to answer the question.
-  const { data: everDelivered } = useQuery({
+  const { data: everDelivered, isSuccess: deliveryProbeAnswered } = useQuery({
     queryKey: ['alertDeliveriesAny', slug],
     queryFn: () => alertingApi.listDeliveries(slug, { limit: 1 }),
   })
@@ -174,13 +242,58 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     && !deliveries?.items.some(item => item.id === focusedDelivery.id)
     ? focusedDelivery
     : null
-  const { data: inbox } = useQuery({
-    queryKey: ['alertInbox', slug],
-    queryFn: () => alertingApi.listInbox(slug, { limit: 20 }),
+  // The status filter. Changing it changes the query key, which starts a fresh
+  // first page — so resetting the filter resets the offset by construction and
+  // no state can be left pointing into a set that no longer exists.
+  const [inboxStatus, setInboxStatus] = useState<InboxStatusFilter>('')
+  const inboxKey = ['alertInbox', slug, inboxStatus]
+  // Paged, not a single fixed slice. The 20 newest incidents were the ONLY 20
+  // an operator could reach, and status is not part of the server sort key, so
+  // acting on all of them did not reveal the 21st — the tail was cleared only
+  // by ageing out of the 30-day window (tripl-oxkt.1). Offset lives in the page
+  // param rather than in component state, so "Load more" appends instead of
+  // replacing and "Showing N of M" can be honest. Invalidation still matches on
+  // the `['alertInbox', slug]` prefix.
+  const inboxQuery = useInfiniteQuery({
+    queryKey: inboxKey,
+    queryFn: ({ pageParam }) =>
+      alertingApi.listInbox(slug, {
+        status: inboxStatus || undefined,
+        offset: pageParam,
+        limit: INBOX_PAGE_SIZE,
+      }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      const loaded = allPages.reduce((sum, page) => sum + page.items.length, 0)
+      return loaded < lastPage.total ? loaded : undefined
+    },
     // Only the Inbox section reads this. Splitting the page is what makes the
     // saving possible — before it, every section was on screen at once.
     enabled: section === 'inbox',
   })
+  const inbox = useMemo(() => {
+    const pages = inboxQuery.data?.pages
+    if (!pages || pages.length === 0) return undefined
+    // `total` is the FILTERED total the first page reported, which is what
+    // "of M" has to mean once a status filter is on.
+    return { items: pages.flatMap(page => page.items), total: pages[0].total }
+  }, [inboxQuery.data])
+  // A Telegram alert names its incident, and `?incident=` only pre-expanded a
+  // card it never fetched — so a link to anything outside the newest page
+  // rendered nothing at all: no card, no banner, no explanation (tripl-oxkt.13).
+  // Fetched by id through the route that ignores the 30-day list window, and
+  // pinned, exactly as the deep-linked delivery above already is.
+  const { data: focusedIncident } = useQuery({
+    queryKey: ['alertInboxGroup', slug, focusIncidentId],
+    queryFn: () => alertingApi.getInboxGroup(slug, focusIncidentId!),
+    enabled: !!focusIncidentId && section === 'inbox',
+  })
+  const pinnedIncident = focusedIncident
+    && !inbox?.items.some(
+      item => item.correlation_group_id === focusedIncident.correlation_group_id,
+    )
+    ? focusedIncident
+    : null
 
   const allRules = destinations.flatMap(destination =>
     destination.rules.map(rule => ({
@@ -317,22 +430,15 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     })
 
   const inboxActionMut = useMutation({
-    mutationFn: ({
-      group,
-      action,
-    }: {
-      group: AlertInboxGroup
-      action: InboxAction
-    }) => {
-      const mutedUntil = new Date(Date.now() + 7 * 86_400_000).toISOString()
+    mutationFn: ({ group, action, mutedUntil }: InboxActionVariables) => {
       const draft = (noteDrafts[group.correlation_group_id] ?? '').trim()
       return alertingApi.applyInboxAction(slug, group.correlation_group_id, {
         action,
         ...(draft ? { note: draft } : {}),
-        ...(action === 'mute' ? { muted_until: mutedUntil } : {}),
+        ...(action === 'mute' && mutedUntil ? { muted_until: mutedUntil } : {}),
       })
     },
-    onSuccess: (_data, variables) => {
+    onSuccess: (data, variables) => {
       // The draft has been persisted server-side; drop it so the input goes
       // back to showing the placeholder rather than a stale copy.
       setNoteDrafts(current => {
@@ -340,11 +446,91 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
         delete rest[variables.group.correlation_group_id]
         return rest
       })
+      // The server returns the group it just wrote, and this used to throw it
+      // away and invalidate — so the row the operator touched showed nothing
+      // until a refetch landed (tripl-oxkt.11). Write it into the page that
+      // holds it; the refetch below is then a correction, not the only source
+      // of feedback.
+      const updated = data.group
+      qc.setQueryData<InfiniteData<AlertInboxListResponse, number>>(inboxKey, current =>
+        current && {
+          ...current,
+          pages: current.pages.map(page => ({
+            ...page,
+            items: page.items.map(item =>
+              item.correlation_group_id === updated.correlation_group_id ? updated : item,
+            ),
+          })),
+        },
+      )
+      // …and the pinned deep-linked copy, which lives under its own key and
+      // would otherwise keep rendering the pre-action status beside the list.
+      qc.setQueryData(
+        ['alertInboxGroup', slug, updated.correlation_group_id],
+        updated,
+      )
+      toast.success(
+        inboxActionSuccessMessage(variables.action, variables.group.status, data),
+      )
+    },
+    // On settled, not on success: an action can commit and then fail to render
+    // its response, and the one thing that must not happen in that case is a
+    // list left showing the pre-action state with no refetch coming.
+    onSettled: (_data, _error, variables) => {
+      // …except for a note, which moves no status and so cannot change what
+      // this list holds, how it is sorted, or what the filter admits. The
+      // group the server returned is already written above, and refetching
+      // every loaded page after a comment is pure cost (tripl-oxkt.20).
+      if (variables.action === 'note') return
       qc.invalidateQueries({ queryKey: ['alertInbox', slug] })
       qc.invalidateQueries({ queryKey: ['alertDeliveries', slug] })
-      qc.invalidateQueries({ queryKey: ['scans', slug] })
+      // No `['scans']` invalidation: an inbox action cannot change a scan
+      // config, and a 20-item triage pass refetched that list 20 times for
+      // nothing (tripl-oxkt.20).
     },
   })
+
+  /**
+   * Every inbox action, with the two that need asking first.
+   *
+   * The confirms live here because `useConfirm` renders its dialog on this
+   * page. "False positive" is the only control on the page that changes
+   * detection permanently and it had no confirm at all — only a `title`
+   * tooltip, on a button that swapped places with Mute between rows. Mute is
+   * confirmed for a different reason: its blast radius is a five-part key and
+   * the card can only show so much of it, so the sentence spells the whole key
+   * before anything goes quiet (tripl-oxkt.7, tripl-oxkt.8).
+   */
+  const handleInboxAction = async (variables: InboxActionVariables) => {
+    if (variables.action === 'false_positive') {
+      const ok = await confirm({
+        title: 'Mark as a false positive',
+        message: falsePositiveConfirmMessage(variables.group),
+        confirmLabel: 'Mark false positive',
+        variant: 'danger',
+      })
+      if (!ok) return
+    }
+    if (variables.action === 'mute' && variables.mutedUntil) {
+      const ok = await confirm({
+        title: 'Mute this incident',
+        message: muteConfirmMessage(variables.group, variables.mutedUntil),
+        confirmLabel: 'Mute',
+      })
+      if (!ok) return
+    }
+    inboxActionMut.mutate(variables)
+  }
+
+  // Which row is busy, and which row failed — read off the mutation's own
+  // variables, so no extra state can drift out of step with it. Both are gated
+  // on the flag rather than on `variables` alone, which survives settling.
+  const actingGroupId = inboxActionMut.isPending
+    ? inboxActionMut.variables?.group.correlation_group_id ?? null
+    : null
+  const failedGroupId = inboxActionMut.isError
+    ? inboxActionMut.variables?.group.correlation_group_id ?? null
+    : null
   const activeDestinationType = editingDestination?.type ?? createType ?? destinationForm.type
 
   const hasDestinations = destinations.length > 0
@@ -357,7 +543,19 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // rules, destinations, inbox) into one guided flow. The Inbox card also stays
   // hidden until a rule exists, so it never shows an empty group before the
   // first rule can produce one.
-  const showGuidedSetup = !hasDestinations && !hasRules && !hasDeliveries
+  //
+  // Gated on both probes having ANSWERED, not on their defaults being empty:
+  // `destinations` defaults to `[]` and the delivery probe starts undefined, so
+  // this was true on first paint — a configured project was told it had nothing
+  // set up, with the whole tab strip hidden, on every load. A sub-second flash
+  // normally; permanent whenever both requests fail, which is exactly when the
+  // page has the least business asserting anything (tripl-oxkt.10).
+  const showGuidedSetup =
+    destinationsLoaded
+    && deliveryProbeAnswered
+    && !hasDestinations
+    && !hasRules
+    && !hasDeliveries
   // A demo workspace is zero-egress: the API accepts no destination but the local
   // demo sink, so offering the channel buttons would only walk the user into a
   // rejection. Say why instead (tripl-2su6.12).
@@ -442,14 +640,23 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
         <AlertingInbox
           slug={slug}
           inbox={inbox}
+          isLoading={inboxQuery.isLoading}
+          isError={inboxQuery.isError}
+          loadError={inboxQuery.error}
+          pinnedGroup={pinnedIncident}
           hasRules={hasRules}
+          statusFilter={inboxStatus}
+          onStatusFilterChange={setInboxStatus}
+          onLoadMore={() => void inboxQuery.fetchNextPage()}
+          hasMore={inboxQuery.hasNextPage}
+          isLoadingMore={inboxQuery.isFetchingNextPage}
           noteDrafts={noteDrafts}
           setNoteDrafts={setNoteDrafts}
           expandedIncidents={expandedIncidents}
           toggleIncident={toggleIncident}
-          onAction={inboxActionMut.mutate}
-          isActionPending={inboxActionMut.isPending}
-          isActionError={inboxActionMut.isError}
+          onAction={handleInboxAction}
+          pendingGroupId={actingGroupId}
+          errorGroupId={failedGroupId}
           actionError={inboxActionMut.error}
           onGoToDestinations={() => selectSection('destinations')}
           focusDeliveryId={focusDeliveryId}
@@ -461,12 +668,17 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
         <AlertAuditPanel
           slug={slug}
           deliveries={deliveries}
+          isLoading={deliveriesLoading}
+          isError={deliveriesFailed}
           pinnedDelivery={pinnedDelivery}
           focusDeliveryId={focusDeliveryId}
           focusItemKey={focusItemKey}
           deliveryFilters={deliveryFilters}
           setDeliveryFilters={setDeliveryFilters}
           activeScanFilter={activeDeliveryFilters.scan_config_id}
+          deliveryOffset={deliveryOffset}
+          setDeliveryOffset={setDeliveryOffset}
+          deliveryLimit={DELIVERY_PAGE_SIZE}
           destinations={destinations}
           allRules={allRules}
           scans={scans}
@@ -475,7 +687,10 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       </>
       )}
 
-      <Dialog open={!!createType || !!editingDestination} onOpenChange={open => { if (!open) closeDestinationDialog() }}>
+      {/* Gated on the role as well as on the two state flags: `refresh()` can
+          rewrite the session mid-visit, and a create form left open across a
+          demotion would still POST its Create. */}
+      <Dialog open={canWrite && (!!createType || !!editingDestination)} onOpenChange={open => { if (!open) closeDestinationDialog() }}>
         <DialogContent className="max-w-lg">
           <form onSubmit={event => { event.preventDefault(); destinationMutation.mutate() }}>
             <DialogHeader>

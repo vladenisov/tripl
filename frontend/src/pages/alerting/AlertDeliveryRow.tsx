@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ChevronDown, Loader2, RotateCcw } from "lucide-react"
-import type { AlertDelivery, AlertDeliveryItem } from "@/types"
+import { ChevronDown, Loader2, RotateCcw, Sparkles } from "lucide-react"
+import type { AlertDelivery, AlertDeliveryDetail, AlertDeliveryItem } from "@/types"
 import { alertingApi } from "@/api/alerting"
 import { getScopeMonitoringPath } from "@/lib/monitoring"
+import { useCanWrite } from "@/lib/permissions"
 import { getErrorMessage } from "@/lib/utils"
 import { formatDateTime } from "@/lib/datetime"
 import { formatPercentDelta } from "@/lib/percentDelta"
@@ -103,6 +104,82 @@ function expectedBasisNote(item: AlertDeliveryItem): string | null {
   return `Adoption-adjusted: ${previous}'s share of this scope at ${version}'s own volume, so the % is share-for-share, not a raw count drop.`
 }
 
+// The delivery time, split into the two lines a 96px column can hold.
+//
+// `formatDateTime` renders one string — "Aug 12, 2026, 2:02 PM" — and in the
+// nine-column table that wrapped over FOUR lines, inflating every row to ~100px
+// so only three and a half fitted on screen (tripl-oxkt.18). Splitting the date
+// from the time makes the wrap deliberate and exactly two lines deep; the cell
+// keeps the full string on its `title`.
+//
+// The year is dropped for the CURRENT year only. A delivery log is read
+// newest-first and repeating "2026" 50 times is the noise that caused the
+// second wrap — but a row from last year must never read as one from this week.
+function compactDeliveryTime(value: string, now: Date = new Date()): { date: string; time: string } | null {
+  const at = new Date(value)
+  if (Number.isNaN(at.getTime())) return null
+  return {
+    date: at.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      ...(at.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }),
+    }),
+    time: at.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
+  }
+}
+
+/** One frozen anomaly out of `payload_snapshot.items`, as this row reads it. */
+interface SnapshotAnomaly {
+  scopeName: string
+  direction: string
+  percentDelta: number | null
+  expectedCount: number
+}
+
+// `payload_snapshot` is typed `Record<string, unknown>` on purpose: it is
+// whatever the worker froze at send time, and its shape has changed across
+// releases (message_format, telegram_message_parts and external_issue_key were
+// all added to it after the fact). So every read of it narrows, never casts —
+// a delivery written by an older worker must degrade to "no summary", not to a
+// crash on the audit page someone opened because something was already wrong.
+function snapshotText(payload: Record<string, unknown> | null, key: string): string | null {
+  const value = payload?.[key]
+  return typeof value === 'string' && value.trim() ? value : null
+}
+
+function snapshotAnomalies(payload: Record<string, unknown> | null): SnapshotAnomaly[] {
+  const raw = payload?.items
+  if (!Array.isArray(raw)) return []
+  const anomalies: SnapshotAnomaly[] = []
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const record = entry as Record<string, unknown>
+    if (typeof record.scope_name !== 'string' || !record.scope_name) continue
+    anomalies.push({
+      scopeName: record.scope_name,
+      direction: typeof record.direction === 'string' ? record.direction : '',
+      // Stored as a MAGNITUDE — the sign lives in `direction` — which is why the
+      // arrow below carries the sense and the number never repeats it.
+      percentDelta: typeof record.percent_delta === 'number' ? record.percent_delta : null,
+      expectedCount: typeof record.expected_count === 'number' ? record.expected_count : 0,
+    })
+  }
+  return anomalies
+}
+
+/** The direction, as one character that survives a 300px column. */
+function directionMark(direction: string): string {
+  if (direction === 'spike') return '↑'
+  if (direction === 'drop') return '↓'
+  return '·'
+}
+
+/** `↓ checkout_completed 70.0%` — one anomaly in the width of a table cell. */
+function anomalyLine(anomaly: SnapshotAnomaly): string {
+  const percent = formatPercentDelta(anomaly.percentDelta, anomaly.expectedCount)
+  return `${directionMark(anomaly.direction)} ${anomaly.scopeName} ${percent}`
+}
+
 // The identity an alert message uses to name ONE item of a delivery, mirroring
 // `_alert_audit_item_anchor` (backend worker/tasks/metrics/urls.py).
 //
@@ -126,6 +203,11 @@ export function AlertDeliveryRow({
   focusItemKey?: string
 }) {
   const isFocused = focusDeliveryId === delivery.id
+  // Read here rather than threaded from the panel: this row also renders inside
+  // IncidentDeliveries, on an incident card that has no such prop, and one row
+  // must not offer a Retry the other one hides. Same context either way, so
+  // there is still exactly one answer per session (tripl-oxkt.9).
+  const canWrite = useCanWrite()
   // Deep-linked rows arrive expanded: the link exists to show one delivery's
   // per-scope numbers, and landing on a collapsed row hides exactly those.
   const [open, setOpen] = useState(isFocused)
@@ -138,17 +220,44 @@ export function AlertDeliveryRow({
     enabled: open,
   })
   // Re-queue a failed delivery. On success the backend flips it back to
-  // 'pending'; invalidating the list query refetches the new status/badge.
+  // 'pending' and hands the fresh row straight back.
   const retryMut = useMutation({
     mutationFn: () => alertingApi.retryDelivery(slug, delivery.id),
-    onSuccess: () => {
+    onSuccess: (updated: AlertDeliveryDetail) => {
+      // Write the returned row into the DETAIL cache as well as invalidating the
+      // list. Invalidating `['alertDeliveries', slug]` alone left a deep-linked
+      // row stale, because the pinned copy the page renders lives under
+      // `['alertDelivery', slug, id]` — so the row kept saying `failed`, the
+      // reader clicked Retry a second time, and the 409 rendered
+      // "Retry failed: Only failed deliveries can be retried" for a retry that
+      // had in fact worked (tripl-oxkt.10). This key is also the one this row's
+      // own expanded panel reads, so both update from the one write.
+      qc.setQueryData(['alertDelivery', slug, delivery.id], updated)
       qc.invalidateQueries({ queryKey: ['alertDeliveries', slug] })
     },
   })
-  const isFailed = delivery.status === 'failed'
-  const renderedPreview = typeof delivery.payload_snapshot?.rendered_message === 'string'
-    ? delivery.payload_snapshot.rendered_message
+  // The retry response is newer than the list page this row was rendered from,
+  // so it wins until the list catches up — which closes the window in which the
+  // button still reads `Retry` on a delivery that is already queued. Comparing
+  // `updated_at` rather than latching on `isSuccess` keeps it self-healing: once
+  // the refetch (or a later failure) advances the prop, the prop wins again.
+  const status = retryMut.data && retryMut.data.updated_at > delivery.updated_at
+    ? retryMut.data.status
+    : delivery.status
+  const isFailed = status === 'failed'
+  // What actually fired, from the frozen payload. The cell used to show the
+  // first 87 characters of `rendered_message`, whose first four lines are a
+  // fixed template header repeating the five cells to its left — the widest
+  // column on the page carried zero information (tripl-oxkt.18). The message
+  // itself moved into the expanded panel, where there is room to read it.
+  const firedAnomalies = snapshotAnomalies(delivery.payload_snapshot)
+  const firedSummary = firedAnomalies.length > 0
+    ? { headline: anomalyLine(firedAnomalies[0]), rest: firedAnomalies.length - 1 }
     : null
+  const firedTitle = firedAnomalies.map(anomalyLine).join('\n')
+  const compactTime = compactDeliveryTime(delivery.created_at)
+  const aiExplanation = snapshotText(detail?.payload_snapshot ?? null, 'ai_explanation')
+  const renderedMessage = snapshotText(detail?.payload_snapshot ?? null, 'rendered_message')
   const payloadItems = Array.isArray(detail?.payload_snapshot?.items)
     ? detail.payload_snapshot.items
     : null
@@ -178,28 +287,59 @@ export function AlertDeliveryRow({
   return (
     <>
       <TableRow ref={focusRef} className={isFocused ? 'bg-primary/5' : undefined}>
-        <TableCell className="text-xs">{formatDateTime(delivery.created_at)}</TableCell>
+        {/* The columns are sized by the table this row sits in (`table-fixed`
+            in AlertAuditPanel), so every cell that can hold a long value
+            truncates inside its own width and keeps the full string on `title`.
+            Without that the fixed widths would simply be overrun. */}
+        <TableCell className="text-xs">
+          {compactTime ? (
+            <div className="whitespace-nowrap" title={formatDateTime(delivery.created_at)}>
+              <div>{compactTime.date}</div>
+              <div className="text-muted-foreground">{compactTime.time}</div>
+            </div>
+          ) : '—'}
+        </TableCell>
         <TableCell>
           <div className="flex flex-wrap items-center gap-1.5">
-            <Badge variant={delivery.status === 'failed' ? 'destructive' : delivery.status === 'sent' ? 'default' : 'secondary'} className="text-[10px]">{delivery.status}</Badge>
+            <Badge variant={status === 'failed' ? 'destructive' : status === 'sent' ? 'default' : 'secondary'} className="text-[10px]">{status}</Badge>
             {(delivery.is_local || delivery.is_simulated) && (
               <LocalDeliveryBadge simulated={delivery.is_simulated} />
             )}
           </div>
         </TableCell>
-        <TableCell className="text-xs">{delivery.destination_name}</TableCell>
-        <TableCell className="text-xs">{delivery.rule_name}</TableCell>
-        <TableCell className="text-xs">{delivery.scan_name}</TableCell>
+        <TableCell className="text-xs">
+          <span className="block truncate" title={delivery.destination_name}>{delivery.destination_name}</span>
+        </TableCell>
+        <TableCell className="text-xs">
+          <span className="block truncate" title={delivery.rule_name}>{delivery.rule_name}</span>
+        </TableCell>
+        <TableCell className="text-xs">
+          <span className="block truncate" title={delivery.scan_name}>{delivery.scan_name}</span>
+        </TableCell>
         <TableCell className="text-xs">{delivery.matched_count}</TableCell>
         <TableCell className="text-xs uppercase">{delivery.channel}</TableCell>
-        <TableCell className="max-w-80 text-xs text-muted-foreground">
-          {delivery.error_message || (renderedPreview ? (
-            <span className="block truncate" title={renderedPreview}>{renderedPreview}</span>
-          ) : '—')}
+        <TableCell className="text-xs text-muted-foreground">
+          {delivery.error_message ? (
+            <span className="block truncate text-destructive" title={delivery.error_message}>
+              {delivery.error_message}
+            </span>
+          ) : firedSummary ? (
+            <div className="min-w-0">
+              <span className="block truncate" title={firedTitle}>{firedSummary.headline}</span>
+              {firedSummary.rest > 0 && (
+                <span className="block truncate text-[10px]" title={firedTitle}>
+                  +{firedSummary.rest} more
+                </span>
+              )}
+            </div>
+          ) : '—'}
         </TableCell>
         <TableCell>
           <div className="flex items-center justify-end gap-1">
-            {isFailed && (
+            {/* Re-queuing a failed delivery re-sends a real message, so it is
+                editor-only server-side. The expander beside it stays: reading
+                what was sent is not a write. */}
+            {isFailed && canWrite && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -259,6 +399,21 @@ export function AlertDeliveryRow({
                   </Badge>
                 )}
               </div>
+              {/* The AI write-up, as a block of its own. It is generated by an
+                  outbound LLM call on every delivery of a rule that has it
+                  enabled — populated on 100 of 100 production deliveries — and
+                  until now it reached the reader only inside the truncated
+                  `rendered_message` preview, i.e. never (tripl-oxkt.18). It is
+                  the one part of the payload that is written for a human. */}
+              {aiExplanation && (
+                <div className="rounded-lg border border-primary/30 bg-primary/5 p-3">
+                  <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-primary">
+                    <Sparkles aria-hidden="true" className="h-3.5 w-3.5" />
+                    AI explanation
+                  </div>
+                  <p className="text-xs leading-relaxed whitespace-pre-wrap">{aiExplanation}</p>
+                </div>
+              )}
               {detail.items.length === 0 ? (
                 <div className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">
                   {emptyItemsNotice(detail.matched_count)}
@@ -373,6 +528,22 @@ export function AlertDeliveryRow({
                     </TableBody>
                   </Table>
                 </div>
+              )}
+              {/* The message exactly as the channel received it. It used to be
+                  the "preview" cell in the row above, where 87 visible
+                  characters of a fixed template header was all anyone ever saw.
+                  Collapsed by default and scrolled in its own box: a telegram
+                  message with eight items and an AI note runs several
+                  kilobytes, and the page body must never scroll sideways. */}
+              {renderedMessage && (
+                <details className="rounded-lg border">
+                  <summary className="cursor-pointer px-3 py-2 text-xs text-muted-foreground">
+                    Message as sent
+                  </summary>
+                  <pre className="max-h-64 overflow-auto border-t px-3 py-2 text-[11px] leading-relaxed break-words whitespace-pre-wrap">
+                    {renderedMessage}
+                  </pre>
+                </details>
               )}
             </div>
           </TableCell>

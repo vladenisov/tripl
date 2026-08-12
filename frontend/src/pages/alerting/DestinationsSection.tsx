@@ -3,10 +3,12 @@ import { Trash2, Webhook } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { VIEWER_READ_ONLY_NOTICE, useCanWrite } from '@/lib/permissions'
 import type { AlertDestination, EventType, ScanConfig } from '@/types'
 
 import { CHANNEL_META } from './channelMeta'
 import { DestinationCard } from './DestinationCard'
+import { describeDeletionImpact } from './deletionImpact'
 import { RoutingRulesPanel } from './RoutingRulesPanel'
 import type { DestinationChannel } from './constants'
 
@@ -58,6 +60,11 @@ export function DestinationsSection({
   }), [destinations])
 
   const hasDestinations = destinations.length > 0
+  // Creating, editing and deleting a destination or a rule are all editor-only
+  // (deps.py `require_editor`), so a viewer gets the configuration as a
+  // read-only report: every value stays on screen, nothing offers to change it
+  // (tripl-oxkt.9).
+  const canWrite = useCanWrite()
   // One source of truth for the channel buttons so the zero-state CTA and the
   // populated-state "add another" row stay in sync.
   const channelButtons = CHANNEL_META.map(({ channel, label, Icon }) => (
@@ -75,7 +82,15 @@ export function DestinationsSection({
 
   return (
     <>
-    {/* The read-only monitor → destination table is the verification half of
+    {/* Once, above everything this section can no longer offer to change —
+        rather than a tooltip on each of the switches, pencils and bins that
+        are simply absent below. */}
+    {!canWrite && (
+      <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+        {VIEWER_READ_ONLY_NOTICE}
+      </p>
+    )}
+    {/* The read-only rule → destination summary is the verification half of
         configuring a route ("did I actually wire this up?"), so it belongs
         with the destinations rather than on its own. */}
     <RoutingRulesPanel slug={slug} />
@@ -103,7 +118,7 @@ export function DestinationsSection({
             </p>
             {isDemo ? (
               <div className="mt-4 max-w-sm">{demoChannelNotice}</div>
-            ) : (
+            ) : !canWrite ? null : (
               <div className="mt-4 flex flex-col items-center gap-2">
                 <span className="text-xs font-medium text-muted-foreground">Add a channel</span>
                 <div className="flex flex-wrap items-center justify-center gap-2">
@@ -131,6 +146,7 @@ export function DestinationsSection({
                 destination={destination}
                 eventTypes={eventTypes}
                 scans={scans}
+                canWrite={canWrite}
                 onEditDestination={onEditDestination}
               />
             ))}
@@ -154,19 +170,27 @@ export function DestinationsSection({
                     destination={destination}
                     eventTypes={eventTypes}
                     scans={scans}
+                    canWrite={canWrite}
                     onEditDestination={onEditDestination}
                   />
-                  <div className="mt-2 flex justify-end">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-muted-foreground hover:text-destructive"
-                      onClick={() => onDeleteDestination(destination)}
-                    >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Delete destination
-                    </Button>
-                  </div>
+                  {/* The confirm itself lives on the page that owns the delete
+                      mutation; the cascade it triggers is stated here too, on
+                      the control, because a `title` reaches a reader who is
+                      still deciding whether to press it (tripl-oxkt.13). */}
+                  {canWrite && (
+                    <div className="mt-2 flex justify-end">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-muted-foreground hover:text-destructive"
+                        title={`Deletes "${destination.name}", its rules, and their history. ${describeDeletionImpact(destination.delivery_count, destination.incident_count)}`}
+                        onClick={() => onDeleteDestination(destination)}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete destination
+                      </Button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -176,7 +200,9 @@ export function DestinationsSection({
             compact row instead of rendering bare headers — every type stays one click
             away without taking vertical space for nothing. The zero-state CTA lives in
             the EmptyState above, so this "add another" row is for the populated view. */}
-        {hasDestinations && (
+        {/* Gone entirely for a viewer: "Add another channel" over a row of
+            buttons that answer 403 is an invitation, not information. */}
+        {hasDestinations && (canWrite || isDemo) && (
           <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed p-3">
             {isDemo ? (
               demoChannelNotice

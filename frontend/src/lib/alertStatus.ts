@@ -1,0 +1,287 @@
+/**
+ * How an incident is spelled on the alerting Inbox: its status, what fired, how
+ * big it was, and what an action just did.
+ *
+ * Deliberately a sibling of `statusLexicon.ts` rather than an entry in it: the
+ * inbox statuses are an alerting-only family, and the reason / magnitude / copy
+ * helpers below are card text, not a status→colour map. It obeys the SAME
+ * colour key (see statusLexicon's header) and reuses `ChipTone`, so a status
+ * cannot mean one thing here and another on the monitors page.
+ *
+ * Everything here is pure and takes its inputs explicitly, so the copy that
+ * decides what an operator believes happened can be unit-tested without
+ * rendering a card.
+ */
+import type { ChipTone } from '@/components/primitives/chip'
+import type {
+  AlertInboxAction,
+  AlertInboxActionResponse,
+  AlertInboxGroup,
+  AlertInboxStatus,
+  MetricScopeType,
+} from '@/types'
+
+import { formatDateTime } from './datetime'
+import { formatPercentDelta } from './percentDelta'
+import { countOf } from './plural'
+
+/** A status rendered as a coloured word: its human label and canonical tone. */
+export interface AlertStatusLexeme {
+  label: string
+  tone: ChipTone
+}
+
+/**
+ * The five inbox statuses, as words a person reads.
+ *
+ * Before this the badge printed `{group.status}` raw, so one literally read
+ * `false_positive`, and three of the five (`open`, `acknowledged`, `muted`)
+ * shared a single grey outline — the operator could not tell an untouched
+ * incident from one they had already snoozed (tripl-oxkt.16).
+ *
+ * `open` stays NEUTRAL on purpose. 52 of 57 production groups are open, and
+ * tinting 52 of 57 rows destroys the scanning benefit colour exists for. Colour
+ * here marks the minority somebody has already made a decision about.
+ */
+export const ALERT_INBOX_STATUS: Record<AlertInboxStatus, AlertStatusLexeme> = {
+  open: { label: 'Open', tone: 'neutral' },
+  acknowledged: { label: 'Acknowledged', tone: 'info' },
+  muted: { label: 'Muted', tone: 'warning' },
+  resolved: { label: 'Resolved', tone: 'success' },
+  // Not `danger`. This is a judgement about the DETECTOR, not a failure of
+  // anything; it used to render as a red `destructive` badge, styling the one
+  // deliberate human call on the page as an error.
+  false_positive: { label: 'False positive', tone: 'accent' },
+}
+
+/** Filter order: the states an operator moves an incident THROUGH, in order. */
+export const ALERT_INBOX_STATUSES: readonly AlertInboxStatus[] = [
+  'open',
+  'acknowledged',
+  'muted',
+  'resolved',
+  'false_positive',
+]
+
+export function alertInboxStatusLabel(status: AlertInboxStatus): string {
+  return ALERT_INBOX_STATUS[status].label
+}
+
+export function alertInboxStatusTone(status: AlertInboxStatus): ChipTone {
+  return ALERT_INBOX_STATUS[status].tone
+}
+
+/**
+ * "Handled" means somebody decided something — anything but `open`.
+ *
+ * Note this is a presentation split, not a behavioural one: the dispatcher
+ * suppresses `acknowledged`, `resolved`, `muted` and `false_positive`
+ * identically, and resets all but an in-force mute back to `open` once the
+ * scope goes quiet.
+ */
+export function isHandledInboxStatus(status: AlertInboxStatus): boolean {
+  return status !== 'open'
+}
+
+/**
+ * How each scope kind is named on a card.
+ *
+ * Lower-case because these read inside a sentence-shaped chip ("drop · release
+ * regression"), and count-based scopes are called "volume" rather than by their
+ * table name: the chip answers "what KIND of signal is this", while the scope
+ * name right below it already answers "of what".
+ */
+const SCOPE_KIND_LABEL: Record<MetricScopeType, string> = {
+  project_total: 'project volume',
+  event_type: 'event-type volume',
+  event: 'volume',
+  schema: 'schema drift',
+  distribution: 'distribution drift',
+  release_regression: 'release regression',
+  metric: 'metric',
+  variable_value_drift: 'value drift',
+}
+
+/**
+ * "drop · release regression" — the one line that answers "why did the same
+ * alert come back for a different reason?".
+ *
+ * Suppression is keyed on (scan, rule, scope, scope kind, direction), and the
+ * card used to render three of those five. Production has one event appearing
+ * twice, same rule and same scan and same direction, differing ONLY in scope
+ * kind: `release_regression` ("this screen regressed in the new build") beside
+ * `event` ("this event's volume dropped"). They rendered as near-identical
+ * cards, so muting one and watching "it" come back was the expected outcome of
+ * a UI that never showed the axis they differ on (tripl-oxkt.4).
+ *
+ * All kinds are joined, not just the newest item's: a legacy group can mix
+ * them, and describing a mixed incident by one member is how the mute's blast
+ * radius gets mis-read.
+ */
+export function incidentReasonLabel(
+  direction: AlertInboxGroup['direction'],
+  scopeTypes: readonly MetricScopeType[],
+): string {
+  if (scopeTypes.length === 0) return direction
+  const kinds = scopeTypes.map(type => SCOPE_KIND_LABEL[type] ?? type)
+  return `${direction} · ${kinds.join(' + ')}`
+}
+
+/** The arrow that carries direction at a glance, ahead of the word. */
+export function incidentDirectionGlyph(direction: AlertInboxGroup['direction']): string {
+  return direction === 'drop' ? '↓' : '↑'
+}
+
+function formatCount(value: number): string {
+  return value.toLocaleString()
+}
+
+/**
+ * "412 vs 1,010 expected · -59.2%" — what actually happened, on the card.
+ *
+ * Reaching this before meant clicking "Show what was sent", expanding a
+ * delivery and reading the items table: two lazy fetches deep, so a blip and an
+ * outage looked identical in the list (tripl-oxkt.4).
+ *
+ * A zero baseline is stated in WORDS, never as "0%". The percent gate admits
+ * anomalies with no baseline at all — a scope resuming after an outage, an
+ * event firing for the first time — and `formatPercentDelta` is the one place
+ * that decides how that is written, so the inbox cannot disagree with the
+ * delivery item or with the alert message the reader is holding.
+ */
+export function incidentMagnitudeLabel(group: {
+  actual_count: number
+  expected_count: number
+  percent_delta: number | null
+}): string {
+  const delta = formatPercentDelta(group.percent_delta, group.expected_count)
+  if (group.expected_count <= 0) {
+    return `${formatCount(group.actual_count)} actual, none expected · ${delta}`
+  }
+  return `${formatCount(group.actual_count)} vs ${formatCount(group.expected_count)} expected · ${delta}`
+}
+
+/**
+ * "worst 92.4% in this group", or null when there is nothing extra to say.
+ *
+ * Only for multi-item groups: on a single-item group the worst magnitude IS the
+ * magnitude line above it, and printing the same number twice reads as two
+ * different facts.
+ */
+export function incidentWorstDeltaLabel(group: {
+  item_count: number
+  max_abs_percent_delta: number | null
+}): string | null {
+  if (group.item_count <= 1 || group.max_abs_percent_delta === null) return null
+  return `worst ${group.max_abs_percent_delta.toFixed(1)}% in this group`
+}
+
+/**
+ * "Closed 30 Jul 2026 by V. Denisov · firing again" — for an incident somebody
+ * already dealt with and that came back.
+ *
+ * `_reopen_closed_incidents` resets any non-open state back to `open` once the
+ * scope goes quiet. That is a deliberate, documented decision, but it was
+ * invisible: `acted_at` shipped and rendered nowhere, so an incident closed
+ * last week was pixel-identical to one nobody had ever seen (tripl-oxkt.5).
+ *
+ * Worded "closed … firing again", not "reopened by the system": a user-clicked
+ * Reopen also leaves a fresh `acted_at`, so the two are indistinguishable from
+ * here. The latest delivery is named as the latest delivery rather than as
+ * "since", because nothing in the payload records WHEN it resumed and inventing
+ * that date would be the false precision this line exists to remove.
+ */
+export function priorDecisionLabel(group: {
+  status: AlertInboxStatus
+  acted_at: string | null
+  acted_by_name: string | null
+  latest_delivery_at: string
+}): string | null {
+  if (group.status !== 'open' || !group.acted_at) return null
+  const who = group.acted_by_name ? ` by ${group.acted_by_name}` : ''
+  return `Closed ${formatDateTime(group.acted_at)}${who} · firing again, latest ${formatDateTime(group.latest_delivery_at)}`
+}
+
+function nameList(names: readonly string[], fallback: string): string {
+  return names.length > 0 ? names.join(', ') : fallback
+}
+
+/**
+ * The confirmation that names the whole suppression key before anything is
+ * silenced.
+ *
+ * The user's model of a mute is "not this thing again"; the system's is an
+ * exact match on (scan, rule, scope, scope kind, direction). Every gap between
+ * those two is an incident the operator believes they silenced and did not, so
+ * the sentence spells all five parts and then says what is NOT covered.
+ */
+export function muteConfirmMessage(group: AlertInboxGroup, mutedUntilIso: string): string {
+  const scopes = nameList(group.scope_names, 'this scope')
+  const reason = incidentReasonLabel(group.direction, group.scope_types)
+  const scans = nameList(group.scan_names, 'this scan')
+  const rules = nameList(group.rule_names, 'this rule')
+  return (
+    `Silences "${reason}" on ${scopes}, from ${scans} via ${rules}, until ` +
+    `${formatDateTime(mutedUntilIso)}. Nothing else is silenced: the same scope ` +
+    'moving the other way, a different kind of signal on it, another scan or ' +
+    'another rule all still alert.'
+  )
+}
+
+/**
+ * The confirmation for the one action on the page that changes DETECTION.
+ *
+ * It writes permanent scope overrides, and until now carried no confirm at all
+ * — only a `title` tooltip, on a 4px-gapped button that swapped places with
+ * Mute between rows (tripl-oxkt.8).
+ */
+export function falsePositiveConfirmMessage(group: AlertInboxGroup): string {
+  const scopes = nameList(group.scope_names, 'this scope')
+  return (
+    `Closes this incident and permanently makes detection stricter on ${scopes} ` +
+    '— nothing else. Undo under Settings › Monitoring › Scope overrides. Some ' +
+    'signal kinds are not tuned this way; the result will say which scopes were ' +
+    'actually changed.'
+  )
+}
+
+/**
+ * What just happened, said out loud.
+ *
+ * Success was announced nowhere: `onSuccess` discarded the response and only
+ * invalidated, so a click on row 12 greyed out the list and then silently
+ * un-greyed it (tripl-oxkt.11).
+ *
+ * The false-positive wording is driven by `overrides_written`, never by
+ * `group.scope_type`. The tooltip used to promise a permanent detection change
+ * on every card, while the ratchet skips any scope kind outside
+ * RATCHETABLE_SCOPE_TYPES — 10 of 57 production groups are release regressions,
+ * where it writes nothing at all (tripl-oxkt.6). And `scope_type` is only the
+ * NEWEST item's, so a client-side guess would be wrong on mixed groups too.
+ */
+export function inboxActionSuccessMessage(
+  action: AlertInboxAction,
+  previousStatus: AlertInboxStatus,
+  response: AlertInboxActionResponse,
+): string {
+  switch (action) {
+    case 'acknowledge':
+      return 'Acknowledged. It stays quiet until the scope goes quiet, then reopens.'
+    case 'resolve':
+      return 'Resolved. It stays quiet until the scope goes quiet, then reopens.'
+    case 'mute':
+      return response.group.muted_until
+        ? `Muted until ${formatDateTime(response.group.muted_until)}.`
+        : 'Muted.'
+    case 'reopen':
+      return previousStatus === 'muted' ? 'Unmuted — alerts resume.' : 'Reopened.'
+    case 'note':
+      return 'Note saved.'
+    case 'false_positive': {
+      const written = response.overrides_written ?? 0
+      return written > 0
+        ? `Marked as a false positive — tightened ${countOf(written, 'scope', 'scopes')}.`
+        : 'Marked as a false positive — no scopes tightened, this kind of signal is not tuned this way.'
+    }
+  }
+}

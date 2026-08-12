@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   formatSignalSeverity,
   getMetricMonitoringPath,
+  getMonitoringPath,
+  getScopeMonitoringPath,
   resolveDetailScope,
   routeScopeToApiScope,
 } from './monitoring'
@@ -23,6 +25,111 @@ describe('routeScopeToApiScope', () => {
 describe('getMetricMonitoringPath', () => {
   it('builds the catalog-metric drilldown URL', () => {
     expect(getMetricMonitoringPath('demo', 'm-1')).toBe('/p/demo/monitoring/metric/m-1')
+  })
+})
+
+describe('getMonitoringPath', () => {
+  it('routes each scope with a detail page to that page', () => {
+    expect(getMonitoringPath('demo', { scope_type: 'project_total', scope_ref: 'pt-1' })).toBe(
+      '/p/demo/monitoring/project-total/pt-1',
+    )
+    expect(getMonitoringPath('demo', { scope_type: 'event_type', scope_ref: 'et-1' })).toBe(
+      '/p/demo/monitoring/event-type/et-1',
+    )
+    expect(getMonitoringPath('demo', { scope_type: 'event', scope_ref: 'evt-1' })).toBe(
+      '/p/demo/monitoring/event/evt-1',
+    )
+    expect(getMonitoringPath('demo', { scope_type: 'metric', scope_ref: 'm-1' })).toBe(
+      '/p/demo/monitoring/metric/m-1',
+    )
+  })
+
+  it('throws rather than guessing for the scopes with no detail route', () => {
+    // Callers that must not link to a wrong page get a loud failure; the ones
+    // merely deciding whether to offer a link use getScopeMonitoringPath.
+    for (const scope of ['schema', 'distribution', 'release_regression', 'variable_value_drift'] as const) {
+      expect(() => getMonitoringPath('demo', { scope_type: scope, scope_ref: 'x' })).toThrow(
+        /no monitoring detail route/,
+      )
+    }
+  })
+})
+
+describe('getScopeMonitoringPath', () => {
+  it('routes a scope that has its own detail page there', () => {
+    expect(
+      getScopeMonitoringPath('demo', { scope_type: 'event', scope_ref: 'evt-1' }),
+    ).toBe('/p/demo/monitoring/event/evt-1')
+    expect(
+      getScopeMonitoringPath('demo', { scope_type: 'metric', scope_ref: 'm-1' }),
+    ).toBe('/p/demo/monitoring/metric/m-1')
+  })
+
+  it('answers with null instead of throwing where getMonitoringPath would throw', () => {
+    // The whole point of this wrapper: a table cell asking "is there anywhere to
+    // link?" must not have to wrap the call in a try.
+    expect(
+      getScopeMonitoringPath('demo', { scope_type: 'schema', scope_ref: 'field_a' }),
+    ).toBeNull()
+    expect(
+      getScopeMonitoringPath('demo', { scope_type: 'distribution', scope_ref: 'field_a' }),
+    ).toBeNull()
+  })
+
+  it('never links a release regression to the event page, even though it has an event_id (tripl-oxkt.21)', () => {
+    // The deny-set case. A release regression compares a release cohort against
+    // the previous release; the event page charts all versions against the
+    // seasonal baseline, so it cannot corroborate the alert even in principle —
+    // which is exactly why the backend builder (worker/tasks/metrics/urls.py)
+    // refuses to emit this link. Note both fields are populated and a regression
+    // scope_ref IS its event id, so nothing cheaper than an explicit deny would
+    // have caught it: before the fix this returned the event page twice over.
+    expect(
+      getScopeMonitoringPath('demo', {
+        scope_type: 'release_regression',
+        scope_ref: 'evt-1',
+        event_id: 'evt-1',
+      }),
+    ).toBeNull()
+  })
+
+  it('denies a release regression whose scope_ref is an event TYPE id', () => {
+    // The event-type-scoped regression was the worse half of the same defect:
+    // scope_ref is an event_type_id, so the old fallthrough emitted a
+    // valid-looking /monitoring/event/{event_type_id} for a page that does not
+    // exist.
+    expect(
+      getScopeMonitoringPath('demo', {
+        scope_type: 'release_regression',
+        scope_ref: 'et-1',
+        event_id: null,
+      }),
+    ).toBeNull()
+  })
+
+  it('still resolves a variable-value drift through the event fallback', () => {
+    // The fallback is not collateral damage of the deny-set: a drift scope has no
+    // route of its own, but its event_id is NOT NULL and /monitoring/event/:id
+    // mounts the panel that names the variable and lists its observed values.
+    expect(
+      getScopeMonitoringPath('demo', {
+        scope_type: 'variable_value_drift',
+        scope_ref: 'plan_tier',
+        event_id: 'evt-9',
+      }),
+    ).toBe('/p/demo/monitoring/event/evt-9')
+  })
+
+  it('gives a drift scope no link at all when it carries no event', () => {
+    // schema / distribution drift carry a null event_id, so they get nothing
+    // rather than a guess — which at least does not mislead.
+    expect(
+      getScopeMonitoringPath('demo', {
+        scope_type: 'schema',
+        scope_ref: 'field_a',
+        event_id: null,
+      }),
+    ).toBeNull()
   })
 })
 

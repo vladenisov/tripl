@@ -34,6 +34,12 @@ const RULE: AlertRule = {
   items_template: null,
   message_format: 'plain',
   filters: [],
+  muted: false,
+  muted_until: null,
+  total_deliveries: 12,
+  incident_count: 4,
+  last_delivery_at: '2026-07-19T09:00:00Z',
+  last_delivery_status: 'sent',
   created_at: '2026-07-19T00:00:00Z',
   updated_at: '2026-07-19T00:00:00Z',
 }
@@ -49,6 +55,12 @@ const RESULT: AlertRuleSimulateResponse = {
   noisy: false,
   cooldown_minutes_used: 1440,
   cooldown_minutes_saved: 1440,
+  min_percent_delta_used: 20,
+  min_percent_delta_saved: 20,
+  min_expected_count_used: 100,
+  min_expected_count_saved: 100,
+  sigma_threshold_used: null,
+  sigma_threshold_saved: null,
   rendered_message: LONG_MESSAGE,
   firings: [
     {
@@ -124,5 +136,69 @@ describe('RuleReplayDialog responsive results', () => {
       .find((button) => button.getAttribute('data-slot') === 'button')
     expect(footerClose).toBeInTheDocument()
     expect(footerClose?.closest('[data-slot="dialog-footer"]')).toHaveClass('shrink-0')
+  })
+})
+
+describe('RuleReplayDialog threshold overrides', () => {
+  it('replays a stricter Min % against the saved run without writing it to the rule', async () => {
+    const stricter: AlertRuleSimulateResponse = {
+      ...RESULT,
+      firings: [],
+      min_percent_delta_used: 300,
+      min_percent_delta_saved: 20,
+    }
+    const simulate = vi
+      .spyOn(alertingApi, 'simulateRule')
+      .mockImplementation((_slug, _destination, _rule, _days, overrides) =>
+        Promise.resolve(overrides?.minPercentDelta === undefined ? RESULT : stricter),
+      )
+    renderDialog()
+
+    fireEvent.change(screen.getByLabelText('Minimum percent delta override'), {
+      target: { value: '300' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
+
+    // Two runs over the same window: `_used`/`_saved` name the thresholds one
+    // run applied, but only the pair says how many firings the change removes.
+    expect(await screen.findByText('With your overrides')).toBeInTheDocument()
+    expect(simulate).toHaveBeenCalledWith('demo', 'destination-1', 'rule-1', 7)
+    expect(simulate).toHaveBeenCalledWith('demo', 'destination-1', 'rule-1', 7, {
+      minPercentDelta: 300,
+    })
+    expect(screen.getByText('Saved thresholds')).toBeInTheDocument()
+    expect(screen.getByText(/saved 20/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/Nothing here is saved to the rule/),
+    ).toBeInTheDocument()
+  })
+
+  it('treats an empty box as "leave it alone" rather than as zero', async () => {
+    const simulate = vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
+    renderDialog()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
+
+    // `Number('')` is 0, so an unguarded parse would replay every blank field as
+    // the most permissive threshold there is and call it the saved behaviour.
+    expect(await screen.findByText('Saved thresholds')).toBeInTheDocument()
+    expect(simulate).toHaveBeenCalledTimes(1)
+    expect(simulate).toHaveBeenCalledWith('demo', 'destination-1', 'rule-1', 7)
+    expect(screen.queryByText('With your overrides')).toBeNull()
+  })
+
+  it('captions the preview with the format it was rendered in', async () => {
+    vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
+    renderDialog()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
+
+    // The caption used to read "as it would render to destination" or
+    // "…to Slack/Telegram" depending on whether the FIRST firing happened to
+    // carry a scope type — a field with nothing to say about rendering.
+    expect(
+      await screen.findByText(/the message this run would have sent, as plain text/),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Slack\/Telegram/)).toBeNull()
   })
 })

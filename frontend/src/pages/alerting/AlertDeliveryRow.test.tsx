@@ -2,7 +2,9 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AlertDelivery, AlertDeliveryDetail, AlertDeliveryItem } from '@/types'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
+import type { AlertDelivery, AlertDeliveryDetail, AlertDeliveryItem, Role } from '@/types'
+import { formatDateTime } from '@/lib/datetime'
 import { AlertDeliveryRow } from './AlertDeliveryRow'
 
 function mockJsonResponse(body: unknown, status = 200) {
@@ -62,28 +64,88 @@ function mockItem(overrides: Partial<AlertDeliveryItem> = {}): AlertDeliveryItem
   }
 }
 
-function renderRow(delivery: AlertDelivery, focusDeliveryId?: string, focusItemKey?: string) {
+// The frozen payload the worker writes at send time. The row reads its summary
+// from here rather than from the message text, so most of these tests describe
+// what this object does to the table cell.
+function mockPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    rendered_message:
+      '[tripl] 1 alerts\nProject delivery via telegram: Ops\nRule: Spike alerts\nScan: Main scan\n\n- Event checkout_completed: down, actual=12, expected=40',
+    items: [
+      {
+        scope_type: 'event',
+        scope_ref: 'checkout_completed',
+        scope_name: 'checkout_completed',
+        direction: 'drop',
+        actual_count: 12,
+        expected_count: 40,
+        absolute_delta: 28,
+        percent_delta: 70,
+      },
+    ],
+    ...overrides,
+  }
+}
+
+/**
+ * A session at one role, for the tests that care.
+ *
+ * The row reads its role from this context; omitting the provider is the
+ * "no role information" case, which keeps the write control (lib/permissions.ts).
+ */
+function authValue(role: Role): AuthContextValue {
+  return {
+    user: {
+      id: 'user-1',
+      email: 'someone@example.com',
+      name: 'Someone',
+      role,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
+}
+
+function renderRow(
+  delivery: AlertDelivery,
+  focusDeliveryId?: string,
+  focusItemKey?: string,
+  role: Role = 'editor',
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
   // Router, because the row links to the scope an alert fired on with <Link>
   // for in-app navigation — in the app it is always mounted under one.
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
-        <table>
-          <tbody>
-            <AlertDeliveryRow
-              slug="demo"
-              delivery={delivery}
-              focusDeliveryId={focusDeliveryId}
-              focusItemKey={focusItemKey}
-            />
-          </tbody>
-        </table>
-      </MemoryRouter>
-    </QueryClientProvider>,
-  )
+  return {
+    // Returned so the retry tests can assert what landed in the cache: the
+    // pinned deep-linked row is a SEPARATE query from the list, and the retry
+    // bug was entirely about which of the two got written.
+    queryClient,
+    ...render(
+      <AuthContext.Provider value={authValue(role)}>
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <table>
+              <tbody>
+                <AlertDeliveryRow
+                  slug="demo"
+                  delivery={delivery}
+                  focusDeliveryId={focusDeliveryId}
+                  focusItemKey={focusItemKey}
+                />
+              </tbody>
+            </table>
+          </MemoryRouter>
+        </QueryClientProvider>
+      </AuthContext.Provider>,
+    ),
+  }
 }
 
 // Expanding the row is what fires the detail GET, so every items-table test
@@ -115,6 +177,15 @@ describe('AlertDeliveryRow retry', () => {
     expect(screen.getByRole('button', { name: 'Retry delivery' })).toBeInTheDocument()
   })
 
+  it('withholds it from a viewer, whose retry is a 403 (tripl-oxkt.9)', () => {
+    // Re-queuing puts a real message back in somebody's channel, so the route
+    // is editor-only. The expander stays: reading what was sent is not a write.
+    renderRow(mockDelivery({ status: 'failed' }), undefined, undefined, 'viewer')
+
+    expect(screen.queryByRole('button', { name: 'Retry delivery' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Expand delivery details' })).toBeEnabled()
+  })
+
   it('re-queues a failed delivery via the retry endpoint', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
@@ -136,6 +207,62 @@ describe('AlertDeliveryRow retry', () => {
     })
   })
 
+  it('flips the row to pending without waiting for the list to refetch', async () => {
+    // The second click was the actual bug: the row still read `failed`, so the
+    // reader retried an already-queued delivery and the 409 rendered
+    // "Only failed deliveries can be retried" for a retry that had worked
+    // (tripl-oxkt.10).
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/alert-deliveries/delivery-1/retry') && init?.method === 'POST') {
+        return mockJsonResponse({
+          ...mockDelivery({
+            status: 'pending',
+            error_message: null,
+            updated_at: '2026-01-02T00:00:00Z',
+          }),
+          items: [],
+        })
+      }
+      throw new Error(`Unhandled fetch: ${init?.method} ${url}`)
+    })
+
+    renderRow(mockDelivery({ status: 'failed' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry delivery' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('pending')).toBeInTheDocument()
+    })
+    expect(screen.queryByRole('button', { name: 'Retry delivery' })).toBeNull()
+  })
+
+  it('writes the retried delivery into the pinned row cache, not only the list', async () => {
+    // The deep-linked row the page pins lives under ['alertDelivery', slug, id];
+    // invalidating ['alertDeliveries', slug] never touched it.
+    const retried = {
+      ...mockDelivery({ status: 'pending', error_message: null, updated_at: '2026-01-02T00:00:00Z' }),
+      items: [],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/alert-deliveries/delivery-1/retry') && init?.method === 'POST') {
+        return mockJsonResponse(retried)
+      }
+      throw new Error(`Unhandled fetch: ${init?.method} ${url}`)
+    })
+
+    const { queryClient } = renderRow(mockDelivery({ status: 'failed' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry delivery' }))
+
+    await waitFor(() => {
+      expect(
+        queryClient.getQueryData<AlertDeliveryDetail>(['alertDelivery', 'demo', 'delivery-1']),
+      ).toMatchObject({ status: 'pending', error_message: null })
+    })
+  })
+
   it('surfaces a retry failure inline via role=alert', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
@@ -154,6 +281,127 @@ describe('AlertDeliveryRow retry', () => {
         'Retry failed: Delivery is not in failed status',
       )
     })
+  })
+})
+
+// The widest column on the audit table used to show the first 87 characters of
+// `rendered_message` — and all 100 production messages open with the same
+// four-line template header repeating the five cells to its left, so the column
+// carried nothing at all (tripl-oxkt.18).
+describe('AlertDeliveryRow what fired', () => {
+  const sent = (payload: Record<string, unknown> | null) =>
+    mockDelivery({ status: 'sent', error_message: null, payload_snapshot: payload })
+
+  it('summarises what fired instead of repeating the message template header', () => {
+    renderRow(sent(mockPayload()))
+
+    expect(screen.getByText('↓ checkout_completed 70.0%')).toBeInTheDocument()
+    expect(screen.queryByText(/Project delivery via telegram/)).toBeNull()
+  })
+
+  it('counts the scopes that did not fit', () => {
+    renderRow(
+      sent(
+        mockPayload({
+          items: [
+            { scope_name: 'checkout_completed', direction: 'drop', percent_delta: 70, expected_count: 40 },
+            { scope_name: 'signup_started', direction: 'spike', percent_delta: 104.6, expected_count: 70 },
+            { scope_name: 'map_model_selected', direction: 'spike', percent_delta: 100.4, expected_count: 165 },
+          ],
+        }),
+      ),
+    )
+
+    expect(screen.getByText('↓ checkout_completed 70.0%')).toBeInTheDocument()
+    expect(screen.getByText('+2 more')).toBeInTheDocument()
+  })
+
+  it('shows the error instead of the summary on a failed delivery', () => {
+    // The reason a delivery failed outranks what it would have said: this is the
+    // one row on the page someone is looking for.
+    renderRow(mockDelivery({ status: 'failed', payload_snapshot: mockPayload() }))
+
+    expect(screen.getByText('Webhook failed')).toBeInTheDocument()
+    expect(screen.queryByText('↓ checkout_completed 70.0%')).toBeNull()
+  })
+
+  it('says there was no baseline rather than claiming a 0% move', () => {
+    // Same rule as the items table: a zero baseline has no percentage, and
+    // printing 0.0% reports the largest possible relative move as the smallest.
+    renderRow(
+      sent(
+        mockPayload({
+          items: [
+            { scope_name: 'first_launch', direction: 'spike', percent_delta: 0, expected_count: 0 },
+          ],
+        }),
+      ),
+    )
+
+    expect(screen.getByText('↑ first_launch no baseline')).toBeInTheDocument()
+  })
+
+  it('falls back to a dash for a delivery whose payload froze no items', () => {
+    // A payload written by an older worker must degrade to "no summary", not
+    // crash the page someone opened because something was already wrong.
+    renderRow(sent(null))
+
+    expect(screen.queryByText(/[↑↓]/)).toBeNull()
+  })
+})
+
+describe('AlertDeliveryRow timestamp', () => {
+  it('splits the timestamp over two lines and keeps the full value on the cell', () => {
+    // One string wrapped over FOUR lines in the nine-column table and inflated
+    // every row to ~100px. Asserted through `formatDateTime` rather than a
+    // literal so the test does not depend on the runner's locale or zone.
+    const delivery = mockDelivery({ status: 'sent', error_message: null })
+    renderRow(delivery)
+
+    const full = formatDateTime(delivery.created_at)
+    expect(screen.getByTitle(full)).toBeInTheDocument()
+    expect(screen.queryByText(full)).toBeNull()
+  })
+})
+
+// `payload_snapshot.ai_explanation` is generated by an outbound LLM call and was
+// populated on 100 of 100 production deliveries while being rendered nowhere at
+// all — it reached the reader only inside the truncated preview (tripl-oxkt.18).
+describe('AlertDeliveryRow expanded payload', () => {
+  it('renders the AI explanation as a block of its own', async () => {
+    expandRow({
+      ...mockDelivery({
+        status: 'sent',
+        error_message: null,
+        payload_snapshot: mockPayload({ ai_explanation: 'Both map settings events roughly doubled in one hour.' }),
+      }),
+      items: [mockItem()],
+    })
+
+    expect(await screen.findByText('AI explanation')).toBeInTheDocument()
+    expect(
+      screen.getByText('Both map settings events roughly doubled in one hour.'),
+    ).toBeInTheDocument()
+  })
+
+  it('omits the AI block when the rule generated no explanation', async () => {
+    expandRow({
+      ...mockDelivery({ status: 'sent', error_message: null, payload_snapshot: mockPayload() }),
+      items: [mockItem()],
+    })
+
+    expect(await screen.findByText('checkout_completed')).toBeInTheDocument()
+    expect(screen.queryByText('AI explanation')).toBeNull()
+  })
+
+  it('keeps the sent message in the expanded row rather than the table cell', async () => {
+    expandRow({
+      ...mockDelivery({ status: 'sent', error_message: null, payload_snapshot: mockPayload() }),
+      items: [mockItem()],
+    })
+
+    expect(await screen.findByText('Message as sent')).toBeInTheDocument()
+    expect(screen.getByText(/Project delivery via telegram: Ops/)).toBeInTheDocument()
   })
 })
 
