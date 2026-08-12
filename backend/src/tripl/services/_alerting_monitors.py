@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tripl.models.alert_delivery import AlertDelivery
+from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
@@ -23,7 +23,15 @@ from tripl.services.monitoring_utils import summarize_monitor_states
 from tripl.services.project_lookup import get_project_by_slug as _get_project
 
 
-def _is_muted(rule: AlertRule, now: datetime) -> bool:
+def is_rule_muted(rule: AlertRule, now: datetime) -> bool:
+    """Is this rule's mute IN FORCE right now? A lapsed ``muted_until`` is not.
+
+    Shared with ``_alerting_destinations`` rather than kept private here: the
+    destination card and the monitors screen describe the SAME AlertRule, and
+    the two screens disagreed about its mute state because only one of them had
+    any (tripl-oxkt.18). One definition, imported, is what keeps them equal — a
+    second copy of these four lines would drift the moment either is edited.
+    """
     muted_until = rule.muted_until
     if muted_until is None:
         return False
@@ -105,7 +113,7 @@ async def get_monitors_summary(session: AsyncSession, slug: str) -> MonitorsSumm
                 min_percent_delta=rule.min_percent_delta,
                 min_expected_count=rule.min_expected_count,
                 cooldown_minutes=rule.cooldown_minutes,
-                muted=_is_muted(rule, now),
+                muted=is_rule_muted(rule, now),
                 muted_until=rule.muted_until,
             )
         )
@@ -142,7 +150,12 @@ async def _build_monitor_detail(
         await session.execute(
             select(AlertDelivery.created_at, AlertDelivery.status)
             .where(AlertDelivery.rule_id == rule.id)
-            .order_by(AlertDelivery.created_at.desc())
+            # Tie-broken on id, like ``_alerting_health`` does for the very same
+            # three numbers on the destination card. A scan writes several
+            # deliveries in the same instant, so ``created_at`` alone lets the
+            # two screens pick different rows and report different statuses for
+            # one rule — the disagreement tripl-oxkt.18 was filed about.
+            .order_by(AlertDelivery.created_at.desc(), AlertDelivery.id.desc())
             .limit(1)
         )
     ).first()
@@ -164,7 +177,7 @@ async def _build_monitor_detail(
         min_percent_delta=rule.min_percent_delta,
         min_expected_count=rule.min_expected_count,
         cooldown_minutes=rule.cooldown_minutes,
-        muted=_is_muted(rule, now),
+        muted=is_rule_muted(rule, now),
         muted_until=rule.muted_until,
         rule_enabled=rule.enabled,
         destination_enabled=destination.enabled,
@@ -178,7 +191,12 @@ async def _build_monitor_detail(
         include_metrics=rule.include_metrics,
         total_deliveries=total_deliveries,
         last_delivery_at=last_delivery[0] if last_delivery else None,
-        last_delivery_status=last_delivery[1] if last_delivery else None,
+        # Coerced at the boundary rather than left to Pydantic, matching
+        # ``_alerting_health``: whether the driver returns the enum member or
+        # its string depends on the dialect, and this contract must not.
+        last_delivery_status=(
+            AlertDeliveryStatus(last_delivery[1]) if last_delivery is not None else None
+        ),
     )
 
 

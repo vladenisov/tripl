@@ -1,9 +1,11 @@
 """Alerting service — public API.
 
-Implementation is split across two private sibling modules:
+Implementation is split across private sibling modules:
 
 * ``_alerting_destinations``  — destinations/rules CRUD, secrets, filters
 * ``_alerting_deliveries``    — deliveries listing, inbox, correlation states
+* ``_alerting_monitors``      — monitors rollup, rule mute state
+* ``_alerting_test_send``     — manual "does this channel work?" probe
 """
 
 from __future__ import annotations
@@ -33,7 +35,9 @@ from tripl.services._alerting_deliveries import (
     INBOX_LOOKBACK_DAYS,
     INBOX_MAX_SOURCE_ITEMS,
     apply_alert_inbox_action,
+    count_open_incidents,
     delivery_to_response,
+    get_alert_inbox_group,
     get_delivery,
     list_alert_inbox,
     list_deliveries,
@@ -64,6 +68,9 @@ from tripl.services._alerting_monitors import (
     mute_monitor,
     unmute_monitor,
 )
+from tripl.services._alerting_test_send import (
+    send_destination_test,
+)
 from tripl.services.alerting_rendering import (
     SCOPE_SCHEMA_DRIFT,
 )
@@ -88,6 +95,7 @@ __all__ = [
     "SIMULATE_MAX_DAYS",
     "SIMULATE_NOISY_THRESHOLD",
     "apply_alert_inbox_action",
+    "count_open_incidents",
     "clear_rule_states",
     "create_destination",
     "create_rule",
@@ -95,6 +103,7 @@ __all__ = [
     "delete_rule",
     "delivery_to_response",
     "destination_to_response",
+    "get_alert_inbox_group",
     "get_delivery",
     "get_destination",
     "get_destination_response",
@@ -108,6 +117,7 @@ __all__ = [
     "replace_rule_filters",
     "retry_delivery",
     "rule_to_response",
+    "send_destination_test",
     "simulate_rule",
     "unmute_monitor",
     "update_destination",
@@ -322,6 +332,21 @@ async def _load_distribution_drift_candidates(
     return candidates
 
 
+def _clears_sigma(anomaly: AlertMatchCandidate, sigma_threshold: float) -> bool:
+    """Would the detector still have recorded this anomaly at ``sigma_threshold``?
+
+    ``AlertMatchCandidate`` is a Protocol and only the ``MetricAnomaly`` members
+    of it carry a ``z_score`` — the drift dataclasses are produced by PSI and
+    schema comparisons, which are not scored in sigmas at all. Those answer True:
+    a detector sensitivity has nothing to say about them, the same way the rule's
+    numeric thresholds do not gate them.
+    """
+    z_score = getattr(anomaly, "z_score", None)
+    if z_score is None:
+        return True
+    return abs(float(z_score)) >= sigma_threshold
+
+
 async def simulate_rule(
     session: AsyncSession,
     slug: str,
@@ -329,7 +354,18 @@ async def simulate_rule(
     rule_id: uuid.UUID,
     days: int,
     cooldown_minutes_override: int | None = None,
+    min_percent_delta_override: float | None = None,
+    min_expected_count_override: float | None = None,
+    sigma_threshold_override: float | None = None,
 ) -> AlertRuleSimulateResponse:
+    """Replay a rule over the last ``days`` and report what it would have sent.
+
+    Every override answers a what-if WITHOUT writing anything: the rule under
+    test is usually live-routing to a real channel, so "would min_percent_delta
+    300 have cut these incidents" must not be asked by saving 300 and waiting
+    (tripl-oxkt.17 part 3). Each is reported back as ``*_used`` beside the rule's
+    stored ``*_saved`` value.
+    """
     from datetime import UTC, timedelta
 
     from fastapi import HTTPException
@@ -346,6 +382,24 @@ async def simulate_rule(
         raise HTTPException(
             status_code=422,
             detail="cooldown_minutes_override must be >= 0",
+        )
+    if min_percent_delta_override is not None and min_percent_delta_override < 0:
+        raise HTTPException(
+            status_code=422,
+            detail="min_percent_delta_override must be >= 0",
+        )
+    if min_expected_count_override is not None and min_expected_count_override < 0:
+        raise HTTPException(
+            status_code=422,
+            detail="min_expected_count_override must be >= 0",
+        )
+    # Strictly positive, unlike the two rule thresholds: sigma divides the gap by
+    # the spread, so 0 is not "no filter", it is "everything is infinitely far
+    # out" — the detector itself never scores against it.
+    if sigma_threshold_override is not None and sigma_threshold_override <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="sigma_threshold_override must be > 0",
         )
 
     project = await _get_project(session, slug)
@@ -428,12 +482,38 @@ async def simulate_rule(
         *schema_candidates,
         *distribution_candidates,
     ]
+    # A sigma what-if is a question about DETECTION, not about the rule, so it is
+    # applied to the candidate list itself: in the world being simulated those
+    # anomalies were never recorded, so they have to be missing from
+    # ``anomalies_considered`` as well, not merely from the firings.
+    #
+    # It can only narrow. The detector writes a row when |z| clears its own
+    # threshold, so raising the bar re-reads rows that exist on disk, while
+    # lowering it asks about rows nobody ever wrote and there is nothing to bring
+    # back — see the docstring on ``AlertRuleSimulateResponse``. Candidates with
+    # no z-score (schema and distribution drift) pass through untouched, exactly
+    # as they bypass the rule's numeric thresholds.
+    if sigma_threshold_override is not None:
+        anomalies = [
+            anomaly for anomaly in anomalies if _clears_sigma(anomaly, sigma_threshold_override)
+        ]
 
-    matched_before_cooldown = sum(1 for anomaly in anomalies if rule_matches_anomaly(rule, anomaly))
+    matched_before_cooldown = sum(
+        1
+        for anomaly in anomalies
+        if rule_matches_anomaly(
+            rule,
+            anomaly,
+            min_percent_delta_override=min_percent_delta_override,
+            min_expected_count_override=min_expected_count_override,
+        )
+    )
     fired = simulate_rule_firings(
         rule,
         anomalies,
         cooldown_minutes_override=cooldown_minutes_override,
+        min_percent_delta_override=min_percent_delta_override,
+        min_expected_count_override=min_expected_count_override,
     )
 
     scope_names = await _build_scope_name_map(session, fired)
@@ -488,6 +568,15 @@ async def simulate_rule(
         if cooldown_minutes_override is not None
         else rule.cooldown_minutes
     )
+    # The detector threshold this replay is measured against. A scan-bound rule
+    # quotes its scan's; a rule left on "All scans" only has one to quote when
+    # every scan in the project agrees, so disagreement reports null rather than
+    # picking one scan's value and presenting it as the rule's.
+    scan_sigma_query = select(ScanConfig.sigma_threshold).where(ScanConfig.project_id == project.id)
+    if rule.scan_config_id is not None:
+        scan_sigma_query = scan_sigma_query.where(ScanConfig.id == rule.scan_config_id)
+    scan_sigmas = {float(value) for value in (await session.execute(scan_sigma_query)).scalars()}
+    sigma_threshold_saved = next(iter(scan_sigmas)) if len(scan_sigmas) == 1 else None
 
     return AlertRuleSimulateResponse(
         rule_id=rule.id,
@@ -501,5 +590,21 @@ async def simulate_rule(
         noisy=len(firings) > SIMULATE_NOISY_THRESHOLD,
         cooldown_minutes_used=effective_cooldown,
         cooldown_minutes_saved=rule.cooldown_minutes,
+        min_percent_delta_used=(
+            rule.min_percent_delta
+            if min_percent_delta_override is None
+            else min_percent_delta_override
+        ),
+        min_percent_delta_saved=rule.min_percent_delta,
+        min_expected_count_used=(
+            rule.min_expected_count
+            if min_expected_count_override is None
+            else min_expected_count_override
+        ),
+        min_expected_count_saved=rule.min_expected_count,
+        sigma_threshold_used=(
+            sigma_threshold_saved if sigma_threshold_override is None else sigma_threshold_override
+        ),
+        sigma_threshold_saved=sigma_threshold_saved,
         rendered_message=rendered_message or None,
     )

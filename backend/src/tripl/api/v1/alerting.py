@@ -8,14 +8,17 @@ from tripl.api.deps import EditorUserDep, SessionDep
 from tripl.models.alert_delivery import AlertDeliveryStatus
 from tripl.models.alert_destination import AlertDestinationType
 from tripl.models.alert_rule import AlertRule
+from tripl.models.anomaly_scope_override import RATCHET_SIGMA_CAP
 from tripl.models.domain_enums import AlertInboxStatus
 from tripl.schemas.alerting import (
     AlertDeliveryDetailResponse,
     AlertDeliveryListResponse,
     AlertDestinationCreate,
     AlertDestinationResponse,
+    AlertDestinationTestResponse,
     AlertDestinationUpdate,
     AlertInboxActionRequest,
+    AlertInboxActionResponse,
     AlertInboxGroupResponse,
     AlertInboxListResponse,
     AlertRuleCreate,
@@ -98,9 +101,12 @@ async def delete_alert_destination(
     destination_id: uuid.UUID,
     current_user: EditorUserDep,
 ) -> None:
-    existing = await alerting_service.get_destination(session, slug, destination_id)
-    name = existing.name
-    await alerting_service.delete_destination(session, slug, destination_id)
+    # The name comes back from the delete itself, which already loaded the row.
+    # Asking the service for the destination first meant
+    # ``get_destination_response`` — the four delete-impact aggregates of
+    # ``load_destination_health`` — to read one string off a row that is about to
+    # be deleted.
+    name = await alerting_service.delete_destination(session, slug, destination_id)
     await audit_service.record(
         session,
         user=current_user,
@@ -110,6 +116,47 @@ async def delete_alert_destination(
         target_name=name,
         project_slug=slug,
     )
+
+
+@router.post(
+    "/alert-destinations/{destination_id}/test",
+    response_model=AlertDestinationTestResponse,
+)
+async def test_alert_destination(
+    session: SessionDep,
+    slug: str,
+    destination_id: uuid.UUID,
+    current_user: EditorUserDep,
+) -> AlertDestinationTestResponse:
+    """Send one fixed test message through this destination's real channel.
+
+    Editor-only: it puts a message in somebody's Slack/Telegram/inbox and, for a
+    tracker destination, opens a ticket. Always 200 — a channel refusal is the
+    answer the caller asked for, not a server fault (see
+    ``AlertDestinationTestResponse``).
+
+    Recorded in the audit log rather than as an AlertDelivery, so the Delivery
+    log keeps meaning "an alert fired"; see ``services/_alerting_test_send``.
+    """
+    # The name comes back with the result, read off the load the send already
+    # did and taken BEFORE the network call — so the audit entry still names the
+    # destination the operator acted on even if the row changes underneath. It
+    # used to be fetched by a second call to ``get_destination``, which is
+    # ``get_destination_response``: four delete-impact aggregates and a second
+    # load of the same row, in front of a request that blocks for up to 10s.
+    outcome = await alerting_service.send_destination_test(session, slug, destination_id)
+    result = outcome.response
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="alert_destination.test",
+        target_type="alert_destination",
+        target_id=destination_id,
+        target_name=outcome.destination_name,
+        project_slug=slug,
+        payload={"ok": result.ok, "error": result.error},
+    )
+    return result
 
 
 @router.post(
@@ -201,6 +248,19 @@ async def simulate_alert_rule(
     rule_id: uuid.UUID,
     days: int = Query(7, ge=1, le=90),
     cooldown_minutes_override: int | None = Query(None, ge=0, le=10080),
+    # The three what-if knobs beside the cooldown one. Omit any of them and the
+    # replay uses the rule's saved value; the reply reports both, as
+    # ``*_used``/``*_saved``. Without these, asking "would min % 300 cut these
+    # incidents" meant saving 300 onto a rule that is live-routing to a real
+    # channel (tripl-oxkt.17 part 3).
+    #
+    # ``sigma_threshold_override`` is the DETECTOR's sensitivity, not a rule
+    # field: it re-reads the recorded anomalies, so it can only ever narrow the
+    # set — see ``AlertRuleSimulateResponse``. Bounded above by the same cap the
+    # false-positive ratchet respects.
+    min_percent_delta_override: float | None = Query(None, ge=0),
+    min_expected_count_override: float | None = Query(None, ge=0),
+    sigma_threshold_override: float | None = Query(None, gt=0, le=RATCHET_SIGMA_CAP),
 ) -> AlertRuleSimulateResponse:
     return await alerting_service.simulate_rule(
         session,
@@ -209,6 +269,9 @@ async def simulate_alert_rule(
         rule_id,
         days,
         cooldown_minutes_override=cooldown_minutes_override,
+        min_percent_delta_override=min_percent_delta_override,
+        min_expected_count_override=min_expected_count_override,
+        sigma_threshold_override=sigma_threshold_override,
     )
 
 
@@ -361,15 +424,30 @@ async def list_alert_inbox(
     )
 
 
-@router.post("/alert-inbox/{correlation_group_id}/actions", response_model=AlertInboxGroupResponse)
+@router.get("/alert-inbox/{correlation_group_id}", response_model=AlertInboxGroupResponse)
+async def get_alert_inbox_group(
+    session: SessionDep,
+    slug: str,
+    correlation_group_id: uuid.UUID,
+) -> AlertInboxGroupResponse:
+    """Resolve one incident by id, ignoring the list's lookback window.
+
+    Alert messages deep-link the incident they describe, and the reader opens
+    them late; before this route the link landed on a page of 20 unrelated
+    incidents with no explanation (tripl-oxkt.7).
+    """
+    return await alerting_service.get_alert_inbox_group(session, slug, correlation_group_id)
+
+
+@router.post("/alert-inbox/{correlation_group_id}/actions", response_model=AlertInboxActionResponse)
 async def apply_alert_inbox_action(
     session: SessionDep,
     slug: str,
     correlation_group_id: uuid.UUID,
     data: AlertInboxActionRequest,
     current_user: EditorUserDep,
-) -> AlertInboxGroupResponse:
-    group = await alerting_service.apply_alert_inbox_action(
+) -> AlertInboxActionResponse:
+    result = await alerting_service.apply_alert_inbox_action(
         session,
         slug,
         correlation_group_id,
@@ -386,4 +464,4 @@ async def apply_alert_inbox_action(
         project_slug=slug,
         payload=data.model_dump(),
     )
-    return group
+    return result

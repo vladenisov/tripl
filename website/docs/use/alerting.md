@@ -38,8 +38,8 @@ A rule never invents an alert — it reacts to **signals** the anomaly detector
 produces on each scan. In short: for each scope the detector compares the latest
 bucket against a seasonal baseline and scores the gap as
 `z = (actual − expected) / spread`, recording a **spike** or **drop** when
-`|z| ≥ sigma_threshold` (default 3) and the expected volume clears
-`min_expected_count` (default 10). It also emits **distribution-drift** signals
+`|z| ≥ sigma_threshold` (default 4) and the expected volume clears
+`min_expected_count` (default 50). It also emits **distribution-drift** signals
 (a value mix shifted) and **release-regression** signals (a new app version
 under-fires an event), plus **variable-value drift** when an event observes
 values outside its effective documented variable list.
@@ -70,9 +70,66 @@ post a message; **Webhook** POSTs a JSON payload. **MarkdownV2** falls back to
 plain text automatically if a message can't be rendered safely.
 :::
 
-There is no separate destination-test endpoint. Use rule replay to validate
-matching, then confirm the first real delivery in **Audit**; a failing webhook
-or an unverified bot token is the most common transport failure.
+### Testing a destination
+
+**Test** on a destination card sends one fixed, clearly-marked message through
+the channel itself —
+`POST /api/v1/projects/{slug}/alert-destinations/{destination_id}/test`, editor
+or owner only. It is the difference between "a bot token is stored" and "a bot
+token works": a revoked Telegram token, a webhook whose channel was archived, and
+a perfectly healthy destination all look identical in the form.
+
+The reply is `{ "ok": …, "error": …, "sent_at": … }`, and:
+
+- **It always answers 200.** A channel refusing the message is the answer you
+  asked for, not a fault on our side, so a refusal comes back as `ok: false` with
+  the channel's own message rather than as a 5xx the UI would render as "tripl is
+  broken". `error` is `null` on success and `sent_at` is `null` on failure —
+  both keys are always present.
+- **It works on a disabled destination.** Disabled means "route no alerts here";
+  checking credentials before switching one back on is the commonest reason to
+  press Test, so refusing would make the button useless exactly when it is
+  wanted.
+- **It records no delivery.** A test is not an alert — writing one would mean
+  borrowing a real rule and scan and claiming they fired, and it would stamp that
+  rule's cooldown and silence the next genuine alert. What is recorded is the
+  operator action, in the project **audit log**, naming the destination it was
+  pressed on. The **Audit** tab below therefore keeps meaning "an alert fired".
+- **A demo project refuses it**, with `ok: false` and an explanation: a demo is
+  zero-egress. The exception is the local demo sink, which answers `ok: true`,
+  because rendering and recording locally is exactly what a real delivery through
+  it does.
+
+Whoever reads that channel did not ask for the message, so it says on its own
+line that nothing is wrong and that someone pressed Test. Use rule replay to
+validate *matching*, and confirm the first real delivery in **Audit**; a failing
+webhook or an unverified bot token is the most common transport failure.
+
+### What deleting one would destroy
+
+Deleting a **rule** deletes its deliveries with it, and deleting a **destination**
+deletes every rule under it and every delivery under those. The Inbox reads
+through those same deliveries, so the incidents they carried go too. That makes
+"Delete?" the wrong question to ask, and both cards state the damage instead —
+the numbers come back on the destination and rule payloads themselves:
+
+| Field | On | Means |
+|---|---|---|
+| `total_deliveries` | a rule | Every delivery this rule has ever made |
+| `incident_count` | a rule | Distinct incidents those deliveries carried |
+| `delivery_count` | a destination | Every delivery through this destination |
+| `incident_count` | a destination | Distinct incidents across all of its rules |
+
+A destination's `incident_count` is **not** the sum of its rules'. Two rules of
+one destination can carry the same incident, and adding two distinct counts would
+report that incident twice, so the destination total is counted in its own right.
+
+:::note
+`total_deliveries` on a rule is the same all-time number
+`GET /monitors/{rule_id}` reports under that name — a monitor *is* an alert rule,
+so it is one number with one name. Do not confuse it with `delivery_count` on an
+**Inbox incident**, which counts the deliveries of that one incident.
+:::
 
 ### What a Webhook destination POSTs
 
@@ -122,6 +179,32 @@ same question two ways.
 Deliveries recorded **before this behaviour shipped** still carry `0.0` in their
 stored `payload_snapshot` — a delivery is a frozen record and is not rewritten.
 Read `expected_count == 0` to disambiguate historical rows.
+:::
+
+#### The test POST is a different body
+
+Pressing **Test** on a webhook destination (see
+[Testing a destination](#testing-a-destination)) POSTs to the same URL with the
+same optional header, but the body is **not** the one above:
+
+```json
+{
+  "event": "tripl.destination_test",
+  "destination": "Ops Webhook",
+  "message": "…Someone pressed Test in Tripl to check that this channel is reachable. No alert fired and nothing is wrong."
+}
+```
+
+Switch on the `event` key to tell them apart: an **alert** body has no `event`
+key at all, and a test body always carries `"tripl.destination_test"`. That is
+why the marker is a typed field rather than only a sentence in `message` — a
+receiver that opens a ticket per alert must be able to drop a test without
+parsing prose. A test body carries no `items`, no `rule` and no `scan`, because
+no rule fired and no scan produced it.
+
+:::note
+The test POST is subject to the same SSRF guard as a real send: the target is
+re-resolved and refused if it points at a private or link-local address.
 :::
 
 ### The AI note remembers what it already told you
@@ -277,6 +360,39 @@ and its Close action visible; on a narrow screen, scroll the firing table itself
 to inspect all columns without losing the rest of the dialog.
 :::
 
+### Replaying a what-if without saving it
+
+Replay answers "how noisy is this rule", and it also answers "how noisy would a
+*different* rule be" — without editing a rule that is live-routing to a real
+channel while you find out.
+`POST /api/v1/projects/{slug}/alert-destinations/{destination_id}/rules/{rule_id}/simulate`
+takes `days` plus four optional overrides, each applied for that one run only and
+written back nowhere:
+
+| Override | Replaces | Notes |
+|---|---|---|
+| `cooldown_minutes_override` | `cooldown_minutes` | `0` disables grouping, so every match becomes a firing |
+| `min_percent_delta_override` | `min percent delta` | The threshold this exists for: "would 300 cut these?" |
+| `min_expected_count_override` | `min expected count` | Ignore low-traffic buckets, as the saved value does |
+| `sigma_threshold_override` | the **detector's** sensitivity | Not a rule setting — see below |
+
+Each comes back as a `*_used` / `*_saved` pair (`min_percent_delta_used`,
+`min_percent_delta_saved`, and so on), so the result can show *tried* beside
+*stored* without a second request. Omit an override and `used` equals `saved`.
+
+`sigma_threshold_override` is the odd one out, because sigma is not a rule
+control at all: it belongs to the scan, and it decides whether an anomaly was
+**recorded**. Replay reads anomalies that already exist, so a **higher** value
+re-reads them and drops the ones whose `|z|` no longer clears the bar — those
+disappear from `anomalies_considered` too, not just from the firings, because in
+the world you are asking about they were never written. A **lower** value cannot
+bring anything back: rows below the scan's own threshold were never stored.
+Drift and release-regression signals carry no z-score and are untouched by it,
+exactly as they bypass the rule thresholds. `sigma_threshold_saved` is the scan's
+configured value, and is `null` for a rule left on **All scans** when the
+project's scans do not agree on one — each carries its own, so there is no single
+saved number to quote.
+
 ### Example
 
 A rule that pages Slack only on meaningful drops in checkout volume:
@@ -345,6 +461,15 @@ and does nothing unless an AI provider is configured — see
 | **Inbox** | Triage: incidents, their actions, and what was sent for each. The default, and where an alert link lands. |
 | **Destinations & rules** | Configuration: channels and the rules that route to them, above a one-line routing summary. |
 | **Audit** | Every delivery in the project, filterable, for "did the message actually go out". |
+
+The sidebar badge beside **Alerting** counts **open incidents**, not
+destinations: `open_incident_count` in the `summary` of
+`GET /api/v1/projects/{slug}` is how many Inbox rows have an effective status of
+`open`, worked out with the Inbox's own 30-day window and its own status rules —
+including the one where a mute that has run out counts as open again. It used to
+badge the destination count, so it read "Alerting 1" beside a page listing 52
+open incidents; a badge that disagrees with the page it labels is worse than no
+badge.
 
 The section is a query parameter rather than a path segment because the second
 path segment already carries the delivery id an alert link points at — links
@@ -453,7 +578,11 @@ The **Inbox** is one row per **incident** — a rule firing in one direction on 
 scope of a scan — over the last 30 days. An incident stays the same row for as
 long as it keeps firing, however many buckets it spans, so a decision you make
 about it holds. From the Inbox you can **acknowledge**, **resolve**, **mute**,
-**reopen**, or mark it a **false positive**, and attach a **note** saying why.
+**reopen**, mark it a **false positive**, or save a **note** — six actions, and
+`note` is one of them in its own right. Every action can carry a note alongside
+it, but you no longer have to change an incident's status to write one down:
+saying why something was a false positive used to mean first undoing the false
+positive.
 
 **Acknowledge, resolve and mute all stop further deliveries** for that incident.
 Because the row is per scope, silencing one screen leaves every other scope the
@@ -465,11 +594,28 @@ occurrence alerts and an old decision can never silence a new problem.
 The note is attached to the incident, survives later actions, and is only
 replaced when you write a new one.
 
+**A note-only save is the one action that decides nothing**, and it is treated
+that way: it does not change the incident's status and it does not stamp who
+handled it or when, so the row does not start claiming "already handled by
+you". Send an empty note to clear the stored one. The other five actions do stamp
+it, which is what the row's *handled by* line is read from — and what tells a
+re-fired incident from a fresh one.
+
 The scope name on an incident row links to the thing that fired — the event,
 event type, project-total or metric monitoring page — so you can check whether
 the alert is real without leaving for the catalog and finding it by hand. Scopes
 with no page of their own (a schema or distribution drift) link to the event they
 were detected on, or stay plain text when there is nothing to open.
+
+The Inbox lists the last **30 days**, but an alert's link is not bound by that
+window: `GET /api/v1/projects/{slug}/alert-inbox/{correlation_group_id}` resolves
+one incident by id and deliberately ignores the lookback, because the reader
+opens the link late and would otherwise land on a page of twenty unrelated
+incidents. Read that way, an incident also reports its **whole** history — its
+true first delivery, and its full item and delivery counts — where the same row
+in the list describes only the part inside the window. Acting on an incident
+older than 30 days works too, and gives you back the same card you were looking
+at when you pressed the button.
 
 Each incident row also carries **what was sent** for it: expand it to see that
 incident's deliveries — destination, status, and the item lines the message
@@ -485,22 +631,44 @@ go out", rather than for acting on one incident. Deliveries too old to belong to
 an incident (written before incidents existed) appear only there.
 
 :::note
-Marking a group **false positive** doesn't just hide it — it nudges the detector
-on **the scope it fired on** (raises that scope's sensitivity threshold and
-minimum expected count) so the same benign pattern is less likely to alert
-again. Every other scope keeps the sensitivity you configured, and the
-project-wide settings are not touched. The nudge is permanent; it is listed and
-can be removed under **Settings → Monitoring → Scope overrides**. See
+Marking a group **false positive** doesn't just hide it — on the scopes that are
+scored by the two numeric detector knobs it nudges the detector on **the scope it
+fired on** (raises that scope's sensitivity threshold and minimum expected count)
+so the same benign pattern is less likely to alert again. Every other scope keeps
+the sensitivity you configured, and the project-wide settings are not touched.
+The nudge is permanent; it is listed and can be removed under **Settings →
+Monitoring → Scope overrides**. See
 [False positives self-tune the thresholds](./anomaly-detection.md#false-positives-self-tune-the-thresholds).
+
+**Not every scope can be nudged.** Only **project-total**, **event-type**,
+**event** and **metric** scopes are scored against a sigma threshold and a
+minimum expected count, so only those are ratcheted. **Schema drift**,
+**distribution drift**, **variable-value drift** and **release regressions**
+reach the Inbox and can be marked a false positive — the incident is recorded and
+silenced exactly as it would be — but nothing tunes them, because neither knob is
+what decided they fired. Tighten those at the source instead: the drift bands
+and the release-regression comparability gate, both in
+[How anomaly detection works](./anomaly-detection.md).
+
+So that the button stops promising a change it did not make, the action's reply
+carries **`overrides_written`** — how many scopes were actually tightened, which
+is `0` for an incident made entirely of the scope types above. It is `null` for
+every other action (acknowledge, resolve, mute, reopen, note), because those
+never touch detection at all; `null` means "not applicable" and `0` means "tried
+and tightened nothing".
 :::
 
 ## Set up your first alert
 
 1. **Observe → Alerting → Destinations** — add a destination (e.g. a
-   Slack webhook) and test it.
+   Slack webhook) and press **Test**, which sends one message through the real
+   channel and answers whether it arrived — see
+   [Testing a destination](#testing-a-destination).
 2. **Add a routing rule** on that destination: choose the scope, direction(s),
    thresholds, optional filters, and cooldown.
-3. *(Optional)* **Simulate** it over recent days to confirm it isn't noisy.
+3. *(Optional)* **Simulate** it over recent days to confirm it isn't noisy — and
+   try a stricter threshold there before saving one, see
+   [Replaying a what-if without saving it](#replaying-a-what-if-without-saving-it).
 4. **Save.** The next scan that produces a matching signal sends a delivery and
    records it in the Inbox and Audit views.
 

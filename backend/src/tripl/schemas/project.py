@@ -119,6 +119,13 @@ class ProjectSummary(BaseModel):
     alert_rule_count: int = 0
     monitoring_signal_count: int = 0
     firing_monitor_count: int = 0
+    # Incidents in the Alerting Inbox whose effective status is `open`. The
+    # sidebar used to badge Alerting with ``alert_destination_count``, so it read
+    # "Alerting 1" while 52 incidents sat open (tripl-oxkt.16). A badge that
+    # disagrees with the page it labels is worse than no badge — this one is
+    # computed by ``_populate_open_incident_counts``, which shares the inbox's
+    # own window and status rules rather than approximating them.
+    open_incident_count: int = 0
     # Number of scan configs whose *latest* run failed. Distinct from
     # ``latest_scan_job`` (the single newest job across the whole project): a
     # config that fails every run is invisible there once a *different* config

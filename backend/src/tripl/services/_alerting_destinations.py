@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
 from sqlalchemy import delete, select
@@ -34,6 +35,12 @@ from tripl.schemas.alerting import (
     AlertRuleResponse,
     AlertRuleUpdate,
 )
+from tripl.services._alerting_health import (
+    DestinationHealth,
+    RuleHealth,
+    load_destination_health,
+)
+from tripl.services._alerting_monitors import is_rule_muted
 from tripl.services.project_lookup import get_project_by_slug as _get_project
 
 
@@ -161,7 +168,7 @@ async def validate_scan_config(
         raise HTTPException(status_code=404, detail="Scan configuration not found")
 
 
-def rule_to_response(rule: AlertRule) -> AlertRuleResponse:
+def rule_to_response(rule: AlertRule, health: RuleHealth, *, now: datetime) -> AlertRuleResponse:
     sorted_filters = sorted(rule.filters, key=lambda item: item.position)
     return AlertRuleResponse(
         id=rule.id,
@@ -196,12 +203,34 @@ def rule_to_response(rule: AlertRule) -> AlertRuleResponse:
             )
             for filter_row in sorted_filters
         ],
+        # ``muted_until`` is emitted raw, unlike the inbox group's, because the
+        # card needs the stored value to offer "unmute" on a rule whose mute has
+        # lapsed; ``muted`` is the claim about NOW and is what the badge reads.
+        muted=is_rule_muted(rule, now),
+        muted_until=rule.muted_until,
+        last_delivery_at=health.last_delivery_at,
+        last_delivery_status=health.last_delivery_status,
+        total_deliveries=health.delivery_count,
+        incident_count=health.incident_count,
         created_at=rule.created_at,
         updated_at=rule.updated_at,
     )
 
 
-def destination_to_response(destination: AlertDestination) -> AlertDestinationResponse:
+def destination_to_response(
+    destination: AlertDestination,
+    health: DestinationHealth,
+    *,
+    now: datetime,
+) -> AlertDestinationResponse:
+    """One destination card. ``now`` is the clock every mute on it is read against.
+
+    Passed in rather than read here: this function is called once per destination
+    while building the LIST, so reading the clock inside it gave one response N
+    different "now"s and two destinations muted to the same instant could
+    disagree about whether that instant had passed. The parameter is required so
+    a future caller has to decide which clock it means (tripl-oxkt.18).
+    """
     rules = sorted(destination.rules, key=lambda item: item.created_at, reverse=True)
     return AlertDestinationResponse(
         id=destination.id,
@@ -227,9 +256,41 @@ def destination_to_response(destination: AlertDestination) -> AlertDestinationRe
         linear_state_id=destination.linear_state_id,
         linear_label_ids=destination.linear_label_ids,
         is_local=destination.type == AlertDestinationType.demo_sink,
-        rules=[rule_to_response(rule) for rule in rules],
+        delivery_count=health.delivery_count,
+        incident_count=health.incident_count,
+        rules=[
+            rule_to_response(rule, health.rules.get(rule.id, RuleHealth()), now=now)
+            for rule in rules
+        ],
         created_at=destination.created_at,
         updated_at=destination.updated_at,
+    )
+
+
+async def build_destination_response(
+    session: AsyncSession,
+    destination: AlertDestination,
+) -> AlertDestinationResponse:
+    """One destination, with the rollups its card and delete confirm need."""
+    health = await load_destination_health(session, [destination.id])
+    return destination_to_response(
+        destination,
+        health.get(destination.id, DestinationHealth()),
+        now=datetime.now(UTC),
+    )
+
+
+async def build_rule_response(
+    session: AsyncSession,
+    rule: AlertRule,
+) -> AlertRuleResponse:
+    """One rule, with the rollups its card and delete confirm need."""
+    health = await load_destination_health(session, [rule.destination_id])
+    destination_health = health.get(rule.destination_id, DestinationHealth())
+    return rule_to_response(
+        rule,
+        destination_health.rules.get(rule.id, RuleHealth()),
+        now=datetime.now(UTC),
     )
 
 
@@ -340,7 +401,19 @@ async def clear_rule_states(session: AsyncSession, rule_ids: list[uuid.UUID]) ->
 async def list_destinations(session: AsyncSession, slug: str) -> list[AlertDestinationResponse]:
     project = await _get_project(session, slug)
     destinations = (await session.execute(_destination_query(project.id))).scalars().unique().all()
-    return [destination_to_response(destination) for destination in destinations]
+    # One batched load for the whole page — see load_destination_health.
+    health = await load_destination_health(session, [dest.id for dest in destinations])
+    # ...and one clock for the whole page, for the same reason: every mute in
+    # this response is read against the same instant.
+    now = datetime.now(UTC)
+    return [
+        destination_to_response(
+            destination,
+            health.get(destination.id, DestinationHealth()),
+            now=now,
+        )
+        for destination in destinations
+    ]
 
 
 async def create_destination(
@@ -403,7 +476,7 @@ async def create_destination(
         project_id=project.id,
         destination_id=destination.id,
     )
-    return destination_to_response(destination)
+    return await build_destination_response(session, destination)
 
 
 async def get_destination_response(
@@ -417,7 +490,7 @@ async def get_destination_response(
         project_id=project.id,
         destination_id=destination_id,
     )
-    return destination_to_response(destination)
+    return await build_destination_response(session, destination)
 
 
 async def update_destination(
@@ -532,23 +605,33 @@ async def update_destination(
         project_id=project.id,
         destination_id=destination_id,
     )
-    return destination_to_response(destination)
+    return await build_destination_response(session, destination)
 
 
 async def delete_destination(
     session: AsyncSession,
     slug: str,
     destination_id: uuid.UUID,
-) -> None:
+) -> str:
+    """Delete a destination and return the NAME it had, for the audit entry.
+
+    Returned rather than left to the caller to fetch: the row is gone once this
+    commits, so a route that wanted to name it had to load the destination a
+    second time beforehand — and the only loader exposed on the service facade is
+    ``get_destination_response``, which drags in the four delete-impact aggregates
+    of ``load_destination_health`` purely to read one string.
+    """
     project = await _get_project(session, slug)
     destination = await get_destination(
         session,
         project_id=project.id,
         destination_id=destination_id,
     )
+    name = destination.name
     await clear_rule_states(session, [rule.id for rule in destination.rules])
     await session.delete(destination)
     await session.commit()
+    return name
 
 
 async def create_rule(
@@ -625,7 +708,7 @@ async def create_rule(
         destination_id=destination.id,
         rule_id=rule.id,
     )
-    return rule_to_response(refreshed_rule)
+    return await build_rule_response(session, refreshed_rule)
 
 
 async def update_rule(
@@ -700,7 +783,7 @@ async def update_rule(
         destination_id=destination_id,
         rule_id=rule_id,
     )
-    return rule_to_response(refreshed_rule)
+    return await build_rule_response(session, refreshed_rule)
 
 
 async def delete_rule(

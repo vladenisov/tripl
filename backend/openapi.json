@@ -1242,6 +1242,10 @@
             "title": "Created At",
             "type": "string"
           },
+          "delivery_count": {
+            "title": "Delivery Count",
+            "type": "integer"
+          },
           "email_from_address": {
             "anyOf": [
               {
@@ -1283,6 +1287,10 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "incident_count": {
+            "title": "Incident Count",
+            "type": "integer"
           },
           "is_local": {
             "default": false,
@@ -1441,11 +1449,52 @@
           "linear_team_id",
           "linear_state_id",
           "linear_label_ids",
+          "delivery_count",
+          "incident_count",
           "rules",
           "created_at",
           "updated_at"
         ],
         "title": "AlertDestinationResponse",
+        "type": "object"
+      },
+      "AlertDestinationTestResponse": {
+        "description": "Result of a manual test send \u2014 did this destination reach its channel?\n\nA channel refusal is an ANSWER, not a server fault: a revoked Telegram token\nand a healthy one look identical in the destination form (tripl-oxkt.17), and\nthe whole point of the probe is to tell them apart. So the route returns 200\nwith ``ok=False`` and the channel's own message rather than a 5xx the UI would\nrender as \"something went wrong on our side\".",
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "sent_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sent At"
+          }
+        },
+        "required": [
+          "ok",
+          "error",
+          "sent_at"
+        ],
+        "title": "AlertDestinationTestResponse",
         "type": "object"
       },
       "AlertDestinationType": {
@@ -1712,7 +1761,8 @@
               "resolve",
               "mute",
               "reopen",
-              "false_positive"
+              "false_positive",
+              "note"
             ],
             "title": "Action",
             "type": "string"
@@ -1748,6 +1798,31 @@
         "title": "AlertInboxActionRequest",
         "type": "object"
       },
+      "AlertInboxActionResponse": {
+        "description": "What the action DID, not only what the group looks like afterwards.\n\n``false_positive`` writes no scope override for scope types the ratchet does\nnot tune \u2014 release regressions among them \u2014 so the button promised a\ndetection change it never made, on 10 of 57 production groups (tripl-oxkt.6).\nThe count is reported so the UI can say \"tightened 2 scopes\" or \"no scopes\ntightened\"; it must NOT be guessed client-side from ``scope_type``, which is\nonly the newest item's.",
+        "properties": {
+          "group": {
+            "$ref": "#/components/schemas/AlertInboxGroupResponse"
+          },
+          "overrides_written": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overrides Written"
+          }
+        },
+        "required": [
+          "group",
+          "overrides_written"
+        ],
+        "title": "AlertInboxActionResponse",
+        "type": "object"
+      },
       "AlertInboxGroupResponse": {
         "properties": {
           "acted_at": {
@@ -1773,6 +1848,21 @@
               }
             ],
             "title": "Acted By"
+          },
+          "acted_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acted By Name"
+          },
+          "actual_count": {
+            "title": "Actual Count",
+            "type": "number"
           },
           "correlation_group_id": {
             "format": "uuid",
@@ -1805,10 +1895,19 @@
             ],
             "title": "Event Id"
           },
+          "expected_count": {
+            "title": "Expected Count",
+            "type": "number"
+          },
           "false_positive_count": {
             "default": 0,
             "title": "False Positive Count",
             "type": "integer"
+          },
+          "first_delivery_at": {
+            "format": "date-time",
+            "title": "First Delivery At",
+            "type": "string"
           },
           "item_count": {
             "title": "Item Count",
@@ -1823,6 +1922,21 @@
             "format": "date-time",
             "title": "Latest Delivery At",
             "type": "string"
+          },
+          "max_abs_percent_delta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Abs Percent Delta"
+          },
+          "muted": {
+            "title": "Muted",
+            "type": "boolean"
           },
           "muted_until": {
             "anyOf": [
@@ -1847,11 +1961,29 @@
             ],
             "title": "Note"
           },
+          "percent_delta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Percent Delta"
+          },
           "rule_names": {
             "items": {
               "type": "string"
             },
             "title": "Rule Names",
+            "type": "array"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/AlertInboxRuleRef"
+            },
+            "title": "Rules",
             "type": "array"
           },
           "scan_names": {
@@ -1875,6 +2007,13 @@
           "scope_type": {
             "$ref": "#/components/schemas/MetricScopeType"
           },
+          "scope_types": {
+            "items": {
+              "$ref": "#/components/schemas/MetricScopeType"
+            },
+            "title": "Scope Types",
+            "type": "array"
+          },
           "status": {
             "$ref": "#/components/schemas/AlertInboxStatus"
           }
@@ -1882,18 +2021,27 @@
         "required": [
           "correlation_group_id",
           "status",
+          "muted",
           "item_count",
           "delivery_count",
           "latest_bucket",
           "latest_delivery_at",
+          "first_delivery_at",
           "direction",
+          "actual_count",
+          "expected_count",
+          "percent_delta",
+          "max_abs_percent_delta",
           "scope_type",
           "scope_ref",
           "event_id",
+          "scope_types",
           "scope_names",
           "destination_names",
           "rule_names",
-          "scan_names"
+          "rules",
+          "scan_names",
+          "acted_by_name"
         ],
         "title": "AlertInboxGroupResponse",
         "type": "object"
@@ -1917,6 +2065,26 @@
           "total"
         ],
         "title": "AlertInboxListResponse",
+        "type": "object"
+      },
+      "AlertInboxRuleRef": {
+        "description": "One rule that carried this incident: the id AND the name, together.\n\nReplaces the parallel ``rule_ids`` / ``rule_names`` arrays, which could not\nbe zipped: ``rule_ids`` was sorted by UUID and ``rule_names`` by name, so\nindex *i* of one had nothing to do with index *i* of the other and the card\nlinked \"Volume rule\" to whichever monitor happened to sort first. Two rules\nof one group can even share a name, so no client-side join could repair it\neither (tripl-oxkt.4).",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "AlertInboxRuleRef",
         "type": "object"
       },
       "AlertInboxStatus": {
@@ -2189,6 +2357,10 @@
             "title": "Id",
             "type": "string"
           },
+          "incident_count": {
+            "title": "Incident Count",
+            "type": "integer"
+          },
           "include_distribution_drifts": {
             "title": "Include Distribution Drifts",
             "type": "boolean"
@@ -2232,6 +2404,28 @@
             ],
             "title": "Items Template"
           },
+          "last_delivery_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Delivery At"
+          },
+          "last_delivery_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlertDeliveryStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "message_format": {
             "$ref": "#/components/schemas/AlertMessageFormat"
           },
@@ -2258,6 +2452,22 @@
             "title": "Min Percent Delta",
             "type": "number"
           },
+          "muted": {
+            "title": "Muted",
+            "type": "boolean"
+          },
+          "muted_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Muted Until"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -2281,6 +2491,10 @@
               }
             ],
             "title": "Scan Config Id"
+          },
+          "total_deliveries": {
+            "title": "Total Deliveries",
+            "type": "integer"
           },
           "updated_at": {
             "format": "date-time",
@@ -2313,6 +2527,12 @@
           "items_template",
           "message_format",
           "filters",
+          "muted",
+          "muted_until",
+          "total_deliveries",
+          "last_delivery_at",
+          "last_delivery_status",
+          "incident_count",
           "created_at",
           "updated_at"
         ],
@@ -2348,6 +2568,22 @@
             "title": "Matched Before Cooldown",
             "type": "integer"
           },
+          "min_expected_count_saved": {
+            "title": "Min Expected Count Saved",
+            "type": "number"
+          },
+          "min_expected_count_used": {
+            "title": "Min Expected Count Used",
+            "type": "number"
+          },
+          "min_percent_delta_saved": {
+            "title": "Min Percent Delta Saved",
+            "type": "number"
+          },
+          "min_percent_delta_used": {
+            "title": "Min Percent Delta Used",
+            "type": "number"
+          },
           "noisy": {
             "title": "Noisy",
             "type": "boolean"
@@ -2372,6 +2608,28 @@
             "title": "Rule Name",
             "type": "string"
           },
+          "sigma_threshold_saved": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sigma Threshold Saved"
+          },
+          "sigma_threshold_used": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sigma Threshold Used"
+          },
           "window_from": {
             "format": "date-time",
             "title": "Window From",
@@ -2394,7 +2652,13 @@
           "firings",
           "noisy",
           "cooldown_minutes_used",
-          "cooldown_minutes_saved"
+          "cooldown_minutes_saved",
+          "min_percent_delta_used",
+          "min_percent_delta_saved",
+          "min_expected_count_used",
+          "min_expected_count_saved",
+          "sigma_threshold_used",
+          "sigma_threshold_saved"
         ],
         "title": "AlertRuleSimulateResponse",
         "type": "object"
@@ -11716,7 +11980,6 @@
             "type": "number"
           },
           "muted": {
-            "default": false,
             "title": "Muted",
             "type": "boolean"
           },
@@ -11777,11 +12040,15 @@
           "status",
           "active_scope_count",
           "firing_scope_count",
+          "last_anomaly_at",
+          "last_notified_at",
           "notify_on_spike",
           "notify_on_drop",
           "min_percent_delta",
           "min_expected_count",
           "cooldown_minutes",
+          "muted",
+          "muted_until",
           "rule_enabled",
           "destination_enabled",
           "include_project_total",
@@ -11792,7 +12059,9 @@
           "include_variable_value_drifts",
           "include_release_regressions",
           "include_metrics",
-          "total_deliveries"
+          "total_deliveries",
+          "last_delivery_at",
+          "last_delivery_status"
         ],
         "title": "MonitorDetailResponse",
         "type": "object"
@@ -11876,7 +12145,6 @@
             "type": "number"
           },
           "muted": {
-            "default": false,
             "title": "Muted",
             "type": "boolean"
           },
@@ -11929,11 +12197,15 @@
           "status",
           "active_scope_count",
           "firing_scope_count",
+          "last_anomaly_at",
+          "last_notified_at",
           "notify_on_spike",
           "notify_on_drop",
           "min_percent_delta",
           "min_expected_count",
-          "cooldown_minutes"
+          "cooldown_minutes",
+          "muted",
+          "muted_until"
         ],
         "title": "MonitorSummaryItem",
         "type": "object"
@@ -13735,6 +14007,11 @@
           "monitoring_signal_count": {
             "default": 0,
             "title": "Monitoring Signal Count",
+            "type": "integer"
+          },
+          "open_incident_count": {
+            "default": 0,
+            "title": "Open Incident Count",
             "type": "integer"
           },
           "review_pending_event_count": {
@@ -20919,6 +21196,58 @@
               ],
               "title": "Cooldown Minutes Override"
             }
+          },
+          {
+            "in": "query",
+            "name": "min_percent_delta_override",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Min Percent Delta Override"
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_expected_count_override",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Min Expected Count Override"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sigma_threshold_override",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "maximum": 10.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sigma Threshold Override"
+            }
           }
         ],
         "responses": {
@@ -20944,6 +21273,59 @@
           }
         },
         "summary": "Simulate Alert Rule",
+        "tags": [
+          "alerting"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/alert-destinations/{destination_id}/test": {
+      "post": {
+        "description": "Send one fixed test message through this destination's real channel.\n\nEditor-only: it puts a message in somebody's Slack/Telegram/inbox and, for a\ntracker destination, opens a ticket. Always 200 \u2014 a channel refusal is the\nanswer the caller asked for, not a server fault (see\n``AlertDestinationTestResponse``).\n\nRecorded in the audit log rather than as an AlertDelivery, so the Delivery\nlog keeps meaning \"an alert fired\"; see ``services/_alerting_test_send``.",
+        "operationId": "test_alert_destination_api_v1_projects__slug__alert_destinations__destination_id__test_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "destination_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Destination Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertDestinationTestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Alert Destination",
         "tags": [
           "alerting"
         ]
@@ -21030,6 +21412,59 @@
         ]
       }
     },
+    "/api/v1/projects/{slug}/alert-inbox/{correlation_group_id}": {
+      "get": {
+        "description": "Resolve one incident by id, ignoring the list's lookback window.\n\nAlert messages deep-link the incident they describe, and the reader opens\nthem late; before this route the link landed on a page of 20 unrelated\nincidents with no explanation (tripl-oxkt.7).",
+        "operationId": "get_alert_inbox_group_api_v1_projects__slug__alert_inbox__correlation_group_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "correlation_group_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Correlation Group Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertInboxGroupResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Alert Inbox Group",
+        "tags": [
+          "alerting"
+        ]
+      }
+    },
     "/api/v1/projects/{slug}/alert-inbox/{correlation_group_id}/actions": {
       "post": {
         "operationId": "apply_alert_inbox_action_api_v1_projects__slug__alert_inbox__correlation_group_id__actions_post",
@@ -21069,7 +21504,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AlertInboxGroupResponse"
+                  "$ref": "#/components/schemas/AlertInboxActionResponse"
                 }
               }
             },

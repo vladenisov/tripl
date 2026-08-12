@@ -40,7 +40,11 @@ from tripl.models.domain_enums import (
     MetricScopeType,
 )
 
-AlertInboxAction = Literal["acknowledge", "resolve", "mute", "reopen", "false_positive"]
+# ``note`` is the only member that does NOT change the incident's status: it
+# documents one. Saving a note used to require taking an action, so writing down
+# why something was a false positive meant first undoing the false positive
+# (tripl-oxkt.20).
+AlertInboxAction = Literal["acknowledge", "resolve", "mute", "reopen", "false_positive", "note"]
 
 
 class AlertRuleFilterPayload(BaseModel):
@@ -168,6 +172,37 @@ class AlertRuleResponse(BaseModel):
     items_template: str | None
     message_format: AlertMessageFormat
     filters: list[AlertRuleFilterResponse]
+    # Mute state of the RULE — the same AlertRule row, and the same computation,
+    # that GET /monitors/{rule_id} already reports. The destination card and the
+    # monitors screen render the same object and used to disagree about whether
+    # it was muted, because this response carried no mute state at all and the
+    # card therefore could neither show nor set one (tripl-oxkt.18). A lapsed
+    # ``muted_until`` is NOT muted; see ``_alerting_monitors.is_rule_muted``,
+    # which both paths call.
+    muted: bool
+    muted_until: datetime | None
+    # Delivery health, so the card can say whether this rule's channel has
+    # actually carried anything — "bot token set" means a value is stored, not
+    # that it reaches Telegram (tripl-oxkt.17). All three are the values
+    # ``MonitorDetailResponse`` already reports for the SAME AlertRule, under the
+    # same names: a monitor IS an alert rule seen from the other side, so the two
+    # payloads must not describe one number twice.
+    #
+    # ``total_deliveries`` shipped here as ``delivery_count`` while the monitor
+    # detail called the identical all-time count ``total_deliveries``, and the
+    # borrowed name was already taken elsewhere in this very file:
+    # ``AlertInboxGroupResponse.delivery_count`` is the number of deliveries
+    # inside ONE incident, not a rule's lifetime total. One name for two
+    # quantities in one API is how a client renders an incident's three sends as
+    # a rule's whole history.
+    total_deliveries: int
+    last_delivery_at: datetime | None
+    last_delivery_status: AlertDeliveryStatus | None
+    # What deleting this rule would destroy. AlertDelivery.rule_id is
+    # ondelete=CASCADE and the Inbox INNER JOINs through it, so the confirm has
+    # to be quantitative rather than a bare "Delete?" (tripl-oxkt.13).
+    # ``incident_count`` counts DISTINCT non-null correlation groups.
+    incident_count: int
     created_at: datetime
     updated_at: datetime
 
@@ -473,11 +508,39 @@ class AlertDestinationResponse(BaseModel):
     # renders and records deliveries locally with no outbound network. The UI
     # uses it to badge the destination as LOCAL SIMULATED (tripl-2su6.6).
     is_local: bool = False
+    # Destination-wide totals of what a delete would destroy, so the destination
+    # confirm can state it too — deleting a destination CASCADEs every rule under
+    # it and every delivery under those (tripl-oxkt.13). NOT the sum of the
+    # per-rule numbers below: one correlation group can be carried by two rules
+    # of the same destination, so summing per-rule DISTINCT counts would count
+    # that incident twice.
+    delivery_count: int
+    incident_count: int
     rules: list[AlertRuleResponse]
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class AlertDestinationTestResponse(BaseModel):
+    """Result of a manual test send — did this destination reach its channel?
+
+    A channel refusal is an ANSWER, not a server fault: a revoked Telegram token
+    and a healthy one look identical in the destination form (tripl-oxkt.17), and
+    the whole point of the probe is to tell them apart. So the route returns 200
+    with ``ok=False`` and the channel's own message rather than a 5xx the UI would
+    render as "something went wrong on our side".
+    """
+
+    ok: bool
+    # Both nullable but ALWAYS SENT — FastAPI serializes every declared field, so
+    # a default here only ever told the generated client the key may be absent
+    # while the server never omits it. Same contract rule as ``event_id`` on the
+    # inbox group: the four construction sites in ``_alerting_test_send`` name
+    # both values explicitly, including the ``None`` half of each pair.
+    error: str | None
+    sent_at: datetime | None
 
 
 class AlertDeliveryItemResponse(BaseModel):
@@ -572,9 +635,33 @@ class AlertDeliveryListResponse(BaseModel):
     total: int
 
 
+class AlertInboxRuleRef(BaseModel):
+    """One rule that carried this incident: the id AND the name, together.
+
+    Replaces the parallel ``rule_ids`` / ``rule_names`` arrays, which could not
+    be zipped: ``rule_ids`` was sorted by UUID and ``rule_names`` by name, so
+    index *i* of one had nothing to do with index *i* of the other and the card
+    linked "Volume rule" to whichever monitor happened to sort first. Two rules
+    of one group can even share a name, so no client-side join could repair it
+    either (tripl-oxkt.4).
+    """
+
+    id: uuid.UUID
+    name: str
+
+
 class AlertInboxGroupResponse(BaseModel):
     correlation_group_id: uuid.UUID
     status: AlertInboxStatus
+    # Effective flag, not a second opinion: ``muted`` is true exactly when
+    # ``status`` is ``muted``, i.e. while the mute is IN FORCE. Present because
+    # ``AlertRuleResponse`` and ``MonitorSummaryItem`` already pair a ``muted``
+    # bool with a raw ``muted_until``, and a client reading both payload families
+    # had to know that "muted" is asked one way here and another way there
+    # (tripl-oxkt.18/.20). ``muted_until`` is nulled once the mute lapses, so the
+    # two fields can never contradict each other the way the rule payload's can.
+    # Always sent, so no default — see ``event_id`` below.
+    muted: bool
     muted_until: datetime | None = None
     note: str | None = None
     false_positive_count: int = 0
@@ -582,7 +669,37 @@ class AlertInboxGroupResponse(BaseModel):
     delivery_count: int
     latest_bucket: datetime
     latest_delivery_at: datetime
+    # When this incident first spoke WITHIN THE WINDOW THIS READING COVERS.
+    # `latest_delivery_at` alone says when it last fired and nothing about how
+    # long it has been going, which is the difference between a blip and a
+    # week-old regression (tripl-oxkt.4). On the list — and on the action reply,
+    # which mirrors it — that window is `INBOX_LOOKBACK_DAYS`, so an incident
+    # older than the window reports its first delivery INSIDE the window, not its
+    # true birth. `GET /alert-inbox/{correlation_group_id}` reads the whole
+    # history and does report the true first, which is one reason it exists.
+    # Same qualification applies to `item_count`, `delivery_count` and
+    # `max_abs_percent_delta`.
+    first_delivery_at: datetime
     direction: AnomalyDirection
+    # Magnitude of the newest item. Two firings of one scope differing only in
+    # scope_type rendered as near-identical cards, with nothing on screen saying
+    # what fired or how big it was (tripl-oxkt.4). The columns are already on
+    # AlertDeliveryItem, so the builder fills these from rows it already holds.
+    actual_count: float
+    expected_count: float
+    # ``None``, not the stored 0.0, when the newest item had no baseline — the
+    # same encoding ``AlertDeliveryItemResponse`` uses, and enforced the same way
+    # (see the validator below). Copying the column straight off the row made the
+    # card render "0%" for a scope firing from nothing, which is the LOUDEST
+    # class there is, while the delivery the card expands to correctly said null
+    # — one payload family answering the same question two ways (tripl-l429.27).
+    percent_delta: float | None
+    # Largest deviation anywhere in the group, so "worst first" is orderable
+    # without fetching the group's items. Computed over the rows that HAVE a
+    # baseline only; ``None`` when no row in the group does, because a group of
+    # zero-baseline firings has no measured deviation to be largest — reporting
+    # the placeholder 0.0 sorted the loudest incidents last (tripl-l429.24).
+    max_abs_percent_delta: float | None
     # The scope of the most recent item, so the card can link straight to the
     # thing that fired. `scope_names` is display text and cannot be routed;
     # without these the reader could see WHAT alerted and had no way to go look
@@ -595,12 +712,53 @@ class AlertInboxGroupResponse(BaseModel):
     # optional while the hand-written one called it required, and the two
     # disagreed about a field the server never omits.
     event_id: uuid.UUID | None
+    # DISTINCT scope types present in the group, sorted. `scope_type` above is
+    # the newest item's alone, and legacy groups can mix types, so a single
+    # value cannot label the card — nor can the client derive what a
+    # false-positive click will actually tune from it (tripl-oxkt.6).
+    scope_types: list[MetricScopeType]
     scope_names: list[str]
     destination_names: list[str]
+    # Distinct rule names, sorted. Kept alongside `rules` because the inbox card
+    # already renders it as a plain label line (frontend AlertingInbox.tsx), and
+    # `rules` is the routable form for linking each name to its monitor.
     rule_names: list[str]
+    # Every rule behind this incident as an (id, name) PAIR, sorted by name. See
+    # `AlertInboxRuleRef` for why the two parallel arrays could not survive.
+    rules: list[AlertInboxRuleRef]
     scan_names: list[str]
     acted_at: datetime | None = None
     acted_by: uuid.UUID | None = None
+    # Display name of `acted_by`, or `None` when the user has no name on file.
+    # The API shipped a bare UUID, so "already handled by <uuid>" was the best a
+    # card could say (tripl-oxkt.5). It deliberately does NOT fall back to the
+    # operator's EMAIL: this endpoint is readable by every project member, and a
+    # fallback would turn an incident card into a roster of colleagues' email
+    # addresses on a surface that previously exposed only an opaque id. The card
+    # already handles a missing name. Nullable but ALWAYS SENT, like `event_id`
+    # above — no default, so the generated client cannot call it optional while
+    # the hand-written type calls it required.
+    acted_by_name: str | None
+
+    @model_validator(mode="after")
+    def blank_percent_delta_without_a_baseline(self) -> AlertInboxGroupResponse:
+        """Enforce the no-baseline encoding on the model, as the item does.
+
+        Mirrors ``AlertDeliveryItemResponse.blank_percent_delta_without_a_baseline``
+        so a future builder cannot reintroduce the placeholder: this response's
+        ``percent_delta`` describes the same newest item its ``expected_count``
+        comes from, so the invariant — null exactly when ``expected_count`` is 0
+        — is checkable right here (tripl-l429.24/.27).
+
+        ``max_abs_percent_delta`` spans the WHOLE group and has no companion
+        expected_count on this model, so nothing here can verify it; the builder
+        computes it over baselined rows only and the tests pin both branches.
+        """
+        self.percent_delta = percent_delta_or_none(
+            self.percent_delta if self.percent_delta is not None else 0.0,
+            self.expected_count,
+        )
+        return self
 
 
 class AlertInboxListResponse(BaseModel):
@@ -617,7 +775,38 @@ class AlertInboxActionRequest(BaseModel):
     def validate_action(self) -> AlertInboxActionRequest:
         if self.action == "mute" and self.muted_until is None:
             raise ValueError("muted_until is required when action is mute")
+        # ``note`` is the one action whose entire effect is the note, and the
+        # write below is conditional on ``note is not None``. Without this guard
+        # a ``{"action": "note"}`` body was a silent 200 that changed nothing
+        # while still inserting a correlation-state row — the request looked
+        # accepted and the note was never saved. Mirrors the mute guard above.
+        # An EMPTY STRING stays valid: it is the documented way to clear a note
+        # (``apply_alert_inbox_action`` stores ``strip() or None``).
+        if self.action == "note" and self.note is None:
+            raise ValueError("note is required when action is note")
         return self
+
+
+class AlertInboxActionResponse(BaseModel):
+    """What the action DID, not only what the group looks like afterwards.
+
+    ``false_positive`` writes no scope override for scope types the ratchet does
+    not tune — release regressions among them — so the button promised a
+    detection change it never made, on 10 of 57 production groups (tripl-oxkt.6).
+    The count is reported so the UI can say "tightened 2 scopes" or "no scopes
+    tightened"; it must NOT be guessed client-side from ``scope_type``, which is
+    only the newest item's.
+    """
+
+    group: AlertInboxGroupResponse
+    # ``None`` for every action that cannot ratchet anything — acknowledge,
+    # resolve, mute, reopen, note — and an actual count only for
+    # ``false_positive``. It was hard-set to 0 for the other five, so a client
+    # rendering "no scopes tightened" off ``=== 0`` announced a detection
+    # decision after an Acknowledge, which never touches detection at all.
+    # ``None`` means "not applicable", ``0`` means "tried and tightened nothing".
+    # Nullable but ALWAYS SENT, so no default — see ``event_id`` on the group.
+    overrides_written: int | None
 
 
 class SimulatedRuleFiring(BaseModel):
@@ -651,12 +840,39 @@ class AlertRuleSimulateResponse(BaseModel):
     matched_before_cooldown: int
     firings: list[SimulatedRuleFiring]
     noisy: bool
-    # Effective cooldown used by this run — equals rule.cooldown_minutes when
-    # no override was passed; mirrors the override otherwise.
+    # Every knob this replay can answer a what-if about comes back as a
+    # ``*_used`` / ``*_saved`` pair: what THIS run applied, and what is stored on
+    # the rule. Replay existed to answer "would a stricter rule have cut these
+    # incidents", but only the cooldown could be varied, so testing a threshold
+    # meant saving it onto a rule that is live-routing to a real channel and
+    # waiting to see what it did to production (tripl-oxkt.17 part 3).
+    #
+    # ``*_used`` equals ``*_saved`` when no override was passed, and mirrors the
+    # override otherwise. ``*_saved`` is sent so the UI can show "current vs
+    # override" without a second round-trip.
     cooldown_minutes_used: int
-    # Saved value on the rule (so the UI can show "current vs override" without
-    # an extra round-trip).
     cooldown_minutes_saved: int
+    min_percent_delta_used: float
+    min_percent_delta_saved: float
+    min_expected_count_used: float
+    min_expected_count_saved: float
+    # The detector's sensitivity, not a rule field — which is why this pair is
+    # the only nullable one. It gates whether an anomaly was RECORDED at all, so
+    # the replay can only apply it as a stricter re-read of the rows the detector
+    # already wrote: raising it drops recorded anomalies whose |z| no longer
+    # clears the bar, while lowering it cannot resurrect anomalies that were
+    # never scored. Drift and release-regression signals carry no z-score and are
+    # untouched by it, exactly as they bypass the rule's numeric thresholds.
+    #
+    # ``sigma_threshold_saved`` is the configured threshold of the scan(s) this
+    # rule reads, and is ``None`` when they do not agree on one — a rule left on
+    # "All scans" spans scans that each carry their own, so there is no single
+    # saved value to quote. Per-scope ratchet overrides (the false-positive
+    # button) can raise the effective threshold above it for individual scopes.
+    # ``sigma_threshold_used`` is the override, or the saved value when none was
+    # passed.
+    sigma_threshold_used: float | None
+    sigma_threshold_saved: float | None
     rendered_message: str | None = None
 
 
@@ -672,8 +888,16 @@ class MonitorSummaryItem(BaseModel):
     status: Literal["firing", "warning", "healthy"]
     active_scope_count: int
     firing_scope_count: int
-    last_anomaly_at: datetime | None = None
-    last_notified_at: datetime | None = None
+    # Nullable but ALWAYS SENT, so no defaults anywhere on this model — the two
+    # builders in ``_alerting_monitors`` name every field. A default here is not
+    # a server behaviour, it is a claim to the generated client that the key can
+    # be missing, and it made the SAME AlertRule carry two TypeScript shapes:
+    # ``muted``/``muted_until``/``last_delivery_at``/``last_delivery_status``
+    # were required on ``AlertRuleResponse`` (the destination card) and optional
+    # here (the monitors screen), for one object the server always describes in
+    # full. Same rule as ``event_id`` on the inbox group.
+    last_anomaly_at: datetime | None
+    last_notified_at: datetime | None
     # Condition summary (so the UI can show the monitor's trigger at a glance).
     notify_on_spike: bool
     notify_on_drop: bool
@@ -682,8 +906,8 @@ class MonitorSummaryItem(BaseModel):
     cooldown_minutes: int
     # Manual snooze state. ``muted`` is the effective flag (``muted_until`` in
     # the future); ``muted_until`` is the raw timestamp the mute lifts at.
-    muted: bool = False
-    muted_until: datetime | None = None
+    muted: bool
+    muted_until: datetime | None
 
 
 class MonitorsSummaryResponse(BaseModel):
@@ -711,10 +935,13 @@ class MonitorDetailResponse(MonitorSummaryItem):
     include_release_regressions: bool
     include_metrics: bool
     # Quick fired-history stats for the detail header (full history comes from
-    # GET /alert-deliveries?rule_id=...).
+    # GET /alert-deliveries?rule_id=...). The same three numbers
+    # ``AlertRuleResponse`` carries for this rule, under the same names and — see
+    # the no-defaults note on ``MonitorSummaryItem`` — now with the same
+    # required-but-nullable shape.
     total_deliveries: int
-    last_delivery_at: datetime | None = None
-    last_delivery_status: AlertDeliveryStatus | None = None
+    last_delivery_at: datetime | None
+    last_delivery_status: AlertDeliveryStatus | None
 
 
 class MonitorMuteRequest(BaseModel):
