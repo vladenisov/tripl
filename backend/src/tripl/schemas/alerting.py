@@ -589,7 +589,12 @@ class AlertInboxGroupResponse(BaseModel):
     # at it (tripl-pq97).
     scope_type: MetricScopeType
     scope_ref: str
-    event_id: uuid.UUID | None = None
+    # Nullable but ALWAYS SENT — `_build_inbox_group_response` fills it from the
+    # latest item unconditionally. No default, so the contract says required and
+    # matches its two siblings above; with one, the generated type made the key
+    # optional while the hand-written one called it required, and the two
+    # disagreed about a field the server never omits.
+    event_id: uuid.UUID | None
     scope_names: list[str]
     destination_names: list[str]
     rule_names: list[str]

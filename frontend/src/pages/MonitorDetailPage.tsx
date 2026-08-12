@@ -105,7 +105,11 @@ export default function MonitorDetailPage() {
             right={
               slug ? (
                 <Link
-                  to={`/p/${slug}/settings/alerting`}
+                  // A monitor IS an alert rule, and rules are edited on the
+                  // destination that owns them — so this has to name the
+                  // section. Without it the link lands on the incident Inbox,
+                  // which is the default, and "Edit monitor" opens triage.
+                  to={`/p/${slug}/settings/alerting?section=destinations`}
                   className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] no-underline transition-colors hover:bg-[var(--surface-hover)]"
                   style={{ color: 'var(--fg-muted)' }}
                 >
