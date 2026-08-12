@@ -14303,6 +14303,25 @@
           "direction": {
             "$ref": "#/components/schemas/AnomalyDirection"
           },
+          "scope_type": {
+            "$ref": "#/components/schemas/MetricScopeType"
+          },
+          "scope_ref": {
+            "type": "string",
+            "title": "Scope Ref"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
           "scope_names": {
             "items": {
               "type": "string"
@@ -14365,6 +14384,9 @@
           "latest_bucket",
           "latest_delivery_at",
           "direction",
+          "scope_type",
+          "scope_ref",
+          "event_id",
           "scope_names",
           "destination_names",
           "rule_names",

@@ -1793,6 +1793,18 @@
           "direction": {
             "$ref": "#/components/schemas/AnomalyDirection"
           },
+          "event_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
           "false_positive_count": {
             "default": 0,
             "title": "False Positive Count",
@@ -1856,6 +1868,13 @@
             "title": "Scope Names",
             "type": "array"
           },
+          "scope_ref": {
+            "title": "Scope Ref",
+            "type": "string"
+          },
+          "scope_type": {
+            "$ref": "#/components/schemas/MetricScopeType"
+          },
           "status": {
             "$ref": "#/components/schemas/AlertInboxStatus"
           }
@@ -1868,6 +1887,9 @@
           "latest_bucket",
           "latest_delivery_at",
           "direction",
+          "scope_type",
+          "scope_ref",
+          "event_id",
           "scope_names",
           "destination_names",
           "rule_names",

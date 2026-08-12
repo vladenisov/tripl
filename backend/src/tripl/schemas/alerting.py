@@ -583,6 +583,18 @@ class AlertInboxGroupResponse(BaseModel):
     latest_bucket: datetime
     latest_delivery_at: datetime
     direction: AnomalyDirection
+    # The scope of the most recent item, so the card can link straight to the
+    # thing that fired. `scope_names` is display text and cannot be routed;
+    # without these the reader could see WHAT alerted and had no way to go look
+    # at it (tripl-pq97).
+    scope_type: MetricScopeType
+    scope_ref: str
+    # Nullable but ALWAYS SENT — `_build_inbox_group_response` fills it from the
+    # latest item unconditionally. No default, so the contract says required and
+    # matches its two siblings above; with one, the generated type made the key
+    # optional while the hand-written one called it required, and the two
+    # disagreed about a field the server never omits.
+    event_id: uuid.UUID | None
     scope_names: list[str]
     destination_names: list[str]
     rule_names: list[str]
