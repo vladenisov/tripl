@@ -3670,7 +3670,7 @@ export interface components {
             destination_names: string[];
             direction: components["schemas"]["AnomalyDirection"];
             /** Event Id */
-            event_id?: string | null;
+            event_id: string | null;
             /**
              * False Positive Count
              * @default 0

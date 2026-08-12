@@ -1889,6 +1889,7 @@
           "direction",
           "scope_type",
           "scope_ref",
+          "event_id",
           "scope_names",
           "destination_names",
           "rule_names",

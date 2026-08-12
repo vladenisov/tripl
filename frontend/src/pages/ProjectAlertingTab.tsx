@@ -141,6 +141,10 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       limit: 50,
       offset: 0,
     }),
+    // Audit is the only reader — the pinned deep-linked row and the table. It
+    // was left ungated because it used to feed the guided-setup gate too; that
+    // now has its own unfiltered probe below, so nothing outside Audit needs it.
+    enabled: section === 'audit',
   })
   // Has this project EVER delivered, asked WITHOUT the audit filters.
   //
