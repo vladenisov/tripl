@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import MonitorsPage from './MonitorsPage'
+import { formatCooldown } from './alerting/constants'
 
 function jsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -187,6 +188,49 @@ describe('MonitorsPage', () => {
 
     await screen.findByText('payment_failed spike')
     expect(screen.getByText('muted')).toBeInTheDocument()
+  })
+
+  // Pins the unit agreement from tripl-oxkt.18: this row used to print the raw
+  // minute count ("cooldown 360m") while the alerting destinations card already
+  // rendered the same rule's cooldown through `formatCooldown` as "6h".
+  // Asserting against the shared helper keeps the two screens from drifting.
+  it('renders the cooldown through the shared formatter (tripl-oxkt.18)', async () => {
+    mockSummary({
+      monitors: [
+        {
+          rule_id: 'rule-1',
+          rule_name: 'payment_failed spike',
+          destination_id: 'dest-1',
+          destination_name: 'Main Slack',
+          destination_type: 'slack',
+          enabled: true,
+          status: 'firing',
+          active_scope_count: 1,
+          firing_scope_count: 1,
+          last_anomaly_at: null,
+          last_notified_at: null,
+          notify_on_spike: true,
+          notify_on_drop: false,
+          min_percent_delta: 50,
+          min_expected_count: 0,
+          cooldown_minutes: 360,
+          muted: false,
+          muted_until: null,
+        },
+      ],
+      firing_count: 1,
+      warning_count: 0,
+      healthy_count: 0,
+      total: 1,
+    })
+
+    renderMonitors()
+
+    await screen.findByText('payment_failed spike')
+    expect(formatCooldown(360)).toBe('6h')
+    expect(screen.getByText(`spike ▲ · ≥50% · cooldown ${formatCooldown(360)}`)).toBeInTheDocument()
+    // The raw minute count must not come back.
+    expect(screen.queryByText(/cooldown 360m/)).toBeNull()
   })
 
   it('shows an empty state with a link to alerting settings', async () => {

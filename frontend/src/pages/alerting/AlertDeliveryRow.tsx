@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge"
 import { LocalDeliveryBadge } from "@/demo/capabilityBadges"
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { invalidateAlertingConfig } from "./alertingCache"
 
 /**
  * Does this stored path point back at the alerting page itself?
@@ -233,7 +234,12 @@ export function AlertDeliveryRow({
       // had in fact worked (tripl-oxkt.10). This key is also the one this row's
       // own expanded panel reads, so both update from the one write.
       qc.setQueryData(['alertDelivery', slug, delivery.id], updated)
-      qc.invalidateQueries({ queryKey: ['alertDeliveries', slug] })
+      // …and the same shared invalidation every other alerting write uses. The
+      // list alone left the Inbox card that groups this delivery counting a
+      // status it no longer has (tripl-oxkt.14). The `setQueryData` above
+      // survives it: `['alertDelivery', slug, id]` is a different key from
+      // `['alertDeliveries', slug]`, not a child of it.
+      invalidateAlertingConfig(qc, slug)
     },
   })
   // The retry response is newer than the list page this row was rendered from,

@@ -80,7 +80,13 @@ function makeDestination(overrides: Partial<AlertDestination> = {}): AlertDestin
   }
 }
 
-function renderCard(destination: AlertDestination = makeDestination(), canWrite = true) {
+function renderCard(
+  destination: AlertDestination = makeDestination(),
+  canWrite = true,
+  // Guided setup's step 3 hands one card the instruction to open its own rule
+  // form and expects to be told when it has been acted on (tripl-oxkt.15).
+  guidedSetup: { autoOpenRule?: boolean; onAutoOpenRuleConsumed?: () => void } = {},
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
@@ -94,6 +100,8 @@ function renderCard(destination: AlertDestination = makeDestination(), canWrite 
           scans={[]}
           canWrite={canWrite}
           onEditDestination={() => {}}
+          autoOpenRule={guidedSetup.autoOpenRule}
+          onAutoOpenRuleConsumed={guidedSetup.onAutoOpenRuleConsumed}
         />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -176,6 +184,35 @@ describe('DestinationCard delete confirms', () => {
     expect(
       await screen.findByText(/It has never delivered, so no history is lost\./),
     ).toBeInTheDocument()
+  })
+})
+
+describe('DestinationCard guided-setup handoff (tripl-oxkt.15)', () => {
+  it('opens the rule form by itself on the destination just created', () => {
+    // The checklist promises "a rule prefilled on the new destination"; the card
+    // had no channel for that at all — its rule dialog opened on click only.
+    renderCard(makeDestination(), true, { autoOpenRule: true })
+
+    expect(screen.getByText('New Alert Rule')).toBeInTheDocument()
+  })
+
+  it('stays closed on every ordinary visit', () => {
+    renderCard()
+
+    expect(screen.queryByText('New Alert Rule')).toBeNull()
+  })
+
+  it('reports the instruction spent, and does not re-open on the next render', () => {
+    const consumed = vi.fn()
+    renderCard(makeDestination(), true, { autoOpenRule: true, onAutoOpenRuleConsumed: consumed })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    expect(screen.queryByText('New Alert Rule')).toBeNull()
+    // The page clears its own state off this callback: the prop is still `true`
+    // here, so a card that never reported back would be re-opened by the next
+    // mount of this section.
+    expect(consumed).toHaveBeenCalled()
   })
 })
 

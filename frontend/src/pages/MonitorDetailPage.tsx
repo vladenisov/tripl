@@ -15,6 +15,7 @@ import {
   MONITOR_STATUS_TONE as STATUS_TONE,
 } from '@/lib/statusLexicon'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
+import { formatCooldown } from './alerting/constants'
 import type { AlertDelivery, MonitorDetail } from '@/types'
 
 const HOUR_MS = 60 * 60 * 1000
@@ -322,7 +323,16 @@ function ConfigPanel({ monitor }: { monitor: MonitorDetail }) {
         value={monitor.min_expected_count > 0 ? `${monitor.min_expected_count.toLocaleString()} events` : 'No minimum'}
         mono={false}
       />
-      <InfoRow label="Cooldown" value={`${monitor.cooldown_minutes}m between alerts`} mono={false} last />
+      {/* The same rule was described as "360m" here and "6h" on the alerting
+          destinations card, so a reader comparing the two screens saw two
+          answers for one value. Both sides now go through the one shared
+          formatter (tripl-oxkt.18); only the sentence around it differs. */}
+      <InfoRow
+        label="Cooldown"
+        value={`${formatCooldown(monitor.cooldown_minutes)} between alerts`}
+        mono={false}
+        last
+      />
       <div
         className="flex items-start gap-4 px-[18px] py-[11px]"
         style={{ borderTop: '1px solid var(--border-subtle)' }}

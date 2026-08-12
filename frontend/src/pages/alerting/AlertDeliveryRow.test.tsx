@@ -263,6 +263,39 @@ describe('AlertDeliveryRow retry', () => {
     })
   })
 
+  it('invalidates the incident queue this delivery is counted in (tripl-oxkt.14)', async () => {
+    // A retry moves a delivery from `failed` to `pending`, and the Inbox card
+    // that groups it prints that status in its delivery count. Invalidating
+    // ['alertDeliveries', slug] alone left the incident reporting the failure.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/alert-deliveries/delivery-1/retry') && init?.method === 'POST') {
+        return mockJsonResponse({
+          ...mockDelivery({ status: 'pending', error_message: null }),
+          items: [],
+        })
+      }
+      throw new Error(`Unhandled fetch: ${init?.method} ${url}`)
+    })
+
+    const { queryClient } = renderRow(mockDelivery({ status: 'failed' }))
+    // Nothing observes the inbox in a row-only render, so what is asserted is
+    // the mark that makes the next visit to the Inbox refetch rather than serve
+    // this entry for another minute of its 60s staleTime.
+    queryClient.setQueryData(['alertInbox', 'demo', ''], { pages: [], pageParams: [] })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry delivery' }))
+
+    await waitFor(() =>
+      expect(queryClient.getQueryState(['alertInbox', 'demo', ''])?.isInvalidated).toBe(true),
+    )
+    // The row's own detail write survives it: ['alertDelivery', slug, id] is a
+    // different key, not a child of ['alertDeliveries', slug].
+    expect(
+      queryClient.getQueryData<AlertDeliveryDetail>(['alertDelivery', 'demo', 'delivery-1']),
+    ).toMatchObject({ status: 'pending' })
+  })
+
   it('surfaces a retry failure inline via role=alert', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)

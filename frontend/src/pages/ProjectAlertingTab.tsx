@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   keepPreviousData,
@@ -27,9 +27,12 @@ import {
   muteConfirmMessage,
 } from '@/lib/alertStatus'
 import { useCanWrite } from '@/lib/permissions'
+import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { AlertDestination, AlertInboxListResponse } from '@/types'
 
 import { AlertAuditPanel, type DeliveryFilters } from './alerting/AlertAuditPanel'
+import { invalidateAlertingConfig } from './alerting/alertingCache'
+import { describeDeletionImpact } from './alerting/deletionImpact'
 import { AlertingGuidedSetup } from './alerting/AlertingGuidedSetup'
 import {
   AlertingInbox,
@@ -64,6 +67,14 @@ const SECTION_LABELS: Record<AlertingSection, string> = {
   audit: 'Delivery log',
 }
 
+// The two halves of the tab contract, named once. The strip declared
+// role="tablist"/role="tab"/aria-selected and NOTHING else — no id, no
+// aria-controls, no role="tabpanel" on the section bodies — so a screen reader
+// announced "tab 1 of 3" over a widget with no panels attached to it
+// (tripl-oxkt.19).
+const tabId = (value: AlertingSection) => `alerting-tab-${value}`
+const panelId = (value: AlertingSection) => `alerting-panel-${value}`
+
 // One page of incidents. 20 was not only too small to reach 37 of 57 production
 // groups — it was TIGHTER than the endpoint's own default of 50 while doing
 // identical database work, because `list_alert_inbox` pulls up to 2000 rows,
@@ -86,6 +97,12 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   const [createType, setCreateType] = useState<DestinationChannel | null>(null)
   const [destinationForm, setDestinationForm] = useState<DestinationFormState>(defaultDestinationForm('slack'))
   const [editingDestination, setEditingDestination] = useState<AlertDestination | null>(null)
+  // Which destination card should open its rule form by itself — the guided
+  // checklist's step 3, handed to the card that owns the destination just
+  // created. Cleared the moment the card consumes it, so it cannot re-open the
+  // dialog the reader has just closed (tripl-oxkt.15).
+  const [autoOpenRuleForDestinationId, setAutoOpenRuleForDestinationId] =
+    useState<string | null>(null)
   const [deliveryFilters, setDeliveryFilters] = useState<DeliveryFilters>({
     status: '',
     channel: '',
@@ -154,6 +171,34 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       params.set('section', next)
       return params
     })
+
+  // The other half of that contract: a roving tabIndex and the arrow keys that
+  // move it. Three plain buttons meant Tab walked all three and the arrows did
+  // nothing, which is precisely the behaviour role="tab" promises to replace
+  // (tripl-oxkt.19). Refs, because selection follows focus here (the APG's
+  // automatic-activation pattern) and the focus has to travel with it — a
+  // second arrow press otherwise starts from the button the reader left.
+  const tabRefs = useRef<Partial<Record<AlertingSection, HTMLButtonElement | null>>>({})
+  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, value: AlertingSection) => {
+    const last = ALERTING_SECTIONS.length - 1
+    const index = ALERTING_SECTIONS.indexOf(value)
+    // Wrapping, per the APG: the strip is a ring, not a line with two dead ends.
+    const next =
+      event.key === 'ArrowLeft'
+        ? ALERTING_SECTIONS[index === 0 ? last : index - 1]
+        : event.key === 'ArrowRight'
+          ? ALERTING_SECTIONS[index === last ? 0 : index + 1]
+          : event.key === 'Home'
+            ? ALERTING_SECTIONS[0]
+            : event.key === 'End'
+              ? ALERTING_SECTIONS[last]
+              : null
+    if (!next) return
+    // An arrow inside a tablist moves the tab, it does not also scroll the page.
+    event.preventDefault()
+    selectSection(next)
+    tabRefs.current[next]?.focus()
+  }
 
   const { data: destinations = [], isSuccess: destinationsLoaded } = useQuery({
     queryKey: ['alertDestinations', slug],
@@ -247,6 +292,14 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // no state can be left pointing into a set that no longer exists.
   const [inboxStatus, setInboxStatus] = useState<InboxStatusFilter>('')
   const inboxKey = ['alertInbox', slug, inboxStatus]
+  // The same hook and the same cadence as RoutingRulesPanel, deliberately: the
+  // page held open during an incident showed a live CONFIGURATION panel beside a
+  // frozen triage queue — a new incident never appeared and a colleague's Ack
+  // never showed, while the action endpoint writes status blind and commits over
+  // it (tripl-oxkt.14). Sharing `useAdaptiveRefetchInterval` is what stops the
+  // two from drifting apart again, and it already answers `false` while the SSE
+  // stream is live or the tab is hidden.
+  const inboxRefetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
   // Paged, not a single fixed slice. The 20 newest incidents were the ONLY 20
   // an operator could reach, and status is not part of the server sort key, so
   // acting on all of them did not reveal the 21st — the tail was cleared only
@@ -270,6 +323,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     // Only the Inbox section reads this. Splitting the page is what makes the
     // saving possible — before it, every section was on screen at once.
     enabled: section === 'inbox',
+    refetchInterval: inboxRefetchInterval,
   })
   const inbox = useMemo(() => {
     const pages = inboxQuery.data?.pages
@@ -313,10 +367,19 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       }
       return alertingApi.createDestination(slug, { ...destinationForm, type })
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['alertDestinations', slug] })
+    onSuccess: created => {
+      invalidateAlertingConfig(qc, slug)
       setCreateType(null)
       setDestinationForm(defaultDestinationForm('slack'))
+      // Step 2 of the checklist has to land on step 3. It used to land nowhere:
+      // creating the destination flipped `hasDestinations`, which took
+      // `showGuidedSetup` false, which dropped the reader on the default Inbox
+      // section reading "No rules yet, so nothing can raise an incident" — with
+      // the destination they just made on a tab they were not on. The checklist
+      // promises "a rule prefilled on the new destination", so open exactly that
+      // (tripl-oxkt.15).
+      selectSection('destinations')
+      setAutoOpenRuleForDestinationId(created.id)
     },
   })
 
@@ -347,7 +410,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       })
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['alertDestinations', slug] })
+      invalidateAlertingConfig(qc, slug)
       setEditingDestination(null)
       setDestinationForm(defaultDestinationForm('slack'))
     },
@@ -355,7 +418,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
 
   const deleteDestinationMut = useMutation({
     mutationFn: (destinationId: string) => alertingApi.deleteDestination(slug, destinationId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['alertDestinations', slug] }),
+    onSuccess: () => invalidateAlertingConfig(qc, slug),
   })
 
   const openCreate = (type: DestinationChannel) => {
@@ -401,7 +464,14 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   const handleDeleteDestination = async (destination: AlertDestination) => {
     const ok = await confirm({
       title: 'Delete destination',
-      message: `Delete "${destination.name}" and all its alert rules?`,
+      // This dialog is the control that actually gates the cascade, and it named
+      // none of it: `Delete "TG" and all its alert rules?` over a delete that
+      // also takes every delivery, every incident group built from them, and the
+      // notes and mutes an operator typed on those incidents. The only place
+      // stating the numbers was a `title` on the button behind it — invisible on
+      // touch, and invisible once this dialog is open (tripl-oxkt.13).
+      message: `Delete "${destination.name}" and all its alert rules? `
+        + describeDeletionImpact(destination.delivery_count, destination.incident_count),
       confirmLabel: 'Delete',
       variant: 'danger',
     })
@@ -593,7 +663,17 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
               key={value}
               type="button"
               role="tab"
+              id={tabId(value)}
+              // Only the selected tab points at a panel: exactly one section is
+              // mounted at a time, and an aria-controls naming an id that is not
+              // in the document is a broken reference, not a hint.
+              aria-controls={section === value ? panelId(value) : undefined}
               aria-selected={section === value}
+              // Roving tabIndex: the strip is ONE stop, and the arrows move
+              // within it.
+              tabIndex={section === value ? 0 : -1}
+              ref={node => { tabRefs.current[value] = node }}
+              onKeyDown={event => handleTabKeyDown(event, value)}
               onClick={() => selectSection(value)}
               className="-mb-px border-b-2 px-3 py-1.5 text-[12.5px] transition-colors"
               style={{
@@ -626,7 +706,16 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
         </>
       ) : (
       <>
+      {/* Each section body is the PANEL of the tab above it. `space-y-6` moves
+          onto the wrapper because these children used to be direct children of
+          the page's own stack (tripl-oxkt.19). */}
       {section === 'destinations' && (
+        <div
+          className="space-y-6"
+          role="tabpanel"
+          id={panelId('destinations')}
+          aria-labelledby={tabId('destinations')}
+        >
         <DestinationsSection
           slug={slug}
           destinations={destinations}
@@ -636,10 +725,19 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           onCreateDestination={openCreate}
           onEditDestination={openEdit}
           onDeleteDestination={handleDeleteDestination}
+          autoOpenRuleForDestinationId={autoOpenRuleForDestinationId}
+          onAutoOpenRuleConsumed={() => setAutoOpenRuleForDestinationId(null)}
         />
+        </div>
       )}
 
       {section === 'inbox' && (
+        <div
+          className="space-y-6"
+          role="tabpanel"
+          id={panelId('inbox')}
+          aria-labelledby={tabId('inbox')}
+        >
         <AlertingInbox
           slug={slug}
           inbox={inbox}
@@ -665,9 +763,16 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           focusDeliveryId={focusDeliveryId}
           focusItemKey={focusItemKey}
         />
+        </div>
       )}
 
       {section === 'audit' && (
+        <div
+          className="space-y-6"
+          role="tabpanel"
+          id={panelId('audit')}
+          aria-labelledby={tabId('audit')}
+        >
         <AlertAuditPanel
           slug={slug}
           deliveries={deliveries}
@@ -686,6 +791,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           allRules={allRules}
           scans={scans}
         />
+        </div>
       )}
       </>
       )}

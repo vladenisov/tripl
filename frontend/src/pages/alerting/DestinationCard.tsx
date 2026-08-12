@@ -46,6 +46,7 @@ import {
 import { getErrorMessage } from '@/lib/utils'
 import { formatDateTime, formatRelativeTime } from "@/lib/datetime"
 import { countOf } from "@/lib/plural"
+import { invalidateAlertingConfig } from "./alertingCache"
 import { describeDeletionImpact } from "./deletionImpact"
 
 const DELIVERY_STATUS_VARIANT: Record<AlertDeliveryStatus, 'success' | 'warning' | 'destructive'> = {
@@ -83,6 +84,11 @@ interface DestinationCardProps {
   // the API leaves open because it saves nothing (tripl-oxkt.9).
   canWrite: boolean
   onEditDestination: (destination: AlertDestination) => void
+  // Guided setup's step 3 (tripl-oxkt.15): `true` on the card for the
+  // destination the reader has just created, which opens its own rule form once
+  // and then reports back so the instruction can be cleared.
+  autoOpenRule?: boolean
+  onAutoOpenRuleConsumed?: () => void
 }
 
 export function DestinationCard({
@@ -92,6 +98,8 @@ export function DestinationCard({
   scans,
   canWrite,
   onEditDestination,
+  autoOpenRule = false,
+  onAutoOpenRuleConsumed,
 }: DestinationCardProps) {
   const qc = useQueryClient()
   const { confirm, dialog } = useConfirm()
@@ -101,18 +109,38 @@ export function DestinationCard({
   const [replayingRule, setReplayingRule] = useState<AlertRule | null>(null)
   const [ruleForm, setRuleForm] = useState<RuleFormState>(defaultRuleForm())
 
+  // Guided setup's step 3, executed by the card that owns the newly created
+  // destination (tripl-oxkt.15). Adjusting state during render is React's
+  // documented way to follow a prop — the same shape the page uses for `?scan=`
+  // — and it is the only one available here: an effect that opens the dialog is
+  // a cascading render (and `react-hooks/set-state-in-effect` rejects it).
+  //
+  // The latch is what makes it happen ONCE. Without it the prop, which stays
+  // set until the page clears it, would re-open the form on the render right
+  // after the reader closed it.
+  const [autoOpenConsumed, setAutoOpenConsumed] = useState(false)
+  if (autoOpenRule && !autoOpenConsumed) {
+    setAutoOpenConsumed(true)
+    setEditingRule(null)
+    setRuleForm(defaultRuleForm())
+    setRuleDialogOpen(true)
+  }
+
+  // Every write below goes through the one shared invalidation: a rule or
+  // destination write also moves the Inbox and the delivery log, and eight
+  // hand-kept copies of `['alertDestinations', slug]` is how none of them did
+  // (tripl-oxkt.14).
   const updateDestinationMut = useMutation({
     mutationFn: (data: { enabled?: boolean }) =>
       alertingApi.updateDestination(slug, destination.id, data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['alertDestinations', slug] }),
+    onSuccess: () => invalidateAlertingConfig(qc, slug),
   })
 
   const createRuleMut = useMutation({
     mutationFn: () => alertingApi.createRule(slug, destination.id, ruleFormToPayload(ruleForm)),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['alertDestinations', slug] })
-      setRuleDialogOpen(false)
-      setEditingRule(null)
+      invalidateAlertingConfig(qc, slug)
+      closeRuleDialog()
       setRuleForm(defaultRuleForm())
       // A created rule lands the alerting chapter's step — inert outside the
       // demo scenario (the reducer drops every other step).
@@ -126,16 +154,15 @@ export function DestinationCard({
       return alertingApi.updateRule(slug, destination.id, editingRule.id, ruleFormToPayload(ruleForm))
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['alertDestinations', slug] })
-      setRuleDialogOpen(false)
-      setEditingRule(null)
+      invalidateAlertingConfig(qc, slug)
+      closeRuleDialog()
       setRuleForm(defaultRuleForm())
     },
   })
 
   const deleteRuleMut = useMutation({
     mutationFn: (ruleId: string) => alertingApi.deleteRule(slug, destination.id, ruleId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['alertDestinations', slug] }),
+    onSuccess: () => invalidateAlertingConfig(qc, slug),
   })
 
   // The rule's enable switch was `updateRule(...).then(...)` with no catch and
@@ -145,7 +172,7 @@ export function DestinationCard({
   const toggleRuleMut = useMutation({
     mutationFn: ({ ruleId, enabled }: { ruleId: string; enabled: boolean }) =>
       alertingApi.updateRule(slug, destination.id, ruleId, { enabled }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['alertDestinations', slug] }),
+    onSuccess: () => invalidateAlertingConfig(qc, slug),
   })
 
   // A test send is deliberately NOT invalidating the destinations list: the
@@ -160,6 +187,22 @@ export function DestinationCard({
     setEditingRule(null)
     setRuleForm(defaultRuleForm())
     setRuleDialogOpen(true)
+  }
+
+  /**
+   * Close the rule dialog, by any of its three exits.
+   *
+   * Also reports the auto-open instruction as spent: the latch above only holds
+   * for the life of THIS card, and the destinations section unmounts every time
+   * the reader visits another tab — so without telling the page, coming back
+   * would open the rule form again on a destination that already has one
+   * (tripl-oxkt.15). Harmless on the ordinary path: the page state is already
+   * null and React bails out on an unchanged value.
+   */
+  const closeRuleDialog = () => {
+    setRuleDialogOpen(false)
+    setEditingRule(null)
+    onAutoOpenRuleConsumed?.()
   }
 
   const openEditRule = (rule: AlertRule) => {
@@ -479,7 +522,7 @@ export function DestinationCard({
       {/* Gated on the role as well as on the open flag: `refresh()` can rewrite
           the session mid-visit, and an editor form left open across a demotion
           would still submit its Save. */}
-      <Dialog open={canWrite && ruleDialogOpen} onOpenChange={open => { if (!open) { setRuleDialogOpen(false); setEditingRule(null) } }}>
+      <Dialog open={canWrite && ruleDialogOpen} onOpenChange={open => { if (!open) closeRuleDialog() }}>
         <DialogContent className="max-w-3xl">
           <form onSubmit={event => { event.preventDefault(); ruleMutation.mutate() }}>
             <DialogHeader>
@@ -725,7 +768,7 @@ export function DestinationCard({
               )}
             </div>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setRuleDialogOpen(false)}>Cancel</Button>
+              <Button type="button" variant="outline" onClick={closeRuleDialog}>Cancel</Button>
               <Button type="submit" disabled={ruleMutation.isPending}>
                 {editingRule ? 'Save' : 'Create'}
               </Button>

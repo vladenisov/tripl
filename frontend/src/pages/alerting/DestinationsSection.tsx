@@ -21,6 +21,13 @@ interface DestinationsSectionProps {
   onCreateDestination: (channel: DestinationChannel) => void
   onEditDestination: (destination: AlertDestination) => void
   onDeleteDestination: (destination: AlertDestination) => void
+  // Guided setup's step 3: the card for this destination opens its rule form on
+  // its own, because the checklist promised "a rule prefilled on the new
+  // destination" and finishing step 2 used to deliver nothing at all
+  // (tripl-oxkt.15). `null` for every other visit to this section.
+  autoOpenRuleForDestinationId: string | null
+  // Called by the card that acted on it, so the page can clear the instruction.
+  onAutoOpenRuleConsumed: () => void
 }
 
 /**
@@ -39,6 +46,8 @@ export function DestinationsSection({
   onCreateDestination,
   onEditDestination,
   onDeleteDestination,
+  autoOpenRuleForDestinationId,
+  onAutoOpenRuleConsumed,
 }: DestinationsSectionProps) {
   // A demo's local sink has no entry in CHANNEL_META (it is not a channel anyone
   // can add), so it fell straight through the per-channel grouping below and its
@@ -148,6 +157,8 @@ export function DestinationsSection({
                 scans={scans}
                 canWrite={canWrite}
                 onEditDestination={onEditDestination}
+                autoOpenRule={destination.id === autoOpenRuleForDestinationId}
+                onAutoOpenRuleConsumed={onAutoOpenRuleConsumed}
               />
             ))}
           </div>
@@ -172,9 +183,14 @@ export function DestinationsSection({
                     scans={scans}
                     canWrite={canWrite}
                     onEditDestination={onEditDestination}
+                    autoOpenRule={destination.id === autoOpenRuleForDestinationId}
+                    onAutoOpenRuleConsumed={onAutoOpenRuleConsumed}
                   />
                   {/* The confirm itself lives on the page that owns the delete
-                      mutation; the cascade it triggers is stated here too, on
+                      mutation, and states the same cascade in the dialog through
+                      the same helper (ProjectAlertingTab `handleDeleteDestination`
+                      — for a while it did not, and this `title` was the only
+                      place the numbers appeared at all). It is repeated here, on
                       the control, because a `title` reaches a reader who is
                       still deciding whether to press it (tripl-oxkt.13). */}
                   {canWrite && (
