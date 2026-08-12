@@ -43,6 +43,15 @@ const MESSAGE_FORMAT_LABEL: Record<AlertMessageFormat, string> = {
   telegram_markdownv2: 'Telegram MarkdownV2',
 }
 
+// The bounds the simulate route enforces on sigma (`gt=0, le=RATCHET_SIGMA_CAP`
+// in api/v1/alerting.py). They are mirrored here rather than left to the server
+// because the failure mode is silent: the input allowed 0, `parseOverride`
+// happily returned it, and every replay then 422'd with nothing on screen
+// explaining why. A bound the UI does not know is a bound the user discovers by
+// failing.
+const SIGMA_MIN_EXCLUSIVE = 0
+const SIGMA_MAX = 10
+
 /** Thresholds to try WITHOUT saving them to the rule. */
 interface ReplayOverrides {
   cooldownMinutes?: number
@@ -156,7 +165,9 @@ export function RuleReplayDialog({
   // Sigma has no rule-level column to compare against — the detector's own
   // default is the baseline — so anything typed here is a change by definition.
   const sigma = parseOverride(sigmaText)
-  if (sigma !== null) {
+  const sigmaOutOfRange =
+    sigma !== null && (sigma <= SIGMA_MIN_EXCLUSIVE || sigma > SIGMA_MAX)
+  if (sigma !== null && !sigmaOutOfRange) {
     requestedOverrides.sigmaThreshold = sigma
   }
   const hasOverrides = Object.keys(requestedOverrides).length > 0
@@ -283,13 +294,20 @@ export function RuleReplayDialog({
               <Input
                 aria-label="Sigma threshold override"
                 type="number"
-                min={0}
+                min={0.1}
+                max={SIGMA_MAX}
                 step="0.1"
+                aria-invalid={sigmaOutOfRange || undefined}
                 placeholder="detector default"
                 value={sigmaText}
                 onChange={(e) => setSigmaText(e.target.value)}
                 className="h-8 w-28 text-xs"
               />
+              {sigmaOutOfRange && (
+                <p role="alert" className="text-[10.5px] text-destructive">
+                  Between {SIGMA_MIN_EXCLUSIVE} and {SIGMA_MAX}, or blank for the detector default.
+                </p>
+              )}
             </div>
             <Button
               size="sm"
@@ -299,7 +317,9 @@ export function RuleReplayDialog({
                   overrides: hasOverrides ? requestedOverrides : null,
                 })
               }
-              disabled={simulateMut.isPending}
+              // Blocked on an out-of-range sigma rather than sent and 422'd:
+              // the replay would fail for a reason the dialog never showed.
+              disabled={simulateMut.isPending || sigmaOutOfRange}
             >
               {simulateMut.isPending ? 'Replaying…' : 'Replay'}
             </Button>

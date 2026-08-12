@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -171,6 +171,41 @@ describe('RuleReplayDialog threshold overrides', () => {
     expect(
       screen.getByText(/Nothing here is saved to the rule/),
     ).toBeInTheDocument()
+  })
+
+  it.each([
+    ['0', 'the route rejects it with gt=0'],
+    ['11', 'the route caps it at the ratchet cap'],
+  ])('refuses to replay sigma %s, because %s', async (value) => {
+    // The input allowed 0 and had no upper bound while the route enforces
+    // `gt=0, le=10`, so this was a UI state that always 422'd with nothing on
+    // screen saying why (flagged on PR #108).
+    const simulate = vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
+    renderDialog()
+
+    fireEvent.change(screen.getByLabelText('Sigma threshold override'), {
+      target: { value },
+    })
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/Between 0 and 10/)
+    expect(screen.getByRole('button', { name: 'Replay' })).toBeDisabled()
+    expect(simulate).not.toHaveBeenCalled()
+  })
+
+  it('replays a sigma inside the range', async () => {
+    const simulate = vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
+    renderDialog()
+
+    fireEvent.change(screen.getByLabelText('Sigma threshold override'), {
+      target: { value: '4.5' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
+
+    await waitFor(() =>
+      expect(simulate).toHaveBeenCalledWith('demo', 'destination-1', 'rule-1', 7, {
+        sigmaThreshold: 4.5,
+      }),
+    )
   })
 
   it('treats an empty box as "leave it alone" rather than as zero', async () => {
