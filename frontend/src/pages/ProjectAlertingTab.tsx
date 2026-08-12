@@ -611,11 +611,14 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       {showGuidedSetup ? (
         <>
           <AlertingGuidedSetup channels={CHANNEL_META} onPickChannel={openCreate} />
-          {/* Keep the Audit log reachable before anything is configured so the
-              surface stays discoverable. Guided state requires zero deliveries,
-              so it is always empty here — render just the panel + empty state,
-              without the (equally empty) filter bar (tripl-7l83.14). */}
-          <Panel title="Audit" subtitle="0 deliveries">
+          {/* Keep the delivery log reachable before anything is configured so
+              the surface stays discoverable. Guided state requires zero
+              deliveries, so it is always empty here — render just the panel +
+              empty state, without the (equally empty) filter bar
+              (tripl-7l83.14). Title matches AlertAuditPanel's: a reader who
+              configures a destination must not watch the panel rename itself
+              (tripl-oxkt.18). */}
+          <Panel title="Delivery log" subtitle="0 deliveries">
             <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
               No deliveries yet.
             </div>

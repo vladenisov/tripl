@@ -512,7 +512,7 @@ the chart and deletable.
 
 ### Alerting
 
-**Where:** Observe › Alerting (Destinations, Inbox, Audit). Destination channels:
+**Where:** Observe › Alerting (Inbox, Destinations & rules, Delivery log). Destination channels:
 **Slack**, **Telegram**, **Webhook**, **Email**, **Jira**, **Linear**. Routing
 rules carry a **cooldown** (minutes); an optional **Scan** binding
 (`scan_config_id`, default **All scans**) that narrows a rule to one scan
@@ -527,16 +527,18 @@ and message and items templates with variables such as `${channel}`,
 `${matched_count}`, and `${items_text}`. Metric-scope anomalies are also safe-off
 and are enabled by the rule editor's **Metrics** box (`include_metrics`). A rule can be
 **simulated/replayed** over the last N days (default 7), optionally overriding
-the saved cooldown. The **Inbox** groups correlated deliveries; the **Audit**
-view lists deliveries filterable by status (pending / sent / failed) with retry
-on failures, plus channel, destination, rule, and **scan**.
+the saved cooldown. The **Inbox** groups correlated deliveries; the **Delivery
+log** lists deliveries filterable by status (pending / sent / failed) with retry
+on failures, plus channel, destination, rule, and **scan**. That third section's
+`?section=` key is still `audit` — the label changed, the link did not, and it is
+not the project-wide **Govern › Audit log** below.
 
 The scan filter is deep-linkable the same way Anomalies' is:
-`/p/<slug>/settings/alerting?scan=<scan_config_id>` opens the audit log already
+`/p/<slug>/settings/alerting?scan=<scan_config_id>` opens the delivery log already
 narrowed to one scan, which is where a scan run's **Alerts queued** counter
 links. As on Anomalies, an id this project does not have degrades to **All**
 once the scan list resolves, so a link to a since-deleted scan shows the full
-audit log rather than a permanently empty one.
+delivery log rather than a permanently empty one.
 
 ---
 

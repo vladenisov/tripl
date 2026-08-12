@@ -250,7 +250,7 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
 
     // ...but the Audit log stays reachable even before anything is configured
     // (tripl-7l83.14): it renders below the guided card with an empty state.
-    expect(screen.getByText('Audit')).toBeInTheDocument()
+    expect(screen.getByText('Delivery log')).toBeInTheDocument()
     expect(screen.getByText('No deliveries yet.')).toBeInTheDocument()
 
     // ...but every channel type is still addable from the guided flow.

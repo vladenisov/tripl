@@ -277,7 +277,7 @@ with the comparability verdict and the reason when a comparison is withheld.
 These rows are recomputed from scratch on every scan, so the tab always
 describes the newest rollout and never keeps a history.
 
-**An alert's own row** in Settings → Alerting → Audit log shows a *past*
+**An alert's own row** in Settings → Alerting → Delivery log shows a *past*
 regression exactly as it was reported: scope, actual, expected and percentage,
 frozen at delivery time. That is where a release-regression alert's `details:`
 link goes — deliberately, because the numbers it quotes cannot be reproduced

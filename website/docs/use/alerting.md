@@ -94,7 +94,8 @@ The reply is `{ "ok": …, "error": …, "sent_at": … }`, and:
   borrowing a real rule and scan and claiming they fired, and it would stamp that
   rule's cooldown and silence the next genuine alert. What is recorded is the
   operator action, in the project **audit log**, naming the destination it was
-  pressed on. The **Audit** tab below therefore keeps meaning "an alert fired".
+  pressed on. The **Delivery log** tab below therefore keeps meaning "an alert
+  fired".
 - **A demo project refuses it**, with `ok: false` and an explanation: a demo is
   zero-egress. The exception is the local demo sink, which answers `ok: true`,
   because rendering and recording locally is exactly what a real delivery through
@@ -102,8 +103,9 @@ The reply is `{ "ok": …, "error": …, "sent_at": … }`, and:
 
 Whoever reads that channel did not ask for the message, so it says on its own
 line that nothing is wrong and that someone pressed Test. Use rule replay to
-validate *matching*, and confirm the first real delivery in **Audit**; a failing
-webhook or an unverified bot token is the most common transport failure.
+validate *matching*, and confirm the first real delivery in the **Delivery
+log**; a failing webhook or an unverified bot token is the most common transport
+failure.
 
 ### What deleting one would destroy
 
@@ -129,6 +131,31 @@ report that incident twice, so the destination total is counted in its own right
 `GET /monitors/{rule_id}` reports under that name — a monitor *is* an alert rule,
 so it is one number with one name. Do not confuse it with `delivery_count` on an
 **Inbox incident**, which counts the deliveries of that one incident.
+:::
+
+### What a rule reports about its own state
+
+Alongside those counts, a rule carries its mute state and its delivery health, so
+its card can answer "is this silenced, and has this channel ever actually carried
+anything" without a second request:
+
+| Field | Means |
+|---|---|
+| `muted` | The rule is muted **right now**. A `muted_until` that has already passed is *not* muted. |
+| `muted_until` | The instant the mute lifts — emitted **raw**, whether or not it has passed. |
+| `last_delivery_at` | When this rule last sent anything, or `null` if it never has. |
+| `last_delivery_status` | That same delivery's `pending` / `sent` / `failed`; `null` whenever `last_delivery_at` is. |
+
+All four are the values `GET /monitors/{rule_id}` already reports for the same
+rule, under the same names — a monitor is an alert rule seen from the other side,
+and one object may not carry two shapes.
+
+:::note `muted_until` is not the question to ask
+Read **`muted`**. `muted_until` on a rule is the stored timestamp and keeps being
+sent after it lapses, so "muted until \<a past date\>" is a normal thing to see on
+an unmuted rule; it means "when the last mute was set to lift", not "this rule is
+silenced". An **Inbox incident** answers this differently — see
+[What an incident row carries](#what-an-incident-row-carries).
 :::
 
 ### What a Webhook destination POSTs
@@ -374,7 +401,7 @@ written back nowhere:
 | `cooldown_minutes_override` | `cooldown_minutes` | `0` disables grouping, so every match becomes a firing |
 | `min_percent_delta_override` | `min percent delta` | The threshold this exists for: "would 300 cut these?" |
 | `min_expected_count_override` | `min expected count` | Ignore low-traffic buckets, as the saved value does |
-| `sigma_threshold_override` | the **detector's** sensitivity | Not a rule setting — see below |
+| `sigma_threshold_override` | the **detector's** sensitivity | Not a rule setting — see below. Must be **greater than 0 and at most 10**, the same ceiling the false-positive ratchet respects; outside that the request is a 422 |
 
 Each comes back as a `*_used` / `*_saved` pair (`min_percent_delta_used`,
 `min_percent_delta_saved`, and so on), so the result can show *tried* beside
@@ -460,7 +487,12 @@ and does nothing unless an AI provider is configured — see
 |---|---|
 | **Inbox** | Triage: incidents, their actions, and what was sent for each. The default, and where an alert link lands. |
 | **Destinations & rules** | Configuration: channels and the rules that route to them, above a one-line routing summary. |
-| **Audit** | Every delivery in the project, filterable, for "did the message actually go out". |
+| **Delivery log** | Every delivery in the project, filterable, for "did the message actually go out". |
+
+The third tab is named **Delivery log** rather than *Audit*, because **Govern →
+Audit log** already means something else entirely — who changed what — while this
+one is the messages behind the Inbox's incidents. Its `?section=` key is still
+`audit`, so every alert link written so far keeps working.
 
 The sidebar badge beside **Alerting** counts **open incidents**, not
 destinations: `open_incident_count` in the `summary` of
@@ -552,7 +584,7 @@ window rather than a scope over a bucket:
   monitoring view that can reproduce these numbers: the event's chart shows all
   versions over its own range, scored against the seasonal baseline — a
   different numerator, denominator, window and estimator. So `details:` opens
-  this delivery's own row in **Settings → Alerting → Audit log**, expanded, with
+  this delivery's own row in **Settings → Alerting → Delivery log**, expanded, with
   the exact scope, actual, expected and percentage the message quoted. Those are
   read back from the delivery's frozen record, so the page can never drift from
   the message, and the link keeps working after the next release ships. Release
@@ -560,7 +592,7 @@ window rather than a scope over a bucket:
   page that shows *more* than its alert line did, and gets sent to that instead.
 - **Each line links to its own row, not just to the delivery.** One delivery
   carries up to 8 items, so the `?item=` on the end of the link names the scope
-  that line was about: the audit table scrolls to that row and marks it **from
+  that line was about: the delivery table scrolls to that row and marks it **from
   your alert**. Without it, eight lines of one message would carry the same URL
   and you would land on eight rows with nothing saying which one you clicked.
   The rest of the delivery stays on screen, so the co-firing scopes are still
@@ -607,6 +639,23 @@ the alert is real without leaving for the catalog and finding it by hand. Scopes
 with no page of their own (a schema or distribution drift) link to the event they
 were detected on, or stay plain text when there is nothing to open.
 
+**The 30 days are a rolling window, not a backlog.** An incident nobody touches
+is not resolved when it leaves the page — it simply stops having fired inside the
+window, and the row disappears with no action recorded against it and no state
+change to explain it. The list's `total` counts what is inside the window (and
+matching the status filter), so it is "incidents to triage now", never "incidents
+this project has ever had".
+
+**Open incidents sort above handled ones.** Effective openness is the list's
+primary ordering term, so something nobody has dealt with can never be pushed off
+page one by something already triaged; within each run the newest activity leads,
+tie-broken on the incident id so paging cannot show one incident twice or skip it.
+A muted, resolved, acknowledged or false-positive incident is therefore reached
+with the **status** filter — `?status=open` / `acknowledged` / `resolved` /
+`muted` / `false_positive`, and an unrecognised value is a 422 rather than a
+silent empty page — and not by scrolling. A mute that has run out counts as
+`open` again and rejoins the top run on its own.
+
 The Inbox lists the last **30 days**, but an alert's link is not bound by that
 window: `GET /api/v1/projects/{slug}/alert-inbox/{correlation_group_id}` resolves
 one incident by id and deliberately ignores the lookback, because the reader
@@ -625,10 +674,78 @@ expanded and the quoted line highlighted. Previously only release regressions
 reached this page and everything else linked to the event's monitoring page,
 which shows neither the deliveries nor the actions.
 
-The **Audit** panel below stays the whole-project delivery log, filterable by
+The **Delivery log** panel below stays the whole-project delivery list, filterable by
 status, channel, destination, rule and scan — the view for "did anything fail to
 go out", rather than for acting on one incident. Deliveries too old to belong to
 an incident (written before incidents existed) appear only there.
+
+### What an incident row carries
+
+`GET /api/v1/projects/{slug}/alert-inbox` returns these rows as typed objects.
+The fields worth knowing before you read one:
+
+| Field | Means |
+|---|---|
+| `first_delivery_at` | When the incident first fired **inside the window this reading covers**. `latest_delivery_at` says when it last spoke and nothing about how long it has been going, which is the difference between a blip and a week-old regression. |
+| `actual_count`, `expected_count`, `percent_delta` | The size of the **newest** item in the incident, so the row can state a magnitude without expanding its deliveries. |
+| `max_abs_percent_delta` | The largest deviation **anywhere** in the incident, so "worst first" is orderable without fetching its items. |
+| `scope_type`, `scope_ref`, `event_id` | The newest item's scope in routable form — what the row's scope link opens. Always sent; `event_id` may be `null`. |
+| `scope_types` | The **distinct** scope kinds present, sorted. |
+| `rules` | Every rule behind the incident, as `{id, name}` pairs sorted by name. |
+| `rule_names` | The same names as plain sorted text, which is what the row renders as its label line. |
+| `acted_by`, `acted_by_name` | Who last acted on it, and their display name. |
+| `muted`, `muted_until` | Whether it is silenced, and until when. |
+
+Several of those need a sentence more.
+
+:::warning `first_delivery_at` is windowed on the list
+On the list — and on an action's reply, which rebuilds the same card from the
+same rows — `first_delivery_at` is the first delivery **within the last 30
+days**, so an incident older than that reports a first delivery inside the window
+rather than its true birth. `item_count`, `delivery_count` and
+`max_abs_percent_delta` are qualified exactly the same way.
+`GET /alert-inbox/{correlation_group_id}` reads the whole history and does report
+the true first — one of the reasons that route exists.
+:::
+
+**`percent_delta` is `null`, not `0`, when `expected_count` is `0`** — the same
+encoding [the delivery's `items[]` already uses](#what-a-webhook-destination-posts),
+enforced the same way, because one incident may not answer the same question two
+ways depending on which payload you read it from. `max_abs_percent_delta` is
+computed over the rows that **have** a baseline only, and is `null` when no row in
+the incident does: a group made entirely of zero-baseline firings has no measured
+deviation to be the largest, and reporting `0.0` there sorted the loudest
+incidents last. Use `absolute_delta` on the items for that class.
+
+**`scope_types` exists because `scope_type` is the newest item's alone.** An older
+incident can mix kinds, so one value cannot label the row — nor tell a client what
+a **false positive** click will actually tune, since only some scope kinds are
+ratchetable — see the false-positive note that closes this section.
+
+**`acted_by_name` is `null` when that user has no name on file**, and it
+deliberately does *not* fall back to their email address. Every project member can
+read the Inbox, and a fallback would turn incident rows into a roster of
+colleagues' email addresses on a surface that previously exposed nothing but an
+opaque id. The row says *handled* without a name.
+
+:::note Why `rules` replaced `rule_ids` and `rule_names` as identifiers
+The two parallel arrays could not be zipped: `rule_ids` was sorted by UUID and
+`rule_names` by name, so index *i* of one had nothing to do with index *i* of the
+other, and a row linked "Volume rule" to whichever monitor happened to sort first.
+Two rules of one incident can even share a name, so no client-side join could
+repair it either. `rules` carries the id and the name **together**, sorted by name.
+`rule_names` is still sent, as the label line's plain text.
+:::
+
+:::note An incident's `muted` and a rule's `muted` are not built alike
+On an incident, `muted` is true exactly while the mute is in force **and**
+`muted_until` is nulled the moment it lapses, so the pair can never contradict
+itself. On a rule (and on a monitor) `muted` is likewise the effective flag, but
+`muted_until` is the raw stored timestamp and keeps being emitted after it has
+passed — see
+[What a rule reports about its own state](#what-a-rule-reports-about-its-own-state).
+Read `muted` in both.
+:::
 
 :::note
 Marking a group **false positive** doesn't just hide it — on the scopes that are
@@ -670,9 +787,9 @@ and tightened nothing".
    try a stricter threshold there before saving one, see
    [Replaying a what-if without saving it](#replaying-a-what-if-without-saving-it).
 4. **Save.** The next scan that produces a matching signal sends a delivery and
-   records it in the Inbox and Audit views.
+   records it in the Inbox and Delivery log views.
 
-The Audit log can be filtered to a single scan with
+The Delivery log can be filtered to a single scan with
 `?scan=<scan_config_id>` — `/p/<slug>/settings/alerting?scan=<scan_config_id>`.
 That is the link behind a scan run's **Alerts queued** counter, so an alert
 naming a scan is reachable from the run that queued it. An id the project does
