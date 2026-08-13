@@ -13,6 +13,7 @@ import { searchApi } from '@/api/search'
 import { useAuth } from '@/components/auth-context'
 import { Button } from '@/components/ui/button'
 import { useConfirm } from '@/hooks/useConfirm'
+import { projectVariablesKey } from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import {
   Field,
@@ -322,7 +323,9 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
     mutationFn: () => projectsApi.retireUnusedVariables(slug, { dry_run: false }),
     onSuccess: () => {
       setRetirementPreview(undefined)
-      qc.invalidateQueries({ queryKey: ['variables'] })
+      // Across every branch: the pass resolves the branch server-side, so this
+      // button does not know which one the settings table is showing.
+      qc.invalidateQueries({ queryKey: projectVariablesKey(slug) })
     },
   })
 
