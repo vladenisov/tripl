@@ -10,12 +10,17 @@ owner-facing danger-zone endpoint. Only the queries differ — that module runs 
 an ``AsyncSession`` and this one on the worker's sync ``Session`` — and that
 split is the same one every other pair in this package lives with.
 
-**This cannot undo the run that just finished.** A variable minted by this run
+**This does not undo the run that just finished.** A variable minted by that run
 had its token written into at least one event's field value by the same run — a
 path enters ``all_paths`` only by appearing in a row, and that row's event
 stores ``${col.path}`` — so the reference check keeps it. What the sweep removes
 is the row whose token has since disappeared from every stored value, which is
 exactly the fossil.
+
+One case does mint and sweep in the same run, and it is the right answer rather
+than an exception to apologise for: a path carried *only* by an ARCHIVED event.
+A scan deliberately leaves an archived row's field values alone (tripl-rsei), so
+the token is never written and nothing live refers to the variable.
 
 Runs after the scan's ``session.commit()`` and before the search reindex, so the
 reindex sees the retired set and the deletions cannot be rolled back by a later

@@ -194,11 +194,16 @@ an **Exclude from scans** tombstone each keep the row. So does a single
 `${token}` left in one event value, even when the variable has no observed
 contexts at all.
 
-The run that creates a variable never retires it in the same pass: that run
-writes the variable's token into at least one event's field value, so the
-reference check keeps it. What retirement removes is the row whose token has
+The run that creates a variable does not normally retire it in the same pass:
+that run writes the variable's token into at least one event's field value, so
+the reference check keeps it. What retirement removes is the row whose token has
 since vanished from every stored value — the leftover of a key that stopped
 arriving, or of an event value that was edited to stop using it.
+
+One case does create and retire in the same run: a path that appears only on an
+**archived** event. A scan deliberately leaves an archived row's field values
+untouched, so the token is never written and nothing live refers to the new
+variable.
 
 When a run retires anything it says so in the run's details list: *Retired N
 unused variables no event refers to*. To see the set for yourself, the Variables

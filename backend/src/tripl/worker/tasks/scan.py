@@ -259,9 +259,13 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
         # whose warehouse holds a JSON column keyed by user-typed text grew a
         # permanent row per key (tripl-10h4). Sweeping here — after the commit,
         # before the reindex — keeps the catalog self-healing instead of relying
-        # on somebody remembering the danger-zone button. It cannot undo this
-        # run: a variable minted above had its token written into a field value
-        # by the same run, so the reference check keeps it.
+        # on somebody remembering the danger-zone button. It does not undo the
+        # run above: a path enters ``all_paths`` only by appearing in a row, and
+        # that row's event stores ``${col.path}``, so the reference check keeps
+        # what was just minted. The one exception is a path carried solely by an
+        # ARCHIVED event, whose field values a scan deliberately does not
+        # rewrite — that variable is minted and swept in the same run, which is
+        # the right outcome for a row nothing live refers to.
         variables_retired = retire_unused_variables(
             session,
             project_id=config.project_id,
