@@ -340,7 +340,7 @@ jobs:
           fi
 
   migrations:
-    name: Alembic round trip (upgrade + downgrade base + upgrade)
+    name: Alembic round trip (upgrade from empty + round-trip newest)
     needs: migration-scope
     if: needs.migration-scope.outputs.alembic == 'true'
     runs-on: ubuntu-latest
