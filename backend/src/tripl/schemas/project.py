@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import cast
+from typing import Literal, cast
 
 from pydantic import BaseModel, Field
 
@@ -73,6 +73,37 @@ class AnomalyResetCounts(BaseModel):
 class DriftResetCounts(BaseModel):
     schema_drifts: int
     distribution_drifts: int
+
+
+class VariableRetirementRequest(BaseModel):
+    """How to retire the variables nothing references, and whether to commit.
+
+    ``dry_run`` defaults to true so the destructive verb takes a second,
+    explicit call: the counts come back broken down by reason first, and only
+    then does an operator decide.
+    """
+
+    mode: Literal["delete", "exclude"] = "delete"
+    dry_run: bool = True
+
+
+class VariableRetirementCounts(BaseModel):
+    """What a retirement pass did, and why it spared everything it spared.
+
+    The ``kept_*`` fields mirror ``core.variable_retirement.KeptReason`` one for
+    one, and a test pins that agreement: a reason the core can emit but this
+    schema cannot name would be dropped silently from the operator's preview,
+    which is the one number they are being asked to trust.
+    """
+
+    scanned: int
+    retirable: int
+    retired: int
+    kept_referenced: int = 0
+    kept_observed: int = 0
+    kept_documented: int = 0
+    kept_user_edited: int = 0
+    kept_excluded: int = 0
 
 
 class ProjectLatestScanJob(BaseModel):

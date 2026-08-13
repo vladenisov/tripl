@@ -39,6 +39,7 @@ from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.project import Project
 from tripl.models.shadow_event_candidate import SHADOW_STATUS_NEW, ShadowEventCandidate
+from tripl.tests._sqlite import enable_sqlite_foreign_keys
 from tripl.tests.conftest import TestSessionLocal
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
@@ -52,6 +53,11 @@ NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 @pytest.fixture
 def sync_session() -> Iterator[Session]:
     engine = create_engine("sqlite:///:memory:")
+    # Before create_all: the pooled connection is opened by the first statement,
+    # and a listener registered after that never fires. Archival inertness is a
+    # claim about what a merge does NOT delete, which needs a database that
+    # actually deletes — see ``_sqlite``.
+    enable_sqlite_foreign_keys(engine)
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
     session = factory()
@@ -101,6 +107,7 @@ def project_and_type(sync_session: Session) -> _ProjectAndType:
 @pytest.fixture
 def sync_session_factory(tmp_path: Path) -> Iterator[sessionmaker[Session]]:
     engine = create_engine(f"sqlite:///{tmp_path / 'archived_inertness.db'}")
+    enable_sqlite_foreign_keys(engine)
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
     try:

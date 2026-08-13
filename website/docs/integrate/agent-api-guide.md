@@ -175,6 +175,13 @@ Event responses include:
 to decide whether another page is needed rather than assuming one response holds
 the whole catalog.
 
+`usage=all|used|unused` narrows the listing: `unused` returns exactly the rows a
+retirement pass would take, `used` its complement. It is answered by the same
+retirement predicate rather than by a "zero usage count" shortcut, so `unused`
+never offers up a variable that a live event value still names. The default is
+`all` and an unrecognised value is a `422`. `total` reflects the filter, so it
+stays the honest count for whichever set you asked for.
+
 Each item in `items` includes `allowed_values`, warehouse/JSON-path `bindings`,
 `excluded_from_scans`, usage summaries, `open_drift_count`, and two inline
 previews that spare a per-variable follow-up call: `sample_values` (observed
@@ -187,6 +194,15 @@ for one variable: low-cardinality contexts list all observed values, while
 high-cardinality contexts list bounded samples and an observed count. Reach for
 it only when the inline previews are not enough. Event overrides replace the
 global documented list for their event.
+
+The catalog is not append-only. Every catalog scan run retires the scan-created
+variables nothing refers to any more — no `${token}` in any stored event field
+or meta value, no observed context, no value drift, no per-event override — so a
+variable id cached from an earlier read can be gone by the next call. A variable
+your agent edited, documented, bound, or excluded from scans is never retired.
+The branch-wide version of the same pass,
+`POST /projects/{slug}/danger/retire-unused-variables`, is not available to
+agents: it takes the strict owner gate and rejects every API key.
 
 ## Updating Events
 

@@ -13,6 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from tripl.core.name_template import VARIABLE_TOKEN_PATTERN
 from tripl.models.event import Event
 from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.variable import Variable
@@ -22,7 +23,17 @@ logger = logging.getLogger(__name__)
 
 VARIABLE_VALUE_SAMPLE_LIMIT = 20
 
-_TOKEN_PATTERN = re.compile(r"\$\{([^}]+)\}")
+# The description every scan-created variable carries, and the only provenance
+# marker the model has — ``Variable`` has no ``created_by``, no ``origin`` and no
+# timestamps. Named here, at its single write site in ``ensure_variable``, so
+# ``core.variable_retirement`` can import the exact string it has to match
+# instead of keeping a second copy. A user who edits this description has taken
+# ownership of the row, which is exactly what retirement reads it for.
+SCAN_PROVENANCE_DESCRIPTION = "Auto-detected variable from data source scan"
+
+# One ``${token}`` grammar for the whole codebase, declared beside the ``{key}``
+# one it is deliberately NOT (``core.name_template``).
+_TOKEN_PATTERN = VARIABLE_TOKEN_PATTERN
 
 
 class VariableIndex:
@@ -405,7 +416,7 @@ def ensure_variable(
         name=derive_display_name(name, index),
         source_name=name,
         variable_type=inferred_type,
-        description="Auto-detected variable from data source scan",
+        description=SCAN_PROVENANCE_DESCRIPTION,
         bindings=[name],
     )
     if branch_id is not None:

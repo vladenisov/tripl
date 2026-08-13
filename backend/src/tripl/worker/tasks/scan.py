@@ -44,6 +44,7 @@ from tripl.worker.search_reindex import reindex_main_branch_from_worker
 from tripl.worker.tasks._errors import NO_EVENT_NAMING_MSG, ScanError, user_facing_error
 from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 from tripl.worker.utils.reserved_columns import reserved_catalog_columns
+from tripl.worker.variable_sweep import retire_unused_variables
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +255,22 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             raise ScanError(NO_EVENT_NAMING_MSG)
 
         session.commit()
+        # Scans mint variables and, before this, never retired one, so a project
+        # whose warehouse holds a JSON column keyed by user-typed text grew a
+        # permanent row per key (tripl-10h4). Sweeping here — after the commit,
+        # before the reindex — keeps the catalog self-healing instead of relying
+        # on somebody remembering the danger-zone button. It cannot undo this
+        # run: a variable minted above had its token written into a field value
+        # by the same run, so the reference check keeps it.
+        variables_retired = retire_unused_variables(
+            session,
+            project_id=config.project_id,
+            branch_id=main_branch_id(session, config.project_id),
+        )
+        if variables_retired:
+            result.details.append(
+                f"Retired {variables_retired} unused variables no event refers to"
+            )
         reindex_main_branch_from_worker(session, config.project_id)
 
         # Mark job as completed

@@ -19,6 +19,20 @@ export interface DemoCancelResult {
   slug: string | null
 }
 
+/** What a variable-retirement pass did, and why it spared what it spared.
+ *  The `kept_*` fields mirror the backend's `KeptReason`; a dry run fills
+ *  everything except `retired`. */
+export interface VariableRetirementCounts {
+  scanned: number
+  retirable: number
+  retired: number
+  kept_referenced: number
+  kept_observed: number
+  kept_documented: number
+  kept_user_edited: number
+  kept_excluded: number
+}
+
 /** Per-table rows removed by a project-wide drift reset. */
 export interface DriftResetCounts {
   schema_drifts: number
@@ -57,4 +71,9 @@ export const projectsApi = {
     api.post<AnomalyResetCounts>(`/projects/${slug}/danger/reset-anomalies`, period),
   resetDrifts: (slug: string, period: DetectionResetPeriod) =>
     api.post<DriftResetCounts>(`/projects/${slug}/danger/reset-drifts`, period),
+  /** Owner-only: drop the variables a scan minted that nothing refers to.
+   *  `dry_run` is passed explicitly so the preview and the commit are visibly
+   *  two different calls rather than one call with a hidden default. */
+  retireUnusedVariables: (slug: string, data: { mode?: 'delete' | 'exclude'; dry_run: boolean }) =>
+    api.post<VariableRetirementCounts>(`/projects/${slug}/danger/retire-unused-variables`, data),
 }

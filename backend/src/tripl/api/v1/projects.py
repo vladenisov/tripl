@@ -1,6 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from tripl.api.deps import EditorUserDep, OwnerUserDep, SessionDep, get_owner_user
+from tripl.api.deps import (
+    BranchIdDep,
+    EditorUserDep,
+    OwnerUserDep,
+    SessionDep,
+    get_owner_user,
+)
 from tripl.config import settings
 from tripl.models.domain_enums import UserRole
 from tripl.models.project import Project
@@ -13,12 +19,15 @@ from tripl.schemas.project import (
     ProjectCreate,
     ProjectResponse,
     ProjectUpdate,
+    VariableRetirementCounts,
+    VariableRetirementRequest,
 )
 from tripl.services import (
     audit_service,
     demo_service,
     detection_reset_service,
     project_service,
+    variable_retirement_service,
 )
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -217,3 +226,51 @@ async def reset_drifts(
         payload={"before": period.before, "after": period.after, "counts": counts},
     )
     return DriftResetCounts(**counts)
+
+
+@router.post(
+    "/{slug}/danger/retire-unused-variables",
+    response_model=VariableRetirementCounts,
+)
+async def retire_unused_variables(
+    session: SessionDep,
+    current_user: OwnerUserDep,
+    slug: str,
+    branch_id: BranchIdDep,
+    data: VariableRetirementRequest,
+) -> VariableRetirementCounts:
+    """Owner-only: drop the variables a scan minted that nothing refers to.
+
+    A scan creates a variable for every placeholder it discovers and has never
+    retired one, so a project whose warehouse holds a JSON column keyed by
+    user-typed text accumulates a row per key forever (tripl-10h4). This deletes
+    only rows that a scan created, no human has edited, no event field value
+    names, and that carry no observed context, drift or override — see
+    ``core.variable_retirement`` for why "no observed context" alone is not
+    enough to be safe.
+
+    ``dry_run`` defaults to true, so the first call is always a preview. It
+    returns the same counts the real pass would, broken down by why each
+    surviving row was kept.
+    """
+    project = await project_service.get_project_by_slug(session, slug)
+    counts = await variable_retirement_service.retire_unused_variables(
+        session,
+        project_id=project.id,
+        branch_id=branch_id,
+        slug=slug,
+        mode=data.mode,
+        dry_run=data.dry_run,
+    )
+    if not data.dry_run:
+        await audit_service.record(
+            session,
+            user=current_user,
+            action="project.retire_unused_variables",
+            target_type="project",
+            target_id=project.id,
+            target_name=project.name,
+            project=project,
+            payload={"mode": data.mode, "counts": counts},
+        )
+    return VariableRetirementCounts(**counts)

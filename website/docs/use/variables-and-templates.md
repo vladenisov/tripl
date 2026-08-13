@@ -64,7 +64,9 @@ page_data.extra.variant
 When a scan sees a matching source path, it adopts the existing variable rather
 than creating a second scan-named variable. New scan-created variables receive a
 short display name where possible while retaining the raw source path as their
-binding.
+binding. Search on the Variables page matches that source path and the bindings
+as well as the name and description, so a variable shortened to `${aalter}` is
+still found by searching for the `property.Aalter` it binds to.
 
 Binding rules:
 
@@ -135,6 +137,24 @@ other drift signals: they use the spike direction for rule matching, carry the
 variable name and novel-value sample in the alert, and bypass numeric volume
 thresholds.
 
+## When a scan merges events into a group
+
+Scan **event group** rules can fold several existing events into one. The
+surviving event keeps the variable data of the events it absorbed: observed
+contexts, per-event documented-value overrides, and value-drift triage all move
+across rather than disappearing with the merged-away event.
+
+Two details worth knowing:
+
+- a context moves only when the surviving event's value for that field still
+  names the variable. A group rule that rewrites a field value to the pattern it
+  matched removes the reference, so the context is dropped rather than left
+  asserting a reference that is no longer there;
+- where both events already carried an entry for the same variable, the
+  surviving event's own override or drift decision wins. Observed contexts are
+  combined instead: the higher observation count, and the union of the sampled
+  values under the usual cap.
+
 ## Exclude instead of deleting scan-owned variables
 
 Deleting a variable removes it from the plan, but a later scan can discover the
@@ -147,6 +167,52 @@ Exclusion keeps a lightweight tombstone:
 - scans do not recreate it or accumulate new contexts/drift for it;
 - **Restore** makes it active again;
 - permanent delete remains available when no scan can reintroduce it.
+
+## Unreferenced scan-created variables are retired automatically
+
+A scan creates a variable for every placeholder it detects. On a JSON column
+whose keys are user-typed text — a map rather than a struct — that once meant a
+permanent plan row per key. Every catalog run now ends by deleting the
+scan-created variables that nothing refers to any more. The sweep works on
+`main`, where scans write; the copies on an open working branch are left alone.
+
+A variable is retired only when **all** of the following are true:
+
+- a scan created it and its description is still the scan's own
+  (*Auto-detected variable from data source scan*);
+- its bindings are still only the source path the scan gave it;
+- it documents no values and carries no per-event override;
+- it carries no value drift — open or resolved;
+- no scan-observed context is recorded against it;
+- nothing stored in the project mentions any of its tokens — its display name,
+  its scan source path, or any binding — as `${token}`. Both `${token}` sites
+  count: an event's **field values** and its **meta values**.
+
+Everything a person touched is out of reach. An edited description, a binding
+you added, documented values, an override, a drift you accepted or snoozed, and
+an **Exclude from scans** tombstone each keep the row. So does a single
+`${token}` left in one event value, even when the variable has no observed
+contexts at all.
+
+The run that creates a variable never retires it in the same pass: that run
+writes the variable's token into at least one event's field value, so the
+reference check keeps it. What retirement removes is the row whose token has
+since vanished from every stored value — the leftover of a key that stopped
+arriving, or of an event value that was edited to stop using it.
+
+When a run retires anything it says so in the run's details list: *Retired N
+unused variables no event refers to*. To see the set for yourself, the Variables
+table's **All / In use / Unused** filter asks the server the same question:
+**Unused** lists exactly the rows a run would take, decided by the rule above
+rather than by a "used in no events" count.
+
+:::note Clearing a backlog that predates the sweep
+An instance owner can run the same pass over a whole branch on demand, from
+**Retire unused variables** in the project's [danger
+zone](./feature-reference.md#project-general--danger-zone) — **Preview** first,
+which commits nothing and reports what it would take, then **Retire**. The route
+behind it is `POST /api/v1/projects/{slug}/danger/retire-unused-variables`.
+:::
 
 ## Bulk changes and branches
 

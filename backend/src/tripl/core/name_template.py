@@ -21,6 +21,42 @@ from typing import Any
 
 NAME_FORMAT_PATTERN = re.compile(r"\{([^}]+)\}")
 
+# The OTHER grammar: ``${variable}`` references inside a stored field value.
+#
+# Distinct from ``NAME_FORMAT_PATTERN`` — that one names a warehouse COLUMN at
+# scan time, this one names a :class:`~tripl.models.variable.Variable` inside a
+# value the catalog stores — but it had drifted into three private capturing
+# copies in two spellings: ``_TOKEN_PATTERN`` (``_event_generator_variables``)
+# and ``_VARIABLE_NAME_PATTERN`` (``worker.tasks.metrics.generation``) at
+# ``[^}]+``, ``_TEMPLATE_TOKEN_PATTERN`` (``event_service``) at ``[^}]*``.
+#
+# The looser spelling wins: a stray ``${}`` should be *seen* and then fail to
+# resolve, not be invisible to the reader that decides whether a variable is
+# still referenced. That decision is what made one copy stop being optional —
+# ``core.variable_retirement`` deletes rows on the strength of "no stored value
+# mentions this token", so it has to extract tokens exactly the way the writers
+# of those values do.
+#
+# Two related patterns are deliberately NOT folded in here, because they answer
+# different questions: ``generation._VARIABLE_TEMPLATE_PATTERN`` is the same
+# grammar without a capture group (it tests whether a value is templated at all,
+# and a capture would change what ``findall`` returns), and
+# ``event_service._JSON_TEMPLATE_VALUE_PATTERN`` restricts the token body to an
+# identifier grammar on purpose, to keep hand-authored JSON values parseable.
+VARIABLE_TOKEN_PATTERN = re.compile(r"\$\{([^}]*)\}")
+
+
+def variable_tokens(value: str) -> list[str]:
+    """Every ``${token}`` name in *value*, in order, duplicates included.
+
+    The ``"${" not in value`` guard is not decoration: the retirement pass runs
+    this over every stored field value in a project, and most of them hold no
+    token at all.
+    """
+    if "${" not in value:
+        return []
+    return VARIABLE_TOKEN_PATTERN.findall(value)
+
 
 class NameFormatError(ValueError):
     """An ``event_name_format`` names a key the row cannot supply.

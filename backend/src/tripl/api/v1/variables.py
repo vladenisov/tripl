@@ -1,4 +1,5 @@
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Query
 
@@ -123,9 +124,18 @@ async def list_variables(
     # single-page fetch stays possible; the default keeps unaware clients off
     # the multi-hundred-KB payload.
     limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    usage: Literal["all", "used", "unused"] = Query(
+        "all",
+        description=(
+            "Narrow to the variables nothing refers to ('unused' — exactly the "
+            "set the retirement sweep would take) or to their complement "
+            "('used'). Declared as an enum rather than a free string so an "
+            "unknown value is a 422 and not a 500 (tripl-57g0)."
+        ),
+    ),
 ) -> VariableListResponse:
     items, total = await variable_service.list_variables(
-        session, slug, branch_id, offset=offset, limit=limit
+        session, slug, branch_id, offset=offset, limit=limit, usage=usage
     )
     return VariableListResponse(
         items=[VariableResponse.model_validate(item) for item in items],

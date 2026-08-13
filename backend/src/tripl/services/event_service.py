@@ -11,7 +11,11 @@ from sqlalchemy.orm import noload
 
 from tripl import cache
 from tripl.alerting_matching import rule_covers_event
-from tripl.core.name_template import apply_name_format, resolve_dotted_keys
+from tripl.core.name_template import (
+    VARIABLE_TOKEN_PATTERN,
+    apply_name_format,
+    resolve_dotted_keys,
+)
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.event import Event, EventStatus
@@ -43,7 +47,9 @@ from tripl.services.search_service import (
 from tripl.services.variable_value_service import attach_event_field_variable_values
 
 _TRACKED_FIELDS = ("status", "name", "description", "sunset_at")
-_TEMPLATE_TOKEN_PATTERN = re.compile(r"\$\{([^}]*)\}")
+# One ``${token}`` grammar for the codebase; this module's spelling is the one
+# it standardised on (``core.name_template``).
+_TEMPLATE_TOKEN_PATTERN = VARIABLE_TOKEN_PATTERN
 _JSON_TEMPLATE_TOKEN_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 _JSON_TEMPLATE_VALUE_PATTERN = re.compile(
     r'"\$\{[A-Za-z_][A-Za-z0-9_.-]*\}"|\$\{[A-Za-z_][A-Za-z0-9_.-]*\}'

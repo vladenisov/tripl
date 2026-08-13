@@ -207,7 +207,28 @@ resolved** toggle in both panels, and a scan reopens an accepted row on its own
 once it observes a value outside the accepted set. The event detail repeats the
 affected event's review panel. Selection enables bulk type/description/value changes and
 delete. **Exclude from scans** keeps a restorable tombstone so a deliberately
-removed scan-owned variable is not recreated. See
+removed scan-owned variable is not recreated. Search matches a variable's
+display name and description **and** its scan source path and bindings, so a
+variable whose display name was shortened from a dotted path is still findable
+by the data path it binds to.
+
+Every catalog run ends by **retiring the scan-created variables nothing refers
+to any more** — no `${token}` in any stored event field or meta value, no
+observed context, no value drift, no per-event override — so a catalog stops
+accumulating rows minted from a JSON column keyed by free text. The pass is
+deliberately narrow: an edited description, a hand-added binding, documented
+values, an override, drift triage, or an **Exclude from scans** tombstone each
+keep the row, and a variable the run has just created is always still
+referenced by that run's own event values. When a run retires anything it says
+so in its [details list](#scan-runs).
+
+An **All / In use / Unused** control filters the table by that same rule.
+**Unused** is answered by the server with the retirement predicate itself rather
+than by an "observed in no events" shortcut, so the count sitting under the
+select-all checkbox is exactly the set a run would take — never a superset that
+quietly includes rows a live event value still names. API clients pass
+`usage=all|used|unused` on `GET /api/v1/projects/{slug}/variables`; the default
+is `all` and an unrecognised value is a `422`. See
 [Variables & templates](./variables-and-templates.md).
 
 ### Event-type relations
@@ -290,6 +311,30 @@ removes metric and breakdown anomaly records (and
 their derived active signals) across every scan/catalog metric. **Reset drifts**
 removes schema and distribution drift, but not variable-value drift. Both can be
 limited to a selected historical period and cannot be undone.
+
+**Retire unused variables** applies the same retirement rule a catalog run
+applies (see [Variables](#variables)) across a whole plan branch in one pass —
+for the backlog that accumulated before runs started sweeping. It is **two
+buttons, not one**: **Preview** commits nothing and reports what the pass would
+take, and **Retire** stays disabled until a preview says there is something to
+take. Either way the row reports the same breakdown — how many rows can be or
+were retired out of how many examined, and how many were kept because something
+still references them, because they carry observed values, because they are
+documented, because they were edited by hand, or because they are excluded from
+scans.
+
+The route behind it is
+`POST /api/v1/projects/{slug}/danger/retire-unused-variables`, body
+`{"mode": "delete" | "exclude", "dry_run": true}`. `dry_run` defaults to `true`,
+so a call that omits it only reports; the response carries `scanned`,
+`retirable`, `retired` and the `kept_*` counters the row renders.
+`mode: "exclude"` tombstones instead of deleting — for a binding still live in
+the warehouse that a later run would otherwise mint again — and is not offered
+in the UI, which always deletes. The route honours `?branch=` and defaults to
+`main`, records `project.retire_unused_variables` in the audit log when it is
+not a dry run, and takes the strict owner gate: like the other owner-only
+administration routes it refuses an API key, so it needs an owner signed in
+through the browser.
 
 ### Plan history & revisions
 
@@ -784,7 +829,9 @@ columns that carried data but had no matching field in the plan — a real
 coverage gap worth fixing. It stays quiet about columns that were empty for
 those rows, and about reserved role columns (event type, time, version,
 platform, and any column an event-group rule matches on), which tripl already
-uses elsewhere and never expects to have a plan field. Repeated identical failures collapse into
+uses elsewhere and never expects to have a plan field. The same list reports
+variables the run retired — *Retired N unused variables no event refers to*,
+see [Variables](#variables) — and says nothing when there were none. Repeated identical failures collapse into
 a streak with an expander, and **Run again** retries the config without losing
 its history.
 
