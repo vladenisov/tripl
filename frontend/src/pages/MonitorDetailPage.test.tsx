@@ -208,6 +208,8 @@ describe('MonitorDetailPage', () => {
 
     renderDetail()
 
-    expect(await screen.findByText('Monitor unavailable')).toBeInTheDocument()
+    // "Rule", not "Monitor": the second noun for one object went with the
+    // standalone list it named (tripl-89ps).
+    expect(await screen.findByText('Rule unavailable')).toBeInTheDocument()
   })
 })

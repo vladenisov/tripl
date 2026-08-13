@@ -158,6 +158,13 @@ class ReleaseRegressionReport:
     comparison happens — fewer than two released active versions, and a baseline
     with no volume in the shared window — inherited that default and reported a
     clean bill of health for a comparison that was never made.
+
+    ``emerging_share`` is the value the verdict was actually decided on, which
+    when several scope partitions are judged together is the release-level
+    maximum rather than this partition's own score (see
+    :func:`detect_release_regressions_by_scope`). Reporting the partition's own
+    number next to a shared verdict would put ``comparable=False`` beside an
+    ``emerging_share`` under the bound and read as a broken gate.
     """
 
     results: list[ReleaseRegressionResult]
@@ -270,28 +277,47 @@ def emerging_share(
     return emerged
 
 
-def detect_release_regressions(
-    *,
+@dataclass(frozen=True)
+class _Aborted:
+    """No comparison was possible, and why.
+
+    Decided from release volumes alone, so every scope partition of the same
+    scan aborts identically: ``no_baseline`` and ``baseline_no_volume`` are the
+    two verdicts that never could disagree between passes.
+    """
+
+    reason: str
+    version: str | None = None
+    previous_version: str | None = None
+
+
+@dataclass(frozen=True)
+class _Comparison:
+    """Which two releases are being compared, over which window, against what
+    totals.
+
+    Every field here is derived from release volumes, never from scope counts,
+    so it is identical for every scope partition of the same scan. That is why
+    the partitions can only ever disagree about the composition statistic.
+    """
+
+    v_new: str
+    v_prev: str
+    window_from: datetime
+    window_to: datetime
+    total_new: int
+    total_prev: int
+    release_share: float
+
+
+def _select_comparison(
     release_total_by_bucket: Mapping[str, Mapping[datetime, int]],
     all_traffic_by_bucket: Mapping[datetime, int],
-    scope_counts: Mapping[str, Mapping[str, Mapping[datetime, int]]],
+    *,
     latest_bucket: datetime,
-    settings: RegressionSettings | None = None,
-) -> ReleaseRegressionReport:
-    """Detect per-scope regressions for the latest active release.
-
-    ``release_total_by_bucket``: per retained release, the per-bucket release
-    volume ``T(v, t)`` (project-wide, ``is_other`` excluded).
-    ``all_traffic_by_bucket``: total traffic per bucket including the "Other"
-    bucket — the denominator for the maturity share.
-    ``scope_counts``: per scope ref (event id or event type id), per retained
-    release, per-bucket count for that scope.
-
-    Returns a report rather than a bare list so a suppressed comparison stays
-    distinguishable from a clean one (see :class:`ReleaseRegressionReport`).
-    """
-    settings = settings or RegressionSettings()
-
+    settings: RegressionSettings,
+) -> _Comparison | _Aborted:
+    """Pick the subject/baseline pair and the window, or say why there is none."""
     activations = _active_releases(
         release_total_by_bucket,
         all_traffic_by_bucket,
@@ -308,7 +334,7 @@ def detect_release_regressions(
     # denominator is unchanged — only eligibility is filtered.
     candidates = released_versions(activations, prerelease_pattern=settings.prerelease_pattern)
     if len(candidates) < 2:
-        return ReleaseRegressionReport(results=[], comparable=False, reason=REASON_NO_BASELINE)
+        return _Aborted(REASON_NO_BASELINE)
 
     ordered = order_versions(candidates)
     v_new = ordered[-1]
@@ -326,31 +352,33 @@ def detect_release_regressions(
     total_new = _window_sum(release_total_by_bucket.get(v_new, {}), window_from, window_to)
     total_prev = _window_sum(release_total_by_bucket.get(v_prev, {}), window_from, window_to)
     if total_prev <= 0:
-        return ReleaseRegressionReport(
-            results=[],
-            comparable=False,
-            reason=REASON_BASELINE_NO_VOLUME,
-            version=v_new,
-            previous_version=v_prev,
-        )
+        return _Aborted(REASON_BASELINE_NO_VOLUME, version=v_new, previous_version=v_prev)
 
-    # Comparability gate: judge nothing until the two releases describe similar
-    # populations. See the note on DEFAULT_MAX_EMERGING_SHARE.
-    emerged = emerging_share(
-        scope_counts,
+    all_window = _window_sum(all_traffic_by_bucket, window_from, window_to)
+    return _Comparison(
         v_new=v_new,
         v_prev=v_prev,
         window_from=window_from,
         window_to=window_to,
         total_new=total_new,
         total_prev=total_prev,
-        min_scope_volume=settings.min_expected,
-        growth_slack=settings.growth_slack,
+        release_share=(total_new / all_window) if all_window > 0 else 0.0,
     )
-    comparable = emerged <= settings.max_emerging_share
 
-    all_window = _window_sum(all_traffic_by_bucket, window_from, window_to)
-    release_share = (total_new / all_window) if all_window > 0 else 0.0
+
+def _scope_results(
+    scope_counts: Mapping[str, Mapping[str, Mapping[datetime, int]]],
+    comparison: _Comparison,
+    *,
+    settings: RegressionSettings,
+) -> list[ReleaseRegressionResult]:
+    """Per-scope deficits for one partition, before the comparability gate."""
+    v_new = comparison.v_new
+    v_prev = comparison.v_prev
+    window_from = comparison.window_from
+    window_to = comparison.window_to
+    total_new = comparison.total_new
+    total_prev = comparison.total_prev
 
     results: list[ReleaseRegressionResult] = []
     for scope_ref, by_version in scope_counts.items():
@@ -420,22 +448,156 @@ def detect_release_regressions(
                 ratio=ratio,
                 share_prev=share_prev,
                 share_new=share_new,
-                release_share=release_share,
+                release_share=comparison.release_share,
                 window_from=window_from,
                 window_to=window_to,
             )
         )
-    if not comparable:
-        # Keep only what a mismatched population cannot manufacture. A release
-        # whose composition is incomparable still gets its silent events
-        # reported; see ReleaseRegressionReport.
-        results = [r for r in results if r.kind == KIND_MISSING]
+    return results
 
-    return ReleaseRegressionReport(
-        results=results,
-        comparable=comparable,
-        reason=REASON_COMPARABLE if comparable else REASON_POPULATION_MISMATCH,
-        emerging_share=emerged,
-        version=v_new,
-        previous_version=v_prev,
+
+def detect_release_regressions_by_scope(
+    *,
+    release_total_by_bucket: Mapping[str, Mapping[datetime, int]],
+    all_traffic_by_bucket: Mapping[datetime, int],
+    scope_counts_by_scope_type: Mapping[str, Mapping[str, Mapping[str, Mapping[datetime, int]]]],
+    latest_bucket: datetime,
+    settings: RegressionSettings | None = None,
+) -> dict[str, ReleaseRegressionReport]:
+    """Judge one release across several scope partitions under ONE verdict.
+
+    ``scope_counts_by_scope_type``: per scope type (event, event type), the
+    ``scope_counts`` mapping :func:`detect_release_regressions` takes. Returns a
+    report per scope type, keyed the same way and in the same order.
+
+    Whether two releases describe comparable populations is a property of the
+    RELEASE. The partitions are only different estimators of it, so they get one
+    verdict between them rather than one each (tripl-phpy). They can never
+    disagree about which release is judged or over what window — that is fixed
+    by :func:`_select_comparison` from release volumes alone — so the shared
+    verdict is exactly the comparability gate and nothing else.
+    """
+    settings = settings or RegressionSettings()
+
+    selection = _select_comparison(
+        release_total_by_bucket,
+        all_traffic_by_bucket,
+        latest_bucket=latest_bucket,
+        settings=settings,
     )
+    if isinstance(selection, _Aborted):
+        # A fresh list per report: ReleaseRegressionReport is frozen but its
+        # ``results`` is not, and one shared empty list would alias across scopes.
+        return {
+            scope_type: ReleaseRegressionReport(
+                results=[],
+                comparable=False,
+                reason=selection.reason,
+                version=selection.version,
+                previous_version=selection.previous_version,
+            )
+            for scope_type in scope_counts_by_scope_type
+        }
+
+    # Comparability gate: judge nothing until the two releases describe similar
+    # populations. See the note on DEFAULT_MAX_EMERGING_SHARE.
+    #
+    # The MAXIMUM across partitions is the combination, because a scope below
+    # ``min_scope_volume`` contributes 0 — absent evidence reads as "nothing
+    # emerged", so each partition can only ever UNDERSTATE emergence, and the
+    # sparser one understates it more. Deciding on the finest partition instead
+    # would therefore invert the gate exactly where the fine partition is too
+    # thin to measure: on a 2600-event catalog coarsened to 3 event types, a
+    # rollout pouring two thirds of its volume into onboarding scores 0.0000 at
+    # event scope — that volume is spread over 1000 events, none of them seen
+    # even 30 times in the window, so the statistic has no support at all —
+    # against 0.6667 at type scope. Letting the event verdict rule would hand
+    # the type pass a ``comparable=True`` it never earned and persist the
+    # windy-ios false alarm one partition up: a volume_drop on the steady-state
+    # type, observed 5600 against expected 23520, on a healthy app.
+    #
+    # Taking the max also makes an unmeasurable partition a non-participant for
+    # free: an empty one scores 0.0 and cannot move a max. There is no "fall
+    # back when the finest partition has nothing to say" case to get wrong.
+    #
+    # The cost is a false negative on ``volume_drop`` when only the fine
+    # partition sees emergence — an event renamed inside its own type looks like
+    # emergence at event scope and like nothing at type scope. That is the
+    # direction this model already prefers to be wrong in: ``missing`` rows
+    # survive suppression, and ``volume_drop`` is precisely what a mismatched
+    # population manufactures.
+    emerged = max(
+        (
+            emerging_share(
+                scope_counts,
+                v_new=selection.v_new,
+                v_prev=selection.v_prev,
+                window_from=selection.window_from,
+                window_to=selection.window_to,
+                total_new=selection.total_new,
+                total_prev=selection.total_prev,
+                min_scope_volume=settings.min_expected,
+                growth_slack=settings.growth_slack,
+            )
+            for scope_counts in scope_counts_by_scope_type.values()
+        ),
+        default=0.0,
+    )
+    comparable = emerged <= settings.max_emerging_share
+    reason = REASON_COMPARABLE if comparable else REASON_POPULATION_MISMATCH
+
+    reports: dict[str, ReleaseRegressionReport] = {}
+    for scope_type, scope_counts in scope_counts_by_scope_type.items():
+        results = _scope_results(scope_counts, selection, settings=settings)
+        if not comparable:
+            # Keep only what a mismatched population cannot manufacture. A
+            # release whose composition is incomparable still gets its silent
+            # events reported; see ReleaseRegressionReport.
+            results = [r for r in results if r.kind == KIND_MISSING]
+        reports[scope_type] = ReleaseRegressionReport(
+            results=results,
+            comparable=comparable,
+            reason=reason,
+            emerging_share=emerged,
+            version=selection.v_new,
+            previous_version=selection.v_prev,
+        )
+    return reports
+
+
+# Sentinel key for the single-partition entry point below. Never persisted: the
+# caller unwraps the one report before the scope type means anything.
+_SOLE_SCOPE = "_sole"
+
+
+def detect_release_regressions(
+    *,
+    release_total_by_bucket: Mapping[str, Mapping[datetime, int]],
+    all_traffic_by_bucket: Mapping[datetime, int],
+    scope_counts: Mapping[str, Mapping[str, Mapping[datetime, int]]],
+    latest_bucket: datetime,
+    settings: RegressionSettings | None = None,
+) -> ReleaseRegressionReport:
+    """Detect per-scope regressions for the latest active release.
+
+    ``release_total_by_bucket``: per retained release, the per-bucket release
+    volume ``T(v, t)`` (project-wide, ``is_other`` excluded).
+    ``all_traffic_by_bucket``: total traffic per bucket including the "Other"
+    bucket — the denominator for the maturity share.
+    ``scope_counts``: per scope ref (event id or event type id), per retained
+    release, per-bucket count for that scope.
+
+    Returns a report rather than a bare list so a suppressed comparison stays
+    distinguishable from a clean one (see :class:`ReleaseRegressionReport`).
+
+    Judges one partition in isolation. Callers persisting SEVERAL partitions of
+    the same release must use :func:`detect_release_regressions_by_scope`, which
+    holds them to a single comparability verdict.
+    """
+    return detect_release_regressions_by_scope(
+        release_total_by_bucket=release_total_by_bucket,
+        all_traffic_by_bucket=all_traffic_by_bucket,
+        scope_counts_by_scope_type={_SOLE_SCOPE: scope_counts},
+        latest_bucket=latest_bucket,
+        settings=settings,
+    )[_SOLE_SCOPE]

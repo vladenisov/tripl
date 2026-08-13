@@ -188,12 +188,32 @@ def _merge_existing_grouped_events(
     for identity, source in list(existing_by_identity.items()):
         if source.project_id != project_id or source.event_type_id != event_type_id:
             continue
+        if _is_archived(source):
+            # Archiving means "put it away". Grouping an archived row rewrites it
+            # and then DELETES it in ``_merge_event_into_group``, so a scan whose
+            # rules happen to match could destroy plan history the user chose to
+            # retire rather than drop (tripl-rsei).
+            continue
         values = _event_values_for_group_matching(source, field_name_by_id)
         match = apply_event_group_rules(identity, values, event_group_rules)
         if match.matched_rule_name is None:
             continue
 
         target = existing_by_identity.get(match.event_name)
+        if target is not None and _is_archived(target):
+            # The group event itself is archived. Merging into it would rewrite
+            # this source and then DELETE it, destroying a live row so that its
+            # volume could land on one the user has retired.
+            #
+            # Skipping does NOT leave the source's volume reported under the
+            # source: `_build_event_name_from_row` applies the same group rules
+            # at collection time, so incoming rows carry the GROUP name either
+            # way. What skipping buys is that the catalog row survives and the
+            # volume is accounted as archived-and-still-arriving (tripl-w3ms)
+            # rather than vanishing with a deleted row. Creating a second, live
+            # group event under that name is not an option either — it is the
+            # same identity as the archived one.
+            continue
         if target is None:
             target = _create_group_event_from_source(
                 session,
@@ -220,6 +240,11 @@ def _merge_existing_grouped_events(
         merged += 1
 
     return merged
+
+
+def _is_archived(event: Event) -> bool:
+    """Whether ``event`` is in the terminal, frozen archived state."""
+    return event.status == _ES.archived.value
 
 
 def _event_values_for_group_matching(

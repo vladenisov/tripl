@@ -20,7 +20,7 @@ from tripl.core.analyzers.release_regression import (
     RegressionSettings,
     ReleaseRegressionReport,
     ReleaseRegressionResult,
-    detect_release_regressions,
+    detect_release_regressions_by_scope,
 )
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
@@ -164,6 +164,11 @@ def _recalculate_release_regressions(
         tell "this release is fine" from "this release cannot be judged yet" if
         the affirmative is also on the record. Without a row the API cannot
         distinguish either from "detection has never run for this scan".
+
+        The per-scope rows deliberately carry the same verdict and the same
+        ``emerging_share``: comparability is a property of the release, and the
+        share stored is the value that decided it, not the score this partition
+        happened to contribute.
         """
         session.add(
             ReleaseComparability(
@@ -180,15 +185,21 @@ def _recalculate_release_regressions(
             )
         )
 
+    # Both partitions go into one call, which holds them to a single
+    # comparability verdict (tripl-phpy). Event types are a coarsening of
+    # events, so the two are estimates of the same population question on the
+    # same release; judging each on its own let one persist composition-
+    # normalized rows that the other had already ruled untrustworthy.
+    reports = detect_release_regressions_by_scope(
+        release_total_by_bucket=release_total_by_bucket,
+        all_traffic_by_bucket=all_traffic_by_bucket,
+        scope_counts_by_scope_type={SCOPE_EVENT: event_counts, SCOPE_EVENT_TYPE: type_counts},
+        latest_bucket=latest_bucket,
+        settings=settings,
+    )
+
     detected = 0
-    for scope_type, counts in ((SCOPE_EVENT, event_counts), (SCOPE_EVENT_TYPE, type_counts)):
-        report = detect_release_regressions(
-            release_total_by_bucket=release_total_by_bucket,
-            all_traffic_by_bucket=all_traffic_by_bucket,
-            scope_counts=counts,
-            latest_bucket=latest_bucket,
-            settings=settings,
-        )
+    for scope_type, report in reports.items():
         if not report.comparable:
             # Not a clean bill of health: either the release's population is not
             # yet comparable to the baseline's — so the composition-normalized
@@ -196,7 +207,8 @@ def _recalculate_release_regressions(
             # rather than writing nothing and leaving zero rows to be read as
             # "no regressions" (tripl-9y4l). ``report.results`` still holds any
             # silent-event rows, which no population difference explains — those
-            # are persisted.
+            # are persisted. The share logged is the release-level one both
+            # scopes were judged on, so the two lines agree by construction.
             logger.info(
                 "release regression comparison withheld: scan=%s scope=%s reason=%s %s vs %s "
                 "emerging_share=%.3f (bound %.3f); keeping %d missing-event row(s)",

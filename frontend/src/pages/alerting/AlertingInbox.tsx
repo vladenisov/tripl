@@ -90,7 +90,10 @@ interface AlertingInboxProps {
   // every card, ~3,000px from the row it was about.
   errorGroupId: string | null
   actionError: unknown
-  onGoToDestinations: () => void
+  // Where a reader with no rules is sent. Rules moved off the destination cards
+  // into their own section (tripl-89ps), so this points at Monitors — adding a
+  // channel is not what unblocks an empty inbox, adding a rule is.
+  onGoToMonitors: () => void
   focusDeliveryId?: string
   focusItemKey?: string
 }
@@ -120,7 +123,7 @@ export function AlertingInbox({
   pendingGroupId,
   errorGroupId,
   actionError,
-  onGoToDestinations,
+  onGoToMonitors,
   focusDeliveryId,
   focusItemKey,
 }: AlertingInboxProps) {
@@ -205,10 +208,10 @@ export function AlertingInbox({
             No rules yet, so nothing can raise an incident. Add one under{' '}
             <button
               type="button"
-              onClick={onGoToDestinations}
+              onClick={onGoToMonitors}
               className="underline underline-offset-2"
             >
-              Destinations &amp; rules
+              Monitors
             </button>
             .
           </p>

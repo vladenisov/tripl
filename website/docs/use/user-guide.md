@@ -105,10 +105,10 @@ Then a good order to look around:
 - **Plan → Events** — browse the catalog. Open an event to see its fields,
   values, tags, status, and recent change history.
 - **Observe → Live activity** — the health of the whole project at a glance.
-- **Observe → Monitors** — see which alert rules are firing and where they
-  route. Then open an event that is showing a signal and study its monitoring
-  detail: the volume chart, the forecast, the heatmap, and the breakdown of
-  what moved.
+- **Observe → Alerting → Monitors** — see which alert rules are firing and
+  where they route. Then open an event that is showing a signal and study its
+  monitoring detail: the volume chart, the forecast, the heatmap, and the
+  breakdown of what moved.
 - **Govern → Reconciliation** — see what is documented-but-dead and
   live-but-undocumented.
 
@@ -438,11 +438,12 @@ counts as "abnormal" in the project's monitoring settings.
 ## Alerting: get the right person notified
 
 A signal only helps if someone hears about it. Open **Observe → Alerting**. It is
-split into three tabs: **Inbox** (incidents to triage, and where an alert link
-lands you), **Destinations & rules** (where routing is configured — a rule
-belongs to the destination it sends to, so they share one tab), and **Delivery
-log** (every delivery, for checking whether a message physically went out). A project
-with nothing configured yet skips the tabs and shows a setup checklist instead.
+split into four tabs: **Inbox** (incidents to triage, and where an alert link
+lands you), **Monitors** (every rule with its live firing state — mute, replay,
+edit and delete live here), **Destinations** (the channels rules route to), and
+**Delivery log** (every delivery, for checking whether a message physically went
+out). A project with nothing configured yet skips the tabs and shows a setup
+checklist instead.
 
 ### 1. Add a destination
 

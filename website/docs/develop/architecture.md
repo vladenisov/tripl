@@ -75,6 +75,16 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
   runs `alembic upgrade head`) before the API starts serving requests, so the
   schema is current. The app process itself does not run migrations on startup;
   its lifespan only configures logging and asserts production readiness.
+- **Migrations are executed in CI, not just parsed.** The `migrations` job stands
+  up the same `pgvector/pgvector` image the Compose stack uses (the chain enables
+  `pg_trgm`, `unaccent` and `vector`, so a stock `postgres` image cannot run it)
+  and does a full round trip on an empty database: `upgrade head`, then
+  `downgrade base`, then `upgrade head` again, asserting after each leg that
+  Alembic is where it claims and that the downgrade left no table or enum type
+  behind. It runs on every push to `main`, on the release gate, and on pull
+  requests that touch `backend/alembic/`. A downgrade you cannot implement must
+  be a documented no-op, never a `raise` — a raising downgrade would make the
+  round trip unrunnable.
 - Health check: `GET /health`.
 
 ### Authentication & access

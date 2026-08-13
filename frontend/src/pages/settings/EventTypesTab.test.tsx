@@ -194,9 +194,17 @@ describe('FieldsEditor fields table', () => {
     // services/field_service._reject_if_a_scan_names_events_by refuses this
     // deletion; without an alert the row simply stays and nothing explains why,
     // which is how the guard would be invisible from the plan UI (tripl-3mmh).
+    // Wording copied from scan_config_lookup.name_format_conflict_detail, whole
+    // rather than abbreviated: *scan*, not "scan config", and both plurals
+    // spelled out (tripl-24i0). The backend owns that rule and
+    // test_name_format_conflict_vocabulary enforces it, so this fixture is a
+    // sample of what arrives rather than a second definition of it — which only
+    // holds if it is the actual sentence.
     const detail =
       "Cannot delete this field. The field 'order_id' is used by the event name " +
-      "format of 1 scan config(s): 'Old events (iOS)' ({order_id}). Edit the scan's " +
+      "format of 1 scan: 'Old events (iOS)' ({order_id}). Without it the scan " +
+      'cannot build an event name and every collection fails with ' +
+      "'the event name format references unknown keys'. Edit the scan's " +
       'Event name format so it no longer references this column, then delete the field.'
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ detail }), {
@@ -216,9 +224,11 @@ describe('FieldsEditor fields table', () => {
     fireEvent.click(screen.getAllByTitle('Delete field')[0])
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'is used by the event name format',
-    )
+    // The WHOLE detail, not a fragment of it: tripl-24i0 chose to render the
+    // shared 409 untouched rather than have this tab rewrite the backend's
+    // wording into the web UI's nouns. A partial match would still pass if
+    // someone added that rewriter and it silently stopped matching.
+    expect(await screen.findByRole('alert')).toHaveTextContent(detail)
   })
 })
 

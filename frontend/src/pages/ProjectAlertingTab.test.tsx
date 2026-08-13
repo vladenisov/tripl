@@ -188,7 +188,10 @@ function mockAlertingFetch(
  * No argument means no `?section=`, i.e. exactly what a bare link does — which
  * is what the guided-setup tests want to exercise.
  */
-function renderTab(section?: 'inbox' | 'destinations' | 'audit', role: Role = 'editor') {
+function renderTab(
+  section?: 'inbox' | 'monitors' | 'destinations' | 'audit',
+  role: Role = 'editor',
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const path = `/p/demo/settings/alerting${section ? `?section=${section}` : ''}`
   return render(
@@ -280,21 +283,23 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
     expect(screen.queryByText('Set up alerting')).toBeNull()
   })
 
-  it('offers the three sections once a destination and rule exist', async () => {
+  it('offers the four sections once a destination and rule exist', async () => {
     mockAlertingFetch([makeDestination({ rules: [makeRule()] })])
     renderTab('destinations')
 
     // Fully configured → the guided card gives way to the real page. It is no
     // longer one scroll holding everything: the sections are tabs, and this one
-    // shows routing.
-    expect(await screen.findByText('Routing rules')).toBeInTheDocument()
-    expect(screen.getByText('Signals route to destinations via rules.')).toBeInTheDocument()
+    // shows the channels.
+    expect(
+      await screen.findByText('Signals route to destinations via rules.'),
+    ).toBeInTheDocument()
     expect(screen.queryByText('Set up alerting')).toBeNull()
 
-    for (const name of ['Inbox', 'Destinations & rules', 'Delivery log']) {
+    // Monitors is the fourth, and it is where the rules went (tripl-89ps).
+    for (const name of ['Inbox', 'Monitors', 'Destinations', 'Delivery log']) {
       expect(screen.getByRole('tab', { name })).toBeInTheDocument()
     }
-    expect(screen.getByRole('tab', { name: 'Destinations & rules' })).toHaveAttribute(
+    expect(screen.getByRole('tab', { name: 'Destinations' })).toHaveAttribute(
       'aria-selected',
       'true',
     )
@@ -659,7 +664,8 @@ describe('ProjectAlertingTab — catalog metric scope (tripl-jfm3.108)', () => {
 
   it('seeds the Metrics box from the saved rule', async () => {
     mockWithRulePatches(makeRule({ include_metrics: true }))
-    renderTab('destinations')
+    // The rule form moved to the Monitors section with the rules (tripl-89ps).
+    renderTab('monitors')
 
     fireEvent.click(await screen.findByRole('button', { name: /Edit rule/ }))
 
@@ -668,7 +674,7 @@ describe('ProjectAlertingTab — catalog metric scope (tripl-jfm3.108)', () => {
 
   it('sends include_metrics when the box is ticked', async () => {
     const patches = mockWithRulePatches(makeRule({ include_metrics: false }))
-    renderTab('destinations')
+    renderTab('monitors')
 
     fireEvent.click(await screen.findByRole('button', { name: /Edit rule/ }))
     fireEvent.click(await screen.findByLabelText('Metrics'))
@@ -718,24 +724,28 @@ describe('ProjectAlertingTab — narrowing a rule to one scan', () => {
     return patches
   }
 
-  it('names the bound scan on the rule row, and says "all scans" when unbound', async () => {
+  it('names the bound scan in the rule settings, and says "all scans" when unbound', async () => {
     // Label and value are separate nodes since the run-on settings line was
     // split into labelled pairs (tripl-oxkt.18), so the scan is asserted by its
-    // value under the "Scan" label rather than as one "Scan: …" string.
+    // value under the "Scan" label rather than as one "Scan: …" string. The
+    // pairs now sit behind the row's expansion (tripl-89ps) — the list is for
+    // scanning state, the settings are one click under it.
     mockWithScans(makeRule({ scan_config_id: 'scan-ios' }))
-    const { unmount } = renderTab('destinations')
+    const { unmount } = renderTab('monitors')
+    fireEvent.click(await screen.findByRole('button', { name: /Show settings for/ }))
     expect(await screen.findByText('Old events (iOS)')).toBeInTheDocument()
     unmount()
 
     vi.restoreAllMocks()
     mockWithScans(makeRule({ scan_config_id: null }))
-    renderTab('destinations')
+    renderTab('monitors')
+    fireEvent.click(await screen.findByRole('button', { name: /Show settings for/ }))
     expect(await screen.findByText('all scans')).toBeInTheDocument()
   })
 
   it('seeds the Scan picker from the saved rule', async () => {
     mockWithScans(makeRule({ scan_config_id: 'scan-web' }))
-    renderTab('destinations')
+    renderTab('monitors')
 
     fireEvent.click(await screen.findByRole('button', { name: /Edit rule/ }))
 
@@ -746,7 +756,7 @@ describe('ProjectAlertingTab — narrowing a rule to one scan', () => {
     // The binding must survive a save that never touched it — otherwise editing
     // any other field would silently widen the rule back to the whole project.
     const patches = mockWithScans(makeRule({ scan_config_id: 'scan-ios', include_metrics: false }))
-    renderTab('destinations')
+    renderTab('monitors')
 
     fireEvent.click(await screen.findByRole('button', { name: /Edit rule/ }))
     fireEvent.click(await screen.findByLabelText('Metrics'))
@@ -760,7 +770,7 @@ describe('ProjectAlertingTab — narrowing a rule to one scan', () => {
     // Omitting the key would leave a previously bound rule bound: the API
     // distinguishes "not mentioned" from "widen me back to the project".
     const patches = mockWithScans(makeRule({ scan_config_id: null }))
-    renderTab('destinations')
+    renderTab('monitors')
 
     fireEvent.click(await screen.findByRole('button', { name: /Edit rule/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -901,34 +911,47 @@ describe('ProjectAlertingTab — viewer role (tripl-oxkt.9)', () => {
     expect(screen.queryByRole('button', { name: 'Add note' })).toBeNull()
   })
 
-  it('leaves Destinations & rules readable and unactionable', async () => {
+  it('leaves Destinations readable and unactionable', async () => {
     configured()
     renderTab('destinations', 'viewer')
 
-    expect(await screen.findByText('Routing rules')).toBeInTheDocument()
     // Configuration is still fully on screen — a viewer's job here is to check
-    // what is wired up, not to change it.
-    // Awaited, not read synchronously: "Routing rules" above is a static
-    // heading, so finding it proves nothing about the destinations query.
+    // what is wired up, not to change it. Awaited, not read synchronously: the
+    // section heading is static, so finding it proves nothing about the query.
     expect((await screen.findAllByText('Main Slack')).length).toBeGreaterThan(0)
-    expect(screen.getByText('Cooldown')).toBeInTheDocument()
 
     for (const name of [
       'Send a test message through Main Slack',
       'Edit destination Main Slack',
-      'Add Rule',
-      'Edit rule payment_failed spike',
-      'Delete rule payment_failed spike',
       'Delete destination',
     ]) {
       expect(screen.queryByRole('button', { name })).toBeNull()
     }
-    for (const name of ['Toggle Main Slack', 'Toggle payment_failed spike']) {
-      expect(screen.queryByRole('switch', { name })).toBeNull()
-    }
+    expect(screen.queryByRole('switch', { name: 'Toggle Main Slack' })).toBeNull()
     // The "add another channel" row goes with them: six buttons under an
     // invitation, all of which answer 403.
     expect(screen.queryByRole('button', { name: 'Telegram' })).toBeNull()
+  })
+
+  it('leaves Monitors readable and unactionable', async () => {
+    configured()
+    renderTab('monitors', 'viewer')
+
+    // The rules and their settings stay legible — including the labelled pairs
+    // behind the row expansion, which is not a write control.
+    expect(await screen.findByRole('link', { name: 'payment_failed spike' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Show settings for/ }))
+    expect(screen.getByText('Cooldown')).toBeInTheDocument()
+
+    for (const name of [
+      'Add rule',
+      'Edit rule payment_failed spike',
+      'Delete rule payment_failed spike',
+      'Mute payment_failed spike',
+    ]) {
+      expect(screen.queryByRole('button', { name })).toBeNull()
+    }
+    expect(screen.queryByRole('switch', { name: 'Toggle payment_failed spike' })).toBeNull()
   })
 
   it('leaves the delivery log readable and unretryable', async () => {
@@ -942,11 +965,16 @@ describe('ProjectAlertingTab — viewer role (tripl-oxkt.9)', () => {
 
   it('gives an editor every one of them back', async () => {
     configured()
-    renderTab('destinations', 'editor')
+    const { unmount } = renderTab('destinations', 'editor')
 
     expect(await screen.findByRole('button', { name: 'Edit destination Main Slack' })).toBeEnabled()
-    expect(screen.getByRole('switch', { name: 'Toggle payment_failed spike' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'Add Rule' })).toBeEnabled()
+    expect(screen.queryByText(/your account has the viewer role/i)).toBeNull()
+    unmount()
+
+    configured()
+    renderTab('monitors', 'editor')
+    expect(await screen.findByRole('switch', { name: 'Toggle payment_failed spike' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /Add rule/ })).toBeEnabled()
     expect(screen.queryByText(/your account has the viewer role/i)).toBeNull()
   })
 
@@ -1012,7 +1040,7 @@ describe('ProjectAlertingTab — a config write reaches the incident views (trip
    * further minute, and every button on them 404s. A client with the default
    * `staleTime: 0` would refetch on the way back regardless and prove nothing.
    */
-  function renderWithProductionCache(section: 'inbox' | 'destinations') {
+  function renderWithProductionCache(section: 'inbox' | 'monitors' | 'destinations') {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false, staleTime: 60_000 } },
     })
@@ -1069,7 +1097,8 @@ describe('ProjectAlertingTab — a config write reaches the incident views (trip
   it('refetches the delivery-history probe the moment a rule is deleted', async () => {
     const remove = vi.spyOn(alertingApi, 'deleteRule').mockResolvedValue(undefined)
     const { probeRequests } = mockCountedFetch()
-    renderWithProductionCache('destinations')
+    // Rules — and therefore the delete that starts this — live on Monitors now.
+    renderWithProductionCache('monitors')
 
     await waitFor(() => expect(probeRequests().length).toBeGreaterThan(0))
     const before = probeRequests().length
@@ -1089,7 +1118,7 @@ describe('ProjectAlertingTab — a config write reaches the incident views (trip
     await screen.findByText(/Showing 1 of 1/)
     const before = inboxRequests().length
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Destinations & rules' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Monitors' }))
     await deleteTheRule()
     fireEvent.click(screen.getByRole('tab', { name: 'Inbox' }))
 
@@ -1167,7 +1196,7 @@ describe('ProjectAlertingTab — guided setup lands step 2 on step 3 (tripl-oxkt
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
   }
 
-  it('switches to Destinations and opens the rule form on the new destination', async () => {
+  it('switches to Monitors and opens the rule form on the new destination', async () => {
     // Finishing step 2 used to flip `hasDestinations`, which took the checklist
     // off screen and dropped the reader on the default Inbox section reading
     // "No rules yet, so nothing can raise an incident" — with the destination
@@ -1182,9 +1211,15 @@ describe('ProjectAlertingTab — guided setup lands step 2 on step 3 (tripl-oxkt
     // aria-hidden: the tab strip is still THERE and still selected, it is just
     // not in the accessibility tree while a dialog is trapping focus.
     expect(
-      screen.getByRole('tab', { name: 'Destinations & rules', hidden: true }),
+      screen.getByRole('tab', { name: 'Monitors', hidden: true }),
     ).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByText('Ops Slack')).toBeInTheDocument()
+    // The new destination is the one the form is prefilled for — named on the
+    // picker the form grew when it left the destination card (tripl-89ps). The
+    // checklist promised "a rule prefilled on the new destination", and this is
+    // the field that now carries that promise.
+    expect(
+      screen.getByRole('combobox', { name: 'Destination', hidden: true }),
+    ).toHaveTextContent('Ops Slack')
   })
 
   it('does not re-open the form the reader closed, on this render or the next visit', async () => {
@@ -1202,10 +1237,11 @@ describe('ProjectAlertingTab — guided setup lands step 2 on step 3 (tripl-oxkt
     )
     expect(screen.queryByText('New Alert Rule')).toBeNull()
 
-    // The card unmounts with the section, so the instruction has to have been
-    // cleared on the page — a prop left set would open the form again here.
+    // The section unmounts when the reader leaves it, so the instruction has to
+    // have been cleared on the page — a prop left set would open the form again
+    // here.
     fireEvent.click(screen.getByRole('tab', { name: 'Inbox' }))
-    fireEvent.click(await screen.findByRole('tab', { name: 'Destinations & rules' }))
+    fireEvent.click(await screen.findByRole('tab', { name: 'Destinations' }))
 
     expect(await screen.findByText('Ops Slack')).toBeInTheDocument()
     expect(screen.queryByText('New Alert Rule')).toBeNull()
@@ -1221,14 +1257,15 @@ describe('ProjectAlertingTab — the tab strip honours the contract it declares 
     configured()
     renderTab('destinations')
 
-    const tab = await screen.findByRole('tab', { name: 'Destinations & rules' })
+    const tab = await screen.findByRole('tab', { name: 'Destinations' })
     const panel = screen.getByRole('tabpanel')
     expect(tab.id).toBeTruthy()
     expect(tab).toHaveAttribute('aria-controls', panel.id)
     expect(panel).toHaveAttribute('aria-labelledby', tab.id)
-    // The two unmounted sections must not claim a panel that is not in the
+    // The three unmounted sections must not claim a panel that is not in the
     // document — a dangling aria-controls is a broken reference, not a hint.
     expect(screen.getByRole('tab', { name: 'Inbox' })).not.toHaveAttribute('aria-controls')
+    expect(screen.getByRole('tab', { name: 'Monitors' })).not.toHaveAttribute('aria-controls')
   })
 
   it('keeps one Tab stop for the whole strip', async () => {
@@ -1236,7 +1273,7 @@ describe('ProjectAlertingTab — the tab strip honours the contract it declares 
     renderTab('inbox')
 
     expect(await screen.findByRole('tab', { name: 'Inbox' })).toHaveAttribute('tabindex', '0')
-    for (const name of ['Destinations & rules', 'Delivery log']) {
+    for (const name of ['Monitors', 'Destinations', 'Delivery log']) {
       expect(screen.getByRole('tab', { name })).toHaveAttribute('tabindex', '-1')
     }
   })
@@ -1249,13 +1286,13 @@ describe('ProjectAlertingTab — the tab strip honours the contract it declares 
     inbox.focus()
     fireEvent.keyDown(inbox, { key: 'ArrowRight' })
 
-    const destinations = screen.getByRole('tab', { name: 'Destinations & rules' })
-    expect(destinations).toHaveAttribute('aria-selected', 'true')
+    const monitors = screen.getByRole('tab', { name: 'Monitors' })
+    expect(monitors).toHaveAttribute('aria-selected', 'true')
     // Focus travels with the selection, or the next arrow press starts from the
     // button the reader left.
-    expect(destinations).toHaveFocus()
+    expect(monitors).toHaveFocus()
 
-    fireEvent.keyDown(destinations, { key: 'ArrowLeft' })
+    fireEvent.keyDown(monitors, { key: 'ArrowLeft' })
     expect(screen.getByRole('tab', { name: 'Inbox' })).toHaveAttribute('aria-selected', 'true')
 
     // The strip is a ring: left from the first lands on the last.
@@ -1267,7 +1304,7 @@ describe('ProjectAlertingTab — the tab strip honours the contract it declares 
     configured()
     renderTab('destinations')
 
-    const destinations = await screen.findByRole('tab', { name: 'Destinations & rules' })
+    const destinations = await screen.findByRole('tab', { name: 'Destinations' })
     fireEvent.keyDown(destinations, { key: 'End' })
 
     const audit = screen.getByRole('tab', { name: 'Delivery log' })

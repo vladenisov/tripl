@@ -719,7 +719,7 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=destinations']}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=monitors']}>
           <Routes>
             <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
@@ -729,7 +729,8 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Add Rule' }))
+    // The rule form moved to the Monitors section with the rules (tripl-89ps).
+    fireEvent.click(await screen.findByRole('button', { name: /Add rule/ }))
 
     const dialog = await screen.findByRole('dialog')
     const templateField = within(dialog)
@@ -813,7 +814,7 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=destinations']}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=monitors']}>
           <Routes>
             <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
@@ -823,8 +824,11 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    expect(await screen.findByText('Main Rule')).toBeInTheDocument()
-    // Each setting is a labelled pair now, not one run-on line (tripl-oxkt.18).
+    expect(await screen.findByRole('link', { name: 'Main Rule' })).toBeInTheDocument()
+    // Each setting is a labelled pair, not one run-on line (tripl-oxkt.18) —
+    // now behind the row's expansion, since the list leads with state
+    // (tripl-89ps).
+    fireEvent.click(screen.getByRole('button', { name: 'Show settings for Main Rule' }))
     expect(screen.getByText('total, groups, events')).toBeInTheDocument()
     expect(screen.getByText('up')).toBeInTheDocument()
     expect(screen.getByText('1d')).toBeInTheDocument()
@@ -923,10 +927,9 @@ describe('ProjectSettingsPage', () => {
       'aria-selected',
       'true',
     )
-    expect(screen.getByRole('tab', { name: 'Destinations & rules' })).toHaveAttribute(
-      'aria-selected',
-      'false',
-    )
+    for (const name of ['Monitors', 'Destinations', 'Delivery log']) {
+      expect(screen.getByRole('tab', { name })).toHaveAttribute('aria-selected', 'false')
+    }
   })
 
   it('expands alert delivery audit items', async () => {

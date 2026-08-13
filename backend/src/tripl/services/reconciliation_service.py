@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.coverage_metric import CoverageMetric
@@ -70,6 +70,36 @@ class DeadEventArchiveResponse(BaseModel):
     archived_count: int
 
 
+def _not_an_archived_identity(project_id: uuid.UUID) -> ColumnElement[bool]:
+    """Anti-join excluding candidates whose identity belongs to an archived event.
+
+    Archiving means "put it away", so the identity is in the plan and by
+    definition not an unmapped event. The collector stopped writing these
+    (tripl-w3ms), but rows written before that shipped would otherwise sit in the
+    inbox forever: accepting one only 409s on the duplicate source identity, so
+    there is no way for the user to clear it. Deliberately not branch-scoped —
+    this listing has no branch, and an event archived on any branch is still one
+    somebody chose to retire.
+    """
+    return ~(
+        select(Event.id)
+        .where(
+            Event.project_id == project_id,
+            Event.status == EventStatus.archived,
+            # `source_name or name`, matching how the collector builds the
+            # archived identity set (generation.py
+            # `_archived_identities_by_event_type`) and how `events_by_name` is
+            # keyed. A hand-created event has no source_name, so comparing the
+            # column alone silently failed to match exactly the rows a user is
+            # most likely to archive by hand: the two halves of one rule have to
+            # agree, or the inbox keeps showing a candidate the collector has
+            # already stopped writing.
+            func.coalesce(Event.source_name, Event.name) == ShadowEventCandidate.event_name,
+        )
+        .exists()
+    )
+
+
 async def list_shadow_events(
     session: AsyncSession,
     slug: str,
@@ -78,12 +108,13 @@ async def list_shadow_events(
     limit: int = 100,
 ) -> ShadowEventListResponse:
     project_id = await get_project_id_by_slug(session, slug)
+    not_archived = _not_an_archived_identity(project_id)
 
     query = (
         select(ShadowEventCandidate, ScanConfig.name, EventType.name)
         .join(ScanConfig, ScanConfig.id == ShadowEventCandidate.scan_config_id)
         .outerjoin(EventType, EventType.id == ShadowEventCandidate.event_type_id)
-        .where(ShadowEventCandidate.project_id == project_id)
+        .where(ShadowEventCandidate.project_id == project_id, not_archived)
         .order_by(ShadowEventCandidate.observed_count.desc())
         .limit(limit)
     )
@@ -95,6 +126,7 @@ async def list_shadow_events(
         await session.scalar(
             select(func.count(ShadowEventCandidate.id)).where(
                 ShadowEventCandidate.project_id == project_id,
+                not_archived,
                 *((ShadowEventCandidate.status == status,) if status else ()),
             )
         )
@@ -104,6 +136,7 @@ async def list_shadow_events(
             select(func.count(ShadowEventCandidate.id)).where(
                 ShadowEventCandidate.project_id == project_id,
                 ShadowEventCandidate.status == SHADOW_STATUS_NEW,
+                not_archived,
             )
         )
     ) or 0

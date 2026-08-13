@@ -98,7 +98,7 @@ function renderInbox(
           pendingGroupId={null}
           errorGroupId={null}
           actionError={null}
-          onGoToDestinations={vi.fn()}
+          onGoToMonitors={vi.fn()}
           {...overrides}
         />
       </MemoryRouter>

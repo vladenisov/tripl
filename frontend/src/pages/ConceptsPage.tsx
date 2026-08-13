@@ -123,13 +123,13 @@ const AREAS: readonly Area[] = [
       {
         term: 'Monitors',
         definition:
-          'Alert rules layered on top of detection: a monitor decides which signals matter for a scope and where they are routed. A project with no monitors still raises signals — it just does not notify anyone about them.',
-        path: '/monitors',
+          'Alert rules layered on top of detection: a monitor decides which signals matter for a scope and where they are routed, and carries its own live state — firing, warning or healthy. A project with no monitors still raises signals — it just does not notify anyone about them. "Monitor" and "alert rule" name the same object, and it lives on one screen: the Monitors tab of Alerting.',
+        path: '/settings/alerting?section=monitors',
       },
       {
         term: 'Alerting',
         definition:
-          'The destinations (Slack, Telegram, webhooks) where firing monitors send notifications, plus the rules for routing them.',
+          'Everything that turns a signal into a notification somebody owes an answer on: the incident Inbox, the rules that route, the destinations (Slack, Telegram, webhooks, email, Jira, Linear) they route to, and the delivery log behind them.',
         path: '/settings/alerting',
       },
     ],

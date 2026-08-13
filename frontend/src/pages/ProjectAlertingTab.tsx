@@ -40,6 +40,7 @@ import {
   type InboxStatusFilter,
 } from './alerting/AlertingInbox'
 import { DestinationsSection } from './alerting/DestinationsSection'
+import { MonitorsSection } from './alerting/MonitorsSection'
 import { CHANNEL_META } from './alerting/channelMeta'
 import { PageHead, Panel } from '@/components/settings/kit'
 import {
@@ -49,17 +50,25 @@ import {
 } from './alerting/constants'
 import { getErrorMessage } from '@/lib/utils'
 
-// The page does three unrelated jobs — configure routing, triage incidents,
-// audit delivery — and stacking them on one scroll made each of them harder to
-// find (tripl-er99). Rules are deliberately NOT a fourth section: a rule hangs
-// off `destination.rules` and its editor lives inside DestinationCard, so
-// "rules" has no existence apart from the destination that owns it.
-const ALERTING_SECTIONS = ['inbox', 'destinations', 'audit'] as const
+// The page does four jobs — triage incidents, tune what routes, configure the
+// channels it routes to, audit delivery — and stacking them on one scroll made
+// each of them harder to find (tripl-er99).
+//
+// Rules used to be deliberately NOT a section here, on the reasoning that a
+// rule hangs off `destination.rules` and has no existence apart from the
+// destination that owns it. That was wrong in one specific way: the fourth
+// section already existed, as a separate NAV ITEM called Monitors, rendering
+// the same AlertRule rows under a second noun with the live state this page
+// could not show. Reading a rule and editing it lived under different nav
+// items, which is how the two drifted about mute (tripl-oxkt.18). Merged in
+// tripl-89ps.
+const ALERTING_SECTIONS = ['inbox', 'monitors', 'destinations', 'audit'] as const
 type AlertingSection = (typeof ALERTING_SECTIONS)[number]
 
 const SECTION_LABELS: Record<AlertingSection, string> = {
   inbox: 'Inbox',
-  destinations: 'Destinations & rules',
+  monitors: 'Monitors',
+  destinations: 'Destinations',
   // "Delivery log", not "Audit": the sidebar already has an "Audit log" meaning
   // something else entirely (who changed what), and this list is the messages
   // behind the Inbox's incidents. The section KEY stays `audit` — every alert
@@ -211,16 +220,17 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   const { data: eventTypes = [] } = useQuery({
     queryKey: ['eventTypes', slug],
     queryFn: () => eventTypesApi.list(slug),
-    // Read only by the rule editor inside a destination card.
-    enabled: section === 'destinations',
+    // Read only by the rule editor's filter rows, which moved to Monitors with
+    // the rest of the rule form (tripl-89ps).
+    enabled: section === 'monitors',
   })
   const { data: scans = [], isSuccess: scansLoaded } = useQuery({
     queryKey: ['scans', slug],
     queryFn: () => scansApi.list(slug),
-    // Read by the rule editor inside a destination card and by the audit
-    // filter bar — and by nothing on the Inbox, which fired this request on
-    // every load and never looked at the answer (tripl-oxkt.20).
-    enabled: section === 'destinations' || section === 'audit',
+    // Read by the rule editor's scan binding and by the audit filter bar — and
+    // by nothing on the Inbox, which fired this request on every load and never
+    // looked at the answer (tripl-oxkt.20).
+    enabled: section === 'monitors' || section === 'audit',
   })
   // A `?scan=` naming a scan this project does not have (deleted since the link
   // was written, or hand-edited) reads as "All" rather than as a permanently
@@ -377,8 +387,10 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       // section reading "No rules yet, so nothing can raise an incident" — with
       // the destination they just made on a tab they were not on. The checklist
       // promises "a rule prefilled on the new destination", so open exactly that
-      // (tripl-oxkt.15).
-      selectSection('destinations')
+      // (tripl-oxkt.15). The section named here is the one that owns the rule
+      // form, which is Monitors since tripl-89ps — landing on Destinations would
+      // reproduce the original bug with a different tab.
+      selectSection('monitors')
       setAutoOpenRuleForDestinationId(created.id)
     },
   })
@@ -609,8 +621,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // blank slate even if its destinations/rules were later removed — keep the
   // normal view (with the Audit log) rather than collapsing to guided setup.
   const hasDeliveries = (everDelivered?.total ?? 0) > 0
-  // Before anything is configured, collapse the three empty boxes (routing
-  // rules, destinations, inbox) into one guided flow. The Inbox card also stays
+  // Before anything is configured, collapse the empty boxes (monitors,
+  // destinations, inbox) into one guided flow. The Inbox card also stays
   // hidden until a rule exists, so it never shows an empty group before the
   // first rule can produce one.
   //
@@ -649,8 +661,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       />
 
       {/* No tab strip while nothing is configured: with no destinations, no
-          rules and no deliveries, two of the three sections are empty by
-          construction, and offering them is three doors onto one room. */}
+          rules and no deliveries, every section but the checklist is empty by
+          construction, and offering them is four doors onto one room. */}
       {!showGuidedSetup && (
         <div
           className="flex flex-wrap items-center gap-1 border-b"
@@ -709,6 +721,27 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       {/* Each section body is the PANEL of the tab above it. `space-y-6` moves
           onto the wrapper because these children used to be direct children of
           the page's own stack (tripl-oxkt.19). */}
+      {section === 'monitors' && (
+        <div
+          className="space-y-6"
+          role="tabpanel"
+          id={panelId('monitors')}
+          aria-labelledby={tabId('monitors')}
+        >
+        <MonitorsSection
+          slug={slug}
+          destinations={destinations}
+          rules={allRules}
+          eventTypes={eventTypes}
+          scans={scans}
+          canWrite={canWrite}
+          autoOpenRuleForDestinationId={autoOpenRuleForDestinationId}
+          onAutoOpenRuleConsumed={() => setAutoOpenRuleForDestinationId(null)}
+          onGoToDestinations={() => selectSection('destinations')}
+        />
+        </div>
+      )}
+
       {section === 'destinations' && (
         <div
           className="space-y-6"
@@ -719,14 +752,10 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
         <DestinationsSection
           slug={slug}
           destinations={destinations}
-          eventTypes={eventTypes}
-          scans={scans}
           isDemo={isDemo}
           onCreateDestination={openCreate}
           onEditDestination={openEdit}
           onDeleteDestination={handleDeleteDestination}
-          autoOpenRuleForDestinationId={autoOpenRuleForDestinationId}
-          onAutoOpenRuleConsumed={() => setAutoOpenRuleForDestinationId(null)}
         />
         </div>
       )}
@@ -759,7 +788,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           pendingGroupId={actingGroupId}
           errorGroupId={failedGroupId}
           actionError={inboxActionMut.error}
-          onGoToDestinations={() => selectSection('destinations')}
+          onGoToMonitors={() => selectSection('monitors')}
           focusDeliveryId={focusDeliveryId}
           focusItemKey={focusItemKey}
         />
