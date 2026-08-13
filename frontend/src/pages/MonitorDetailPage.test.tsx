@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import MonitorDetailPage from './MonitorDetailPage'
+import { formatCooldown } from './alerting/constants'
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -27,7 +28,9 @@ const BASE_MONITOR = {
   notify_on_drop: false,
   min_percent_delta: 50,
   min_expected_count: 100,
-  cooldown_minutes: 60,
+  // 360 is the value from tripl-oxkt.18: the monitors side used to print it raw
+  // as "360m" while the alerting side already said "6h" for the same rule.
+  cooldown_minutes: 360,
   muted: false,
   muted_until: null,
   rule_enabled: true,
@@ -117,7 +120,7 @@ describe('MonitorDetailPage', () => {
     // Condition config
     expect(screen.getByText('Spike ▲')).toBeInTheDocument()
     expect(screen.getByText('≥ 50% change')).toBeInTheDocument()
-    expect(screen.getByText('60m between alerts')).toBeInTheDocument()
+    expect(screen.getByText('6h between alerts')).toBeInTheDocument()
     expect(screen.getByText('Project total')).toBeInTheDocument()
     // Routing destination + recency
     expect(screen.getByText('Main Slack')).toBeInTheDocument()
@@ -133,6 +136,39 @@ describe('MonitorDetailPage', () => {
       'href',
       '/p/demo/monitors',
     )
+  })
+
+  // Pins the unit agreement from tripl-oxkt.18: this page and the alerting
+  // destinations card described one rule's cooldown two different ways ("360m"
+  // vs "6h"). Asserting against `formatCooldown` itself — the helper the
+  // alerting side already renders — means the two screens cannot drift apart
+  // again without this failing.
+  // 90 stays in minutes because it is not a whole number of hours; 1 is the
+  // smallest cooldown the API accepts (`ge=1`), so 0 is unreachable here.
+  it.each([
+    [1, '1m'],
+    [30, '30m'],
+    [60, '1h'],
+    [90, '90m'],
+    [360, '6h'],
+    [1440, '1d'],
+  ])('renders a %i-minute cooldown as "%s between alerts"', async (minutes, expected) => {
+    expect(formatCooldown(minutes)).toBe(expected)
+    mockApi({ monitor: { ...BASE_MONITOR, cooldown_minutes: minutes } })
+
+    renderDetail()
+
+    await screen.findByRole('heading', { name: 'payment_failed spike' })
+    expect(screen.getByText(`${expected} between alerts`)).toBeInTheDocument()
+  })
+
+  it('never prints a raw minute count once the formatter has a coarser unit', async () => {
+    mockApi({ monitor: { ...BASE_MONITOR, cooldown_minutes: 360 } })
+
+    renderDetail()
+
+    await screen.findByRole('heading', { name: 'payment_failed spike' })
+    expect(screen.queryByText('360m between alerts')).toBeNull()
   })
 
   it('mutes the monitor for a preset duration', async () => {

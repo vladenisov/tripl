@@ -15,6 +15,7 @@ import {
   MONITOR_STATUS_TONE as STATUS_TONE,
 } from '@/lib/statusLexicon'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
+import { formatCooldown } from './alerting/constants'
 import type { MonitorSummaryItem } from '@/types'
 
 const MONITOR_GRID = 'grid grid-cols-[1.4fr_1.6fr_1fr_84px_84px] items-center gap-3 px-4'
@@ -212,7 +213,10 @@ function MonitorRow({ monitor, slug }: { monitor: MonitorSummaryItem; slug?: str
   const condition = [
     directions,
     monitor.min_percent_delta > 0 ? `≥${monitor.min_percent_delta}%` : null,
-    `cooldown ${monitor.cooldown_minutes}m`,
+    // Same shared formatter the alerting destinations card uses, so one rule
+    // reads as one duration on every screen instead of "360m" here and "6h"
+    // there (tripl-oxkt.18).
+    `cooldown ${formatCooldown(monitor.cooldown_minutes)}`,
   ]
     .filter(Boolean)
     .join(' · ')

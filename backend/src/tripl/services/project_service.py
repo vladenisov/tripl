@@ -36,7 +36,7 @@ from tripl.schemas.project import (
     ProjectSummary,
     ProjectUpdate,
 )
-from tripl.services import plan_branch_service
+from tripl.services import alerting_service, plan_branch_service
 from tripl.services.metrics_insights_service import (
     _count_active_metric_signals_by_project,
     is_significant_signal,
@@ -171,8 +171,32 @@ async def _get_project_summaries(
     await _populate_failing_scan_configs(session, summaries)
     await _populate_monitoring_signals(session, summaries)
     await _populate_firing_monitor_counts(session, summaries)
+    await _populate_open_incident_counts(session, summaries)
 
     return summaries
+
+
+async def _populate_open_incident_counts(
+    session: AsyncSession,
+    summaries: dict[uuid.UUID, ProjectSummary],
+) -> None:
+    """Stamp each summary with the inbox's OWN count of open incidents.
+
+    The sidebar badge next to "Alerting" showed the destination count, so it read
+    "Alerting 1" beside a page listing 52 open incidents (tripl-oxkt.16). The fix
+    is only worth anything if the number agrees with the page, so the counting is
+    not done here at all: ``alerting_service.count_open_incidents`` owns it, next
+    to the ``list_alert_inbox`` whose window, cap and lapsed-mute rule it has to
+    match. A copy of any of those rules on this side is exactly how the badge and
+    the page drift apart, and this module has no business reaching into the
+    inbox's private helpers or its models to keep one.
+    """
+    if not summaries:
+        return
+
+    counts = await alerting_service.count_open_incidents(session, list(summaries))
+    for project_id, count in counts.items():
+        summaries[project_id].open_incident_count = count
 
 
 async def _populate_failing_scan_configs(

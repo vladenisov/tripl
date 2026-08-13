@@ -1,10 +1,14 @@
 import { api } from './client'
 import type {
   AlertDeliveryDetail,
+  AlertInboxAction,
+  AlertInboxActionResponse,
   AlertInboxGroup,
   AlertInboxListResponse,
+  AlertInboxStatus,
   AlertDeliveryListResponse,
   AlertDestination,
+  AlertDestinationTestResponse,
   AlertRule,
   AlertRuleFilterPayload,
   AlertRuleSimulateResponse,
@@ -76,6 +80,17 @@ export const alertingApi = {
   deleteDestination: (slug: string, destinationId: string) =>
     api.del(`/projects/${slug}/alert-destinations/${destinationId}`),
 
+  /**
+   * Send a probe through this destination's real channel. Resolves 200 even
+   * when the channel refuses — inspect `ok`/`error` rather than catching, since
+   * a rejected token IS the answer the button was pressed for (tripl-oxkt.17).
+   */
+  testDestination: (slug: string, destinationId: string) =>
+    api.post<AlertDestinationTestResponse>(
+      `/projects/${slug}/alert-destinations/${destinationId}/test`,
+      undefined,
+    ),
+
   createRule: (
     slug: string,
     destinationId: string,
@@ -89,6 +104,9 @@ export const alertingApi = {
       include_distribution_drifts?: boolean
       include_release_regressions?: boolean
       include_variable_value_drifts?: boolean
+      // Accepted by the API and carried on AlertRule, but was missing from both
+      // payloads — a form could show the metric toggle and never save it.
+      include_metrics?: boolean
       notify_on_spike?: boolean
       notify_on_drop?: boolean
       ai_explanation_enabled?: boolean
@@ -117,6 +135,9 @@ export const alertingApi = {
       include_distribution_drifts?: boolean
       include_release_regressions?: boolean
       include_variable_value_drifts?: boolean
+      // Accepted by the API and carried on AlertRule, but was missing from both
+      // payloads — a form could show the metric toggle and never save it.
+      include_metrics?: boolean
       notify_on_spike?: boolean
       notify_on_drop?: boolean
       ai_explanation_enabled?: boolean
@@ -139,11 +160,30 @@ export const alertingApi = {
     destinationId: string,
     ruleId: string,
     days: number,
-    cooldownMinutesOverride?: number,
+    /**
+     * Thresholds to try WITHOUT saving them to the rule. Each omitted override
+     * falls back to the rule's stored value; the response echoes both as
+     * `*_used` / `*_saved` so the preview can be labelled honestly.
+     */
+    overrides?: {
+      cooldownMinutes?: number
+      minPercentDelta?: number
+      minExpectedCount?: number
+      sigmaThreshold?: number
+    },
   ) => {
     const params = new URLSearchParams({ days: String(days) })
-    if (cooldownMinutesOverride !== undefined) {
-      params.set('cooldown_minutes_override', String(cooldownMinutesOverride))
+    if (overrides?.cooldownMinutes !== undefined) {
+      params.set('cooldown_minutes_override', String(overrides.cooldownMinutes))
+    }
+    if (overrides?.minPercentDelta !== undefined) {
+      params.set('min_percent_delta_override', String(overrides.minPercentDelta))
+    }
+    if (overrides?.minExpectedCount !== undefined) {
+      params.set('min_expected_count_override', String(overrides.minExpectedCount))
+    }
+    if (overrides?.sigmaThreshold !== undefined) {
+      params.set('sigma_threshold_override', String(overrides.sigmaThreshold))
     }
     return api.post<AlertRuleSimulateResponse>(
       `/projects/${slug}/alert-destinations/${destinationId}/rules/${ruleId}/simulate?${params}`,
@@ -236,7 +276,10 @@ export const alertingApi = {
 
   listInbox: (
     slug: string,
-    params?: { status?: string; offset?: number; limit?: number },
+    // `status` is the union, not a bare string: the API 422s on anything else,
+    // and a filter chip typo should fail at build time rather than as an empty
+    // inbox nobody can explain.
+    params?: { status?: AlertInboxStatus; offset?: number; limit?: number },
   ) => {
     const sp = new URLSearchParams()
     if (params?.status) sp.set('status', params.status)
@@ -246,13 +289,25 @@ export const alertingApi = {
     return api.get<AlertInboxListResponse>(`/projects/${slug}/alert-inbox${qs ? `?${qs}` : ''}`)
   },
 
+  /**
+   * One incident by id, ignoring the 30-day window the list is scoped to. A
+   * deep link to an older incident used to land on an empty inbox because the
+   * only way to fetch a group was to find it in that page (tripl-oxkt.11).
+   */
+  getInboxGroup: (slug: string, correlationGroupId: string) =>
+    api.get<AlertInboxGroup>(`/projects/${slug}/alert-inbox/${correlationGroupId}`),
+
   applyInboxAction: (
     slug: string,
     correlationGroupId: string,
     data: {
-      action: 'acknowledge' | 'resolve' | 'mute' | 'reopen' | 'false_positive'
+      action: AlertInboxAction
       note?: string | null
       muted_until?: string | null
     },
-  ) => api.post<AlertInboxGroup>(`/projects/${slug}/alert-inbox/${correlationGroupId}/actions`, data),
+  ) =>
+    api.post<AlertInboxActionResponse>(
+      `/projects/${slug}/alert-inbox/${correlationGroupId}/actions`,
+      data,
+    ),
 }

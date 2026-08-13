@@ -16,7 +16,7 @@ import {
   Variable,
   type LucideIcon,
 } from 'lucide-react'
-import type { ProjectSummary } from '@/types'
+import type { ActivityItemType, ProjectSummary } from '@/types'
 
 /**
  * Shared navigation model for the job-based information architecture
@@ -60,9 +60,9 @@ export function formatCount(n: number): string {
  */
 export function buildNavGroups(slug: string, summary: ProjectSummary | undefined): NavGroup[] {
   const base = `/p/${slug}`
-  const destinations = summary?.alert_destination_count ?? 0
   const firingMonitors = summary?.firing_monitor_count ?? 0
   const openSignals = summary?.monitoring_signal_count ?? 0
+  const openIncidents = summary?.open_incident_count ?? 0
 
   return [
     {
@@ -191,7 +191,21 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           icon: Bell,
           href: `${base}/settings/alerting`,
           match: (p) => p.startsWith(`${base}/settings/alerting`),
-          count: destinations > 0 ? formatCount(destinations) : undefined,
+          // Badges the OPEN INCIDENT population (open_incident_count) — the
+          // backlog the inbox on that page owes an answer on — in a danger tone
+          // when any are open. It used to badge alert_destination_count, which
+          // is configuration, not work: the sidebar read "Alerting 1" (one
+          // telegram destination) directly under "Anomalies 68" while 52
+          // incidents sat open, so the one surface with a real queue looked like
+          // the quietest thing in the group (tripl-oxkt.16). That is the third
+          // badge-parity bug in this file after the two above, and it has the
+          // same cause every time: the badge was bound to whatever count the
+          // summary already happened to carry rather than to what the page
+          // counts. The backend computes open_incident_count over the same
+          // 30-day window and mute-expiry rules as list_alert_inbox precisely so
+          // the two cannot disagree. Omitted when the inbox is clear.
+          count: openIncidents > 0 ? formatCount(openIncidents) : undefined,
+          tone: openIncidents > 0 ? 'danger' : undefined,
         },
       ],
     },
@@ -251,4 +265,86 @@ export function resolveNavLocation(
     }
   }
   return null
+}
+
+/**
+ * Query params the alerting page reads to focus one delivery item and one
+ * incident. These are the same two anchors an alert MESSAGE carries —
+ * `ALERT_AUDIT_ITEM_PARAM` / `ALERT_INCIDENT_PARAM` in
+ * backend/src/tripl/worker/tasks/metrics/urls.py — so an in-app link and a link
+ * out of someone's telegram history land on exactly the same row and card.
+ * Names duplicated rather than imported because nothing generates them into the
+ * client; changing either side alone breaks every link already sent.
+ */
+export const ALERT_ITEM_PARAM = 'item'
+export const ALERT_INCIDENT_PARAM = 'incident'
+
+export interface AlertingPathAnchors {
+  /** Delivery to open: the second segment of /p/:slug/settings/:tab/:itemId. */
+  deliveryId?: string | null
+  /** `${scope_type}:${scope_ref}` — the one item inside that delivery. */
+  itemAnchor?: string | null
+  /** Incident (correlation group) whose card carries the triage actions. */
+  incidentId?: string | null
+}
+
+/**
+ * Build a link into the alerting page carrying whichever anchors the caller
+ * actually has. With none it is the plain page, which is what most call sites
+ * want; each anchor added narrows what the reader lands on.
+ *
+ * The anchors are percent-encoded by URLSearchParams where the backend builder
+ * keeps a literal `:` in the item value. That difference is invisible to the
+ * page: it reads both through `useSearchParams`, which decodes.
+ */
+export function getAlertingPath(slug: string, anchors: AlertingPathAnchors = {}): string {
+  const base = `/p/${slug}/settings/alerting`
+  const path = anchors.deliveryId ? `${base}/${anchors.deliveryId}` : base
+  const params = new URLSearchParams()
+  if (anchors.itemAnchor) params.set(ALERT_ITEM_PARAM, anchors.itemAnchor)
+  if (anchors.incidentId) params.set(ALERT_INCIDENT_PARAM, anchors.incidentId)
+  const query = params.toString()
+  return query ? `${path}?${query}` : path
+}
+
+// Activity feed ids are `<source>:<row id>`; alert rows are minted as
+// `alert-delivery:<delivery id>` by `_alert_delivery_items`
+// (backend/src/tripl/services/activity_service.py).
+const ACTIVITY_ALERT_DELIVERY_PREFIX = 'alert-delivery:'
+
+/** The fields {@link resolveActivityTargetPath} reads; `ActivityItem` satisfies
+ * it structurally. */
+export interface ActivityTargetInput {
+  id: string
+  type: ActivityItemType
+  project_slug: string
+  target_path: string | null
+}
+
+/**
+ * Where an activity row should actually go.
+ *
+ * The feed's alert rows arrive with `target_path` = the bare
+ * `/p/:slug/settings/alerting`, which drops the reader at the top of a page
+ * holding every delivery and every incident. That makes the in-app notification
+ * strictly worse than the telegram message the same delivery sent, which links
+ * to the exact row (tripl-oxkt.21). The delivery id was never lost — it is
+ * inside the row's own id — so rebuild the deep link here rather than land on
+ * the page index.
+ *
+ * The incident anchor is genuinely absent: `ActivityItemResponse` carries no
+ * correlation group, so a delivery-only link is the honest best. That is a
+ * shape the page already handles — it opens the audit section for a
+ * delivery-only link and the inbox for an incident one — and it is what alerts
+ * sent before incidents existed still carry.
+ *
+ * Anything that is not an alert row, or whose id is not shaped as expected,
+ * keeps the path the backend sent: guessing is how this defect started.
+ */
+export function resolveActivityTargetPath(item: ActivityTargetInput): string | null {
+  if (item.type !== 'alert') return item.target_path
+  if (!item.id.startsWith(ACTIVITY_ALERT_DELIVERY_PREFIX)) return item.target_path
+  const deliveryId = item.id.slice(ACTIVITY_ALERT_DELIVERY_PREFIX.length)
+  if (!deliveryId) return item.target_path
+  return getAlertingPath(item.project_slug, { deliveryId })
 }

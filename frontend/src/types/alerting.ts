@@ -1,3 +1,5 @@
+import type { MetricScopeType } from './metrics'
+
 // 'demo_sink' is the demo-only local sink: it renders + records deliveries with
 // no outbound network. It appears here so existing destinations/deliveries can
 // carry it, but is intentionally kept out of the user-selectable
@@ -44,6 +46,19 @@ export interface AlertRule {
   items_template: string | null
   message_format: AlertMessageFormat
   filters: AlertRuleFilter[]
+  // Manual snooze state, same shape as MonitorSummaryItem: `muted` is the
+  // effective flag, `muted_until` the timestamp it lifts at. Carried on the rule
+  // itself so the destinations list can show a snoozed rule without a second
+  // round-trip to /monitors-summary (tripl-oxkt.13).
+  muted: boolean
+  muted_until: string | null
+  // Fired-history counters: how often this rule has actually delivered, and how
+  // many incidents it carried. A rule with zero of both is configured but has
+  // never proven itself — worth saying out loud rather than leaving to guesswork.
+  total_deliveries: number
+  incident_count: number
+  last_delivery_at: string | null
+  last_delivery_status: AlertDeliveryStatus | null
   created_at: string
   updated_at: string
 }
@@ -89,14 +104,35 @@ export interface AlertDestination {
   linear_label_ids: string | null
   // True for a demo_sink: a local, non-sendable sink badged LOCAL SIMULATED.
   is_local: boolean
+  // Traffic this destination has actually carried. A configured destination that
+  // has delivered nothing looks identical to a working one in the form, which is
+  // the same blind spot the test-send probe closes (tripl-oxkt.17).
+  delivery_count: number
+  incident_count: number
   rules: AlertRule[]
   created_at: string
   updated_at: string
 }
 
+/**
+ * Result of a manual test send. A channel refusal is an ANSWER, not a server
+ * fault — a revoked Telegram token and a healthy one look identical in the
+ * destination form (tripl-oxkt.17) — so the route answers 200 with `ok: false`
+ * and the channel's own message rather than a 5xx the UI would render as
+ * "something went wrong on our side".
+ */
+export interface AlertDestinationTestResponse {
+  ok: boolean
+  error: string | null
+  sent_at: string | null
+}
+
 export interface SimulatedRuleFiring {
   anomaly_id: string
-  scope_type: 'project_total' | 'event_type' | 'event' | 'schema' | 'distribution'
+  // Was a five-member subset while the backend has been simulating metric,
+  // release_regression and variable_value_drift firings too — the narrowed union
+  // silently mis-typed the scopes it omitted. Mirror the enum instead.
+  scope_type: MetricScopeType
   scope_ref: string
   scope_name: string
   event_type_id: string | null
@@ -123,26 +159,31 @@ export interface AlertRuleSimulateResponse {
   matched_before_cooldown: number
   firings: SimulatedRuleFiring[]
   noisy: boolean
+  // Every tunable the simulation can override reports the same pair: `_used` is
+  // the value this run applied, `_saved` the value stored on the rule. Without
+  // both, a preview run and the rule's real behaviour are indistinguishable on
+  // screen and "what would happen if I raised the threshold" cannot be answered
+  // (tripl-oxkt.15). sigma has no rule-level column yet, hence nullable.
   cooldown_minutes_used: number
   cooldown_minutes_saved: number
+  min_percent_delta_used: number
+  min_percent_delta_saved: number
+  min_expected_count_used: number
+  min_expected_count_saved: number
+  sigma_threshold_used: number | null
+  sigma_threshold_saved: number | null
   rendered_message: string | null
 }
 
 export interface AlertDeliveryItem {
   id: string
   delivery_id: string
-  // `metric`, `release_regression` and `variable_value_drift` were missing
-  // here while the backend has been delivering them for releases — the audit
-  // table renders whatever arrives, so nothing crashed and nothing narrowed.
-  scope_type:
-    | 'project_total'
-    | 'event_type'
-    | 'event'
-    | 'metric'
-    | 'schema'
-    | 'distribution'
-    | 'release_regression'
-    | 'variable_value_drift'
+  // `metric`, `release_regression` and `variable_value_drift` were missing from
+  // the inline union that used to live here while the backend has been
+  // delivering them for releases — the audit table renders whatever arrives, so
+  // nothing crashed and nothing narrowed. Mirroring the enum keeps that from
+  // recurring the next time a scope kind is added.
+  scope_type: MetricScopeType
   scope_ref: string
   scope_name: string
   event_type_id: string | null
@@ -152,7 +193,12 @@ export interface AlertDeliveryItem {
   actual_count: number
   expected_count: number
   absolute_delta: number
-  percent_delta: number
+  // NULL when there was no baseline to divide by (tripl-l429.27) — the API has
+  // sent null since then while this said `number`. `formatPercentDelta` in
+  // lib/percentDelta already handles null; go through it rather than coercing to
+  // 0 and printing "0%", which reads as "nothing changed" for exactly the items
+  // that changed most.
+  percent_delta: number | null
   details_path: string | null
   monitoring_path: string | null
   drift_field: string | null
@@ -200,29 +246,95 @@ export type AlertInboxStatus =
   | 'muted'
   | 'false_positive'
 
+/**
+ * One rule that carried an incident: id AND name, together.
+ *
+ * Replaces the parallel `rule_ids` / `rule_names` arrays, which could not be
+ * zipped — `rule_ids` came back sorted by UUID and `rule_names` by name, so
+ * index *i* of one had nothing to do with index *i* of the other and the card
+ * linked "Volume rule" to whichever monitor happened to sort first. Two rules
+ * in one group can even share a name, so no client-side join could repair it
+ * either (tripl-oxkt.4). Link with `rules`; `rule_names` stays display text.
+ */
+export interface AlertInboxRuleRef {
+  id: string
+  name: string
+}
+
 export interface AlertInboxGroup {
   correlation_group_id: string
   status: AlertInboxStatus
+  // `muted` is the effective flag (true iff status === 'muted'); `muted_until`
+  // is null unless that mute is actually in force. The card used to derive
+  // "muted" from a `muted_until` that outlived the mute, so a reopened group
+  // kept rendering as snoozed (tripl-oxkt.9).
+  muted: boolean
   muted_until: string | null
   note: string | null
   false_positive_count: number
   item_count: number
   delivery_count: number
   latest_bucket: string
+  // Both ends of the incident's life. `first_delivery_at` is what "started 3
+  // days ago" is measured from — an incident with one timestamp cannot be told
+  // apart from one that has been firing all week.
+  first_delivery_at: string
   latest_delivery_at: string
-  direction: string
+  direction: 'spike' | 'drop'
+  // Size of the newest item, so the card can say what actually happened instead
+  // of only how many deliveries it took. percent_delta is NULL when
+  // expected_count is 0 — a zero baseline has no percentage; render "new" /
+  // "from nothing" there, never "0%". max_abs_percent_delta is the worst
+  // magnitude across the group and is null for the same reason.
+  actual_count: number
+  expected_count: number
+  percent_delta: number | null
+  max_abs_percent_delta: number | null
   // Routable identity of the newest item. `scope_names` is display text, so
-  // these are what the card links with.
-  scope_type: string
+  // these are what the card links with. `scope_types` is the distinct set of
+  // kinds in the group: a mixed incident cannot be described by the newest
+  // item's `scope_type` alone.
+  scope_type: MetricScopeType
+  scope_types: MetricScopeType[]
   scope_ref: string
   event_id: string | null
   scope_names: string[]
   destination_names: string[]
+  rules: AlertInboxRuleRef[]
   rule_names: string[]
   scan_names: string[]
   acted_at: string | null
   acted_by: string | null
+  // Resolved display name of `acted_by` (a user id). "Acknowledged by
+  // 3f2a…-c91b" told nobody anything.
+  acted_by_name: string | null
 }
+
+/**
+ * What an inbox action DID, not only what the group looks like afterwards.
+ *
+ * `overrides_written` is null for every action except `false_positive`, where
+ * it counts the scopes actually tightened. It is zero for release regressions,
+ * which the ratchet does not tune — the button promised a detection change it
+ * never made on 10 of 57 production groups (tripl-oxkt.6). Never guess this
+ * client-side from `scope_type`; that is only the newest item's.
+ */
+export interface AlertInboxActionResponse {
+  group: AlertInboxGroup
+  overrides_written: number | null
+}
+
+/**
+ * `note` records a comment on the incident and changes nothing else — it does
+ * not move `status` and does not stamp `acted_at`.
+ */
+export type AlertInboxAction =
+  | 'acknowledge'
+  | 'resolve'
+  | 'mute'
+  | 'reopen'
+  | 'false_positive'
+  | 'note'
 
 export interface AlertInboxListResponse {
   items: AlertInboxGroup[]

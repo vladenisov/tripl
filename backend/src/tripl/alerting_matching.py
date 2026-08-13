@@ -104,7 +104,22 @@ def filter_matches_anomaly(filter_row: AlertRuleFilter, anomaly: AlertMatchCandi
     return True
 
 
-def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
+def rule_matches_anomaly(
+    rule: AlertRule,
+    anomaly: AlertMatchCandidate,
+    *,
+    min_percent_delta_override: float | None = None,
+    min_expected_count_override: float | None = None,
+) -> bool:
+    """Would this rule deliver this signal?
+
+    The two overrides exist for the in-UI replay and are ``None`` on every live
+    path, which then reads the rule exactly as before. They are keyword-only and
+    named like ``simulate_rule_firings``' ``cooldown_minutes_override`` for the
+    same reason it exists: answering "would min_percent_delta 300 have cut these
+    incidents" must not require SAVING 300 onto a rule that is live-routing to a
+    real channel and waiting to find out (tripl-oxkt.17).
+    """
     # Scan gate. NULL on the rule means the whole project — the behaviour every
     # rule had before the column existed, so the migration is a no-op.
     #
@@ -157,8 +172,17 @@ def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
     }:
         return all(filter_matches_anomaly(filter_row, anomaly) for filter_row in rule.filters)
 
-    # Numeric thresholds.
-    if anomaly.expected_count < rule.min_expected_count:
+    # Numeric thresholds. The effective values, so a replay can ask a what-if
+    # without the rule being edited underneath a live channel.
+    min_expected_count = (
+        rule.min_expected_count
+        if min_expected_count_override is None
+        else min_expected_count_override
+    )
+    min_percent_delta = (
+        rule.min_percent_delta if min_percent_delta_override is None else min_percent_delta_override
+    )
+    if anomaly.expected_count < min_expected_count:
         return False
     absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
     if absolute_delta < rule.min_absolute_delta:
@@ -178,7 +202,7 @@ def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
     # observed 0.9 scores 350% today and would score 70% under a floor of one,
     # dropping below the very threshold this is about.
     if anomaly.expected_count > 0:
-        if absolute_delta / anomaly.expected_count * 100 < rule.min_percent_delta:
+        if absolute_delta / anomaly.expected_count * 100 < min_percent_delta:
             return False
     elif absolute_delta <= 0:
         # No baseline and no movement: nothing to report.
@@ -231,6 +255,8 @@ def simulate_rule_firings(
     anomalies: list[AlertMatchCandidate],
     *,
     cooldown_minutes_override: int | None = None,
+    min_percent_delta_override: float | None = None,
+    min_expected_count_override: float | None = None,
 ) -> list[AlertMatchCandidate]:
     """Replay anomalies through a rule with in-memory cooldown gating.
 
@@ -239,6 +265,11 @@ def simulate_rule_firings(
     live pipeline uses for AlertRuleState. When ``cooldown_minutes_override``
     is set, that value is used in place of ``rule.cooldown_minutes`` so the
     simulator can A/B different cooldowns without writing back to the rule.
+
+    The two threshold overrides do the same for the numeric gates, and are
+    forwarded whole to ``rule_matches_anomaly`` — the gate has to move INSIDE the
+    replay, not after it, because a signal the stricter rule would never have
+    matched must not consume the cooldown slot that then hides the next one.
     """
     effective_cooldown = (
         cooldown_minutes_override
@@ -251,7 +282,12 @@ def simulate_rule_firings(
     last_fired_at: dict[tuple[str, str], datetime] = {}
 
     for anomaly in sorted(anomalies, key=lambda a: a.bucket):
-        if not rule_matches_anomaly(rule, anomaly):
+        if not rule_matches_anomaly(
+            rule,
+            anomaly,
+            min_percent_delta_override=min_percent_delta_override,
+            min_expected_count_override=min_expected_count_override,
+        ):
             continue
         key = (anomaly.scope_type, anomaly.scope_ref)
         last = last_fired_at.get(key)

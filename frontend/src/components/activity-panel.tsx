@@ -17,6 +17,7 @@ import { activityApi } from '@/api/activity'
 import { Dot } from '@/components/primitives/dot'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import { formatRelativeTime } from '@/lib/datetime'
+import { resolveActivityTargetPath } from '@/lib/navigation'
 import { countOf } from '@/lib/plural'
 import type { ActivityItem, ActivityItemSeverity, ActivityItemType } from '@/types'
 
@@ -322,9 +323,18 @@ function ActivityRow({
     color: 'inherit',
   }
 
-  if (item.target_path) {
+  // Not `item.target_path` directly: the feed's alert rows arrive with the bare
+  // /p/:slug/settings/alerting, which drops the reader at the top of a page
+  // holding every delivery and every incident — strictly worse than the telegram
+  // message the same delivery sent, which links to the exact row.
+  // `resolveActivityTargetPath` rebuilds the deep link from the delivery id the
+  // row already carries in its own id, and returns `target_path` untouched for
+  // everything else (tripl-oxkt.21).
+  const targetPath = resolveActivityTargetPath(item)
+
+  if (targetPath) {
     return (
-      <Link to={item.target_path} className={ROW_CLASS} style={style}>
+      <Link to={targetPath} className={ROW_CLASS} style={style}>
         {content}
       </Link>
     )

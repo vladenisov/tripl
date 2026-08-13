@@ -87,7 +87,7 @@ synthetic source:
   webhook, email, Jira, or Linear from a **real** project instead. The local sink
   itself cannot fail, so the recipe seeds one **failed** earlier attempt at the
   same incident: the failed‑delivery state and the **Retry** action are reachable
-  from the delivery Audit table, and retrying it re‑dispatches down the normal
+  from the Delivery log table, and retrying it re‑dispatches down the normal
   path and succeeds.
 - **Implementation tickets and AI features** are surfaced with a clear next step
   rather than performing an external action.

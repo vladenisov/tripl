@@ -24,6 +24,7 @@ from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
+from tripl.models.user import User
 from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks import metrics
 from tripl.worker.tasks.alerts import check_deprecated_sunset_events
@@ -216,7 +217,10 @@ async def test_alert_inbox_false_positive_updates_state_and_thresholds(
     )
 
     assert action_resp.status_code == 200
-    assert action_resp.json()["status"] == "false_positive"
+    # The action reports what it DID alongside the group: two event_type rows
+    # collapse to one ratchetable scope, so exactly one override was written.
+    assert action_resp.json()["group"]["status"] == "false_positive"
+    assert action_resp.json()["overrides_written"] == 1
     async with TestSessionLocal() as session:
         state = await session.scalar(
             select(AlertCorrelationState).where(
@@ -5323,3 +5327,1947 @@ async def test_alert_inbox_rejects_unknown_status_instead_of_reporting_empty(
     other = await client.get(base, params={"status": "resolved"})
     assert other.status_code == 200
     assert other.json()["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Inbox as a triage surface (epic tripl-oxkt): the card has to say WHAT fired
+# and how big it was, an incident a human handled must stay reachable, and an
+# action must report what it actually did.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_inbox_fixture(
+    project_id: uuid.UUID,
+    *,
+    rule_names: tuple[str, ...] = ("Rule",),
+) -> tuple[uuid.UUID, list[uuid.UUID], uuid.UUID]:
+    """Insert the infra an inbox group hangs off.
+
+    Returns ``(scan_config_id, rule_ids, destination_id)``.
+    """
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            name="Inbox DS",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        session.add(data_source)
+        await session.flush()
+        scan_config = ScanConfig(
+            project_id=project_id,
+            data_source_id=data_source.id,
+            name="Inbox Scan",
+            base_query="SELECT * FROM events",
+            time_column="time",
+            interval="1h",
+            sigma_threshold=3.0,
+            min_expected_count=10,
+        )
+        destination = AlertDestination(
+            project_id=project_id,
+            type="slack",
+            name="Inbox Slack",
+            enabled=True,
+            webhook_url_encrypted="secret",
+        )
+        settings = ProjectAnomalySettings(
+            project_id=project_id,
+            anomaly_detection_enabled=True,
+            sigma_threshold=3.0,
+            min_expected_count=10,
+        )
+        session.add_all([scan_config, destination, settings])
+        await session.flush()
+        rules = [
+            AlertRule(destination_id=destination.id, name=name, enabled=True) for name in rule_names
+        ]
+        session.add_all(rules)
+        await session.commit()
+        return scan_config.id, [rule.id for rule in rules], destination.id
+
+
+async def _seed_inbox_delivery(
+    project_id: uuid.UUID,
+    *,
+    scan_config_id: uuid.UUID,
+    destination_id: uuid.UUID,
+    rule_id: uuid.UUID,
+    created_at: datetime,
+    items: list[dict[str, object]],
+) -> uuid.UUID:
+    """Insert one delivery with its items. ``created_at`` is set explicitly so a
+    test can place a group inside or outside the inbox's lookback window."""
+    async with TestSessionLocal() as session:
+        delivery = AlertDelivery(
+            project_id=project_id,
+            scan_config_id=scan_config_id,
+            destination_id=destination_id,
+            rule_id=rule_id,
+            status="sent",
+            channel="slack",
+            matched_count=len(items),
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        session.add(delivery)
+        await session.flush()
+        for item in items:
+            session.add(AlertDeliveryItem(delivery_id=delivery.id, **item))
+        await session.commit()
+        return delivery.id
+
+
+def _drop_tz(value: datetime) -> datetime:
+    """Compare timestamps regardless of tzinfo.
+
+    ``TimestampMixin`` uses a plain ``DateTime(timezone=True)`` and SQLite hands
+    those back NAIVE, so a seeded aware timestamp and the one the API echoes back
+    after the round trip cannot be compared directly. Everything is UTC.
+    """
+    return value.replace(tzinfo=None)
+
+
+def _inbox_item(
+    *,
+    scope_type: str,
+    bucket: datetime,
+    percent_delta: float,
+    correlation_group_id: uuid.UUID,
+    actual_count: float = 20,
+    expected_count: float = 10,
+) -> dict[str, object]:
+    return {
+        "scope_type": scope_type,
+        "scope_ref": str(uuid.uuid4()),
+        "scope_name": f"{scope_type} scope",
+        "bucket": bucket,
+        "direction": "spike" if percent_delta >= 0 else "drop",
+        "actual_count": actual_count,
+        "expected_count": expected_count,
+        "absolute_delta": actual_count - expected_count,
+        "percent_delta": percent_delta,
+        "correlation_group_id": correlation_group_id,
+    }
+
+
+@pytest.mark.asyncio
+async def test_inbox_group_reports_magnitude_scope_types_and_rules(client: AsyncClient) -> None:
+    """Two firings of one scope were near-identical cards: status, item count and
+    names, but never what fired or how big it was (tripl-oxkt.4)."""
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Inbox Magnitude", "slug": "inbox-magnitude", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(
+        project_id, rule_names=("Volume rule", "Release rule")
+    )
+    group_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    first_at = now - timedelta(days=3)
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=first_at,
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=now - timedelta(days=3),
+                percent_delta=120.0,
+                correlation_group_id=group_id,
+            )
+        ],
+    )
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[1],
+        created_at=now - timedelta(hours=1),
+        items=[
+            _inbox_item(
+                scope_type="release_regression",
+                bucket=now - timedelta(hours=1),
+                percent_delta=-42.5,
+                actual_count=3,
+                expected_count=8,
+                correlation_group_id=group_id,
+            )
+        ],
+    )
+
+    resp = await client.get("/api/v1/projects/inbox-magnitude/alert-inbox")
+    assert resp.status_code == 200
+    group = resp.json()["items"][0]
+
+    # Magnitude of the NEWEST item, so the card reports the firing it headlines.
+    assert group["actual_count"] == 3
+    assert group["expected_count"] == 8
+    assert group["percent_delta"] == -42.5
+    # ...while the worst deviation anywhere in the group survives for ordering.
+    assert group["max_abs_percent_delta"] == 120.0
+    # `scope_type` alone cannot label a group that mixes types.
+    assert group["scope_type"] == "release_regression"
+    assert group["scope_types"] == ["event", "release_regression"]
+    # Rule id and rule name travel as ONE pair, sorted by name: the parallel
+    # arrays sorted by different keys could not be zipped, so the card linked a
+    # name to whichever monitor happened to sort first.
+    assert group["rules"] == [
+        {"id": str(rule_ids[1]), "name": "Release rule"},
+        {"id": str(rule_ids[0]), "name": "Volume rule"},
+    ]
+    assert group["rule_names"] == ["Release rule", "Volume rule"]
+    assert "rule_ids" not in group
+    # How long this has been going, not just when it last spoke.
+    assert _drop_tz(datetime.fromisoformat(group["first_delivery_at"])) == _drop_tz(first_at)
+    assert _drop_tz(datetime.fromisoformat(group["latest_delivery_at"])) > _drop_tz(first_at)
+    # Nobody has acted, so there is no name to show.
+    assert group["acted_by_name"] is None
+
+
+@pytest.mark.asyncio
+async def test_lapsed_mute_stops_reporting_muted_until(client: AsyncClient) -> None:
+    """A mute that has expired reported status `open` AND `muted_until` in the
+    past, so the card rendered two contradictory claims (tripl-oxkt.20)."""
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Lapsed Mute", "slug": "lapsed-mute", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    group_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=now - timedelta(hours=2),
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=now - timedelta(hours=2),
+                percent_delta=90.0,
+                correlation_group_id=group_id,
+            )
+        ],
+    )
+
+    # Mute already lifted.
+    async with TestSessionLocal() as session:
+        session.add(
+            AlertCorrelationState(
+                project_id=project_id,
+                correlation_group_id=group_id,
+                status="muted",
+                muted_until=now - timedelta(days=1),
+            )
+        )
+        await session.commit()
+
+    resp = await client.get("/api/v1/projects/lapsed-mute/alert-inbox")
+    assert resp.status_code == 200
+    group = resp.json()["items"][0]
+    assert group["status"] == "open"
+    assert group["muted_until"] is None
+
+    # A mute still in force keeps reporting when it lifts.
+    async with TestSessionLocal() as session:
+        state = await session.scalar(
+            select(AlertCorrelationState).where(
+                AlertCorrelationState.correlation_group_id == group_id
+            )
+        )
+        assert state is not None
+        state.muted_until = now + timedelta(days=1)
+        await session.commit()
+
+    resp = await client.get("/api/v1/projects/lapsed-mute/alert-inbox")
+    group = resp.json()["items"][0]
+    assert group["status"] == "muted"
+    assert group["muted_until"] is not None
+
+
+@pytest.mark.asyncio
+async def test_handled_group_never_outranks_an_untouched_open_one(client: AsyncClient) -> None:
+    """Open work sorts above handled work, full stop.
+
+    Ranking on "newest of last-spoke and last-acted-on" stamped `acted_at` for
+    acknowledge, resolve, mute, reopen and false_positive alike, so the last N
+    incidents a human TRIAGED took the top N ranks and pushed every untouched one
+    off page one — a worse failure than the sinking it was meant to fix, and it
+    did not fix that either (a mute freezes the key just the same, minutes later)
+    — tripl-oxkt.2.
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Handled Sort", "slug": "handled-sort", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    now = datetime.now(UTC)
+    handled_group = uuid.uuid4()
+    fresh_group = uuid.uuid4()
+
+    async def seed(group_id: uuid.UUID, created_at: datetime) -> None:
+        await _seed_inbox_delivery(
+            project_id,
+            scan_config_id=scan_config_id,
+            destination_id=destination_id,
+            rule_id=rule_ids[0],
+            created_at=created_at,
+            items=[
+                _inbox_item(
+                    scope_type="event",
+                    bucket=created_at,
+                    percent_delta=100.0,
+                    correlation_group_id=group_id,
+                )
+            ],
+        )
+
+    # The one a human will handle is the NEWER of the two, so activity alone
+    # would put it on top after the action.
+    await seed(fresh_group, now - timedelta(days=5))
+    await seed(handled_group, now - timedelta(minutes=5))
+
+    # Before anyone acts, the newest delivery leads.
+    resp = await client.get("/api/v1/projects/handled-sort/alert-inbox")
+    assert [item["correlation_group_id"] for item in resp.json()["items"]] == [
+        str(handled_group),
+        str(fresh_group),
+    ]
+
+    resolve_resp = await client.post(
+        f"/api/v1/projects/handled-sort/alert-inbox/{handled_group}/actions",
+        json={"action": "resolve"},
+    )
+    assert resolve_resp.status_code == 200
+
+    # (a) A resolved group must NOT outrank an untouched open one, however much
+    # more recently it spoke or was acted on.
+    resp = await client.get("/api/v1/projects/handled-sort/alert-inbox")
+    assert [item["correlation_group_id"] for item in resp.json()["items"]] == [
+        str(fresh_group),
+        str(handled_group),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_muted_group_stays_findable_behind_the_status_filter(client: AsyncClient) -> None:
+    """Reaching a muted incident is the status filter's job, not the sort's.
+
+    A muted group is suppressed, so it records no further deliveries and its
+    activity key is frozen: no ordering rule can keep it on page one while open
+    incidents keep firing. Sinking it is therefore expected — what must NOT
+    happen is it becoming unreachable (tripl-oxkt.1/.2).
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Muted Reach", "slug": "muted-reach", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    now = datetime.now(UTC)
+    muted_group = uuid.uuid4()
+
+    async def seed(group_id: uuid.UUID, created_at: datetime) -> None:
+        await _seed_inbox_delivery(
+            project_id,
+            scan_config_id=scan_config_id,
+            destination_id=destination_id,
+            rule_id=rule_ids[0],
+            created_at=created_at,
+            items=[
+                _inbox_item(
+                    scope_type="event",
+                    bucket=created_at,
+                    percent_delta=100.0,
+                    correlation_group_id=group_id,
+                )
+            ],
+        )
+
+    await seed(muted_group, now - timedelta(hours=6))
+    mute_resp = await client.post(
+        f"/api/v1/projects/muted-reach/alert-inbox/{muted_group}/actions",
+        json={"action": "mute", "muted_until": (now + timedelta(days=7)).isoformat()},
+    )
+    assert mute_resp.status_code == 200
+    # The mute is IN FORCE, so both readings of "is it muted?" agree.
+    assert mute_resp.json()["group"]["status"] == "muted"
+    assert mute_resp.json()["group"]["muted"] is True
+    assert mute_resp.json()["group"]["muted_until"] is not None
+
+    # Five newer incidents across distinct groups bury it in the default view.
+    for index in range(5):
+        await seed(uuid.uuid4(), now - timedelta(minutes=index + 1))
+
+    default_view = await client.get("/api/v1/projects/muted-reach/alert-inbox")
+    listed = [item["correlation_group_id"] for item in default_view.json()["items"]]
+    assert listed[-1] == str(muted_group)
+
+    # (b) ...and the status filter still hands it straight back.
+    filtered = await client.get(
+        "/api/v1/projects/muted-reach/alert-inbox", params={"status": "muted"}
+    )
+    assert filtered.status_code == 200
+    assert [item["correlation_group_id"] for item in filtered.json()["items"]] == [str(muted_group)]
+
+
+@pytest.mark.asyncio
+async def test_false_positive_reports_how_many_scopes_it_tightened(client: AsyncClient) -> None:
+    """`release_regression` is not in RATCHETABLE_SCOPE_TYPES, so the button
+    wrote nothing on 10 of 57 production groups while promising a permanent
+    detection change (tripl-oxkt.6). The count says which happened."""
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Override Count", "slug": "override-count", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    now = datetime.now(UTC)
+    regression_group = uuid.uuid4()
+    event_group = uuid.uuid4()
+    for group_id, scope_type in ((regression_group, "release_regression"), (event_group, "event")):
+        await _seed_inbox_delivery(
+            project_id,
+            scan_config_id=scan_config_id,
+            destination_id=destination_id,
+            rule_id=rule_ids[0],
+            created_at=now - timedelta(hours=1),
+            items=[
+                _inbox_item(
+                    scope_type=scope_type,
+                    bucket=now - timedelta(hours=1),
+                    percent_delta=100.0,
+                    correlation_group_id=group_id,
+                )
+            ],
+        )
+
+    regression_resp = await client.post(
+        f"/api/v1/projects/override-count/alert-inbox/{regression_group}/actions",
+        json={"action": "false_positive"},
+    )
+    assert regression_resp.status_code == 200
+    # The incident is still dismissed — only the ratchet is a no-op.
+    assert regression_resp.json()["group"]["status"] == "false_positive"
+    assert regression_resp.json()["overrides_written"] == 0
+
+    event_resp = await client.post(
+        f"/api/v1/projects/override-count/alert-inbox/{event_group}/actions",
+        json={"action": "false_positive"},
+    )
+    assert event_resp.status_code == 200
+    assert event_resp.json()["overrides_written"] == 1
+
+    async with TestSessionLocal() as session:
+        overrides = list(
+            (
+                await session.execute(
+                    select(AnomalyScopeOverride).where(
+                        AnomalyScopeOverride.project_id == project_id
+                    )
+                )
+            ).scalars()
+        )
+        assert [override.scope_type for override in overrides] == ["event"]
+
+
+@pytest.mark.asyncio
+async def test_note_action_records_the_note_and_nothing_else(client: AsyncClient) -> None:
+    """Documenting an incident used to require taking an action, and the stamp at
+    the end of apply_alert_inbox_action was unconditional — so a note-only save
+    forged the "already handled by X" line the card derives from acted_at
+    (tripl-oxkt.20)."""
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Note Only", "slug": "note-only", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    group_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=now - timedelta(hours=1),
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=now - timedelta(hours=1),
+                percent_delta=100.0,
+                correlation_group_id=group_id,
+            )
+        ],
+    )
+
+    # A note on a never-touched incident leaves it open and unstamped.
+    note_resp = await client.post(
+        f"/api/v1/projects/note-only/alert-inbox/{group_id}/actions",
+        json={"action": "note", "note": "Watching the rollout"},
+    )
+    assert note_resp.status_code == 200
+    group = note_resp.json()["group"]
+    assert group["status"] == "open"
+    assert group["note"] == "Watching the rollout"
+    assert group["acted_at"] is None
+    assert group["acted_by"] is None
+    assert group["acted_by_name"] is None
+    # `None`, not 0: a note cannot tighten anything, and reporting 0 let the UI
+    # render "no scopes tightened" — a detection verdict — after an action that
+    # never went near detection.
+    assert note_resp.json()["overrides_written"] is None
+
+    # A real decision stamps it, and names the human who took it.
+    ack_resp = await client.post(
+        f"/api/v1/projects/note-only/alert-inbox/{group_id}/actions",
+        json={"action": "acknowledge"},
+    )
+    assert ack_resp.status_code == 200
+    assert ack_resp.json()["group"]["acted_by_name"] == "Test User"
+    acted_at = ack_resp.json()["group"]["acted_at"]
+    assert acted_at is not None
+
+    # A later note replaces the text without re-stamping the decision.
+    second_note = await client.post(
+        f"/api/v1/projects/note-only/alert-inbox/{group_id}/actions",
+        json={"action": "note", "note": "Still watching"},
+    )
+    assert second_note.status_code == 200
+    assert second_note.json()["group"]["status"] == "acknowledged"
+    assert second_note.json()["group"]["note"] == "Still watching"
+    assert _drop_tz(datetime.fromisoformat(second_note.json()["group"]["acted_at"])) == _drop_tz(
+        datetime.fromisoformat(acted_at)
+    )
+
+
+@pytest.mark.asyncio
+async def test_inbox_group_route_resolves_a_group_outside_the_lookback_window(
+    client: AsyncClient,
+) -> None:
+    """An alert message deep-links its incident and the reader opens it late, so
+    this route must ignore INBOX_LOOKBACK_DAYS — the links that most need to land
+    are the old ones (tripl-oxkt.7)."""
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Deep Link", "slug": "deep-link", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    group_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    aged_at = now - timedelta(days=60)
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=aged_at,
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=aged_at,
+                percent_delta=100.0,
+                correlation_group_id=group_id,
+            )
+        ],
+    )
+
+    # The list window has long since dropped it.
+    listed = await client.get("/api/v1/projects/deep-link/alert-inbox")
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 0
+
+    resolved = await client.get(f"/api/v1/projects/deep-link/alert-inbox/{group_id}")
+    assert resolved.status_code == 200
+    group = resolved.json()
+    assert group["correlation_group_id"] == str(group_id)
+    assert group["status"] == "open"
+    assert group["item_count"] == 1
+    assert group["percent_delta"] == 100.0
+
+    unknown = await client.get(f"/api/v1/projects/deep-link/alert-inbox/{uuid.uuid4()}")
+    assert unknown.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_inbox_action_succeeds_on_a_group_outside_the_lookback_window(
+    client: AsyncClient,
+) -> None:
+    """The action committed and THEN rebuilt the whole inbox to find the group it
+    had just written, so an aged incident 404'd after a successful write and the
+    UI reported an error for a change that landed (tripl-oxkt.20)."""
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Aged Action", "slug": "aged-action", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    group_id = uuid.uuid4()
+    aged_at = datetime.now(UTC) - timedelta(days=45)
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=aged_at,
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=aged_at,
+                percent_delta=100.0,
+                correlation_group_id=group_id,
+            )
+        ],
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/aged-action/alert-inbox/{group_id}/actions",
+        json={"action": "resolve", "note": "Fixed in the next release"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["group"]["status"] == "resolved"
+    assert resp.json()["group"]["note"] == "Fixed in the next release"
+    # An acknowledge/resolve cannot tighten a scope, so it reports "not
+    # applicable" rather than a count of zero.
+    assert resp.json()["overrides_written"] is None
+
+
+@pytest.mark.asyncio
+async def test_inbox_group_reports_no_baseline_as_null_not_zero(client: AsyncClient) -> None:
+    """A scope firing from a ZERO baseline is the loudest class there is, and the
+    stored 0.0 is a placeholder, not a measurement.
+
+    Copied off the column, it rendered "0%" on the card and sorted as the
+    SMALLEST deviation in the group, while the delivery the card expands to
+    correctly reported null — one payload family answering the same question two
+    ways (tripl-l429.24/.27).
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "No Baseline", "slug": "no-baseline", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    now = datetime.now(UTC)
+    barren_group = uuid.uuid4()
+    mixed_group = uuid.uuid4()
+
+    # Nothing in this group ever had a baseline.
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=now - timedelta(hours=1),
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=now - timedelta(hours=1),
+                percent_delta=0.0,
+                actual_count=37,
+                expected_count=0,
+                correlation_group_id=barren_group,
+            )
+        ],
+    )
+    # This one's NEWEST item has no baseline, but an older one did — so the
+    # headline number is null while the group still has a worst measured
+    # deviation to be ordered by.
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=now - timedelta(hours=4),
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=now - timedelta(hours=4),
+                percent_delta=-64.0,
+                actual_count=9,
+                expected_count=25,
+                correlation_group_id=mixed_group,
+            )
+        ],
+    )
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=now - timedelta(hours=2),
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=now - timedelta(hours=2),
+                percent_delta=0.0,
+                actual_count=12,
+                expected_count=0,
+                correlation_group_id=mixed_group,
+            )
+        ],
+    )
+
+    resp = await client.get("/api/v1/projects/no-baseline/alert-inbox")
+    assert resp.status_code == 200
+    groups = {group["correlation_group_id"]: group for group in resp.json()["items"]}
+
+    barren = groups[str(barren_group)]
+    assert barren["expected_count"] == 0
+    assert barren["percent_delta"] is None
+    # No row in the group has a baseline, so there is no measured deviation to be
+    # the largest — emphatically not 0.0, which sorted it last.
+    assert barren["max_abs_percent_delta"] is None
+
+    mixed = groups[str(mixed_group)]
+    assert mixed["percent_delta"] is None
+    assert mixed["max_abs_percent_delta"] == 64.0
+
+    # The deep link reads the same way.
+    detail = await client.get(f"/api/v1/projects/no-baseline/alert-inbox/{barren_group}")
+    assert detail.status_code == 200
+    assert detail.json()["percent_delta"] is None
+    assert detail.json()["max_abs_percent_delta"] is None
+
+
+@pytest.mark.asyncio
+async def test_inbox_action_returns_what_the_list_returned(client: AsyncClient) -> None:
+    """Acknowledge must not redraw the card with different numbers.
+
+    The action rebuilt the group from ALL of its rows while the list built it
+    from rows inside INBOX_LOOKBACK_DAYS, so an incident with deliveries on both
+    sides of the cutoff re-rendered with a different item_count, delivery_count,
+    first_delivery_at, latest_bucket, max_abs_percent_delta, scope_names, rules
+    and scan_names — with no state change that explained any of it.
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Straddle", "slug": "straddle", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    now = datetime.now(UTC)
+    group_id = uuid.uuid4()
+
+    # Outside the window: bigger, older, and with its own scope name.
+    outside_at = now - timedelta(days=45)
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=outside_at,
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=outside_at,
+                percent_delta=900.0,
+                correlation_group_id=group_id,
+            )
+        ],
+    )
+    # Inside the window.
+    inside_at = now - timedelta(hours=3)
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=inside_at,
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=inside_at,
+                percent_delta=110.0,
+                correlation_group_id=group_id,
+            )
+        ],
+    )
+
+    listed = await client.get("/api/v1/projects/straddle/alert-inbox")
+    assert listed.status_code == 200
+    before = listed.json()["items"][0]
+    assert before["item_count"] == 1
+    assert before["max_abs_percent_delta"] == 110.0
+
+    acted = await client.post(
+        f"/api/v1/projects/straddle/alert-inbox/{group_id}/actions",
+        json={"action": "acknowledge"},
+    )
+    assert acted.status_code == 200
+    after = acted.json()["group"]
+
+    # Everything the window decides is unchanged by the click.
+    windowed_fields = (
+        "item_count",
+        "delivery_count",
+        "first_delivery_at",
+        "latest_bucket",
+        "latest_delivery_at",
+        "percent_delta",
+        "max_abs_percent_delta",
+        "scope_names",
+        "scope_types",
+        "rules",
+        "rule_names",
+        "scan_names",
+    )
+    assert {field: after[field] for field in windowed_fields} == {
+        field: before[field] for field in windowed_fields
+    }
+    # ...and the list agrees with itself afterwards.
+    relisted = (await client.get("/api/v1/projects/straddle/alert-inbox")).json()["items"][0]
+    assert {field: relisted[field] for field in windowed_fields} == {
+        field: before[field] for field in windowed_fields
+    }
+    # Only what the action actually decided moved.
+    assert before["status"] == "open"
+    assert after["status"] == "acknowledged"
+
+    # The deep link is the one reading that DOES see the whole history — that is
+    # its purpose, and it is why the action's window had to be explicit.
+    deep = await client.get(f"/api/v1/projects/straddle/alert-inbox/{group_id}")
+    assert deep.status_code == 200
+    assert deep.json()["item_count"] == 2
+    assert deep.json()["max_abs_percent_delta"] == 900.0
+
+
+@pytest.mark.asyncio
+async def test_inbox_never_reports_an_operators_email(client: AsyncClient) -> None:
+    """`acted_by_name` used to fall back to the acting operator's EMAIL.
+
+    Every project member can read the inbox, and this endpoint previously exposed
+    only an opaque UUID, so the fallback turned incident cards into a roster of
+    colleagues' addresses. An unnamed operator gets no name (tripl-oxkt.5).
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Nameless", "slug": "nameless", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    group_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=now - timedelta(hours=1),
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=now - timedelta(hours=1),
+                percent_delta=100.0,
+                correlation_group_id=group_id,
+            )
+        ],
+    )
+
+    # `name` is nullable on User, which is the only way acted_by fails to
+    # resolve: the column is an FK, so it cannot point at a row that is not there.
+    async with TestSessionLocal() as session:
+        user = await session.scalar(select(User).where(User.email == "test@example.com"))
+        assert user is not None
+        user.name = None
+        await session.commit()
+
+    acted = await client.post(
+        f"/api/v1/projects/nameless/alert-inbox/{group_id}/actions",
+        json={"action": "acknowledge"},
+    )
+    assert acted.status_code == 200
+    group = acted.json()["group"]
+    # The decision is still attributed — by id, which is not a personal detail.
+    assert group["acted_by"] is not None
+    assert group["acted_by_name"] is None
+    assert "test@example.com" not in acted.text
+
+
+@pytest.mark.asyncio
+async def test_inbox_group_of_another_project_is_not_reachable(client: AsyncClient) -> None:
+    """A correlation group is only ever addressed under its own project's slug.
+
+    Both single-group routes filter on ``AlertDelivery.project_id``, so asking
+    for somebody else's incident is a 404 rather than a cross-project read.
+    """
+    owner_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Group Owner", "slug": "group-owner", "description": ""},
+    )
+    await client.post(
+        "/api/v1/projects",
+        json={"name": "Group Stranger", "slug": "group-stranger", "description": ""},
+    )
+    owner_id = uuid.UUID(owner_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(owner_id)
+    group_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    await _seed_inbox_delivery(
+        owner_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=now - timedelta(hours=1),
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=now - timedelta(hours=1),
+                percent_delta=100.0,
+                correlation_group_id=group_id,
+            )
+        ],
+    )
+
+    assert (
+        await client.get(f"/api/v1/projects/group-owner/alert-inbox/{group_id}")
+    ).status_code == 200
+
+    stranger_read = await client.get(f"/api/v1/projects/group-stranger/alert-inbox/{group_id}")
+    assert stranger_read.status_code == 404
+    stranger_write = await client.post(
+        f"/api/v1/projects/group-stranger/alert-inbox/{group_id}/actions",
+        json={"action": "resolve"},
+    )
+    assert stranger_write.status_code == 404
+    # ...and the write really did not land under the other project either.
+    async with TestSessionLocal() as session:
+        assert (
+            await session.scalar(
+                select(AlertCorrelationState).where(
+                    AlertCorrelationState.correlation_group_id == group_id
+                )
+            )
+        ) is None
+
+
+@pytest.mark.asyncio
+async def test_note_action_without_a_note_is_rejected(client: AsyncClient) -> None:
+    """`{"action": "note"}` with no note was a silent 200 no-op.
+
+    The note write is conditional on ``note is not None``, so the request looked
+    accepted, changed nothing, and still inserted a correlation-state row. The
+    guard mirrors the one mute/muted_until already had.
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Empty Note", "slug": "empty-note", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    group_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=now - timedelta(hours=1),
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=now - timedelta(hours=1),
+                percent_delta=100.0,
+                correlation_group_id=group_id,
+            )
+        ],
+    )
+
+    missing = await client.post(
+        f"/api/v1/projects/empty-note/alert-inbox/{group_id}/actions",
+        json={"action": "note"},
+    )
+    assert missing.status_code == 422
+    # Nothing was written on the way to rejecting it.
+    async with TestSessionLocal() as session:
+        assert (
+            await session.scalar(
+                select(AlertCorrelationState).where(
+                    AlertCorrelationState.correlation_group_id == group_id
+                )
+            )
+        ) is None
+
+    # An EMPTY note is still valid — it is the documented way to clear one.
+    await client.post(
+        f"/api/v1/projects/empty-note/alert-inbox/{group_id}/actions",
+        json={"action": "note", "note": "Was investigating"},
+    )
+    cleared = await client.post(
+        f"/api/v1/projects/empty-note/alert-inbox/{group_id}/actions",
+        json={"action": "note", "note": ""},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["group"]["note"] is None
+
+
+async def _seed_slack_destination_with_rule(
+    client: AsyncClient,
+    slug: str,
+    *,
+    name: str = "Ops Slack",
+    rule_name: str = "Volume rule",
+) -> tuple[str, str]:
+    """Create a real slack destination + rule THROUGH THE API.
+
+    Through the API rather than by INSERT because the webhook has to be a value
+    ``decrypt_value`` can read back — a hand-written ``webhook_url_encrypted``
+    is not, and a test send would then fail for a reason no operator could hit.
+    Returns ``(destination_id, rule_id)``.
+    """
+    destination_resp = await client.post(
+        f"/api/v1/projects/{slug}/alert-destinations",
+        json={
+            "type": "slack",
+            "name": name,
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T000/B000/XXX",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+    rule_resp = await client.post(
+        f"/api/v1/projects/{slug}/alert-destinations/{destination_id}/rules",
+        json={"name": rule_name, "enabled": True},
+    )
+    assert rule_resp.status_code == 201
+    return destination_id, rule_resp.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_rule_carries_the_same_mute_state_as_its_monitor(client: AsyncClient) -> None:
+    """The destination card and the monitors screen render the SAME AlertRule and
+    used to disagree about its mute, because AlertRuleResponse had no mute state
+    at all — so the card could neither show nor set one (tripl-oxkt.18)."""
+    await client.post(
+        "/api/v1/projects",
+        json={"name": "Rule Mute", "slug": "rule-mute", "description": ""},
+    )
+    destination_id, rule_id = await _seed_slack_destination_with_rule(client, "rule-mute")
+
+    async def read_rule() -> dict[str, object]:
+        resp = await client.get("/api/v1/projects/rule-mute/alert-destinations")
+        assert resp.status_code == 200
+        return resp.json()[0]["rules"][0]
+
+    rule = await read_rule()
+    assert rule["muted"] is False
+    assert rule["muted_until"] is None
+
+    muted_until = datetime.now(UTC) + timedelta(hours=2)
+    mute_resp = await client.post(
+        f"/api/v1/projects/rule-mute/monitors/{rule_id}/mute",
+        json={"muted_until": muted_until.isoformat()},
+    )
+    assert mute_resp.status_code == 200
+    assert mute_resp.json()["muted"] is True
+
+    rule = await read_rule()
+    monitor = (await client.get(f"/api/v1/projects/rule-mute/monitors/{rule_id}")).json()
+    assert rule["muted"] is True
+    assert rule["muted"] == monitor["muted"]
+    assert rule["muted_until"] == monitor["muted_until"]
+
+    # A mute that has run out. It can only arrive by the passage of time — the
+    # mute route refuses a past instant — so it is written straight to the row.
+    async with TestSessionLocal() as session:
+        db_rule = await session.get(AlertRule, uuid.UUID(rule_id))
+        assert db_rule is not None
+        db_rule.muted_until = datetime.now(UTC) - timedelta(hours=1)
+        await session.commit()
+
+    rule = await read_rule()
+    monitor = (await client.get(f"/api/v1/projects/rule-mute/monitors/{rule_id}")).json()
+    assert rule["muted"] is False
+    assert monitor["muted"] is False
+    # The stored instant survives, so the card can still offer "unmute" on a rule
+    # whose mute has lapsed; `muted` is the claim about NOW.
+    assert rule["muted_until"] is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_confirm_can_state_what_it_would_destroy(client: AsyncClient) -> None:
+    """Both AlertDelivery FKs are ondelete=CASCADE and the Inbox INNER JOINs
+    through them, so deleting a rule or a destination silently takes the delivery
+    history and the incidents with it. The confirm needs numbers (tripl-oxkt.13)."""
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Delete Impact", "slug": "delete-impact", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(
+        project_id, rule_names=("Rule A", "Rule B")
+    )
+    rule_a, rule_b = rule_ids
+    shared_group = uuid.uuid4()
+    only_a_group = uuid.uuid4()
+    now = datetime.now(UTC)
+
+    async def seed(rule_id: uuid.UUID, created_at: datetime, groups: list[uuid.UUID]) -> uuid.UUID:
+        return await _seed_inbox_delivery(
+            project_id,
+            scan_config_id=scan_config_id,
+            destination_id=destination_id,
+            rule_id=rule_id,
+            created_at=created_at,
+            items=[
+                _inbox_item(
+                    scope_type="event",
+                    bucket=created_at,
+                    percent_delta=50.0,
+                    correlation_group_id=group_id,
+                )
+                for group_id in groups
+            ],
+        )
+
+    await seed(rule_a, now - timedelta(hours=3), [shared_group, only_a_group])
+    newest_a = await seed(rule_a, now - timedelta(hours=1), [shared_group])
+    await seed(rule_b, now - timedelta(hours=2), [shared_group])
+    async with TestSessionLocal() as session:
+        delivery = await session.get(AlertDelivery, newest_a)
+        assert delivery is not None
+        delivery.status = AlertDeliveryStatus.failed.value
+        await session.commit()
+
+    listed = (await client.get("/api/v1/projects/delete-impact/alert-destinations")).json()
+    assert len(listed) == 1
+    destination = listed[0]
+    rules = {rule["id"]: rule for rule in destination["rules"]}
+
+    # ``total_deliveries`` on a RULE, not ``delivery_count``: the monitor detail
+    # already publishes this same all-time count under that name, and
+    # ``delivery_count`` means the deliveries of one INCIDENT on the inbox group.
+    assert rules[str(rule_a)]["total_deliveries"] == 2
+    assert "delivery_count" not in rules[str(rule_a)]
+    assert rules[str(rule_a)]["incident_count"] == 2
+    assert rules[str(rule_b)]["total_deliveries"] == 1
+    assert rules[str(rule_b)]["incident_count"] == 1
+
+    # The DESTINATION keeps ``delivery_count``: it is a destination-wide total
+    # with no monitor counterpart to disagree with.
+    assert destination["delivery_count"] == 3
+    # The point of querying the destination total separately: `shared_group` is
+    # carried by BOTH rules, so summing the per-rule DISTINCT counts would claim
+    # three incidents where there are two.
+    assert destination["incident_count"] == 2
+
+    # Delivery health of the newest delivery, per rule, not per destination.
+    assert rules[str(rule_a)]["last_delivery_status"] == "failed"
+    assert rules[str(rule_b)]["last_delivery_status"] == "sent"
+    assert rules[str(rule_a)]["last_delivery_at"] > rules[str(rule_b)]["last_delivery_at"]
+
+    # A rule that has never delivered says so rather than omitting the fields.
+    fresh_resp = await client.post(
+        f"/api/v1/projects/delete-impact/alert-destinations/{destination_id}/rules",
+        json={"name": "Rule C", "enabled": True},
+    )
+    assert fresh_resp.status_code == 201
+    fresh = fresh_resp.json()
+    assert fresh["total_deliveries"] == 0
+    assert fresh["incident_count"] == 0
+    assert fresh["last_delivery_at"] is None
+    assert fresh["last_delivery_status"] is None
+
+
+@pytest.mark.asyncio
+async def test_destination_test_send_reaches_the_channel_and_logs_no_delivery(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """'webhook set' says a value is STORED, not that it arrives (tripl-oxkt.17)."""
+    from tripl.models.audit_log import AuditLog
+    from tripl.worker.tasks import alerts
+
+    posted: list[tuple[str, dict[str, object]]] = []
+
+    def capture_post_json(
+        url: str,
+        body: dict[str, object],
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, object] | None:
+        posted.append((url, body))
+        return None
+
+    monkeypatch.setattr(alerts, "_post_json", capture_post_json)
+    await client.post(
+        "/api/v1/projects",
+        json={"name": "Test Send", "slug": "test-send", "description": ""},
+    )
+    destination_id, _rule_id = await _seed_slack_destination_with_rule(client, "test-send")
+
+    resp = await client.post(f"/api/v1/projects/test-send/alert-destinations/{destination_id}/test")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["error"] is None
+    assert body["sent_at"] is not None
+
+    assert len(posted) == 1
+    url, payload = posted[0]
+    assert "hooks.slack.com" in url
+    text = payload["text"]
+    assert isinstance(text, str)
+    # Unmistakably a test to whoever reads the channel: nobody in that channel
+    # asked for this message.
+    assert "Tripl test message" in text
+    assert "No alert fired" in text
+
+    async with TestSessionLocal() as session:
+        # NOT in the Delivery log: a test row would have to borrow a real rule and
+        # a real scan (both FKs are NOT NULL) and claim they fired.
+        deliveries = (await session.execute(select(AlertDelivery))).scalars().all()
+        assert deliveries == []
+        # The operator action is recorded where operator actions belong.
+        actions = [
+            row.action
+            for row in (await session.execute(select(AuditLog))).scalars().all()
+            if row.action == "alert_destination.test"
+        ]
+        assert actions == ["alert_destination.test"]
+
+
+@pytest.mark.asyncio
+async def test_destination_test_send_reports_a_channel_refusal_as_an_answer(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A revoked token is the thing the probe exists to find, so it comes back as
+    ok=false with the channel's own words — not as a 500 reading "Tripl broke"."""
+    from tripl.worker.tasks import alerts
+
+    def refuse(
+        url: str,
+        body: dict[str, object],
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, object] | None:
+        raise ValueError("HTTP 401 from https://hooks.slack.com: invalid_token")
+
+    monkeypatch.setattr(alerts, "_post_json", refuse)
+    await client.post(
+        "/api/v1/projects",
+        json={"name": "Test Refused", "slug": "test-refused", "description": ""},
+    )
+    destination_id, _rule_id = await _seed_slack_destination_with_rule(client, "test-refused")
+
+    resp = await client.post(
+        f"/api/v1/projects/test-refused/alert-destinations/{destination_id}/test"
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert "401" in body["error"]
+    assert "invalid_token" in body["error"]
+    assert body["sent_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_destination_test_send_on_a_demo_project_never_leaves_the_box(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A demo is zero-egress (tripl-2su6.12): its local sink tests ok with no
+    network, and its disabled Slack example is refused rather than sent."""
+    from tripl.worker.tasks import alerts
+
+    def explode(
+        url: str,
+        body: dict[str, object],
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, object] | None:
+        raise AssertionError("a demo project must make no outbound request")
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Demo Test Send", "slug": "demo-test-send", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    # Created while the project is still real: a demo may not gain an external
+    # destination through the API, which is exactly the row a demo ships.
+    slack_id, _rule_id = await _seed_slack_destination_with_rule(client, "demo-test-send")
+    async with TestSessionLocal() as session:
+        project = await session.get(Project, project_id)
+        assert project is not None
+        project.is_demo = True
+        await session.commit()
+
+    sink_resp = await client.post(
+        "/api/v1/projects/demo-test-send/alert-destinations",
+        json={"type": "demo_sink", "name": "Local sink", "enabled": True},
+    )
+    assert sink_resp.status_code == 201
+    sink_id = sink_resp.json()["id"]
+
+    monkeypatch.setattr(alerts, "_post_json", explode)
+
+    sink_test = await client.post(
+        f"/api/v1/projects/demo-test-send/alert-destinations/{sink_id}/test"
+    )
+    assert sink_test.status_code == 200
+    assert sink_test.json()["ok"] is True
+    assert sink_test.json()["sent_at"] is not None
+
+    slack_test = await client.post(
+        f"/api/v1/projects/demo-test-send/alert-destinations/{slack_id}/test"
+    )
+    assert slack_test.status_code == 200
+    assert slack_test.json()["ok"] is False
+    assert "Demo projects cannot send external alerts" in slack_test.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_open_incident_count_agrees_with_the_inbox_it_badges(client: AsyncClient) -> None:
+    """The sidebar badged `alert_destination_count`, so it read "Alerting 1" while
+    52 incidents sat open (tripl-oxkt.16). A badge that disagrees with the page it
+    labels is worse than none, so it is asserted equal to the page's own total."""
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Open Badge", "slug": "open-badge", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    now = datetime.now(UTC)
+
+    async def seed_group(created_at: datetime) -> uuid.UUID:
+        group_id = uuid.uuid4()
+        await _seed_inbox_delivery(
+            project_id,
+            scan_config_id=scan_config_id,
+            destination_id=destination_id,
+            rule_id=rule_ids[0],
+            created_at=created_at,
+            items=[
+                _inbox_item(
+                    scope_type="event",
+                    bucket=created_at,
+                    percent_delta=80.0,
+                    correlation_group_id=group_id,
+                )
+            ],
+        )
+        return group_id
+
+    untouched = await seed_group(now - timedelta(hours=1))
+    resolved = await seed_group(now - timedelta(hours=2))
+    lapsed_mute = await seed_group(now - timedelta(hours=3))
+    live_mute = await seed_group(now - timedelta(hours=4))
+    # Older than INBOX_LOOKBACK_DAYS: the page cannot see it, so neither may the
+    # badge, however open it looks.
+    await seed_group(now - timedelta(days=40))
+
+    async with TestSessionLocal() as session:
+        session.add_all(
+            [
+                AlertCorrelationState(
+                    project_id=project_id,
+                    correlation_group_id=resolved,
+                    status="resolved",
+                ),
+                AlertCorrelationState(
+                    project_id=project_id,
+                    correlation_group_id=lapsed_mute,
+                    status="muted",
+                    muted_until=now - timedelta(hours=1),
+                ),
+                AlertCorrelationState(
+                    project_id=project_id,
+                    correlation_group_id=live_mute,
+                    status="muted",
+                    muted_until=now + timedelta(days=2),
+                ),
+            ]
+        )
+        await session.commit()
+
+    inbox = (
+        await client.get("/api/v1/projects/open-badge/alert-inbox", params={"status": "open"})
+    ).json()
+    summary = (await client.get("/api/v1/projects/open-badge")).json()["summary"]
+
+    # `untouched` plus `lapsed_mute` — a mute that has run out is open again.
+    assert inbox["total"] == 2
+    assert {group["correlation_group_id"] for group in inbox["items"]} == {
+        str(untouched),
+        str(lapsed_mute),
+    }
+    assert summary["open_incident_count"] == inbox["total"]
+    # ...and it is emphatically not the old destination count.
+    assert summary["alert_destination_count"] == 1
+
+
+async def _seed_simulate_fixture(
+    client: AsyncClient,
+    slug: str,
+    *,
+    second_scan_sigma: float | None = None,
+) -> dict[str, object]:
+    """A project with one destination, one wide-open rule and three scopes.
+
+    The three scopes deliberately disagree on every knob the replay can override,
+    so one seeding is enough for all of them:
+
+    ==========  ========  ========  =======  =======
+    scope       expected    actual  percent  z-score
+    ==========  ========  ========  =======  =======
+    loud            20.0     200.0     900%     10.0
+    quiet          100.0     150.0      50%      4.2
+    thin             5.0      20.0     300%      8.0
+    ==========  ========  ========  =======  =======
+
+    ``second_scan_sigma`` adds a second scan configured to a different
+    ``sigma_threshold``, which is how a project stops having ONE saved detector
+    threshold to quote.
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": f"Sim {slug}", "slug": slug},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    destination_resp = await client.post(
+        f"/api/v1/projects/{slug}/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Sim Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T1/B1/sim",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+
+    rule_resp = await client.post(
+        f"/api/v1/projects/{slug}/alert-destinations/{destination_id}/rules",
+        json={
+            "name": "Sim Rule",
+            "enabled": True,
+            "include_project_total": True,
+            "include_event_types": True,
+            "include_events": True,
+            "notify_on_spike": True,
+            "notify_on_drop": True,
+            # Wide open, so every gate below is the override's doing and not the
+            # rule's.
+            "min_percent_delta": 0,
+            "min_absolute_delta": 0,
+            "min_expected_count": 0,
+            "cooldown_minutes": 60,
+            "filters": [],
+        },
+    )
+    assert rule_resp.status_code == 201
+    rule_id = rule_resp.json()["id"]
+
+    now = datetime.now(UTC)
+    scopes = {
+        "loud": (20.0, 200.0, 10.0),
+        "quiet": (100.0, 150.0, 4.2),
+        "thin": (5.0, 20.0, 8.0),
+    }
+    scope_refs = {name: str(uuid.uuid4()) for name in scopes}
+    async with TestSessionLocal() as session, session.begin():
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="ds",
+            db_type="clickhouse",
+            host="h",
+            port=8123,
+            database_name="d",
+            username="u",
+            password_encrypted="",
+        )
+        session.add(data_source)
+        await session.flush()
+        scan = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project_id,
+            name="sc",
+            base_query="SELECT 1",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add(scan)
+        if second_scan_sigma is not None:
+            session.add(
+                ScanConfig(
+                    id=uuid.uuid4(),
+                    data_source_id=data_source.id,
+                    project_id=project_id,
+                    name="sc-strict",
+                    base_query="SELECT 2",
+                    cardinality_threshold=100,
+                    interval="1h",
+                    sigma_threshold=second_scan_sigma,
+                )
+            )
+        await session.flush()
+        from tripl.models.metric_anomaly import MetricAnomaly
+
+        for name, (expected, actual, z_score) in scopes.items():
+            session.add(
+                MetricAnomaly(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan.id,
+                    scope_type="event",
+                    scope_ref=scope_refs[name],
+                    event_id=None,
+                    event_type_id=None,
+                    bucket=now - timedelta(days=1),
+                    actual_count=actual,
+                    expected_count=expected,
+                    stddev=1.0,
+                    z_score=z_score,
+                    direction="spike",
+                )
+            )
+        scan_id = scan.id
+
+    return {
+        "project_id": project_id,
+        "destination_id": destination_id,
+        "rule_id": rule_id,
+        "scan_id": scan_id,
+        "scope_refs": scope_refs,
+    }
+
+
+def _simulate_url(fixture: dict[str, object], slug: str) -> str:
+    return (
+        f"/api/v1/projects/{slug}/alert-destinations/"
+        f"{fixture['destination_id']}/rules/{fixture['rule_id']}/simulate"
+    )
+
+
+@pytest.mark.asyncio
+async def test_simulate_tries_a_percent_threshold_without_saving_it_on_a_live_rule(
+    client: AsyncClient,
+) -> None:
+    """tripl-oxkt.17 part 3: replay accepted only ``days`` and a cooldown, so
+    asking "would min % 300 cut these" meant editing a rule that is live-routing
+    to a real channel and waiting to see what production did."""
+    slug = "sim-pct-override"
+    fixture = await _seed_simulate_fixture(client, slug)
+    url = _simulate_url(fixture, slug)
+
+    baseline = (await client.post(f"{url}?days=7")).json()
+    assert len(baseline["firings"]) == 3
+    assert baseline["min_percent_delta_used"] == 0.0
+    assert baseline["min_percent_delta_saved"] == 0.0
+
+    # 300 drops `quiet` (50%) and keeps `thin` — which is exactly 300%, and the
+    # live gate is ``< threshold``, so the boundary belongs to the alert.
+    tightened = (await client.post(f"{url}?days=7&min_percent_delta_override=300")).json()
+    assert {firing["scope_ref"] for firing in tightened["firings"]} == {
+        fixture["scope_refs"]["loud"],  # type: ignore[index]
+        fixture["scope_refs"]["thin"],  # type: ignore[index]
+    }
+    assert tightened["matched_before_cooldown"] == 2
+    # The candidates are all still THERE — a rule threshold does not un-detect
+    # anything, it only declines to deliver it.
+    assert tightened["anomalies_considered"] == 3
+    assert tightened["min_percent_delta_used"] == 300.0
+    assert tightened["min_percent_delta_saved"] == 0.0
+
+    # The whole point: nothing was written. The rule still routes exactly as it
+    # did before the question was asked.
+    rule = (
+        await client.get(f"/api/v1/projects/{slug}/alert-destinations/{fixture['destination_id']}")
+    ).json()["rules"][0]
+    assert rule["min_percent_delta"] == 0.0
+    assert len((await client.post(f"{url}?days=7")).json()["firings"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_simulate_tries_a_min_expected_count_without_saving_it(client: AsyncClient) -> None:
+    slug = "sim-count-override"
+    fixture = await _seed_simulate_fixture(client, slug)
+    url = _simulate_url(fixture, slug)
+
+    tightened = (await client.post(f"{url}?days=7&min_expected_count_override=50")).json()
+    # Only `quiet` expects 100; `loud` (20) and `thin` (5) are below the floor.
+    assert [firing["scope_ref"] for firing in tightened["firings"]] == [
+        fixture["scope_refs"]["quiet"]  # type: ignore[index]
+    ]
+    assert tightened["min_expected_count_used"] == 50.0
+    assert tightened["min_expected_count_saved"] == 0.0
+    assert tightened["anomalies_considered"] == 3
+
+    rule = (
+        await client.get(f"/api/v1/projects/{slug}/alert-destinations/{fixture['destination_id']}")
+    ).json()["rules"][0]
+    assert rule["min_expected_count"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_simulate_sigma_override_re_reads_what_the_detector_recorded(
+    client: AsyncClient,
+) -> None:
+    """A sigma what-if is about DETECTION, so it removes candidates outright.
+
+    The rule thresholds decline to deliver a signal that exists; a stricter sigma
+    says the signal was never recorded, which has to show in
+    ``anomalies_considered`` as well or the two numbers would describe different
+    worlds.
+    """
+    slug = "sim-sigma-override"
+    fixture = await _seed_simulate_fixture(client, slug)
+    url = _simulate_url(fixture, slug)
+
+    baseline = (await client.post(f"{url}?days=7")).json()
+    assert baseline["anomalies_considered"] == 3
+    # No override: `used` mirrors the scan's own configured threshold.
+    assert baseline["sigma_threshold_saved"] == 4.0
+    assert baseline["sigma_threshold_used"] == 4.0
+
+    strict = (await client.post(f"{url}?days=7&sigma_threshold_override=5")).json()
+    # `quiet` was scored at z=4.2 and would not have been written at all.
+    assert strict["anomalies_considered"] == 2
+    assert strict["matched_before_cooldown"] == 2
+    assert {firing["scope_ref"] for firing in strict["firings"]} == {
+        fixture["scope_refs"]["loud"],  # type: ignore[index]
+        fixture["scope_refs"]["thin"],  # type: ignore[index]
+    }
+    assert strict["sigma_threshold_used"] == 5.0
+    assert strict["sigma_threshold_saved"] == 4.0
+
+    # Exactly at a candidate's z-score still keeps it: the detector's own test is
+    # ``|z| >= threshold``, and the replay must not disagree with it.
+    boundary = (await client.post(f"{url}?days=7&sigma_threshold_override=8")).json()
+    assert {firing["scope_ref"] for firing in boundary["firings"]} == {
+        fixture["scope_refs"]["loud"],  # type: ignore[index]
+        fixture["scope_refs"]["thin"],  # type: ignore[index]
+    }
+
+    # Lowering it cannot conjure anything: the rows below the scan's threshold
+    # were never written, so there is nothing on disk to bring back.
+    loosened = (await client.post(f"{url}?days=7&sigma_threshold_override=1")).json()
+    assert loosened["anomalies_considered"] == 3
+    assert loosened["sigma_threshold_used"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_simulate_reports_no_saved_sigma_when_the_scans_disagree(
+    client: AsyncClient,
+) -> None:
+    """``sigma_threshold`` is a SCAN setting, and a project-wide rule reads many."""
+    slug = "sim-sigma-saved"
+    fixture = await _seed_simulate_fixture(client, slug, second_scan_sigma=6.0)
+    url = _simulate_url(fixture, slug)
+
+    wide = (await client.post(f"{url}?days=7")).json()
+    assert wide["sigma_threshold_saved"] is None
+    assert wide["sigma_threshold_used"] is None
+
+    # Bind the rule to one scan and it has exactly one saved value to quote.
+    bound = await client.patch(
+        f"/api/v1/projects/{slug}/alert-destinations/"
+        f"{fixture['destination_id']}/rules/{fixture['rule_id']}",
+        json={"scan_config_id": str(fixture["scan_id"])},
+    )
+    assert bound.status_code == 200
+    narrowed = (await client.post(f"{url}?days=7")).json()
+    assert narrowed["sigma_threshold_saved"] == 4.0
+    assert narrowed["sigma_threshold_used"] == 4.0
+    # ...and an override still wins over it.
+    overridden = (await client.post(f"{url}?days=7&sigma_threshold_override=6")).json()
+    assert overridden["sigma_threshold_used"] == 6.0
+    assert overridden["sigma_threshold_saved"] == 4.0
+
+
+@pytest.mark.asyncio
+async def test_simulate_rejects_overrides_that_cannot_mean_anything(client: AsyncClient) -> None:
+    slug = "sim-bad-override"
+    fixture = await _seed_simulate_fixture(client, slug)
+    url = _simulate_url(fixture, slug)
+
+    for query in (
+        "min_percent_delta_override=-1",
+        "min_expected_count_override=-1",
+        # Zero sigma is not "no filter": the detector divides by the spread, so
+        # nothing is ever scored against it.
+        "sigma_threshold_override=0",
+        # Above the ceiling the false-positive ratchet itself respects.
+        "sigma_threshold_override=10.5",
+    ):
+        resp = await client.post(f"{url}?days=7&{query}")
+        assert resp.status_code == 422, query
+
+
+@pytest.mark.asyncio
+async def test_rule_and_monitor_report_one_delivery_total_under_one_name(
+    client: AsyncClient,
+) -> None:
+    """A monitor IS an alert rule, so its all-time delivery count must not have
+    two names — and ``delivery_count`` was already taken by the inbox group,
+    where it means the deliveries of ONE incident."""
+    from tripl.services._alerting_health import load_destination_health
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "One Name", "slug": "one-name"},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    destination_resp = await client.post(
+        "/api/v1/projects/one-name/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Ops",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T1/B1/one",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+
+    rule_resp = await client.post(
+        f"/api/v1/projects/one-name/alert-destinations/{destination_id}/rules",
+        json={"name": "Rule", "enabled": True, "filters": []},
+    )
+    assert rule_resp.status_code == 201
+    rule_id = rule_resp.json()["id"]
+
+    now = datetime.now(UTC)
+    async with TestSessionLocal() as session, session.begin():
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="ds",
+            db_type="clickhouse",
+            host="h",
+            port=8123,
+            database_name="d",
+            username="u",
+            password_encrypted="",
+        )
+        session.add(data_source)
+        await session.flush()
+        scan = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project_id,
+            name="sc",
+            base_query="SELECT 1",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add(scan)
+        await session.flush()
+        for index, status in enumerate((AlertDeliveryStatus.sent, AlertDeliveryStatus.failed)):
+            session.add(
+                AlertDelivery(
+                    id=uuid.uuid4(),
+                    project_id=project_id,
+                    scan_config_id=scan.id,
+                    destination_id=uuid.UUID(destination_id),
+                    rule_id=uuid.UUID(rule_id),
+                    status=status.value,
+                    channel="slack",
+                    matched_count=1,
+                    created_at=now - timedelta(hours=2 - index),
+                )
+            )
+
+    listed = (await client.get("/api/v1/projects/one-name/alert-destinations")).json()
+    rule = listed[0]["rules"][0]
+    monitor = (await client.get(f"/api/v1/projects/one-name/monitors/{rule_id}")).json()
+
+    assert rule["total_deliveries"] == 2
+    assert monitor["total_deliveries"] == rule["total_deliveries"]
+    assert "delivery_count" not in rule
+    # ...and the health field the frontend string-matches agrees across both.
+    assert rule["last_delivery_status"] == "failed"
+    assert monitor["last_delivery_status"] == rule["last_delivery_status"]
+
+    # The loader itself hands back the ENUM, so the guarantee does not rest on
+    # Pydantic coercing a bare string at the response boundary.
+    async with TestSessionLocal() as session:
+        health = await load_destination_health(session, [uuid.UUID(destination_id)])
+    status_value = health[uuid.UUID(destination_id)].rules[uuid.UUID(rule_id)].last_delivery_status
+    assert isinstance(status_value, AlertDeliveryStatus)
+    assert status_value is AlertDeliveryStatus.failed
+
+
+def test_monitor_and_test_send_contracts_declare_every_field_they_always_send() -> None:
+    """A default on a response model is not a behaviour, it is a claim to the
+    generated client that the key may be missing.
+
+    ``muted``/``muted_until``/``last_delivery_at``/``last_delivery_status``
+    described the same AlertRule on both payload families and disagreed about
+    whether they were optional, so one object had two TypeScript shapes.
+    """
+    from tripl.main import app
+
+    schemas = app.openapi()["components"]["schemas"]
+
+    shared_rule_fields = {"muted", "muted_until", "last_delivery_at", "last_delivery_status"}
+    assert shared_rule_fields <= set(schemas["AlertRuleResponse"]["required"])
+    assert shared_rule_fields <= set(schemas["MonitorDetailResponse"]["required"])
+    assert {"muted", "muted_until"} <= set(schemas["MonitorSummaryItem"]["required"])
+    # The two monitor timestamps have no rule counterpart but are sent just as
+    # unconditionally, by the same two builders.
+    assert {"last_anomaly_at", "last_notified_at"} <= set(schemas["MonitorSummaryItem"]["required"])
+    # The test-send reply serializes both on every response, including the
+    # ``None`` half of each pair — exactly the mismatch ``event_id`` warns about.
+    assert {"ok", "error", "sent_at"} <= set(schemas["AlertDestinationTestResponse"]["required"])
+
+
+@pytest.mark.asyncio
+async def test_destination_card_reads_every_mute_against_the_clock_it_was_given(
+    client: AsyncClient,
+) -> None:
+    """``destination_to_response`` used to read ``datetime.now`` itself, so the
+    list built one clock PER DESTINATION while its comment promised one for the
+    whole response."""
+    from tripl.services._alerting_destinations import destination_to_response, get_destination
+    from tripl.services._alerting_health import DestinationHealth
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "One Clock", "slug": "one-clock"},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    destination_resp = await client.post(
+        "/api/v1/projects/one-clock/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Ops",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T1/B1/clock",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = uuid.UUID(destination_resp.json()["id"])
+
+    rule_resp = await client.post(
+        f"/api/v1/projects/one-clock/alert-destinations/{destination_id}/rules",
+        json={"name": "Rule", "enabled": True, "filters": []},
+    )
+    assert rule_resp.status_code == 201
+    rule_id = rule_resp.json()["id"]
+
+    muted_until = datetime.now(UTC) + timedelta(days=1)
+    mute_resp = await client.post(
+        f"/api/v1/projects/one-clock/monitors/{rule_id}/mute",
+        json={"muted_until": muted_until.isoformat()},
+    )
+    assert mute_resp.status_code == 200
+
+    async with TestSessionLocal() as session:
+        destination = await get_destination(
+            session,
+            project_id=project_id,
+            destination_id=destination_id,
+        )
+        during = destination_to_response(
+            destination,
+            DestinationHealth(),
+            now=muted_until - timedelta(hours=1),
+        )
+        after = destination_to_response(
+            destination,
+            DestinationHealth(),
+            now=muted_until + timedelta(hours=1),
+        )
+
+    # The second call asks about an instant a day in the future. A function
+    # reading its own clock would answer "still muted" for both.
+    assert during.rules[0].muted is True
+    assert after.rules[0].muted is False
+    assert after.rules[0].muted_until is not None
+
+
+@pytest.mark.asyncio
+async def test_naming_a_destination_for_the_audit_log_costs_no_rollup_queries(
+    client: AsyncClient,
+) -> None:
+    """Delete and test-send both had to name the destination in the audit entry,
+    and both did it by calling ``get_destination`` — which is
+    ``get_destination_response``, i.e. the four delete-impact aggregates of
+    ``load_destination_health`` plus a second load of the row."""
+    from tripl.models.audit_log import AuditLog
+
+    # Shared with test_project_lookup_perf rather than copied: there is one right
+    # way to count what the test engine executed.
+    from tripl.tests.test_project_lookup_perf import captured_sql
+    from tripl.worker.tasks import alerts
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Cheap Name", "slug": "cheap-name"},
+    )
+    assert project_resp.status_code == 201
+
+    async def _make_destination(name: str) -> str:
+        resp = await client.post(
+            "/api/v1/projects/cheap-name/alert-destinations",
+            json={
+                "type": "slack",
+                "name": name,
+                "enabled": True,
+                "webhook_url": "https://hooks.slack.com/services/T1/B1/cheap",
+            },
+        )
+        assert resp.status_code == 201
+        return str(resp.json()["id"])
+
+    def _aggregate_statements(statements: list[str]) -> list[str]:
+        return [statement for statement in statements if "count(" in statement.lower()]
+
+    sent: list[str] = []
+
+    def _fake_slack(webhook_url: str, message: str, **_kwargs: object) -> None:
+        sent.append(message)
+
+    monkeypatched = alerts._send_slack_message
+    alerts._send_slack_message = _fake_slack  # type: ignore[assignment]
+    try:
+        test_target = await _make_destination("Test Me")
+        with captured_sql() as statements:
+            test_resp = await client.post(
+                f"/api/v1/projects/cheap-name/alert-destinations/{test_target}/test"
+            )
+        assert test_resp.status_code == 200
+        assert test_resp.json()["ok"] is True
+        assert sent
+        assert _aggregate_statements(statements) == []
+    finally:
+        alerts._send_slack_message = monkeypatched  # type: ignore[assignment]
+
+    delete_target = await _make_destination("Delete Me")
+    with captured_sql() as statements:
+        delete_resp = await client.delete(
+            f"/api/v1/projects/cheap-name/alert-destinations/{delete_target}"
+        )
+    assert delete_resp.status_code == 204
+    assert _aggregate_statements(statements) == []
+
+    # Both entries still NAME the destination the operator acted on, which is the
+    # only reason the extra load existed.
+    async with TestSessionLocal() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(AuditLog.action, AuditLog.target_name).where(
+                        AuditLog.target_type == "alert_destination"
+                    )
+                )
+            )
+            .tuples()
+            .all()
+        )
+    named = {action: target_name for action, target_name in rows}
+    assert named["alert_destination.test"] == "Test Me"
+    assert named["alert_destination.delete"] == "Delete Me"

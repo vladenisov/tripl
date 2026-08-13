@@ -1,7 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { alertingApi } from '@/api/alerting'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
+import type { Role } from '@/types'
 
 import ProjectAlertingTab from './ProjectAlertingTab'
 
@@ -37,6 +41,15 @@ function makeRule(overrides: Record<string, unknown> = {}) {
     items_template: null,
     message_format: 'plain',
     filters: [],
+    // The delivery-health block the card grew (tripl-oxkt.17/.18) reads all six
+    // of these unconditionally — `countOf(undefined, …)` throws, and these
+    // fixtures are untyped JSON, so tsc would not have caught it.
+    muted: false,
+    muted_until: null,
+    total_deliveries: 0,
+    incident_count: 0,
+    last_delivery_at: null,
+    last_delivery_status: null,
     created_at: '2026-06-13T10:00:00Z',
     updated_at: '2026-06-13T10:00:00Z',
     ...overrides,
@@ -68,6 +81,9 @@ function makeDestination(overrides: Record<string, unknown> = {}) {
     linear_state_id: null,
     linear_label_ids: null,
     is_local: false,
+    // Same reason as the rule counters above: the card's subtitle prints both.
+    delivery_count: 0,
+    incident_count: 0,
     rules: [],
     created_at: '2026-06-13T10:00:00Z',
     updated_at: '2026-06-13T10:00:00Z',
@@ -79,20 +95,32 @@ function makeInboxGroup(overrides: Record<string, unknown> = {}) {
   return {
     correlation_group_id: 'grp-1',
     status: 'open',
+    muted: false,
     muted_until: null,
     note: null,
     false_positive_count: 0,
     item_count: 1,
     delivery_count: 1,
     latest_bucket: '2026-06-13T10:00:00Z',
+    first_delivery_at: '2026-06-13T09:00:00Z',
     latest_delivery_at: '2026-06-13T10:05:00Z',
     direction: 'spike',
+    actual_count: 1500,
+    expected_count: 1010,
+    percent_delta: 48.5,
+    max_abs_percent_delta: null,
+    scope_type: 'event',
+    scope_types: ['event'],
+    scope_ref: 'scope-1',
+    event_id: null,
     scope_names: ['payment_failed'],
     destination_names: ['Main Slack'],
+    rules: [{ id: 'rule-1', name: 'payment_failed spike' }],
     rule_names: ['payment_failed spike'],
     scan_names: ['prod events'],
     acted_at: null,
     acted_by: null,
+    acted_by_name: null,
     ...overrides,
   }
 }
@@ -140,7 +168,11 @@ function mockAlertingFetch(
     if (url.includes('/alert-deliveries')) {
       return jsonResponse({ items: deliveries, total: deliveries.length })
     }
-    if (url.includes('/alert-inbox')) return jsonResponse({ items: inbox, total: inbox.length })
+    // The list, not the per-group route below it: a deep-linked incident is
+    // fetched by id and would otherwise be answered with a list body.
+    if (/\/alert-inbox(\?|$)/.test(url)) {
+      return jsonResponse({ items: inbox, total: inbox.length })
+    }
     if (url.includes('/monitors-summary')) {
       return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
     }
@@ -156,16 +188,44 @@ function mockAlertingFetch(
  * No argument means no `?section=`, i.e. exactly what a bare link does — which
  * is what the guided-setup tests want to exercise.
  */
-function renderTab(section?: 'inbox' | 'destinations' | 'audit') {
+function renderTab(section?: 'inbox' | 'destinations' | 'audit', role: Role = 'editor') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const path = `/p/demo/settings/alerting${section ? `?section=${section}` : ''}`
   return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[path]}>
-        <ProjectAlertingTab slug="demo" />
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <AuthContext.Provider value={authValue(role)}>
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[path]}>
+          <ProjectAlertingTab slug="demo" />
+        </MemoryRouter>
+      </QueryClientProvider>
+    </AuthContext.Provider>,
   )
+}
+
+/**
+ * A session at one role.
+ *
+ * Every write on this page is editor-only server-side, and the page had no
+ * concept of a role at all — the string "viewer" appeared nowhere in the
+ * frontend, so a viewer was shown ~80 fully enabled controls, each of which
+ * answered 403 (tripl-oxkt.9).
+ */
+function authValue(role: Role): AuthContextValue {
+  return {
+    user: {
+      id: 'user-1',
+      email: 'someone@example.com',
+      name: 'Someone',
+      role,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
 }
 
 afterEach(() => {
@@ -191,7 +251,7 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
 
     // ...but the Audit log stays reachable even before anything is configured
     // (tripl-7l83.14): it renders below the guided card with an empty state.
-    expect(screen.getByText('Audit')).toBeInTheDocument()
+    expect(screen.getByText('Delivery log')).toBeInTheDocument()
     expect(screen.getByText('No deliveries yet.')).toBeInTheDocument()
 
     // ...but every channel type is still addable from the guided flow.
@@ -231,7 +291,7 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
     expect(screen.getByText('Signals route to destinations via rules.')).toBeInTheDocument()
     expect(screen.queryByText('Set up alerting')).toBeNull()
 
-    for (const name of ['Inbox', 'Destinations & rules', 'Audit']) {
+    for (const name of ['Inbox', 'Destinations & rules', 'Delivery log']) {
       expect(screen.getByRole('tab', { name })).toBeInTheDocument()
     }
     expect(screen.getByRole('tab', { name: 'Destinations & rules' })).toHaveAttribute(
@@ -251,12 +311,15 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
     })
     renderTab('inbox')
 
-    expect(await screen.findByText('1 group')).toBeInTheDocument()
-    expect(screen.queryByText('1 groups')).toBeNull()
+    // The Inbox subtitle no longer counts groups: it states how much of the
+    // queue is on screen against the server total, because printing 57 above a
+    // list of 20 with no control of any kind is what made 37 incidents
+    // unreachable (tripl-oxkt.1).
+    expect(await screen.findByText('Showing 1 of 1 · last 30 days')).toBeInTheDocument()
 
     // The two subtitles now live on different tabs, so checking both means
     // switching — which is also the cheapest proof the strip works.
-    fireEvent.click(screen.getByRole('tab', { name: 'Audit' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Delivery log' }))
     expect(await screen.findByText('1 delivery')).toBeInTheDocument()
     expect(screen.queryByText('1 deliveries')).toBeNull()
 
@@ -267,6 +330,245 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
     // group, so the disagreement is visible in a single glance.
     expect(await screen.findByText('1 item')).toBeInTheDocument()
     expect(screen.queryByText('1 items')).toBeNull()
+  })
+})
+
+describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom of (tripl-oxkt.1)', () => {
+  /**
+   * An inbox server that actually pages and filters, so the list controls are
+   * exercised against the contract rather than against a stub that ignores
+   * them. `pageSize` is the server's own cap: the client asks for 50, and a
+   * smaller answer is what forces the accumulate path that "Load more" is.
+   */
+  function mockPagedInbox(
+    groups: Record<string, unknown>[],
+    { pageSize = 50, pinned = null as Record<string, unknown> | null } = {},
+  ) {
+    const inboxUrls: string[] = []
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (/\/alert-inbox\/[^/?]+$/.test(url)) {
+        if (!pinned) return new Response('null', { status: 404 })
+        return jsonResponse(pinned)
+      }
+      if (url.includes('/alert-inbox')) {
+        inboxUrls.push(url)
+        const params = new URL(url, 'http://test').searchParams
+        const status = params.get('status')
+        const offset = Number(params.get('offset') ?? '0')
+        const matching = status ? groups.filter(group => group.status === status) : groups
+        return jsonResponse({
+          items: matching.slice(offset, offset + pageSize),
+          total: matching.length,
+        })
+      }
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: false })
+      }
+      if (url.includes('/alert-destinations')) {
+        return jsonResponse([makeDestination({ rules: [makeRule()] })])
+      }
+      if (url.includes('/alert-deliveries')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.includes('/events')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/scans')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    return { inboxUrls }
+  }
+
+  function renderInboxTab(focusIncidentId?: string) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=inbox']}>
+          <ProjectAlertingTab slug="demo" focusIncidentId={focusIncidentId} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('asks for a full page and no status, until a filter says otherwise', async () => {
+    const { inboxUrls } = mockPagedInbox([makeInboxGroup()])
+    renderInboxTab()
+
+    await screen.findByText(/Showing 1 of 1/)
+    // 20 was tighter than the endpoint's own default of 50 while doing
+    // identical database work.
+    expect(inboxUrls[0]).toContain('limit=50')
+    expect(inboxUrls[0]).toContain('offset=0')
+    expect(inboxUrls[0]).not.toContain('status=')
+  })
+
+  it('narrows to one status, and back, without stranding the offset', async () => {
+    const { inboxUrls } = mockPagedInbox([
+      makeInboxGroup(),
+      makeInboxGroup({
+        correlation_group_id: 'grp-2',
+        status: 'muted',
+        muted: true,
+        muted_until: '2026-08-19T10:00:00Z',
+        scope_names: ['checkout_started'],
+        scope_ref: 'scope-2',
+      }),
+    ])
+    renderInboxTab()
+
+    await screen.findByText(/Showing 2 of 2/)
+    // Muting freezes a row's sort key, so a muted incident sinks past the page
+    // boundary in about a day while the mute lasts a week — and the only
+    // control that lifts it lives on the card that muting hides (tripl-oxkt.2).
+    fireEvent.click(screen.getByRole('button', { name: 'Muted' }))
+
+    await waitFor(() => expect(inboxUrls.at(-1)).toContain('status=muted'))
+    expect(await screen.findByText(/Showing 1 of 1/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Unmute checkout_started/ })).toBeInTheDocument()
+
+    // Back to All: a fresh first page, never an offset left pointing into a
+    // set that no longer exists.
+    fireEvent.click(screen.getByRole('button', { name: 'All' }))
+    await waitFor(() => {
+      expect(inboxUrls.at(-1)).not.toContain('status=')
+      expect(inboxUrls.at(-1)).toContain('offset=0')
+    })
+  })
+
+  it('loads the rest of the queue instead of replacing what is on screen', async () => {
+    const groups = Array.from({ length: 3 }, (_, index) =>
+      makeInboxGroup({
+        correlation_group_id: `grp-${index}`,
+        scope_ref: `scope-${index}`,
+        scope_names: [`event_${index}`],
+      }),
+    )
+    const { inboxUrls } = mockPagedInbox(groups, { pageSize: 2 })
+    renderInboxTab()
+
+    expect(await screen.findByText('Showing 2 of 3 · last 30 days')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Load more (1 left)' }))
+
+    // Appended, not swapped: the third row joins the first two.
+    expect(await screen.findByText('Showing 3 of 3 · last 30 days')).toBeInTheDocument()
+    expect(screen.getByText('event_0')).toBeInTheDocument()
+    expect(screen.getByText('event_2')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Load more/ })).toBeNull()
+    expect(inboxUrls.at(-1)).toContain('offset=2')
+  })
+
+  it('pins a deep-linked incident the list does not contain (tripl-oxkt.13)', async () => {
+    // The alert a reader is holding names an incident that aged past the newest
+    // page hours ago. `?incident=` used to only pre-expand a card it never
+    // fetched, so the link rendered nothing at all.
+    mockPagedInbox([makeInboxGroup()], {
+      pinned: makeInboxGroup({
+        correlation_group_id: 'grp-old',
+        scope_names: ['settings/choose_model'],
+        scope_ref: 'scope-old',
+      }),
+    })
+    renderInboxTab('grp-old')
+
+    expect(await screen.findByText(/Linked from an alert/)).toBeInTheDocument()
+    expect(screen.getByText('settings/choose_model')).toBeInTheDocument()
+  })
+})
+
+describe('ProjectAlertingTab — an inbox action reports on its own row (tripl-oxkt.11)', () => {
+  function mockInboxWithHeldAction(groups: Record<string, unknown>[]) {
+    let releaseAction: ((value: Response) => void) | null = null
+    const actionBodies: Record<string, unknown>[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/alert-inbox/') && url.endsWith('/actions')) {
+        actionBodies.push(JSON.parse(String(init?.body)))
+        return new Promise<Response>(resolve => {
+          releaseAction = () =>
+            resolve(
+              jsonResponse({
+                group: { ...groups[0], status: 'acknowledged' },
+                overrides_written: null,
+              }),
+            )
+        })
+      }
+      if (/\/alert-inbox(\?|$)/.test(url)) {
+        return jsonResponse({ items: groups, total: groups.length })
+      }
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: false })
+      }
+      if (url.includes('/alert-destinations')) {
+        return jsonResponse([makeDestination({ rules: [makeRule()] })])
+      }
+      if (url.includes('/alert-deliveries')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.includes('/events')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/scans')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    return { actionBodies, release: () => releaseAction?.(new Response()) }
+  }
+
+  it('greys out the row it is acting on and leaves the rest of the list live', async () => {
+    mockInboxWithHeldAction([
+      makeInboxGroup(),
+      makeInboxGroup({
+        correlation_group_id: 'grp-2',
+        scope_ref: 'scope-2',
+        scope_names: ['checkout_started'],
+      }),
+    ])
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=inbox']}>
+          <ProjectAlertingTab slug="demo" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    const acks = await screen.findAllByRole('button', { name: /^Acknowledge / })
+    expect(acks).toHaveLength(2)
+    fireEvent.click(acks[0])
+
+    // One shared `isActionPending` used to disable all ~80 buttons on the page,
+    // so triage was strictly serial and the row you touched showed nothing.
+    await waitFor(() => expect(acks[0]).toBeDisabled())
+    expect(acks[1]).toBeEnabled()
+  })
+
+  it('sends the note the card is holding, and can send one on its own', async () => {
+    const { actionBodies } = mockInboxWithHeldAction([makeInboxGroup()])
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=inbox']}>
+          <ProjectAlertingTab slug="demo" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add note' }))
+    fireEvent.change(screen.getByRole('textbox', { name: /^Note on payment_failed/ }), {
+      target: { value: 'expected, we retired these screens' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save note' }))
+
+    // `note` records the comment and moves nothing: documenting why something
+    // was a false positive used to require first undoing the false positive.
+    await waitFor(() => expect(actionBodies).toHaveLength(1))
+    expect(actionBodies[0]).toEqual({
+      action: 'note',
+      note: 'expected, we retired these screens',
+    })
   })
 })
 
@@ -417,15 +719,18 @@ describe('ProjectAlertingTab — narrowing a rule to one scan', () => {
   }
 
   it('names the bound scan on the rule row, and says "all scans" when unbound', async () => {
+    // Label and value are separate nodes since the run-on settings line was
+    // split into labelled pairs (tripl-oxkt.18), so the scan is asserted by its
+    // value under the "Scan" label rather than as one "Scan: …" string.
     mockWithScans(makeRule({ scan_config_id: 'scan-ios' }))
     const { unmount } = renderTab('destinations')
-    expect(await screen.findByText('Scan: Old events (iOS)')).toBeInTheDocument()
+    expect(await screen.findByText('Old events (iOS)')).toBeInTheDocument()
     unmount()
 
     vi.restoreAllMocks()
     mockWithScans(makeRule({ scan_config_id: null }))
     renderTab('destinations')
-    expect(await screen.findByText('Scan: all scans')).toBeInTheDocument()
+    expect(await screen.findByText('all scans')).toBeInTheDocument()
   })
 
   it('seeds the Scan picker from the saved rule', async () => {
@@ -564,10 +869,422 @@ describe('ProjectAlertingTab — per-scan focus via ?scan= (tripl-3y7z.2)', () =
     // The first request may still carry the id (the scan list is in flight and
     // dropping a filter on a `[]` default would discard VALID ones); what must
     // not survive is the settled state.
-    await screen.findByText('Audit')
+    // By role: the tab and the panel it opens now share this label.
+    await screen.findByRole('tab', { name: 'Delivery log' })
     await waitFor(() => {
       expect(deliveryUrls.length).toBeGreaterThan(0)
       expect(deliveryUrls.at(-1)).not.toContain('scan_config_id')
     })
+  })
+})
+
+describe('ProjectAlertingTab — viewer role (tripl-oxkt.9)', () => {
+  // The backend rejects every mutation on this page with 403 "Editor role
+  // required" (deps.py), and the page used to offer all of them anyway.
+  const configured = () =>
+    mockAlertingFetch([makeDestination({ rules: [makeRule()] })], {
+      inbox: [makeInboxGroup()],
+      deliveries: [makeDelivery({ status: 'failed', error_message: 'Forbidden' })],
+    })
+
+  it('leaves the Inbox readable and unactionable', async () => {
+    configured()
+    renderTab('inbox', 'viewer')
+
+    // The incident is fully legible…
+    expect(await screen.findByText('payment_failed')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /what was sent/ })).toBeEnabled()
+    // …and not one of the five actions is on the card.
+    for (const name of [/^Acknowledge /, /^Resolve /, /^Mute /, /^Reopen /, /false positive$/]) {
+      expect(screen.queryByRole('button', { name })).toBeNull()
+    }
+    expect(screen.queryByRole('button', { name: 'Add note' })).toBeNull()
+  })
+
+  it('leaves Destinations & rules readable and unactionable', async () => {
+    configured()
+    renderTab('destinations', 'viewer')
+
+    expect(await screen.findByText('Routing rules')).toBeInTheDocument()
+    // Configuration is still fully on screen — a viewer's job here is to check
+    // what is wired up, not to change it.
+    // Awaited, not read synchronously: "Routing rules" above is a static
+    // heading, so finding it proves nothing about the destinations query.
+    expect((await screen.findAllByText('Main Slack')).length).toBeGreaterThan(0)
+    expect(screen.getByText('Cooldown')).toBeInTheDocument()
+
+    for (const name of [
+      'Send a test message through Main Slack',
+      'Edit destination Main Slack',
+      'Add Rule',
+      'Edit rule payment_failed spike',
+      'Delete rule payment_failed spike',
+      'Delete destination',
+    ]) {
+      expect(screen.queryByRole('button', { name })).toBeNull()
+    }
+    for (const name of ['Toggle Main Slack', 'Toggle payment_failed spike']) {
+      expect(screen.queryByRole('switch', { name })).toBeNull()
+    }
+    // The "add another channel" row goes with them: six buttons under an
+    // invitation, all of which answer 403.
+    expect(screen.queryByRole('button', { name: 'Telegram' })).toBeNull()
+  })
+
+  it('leaves the delivery log readable and unretryable', async () => {
+    configured()
+    renderTab('audit', 'viewer')
+
+    expect((await screen.findAllByText('Main Slack')).length).toBeGreaterThan(0)
+    expect(screen.getByLabelText('Status')).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Retry delivery' })).toBeNull()
+  })
+
+  it('gives an editor every one of them back', async () => {
+    configured()
+    renderTab('destinations', 'editor')
+
+    expect(await screen.findByRole('button', { name: 'Edit destination Main Slack' })).toBeEnabled()
+    expect(screen.getByRole('switch', { name: 'Toggle payment_failed spike' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Add Rule' })).toBeEnabled()
+    expect(screen.queryByText(/your account has the viewer role/i)).toBeNull()
+  })
+
+  it('offers guided setup as an explanation, not as six dead buttons', async () => {
+    mockAlertingFetch()
+    renderTab(undefined, 'viewer')
+
+    expect(await screen.findByText('Set up alerting')).toBeInTheDocument()
+    // The three steps stay: they answer "what is this page" for someone who
+    // cannot yet be shown any alerting at all.
+    expect(screen.getByText('Pick a channel')).toBeInTheDocument()
+    expect(screen.getByText(/the first destination is created by an editor or owner/))
+      .toBeInTheDocument()
+    for (const label of ['Slack', 'Telegram', 'Webhook', 'Email', 'Jira', 'Linear']) {
+      expect(screen.queryByRole('button', { name: label })).toBeNull()
+    }
+  })
+})
+
+describe('ProjectAlertingTab — the destination confirm states the cascade (tripl-oxkt.13)', () => {
+  it('names the deliveries and incidents in the DIALOG, not only in a title', async () => {
+    // The dialog is the control that actually gates the cascade, and it read
+    // `Delete "Main Slack" and all its alert rules?` — naming none of the
+    // deliveries, incidents, notes or mutes that ON DELETE CASCADE takes with
+    // them. The one place stating them was a `title` on the button behind it,
+    // which is invisible on touch and invisible once this dialog is open.
+    mockAlertingFetch([
+      makeDestination({ delivery_count: 115, incident_count: 57, rules: [makeRule()] }),
+    ])
+    renderTab('destinations')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete destination' }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    expect(
+      within(dialog).getByText(
+        /Delete "Main Slack" and all its alert rules\? This also deletes 115 deliveries and 57 incidents built from them, including any notes and mutes on those incidents\. It cannot be undone\./,
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('says plainly that a destination which never delivered loses no history', async () => {
+    mockAlertingFetch([
+      makeDestination({ delivery_count: 0, incident_count: 0, rules: [makeRule()] }),
+    ])
+    renderTab('destinations')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete destination' }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    expect(
+      within(dialog).getByText(/It has never delivered, so no history is lost\./),
+    ).toBeInTheDocument()
+  })
+})
+
+describe('ProjectAlertingTab — a config write reaches the incident views (tripl-oxkt.14)', () => {
+  /**
+   * The production cache policy, not the test default.
+   *
+   * `staleTime: 60_000` (main.tsx) is the whole defect: without an invalidation
+   * the Inbox keeps serving the incidents a rule delete just destroyed for a
+   * further minute, and every button on them 404s. A client with the default
+   * `staleTime: 0` would refetch on the way back regardless and prove nothing.
+   */
+  function renderWithProductionCache(section: 'inbox' | 'destinations') {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 60_000 } },
+    })
+    return render(
+      <AuthContext.Provider value={authValue('editor')}>
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[`/p/demo/settings/alerting?section=${section}`]}>
+            <ProjectAlertingTab slug="demo" />
+          </MemoryRouter>
+        </QueryClientProvider>
+      </AuthContext.Provider>,
+    )
+  }
+
+  /** Records every URL asked for, so a refetch is counted rather than assumed. */
+  function mockCountedFetch() {
+    const urls: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      urls.push(url)
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: false })
+      }
+      if (url.includes('/alert-destinations')) {
+        return jsonResponse([makeDestination({ rules: [makeRule()] })])
+      }
+      if (url.includes('/alert-deliveries')) return jsonResponse({ items: [], total: 0 })
+      if (/\/alert-inbox(\?|$)/.test(url)) {
+        return jsonResponse({ items: [makeInboxGroup()], total: 1 })
+      }
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.includes('/events')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/scans')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    return {
+      urls,
+      inboxRequests: () => urls.filter(url => /\/alert-inbox(\?|$)/.test(url)),
+      // The unfiltered probe that decides whether the page collapses into
+      // guided setup — one row is the whole request.
+      probeRequests: () => urls.filter(url => url.includes('/alert-deliveries') && url.includes('limit=1')),
+    }
+  }
+
+  /** Delete the one rule on the card, through its confirm. */
+  async function deleteTheRule() {
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete rule payment_failed spike' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+  }
+
+  it('refetches the delivery-history probe the moment a rule is deleted', async () => {
+    const remove = vi.spyOn(alertingApi, 'deleteRule').mockResolvedValue(undefined)
+    const { probeRequests } = mockCountedFetch()
+    renderWithProductionCache('destinations')
+
+    await waitFor(() => expect(probeRequests().length).toBeGreaterThan(0))
+    const before = probeRequests().length
+    await deleteTheRule()
+
+    // The probe is an active query, so it refetches immediately — the direct
+    // proof that a config write now invalidates the delivery side at all.
+    await waitFor(() => expect(remove).toHaveBeenCalled())
+    await waitFor(() => expect(probeRequests().length).toBeGreaterThan(before))
+  })
+
+  it('refetches the Inbox on the way back to it, instead of listing deleted incidents', async () => {
+    vi.spyOn(alertingApi, 'deleteRule').mockResolvedValue(undefined)
+    const { inboxRequests } = mockCountedFetch()
+    renderWithProductionCache('inbox')
+
+    await screen.findByText(/Showing 1 of 1/)
+    const before = inboxRequests().length
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Destinations & rules' }))
+    await deleteTheRule()
+    fireEvent.click(screen.getByRole('tab', { name: 'Inbox' }))
+
+    // Without the invalidation this stays where it was for a full minute: the
+    // incidents the delete destroyed are still on screen, and every button on
+    // them 404s through _get_or_create_correlation_state.
+    await waitFor(() => expect(inboxRequests().length).toBeGreaterThan(before))
+  })
+
+  it('polls the Inbox, so a page held open during an incident is not frozen', async () => {
+    // The configuration panel beside it polled every 60s while the triage queue
+    // — the one thing on this page that changes without the reader — did not: a
+    // new incident never appeared and a colleague's Ack never showed.
+    vi.useFakeTimers()
+    try {
+      const { inboxRequests } = mockCountedFetch()
+      renderWithProductionCache('inbox')
+
+      // `waitFor` cannot drive vitest's fake clock (it only detects jest's), so
+      // the timers are advanced explicitly and the assertions are synchronous.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+      const loaded = inboxRequests().length
+      expect(loaded).toBeGreaterThan(0)
+
+      // Nothing was clicked and nothing regained focus: the only thing that can
+      // ask again is the interval.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(inboxRequests().length).toBeGreaterThan(loaded)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('ProjectAlertingTab — guided setup lands step 2 on step 3 (tripl-oxkt.15)', () => {
+  /** A destinations list that starts empty and holds what the POST creates. */
+  function mockCreatableDestinations() {
+    const created: Record<string, unknown>[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/alert-destinations') && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { name: string }
+        const destination = makeDestination({ id: 'dest-new', name: body.name, rules: [] })
+        created.push(destination)
+        return jsonResponse(destination)
+      }
+      if (url.includes('/alert-destinations')) return jsonResponse(created)
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: false })
+      }
+      if (url.includes('/alert-deliveries')) return jsonResponse({ items: [], total: 0 })
+      if (/\/alert-inbox(\?|$)/.test(url)) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.includes('/events')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/scans')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    return created
+  }
+
+  /** Steps 1 and 2 of the checklist: pick Slack, fill it in, Create. */
+  async function finishStepTwo() {
+    fireEvent.click(await screen.findByRole('button', { name: 'Slack' }))
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Ops Slack' } })
+    fireEvent.change(screen.getByLabelText('Webhook URL'), {
+      target: { value: 'https://hooks.slack.com/services/T/B/X' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+  }
+
+  it('switches to Destinations and opens the rule form on the new destination', async () => {
+    // Finishing step 2 used to flip `hasDestinations`, which took the checklist
+    // off screen and dropped the reader on the default Inbox section reading
+    // "No rules yet, so nothing can raise an incident" — with the destination
+    // they had just made on a tab they were not on.
+    mockCreatableDestinations()
+    renderTab()
+
+    await finishStepTwo()
+
+    expect(await screen.findByText('New Alert Rule')).toBeInTheDocument()
+    // `hidden: true`, because the open modal marks the rest of the page
+    // aria-hidden: the tab strip is still THERE and still selected, it is just
+    // not in the accessibility tree while a dialog is trapping focus.
+    expect(
+      screen.getByRole('tab', { name: 'Destinations & rules', hidden: true }),
+    ).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('Ops Slack')).toBeInTheDocument()
+  })
+
+  it('does not re-open the form the reader closed, on this render or the next visit', async () => {
+    mockCreatableDestinations()
+    renderTab()
+
+    await finishStepTwo()
+    // Wait for the rule form, then cancel THAT one. Clicking the first "Cancel"
+    // on screen right after Create cancels the still-open destination dialog —
+    // the create mutation has not resolved yet, so the rule form does not exist
+    // and the assertion below passes for the wrong reason.
+    await screen.findByText('New Alert Rule')
+    fireEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }),
+    )
+    expect(screen.queryByText('New Alert Rule')).toBeNull()
+
+    // The card unmounts with the section, so the instruction has to have been
+    // cleared on the page — a prop left set would open the form again here.
+    fireEvent.click(screen.getByRole('tab', { name: 'Inbox' }))
+    fireEvent.click(await screen.findByRole('tab', { name: 'Destinations & rules' }))
+
+    expect(await screen.findByText('Ops Slack')).toBeInTheDocument()
+    expect(screen.queryByText('New Alert Rule')).toBeNull()
+  })
+})
+
+describe('ProjectAlertingTab — the tab strip honours the contract it declares (tripl-oxkt.19)', () => {
+  const configured = () => mockAlertingFetch([makeDestination({ rules: [makeRule()] })])
+
+  it('attaches the section body to the tab that names it', async () => {
+    // role="tab" and aria-selected, with no id, no aria-controls and no
+    // role="tabpanel" anywhere, announced a widget with no panels attached.
+    configured()
+    renderTab('destinations')
+
+    const tab = await screen.findByRole('tab', { name: 'Destinations & rules' })
+    const panel = screen.getByRole('tabpanel')
+    expect(tab.id).toBeTruthy()
+    expect(tab).toHaveAttribute('aria-controls', panel.id)
+    expect(panel).toHaveAttribute('aria-labelledby', tab.id)
+    // The two unmounted sections must not claim a panel that is not in the
+    // document — a dangling aria-controls is a broken reference, not a hint.
+    expect(screen.getByRole('tab', { name: 'Inbox' })).not.toHaveAttribute('aria-controls')
+  })
+
+  it('keeps one Tab stop for the whole strip', async () => {
+    configured()
+    renderTab('inbox')
+
+    expect(await screen.findByRole('tab', { name: 'Inbox' })).toHaveAttribute('tabindex', '0')
+    for (const name of ['Destinations & rules', 'Delivery log']) {
+      expect(screen.getByRole('tab', { name })).toHaveAttribute('tabindex', '-1')
+    }
+  })
+
+  it('moves the selection with ArrowRight/ArrowLeft, wrapping at both ends', async () => {
+    configured()
+    renderTab('inbox')
+
+    const inbox = await screen.findByRole('tab', { name: 'Inbox' })
+    inbox.focus()
+    fireEvent.keyDown(inbox, { key: 'ArrowRight' })
+
+    const destinations = screen.getByRole('tab', { name: 'Destinations & rules' })
+    expect(destinations).toHaveAttribute('aria-selected', 'true')
+    // Focus travels with the selection, or the next arrow press starts from the
+    // button the reader left.
+    expect(destinations).toHaveFocus()
+
+    fireEvent.keyDown(destinations, { key: 'ArrowLeft' })
+    expect(screen.getByRole('tab', { name: 'Inbox' })).toHaveAttribute('aria-selected', 'true')
+
+    // The strip is a ring: left from the first lands on the last.
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Inbox' }), { key: 'ArrowLeft' })
+    expect(screen.getByRole('tab', { name: 'Delivery log' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('jumps to the first and last section with Home and End', async () => {
+    configured()
+    renderTab('destinations')
+
+    const destinations = await screen.findByRole('tab', { name: 'Destinations & rules' })
+    fireEvent.keyDown(destinations, { key: 'End' })
+
+    const audit = screen.getByRole('tab', { name: 'Delivery log' })
+    expect(audit).toHaveAttribute('aria-selected', 'true')
+    expect(audit).toHaveFocus()
+
+    fireEvent.keyDown(audit, { key: 'Home' })
+    expect(screen.getByRole('tab', { name: 'Inbox' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('leaves keys it does not own alone', async () => {
+    configured()
+    renderTab('inbox')
+
+    const inbox = await screen.findByRole('tab', { name: 'Inbox' })
+    fireEvent.keyDown(inbox, { key: 'ArrowDown' })
+
+    expect(inbox).toHaveAttribute('aria-selected', 'true')
   })
 })

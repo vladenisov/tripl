@@ -630,6 +630,8 @@ describe('ProjectSettingsPage', () => {
             webhook_set: true,
             bot_token_set: false,
             chat_id: null,
+            delivery_count: 0,
+            incident_count: 0,
             rules: [],
             created_at: '2026-04-11T00:00:00Z',
             updated_at: '2026-04-11T00:00:00Z',
@@ -643,6 +645,8 @@ describe('ProjectSettingsPage', () => {
             webhook_set: false,
             bot_token_set: true,
             chat_id: '-100123',
+            delivery_count: 0,
+            incident_count: 0,
             rules: [],
             created_at: '2026-04-11T00:00:00Z',
             updated_at: '2026-04-11T00:00:00Z',
@@ -694,6 +698,8 @@ describe('ProjectSettingsPage', () => {
           webhook_set: false,
           bot_token_set: true,
           chat_id: '-100123',
+          delivery_count: 0,
+          incident_count: 0,
           rules: [],
           created_at: '2026-04-11T00:00:00Z',
           updated_at: '2026-04-11T00:00:00Z',
@@ -757,11 +763,19 @@ describe('ProjectSettingsPage', () => {
           webhook_set: true,
           bot_token_set: false,
           chat_id: null,
+          delivery_count: 0,
+          incident_count: 0,
           rules: [{
             id: 'rule-1',
             destination_id: 'dest-1',
             name: 'Main Rule',
             enabled: true,
+            muted: false,
+            muted_until: null,
+            total_deliveries: 0,
+            incident_count: 0,
+            last_delivery_at: null,
+            last_delivery_status: null,
             include_project_total: true,
             include_event_types: true,
             include_events: true,
@@ -810,10 +824,11 @@ describe('ProjectSettingsPage', () => {
     )
 
     expect(await screen.findByText('Main Rule')).toBeInTheDocument()
-    expect(screen.getByText('Scopes: total, groups, events')).toBeInTheDocument()
-    expect(screen.getByText('Direction: up')).toBeInTheDocument()
-    expect(screen.getByText('Cooldown: 1d')).toBeInTheDocument()
-    expect(screen.getByText('Message: custom (slack_mrkdwn)')).toBeInTheDocument()
+    // Each setting is a labelled pair now, not one run-on line (tripl-oxkt.18).
+    expect(screen.getByText('total, groups, events')).toBeInTheDocument()
+    expect(screen.getByText('up')).toBeInTheDocument()
+    expect(screen.getByText('1d')).toBeInTheDocument()
+    expect(screen.getByText('custom (slack_mrkdwn)')).toBeInTheDocument()
   })
 
   it('does not collapse into setup when an audit filter matches nothing', async () => {
@@ -857,7 +872,7 @@ describe('ProjectSettingsPage', () => {
 
     // Still the real page: tabs present, and the Audit filter bar still there to
     // undo the filter with.
-    expect(await screen.findByRole('tab', { name: 'Audit' })).toHaveAttribute(
+    expect(await screen.findByRole('tab', { name: 'Delivery log' })).toHaveAttribute(
       'aria-selected',
       'true',
     )

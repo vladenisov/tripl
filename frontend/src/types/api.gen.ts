@@ -679,6 +679,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/alert-destinations/{destination_id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Alert Destination
+         * @description Send one fixed test message through this destination's real channel.
+         *
+         *     Editor-only: it puts a message in somebody's Slack/Telegram/inbox and, for a
+         *     tracker destination, opens a ticket. Always 200 — a channel refusal is the
+         *     answer the caller asked for, not a server fault (see
+         *     ``AlertDestinationTestResponse``).
+         *
+         *     Recorded in the audit log rather than as an AlertDelivery, so the Delivery
+         *     log keeps meaning "an alert fired"; see ``services/_alerting_test_send``.
+         */
+        post: operations["test_alert_destination_api_v1_projects__slug__alert_destinations__destination_id__test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/alert-inbox": {
         parameters: {
             query?: never;
@@ -688,6 +716,30 @@ export interface paths {
         };
         /** List Alert Inbox */
         get: operations["list_alert_inbox_api_v1_projects__slug__alert_inbox_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/alert-inbox/{correlation_group_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Alert Inbox Group
+         * @description Resolve one incident by id, ignoring the list's lookback window.
+         *
+         *     Alert messages deep-link the incident they describe, and the reader opens
+         *     them late; before this route the link landed on a page of 20 unrelated
+         *     incidents with no explanation (tripl-oxkt.7).
+         */
+        get: operations["get_alert_inbox_group_api_v1_projects__slug__alert_inbox__correlation_group_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3530,6 +3582,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Delivery Count */
+            delivery_count: number;
             /** Email From Address */
             email_from_address: string | null;
             /** Email Recipients */
@@ -3543,6 +3597,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Incident Count */
+            incident_count: number;
             /**
              * Is Local
              * @default false
@@ -3587,6 +3643,24 @@ export interface components {
             webhook_header_name: string | null;
             /** Webhook Set */
             webhook_set: boolean;
+        };
+        /**
+         * AlertDestinationTestResponse
+         * @description Result of a manual test send — did this destination reach its channel?
+         *
+         *     A channel refusal is an ANSWER, not a server fault: a revoked Telegram token
+         *     and a healthy one look identical in the destination form (tripl-oxkt.17), and
+         *     the whole point of the probe is to tell them apart. So the route returns 200
+         *     with ``ok=False`` and the channel's own message rather than a 5xx the UI would
+         *     render as "something went wrong on our side".
+         */
+        AlertDestinationTestResponse: {
+            /** Error */
+            error: string | null;
+            /** Ok */
+            ok: boolean;
+            /** Sent At */
+            sent_at: string | null;
         };
         /**
          * AlertDestinationType
@@ -3647,11 +3721,27 @@ export interface components {
              * Action
              * @enum {string}
              */
-            action: "acknowledge" | "resolve" | "mute" | "reopen" | "false_positive";
+            action: "acknowledge" | "resolve" | "mute" | "reopen" | "false_positive" | "note";
             /** Muted Until */
             muted_until?: string | null;
             /** Note */
             note?: string | null;
+        };
+        /**
+         * AlertInboxActionResponse
+         * @description What the action DID, not only what the group looks like afterwards.
+         *
+         *     ``false_positive`` writes no scope override for scope types the ratchet does
+         *     not tune — release regressions among them — so the button promised a
+         *     detection change it never made, on 10 of 57 production groups (tripl-oxkt.6).
+         *     The count is reported so the UI can say "tightened 2 scopes" or "no scopes
+         *     tightened"; it must NOT be guessed client-side from ``scope_type``, which is
+         *     only the newest item's.
+         */
+        AlertInboxActionResponse: {
+            group: components["schemas"]["AlertInboxGroupResponse"];
+            /** Overrides Written */
+            overrides_written: number | null;
         };
         /** AlertInboxGroupResponse */
         AlertInboxGroupResponse: {
@@ -3659,6 +3749,10 @@ export interface components {
             acted_at?: string | null;
             /** Acted By */
             acted_by?: string | null;
+            /** Acted By Name */
+            acted_by_name: string | null;
+            /** Actual Count */
+            actual_count: number;
             /**
              * Correlation Group Id
              * Format: uuid
@@ -3671,11 +3765,18 @@ export interface components {
             direction: components["schemas"]["AnomalyDirection"];
             /** Event Id */
             event_id: string | null;
+            /** Expected Count */
+            expected_count: number;
             /**
              * False Positive Count
              * @default 0
              */
             false_positive_count: number;
+            /**
+             * First Delivery At
+             * Format: date-time
+             */
+            first_delivery_at: string;
             /** Item Count */
             item_count: number;
             /**
@@ -3688,12 +3789,20 @@ export interface components {
              * Format: date-time
              */
             latest_delivery_at: string;
+            /** Max Abs Percent Delta */
+            max_abs_percent_delta: number | null;
+            /** Muted */
+            muted: boolean;
             /** Muted Until */
             muted_until?: string | null;
             /** Note */
             note?: string | null;
+            /** Percent Delta */
+            percent_delta: number | null;
             /** Rule Names */
             rule_names: string[];
+            /** Rules */
+            rules: components["schemas"]["AlertInboxRuleRef"][];
             /** Scan Names */
             scan_names: string[];
             /** Scope Names */
@@ -3701,6 +3810,8 @@ export interface components {
             /** Scope Ref */
             scope_ref: string;
             scope_type: components["schemas"]["MetricScopeType"];
+            /** Scope Types */
+            scope_types: components["schemas"]["MetricScopeType"][];
             status: components["schemas"]["AlertInboxStatus"];
         };
         /** AlertInboxListResponse */
@@ -3709,6 +3820,26 @@ export interface components {
             items: components["schemas"]["AlertInboxGroupResponse"][];
             /** Total */
             total: number;
+        };
+        /**
+         * AlertInboxRuleRef
+         * @description One rule that carried this incident: the id AND the name, together.
+         *
+         *     Replaces the parallel ``rule_ids`` / ``rule_names`` arrays, which could not
+         *     be zipped: ``rule_ids`` was sorted by UUID and ``rule_names`` by name, so
+         *     index *i* of one had nothing to do with index *i* of the other and the card
+         *     linked "Volume rule" to whichever monitor happened to sort first. Two rules
+         *     of one group can even share a name, so no client-side join could repair it
+         *     either (tripl-oxkt.4).
+         */
+        AlertInboxRuleRef: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
         };
         /**
          * AlertInboxStatus
@@ -3869,6 +4000,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Incident Count */
+            incident_count: number;
             /** Include Distribution Drifts */
             include_distribution_drifts: boolean;
             /** Include Event Types */
@@ -3887,6 +4020,9 @@ export interface components {
             include_variable_value_drifts: boolean;
             /** Items Template */
             items_template: string | null;
+            /** Last Delivery At */
+            last_delivery_at: string | null;
+            last_delivery_status: components["schemas"]["AlertDeliveryStatus"] | null;
             message_format: components["schemas"]["AlertMessageFormat"];
             /** Message Template */
             message_template: string | null;
@@ -3896,6 +4032,10 @@ export interface components {
             min_expected_count: number;
             /** Min Percent Delta */
             min_percent_delta: number;
+            /** Muted */
+            muted: boolean;
+            /** Muted Until */
+            muted_until: string | null;
             /** Name */
             name: string;
             /** Notify On Drop */
@@ -3904,6 +4044,8 @@ export interface components {
             notify_on_spike: boolean;
             /** Scan Config Id */
             scan_config_id: string | null;
+            /** Total Deliveries */
+            total_deliveries: number;
             /**
              * Updated At
              * Format: date-time
@@ -3924,6 +4066,14 @@ export interface components {
             firings: components["schemas"]["SimulatedRuleFiring"][];
             /** Matched Before Cooldown */
             matched_before_cooldown: number;
+            /** Min Expected Count Saved */
+            min_expected_count_saved: number;
+            /** Min Expected Count Used */
+            min_expected_count_used: number;
+            /** Min Percent Delta Saved */
+            min_percent_delta_saved: number;
+            /** Min Percent Delta Used */
+            min_percent_delta_used: number;
             /** Noisy */
             noisy: boolean;
             /** Rendered Message */
@@ -3935,6 +4085,10 @@ export interface components {
             rule_id: string;
             /** Rule Name */
             rule_name: string;
+            /** Sigma Threshold Saved */
+            sigma_threshold_saved: number | null;
+            /** Sigma Threshold Used */
+            sigma_threshold_used: number | null;
             /**
              * Window From
              * Format: date-time
@@ -7353,23 +7507,20 @@ export interface components {
             /** Include Variable Value Drifts */
             include_variable_value_drifts: boolean;
             /** Last Anomaly At */
-            last_anomaly_at?: string | null;
+            last_anomaly_at: string | null;
             /** Last Delivery At */
-            last_delivery_at?: string | null;
-            last_delivery_status?: components["schemas"]["AlertDeliveryStatus"] | null;
+            last_delivery_at: string | null;
+            last_delivery_status: components["schemas"]["AlertDeliveryStatus"] | null;
             /** Last Notified At */
-            last_notified_at?: string | null;
+            last_notified_at: string | null;
             /** Min Expected Count */
             min_expected_count: number;
             /** Min Percent Delta */
             min_percent_delta: number;
-            /**
-             * Muted
-             * @default false
-             */
+            /** Muted */
             muted: boolean;
             /** Muted Until */
-            muted_until?: string | null;
+            muted_until: string | null;
             /** Notify On Drop */
             notify_on_drop: boolean;
             /** Notify On Spike */
@@ -7422,20 +7573,17 @@ export interface components {
             /** Firing Scope Count */
             firing_scope_count: number;
             /** Last Anomaly At */
-            last_anomaly_at?: string | null;
+            last_anomaly_at: string | null;
             /** Last Notified At */
-            last_notified_at?: string | null;
+            last_notified_at: string | null;
             /** Min Expected Count */
             min_expected_count: number;
             /** Min Percent Delta */
             min_percent_delta: number;
-            /**
-             * Muted
-             * @default false
-             */
+            /** Muted */
             muted: boolean;
             /** Muted Until */
-            muted_until?: string | null;
+            muted_until: string | null;
             /** Notify On Drop */
             notify_on_drop: boolean;
             /** Notify On Spike */
@@ -8175,6 +8323,11 @@ export interface components {
              * @default 0
              */
             monitoring_signal_count: number;
+            /**
+             * Open Incident Count
+             * @default 0
+             */
+            open_incident_count: number;
             /**
              * Review Pending Event Count
              * @default 0
@@ -11424,6 +11577,9 @@ export interface operations {
             query?: {
                 days?: number;
                 cooldown_minutes_override?: number | null;
+                min_percent_delta_override?: number | null;
+                min_expected_count_override?: number | null;
+                sigma_threshold_override?: number | null;
             };
             header?: never;
             path: {
@@ -11442,6 +11598,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AlertRuleSimulateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_alert_destination_api_v1_projects__slug__alert_destinations__destination_id__test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                destination_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertDestinationTestResponse"];
                 };
             };
             /** @description Validation Error */
@@ -11490,6 +11678,38 @@ export interface operations {
             };
         };
     };
+    get_alert_inbox_group_api_v1_projects__slug__alert_inbox__correlation_group_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                correlation_group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertInboxGroupResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     apply_alert_inbox_action_api_v1_projects__slug__alert_inbox__correlation_group_id__actions_post: {
         parameters: {
             query?: never;
@@ -11512,7 +11732,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AlertInboxGroupResponse"];
+                    "application/json": components["schemas"]["AlertInboxActionResponse"];
                 };
             };
             /** @description Validation Error */

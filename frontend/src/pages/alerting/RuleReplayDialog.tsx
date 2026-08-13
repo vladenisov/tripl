@@ -21,16 +21,82 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import type { AlertRule, AlertRuleSimulateResponse } from '@/types'
+import type { AlertMessageFormat, AlertRule, AlertRuleSimulateResponse } from '@/types'
 import { getErrorMessage } from '@/lib/utils'
 import { formatDateTime } from '@/lib/datetime'
 import { formatPercentDelta } from '@/lib/percentDelta'
+import { formatCooldown } from './constants'
 
 const DAYS_OPTIONS = [1, 3, 7, 14, 30] as const
+
+/**
+ * The preview caption used to pick its wording from
+ * `firings[0]?.scope_type ? 'destination' : 'Slack/Telegram'` — a field that
+ * says nothing whatsoever about how a message is rendered, so the line was a
+ * coin flip dressed as information (tripl-oxkt.17). What the preview is actually
+ * rendered with is the rule's own message format, so that is what it now names.
+ */
+const MESSAGE_FORMAT_LABEL: Record<AlertMessageFormat, string> = {
+  plain: 'plain text',
+  slack_mrkdwn: 'Slack mrkdwn',
+  telegram_html: 'Telegram HTML',
+  telegram_markdownv2: 'Telegram MarkdownV2',
+}
+
+// The bounds the simulate route enforces on sigma (`gt=0, le=RATCHET_SIGMA_CAP`
+// in api/v1/alerting.py). They are mirrored here rather than left to the server
+// because the failure mode is silent: the input allowed 0, `parseOverride`
+// happily returned it, and every replay then 422'd with nothing on screen
+// explaining why. A bound the UI does not know is a bound the user discovers by
+// failing.
+const SIGMA_MIN_EXCLUSIVE = 0
+const SIGMA_MAX = 10
+
+/** Thresholds to try WITHOUT saving them to the rule. */
+interface ReplayOverrides {
+  cooldownMinutes?: number
+  minPercentDelta?: number
+  minExpectedCount?: number
+  sigmaThreshold?: number
+}
 
 type ReplayResult = {
   saved: AlertRuleSimulateResponse
   override: AlertRuleSimulateResponse | null
+}
+
+/**
+ * A blank box means "leave this one alone", which is a different instruction
+ * from 0 — `Number('')` is 0, so parsing without this guard would silently
+ * replay every empty field as the most permissive threshold there is.
+ */
+function parseOverride(text: string): number | null {
+  const trimmed = text.trim()
+  if (trimmed === '') return null
+  const value = Number(trimmed)
+  if (!Number.isFinite(value) || value < 0) return null
+  return value
+}
+
+function ThresholdRow({
+  label,
+  used,
+  saved,
+}: {
+  label: string
+  used: string
+  saved: string
+}) {
+  const changed = used !== saved
+  return (
+    <div className="min-w-0">
+      <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</dt>
+      <dd className={changed ? 'text-xs font-medium text-foreground' : 'text-xs text-muted-foreground'}>
+        {used}
+        {changed && <span className="text-muted-foreground"> (saved {saved})</span>}
+      </dd>
+    </div>
+  )
 }
 
 function FiringsCountBadge({
@@ -73,26 +139,52 @@ export function RuleReplayDialog({
   rule: AlertRule
 }) {
   const [days, setDays] = useState<number>(7)
-  const [overrideText, setOverrideText] = useState<string>('')
+  const [cooldownText, setCooldownText] = useState<string>('')
+  const [minPercentText, setMinPercentText] = useState<string>('')
+  const [minExpectedText, setMinExpectedText] = useState<string>('')
+  const [sigmaText, setSigmaText] = useState<string>('')
   const [result, setResult] = useState<ReplayResult | null>(null)
   const { notifyStepCompleted } = useDemoScenarioActions()
 
-  const overrideValue =
-    overrideText.trim() === '' ? null : Math.max(0, Number(overrideText.trim()))
-  const overrideIsValid = overrideValue === null || Number.isFinite(overrideValue)
-  const overrideDiffersFromSaved =
-    overrideValue !== null && overrideValue !== rule.cooldown_minutes
+  // Only a value that actually DIFFERS from the rule counts as an override:
+  // typing the saved number back in would otherwise cost a second identical
+  // request and label the result "Override" when nothing was overridden.
+  const requestedOverrides: ReplayOverrides = {}
+  const cooldown = parseOverride(cooldownText)
+  if (cooldown !== null && cooldown !== rule.cooldown_minutes) {
+    requestedOverrides.cooldownMinutes = cooldown
+  }
+  const minPercent = parseOverride(minPercentText)
+  if (minPercent !== null && minPercent !== rule.min_percent_delta) {
+    requestedOverrides.minPercentDelta = minPercent
+  }
+  const minExpected = parseOverride(minExpectedText)
+  if (minExpected !== null && minExpected !== rule.min_expected_count) {
+    requestedOverrides.minExpectedCount = minExpected
+  }
+  // Sigma has no rule-level column to compare against — the detector's own
+  // default is the baseline — so anything typed here is a change by definition.
+  const sigma = parseOverride(sigmaText)
+  const sigmaOutOfRange =
+    sigma !== null && (sigma <= SIGMA_MIN_EXCLUSIVE || sigma > SIGMA_MAX)
+  if (sigma !== null && !sigmaOutOfRange) {
+    requestedOverrides.sigmaThreshold = sigma
+  }
+  const hasOverrides = Object.keys(requestedOverrides).length > 0
 
   const simulateMut = useMutation({
-    mutationFn: async ({ n, override }: { n: number; override: number | null }) => {
+    mutationFn: async ({ n, overrides }: { n: number; overrides: ReplayOverrides | null }) => {
+      // Two runs, always: `*_used`/`*_saved` name the thresholds a single run
+      // applied, but only a second run over the SAME window says how many
+      // firings the change would actually have removed.
       const savedPromise = alertingApi.simulateRule(slug, destinationId, rule.id, n)
-      if (override === null || override === rule.cooldown_minutes) {
+      if (!overrides) {
         const saved = await savedPromise
         return { saved, override: null } satisfies ReplayResult
       }
       const [saved, overrideResp] = await Promise.all([
         savedPromise,
-        alertingApi.simulateRule(slug, destinationId, rule.id, n, override),
+        alertingApi.simulateRule(slug, destinationId, rule.id, n, overrides),
       ])
       return { saved, override: overrideResp } satisfies ReplayResult
     },
@@ -109,7 +201,10 @@ export function RuleReplayDialog({
     if (!value) {
       setResult(null)
       simulateMut.reset()
-      setOverrideText('')
+      setCooldownText('')
+      setMinPercentText('')
+      setMinExpectedText('')
+      setSigmaText('')
     }
   }
 
@@ -144,29 +239,87 @@ export function RuleReplayDialog({
                 </SelectContent>
               </Select>
             </div>
+            {/* Every threshold the simulation can vary, tried WITHOUT saving it:
+                answering "would Min % 300 cut these incidents" used to mean
+                writing 300 onto the rule that is live-routing to a real channel
+                and waiting to find out (tripl-oxkt.17). */}
             <div className="space-y-1">
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground" aria-hidden="true">
-                Cooldown override (min)
+                Cooldown (min)
               </div>
               <Input
                 aria-label="Cooldown override in minutes"
                 type="number"
                 min={0}
                 placeholder={`saved: ${rule.cooldown_minutes}`}
-                value={overrideText}
-                onChange={(e) => setOverrideText(e.target.value)}
-                className="h-8 w-36 text-xs"
+                value={cooldownText}
+                onChange={(e) => setCooldownText(e.target.value)}
+                className="h-8 w-32 text-xs"
               />
+            </div>
+            <div className="space-y-1">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground" aria-hidden="true">
+                Min %
+              </div>
+              <Input
+                aria-label="Minimum percent delta override"
+                type="number"
+                min={0}
+                step="0.1"
+                placeholder={`saved: ${rule.min_percent_delta}`}
+                value={minPercentText}
+                onChange={(e) => setMinPercentText(e.target.value)}
+                className="h-8 w-28 text-xs"
+              />
+            </div>
+            <div className="space-y-1">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground" aria-hidden="true">
+                Min expected
+              </div>
+              <Input
+                aria-label="Minimum expected count override"
+                type="number"
+                min={0}
+                step="0.1"
+                placeholder={`saved: ${rule.min_expected_count}`}
+                value={minExpectedText}
+                onChange={(e) => setMinExpectedText(e.target.value)}
+                className="h-8 w-28 text-xs"
+              />
+            </div>
+            <div className="space-y-1">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground" aria-hidden="true">
+                Sigma
+              </div>
+              <Input
+                aria-label="Sigma threshold override"
+                type="number"
+                min={0.1}
+                max={SIGMA_MAX}
+                step="0.1"
+                aria-invalid={sigmaOutOfRange || undefined}
+                placeholder="detector default"
+                value={sigmaText}
+                onChange={(e) => setSigmaText(e.target.value)}
+                className="h-8 w-28 text-xs"
+              />
+              {sigmaOutOfRange && (
+                <p role="alert" className="text-[10.5px] text-destructive">
+                  Between {SIGMA_MIN_EXCLUSIVE} and {SIGMA_MAX}, or blank for the detector default.
+                </p>
+              )}
             </div>
             <Button
               size="sm"
               onClick={() =>
                 simulateMut.mutate({
                   n: days,
-                  override: overrideIsValid ? overrideValue : null,
+                  overrides: hasOverrides ? requestedOverrides : null,
                 })
               }
-              disabled={simulateMut.isPending}
+              // Blocked on an out-of-range sigma rather than sent and 422'd:
+              // the replay would fail for a reason the dialog never showed.
+              disabled={simulateMut.isPending || sigmaOutOfRange}
             >
               {simulateMut.isPending ? 'Replaying…' : 'Replay'}
             </Button>
@@ -200,21 +353,58 @@ export function RuleReplayDialog({
             <>
               <div className="flex flex-wrap items-center gap-3 text-sm">
                 <FiringsCountBadge
-                  label={`Saved (${result.saved.cooldown_minutes_saved} min)`}
+                  label="Saved thresholds"
                   count={result.saved.firings.length}
                   noisy={result.saved.noisy}
                 />
-                {result.override && overrideDiffersFromSaved && (
+                {result.override && (
                   <>
                     <span className="text-muted-foreground">→</span>
                     <FiringsCountBadge
-                      label={`Override (${result.override.cooldown_minutes_used} min)`}
+                      label="With your overrides"
                       count={result.override.firings.length}
                       noisy={result.override.noisy}
                     />
                   </>
                 )}
               </div>
+
+              {/* What the shown run actually applied, against what the rule
+                  stores. Without both halves a preview run and the rule's real
+                  behaviour are indistinguishable on screen. */}
+              {displayResult && (
+                <div className="space-y-1">
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4">
+                    <ThresholdRow
+                      label="Cooldown"
+                      used={formatCooldown(displayResult.cooldown_minutes_used)}
+                      saved={formatCooldown(displayResult.cooldown_minutes_saved)}
+                    />
+                    <ThresholdRow
+                      label="Min %"
+                      used={String(displayResult.min_percent_delta_used)}
+                      saved={String(displayResult.min_percent_delta_saved)}
+                    />
+                    <ThresholdRow
+                      label="Min expected"
+                      used={String(displayResult.min_expected_count_used)}
+                      saved={String(displayResult.min_expected_count_saved)}
+                    />
+                    <ThresholdRow
+                      label="Sigma"
+                      used={displayResult.sigma_threshold_used === null
+                        ? 'detector default'
+                        : String(displayResult.sigma_threshold_used)}
+                      saved={displayResult.sigma_threshold_saved === null
+                        ? 'detector default'
+                        : String(displayResult.sigma_threshold_saved)}
+                    />
+                  </dl>
+                  <p className="text-[11px] text-muted-foreground">
+                    Nothing here is saved to the rule — it keeps routing on its stored thresholds.
+                  </p>
+                </div>
+              )}
 
               {displayResult && displayResult.firings.length === 0 ? (
                 <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
@@ -278,7 +468,8 @@ export function RuleReplayDialog({
               {displayResult?.rendered_message && (
                 <div className="min-w-0 space-y-1">
                   <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                    Preview (as it would render to {result.saved.firings[0]?.scope_type ? 'destination' : 'Slack/Telegram'})
+                    Preview — the message this run would have sent, as{' '}
+                    {MESSAGE_FORMAT_LABEL[rule.message_format]}
                   </div>
                   <pre className="max-h-48 min-w-0 max-w-full overflow-auto whitespace-pre-wrap rounded-md border bg-muted/30 px-3 py-2 font-mono text-[11px] [overflow-wrap:anywhere]">
                     {displayResult.rendered_message}

@@ -24,6 +24,30 @@ const SCOPES_WITH_MONITORING_ROUTE = new Set<string>([
 ])
 
 /**
+ * Scopes that must never reach the event fallback below, however well-formed
+ * their `event_id` looks.
+ *
+ * A release regression compares a release COHORT against the previous release.
+ * The event monitoring page charts every version over the chart's own range
+ * against the seasonal baseline — a different numerator, denominator, window AND
+ * estimator — so, in the words of the backend builder that refuses to emit this
+ * same link (`_build_monitoring_url`, backend/src/tripl/worker/tasks/metrics/
+ * urls.py), it "could not corroborate the alert even in principle". A reader who
+ * follows it sees a chart that disagrees with the alert and cannot tell which
+ * one is wrong. The backend made that call and the frontend was still sending
+ * people there (tripl-oxkt.21) — one decision, made twice, in opposite
+ * directions.
+ *
+ * A deny-set rather than a narrower fallback because a release regression's
+ * `scope_ref` IS its event id and its `event_id` is populated, so every cheaper
+ * guard would still let it through. The delivery that carried the regression is
+ * the only surface holding its actual / expected / % delta, and the incident
+ * card links there already; this returns null so no second, contradicting link
+ * is offered beside it.
+ */
+const SCOPES_WITH_NO_SUBSTANTIATING_PAGE = new Set<string>(['release_regression'])
+
+/**
  * Where to look at the thing an alert fired on, or `null` when there is nowhere
  * to look.
  *
@@ -33,12 +57,17 @@ const SCOPES_WITH_MONITORING_ROUTE = new Set<string>([
  * making every caller wrap it in a try.
  *
  * The event fallback matters for drift scopes: they have no route of their own,
- * but the event they were detected on does.
+ * but the event they were detected on does. `variable_value_drift` in
+ * particular has a NOT NULL `event_id`, and /monitoring/event/:id mounts the
+ * panel that names the variable and lists its observed values — that link is
+ * the whole reason the fallback exists, so narrow it with the deny-set above
+ * rather than removing it.
  */
 export function getScopeMonitoringPath(
   slug: string,
   scope: { scope_type: string; scope_ref: string; event_id?: string | null },
 ): string | null {
+  if (SCOPES_WITH_NO_SUBSTANTIATING_PAGE.has(scope.scope_type)) return null
   if (SCOPES_WITH_MONITORING_ROUTE.has(scope.scope_type)) {
     return getMonitoringPath(slug, {
       scope_type: scope.scope_type as MetricScopeType,

@@ -24,6 +24,20 @@ import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
  * per-rule detail it showed is on this same screen in more depth, in the
  * destination cards below — scan binding, scopes, thresholds, templates,
  * filters — none of which the table carried.
+ *
+ * Two later corrections (tripl-oxkt.18):
+ *
+ *  - The summary was printed TWICE — once as the panel subtitle ("1 monitor ·
+ *    1 firing"), once in the body ("1 monitor routing · 1 firing"). The
+ *    differentiating suffixes are empty in the single-rule case, so the two
+ *    lines read as the same sentence stuttered. The body copy was the richer
+ *    one, so it moved up into the subtitle and the body kept only the link.
+ *  - The object is a "rule" here and everywhere else on this tab (the section
+ *    is "Destinations & rules", the dialog is "New Alert Rule", the API entity
+ *    is AlertRule). It was the only place calling it a "monitor", 200px above
+ *    a card calling the same row a rule. The Monitors PAGE keeps its name —
+ *    it is a different surface, and the link says what it is for rather than
+ *    re-introducing the second noun as if it were a second object.
  */
 export function RoutingRulesPanel({ slug }: { slug: string }) {
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
@@ -35,12 +49,18 @@ export function RoutingRulesPanel({ slug }: { slug: string }) {
     staleTime: 30_000,
   })
   const summary = query.data
-  const monitors = summary?.monitors ?? []
+  const rules = summary?.monitors ?? []
   const firingCount = summary?.firing_count ?? 0
-  const mutedCount = monitors.filter(monitor => monitor.muted).length
-  const offCount = monitors.filter(monitor => !monitor.enabled).length
-  const subtitle = summary
-    ? `${countOf(summary.total, 'monitor', 'monitors')} · ${firingCount} firing`
+  const mutedCount = rules.filter(rule => rule.muted).length
+  const offCount = rules.filter(rule => !rule.enabled).length
+  // `muted` and `off` are named rather than folded into a total: both mean
+  // "configured but not delivering", which is exactly the state this tab exists
+  // to catch and the one the old table hid.
+  const subtitle = rules.length > 0
+    ? `${countOf(rules.length, 'rule', 'rules')} routing`
+      + (firingCount > 0 ? ` · ${firingCount} firing` : '')
+      + (mutedCount > 0 ? ` · ${mutedCount} muted` : '')
+      + (offCount > 0 ? ` · ${offCount} off` : '')
     : undefined
 
   return (
@@ -49,27 +69,18 @@ export function RoutingRulesPanel({ slug }: { slug: string }) {
       subtitle={subtitle}
       subtitleTone={firingCount > 0 ? 'danger' : undefined}
     >
-      {monitors.length === 0 ? (
+      {rules.length === 0 ? (
         <div className="px-4 py-6 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-          {query.isLoading ? 'Loading…' : 'No monitors route to a destination yet.'}
+          {query.isLoading ? 'Loading…' : 'No rules route to a destination yet.'}
         </div>
       ) : (
-        <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
-          {/* `muted` and `off` are named rather than folded into a total:
-              both mean "configured but not delivering", which is exactly the
-              state this tab exists to catch and the one the old table hid. */}
-          <span className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-            {countOf(monitors.length, 'monitor', 'monitors')} routing
-            {firingCount > 0 ? ` · ${firingCount} firing` : ''}
-            {mutedCount > 0 ? ` · ${mutedCount} muted` : ''}
-            {offCount > 0 ? ` · ${offCount} off` : ''}
-          </span>
+        <div className="flex flex-wrap items-center justify-end gap-2 px-4 py-3">
           <Link
             to={`/p/${slug}/monitors`}
             className="text-[12px] underline underline-offset-2"
             style={{ color: 'var(--fg-muted)' }}
           >
-            View monitors →
+            Mute or tune a rule →
           </Link>
         </div>
       )}

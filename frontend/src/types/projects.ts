@@ -25,6 +25,10 @@ export interface ProjectSummary {
   alert_rule_count: number
   monitoring_signal_count: number
   firing_monitor_count: number
+  // Incidents still awaiting triage (inbox status 'open'). `firing_monitor_count`
+  // counts monitors that are unhappy right now; this counts work a human still
+  // owes an answer on, which is the number the alerting tab is judged by.
+  open_incident_count: number
   // Number of scan configs whose latest run failed. Counts hidden per-config
   // failures the single newest `latest_scan_job` misses.
   failing_scan_config_count: number
