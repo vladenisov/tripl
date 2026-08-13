@@ -481,13 +481,20 @@ and does nothing unless an AI provider is configured — see
 
 ## The page
 
-**Observe → Alerting** is three tabs, selected with `?section=`:
+**Observe → Alerting** is four tabs, selected with `?section=`:
 
 | Tab | For |
 |---|---|
 | **Inbox** | Triage: incidents, their actions, and what was sent for each. The default, and where an alert link lands. |
-| **Destinations & rules** | Configuration: channels and the rules that route to them, above a one-line routing summary. |
+| **Monitors** | Every rule in the project with its live firing state, plus mute, replay, edit and delete. |
+| **Destinations** | The channels rules route to: configuration, a test send, and how much traffic each has carried. |
 | **Delivery log** | Every delivery in the project, filterable, for "did the message actually go out". |
+
+**Monitors** was a separate nav item until it was merged in. It listed the same
+`AlertRule` rows this page already owned — a rule was read there and edited here
+— so the two surfaces drifted about mute state. `/p/<slug>/monitors` now
+redirects to `?section=monitors`; `/p/<slug>/monitors/<rule_id>` still opens that
+rule's fired history.
 
 The third tab is named **Delivery log** rather than *Audit*, because **Govern →
 Audit log** already means something else entirely — who changed what — while this
@@ -508,16 +515,16 @@ path segment already carries the delivery id an alert link points at — links
 already sent keep working, and one carrying `?incident=` opens the Inbox with
 that incident expanded.
 
-Rules do not get a tab of their own: a rule belongs to the destination it sends
-to, and is edited on that destination's card.
+**Monitors are these same rules.** A monitor is not a separate object — it is an
+alert rule plus its live firing state. For a while the two had separate homes:
+rules were listed and edited on the destination cards, while their state lived
+on a **Monitors** page under its own nav item. The result was one object with two
+names on two screens, and they drifted — a rule could read "muted" on one and
+fully live on the other.
 
-**Monitors are these same rules**, seen from the other side. A monitor is not a
-separate object — it is an alert rule plus its live firing state, which is why
-**Observe → Monitors** and this tab talk about the same things. The tab answers
-"is it wired up", so it carries a one-line routing summary (how many monitors
-route, and how many are firing, muted or off) and links to Monitors for the
-per-monitor detail, its history and the mute control. Editing a monitor brings
-you back here, to the destination card that owns the rule.
+They are now one tab. The **Monitors** tab carries the rule, its state, and every
+control that acts on it; **Destinations** carries only the channels, plus a rule
+count so "wired up and nothing routes here" is still visible.
 
 ## Deliveries and the Inbox
 

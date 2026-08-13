@@ -3,7 +3,6 @@ import {
   AlertTriangle,
   Bell,
   Braces,
-  Gauge,
   GitBranch,
   GitCompare,
   LineChart,
@@ -60,7 +59,15 @@ export function formatCount(n: number): string {
  */
 export function buildNavGroups(slug: string, summary: ProjectSummary | undefined): NavGroup[] {
   const base = `/p/${slug}`
-  const firingMonitors = summary?.firing_monitor_count ?? 0
+  // `firing_monitor_count` is deliberately NOT read here any more. It badged the
+  // standalone Monitors item, and with that item merged into Alerting
+  // (tripl-89ps) a firing rule is already counted by `open_incident_count`
+  // below: firing produces a delivery, a delivery opens an incident, and the
+  // incident is the thing somebody still owes an answer on. Badging both would
+  // put two danger counts on one nav group for one event — which is the
+  // complaint that started the merge. The firing/warning/healthy rollup lives on
+  // the Monitors section itself, where it can be read against the rules it
+  // counts.
   const openSignals = summary?.monitoring_signal_count ?? 0
   const openIncidents = summary?.open_incident_count ?? 0
 
@@ -148,40 +155,32 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
             || p.startsWith(`${base}/monitoring/metric/`),
         },
         {
-          id: 'monitoring',
-          label: 'Monitors',
-          icon: Gauge,
-          href: `${base}/monitors`,
-          // /monitoring/* drilldowns belong to Monitors — except the
-          // catalog-metric (/monitoring/metric/) and catalog-event
-          // (/monitoring/event/) drilldowns, which the Metrics and Events items
-          // above claim respectively. The event-type / project-total drilldowns
-          // stay here (and /monitoring/event-type/ is safe: it does not start
-          // with /monitoring/event/, so the exclusion below does not catch it).
-          match: (p) =>
-            p.startsWith(`${base}/monitors`)
-            || (p.startsWith(`${base}/monitoring`)
-              && !p.startsWith(`${base}/monitoring/metric/`)
-              && !p.startsWith(`${base}/monitoring/event/`))
-            || p.startsWith(`${base}/settings/monitoring`),
-          // The badge counts MONITORS in a FIRING state (firing_monitor_count),
-          // never the open-signal population (monitoring_signal_count) — that
-          // produced "Monitors 5" beside a Monitors page showing 1 monitor. This
-          // keeps the badge equal to the Monitors page firing_count; omitted (no
-          // count, no tone) when nothing is firing.
-          count: firingMonitors > 0 ? formatCount(firingMonitors) : undefined,
-          tone: firingMonitors > 0 ? 'danger' : undefined,
-        },
-        {
           id: 'anomalies',
           label: 'Anomalies',
           icon: AlertTriangle,
           href: `${base}/anomalies`,
-          match: (p) => p.startsWith(`${base}/anomalies`),
+          // Anomalies owns the DETECTION layer end to end, which is two things
+          // the vanished Monitors item used to hold by accident (tripl-89ps):
+          //
+          //  - `/settings/monitoring`, the detection settings. They decide what
+          //    gets FLAGGED and notify nobody, so they never belonged with the
+          //    rules that route the result.
+          //  - the per-scope volume drilldowns under `/monitoring/`, minus the
+          //    catalog-metric (`/monitoring/metric/`) and catalog-event
+          //    (`/monitoring/event/`) ones, which Metrics and Events claim
+          //    above. What is left — event-type and project-total — is reached
+          //    from a signal on this page, so this is where it belongs. Note
+          //    `/monitoring/event-type/` is safe from the event exclusion: it
+          //    does not start with `/monitoring/event/`.
+          match: (p) =>
+            p.startsWith(`${base}/anomalies`)
+            || p.startsWith(`${base}/settings/monitoring`)
+            || (p.startsWith(`${base}/monitoring`)
+              && !p.startsWith(`${base}/monitoring/metric/`)
+              && !p.startsWith(`${base}/monitoring/event/`)),
           // Badges the open-signal population (monitoring_signal_count) — the raw
           // anomalies feed this page lists — in a danger tone when any are open.
-          // This is deliberately the signal count, not firing_monitor_count: that
-          // one belongs to Monitors above. Omitted when nothing is open.
+          // Omitted when nothing is open.
           count: openSignals > 0 ? formatCount(openSignals) : undefined,
           tone: openSignals > 0 ? 'danger' : undefined,
         },
@@ -190,7 +189,13 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           label: 'Alerting',
           icon: Bell,
           href: `${base}/settings/alerting`,
-          match: (p) => p.startsWith(`${base}/settings/alerting`),
+          // `/monitors/:id` is the per-rule fired history, and a rule is an
+          // Alerting object — the standalone Monitors list that used to own
+          // this prefix rendered the same AlertRule rows under a second noun,
+          // and is now the Monitors SECTION of this page (tripl-89ps).
+          match: (p) =>
+            p.startsWith(`${base}/settings/alerting`)
+            || p.startsWith(`${base}/monitors`),
           // Badges the OPEN INCIDENT population (open_incident_count) — the
           // backlog the inbox on that page owes an answer on — in a danger tone
           // when any are open. It used to badge alert_destination_count, which

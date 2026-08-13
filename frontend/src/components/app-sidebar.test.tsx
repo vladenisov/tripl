@@ -192,7 +192,6 @@ describe('AppSidebar', () => {
       'Schema & fields',
       'Plan branches',
       'Live activity',
-      'Monitors',
       'Anomalies',
       'Alerting',
       'Reconciliation',
@@ -216,7 +215,6 @@ describe('AppSidebar', () => {
       'Live activity': '/p/demo/overview',
       'Schema & fields': '/p/demo/settings/meta-fields',
       'Plan branches': '/p/demo/settings/branches',
-      Monitors: '/p/demo/monitors',
       Anomalies: '/p/demo/anomalies',
       Alerting: '/p/demo/settings/alerting',
       Reconciliation: '/p/demo/reconciliation',
@@ -262,7 +260,7 @@ describe('AppSidebar', () => {
     expect(eventTypeLink).toHaveStyle({ background: 'var(--surface-hover)' })
   })
 
-  it('surfaces project-summary counts including the firing-monitor count on Monitors', async () => {
+  it('surfaces project-summary counts, and badges Observe exactly twice', async () => {
     mockProjectsFetch()
 
     renderSidebar('/p/demo/events')
@@ -282,19 +280,18 @@ describe('AppSidebar', () => {
     expect(alertingLink).toHaveTextContent('7')
     expect(alertingLink).not.toHaveTextContent('1')
 
-    // H1: the "Monitors" nav item counts MONITORS in a firing state
-    // (firing_monitor_count === 3), equal to the Monitors page firing_count — so
-    // it surfaces "3" and never the open-signal population
-    // (monitoring_signal_count === 9 here).
-    const monitorsLink = screen.getByRole('link', { name: /Monitors/ })
-    expect(monitorsLink).toHaveTextContent('3')
-    expect(monitorsLink).not.toHaveTextContent('9')
-
-    // The Anomalies item is the counterpart: it badges the open-signal
-    // population (monitoring_signal_count === 9), not the firing-monitor count.
+    // Anomalies badges the open-signal population (monitoring_signal_count === 9).
     const anomaliesLink = screen.getByRole('link', { name: /Anomalies/ })
     expect(anomaliesLink).toHaveTextContent('9')
+
+    // And nothing badges firing_monitor_count (3) any more. It belonged to the
+    // Monitors item, which is gone (tripl-89ps): a firing rule already reaches
+    // the sidebar as the incident it opens, and three danger badges in one group
+    // for one event is what the merge set out to fix. The firing count is on the
+    // Monitors section's own rollup.
+    expect(screen.queryByRole('link', { name: /Monitors/ })).toBeNull()
     expect(anomaliesLink).not.toHaveTextContent('3')
+    expect(alertingLink).not.toHaveTextContent('3')
   })
 
   it('surfaces Variables and Relations as discoverable Plan nav items (M6)', async () => {
@@ -314,9 +311,12 @@ describe('AppSidebar', () => {
   it('marks the active surface based on the current route', async () => {
     mockProjectsFetch()
 
+    // Detection settings highlight Anomalies — they decide what gets flagged,
+    // and notify nobody. They used to highlight Monitors, a list of alert rules
+    // they have no bearing on (tripl-89ps).
     renderSidebar('/p/demo/settings/monitoring')
-    const monitors = await screen.findByRole('link', { name: /Monitors/ })
-    expect(monitors).toHaveStyle({ background: 'var(--surface-hover)' })
+    const anomalies = await screen.findByRole('link', { name: /Anomalies/ })
+    expect(anomalies).toHaveStyle({ background: 'var(--surface-hover)' })
   })
 
   it('renders a workspace-scoped nav on /workspace instead of the last project', async () => {

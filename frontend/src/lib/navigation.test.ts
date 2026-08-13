@@ -52,7 +52,6 @@ describe('buildNavGroups', () => {
       'event-types': '/p/demo/settings/event-types',
       schema: '/p/demo/settings/meta-fields',
       branches: '/p/demo/settings/branches',
-      monitoring: '/p/demo/monitors',
       metrics: '/p/demo/metrics',
       anomalies: '/p/demo/anomalies',
       alerting: '/p/demo/settings/alerting',
@@ -70,37 +69,34 @@ describe('buildNavGroups', () => {
     expect(items.find((i) => i.id === 'variables')!.count).toBe('40')
   })
 
-  it('binds the Monitors badge to the firing-monitor count, never the signal count (H1)', () => {
-    // "Monitors" counts MONITORS in a firing state (firing_monitor_count), not the
-    // open-signal population (monitoring_signal_count). Binding to the signal count
-    // read "Monitors 9" next to a Monitors page showing 3 firing monitors.
-    const summary = projectSummary({ monitoring_signal_count: 9, firing_monitor_count: 3 })
-    const monitors = buildNavGroups('demo', summary)
-      .flatMap((g) => g.items)
-      .find((i) => i.id === 'monitoring')!
-    // Shows the firing-monitor count (3) in a danger tone — equal to the Monitors
-    // page firing_count — and never the stale signal population (9).
-    expect(monitors.count).toBe('3')
-    expect(monitors.tone).toBe('danger')
-    expect(monitors.count).not.toBe('9')
+  it('has no Monitors item: rules are an Alerting section, not a nav peer (tripl-89ps)', () => {
+    // The item rendered the same AlertRule rows the Alerting page owned, under a
+    // second noun, and badged `firing_monitor_count` beside Anomalies' signal
+    // count and Alerting's incident count — three danger badges in one group for
+    // one event. It is now a section of Alerting.
+    const items = buildNavGroups('demo', projectSummary()).flatMap((g) => g.items)
+    expect(items.find((i) => i.id === 'monitoring')).toBeUndefined()
+    expect(items.map((i) => i.label)).not.toContain('Monitors')
   })
 
-  it('omits the Monitors badge when no monitors are firing (H1)', () => {
-    // No firing monitors → no count and no tone (rather than a "0" badge).
-    const summary = projectSummary({ monitoring_signal_count: 9, firing_monitor_count: 0 })
-    const withZero = buildNavGroups('demo', summary).flatMap((g) => g.items)
-    const withoutSummary = buildNavGroups('demo', undefined).flatMap((g) => g.items)
-    for (const items of [withZero, withoutSummary]) {
-      const monitors = items.find((i) => i.id === 'monitoring')!
-      expect(monitors.count).toBeUndefined()
-      expect(monitors.tone).toBeUndefined()
-    }
+  it('leaves exactly two badged surfaces in Observe, not three', () => {
+    // A firing rule already reaches the sidebar through the incident it opens,
+    // so `firing_monitor_count` is deliberately unread — the firing/warning/
+    // healthy rollup lives on the Monitors section, against the rules it counts.
+    const summary = projectSummary({
+      monitoring_signal_count: 9,
+      firing_monitor_count: 3,
+      open_incident_count: 52,
+    })
+    const observe = buildNavGroups('demo', summary).find((g) => g.label === 'Observe')!
+    const badged = observe.items.filter((i) => i.count !== undefined)
+    expect(badged.map((i) => i.id)).toEqual(['anomalies', 'alerting'])
   })
 
-  it('binds the Anomalies badge to the open-signal count (not firing monitors)', () => {
+  it('binds the Anomalies badge to the open-signal count', () => {
     // Anomalies lists the raw open-signal population, so its badge uses
-    // monitoring_signal_count — deliberately distinct from the Monitors badge,
-    // which counts firing monitors (firing_monitor_count).
+    // monitoring_signal_count — never the firing-rule count, which is a
+    // different question answered on the Alerting page.
     const summary = projectSummary({ monitoring_signal_count: 9, firing_monitor_count: 3 })
     const anomalies = buildNavGroups('demo', summary)
       .flatMap((g) => g.items)
@@ -185,51 +181,69 @@ describe('buildNavGroups', () => {
     })
   })
 
-  it('activates Metrics — and not Monitors — on the metric monitoring drilldown (tripl-nxk2.3)', () => {
+  it('activates Metrics — and not Anomalies — on the metric monitoring drilldown (tripl-nxk2.3)', () => {
     // /p/:slug/monitoring/metric/:id is the catalog-metric detail page
     // (getMetricMonitoringPath). Breadcrumbs read "Metrics › Detail", so the
-    // sidebar must highlight Metrics; the blanket /monitoring prefix on the
-    // Monitors item used to win instead.
+    // sidebar must highlight Metrics; the blanket /monitoring prefix — carried
+    // by the old Monitors item, now by Anomalies — used to win instead.
     const items = buildNavGroups('demo', undefined).flatMap((g) => g.items)
     const metrics = items.find((i) => i.id === 'metrics')!
-    const monitors = items.find((i) => i.id === 'monitoring')!
+    const anomalies = items.find((i) => i.id === 'anomalies')!
     const path = '/p/demo/monitoring/metric/9136d575'
     expect(metrics.match(path)).toBe(true)
-    expect(monitors.match(path)).toBe(false)
+    expect(anomalies.match(path)).toBe(false)
   })
 
-  it('keeps the event-type and project-total monitoring drilldowns on the Monitors item', () => {
+  it('puts the event-type and project-total drilldowns on Anomalies (tripl-89ps)', () => {
     // The catalog-metric (/monitoring/metric/) and catalog-event
-    // (/monitoring/event/) drilldowns moved to Metrics and Events respectively;
-    // the event-type / project-total monitoring drilldowns still activate
-    // Monitors (and never Metrics or Events).
+    // (/monitoring/event/) drilldowns belong to Metrics and Events. What is left
+    // is reached from a signal, so it belongs to Anomalies — it used to activate
+    // "Monitors", a list of alert RULES these volume charts have nothing to do
+    // with.
     const items = buildNavGroups('demo', undefined).flatMap((g) => g.items)
     const metrics = items.find((i) => i.id === 'metrics')!
     const events = items.find((i) => i.id === 'events')!
-    const monitors = items.find((i) => i.id === 'monitoring')!
+    const anomalies = items.find((i) => i.id === 'anomalies')!
     for (const path of [
       '/p/demo/monitoring/event-type/et-1',
       '/p/demo/monitoring/project-total/pt-1',
     ]) {
-      expect(monitors.match(path)).toBe(true)
+      expect(anomalies.match(path)).toBe(true)
       expect(metrics.match(path)).toBe(false)
       expect(events.match(path)).toBe(false)
     }
   })
 
-  it('activates Events — and not Monitors — on the catalog-event monitoring drilldown (tripl-7l83.8)', () => {
+  it('puts the detection settings on Anomalies, which is what they tune (tripl-89ps)', () => {
+    // /settings/monitoring decides what gets FLAGGED and notifies nobody, so it
+    // never belonged with the rules that route the result.
+    const items = buildNavGroups('demo', undefined).flatMap((g) => g.items)
+    const anomalies = items.find((i) => i.id === 'anomalies')!
+    const alerting = items.find((i) => i.id === 'alerting')!
+    expect(anomalies.match('/p/demo/settings/monitoring')).toBe(true)
+    expect(alerting.match('/p/demo/settings/monitoring')).toBe(false)
+  })
+
+  it('keeps the per-rule detail on Alerting, which owns rules (tripl-89ps)', () => {
+    const items = buildNavGroups('demo', undefined).flatMap((g) => g.items)
+    const alerting = items.find((i) => i.id === 'alerting')!
+    const anomalies = items.find((i) => i.id === 'anomalies')!
+    expect(alerting.match('/p/demo/monitors/rule-1')).toBe(true)
+    expect(anomalies.match('/p/demo/monitors/rule-1')).toBe(false)
+  })
+
+  it('activates Events — and not Anomalies — on the catalog-event monitoring drilldown (tripl-7l83.8)', () => {
     // /p/:slug/monitoring/event/:id is the catalog-event detail page
     // (getMonitoringPath, scope_type 'event'), reached from the Events catalog.
-    // Breadcrumbs read "Events › Detail", so the sidebar must highlight Events;
-    // the blanket /monitoring prefix on the Monitors item used to win instead.
+    // Breadcrumbs read "Events › Detail", so the sidebar must highlight Events.
     const items = buildNavGroups('demo', undefined).flatMap((g) => g.items)
     const events = items.find((i) => i.id === 'events')!
-    const monitors = items.find((i) => i.id === 'monitoring')!
+    const anomalies = items.find((i) => i.id === 'anomalies')!
     const path = '/p/demo/monitoring/event/evt-1'
     expect(events.match(path)).toBe(true)
-    expect(monitors.match(path)).toBe(false)
+    expect(anomalies.match(path)).toBe(false)
     // Precision guard: the trailing slash means the event-type drilldown is NOT
-    // swept into Events — it legitimately belongs to Monitors.
+    // swept into Events — it legitimately belongs to Anomalies.
     expect(events.match('/p/demo/monitoring/event-type/et-1')).toBe(false)
   })
 })
@@ -244,8 +258,10 @@ describe('resolveNavLocation', () => {
     ['/p/demo/settings/event-types', 'Plan', 'Event types'],
     ['/p/demo/settings/meta-fields', 'Plan', 'Schema & fields'],
     ['/p/demo/settings/branches', 'Plan', 'Plan branches'],
-    ['/p/demo/monitors', 'Observe', 'Monitors'],
-    ['/p/demo/settings/monitoring', 'Observe', 'Monitors'],
+    // A rule's fired history is an Alerting surface; the detection settings are
+    // an Anomalies one. Both used to read "Monitors" (tripl-89ps).
+    ['/p/demo/monitors/rule-1', 'Observe', 'Alerting'],
+    ['/p/demo/settings/monitoring', 'Observe', 'Anomalies'],
     ['/p/demo/metrics', 'Observe', 'Metrics'],
     ['/p/demo/anomalies', 'Observe', 'Anomalies'],
     ['/p/demo/settings/alerting', 'Observe', 'Alerting'],

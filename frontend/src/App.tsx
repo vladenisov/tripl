@@ -62,7 +62,6 @@ const MainPage = lazyRoute(() => import('./pages/ProjectsPage'))
 const EventsPage = lazyRoute(() => import('./pages/EventsPage'))
 const EventEditPage = lazyRoute(() => import('./pages/events/EventForm'))
 const OverviewPage = lazyRoute(() => import('./pages/OverviewPage'))
-const MonitorsPage = lazyRoute(() => import('./pages/MonitorsPage'))
 const MonitorDetailPage = lazyRoute(() => import('./pages/MonitorDetailPage'))
 const MonitoringDetailPage = lazyRoute(() => import('./pages/MonitoringDetailPage'))
 const ProjectSettingsPage = lazyRoute(() => import('./pages/ProjectSettingsPage'))
@@ -197,6 +196,20 @@ function DataSourceRedirect() {
 function EventDetailRedirect() {
   const { slug, eventId } = useParams<{ slug: string; eventId: string }>()
   return <Navigate to={`/p/${slug}/monitoring/event/${eventId}`} replace />
+}
+
+/**
+ * `/p/:slug/monitors` → the Monitors section of Alerting.
+ *
+ * The standalone page rendered the same AlertRule rows the Alerting page
+ * already owned, so it was merged in (tripl-89ps). The path stays reachable
+ * because it is in bookmarks and in the "Mute or tune a rule" links written
+ * before the merge. The per-rule detail at `/monitors/:monitorId` is NOT
+ * redirected — it is the rule's fired history, which no section carries.
+ */
+function MonitorsRedirect() {
+  const { slug } = useParams<{ slug: string }>()
+  return <Navigate to={`/p/${slug}/settings/alerting?section=monitors`} replace />
 }
 
 /**
@@ -386,7 +399,7 @@ export default function App() {
             <Route path="/p/:slug/events/:tab" element={withSuspense(<EventsPage />)} />
             <Route path="/p/:slug/events" element={withSuspense(<EventsPage />)} />
             <Route path="/p/:slug/overview" element={withSuspense(<OverviewPage />)} />
-            <Route path="/p/:slug/monitors" element={withSuspense(<MonitorsPage />)} />
+            <Route path="/p/:slug/monitors" element={<MonitorsRedirect />} />
             <Route path="/p/:slug/monitors/:monitorId" element={withSuspense(<MonitorDetailPage />)} />
             <Route path="/p/:slug/reconciliation" element={withSuspense(<ReconciliationPage />)} />
             <Route path="/p/:slug/anomalies" element={withSuspense(<AnomaliesPage />)} />

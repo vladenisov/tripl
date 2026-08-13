@@ -107,8 +107,8 @@ type-appropriate inputs.
 ### Event photos & specs
 
 **Where:** the **Photos & specs** panel on an event's **monitoring detail** page
-(Observe › Monitors → open an event, or click an event's signal). It is shown for
-the `event` scope only.
+(Plan › Events → open an event, or click an event's signal on Observe ›
+Anomalies). It is shown for the `event` scope only.
 
 You can upload images (JPEG, PNG, GIF, or WebP) by drag-and-drop or the **Upload
 image** button (stored on the configured backend — local disk or GCS), attach a
@@ -329,14 +329,27 @@ can still reach done without it.
 
 ### Monitors
 
-**Where:** Observe › Monitors. A list of monitors — each an alert **rule**
-attached to a scope — showing the **condition** it watches for (spike/drop
-direction, threshold, cooldown), the **destination** it routes alerts to, and its
-**state** (firing / warning / healthy); a firing count sits above the list and
-muted monitors are flagged. Open a monitor for its detail — the condition, the
-destination, mute controls, and its fired/delivery history. This is distinct from the **Monitoring detail** below: the per-scope
-volume drilldown (chart, forecast, heatmap) is reached from an event or a signal,
-not from a monitor row.
+**Where:** Observe › Alerting › **Monitors** (route
+`/p/<slug>/settings/alerting?section=monitors`). Every alert **rule** in the
+project, across all destinations, in one list: the **condition** it watches for
+(spike/drop direction, threshold, cooldown), the **destination** it routes to,
+its **state** (firing / warning / healthy), when it **last fired**, and its
+delivery health (`115 deliveries · 57 incidents · last 3h ago · sent`, or *Never
+delivered*). A firing/warning/healthy rollup sits above the list. Each row
+expands to the full labelled settings — scan binding, scopes, direction,
+cooldown, thresholds, message template, filters — and carries its own controls:
+enable, **mute** (with the duration on the button), **replay**, edit, delete.
+Open a rule for its detail page, which adds the fired history.
+
+This used to be a **separate nav item** with its own page, rendering the same
+`AlertRule` rows under a second noun: a rule was read there and edited under
+Alerting, which is how the two screens came to disagree about its mute state.
+"Monitor" and "rule" are the same object, and it now has one home. `/p/<slug>/monitors`
+redirects here.
+
+Distinct from the **Monitoring detail** below: the per-scope volume drilldown
+(chart, forecast, heatmap) is reached from an event or a signal, not from a rule
+row.
 
 ### Monitoring detail
 
@@ -512,7 +525,7 @@ the chart and deletable.
 
 ### Alerting
 
-**Where:** Observe › Alerting (Inbox, Destinations & rules, Delivery log). Destination channels:
+**Where:** Observe › Alerting (Inbox, Monitors, Destinations, Delivery log). Destination channels:
 **Slack**, **Telegram**, **Webhook**, **Email**, **Jira**, **Linear**. Routing
 rules carry a **cooldown** (minutes); an optional **Scan** binding
 (`scan_config_id`, default **All scans**) that narrows a rule to one scan

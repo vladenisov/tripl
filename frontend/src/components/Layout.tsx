@@ -109,20 +109,24 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
   // Detail surfaces carry their nav area so the breadcrumb reads
   // "project › Area › Page › Detail". An event's catalog detail is served under
   // /monitoring/event/<id> (the canonical event route), but it belongs to
-  // Plan › Events — only project-total/event-type signal detail is "Observe ›
-  // Monitors". Check the event scope first.
+  // Plan › Events — only project-total/event-type signal detail falls through
+  // to the generic branch. Check the event scope first.
   if (pathname.includes('/monitoring/event/') || pathname.includes('/events/detail/')) {
     return { crumbs: withProject('Plan', 'Events'), title: 'Detail' }
   }
-  // Catalog-metric drilldowns belong to the Metrics surface, not Monitors, so
-  // their breadcrumb reads "… › Observe › Metrics" (matching the metrics list
-  // nav) instead of the generic "Observe › Monitors". Check before the generic
-  // /monitoring/ branch.
+  // Catalog-metric drilldowns belong to the Metrics surface, so their
+  // breadcrumb reads "… › Observe › Metrics" (matching the metrics list nav).
+  // Check before the generic /monitoring/ branch.
   if (pathname.includes('/monitoring/metric/')) {
     return { crumbs: withProject('Observe', 'Metrics'), title: 'Detail' }
   }
+  // What is left — event-type and project-total volume drilldowns — is reached
+  // from a signal, so it reads "Observe › Anomalies". It used to say "Monitors",
+  // which named a list of alert RULES: a different object entirely, and one
+  // these charts have nothing to do with. That nav item is gone (tripl-89ps)
+  // and the drilldowns follow the surface they are opened from.
   if (pathname.includes('/monitoring/')) {
-    return { crumbs: withProject('Observe', 'Monitors'), title: 'Detail' }
+    return { crumbs: withProject('Observe', 'Anomalies'), title: 'Detail' }
   }
 
   // Map the route to its grouped-nav area (Plan / Observe / Govern / Connect)

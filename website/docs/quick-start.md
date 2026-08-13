@@ -103,10 +103,10 @@ Then look around in roughly this order:
 - **Plan → Events** — the catalog. Open an event to see its fields, values,
   tags, status, and change history.
 - **Observe → Live activity** — the health of the whole project at a glance.
-- **Observe → Monitors** — the demo's alert rules, each with its current state
-  and the condition it watches for. To study a signal's volume chart, forecast,
-  heatmap, and the breakdown of what moved, open the event (or click its
-  signal) — that opens the monitoring detail.
+- **Observe → Alerting → Monitors** — the demo's alert rules, each with its
+  current state and the condition it watches for. To study a signal's volume
+  chart, forecast, heatmap, and the breakdown of what moved, open the event (or
+  click its signal) — that opens the monitoring detail.
 - **Govern → Reconciliation** — what is documented-but-dead and
   live-but-undocumented.
 
@@ -274,12 +274,13 @@ patterns) and raises a **signal** on an unexpected spike, drop, or change of
 shape. There is nothing to set up.
 
 - **Observe → Live activity** — the whole project at a glance.
-- **Observe → Monitors** — each **monitor** here is an alert rule attached to a
-  scope, listed with the condition it watches for, where it routes, and its
-  current state. Open an event (or one of its signals) for the full drilldown —
-  the **monitoring detail**: volume chart with a short forecast, heatmap by hour
-  and weekday, value-distribution drift, and breakdowns of which slice moved.
-  (Where a firing signal *routes* is Alerting's job — see Step 8.)
+- **Observe → Alerting → Monitors** — each **monitor** here is an alert rule
+  attached to a scope, listed with the condition it watches for, where it
+  routes, and its current state. Open an event (or one of its signals) for the
+  full drilldown — the **monitoring detail**: volume chart with a short
+  forecast, heatmap by hour and weekday, value-distribution drift, and
+  breakdowns of which slice moved. (The rest of what happens to a firing signal
+  is on the other Alerting tabs — see Step 8.)
 
 :::note "No data yet" is normal at first
 These views read from collected metrics, so they stay empty until scans have

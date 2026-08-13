@@ -121,15 +121,15 @@ const AREAS: readonly Area[] = [
         path: '/anomalies',
       },
       {
-        term: 'Monitors',
+        term: 'Rules (Monitors)',
         definition:
-          'Alert rules layered on top of detection: a monitor decides which signals matter for a scope and where they are routed. A project with no monitors still raises signals — it just does not notify anyone about them.',
-        path: '/monitors',
+          'Alert rules layered on top of detection: a rule decides which signals matter for a scope and where they are routed, and carries its own firing/healthy state. A project with no rules still raises signals — it just does not notify anyone about them. They live on the Monitors section of Alerting; "monitor" and "rule" name the same object.',
+        path: '/settings/alerting?section=monitors',
       },
       {
         term: 'Alerting',
         definition:
-          'The destinations (Slack, Telegram, webhooks) where firing monitors send notifications, plus the rules for routing them.',
+          'Everything that turns a signal into a notification somebody owes an answer on: the incident Inbox, the rules that route, the destinations (Slack, Telegram, webhooks, email, Jira, Linear) they route to, and the delivery log behind them.',
         path: '/settings/alerting',
       },
     ],

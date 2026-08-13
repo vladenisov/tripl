@@ -210,9 +210,10 @@ there is nothing to set up.
 
 A **monitor** is an [alert rule](#alert-rule) attached to a scope, together
 with its live state — firing, warning, or healthy (a monitor can also be
-muted, which is an independent flag). The **Observe → Monitors**
-page lists them. A monitor doesn't detect anything itself: it decides which
-signals matter and where they go.
+muted, which is an independent flag). The **Observe → Alerting → Monitors**
+tab lists them. A monitor doesn't detect anything itself: it decides which
+signals matter and where they go. "Monitor" and "rule" name the same object,
+and they share one screen.
 
 Detection watches three levels: the **whole project**, an **event type**, or a
 single **event** — and each active **metric** is watched the same way, as its

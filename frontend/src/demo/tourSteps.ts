@@ -126,8 +126,11 @@ export function buildTourSteps(slug: string): TourStep[] {
       id: 'monitors',
       area: 'Observe',
       title: 'Monitors',
-      blurb: 'Per-metric monitors that watch for spikes and drops.',
-      to: `${base}/monitors`,
+      blurb: 'The rules that decide which spikes and drops are worth notifying about, and their live state.',
+      // The section, not the standalone page: that page rendered these same
+      // rules under a second noun and was merged in (tripl-89ps). `/monitors`
+      // would still resolve, but only through a redirect.
+      to: `${base}/settings/alerting?section=monitors`,
     },
     {
       id: 'anomalies',

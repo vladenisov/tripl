@@ -78,7 +78,7 @@ export default function MonitorDetailPage() {
       <div className="min-w-0 space-y-6 pb-12">
         <BackLink slug={slug} />
         <ErrorState
-          title="Monitor unavailable"
+          title="Rule unavailable"
           error={monitorQuery.error}
           onRetry={() => {
             void monitorQuery.refetch()
@@ -106,16 +106,17 @@ export default function MonitorDetailPage() {
             right={
               slug ? (
                 <Link
-                  // A monitor IS an alert rule, and rules are edited on the
-                  // destination that owns them — so this has to name the
-                  // section. Without it the link lands on the incident Inbox,
-                  // which is the default, and "Edit monitor" opens triage.
-                  to={`/p/${slug}/settings/alerting?section=destinations`}
+                  // A monitor IS an alert rule — the standalone list that used
+                  // the first noun is gone, and rules are edited in the
+                  // Monitors section of Alerting (tripl-89ps). The section has
+                  // to be named: without it the link lands on the incident
+                  // Inbox, which is the default, and "Edit rule" opens triage.
+                  to={`/p/${slug}/settings/alerting?section=monitors`}
                   className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] no-underline transition-colors hover:bg-[var(--surface-hover)]"
                   style={{ color: 'var(--fg-muted)' }}
                 >
                   <Settings2 className="h-3.5 w-3.5" />
-                  Edit monitor
+                  Edit rule
                 </Link>
               ) : undefined
             }
@@ -128,7 +129,7 @@ export default function MonitorDetailPage() {
             </Chip>
             {!monitor.rule_enabled && (
               <Chip tone="neutral" size="sm">
-                Monitor off
+                Rule off
               </Chip>
             )}
             {monitor.muted && monitor.muted_until && (

@@ -4,35 +4,31 @@ import { Trash2, Webhook } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { VIEWER_READ_ONLY_NOTICE, useCanWrite } from '@/lib/permissions'
-import type { AlertDestination, EventType, ScanConfig } from '@/types'
+import type { AlertDestination } from '@/types'
 
 import { CHANNEL_META } from './channelMeta'
 import { DestinationCard } from './DestinationCard'
 import { describeDeletionImpact } from './deletionImpact'
-import { RoutingRulesPanel } from './RoutingRulesPanel'
 import type { DestinationChannel } from './constants'
 
 interface DestinationsSectionProps {
   slug: string
   destinations: AlertDestination[]
-  eventTypes: EventType[]
-  scans: ScanConfig[]
   isDemo: boolean
   onCreateDestination: (channel: DestinationChannel) => void
   onEditDestination: (destination: AlertDestination) => void
   onDeleteDestination: (destination: AlertDestination) => void
-  // Guided setup's step 3: the card for this destination opens its rule form on
-  // its own, because the checklist promised "a rule prefilled on the new
-  // destination" and finishing step 2 used to deliver nothing at all
-  // (tripl-oxkt.15). `null` for every other visit to this section.
-  autoOpenRuleForDestinationId: string | null
-  // Called by the card that acted on it, so the page can clear the instruction.
-  onAutoOpenRuleConsumed: () => void
 }
 
 /**
- * The "Destinations & rules" section: the routing matrix plus the per-channel
- * destination cards and the add-a-channel affordances.
+ * The "Destinations" section: the per-channel cards and the add-a-channel
+ * affordances.
+ *
+ * It was "Destinations & rules" and carried both. Rules — and the read-only
+ * rule → destination summary panel that sat above them — moved to the Monitors
+ * section (tripl-89ps), where they are shown with the firing state that made a
+ * second screen necessary in the first place. What is left here is one object:
+ * a channel.
  *
  * The create/edit dialog deliberately stays with the page: guided setup calls
  * the same `onCreateDestination` while this section is not mounted at all.
@@ -40,14 +36,10 @@ interface DestinationsSectionProps {
 export function DestinationsSection({
   slug,
   destinations,
-  eventTypes,
-  scans,
   isDemo,
   onCreateDestination,
   onEditDestination,
   onDeleteDestination,
-  autoOpenRuleForDestinationId,
-  onAutoOpenRuleConsumed,
 }: DestinationsSectionProps) {
   // A demo's local sink has no entry in CHANNEL_META (it is not a channel anyone
   // can add), so it fell straight through the per-channel grouping below and its
@@ -99,11 +91,6 @@ export function DestinationsSection({
         {VIEWER_READ_ONLY_NOTICE}
       </p>
     )}
-    {/* The read-only rule → destination summary is the verification half of
-        configuring a route ("did I actually wire this up?"), so it belongs
-        with the destinations rather than on its own. */}
-    <RoutingRulesPanel slug={slug} />
-
     <div className="grid gap-6">
       <div className="min-w-0 space-y-4">
         <div className="space-y-1">
@@ -153,12 +140,8 @@ export function DestinationsSection({
                 key={destination.id}
                 slug={slug}
                 destination={destination}
-                eventTypes={eventTypes}
-                scans={scans}
                 canWrite={canWrite}
                 onEditDestination={onEditDestination}
-                autoOpenRule={destination.id === autoOpenRuleForDestinationId}
-                onAutoOpenRuleConsumed={onAutoOpenRuleConsumed}
               />
             ))}
           </div>
@@ -179,12 +162,8 @@ export function DestinationsSection({
                   <DestinationCard
                     slug={slug}
                     destination={destination}
-                    eventTypes={eventTypes}
-                    scans={scans}
                     canWrite={canWrite}
                     onEditDestination={onEditDestination}
-                    autoOpenRule={destination.id === autoOpenRuleForDestinationId}
-                    onAutoOpenRuleConsumed={onAutoOpenRuleConsumed}
                   />
                   {/* The confirm itself lives on the page that owns the delete
                       mutation, and states the same cascade in the dialog through

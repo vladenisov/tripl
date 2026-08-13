@@ -1,0 +1,404 @@
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { alertingApi } from '@/api/alerting'
+import type { AlertDestination, AlertRule, MonitorsSummaryResponse } from '@/types'
+
+import { MonitorsSection, type RuleWithDestination } from './MonitorsSection'
+
+function makeRule(overrides: Partial<RuleWithDestination> = {}): RuleWithDestination {
+  return {
+    id: 'rule-1',
+    destination_id: 'dest-1',
+    destination_name: 'TG',
+    scan_config_id: null,
+    name: 'Prod drops',
+    enabled: true,
+    include_project_total: true,
+    include_event_types: false,
+    include_events: false,
+    include_schema_drifts: false,
+    include_distribution_drifts: false,
+    include_release_regressions: false,
+    include_variable_value_drifts: false,
+    include_metrics: false,
+    notify_on_spike: false,
+    notify_on_drop: true,
+    ai_explanation_enabled: false,
+    min_percent_delta: 100,
+    min_absolute_delta: 0,
+    min_expected_count: 0,
+    cooldown_minutes: 360,
+    message_template: null,
+    items_template: null,
+    message_format: 'plain',
+    filters: [],
+    muted: false,
+    muted_until: null,
+    total_deliveries: 115,
+    incident_count: 57,
+    last_delivery_at: '2026-08-12T09:00:00Z',
+    last_delivery_status: 'sent',
+    created_at: '2026-07-01T00:00:00Z',
+    updated_at: '2026-07-01T00:00:00Z',
+    ...overrides,
+  }
+}
+
+function makeDestination(overrides: Partial<AlertDestination> = {}): AlertDestination {
+  return {
+    id: 'dest-1',
+    project_id: 'proj-1',
+    type: 'telegram',
+    name: 'TG',
+    enabled: true,
+    webhook_set: false,
+    bot_token_set: true,
+    chat_id: '-100223344',
+    target_url_set: false,
+    webhook_header_name: null,
+    email_recipients: null,
+    email_from_address: null,
+    email_subject_template: null,
+    jira_base_url: null,
+    jira_auth_email: null,
+    jira_api_token_set: false,
+    jira_project_key: null,
+    jira_issue_type: null,
+    linear_api_key_set: false,
+    linear_team_id: null,
+    linear_state_id: null,
+    linear_label_ids: null,
+    is_local: false,
+    delivery_count: 115,
+    incident_count: 57,
+    rules: [makeRule() as AlertRule],
+    created_at: '2026-07-01T00:00:00Z',
+    updated_at: '2026-07-01T00:00:00Z',
+    ...overrides,
+  }
+}
+
+function makeSummary(overrides: Partial<MonitorsSummaryResponse> = {}): MonitorsSummaryResponse {
+  return {
+    monitors: [
+      {
+        rule_id: 'rule-1',
+        rule_name: 'Prod drops',
+        destination_id: 'dest-1',
+        destination_name: 'TG',
+        destination_type: 'telegram',
+        enabled: true,
+        status: 'firing',
+        active_scope_count: 2,
+        firing_scope_count: 1,
+        last_anomaly_at: '2026-08-12T10:00:00Z',
+        last_notified_at: null,
+        notify_on_spike: false,
+        notify_on_drop: true,
+        min_percent_delta: 100,
+        min_expected_count: 0,
+        cooldown_minutes: 360,
+        muted: false,
+        muted_until: null,
+      },
+    ],
+    firing_count: 1,
+    warning_count: 0,
+    healthy_count: 0,
+    total: 1,
+    ...overrides,
+  }
+}
+
+interface RenderOptions {
+  rules?: RuleWithDestination[]
+  destinations?: AlertDestination[]
+  canWrite?: boolean
+  autoOpenRuleForDestinationId?: string | null
+  onAutoOpenRuleConsumed?: () => void
+  onGoToDestinations?: () => void
+}
+
+function renderSection(options: RenderOptions = {}) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <MonitorsSection
+          slug="windy-ios"
+          destinations={options.destinations ?? [makeDestination()]}
+          rules={options.rules ?? [makeRule()]}
+          eventTypes={[]}
+          scans={[]}
+          canWrite={options.canWrite ?? true}
+          autoOpenRuleForDestinationId={options.autoOpenRuleForDestinationId ?? null}
+          onAutoOpenRuleConsumed={options.onAutoOpenRuleConsumed ?? (() => {})}
+          onGoToDestinations={options.onGoToDestinations ?? (() => {})}
+        />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  )
+}
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('MonitorsSection live state (tripl-89ps)', () => {
+  it('shows the firing state that only the standalone page used to carry', async () => {
+    // This is the whole point of the merge: the rule and the state it is in are
+    // one row now, so nothing has to be read on a second nav item.
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection()
+
+    // Scoped to the table: the rollup above it also carries a "Firing" label,
+    // and the assertion is about the ROW knowing its own state.
+    // Awaited on the CHIP, not on the table: the table renders straight from
+    // props, so it is on screen before the state request has answered — which
+    // is the behaviour the next test pins down.
+    const table = await screen.findByRole('table', { name: 'Alert rules' })
+    expect(await within(table).findByText('Firing')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Prod drops' })).toHaveAttribute(
+      'href',
+      '/p/windy-ios/monitors/rule-1',
+    )
+  })
+
+  it('renders the rule before the state request answers, rather than blanking the list', () => {
+    // A rule is not less real for its status being in flight, and emptying the
+    // table on every refetch would hide the rows mid-incident.
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockReturnValue(new Promise(() => {}))
+    renderSection()
+
+    expect(screen.getByRole('link', { name: 'Prod drops' })).toBeInTheDocument()
+  })
+
+  it('keeps the delivery health that moved off the destination card', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection()
+
+    // `Never delivered` and `last sent 3h ago` are opposite facts, and the card
+    // stated neither before tripl-oxkt.17 — the merge must not lose it again.
+    expect(
+      await screen.findByText(/115 deliveries · 57 incidents · last .* · sent/),
+    ).toBeInTheDocument()
+  })
+
+  it('says plainly when a rule has never delivered', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection({
+      rules: [makeRule({ total_deliveries: 0, incident_count: 0, last_delivery_at: null, last_delivery_status: null })],
+    })
+
+    expect(await screen.findByText('Never delivered')).toBeInTheDocument()
+  })
+})
+
+describe('MonitorsSection rule settings', () => {
+  it('keeps every setting behind one labelled expansion instead of dropping them', async () => {
+    // The destination card printed these on every rule. Moving the rules must
+    // not lose the scan binding or the filters, which the rule detail page does
+    // not show at all.
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection()
+
+    const toggle = await screen.findByRole('button', { name: 'Show settings for Prod drops' })
+    expect(screen.queryByText('Scan')).toBeNull()
+
+    fireEvent.click(toggle)
+
+    expect(screen.getByText('Scan')).toBeInTheDocument()
+    expect(screen.getByText('all scans')).toBeInTheDocument()
+    expect(screen.getByText('Cooldown')).toBeInTheDocument()
+    expect(screen.getByText('6h')).toBeInTheDocument()
+    expect(screen.getByText('Min expected')).toBeInTheDocument()
+  })
+})
+
+describe('MonitorsSection mute', () => {
+  it('mutes from the row, on the same screen that shows the rule is muted', async () => {
+    // Mute lived on a separate page while the mute STATE was rendered here, and
+    // that split is exactly how the two disagreed (tripl-oxkt.18).
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    const mute = vi.spyOn(alertingApi, 'muteMonitor').mockResolvedValue({} as never)
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Mute Prod drops' }))
+    // The duration is on the control, so no mute is silent — the same labels
+    // and the same reveal the Inbox uses.
+    fireEvent.click(screen.getByRole('button', { name: 'Mute Prod drops for 24h' }))
+
+    await waitFor(() => expect(mute).toHaveBeenCalled())
+    expect(mute.mock.calls[0][0]).toBe('windy-ios')
+    expect(mute.mock.calls[0][1]).toBe('rule-1')
+  })
+
+  it('offers Unmute — not a second Mute — once a rule is muted', async () => {
+    // "Mute works, unmute does not" was the reported symptom that started this:
+    // the only way back was a control labelled something else entirely.
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    const unmute = vi.spyOn(alertingApi, 'unmuteMonitor').mockResolvedValue({} as never)
+    renderSection({ rules: [makeRule({ muted: true, muted_until: '2026-08-19T00:00:00Z' })] })
+
+    expect(await screen.findByText(/^muted until /)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Unmute Prod drops' }))
+
+    await waitFor(() => expect(unmute).toHaveBeenCalledWith('windy-ios', 'rule-1'))
+  })
+})
+
+describe('MonitorsSection rule writes', () => {
+  it('states what the cascade destroys instead of asking Delete "Prod drops"?', async () => {
+    // `AlertDelivery.rule_id` is ON DELETE CASCADE and the inbox INNER JOINs
+    // through it, so this one button takes 115 deliveries and 57 incidents —
+    // with their notes and mutes (tripl-oxkt.13).
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    const remove = vi.spyOn(alertingApi, 'deleteRule').mockResolvedValue(undefined)
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete rule Prod drops' }))
+
+    expect(
+      await screen.findByText(
+        /Delete "Prod drops"\? This also deletes 115 deliveries and 57 incidents/,
+      ),
+    ).toBeInTheDocument()
+    expect(remove).not.toHaveBeenCalled()
+  })
+
+  it('routes the enable switch through a mutation so a failure is not silent', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    const update = vi.spyOn(alertingApi, 'updateRule').mockResolvedValue(makeRule({ enabled: false }))
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('switch', { name: 'Toggle Prod drops' }))
+
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith('windy-ios', 'dest-1', 'rule-1', { enabled: false }),
+    )
+  })
+
+  it('leaves the switch showing the server value when the write is rejected', async () => {
+    // `checked` is bound to the rule the server sent, so a 403 leaves it exactly
+    // where it was rather than flipping and silently reverting (tripl-oxkt.9).
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    vi.spyOn(alertingApi, 'updateRule').mockRejectedValue(new Error('Editor role required'))
+    renderSection()
+
+    const toggle = await screen.findByRole('switch', { name: 'Toggle Prod drops' })
+    fireEvent.click(toggle)
+
+    await waitFor(() => expect(toggle).toBeChecked())
+  })
+})
+
+describe('MonitorsSection guided-setup handoff (tripl-oxkt.15)', () => {
+  it('opens the rule form prefilled for the destination just created', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection({ autoOpenRuleForDestinationId: 'dest-1' })
+
+    expect(await screen.findByText('New Alert Rule')).toBeInTheDocument()
+  })
+
+  it('stays closed on every ordinary visit', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection()
+
+    await screen.findByRole('link', { name: 'Prod drops' })
+    expect(screen.queryByText('New Alert Rule')).toBeNull()
+  })
+
+  it('reports the instruction spent, and does not re-open on the next render', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    const consumed = vi.fn()
+    renderSection({ autoOpenRuleForDestinationId: 'dest-1', onAutoOpenRuleConsumed: consumed })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
+
+    expect(screen.queryByText('New Alert Rule')).toBeNull()
+    // The page clears its own state off this callback: the prop is still set
+    // here, so a section that never reported back would re-open the dialog on
+    // the next mount.
+    expect(consumed).toHaveBeenCalled()
+  })
+})
+
+describe('MonitorsSection rule editor', () => {
+  it('asks which destination a new rule routes to, now that no card answers it', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection({
+      destinations: [makeDestination(), makeDestination({ id: 'dest-2', name: 'Slack', type: 'slack' })],
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: /Add rule/ }))
+
+    expect(screen.getByText('New Alert Rule')).toBeInTheDocument()
+    expect(screen.getByLabelText('Destination')).toBeInTheDocument()
+    // Nothing routes anywhere until one is named — the API addresses the rule
+    // through its destination, so Create would 404 on a segment nobody saw.
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled()
+  })
+})
+
+describe('MonitorsSection empty states', () => {
+  it('sends a project with no channels to Destinations, not to a rule form', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(
+      makeSummary({ monitors: [], firing_count: 0, total: 0 }),
+    )
+    const goToDestinations = vi.fn()
+    renderSection({ rules: [], destinations: [], onGoToDestinations: goToDestinations })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add a destination' }))
+
+    expect(goToDestinations).toHaveBeenCalled()
+  })
+
+  it('hides the all-zero rollup when there is nothing to roll up', () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(
+      makeSummary({ monitors: [], firing_count: 0, total: 0 }),
+    )
+    renderSection({ rules: [] })
+
+    expect(screen.queryByText('Firing')).toBeNull()
+    expect(screen.getByText('No rules yet')).toBeInTheDocument()
+  })
+})
+
+describe('MonitorsSection viewer gating (tripl-oxkt.9)', () => {
+  const WRITE_CONTROLS = ['Mute Prod drops', 'Edit rule Prod drops', 'Delete rule Prod drops']
+
+  it('offers an editor every write control', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection()
+
+    for (const name of WRITE_CONTROLS) {
+      expect(await screen.findByRole('button', { name })).toBeEnabled()
+    }
+    expect(screen.getByRole('switch', { name: 'Toggle Prod drops' })).toBeEnabled()
+  })
+
+  it('offers a viewer none of them, and says so once', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection({ canWrite: false })
+
+    await screen.findByRole('link', { name: 'Prod drops' })
+    for (const name of WRITE_CONTROLS) {
+      expect(screen.queryByRole('button', { name })).toBeNull()
+    }
+    expect(screen.queryByRole('switch', { name: 'Toggle Prod drops' })).toBeNull()
+  })
+
+  it('keeps replay, which the API does not gate because it saves nothing', async () => {
+    // The one control here with no EditorUserDep on its route: asking "would a
+    // stricter threshold have cut this noise" changes nothing.
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection({ canWrite: false })
+
+    expect(await screen.findByRole('button', { name: 'Replay Prod drops' })).toBeEnabled()
+  })
+})
