@@ -273,6 +273,253 @@ jobs:
         if: failure()
         run: docker logs bqemu 2>&1 | tail -100 || true
 
+  # Everything else this repo does about alembic is STATIC. The backend job lints
+  # and format-checks alembic/versions, and test_alembic_revisions.py parses the
+  # revision graph — which caught a duplicate revision id on 2026-08-05, but
+  # cannot catch a statement Postgres rejects, a server_default that will not
+  # cast, or a data step that touches the wrong rows. All 86 revisions had
+  # therefore never been EXECUTED by CI, while the deployment entrypoint runs
+  # `alembic upgrade head` on every single release (tripl-s9nm). The enum-cast
+  # failures this repo has already hit — the variables.variable_type default, the
+  # duplicate-variable rewrite — are exactly what a from-empty run catches.
+  #
+  # Two jobs rather than one, deliberately. The scope probe always runs and always
+  # reports, so the expensive job can be gated without the "skipped but required"
+  # trap: a workflow-level `paths:` filter produces NO check at all, and a PR that
+  # requires it sits on "Expected — Waiting for status to be reported" forever,
+  # whereas a job skipped by an `if:` reports a conclusion that branch protection
+  # accepts. bigquery-value-conformance.yml gates its credentialed job the same
+  # way, for the same reason.
+  migration-scope:
+    name: Detect alembic changes
+    runs-on: ubuntu-latest
+    outputs:
+      alembic: ${{ steps.scope.outputs.alembic }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Both sides of the PR are needed to diff it; the default shallow fetch
+          # has neither.
+          fetch-depth: 0
+
+      - id: scope
+        name: Decide whether the round trip must run
+        env:
+          # Via env, not inline `${{ }}` in the script body: the values land as
+          # data instead of being pasted into the shell.
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Anything that is not a pull request — a push to main, and the
+          # workflow_call the release workflow makes before it publishes an image
+          # — runs the round trip unconditionally. Those are the commits a deploy
+          # actually migrates, so a fast PR is not what matters there.
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "alembic=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$EVENT_NAME: running the alembic round trip unconditionally."
+            exit 0
+          fi
+          merge_base=$(git merge-base "$BASE_SHA" HEAD || true)
+          if [ -z "$merge_base" ]; then
+            # Fail TOWARDS running. A detection bug must cost a few minutes, not
+            # quietly retire the only gate that executes a migration.
+            echo "alembic=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::no merge base with $BASE_SHA; running the round trip anyway."
+            exit 0
+          fi
+          # ci.yml is in the filter on purpose: a PR that edits this gate must run
+          # the gate it edited.
+          changed=$(git diff --name-only "$merge_base" HEAD -- backend/alembic .github/workflows/ci.yml)
+          if [ -n "$changed" ]; then
+            echo "alembic=true" >> "$GITHUB_OUTPUT"
+            echo "migration-relevant changes:"
+            echo "$changed"
+          else
+            echo "alembic=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::nothing changed under backend/alembic/; skipping the round trip."
+          fi
+
+  migrations:
+    name: Alembic round trip (upgrade + downgrade base + upgrade)
+    needs: migration-scope
+    if: needs.migration-scope.outputs.alembic == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        # THE image the compose stack runs (compose.yaml and compose.dev.yaml),
+        # not stock postgres: e8f9a0b1c2d3 does `CREATE EXTENSION vector`, which a
+        # stock image cannot satisfy, so the chain would die 20 revisions in and
+        # the gate would be testing the wrong database anyway. pg_trgm and
+        # unaccent ship with contrib. Pinned by digest for the reason the
+        # conformance warehouses are: a gate whose database can change underneath
+        # it is not a gate.
+        image: pgvector/pgvector:0.8.2-pg18-trixie@sha256:b7337db8fe39d12fe8ecb0003c72680f24479813a744b43154eee6f2eab5a5f3
+        env:
+          POSTGRES_USER: tripl
+          POSTGRES_PASSWORD: tripl
+          POSTGRES_DB: tripl
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tripl -d tripl"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 24
+    env:
+      # alembic/env.py takes its URL from tripl.config.settings.database_url, so
+      # DATABASE_URL is the one that matters — and it must carry the ASYNC driver,
+      # because env.py builds an async_engine_from_config and psycopg's sync
+      # driver would fail at connect. SYNC_DATABASE_URL is not read by migrations.
+      DATABASE_URL: postgresql+asyncpg://tripl:tripl@localhost:5432/tripl
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          # Same setup as the backend job above: uv reads backend/.python-version
+          # itself during `uv sync`, which is where Python 3.14 comes from.
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Wait for an EMPTY Postgres
+        # pg_isready answers happily on a server that will still reject the login,
+        # so the probe authenticates and runs a real query — the same reasoning as
+        # the conformance job's wait step. It also asserts the database is empty:
+        # a "from empty" round trip that in fact starts from someone else's schema
+        # proves nothing about the first revisions.
+        run: |
+          uv run python - <<'PY'
+          import sys
+          import time
+
+          import psycopg
+
+          dsn = "host=localhost port=5432 dbname=tripl user=tripl password=tripl connect_timeout=3"
+          for attempt in range(1, 31):
+              try:
+                  with psycopg.connect(dsn) as conn:
+                      tables = conn.execute(
+                          "SELECT table_name FROM information_schema.tables "
+                          "WHERE table_schema = 'public' ORDER BY table_name"
+                      ).fetchall()
+                  break
+              except psycopg.OperationalError as exc:
+                  print(f"attempt {attempt}: {exc}")
+                  time.sleep(2)
+          else:
+              sys.exit("::error::postgres never accepted an authenticated connection")
+          if tables:
+              names = ", ".join(row[0] for row in tables)
+              sys.exit(f"::error::the database is not empty, it already holds: {names}")
+          print("postgres is up, authenticated, and empty")
+          PY
+
+      - name: Upgrade head from empty
+        # The leg every deploy runs. From EMPTY, so all 86 revisions execute in
+        # order against real Postgres instead of being read by a graph parser.
+        # `alembic current` is compared to `alembic heads` because `upgrade` exits
+        # 0 on a chain that did nothing at all.
+        run: |
+          uv run alembic upgrade head
+          head=$(uv run alembic heads | awk 'NR==1 {print $1}')
+          current=$(uv run alembic current | awk 'NR==1 {print $1}')
+          echo "heads=$head current=$current"
+          if [ -z "$head" ] || [ "$current" != "$head" ]; then
+            echo "::error::after upgrade head the database is at '$current', expected '$head'"
+            exit 1
+          fi
+
+      - name: Downgrade to base and prove nothing is left behind
+        # `downgrade base`, not `downgrade -1`, and that was checked rather than
+        # assumed — one non-reversible revision would make this job red for good.
+        # Every downgrade in the chain was read first: none raises, every index,
+        # constraint and column a downgrade drops is created by the same file's
+        # upgrade, no downgrade references a table a later revision creates (they
+        # unwind newest-first), and the data steps only ever meet the empty tables
+        # of a from-empty chain. The one genuinely irreversible operation in the
+        # tree — ALTER TYPE ... ADD VALUE, since Postgres cannot drop an enum
+        # label — is handled in all eight revisions that use it by a downgrade
+        # that documents the surviving label and does nothing; a no-op, not a
+        # raise, and the label goes away regardless because the revision that
+        # CREATED the type drops the type. Write that kind of documented no-op if
+        # you ever cannot implement a downgrade: a raise would retire this gate.
+        #
+        # The leftover check is not decoration. A downgrade that drops its table
+        # but keeps its enum type is invisible until the next upgrade, and often
+        # invisible then too, because these migrations create types with
+        # checkfirst=True and would silently adopt the stale one.
+        run: |
+          uv run alembic downgrade base
+          current=$(uv run alembic current | awk 'NR==1 {print $1}')
+          if [ -n "$current" ]; then
+            echo "::error::after downgrade base the database is still at '$current'"
+            exit 1
+          fi
+          uv run python - <<'PY'
+          import sys
+
+          import psycopg
+
+          dsn = "host=localhost port=5432 dbname=tripl user=tripl password=tripl connect_timeout=5"
+          with psycopg.connect(dsn) as conn:
+              # alembic_version survives a downgrade to base by design: alembic
+              # keeps the table and empties it.
+              tables = [
+                  row[0]
+                  for row in conn.execute(
+                      "SELECT table_name FROM information_schema.tables "
+                      "WHERE table_schema = 'public' AND table_name <> 'alembic_version' "
+                      "ORDER BY table_name"
+                  )
+              ]
+              # Enums only (typtype = 'e'), and never the ones an extension owns:
+              # pgvector's own types are not a migration's to clean up.
+              enums = [
+                  row[0]
+                  for row in conn.execute(
+                      "SELECT t.typname FROM pg_type AS t "
+                      "JOIN pg_namespace AS n ON n.oid = t.typnamespace "
+                      "WHERE n.nspname = 'public' AND t.typtype = 'e' "
+                      "AND NOT EXISTS ("
+                      "  SELECT 1 FROM pg_depend AS d "
+                      "  WHERE d.objid = t.oid AND d.deptype = 'e'"
+                      ") ORDER BY t.typname"
+                  )
+              ]
+          if tables:
+              print(f"::error::tables surviving downgrade base: {', '.join(tables)}")
+          if enums:
+              print(f"::error::enum types surviving downgrade base: {', '.join(enums)}")
+          if tables or enums:
+              sys.exit(
+                  "downgrade base left objects behind: the revision that CREATED each one "
+                  "does not drop it in its downgrade."
+              )
+          print("downgrade base left a clean database")
+          PY
+
+      - name: Upgrade head again
+        # The half of the round trip that catches a downgrade which "succeeded"
+        # into a state the chain can no longer be replayed over — a dropped column
+        # that comes back with the wrong type, a type left in place that CREATE
+        # TYPE then trips over, an index name that only exists the first time.
+        run: |
+          uv run alembic upgrade head
+          head=$(uv run alembic heads | awk 'NR==1 {print $1}')
+          current=$(uv run alembic current | awk 'NR==1 {print $1}')
+          echo "heads=$head current=$current"
+          if [ -z "$head" ] || [ "$current" != "$head" ]; then
+            echo "::error::after the re-upgrade the database is at '$current', expected '$head'"
+            exit 1
+          fi
+
   frontend:
     name: Frontend (lint + build + test)
     runs-on: ubuntu-latest
