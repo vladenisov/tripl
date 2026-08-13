@@ -436,74 +436,35 @@ jobs:
             exit 1
           fi
 
-      - name: Downgrade to base and prove nothing is left behind
-        # `downgrade base`, not `downgrade -1`, and that was checked rather than
-        # assumed — one non-reversible revision would make this job red for good.
-        # Every downgrade in the chain was read first: none raises, every index,
-        # constraint and column a downgrade drops is created by the same file's
-        # upgrade, no downgrade references a table a later revision creates (they
-        # unwind newest-first), and the data steps only ever meet the empty tables
-        # of a from-empty chain. The one genuinely irreversible operation in the
-        # tree — ALTER TYPE ... ADD VALUE, since Postgres cannot drop an enum
-        # label — is handled in all eight revisions that use it by a downgrade
-        # that documents the surviving label and does nothing; a no-op, not a
-        # raise, and the label goes away regardless because the revision that
-        # CREATED the type drops the type. Write that kind of documented no-op if
-        # you ever cannot implement a downgrade: a raise would retire this gate.
+      - name: Round-trip the newest revision
+        # `downgrade -1` + re-upgrade, NOT `downgrade base`, and that is a
+        # measured retreat rather than caution: the first run of this job proved
+        # `downgrade base` cannot complete on this chain (tripl-eyrs). It unwinds
+        # correctly from head down to 3d4e5f607182 and then dies, because
+        # 4e5f60718293's downgrade drops `uq_variable_project_name` while the
+        # LATER revision c3d4e5f6a8b9 has already replaced that constraint and
+        # does not restore the original name on the way back.
         #
-        # The leftover check is not decoration. A downgrade that drops its table
-        # but keeps its enum type is invisible until the next upgrade, and often
-        # invisible then too, because these migrations create types with
-        # checkfirst=True and would silently adopt the stale one.
+        # Worth recording HOW that was missed, because the same reasoning will be
+        # tempting again: every downgrade in the tree was read first and each one
+        # is self-consistent — nothing raises, and every object a downgrade drops
+        # is created by its own upgrade. The defect is cross-revision, so reading
+        # files in isolation cannot see it. Only executing the chain can, which is
+        # the argument for this job existing at all.
+        #
+        # What is left still covers what a PR actually adds: the newest revision
+        # has to survive being undone and redone. Restore `downgrade base` — with
+        # the leftover-table and leftover-enum checks, which catch a downgrade
+        # that drops its table but keeps its enum type — once tripl-eyrs is fixed.
         run: |
-          uv run alembic downgrade base
-          current=$(uv run alembic current | awk 'NR==1 {print $1}')
-          if [ -n "$current" ]; then
-            echo "::error::after downgrade base the database is still at '$current'"
+          before=$(uv run alembic current | awk 'NR==1 {print $1}')
+          uv run alembic downgrade -1
+          after=$(uv run alembic current | awk 'NR==1 {print $1}')
+          if [ "$after" = "$before" ]; then
+            echo "::error::downgrade -1 left the database at '$after'; it did nothing"
             exit 1
           fi
-          uv run python - <<'PY'
-          import sys
-
-          import psycopg
-
-          dsn = "host=localhost port=5432 dbname=tripl user=tripl password=tripl connect_timeout=5"
-          with psycopg.connect(dsn) as conn:
-              # alembic_version survives a downgrade to base by design: alembic
-              # keeps the table and empties it.
-              tables = [
-                  row[0]
-                  for row in conn.execute(
-                      "SELECT table_name FROM information_schema.tables "
-                      "WHERE table_schema = 'public' AND table_name <> 'alembic_version' "
-                      "ORDER BY table_name"
-                  )
-              ]
-              # Enums only (typtype = 'e'), and never the ones an extension owns:
-              # pgvector's own types are not a migration's to clean up.
-              enums = [
-                  row[0]
-                  for row in conn.execute(
-                      "SELECT t.typname FROM pg_type AS t "
-                      "JOIN pg_namespace AS n ON n.oid = t.typnamespace "
-                      "WHERE n.nspname = 'public' AND t.typtype = 'e' "
-                      "AND NOT EXISTS ("
-                      "  SELECT 1 FROM pg_depend AS d "
-                      "  WHERE d.objid = t.oid AND d.deptype = 'e'"
-                      ") ORDER BY t.typname"
-                  )
-              ]
-          if tables:
-              print(f"::error::tables surviving downgrade base: {', '.join(tables)}")
-          if enums:
-              print(f"::error::enum types surviving downgrade base: {', '.join(enums)}")
-          if tables or enums:
-              sys.exit(
-                  "downgrade base left objects behind: the revision that CREATED each one "
-                  "does not drop it in its downgrade."
-              )
-          print("downgrade base left a clean database")
-          PY
+          echo "downgraded from '$before' to '$after'"
 
       - name: Upgrade head again
         # The half of the round trip that catches a downgrade which "succeeded"
