@@ -93,9 +93,13 @@ describe('ConceptsPage', () => {
     expect(
       screen.getByRole('link', { name: 'Open Reconciliation in the app' }),
     ).toHaveAttribute('href', '/p/demo/reconciliation')
+    // The Monitors SECTION of Alerting, not the standalone page: that page
+    // rendered the same alert rules under a second noun and was merged in
+    // (tripl-89ps). The glossary keeps the term — it is what the tab is called
+    // — and points at where the object actually lives.
     expect(screen.getByRole('link', { name: 'Open Monitors in the app' })).toHaveAttribute(
       'href',
-      '/p/demo/monitors',
+      '/p/demo/settings/alerting?section=monitors',
     )
   })
 })

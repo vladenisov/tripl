@@ -29,7 +29,11 @@ describe('buildTourSteps', () => {
     expect(byId.get('scans')).toBe('/p/acme/scans')
     expect(byId.get('live-activity')).toBe('/p/acme/overview')
     expect(byId.get('metrics')).toBe('/p/acme/metrics')
-    expect(byId.get('monitors')).toBe('/p/acme/monitors')
+    // The Monitors SECTION of Alerting: the standalone page rendered the same
+    // rules under a second noun and was merged in (tripl-89ps). `/monitors`
+    // still resolves, but only through a redirect, and a tour step should land
+    // on the real surface rather than bounce through one.
+    expect(byId.get('monitors')).toBe('/p/acme/settings/alerting?section=monitors')
     expect(byId.get('anomalies')).toBe('/p/acme/anomalies')
     expect(byId.get('coverage')).toBe('/p/acme/coverage')
     expect(byId.get('reconciliation')).toBe('/p/acme/reconciliation')

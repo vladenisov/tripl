@@ -121,9 +121,9 @@ const AREAS: readonly Area[] = [
         path: '/anomalies',
       },
       {
-        term: 'Rules (Monitors)',
+        term: 'Monitors',
         definition:
-          'Alert rules layered on top of detection: a rule decides which signals matter for a scope and where they are routed, and carries its own firing/healthy state. A project with no rules still raises signals — it just does not notify anyone about them. They live on the Monitors section of Alerting; "monitor" and "rule" name the same object.',
+          'Alert rules layered on top of detection: a monitor decides which signals matter for a scope and where they are routed, and carries its own live state — firing, warning or healthy. A project with no monitors still raises signals — it just does not notify anyone about them. "Monitor" and "alert rule" name the same object, and it lives on one screen: the Monitors tab of Alerting.',
         path: '/settings/alerting?section=monitors',
       },
       {
