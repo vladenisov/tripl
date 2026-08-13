@@ -20,18 +20,18 @@ authors = [{ name = "Vladislav Denisov" }]
 # directory fail loudly instead of pushing a 400 MB server stack to the index.
 classifiers = ["Private :: Do Not Upload"]
 dependencies = [
-    "fastapi>=0.140.0",
+    "fastapi>=0.141.1",
     "uvicorn[standard]>=0.52.0",
     "sqlalchemy[asyncio]>=2.0.51",
     "asyncpg>=0.31.0",
-    "alembic>=1.18.5",
-    "pydantic-settings>=2.14.1",
+    "alembic>=1.19.1",
+    "pydantic-settings>=2.15.0",
     "celery>=5.6.3",
     "clickhouse-connect>=1.6.0",
     "cryptography>=49.0.0",
     "psycopg[binary]>=3.3.4",
-    "google-cloud-bigquery>=3.42.2",
-    "google-cloud-storage>=3.13.0",
+    "google-cloud-bigquery>=3.43.0",
+    "google-cloud-storage>=3.13.1",
     "python-multipart>=0.0.32",
     "statsmodels>=0.14.6",
     "redis[hiredis]>=8.1.0",
@@ -47,7 +47,7 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
     "aiosqlite>=0.22.1",
-    "ruff>=0.16.0",
+    "ruff>=0.16.2",
     "mypy>=2.3.0",
 ]
 
