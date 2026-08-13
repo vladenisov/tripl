@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import Select, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
@@ -48,17 +48,23 @@ _DELETE_BATCH = 1000
 async def _variable_ids_with_rows(
     session: AsyncSession,
     column: InstrumentedAttribute[uuid.UUID],
-    variable_ids: list[uuid.UUID],
+    scoped_variable_ids: Select[tuple[uuid.UUID]],
 ) -> set[uuid.UUID]:
-    """The subset of *variable_ids* that has at least one row on *column*.
+    """Which of the branch's variables have at least one row on *column*.
 
     A ``DISTINCT`` over an indexed FK, not a per-variable ``EXISTS``: all three
     tables index ``variable_id`` (``ix_variable_values_variable`` and the
     ``index=True`` declarations on the drift and override models).
+
+    ``scoped_variable_ids`` is a SUBQUERY, not the list of ids already loaded
+    above, and that is the whole point: PostgreSQL refuses a statement carrying
+    more than 65535 bind parameters, and the population this module exists to
+    clean up is unbounded by construction. Passing the literal list would have
+    put the same ceiling on these three reads that ``_DELETE_BATCH`` is there to
+    keep off the writes — guarding one and not the other is worse than guarding
+    neither, because it reads as though the problem was handled.
     """
-    if not variable_ids:
-        return set()
-    rows = await session.execute(select(column).where(column.in_(variable_ids)).distinct())
+    rows = await session.execute(select(column).where(column.in_(scoped_variable_ids)).distinct())
     return set(rows.scalars().all())
 
 
@@ -114,18 +120,16 @@ async def plan_project_retirement(
     )
     values = [*field_values, *meta_values]
 
-    variable_ids = [variable.id for variable in variables]
+    scoped_ids = select(Variable.id).where(*scope)
     return plan_retirement(
         variables,
         referenced=referenced_tokens(values),
-        with_contexts=await _variable_ids_with_rows(
-            session, VariableValue.variable_id, variable_ids
-        ),
+        with_contexts=await _variable_ids_with_rows(session, VariableValue.variable_id, scoped_ids),
         with_drifts=await _variable_ids_with_rows(
-            session, VariableValueDrift.variable_id, variable_ids
+            session, VariableValueDrift.variable_id, scoped_ids
         ),
         with_overrides=await _variable_ids_with_rows(
-            session, VariableEventValueOverride.variable_id, variable_ids
+            session, VariableEventValueOverride.variable_id, scoped_ids
         ),
     )
 

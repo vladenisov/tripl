@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from sqlalchemy import delete, select
+from sqlalchemy import Select, delete, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
 
 from tripl.core.variable_retirement import plan_retirement, referenced_tokens
@@ -55,11 +55,18 @@ _DELETE_BATCH = 1000
 def _ids_with_rows(
     session: Session,
     column: InstrumentedAttribute[uuid.UUID],
-    variable_ids: list[uuid.UUID],
+    scoped_variable_ids: Select[tuple[uuid.UUID]],
 ) -> set[uuid.UUID]:
-    if not variable_ids:
-        return set()
-    return set(session.execute(select(column).where(column.in_(variable_ids)).distinct()).scalars())
+    """See ``variable_retirement_service._variable_ids_with_rows``.
+
+    A SUBQUERY, not the loaded id list: the population is unbounded by
+    construction and PostgreSQL caps a statement at 65535 bind parameters, so a
+    literal ``IN`` here would put on the reads exactly the ceiling
+    ``_DELETE_BATCH`` keeps off the writes.
+    """
+    return set(
+        session.execute(select(column).where(column.in_(scoped_variable_ids)).distinct()).scalars()
+    )
 
 
 def retire_unused_variables(
@@ -101,15 +108,13 @@ def retire_unused_variables(
         ).scalars(),
     ]
 
-    variable_ids = [variable.id for variable in variables]
+    scoped_ids = select(Variable.id).where(*scope)
     plan = plan_retirement(
         variables,
         referenced=referenced_tokens(values),
-        with_contexts=_ids_with_rows(session, VariableValue.variable_id, variable_ids),
-        with_drifts=_ids_with_rows(session, VariableValueDrift.variable_id, variable_ids),
-        with_overrides=_ids_with_rows(
-            session, VariableEventValueOverride.variable_id, variable_ids
-        ),
+        with_contexts=_ids_with_rows(session, VariableValue.variable_id, scoped_ids),
+        with_drifts=_ids_with_rows(session, VariableValueDrift.variable_id, scoped_ids),
+        with_overrides=_ids_with_rows(session, VariableEventValueOverride.variable_id, scoped_ids),
     )
     if not plan.retirable:
         return 0

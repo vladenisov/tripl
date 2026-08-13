@@ -108,6 +108,14 @@ async def list_variables(
         # ``in_(())`` and ``not_in(())`` are both well defined on an empty
         # sequence, so a project with nothing to retire needs no special case:
         # "unused" correctly returns no rows, "used" correctly returns all.
+        #
+        # This one IS a literal id list, unlike the anti-joins inside
+        # ``plan_project_retirement`` which take a subquery: the retirable set
+        # is computed in Python and has no SQL expression to stand in for it.
+        # The bound is therefore PostgreSQL's 65535 bind parameters against the
+        # project's variable count — comfortable now that the end-of-scan sweep
+        # keeps that count from growing without limit, which is exactly the
+        # property this filter exists to make visible.
         scope.append(
             Variable.id.in_(plan.retirable)
             if usage == "unused"

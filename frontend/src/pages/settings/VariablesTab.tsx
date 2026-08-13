@@ -799,7 +799,10 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
             <EmptyState
               icon={VariableIcon}
               title="Nothing to retire"
-              description="Every variable in this project is referenced by an event field value, carries observed values, or was edited by hand."
+              // Every reason the backend predicate can keep a row for. The
+              // first version named three of seven, so an operator staring at
+              // an empty list would have been told the wrong thing about why.
+              description="Every variable here is kept by something: a field or meta value that names it, observed values, documented values, a value drift, a per-event override, an exclusion from scans, or an edit someone made."
             />
           </div>
         ) : usageFilter === 'used' ? (
