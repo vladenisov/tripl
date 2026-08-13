@@ -636,6 +636,12 @@ def collect_metrics(
         n_distribution_drifts = 0
         significant_distribution_drifts = 0
         query_rows_scanned = 0
+        # "Archived but still arriving" is real information, but it is NOT a
+        # coverage story: folding a deliberate user decision into a governance
+        # percentage makes that number move for reasons unrelated to
+        # instrumentation quality. It is reported on the run instead (tripl-w3ms).
+        archived_volume = 0
+        archived_identities_seen: set[str] = set()
 
         for chunk_index, (chunk_from, chunk_to) in enumerate(chunks, start=1):
             if is_replay and chunk_index <= resume_completed_chunks:
@@ -702,6 +708,8 @@ def collect_metrics(
             n_breakdown_tp += chunk_stats.n_breakdown_tp
             n_distribution_drifts += chunk_stats.n_distribution_drifts
             significant_distribution_drifts += chunk_stats.significant_distribution_drifts
+            archived_volume += chunk_stats.archived_volume
+            archived_identities_seen |= chunk_stats.archived_identities_seen
 
             # Heartbeat: bump the job row after each chunk so the scheduler's
             # staleness reaper sees forward progress. Without this, updated_at
@@ -734,6 +742,15 @@ def collect_metrics(
                 total_chunks=len(chunks),
                 completed_chunks=len(chunks),
                 phase="finalizing",
+            )
+
+        # Said in words as well as counters: an archived event that keeps arriving
+        # is worth knowing about, and the run summary is where it belongs now that
+        # coverage no longer moves for it.
+        if archived_volume:
+            all_details.append(
+                f"Archived events still arriving: {len(archived_identities_seen)} "
+                f"identity(ies), {archived_volume} row(s); excluded from data match"
             )
 
         replay_values_touched = 0
@@ -871,6 +888,8 @@ def collect_metrics(
             "alerts_queued": len(delivery_ids),
             "metrics_row_limit": metrics_row_limit,
             "query_rows_scanned": query_rows_scanned,
+            "archived_event_volume": archived_volume,
+            "archived_events_still_arriving": len(archived_identities_seen),
             "details": all_details,
         }
         if is_replay:

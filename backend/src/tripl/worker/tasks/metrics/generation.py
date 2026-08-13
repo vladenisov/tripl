@@ -453,6 +453,29 @@ def _generation_result_from_snapshot(
     return result, branch_id
 
 
+def _archived_identities_by_event_type(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+) -> dict[uuid.UUID, set[str]]:
+    """Scan identities of archived events, keyed by event type.
+
+    Keyed by ``event_type_id`` rather than filtered on a branch: the caller only
+    ever looks up types it resolved on the main plan, and a working branch's
+    deep copy carries its own type ids, so branch rows can never leak in.
+    """
+    by_event_type: dict[uuid.UUID, set[str]] = {}
+    rows = session.execute(
+        select(Event.event_type_id, Event.source_name, Event.name).where(
+            Event.project_id == project_id,
+            Event.status == "archived",
+        )
+    ).all()
+    for event_type_id, source_name, name in rows:
+        by_event_type.setdefault(event_type_id, set()).add(source_name or name)
+    return by_event_type
+
+
 def _load_latest_generation_snapshot(
     session: Session,
     *,
@@ -481,6 +504,15 @@ def _load_latest_generation_snapshot(
     if int(snapshot.get("version") or 0) != 1:
         return {}, None, None
 
+    # The snapshot only serializes ``events_by_name``, which archived events are
+    # already absent from, so their identities have to come back from the catalog
+    # — otherwise a replay refiles every archived identity as a shadow candidate
+    # and drops its volume out of the coverage numerator (tripl-w3ms).
+    archived_by_event_type = _archived_identities_by_event_type(
+        session,
+        project_id=config.project_id,
+    )
+
     if config.event_type_column:
         group_results_raw = snapshot.get("group_results")
         if not isinstance(group_results_raw, dict):
@@ -495,6 +527,8 @@ def _load_latest_generation_snapshot(
                 group_payload,
                 project_id=config.project_id,
             )
+            if result.event_type_id is not None:
+                result.archived_identities = archived_by_event_type.get(result.event_type_id, set())
             group_results[str(group_name)] = result
             if replay_branch_id is None:
                 replay_branch_id = branch_id
@@ -509,6 +543,8 @@ def _load_latest_generation_snapshot(
         project_id=config.project_id,
         default_event_type_id=config.event_type_id,
     )
+    if result.event_type_id is not None:
+        result.archived_identities = archived_by_event_type.get(result.event_type_id, set())
     return {}, result, branch_id
 
 
@@ -585,11 +621,16 @@ def _load_existing_generation_result(
         # Key on the stable scan identity (source_name), not the editable display name, so
         # metrics still attach to events the user has renamed. Falls back to name for legacy
         # rows whose source_name has not been backfilled yet.
-        # Exclude archived events so they are ignored during metrics collection.
+        # Exclude archived events so they are ignored during metrics collection,
+        # but keep their identities so the collector can tell "put away" from
+        # "never planned" and leave coverage alone (tripl-w3ms).
         events_by_name={
             (event.source_name or event.name): event
             for event in events
             if event.status != "archived"
+        },
+        archived_identities={
+            (event.source_name or event.name) for event in events if event.status == "archived"
         },
     )
 

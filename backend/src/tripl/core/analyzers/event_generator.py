@@ -77,7 +77,7 @@ from tripl.core.analyzers.event_plan import (
     plan_column_meta,
     plan_events,
 )
-from tripl.models.event import Event
+from tripl.models.event import Event, EventStatus
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.field_definition import FieldDefinition
 
@@ -128,6 +128,13 @@ class GenerationResult:
     details: list[str] = field(default_factory=list)
     col_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
     events_by_name: dict[str, Event] = field(default_factory=dict)
+    # Scan identities of ARCHIVED events, deliberately kept out of
+    # ``events_by_name`` so nothing collects metrics for them. The collector
+    # still needs them by name to tell "put away" apart from "never planned":
+    # without this an archived identity misses ``events_by_name``, is filed as a
+    # shadow candidate, and its volume lands in the coverage denominator but not
+    # the numerator — so archiving a busy event tanks coverage (tripl-w3ms).
+    archived_identities: set[str] = field(default_factory=set)
     snapshot: dict[str, Any] | None = None
 
 
@@ -252,6 +259,14 @@ def generate_events(
 
         existing = existing_by_identity.get(event_name)
         if existing is not None:
+            if existing.status == EventStatus.archived:
+                # Archiving means "put it away", so an archived row is frozen:
+                # a scan must not rewrite its field values or re-observe its
+                # variable contexts just because the identity still arrives.
+                # Counted as skipped like any other already-known identity, so
+                # the run summary keeps reconciling against the plan (tripl-rsei).
+                result.events_skipped += 1
+                continue
             # Update field values on existing event
             rewritten_fields |= _upsert_field_values(existing, field_values)
             _record_variable_contexts(
@@ -333,9 +348,14 @@ def generate_events(
     result.event_type_id = event_type_id
     # Keyed by scan identity (source_name == formatted event name); metric collection looks
     # events up by the same row-derived name, so renamed events still match here.
-    # Exclude archived events so we don't collect metrics/send alerts for them.
+    # Exclude archived events so we don't collect metrics/send alerts for them, but hand
+    # their identities over separately — dropping them entirely is what made the collector
+    # mistake an archived event for an unplanned one (tripl-w3ms).
     result.events_by_name = {
-        k: v for k, v in existing_by_identity.items() if v.status != "archived"
+        k: v for k, v in existing_by_identity.items() if v.status != EventStatus.archived
+    }
+    result.archived_identities = {
+        k for k, v in existing_by_identity.items() if v.status == EventStatus.archived
     }
     return result
 

@@ -570,6 +570,16 @@ inferred), or **Dismiss** it. **Dead events** (in plan, not seen recently over a
 14-day window) can be selected and archived; archiving targets the project's
 `main` branch.
 
+**Archiving puts an event away for good.** An archived event is inert: scans stop
+refreshing its field values, group rules can neither rewrite nor delete it, and
+its warehouse volume leaves data match on *both* sides — it counts as neither
+matched nor unmatched. So archiving a busy event does not move the percentage,
+and the archived identity never comes back through the shadow inbox as an
+"unmapped event". If an archived event is still arriving, the scan run says so:
+its **run summary** reports how many archived identities were seen and how many
+rows they carried, deliberately kept off the data-match percentage rather than
+folded into it. Its volume also still appears in the event type's volume series.
+
 ### Coverage
 
 **Where:** Govern › Coverage (route `/p/<slug>/coverage`). A read-only

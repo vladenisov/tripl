@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Protocol, cast
 
@@ -70,6 +70,11 @@ class ChunkStats:
     n_breakdown_tp: int = 0
     n_distribution_drifts: int = 0
     significant_distribution_drifts: int = 0
+    # Warehouse volume that resolved to an ARCHIVED plan identity. Held out of
+    # coverage entirely (see ``process_chunk``), so this is the only place the
+    # run still reports "you put this away and it is still arriving".
+    archived_volume: int = 0
+    archived_identities_seen: set[str] = field(default_factory=set)
 
 
 def _delete_chunk_window(
@@ -206,6 +211,7 @@ def process_chunk(
         cnt = int(cast(int | str | float, row[-1]))
         col_meta: dict[str, dict[str, object]]
         events_by_name: dict[str, Event]
+        archived_identities: set[str]
         event_type_id: uuid.UUID | None
 
         # Coverage denominator counts every returned row — including
@@ -226,12 +232,14 @@ def process_chunk(
                 continue
             col_meta = gen_result.col_meta
             events_by_name = gen_result.events_by_name
+            archived_identities = gen_result.archived_identities
         else:
             event_type_id = config.event_type_id
             if single_result is None:
                 continue
             col_meta = single_result.col_meta
             events_by_name = single_result.events_by_name
+            archived_identities = single_result.archived_identities
 
         # Build event name from row (same logic as generate_events)
         event_name = _build_event_name_from_row(
@@ -247,17 +255,6 @@ def process_chunk(
 
         if event_name:
             ev = events_by_name.get(event_name)
-            if not isinstance(ev, Event):
-                # Shadow candidate: warehouse identity with no plan
-                # event. Tracked per (event_type, identity).
-                shadow_key = (event_type_id, event_name)
-                shadow_entry = shadow_agg.get(shadow_key)
-                if shadow_entry is None:
-                    shadow_agg[shadow_key] = [cnt, bucket, bucket]
-                else:
-                    shadow_entry[0] = cast(int, shadow_entry[0]) + cnt
-                    shadow_entry[1] = min(cast(datetime, shadow_entry[1]), bucket)
-                    shadow_entry[2] = max(cast(datetime, shadow_entry[2]), bucket)
             if isinstance(ev, Event):
                 coverage_entry[1] += cnt
                 key = (config.id, ev.id, bucket)
@@ -273,6 +270,31 @@ def process_chunk(
                         json_value_names=json_value_names,
                         variable_by_token=replay_variables_by_token,
                     )
+            elif event_name in archived_identities:
+                # Archived, not unplanned. The identity IS in the plan — the user
+                # put it away — so filing it as a shadow candidate resurrects the
+                # very row they retired. Take its volume back OUT of the
+                # denominator too: coverage asks "of the traffic the plan is meant
+                # to describe, how much does it describe", and archiving withdraws
+                # the event from that question on both sides. Leaving it in the
+                # denominator alone made archiving a busy event silently tank the
+                # project's coverage percentage (tripl-w3ms). The volume is not
+                # lost — it still lands in the event-type series below, and the
+                # run reports it via ``ChunkStats.archived_volume``.
+                coverage_entry[0] -= cnt
+                stats.archived_volume += cnt
+                stats.archived_identities_seen.add(event_name)
+            else:
+                # Shadow candidate: warehouse identity with no plan
+                # event. Tracked per (event_type, identity).
+                shadow_key = (event_type_id, event_name)
+                shadow_entry = shadow_agg.get(shadow_key)
+                if shadow_entry is None:
+                    shadow_agg[shadow_key] = [cnt, bucket, bucket]
+                else:
+                    shadow_entry[0] = cast(int, shadow_entry[0]) + cnt
+                    shadow_entry[1] = min(cast(datetime, shadow_entry[1]), bucket)
+                    shadow_entry[2] = max(cast(datetime, shadow_entry[2]), bucket)
 
         if event_type_id:
             key = (config.id, event_type_id, bucket)
