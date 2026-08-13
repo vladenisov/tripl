@@ -165,14 +165,47 @@ def name_format_conflict_detail(
     hits this on the drift badge and again on the plan's Delete button must read
     one rule, not two similar-sounding ones.
 
-    It names the column, every scan config that needs it WITH its format string,
-    the failure they would otherwise hit, and the one edit that unblocks them.
+    It names the column, every scan that needs it WITH its format string, the
+    failure they would otherwise hit, and the one edit that unblocks them.
+
+    **It says "scan", not "scan config"**, and spells both plurals out rather
+    than writing "(s)" (tripl-24i0). One sentence for three surfaces means it has
+    to be readable on all three, and the web UI is the strictest: tripl-3y7z
+    settled *scan* as its noun and `frontend/src/scan-docs-agreement.test.ts`
+    enforces it — but only over frontend source, so a sentence authored here and
+    rendered verbatim in a ``role="alert"`` walks straight past that guard. The
+    alternatives were worse: a second UI-facing form of the same sentence would
+    need a surface discriminator no request carries — the drift door is posted to
+    by the badge and by ``tripl drifts accept`` through the one route — and would
+    leave two copies of one rule to keep in sync, the defect class this module's
+    own docstring exists to prevent; a frontend that pattern-matched this prose
+    would stop matching, silently, the first reword. "scan" costs the
+    CLI and MCP nothing — ``scan_config`` stays the wire IDENTIFIER, and the two
+    sentences after this one already said "the scan" while the count said "scan
+    config(s)", so this only makes the message agree with itself.
+    ``backend/src/tripl/tests/test_name_format_conflict_vocabulary.py`` holds it
+    there, on this side of the wire, where the string is written.
     """
     named = "; ".join(f"'{config.name}' ({config.event_name_format})" for config in configs)
+    one = len(configs) == 1
+    counted = f"{len(configs)} scan" if one else f"{len(configs)} scans"
+    # The back-references have to agree with the count, or the plural case reads
+    # "the event name format of 2 scans: 'A'; 'B'. Without it THE SCAN cannot
+    # build an event name ... Edit THE SCAN'S Event name format" — a sentence
+    # that names two scans and then instructs the reader about one. Pluralising
+    # only the counted noun is the same defect "(s)" had, moved two clauses
+    # along (tripl-24i0).
+    subject = (
+        "the scan cannot build an event name" if one else "those scans cannot build event names"
+    )
+    instruction = (
+        "Edit the scan's Event name format so it no longer references this column"
+        if one
+        else "Edit their Event name formats so they no longer reference this column"
+    )
     return (
         f"{lead} The field '{field_name}' is used by the event name format of "
-        f"{len(configs)} scan config(s): {named}. Without it the scan cannot build an "
-        "event name and every collection fails with 'the event name format references "
-        "unknown keys'. Edit the scan's Event name format so it no longer references "
-        f"this column, then {then}."
+        f"{counted}: {named}. Without it {subject} "
+        "and every collection fails with 'the event name format references "
+        f"unknown keys'. {instruction}, then {then}."
     )

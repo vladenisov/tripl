@@ -507,8 +507,15 @@ export function FieldsEditor({
           format builds event names from) is invisible: the row simply stays and
           the operator has no idea why (tripl-3mmh). The backend sends a plain
           string detail, which api/client.ts puts straight into ApiError.message,
-          so it renders verbatim — it already names the scan config and the one
-          edit that unblocks the delete. */}
+          so it renders verbatim — it already names the scan and the one edit
+          that unblocks the delete.
+
+          Verbatim deliberately (tripl-24i0): rewriting the wording here means
+          matching backend prose, which fails OPEN the first time the backend
+          rewords — the old string on screen and nothing to notice. The web UI's
+          nouns are enforced where the sentence is written instead, by backend
+          test_name_format_conflict_vocabulary, since scan-docs-agreement.test.ts
+          reads frontend sources and cannot see a string built in Python. */}
       {deleteMut.isError && (
         <div role="alert" className="px-[18px] py-2 text-[12.5px] text-destructive">
           {getErrorMessage(deleteMut.error)}
