@@ -2139,6 +2139,121 @@ def test_recalculate_release_regressions_records_a_withheld_verdict(
         assert verdict.emerging_share > verdict.max_emerging_share
 
 
+def test_recalculate_release_regressions_writes_one_verdict_for_both_scopes(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The two persistence passes judge the same release and must not disagree.
+
+    Event-scope sees the windy-ios mix and scores 0.54; the event-type rows here
+    are a single type carrying all the traffic, which on its own scores 0.0 and
+    comes back comparable. Comparability is a property of the release, so the
+    partition that saw the population change decides for both — otherwise the
+    type pass persists composition-normalized rows that the event pass had
+    already ruled untrustworthy, with nothing downstream filtering by scope
+    (tripl-phpy).
+    """
+    days = [datetime(2026, 1, d) for d in range(1, 11)]
+    steady = {"main": 700, "onboarding": 20, "purchase": 280}
+    fresh = {"main": 60, "onboarding": 640, "purchase": 300}
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        config.app_version_column = "app_version"
+        events = {
+            name: Event(
+                id=uuid.uuid4(),
+                project_id=config.project_id,
+                event_type_id=config.event_type_id,
+                name=f"event_name={name}",
+                description="",
+                status="implemented",
+            )
+            for name in steady
+        }
+        session.add_all(list(events.values()))
+        session.commit()
+
+        def _add(*, event_id, event_type_id, bucket, version, count):
+            session.add(
+                EventMetricBreakdown(
+                    id=uuid.uuid4(),
+                    scan_config_id=config.id,
+                    event_id=event_id,
+                    event_type_id=event_type_id,
+                    bucket=bucket,
+                    breakdown_column="app_version",
+                    breakdown_value=version,
+                    is_other=False,
+                    count=count,
+                )
+            )
+
+        for day in days:
+            for name, count in steady.items():
+                _add(
+                    event_id=events[name].id,
+                    event_type_id=None,
+                    bucket=day,
+                    version="2.0.0",
+                    count=count,
+                )
+            # The type-scope partition: all of it in one type, so its own
+            # composition never moves and it would be judged comparable alone.
+            _add(
+                event_id=None,
+                event_type_id=config.event_type_id,
+                bucket=day,
+                version="2.0.0",
+                count=sum(steady.values()),
+            )
+        for day in days[6:]:
+            for name, count in fresh.items():
+                _add(
+                    event_id=events[name].id,
+                    event_type_id=None,
+                    bucket=day,
+                    version="2.1.0",
+                    count=count,
+                )
+            _add(
+                event_id=None,
+                event_type_id=config.event_type_id,
+                bucket=day,
+                version="2.1.0",
+                count=sum(fresh.values()),
+            )
+        session.commit()
+
+        metrics._recalculate_release_regressions(
+            session,
+            config,
+            evaluation_start=datetime(2026, 1, 1),
+            evaluation_end=datetime(2026, 1, 11),
+        )
+        session.commit()
+
+        verdicts = {
+            v.scope_type: v
+            for v in (
+                session.execute(
+                    select(ReleaseComparability).where(
+                        ReleaseComparability.scan_config_id == config.id
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        }
+        assert set(verdicts) == {"event", "event_type"}
+        assert {v.comparable for v in verdicts.values()} == {False}
+        assert {v.reason for v in verdicts.values()} == {"population_mismatch"}
+        assert {v.version for v in verdicts.values()} == {"2.1.0"}
+        # Both rows carry the share that decided the verdict, not the score each
+        # partition happened to contribute: a stored 0.0 next to
+        # ``comparable=False`` would read as a broken gate.
+        assert len({v.emerging_share for v in verdicts.values()}) == 1
+        assert all(v.emerging_share > v.max_emerging_share for v in verdicts.values())
+
+
 def test_recalculate_release_regressions_skips_prerelease_builds(
     sync_session_factory: sessionmaker[Session],
 ) -> None:

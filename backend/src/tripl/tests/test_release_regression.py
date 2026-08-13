@@ -12,6 +12,7 @@ from tripl.core.analyzers.release_regression import (
     REASON_POPULATION_MISMATCH,
     RegressionSettings,
     detect_release_regressions,
+    detect_release_regressions_by_scope,
 )
 
 PREV = "2.0.0"
@@ -322,6 +323,156 @@ def test_a_thin_new_release_spread_over_a_wide_catalog_is_still_judged() -> None
 
     assert report.comparable is True
     assert [r.scope_ref for r in report.results] == ["main"]
+
+
+# --- one verdict across scope partitions (tripl-phpy) -------------------------
+#
+# The recalculation layer judges the same release twice, once per scope
+# partition, and event types are a coarsening of events. Nothing used to hold
+# the two passes to the same comparability answer.
+
+
+def _two_partitions(per_type: dict[str, tuple[int, int, int]]):
+    """An event-level partition and its exact event-type coarsening.
+
+    ``per_type`` maps a type ref to ``(events in the type, prev count per
+    bucket per event, new count per bucket per event)``. Both partitions
+    describe the same traffic and therefore share one
+    ``release_total_by_bucket``, which is what makes any disagreement between
+    them a disagreement about the composition statistic and nothing else.
+    """
+    events_prev, events_new, types_prev, types_new = {}, {}, {}, {}
+    for type_ref, (count, prev, new) in per_type.items():
+        types_prev[type_ref] = count * prev
+        types_new[type_ref] = count * new
+        for i in range(count):
+            events_prev[f"{type_ref}/{i}"] = prev
+            events_new[f"{type_ref}/{i}"] = new
+    release_total, all_traffic, event_counts = _mix(events_prev, events_new)
+    _, _, type_counts = _mix(types_prev, types_new)
+    return release_total, all_traffic, event_counts, type_counts
+
+
+# The windy-ios population change on a catalog fine enough to hide it: a rollout
+# of fresh installs pours two thirds of its volume into onboarding, but that
+# volume is spread over 1000 events, so no single event is seen even 30 times in
+# the window and the event-scope statistic has nothing to stand on.
+_FINE_CATALOG = {
+    "type/steady": (1400, 7, 1),
+    "type/onboarding": (1000, 0, 4),
+    "type/purchase": (200, 1, 3),
+}
+
+
+def _by_scope(release_total, all_traffic, partitions, settings=None):
+    return detect_release_regressions_by_scope(
+        release_total_by_bucket=release_total,
+        all_traffic_by_bucket=all_traffic,
+        scope_counts_by_scope_type=partitions,
+        latest_bucket=DAYS[-1],
+        settings=settings or RegressionSettings(),
+    )
+
+
+def test_the_two_scope_partitions_are_held_to_a_single_verdict() -> None:
+    """Judged apart the two partitions contradict each other on the same release.
+
+    Comparability is a property of the RELEASE, so one of those answers has to
+    win for both. It has to be the partition that SAW the change: a scope below
+    the volume floor contributes nothing, so every partition understates
+    emergence and the sparser one understates it most.
+    """
+    release_total, all_traffic, event_counts, type_counts = _two_partitions(_FINE_CATALOG)
+
+    apart = {
+        "event": _report(release_total, all_traffic, event_counts),
+        "event_type": _report(release_total, all_traffic, type_counts),
+    }
+    assert apart["event"].comparable is True
+    assert apart["event"].emerging_share == 0.0, "no event clears the 30-event floor"
+    assert apart["event_type"].comparable is False
+    assert apart["event_type"].emerging_share > 0.6
+
+    together = _by_scope(
+        release_total, all_traffic, {"event": event_counts, "event_type": type_counts}
+    )
+    assert {r.comparable for r in together.values()} == {False}
+    assert {r.reason for r in together.values()} == {REASON_POPULATION_MISMATCH}
+    # And on the number that decided it, so a reader is never shown
+    # ``comparable=False`` next to a share under the bound.
+    assert {r.emerging_share for r in together.values()} == {apart["event_type"].emerging_share}
+
+
+def test_the_sparser_partition_cannot_wave_through_the_row_the_denser_one_vetoed() -> None:
+    """Why "decide once on the finest partition available" is the wrong rule.
+
+    The event scope returns comparable here only because it measured nothing at
+    all. Letting that verdict govern the type pass would persist a volume_drop
+    on the steady-state type of a healthy app — the windy-ios false alarm, one
+    partition up from where it was fixed.
+    """
+    release_total, all_traffic, event_counts, type_counts = _two_partitions(_FINE_CATALOG)
+
+    ungated = _report(
+        release_total, all_traffic, type_counts, RegressionSettings(max_emerging_share=1.0)
+    )
+    assert [(r.scope_ref, r.kind) for r in ungated.results] == [("type/steady", KIND_VOLUME_DROP)]
+
+    together = _by_scope(
+        release_total, all_traffic, {"event": event_counts, "event_type": type_counts}
+    )
+    assert together["event_type"].results == []
+
+
+def test_a_partition_with_nothing_to_measure_cannot_veto_a_comparable_release() -> None:
+    """The other direction, which a naive "all partitions must agree" would break.
+
+    A scan whose event-type scope has no breakdown rows of its own is ordinary.
+    Absent evidence has to stay absent evidence rather than become a veto, and
+    taking the maximum gives that for free — an empty partition scores 0.0 and
+    cannot move a maximum.
+    """
+    release_total, all_traffic, scope_counts = _mix(_STEADY, {**_STEADY, "main": 0})
+
+    together = _by_scope(release_total, all_traffic, {"event": scope_counts, "event_type": {}})
+    assert {r.comparable for r in together.values()} == {True}
+    assert {r.reason for r in together.values()} == {REASON_COMPARABLE}
+    assert [r.scope_ref for r in together["event"].results] == ["main"]
+    assert together["event_type"].results == []
+
+
+def test_a_shared_suppression_still_reports_silent_scopes_at_every_partition() -> None:
+    """Suppression withholds composition-normalized findings, not silent events.
+
+    A scope that went to zero is not something a different mix of users
+    explains, and the shared verdict must not quietly widen what gets dropped.
+    """
+    silent = _FINE_CATALOG | {"type/legacy": (1, 100, 0)}
+    release_total, all_traffic, event_counts, type_counts = _two_partitions(silent)
+
+    together = _by_scope(
+        release_total, all_traffic, {"event": event_counts, "event_type": type_counts}
+    )
+    assert {r.comparable for r in together.values()} == {False}
+    assert [(r.scope_ref, r.kind) for r in together["event_type"].results] == [
+        ("type/legacy", KIND_MISSING)
+    ]
+    assert [(r.scope_ref, r.kind) for r in together["event"].results] == [
+        ("type/legacy/0", KIND_MISSING)
+    ]
+
+
+def test_a_release_with_no_baseline_aborts_identically_at_every_partition() -> None:
+    """The two pre-comparison exits are decided from release volumes alone, so
+    they were never able to disagree. Pinned so that stays true."""
+    release_total = {NEW: {d: 1000 for d in NEW_DAYS}}
+    all_traffic = {d: 1000 if d in NEW_DAYS else 0 for d in DAYS}
+
+    together = _by_scope(release_total, all_traffic, {"event": {}, "event_type": {}})
+    assert {r.comparable for r in together.values()} == {False}
+    assert {r.reason for r in together.values()} == {REASON_NO_BASELINE}
+    # Frozen report, mutable ``results``: the two must not share one list.
+    assert together["event"].results is not together["event_type"].results
 
 
 def test_an_event_that_went_completely_silent_survives_the_suppression() -> None:
