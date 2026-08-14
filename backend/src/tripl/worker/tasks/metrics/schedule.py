@@ -43,6 +43,7 @@ from tripl.worker.tasks.metrics.metric_collect import (
     COLLECTION_STATUS_RUNNING,
     collect_fact_metrics_batch,
     collect_metric_definitions,
+    event_composition_binding_error,
     mark_collection_error,
 )
 from tripl.worker.tasks.metrics.tasks import METRICS_COLLECTION_MODE, collect_metrics
@@ -539,6 +540,14 @@ def _event_composition_due(session: Session, definition: MetricDefinition) -> bo
     event_metrics, so "due" means the newest numerator event-metric bucket is
     ahead of the newest value we have composed.
     """
+    # A structurally unconfigured metric is ALWAYS due, so the collector gets to
+    # say so. Without this the guard would be inert: both refs NULL means no
+    # source bucket, ``source_max`` is None, and this returns False forever —
+    # which is exactly the half of tripl-jtnv that made the flatline permanent.
+    # The hourly post-error backoff keeps it from becoming a storm.
+    if event_composition_binding_error(definition) is not None:
+        return True
+
     source_max = _max_event_metric_bucket(
         session,
         event_id=definition.numerator_event_id,

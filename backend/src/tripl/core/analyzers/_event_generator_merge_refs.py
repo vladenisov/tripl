@@ -37,11 +37,10 @@ the dangling reference it was fixing. It also may not import ``tripl.worker``:
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from tripl.core.event_references import replace_preserving_order
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_filter import AlertRuleFilter
 from tripl.models.anomaly_scope_override import AnomalyScopeOverride
@@ -71,30 +70,6 @@ def move_dangling_event_references(session: Session, *, source: Event, target: E
     _move_alert_rule_filter_values(session, source=source, target=target)
     _move_chart_annotations(session, source=source, target=target)
     _move_implementation_ticket_event_ids(session, source=source, target=target)
-
-
-def _replace_preserving_order(values: Iterable[str], old: str, new: str) -> list[str]:
-    """Swap *old* for *new* in a JSON id list, de-duplicating, order preserved.
-
-    Returns a NEW list because these columns are plain ``JSON`` and this
-    repository maps no ``MutableList`` anywhere: mutating one in place leaves the
-    instance unflagged, the write is never flushed, and every assertion made
-    against the in-memory object still passes. That is exactly the shape of a
-    test that cannot fail, which is how tripl-xfxa survived as long as it did.
-
-    De-duplicating matters because both events can already be listed: a ticket
-    would otherwise name the survivor twice in its Jira summary, and a filter
-    would render a duplicate chip.
-    """
-    seen: set[str] = set()
-    out: list[str] = []
-    for value in values:
-        candidate = new if value == old else value
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        out.append(candidate)
-    return out
 
 
 def _move_metric_composition_operands(session: Session, *, source: Event, target: Event) -> None:
@@ -245,7 +220,7 @@ def _move_alert_rule_filter_values(session: Session, *, source: Event, target: E
         values = [str(value) for value in (row.values or [])]
         if source_ref not in values:
             continue
-        row.values = _replace_preserving_order(values, source_ref, target_ref)
+        row.values = replace_preserving_order(values, source_ref, target_ref)
 
 
 def _move_chart_annotations(session: Session, *, source: Event, target: Event) -> None:
@@ -297,4 +272,4 @@ def _move_implementation_ticket_event_ids(
         event_ids = [str(value) for value in (ticket.event_ids or [])]
         if source_ref not in event_ids:
             continue
-        ticket.event_ids = _replace_preserving_order(event_ids, source_ref, target_ref)
+        ticket.event_ids = replace_preserving_order(event_ids, source_ref, target_ref)

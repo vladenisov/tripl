@@ -114,6 +114,58 @@ from tripl.worker.tasks.metrics.metric_rows import (
 logger = logging.getLogger(__name__)
 
 
+def event_composition_binding_error(definition: MetricDefinition) -> str | None:
+    """Why this metric can never produce a value, or ``None`` if it can.
+
+    An ``event_composition`` metric reads an already-collected series through
+    ``_read_event_metric_series``, which returns ``{}`` for TWO different
+    situations that the collector then treated identically:
+
+    * the operand is configured and simply has no rows yet — legitimately zero,
+      and it must stay silent;
+    * the metric has no operand AT ALL, both the event ref and the event-type
+      ref being NULL — structurally unable to produce anything, ever.
+
+    Reporting the second as ``{"values": 0, "grids": 0}`` is what made tripl-jtnv
+    invisible for as long as it was: a SUCCESS with zero rows leaves
+    ``last_collection_status`` green, and ``_event_composition_due`` then reads
+    the same empty series and returns ``False`` forever, so the scheduler stops
+    asking. The metric flatlines and nothing anywhere says why.
+
+    A user cannot reach this state by hand — the schemas require a numerator on
+    create and on update, and a denominator for ``ratio`` — so a NULL operand is
+    ALWAYS the footprint of an ``ondelete="SET NULL"``: a deleted event
+    (tripl-jtnv, now also carried by the group merge) or a deleted event type
+    (tripl-nmn3). Checking the binding rather than the deleting door is the
+    point: one kind-level guard covers every present and future door.
+
+    Returned rather than raised so ``_event_composition_due`` can ask the same
+    question without catching an exception.
+    """
+    if definition.composition is None:
+        return "This metric has no composition set, so there is nothing to compute."
+    composition = (
+        definition.composition
+        if isinstance(definition.composition, MetricComposition)
+        else MetricComposition(definition.composition)
+    )
+    if definition.numerator_event_id is None and definition.numerator_event_type_id is None:
+        return (
+            "This metric's numerator no longer points at anything. The event or event type "
+            "it was defined against has been deleted, so the metric can never produce a "
+            "value. Point it at a live event or event type, or delete the metric."
+        )
+    if composition is MetricComposition.ratio and (
+        definition.denominator_event_id is None and definition.denominator_event_type_id is None
+    ):
+        return (
+            "This ratio's denominator no longer points at anything. The event or event type "
+            "it was defined against has been deleted, so the metric can never produce a "
+            "value. Point it at a live event or event type, or delete the metric."
+        )
+    return None
+
+
 def mark_collection_error(definition: MetricDefinition, message: str) -> None:
     """Put one metric into the error state — the only way it is entered.
 
@@ -2512,13 +2564,20 @@ def _collect_event_composition(
     full already-collected event-metric series, so a manual collect simply
     recomputes everything available.
     """
-    if definition.composition is None:
+    binding_error = event_composition_binding_error(definition)
+    if binding_error is not None:
+        raise ScanError(binding_error)
+    raw_composition = definition.composition
+    if raw_composition is None:  # pragma: no cover - the guard above already raised
+        # Unreachable, and kept anyway: the guard owns the rule so that
+        # ``_event_composition_due`` can ask the same question, which leaves the
+        # type checker unable to see the narrowing it used to get here.
         msg = "event_composition metric requires a composition"
         raise ScanError(msg)
     composition = (
-        definition.composition
-        if isinstance(definition.composition, MetricComposition)
-        else MetricComposition(definition.composition)
+        raw_composition
+        if isinstance(raw_composition, MetricComposition)
+        else MetricComposition(raw_composition)
     )
 
     numerator_by_grid = _read_event_metric_series(

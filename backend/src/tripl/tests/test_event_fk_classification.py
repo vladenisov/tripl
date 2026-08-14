@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import tripl.models  # noqa: F401  (imports every model so Base.metadata is complete)
 from tripl.models.base import Base
+from tripl.services._event_reference_cleanup import DELETE_PATH_COLUMNS
 
 EVENT_PRIMARY_KEY = "events.id"
 
@@ -67,6 +68,13 @@ MIGRATED: dict[tuple[str, str], str] = {
         "only — 'single' and 'per_distinct_user' ignore it — but re-pointed regardless, because a "
         "dangling NULL is worse than an unread id."
     ),
+    # Both operand entries describe the MERGE. On a DELETE there is no survivor,
+    # so the SET NULL stands and nothing here re-points it — the metric is driven
+    # red at collection instead, by event_composition_binding_error, which asks
+    # about the BINDING rather than about the door. One kind-level guard covers
+    # a deleted event, a deleted event type and any future SET NULL on those
+    # four columns; a per-door copy is the "seventh call site" failure again
+    # (tripl-nmn3).
 }
 
 # The merge intentionally lets these go. Nothing rebuilds them; losing them is
@@ -100,18 +108,31 @@ DELIBERATELY_CASCADES: dict[tuple[str, str], str] = {
         "uq_event_field_value_event_field anyway."
     ),
     ("metric_anomalies", "event_id"): (
-        "_delete_event_anomalies deletes BOTH events' rows on purpose — merging the metric series "
-        "invalidates the target's baseline too — and worker/tasks/metrics/detect.py rescores the "
-        "window on the next collect_metrics."
+        "NOTE the FK is ondelete=SET NULL, not CASCADE — this bucket means 'not carried onto a "
+        "survivor', and something else has to do the removing on every path. MERGE: "
+        "_delete_event_anomalies deletes BOTH events' rows on purpose (merging the series "
+        "invalidates the target's baseline too) and detect.py rescores on the next "
+        "collect_metrics. DELETE: _event_reference_cleanup deletes them, by event_id AND by "
+        "scope_ref. Until it did, a deleted event left its anomalies behind with a NULL event_id, "
+        "and NULL reads as 'allow' at both gates — signals.py keeps a row whose joined event is "
+        "NULL, and filter_matches_anomaly returns True for a NULL actual — so the orphans passed "
+        "every event filter. Archiving an event suppressed its alerts; deleting one un-suppressed "
+        "them (tripl-xjuv)."
     ),
     ("metric_breakdown_anomalies", "event_id"): (
-        "Same as metric_anomalies: explicitly deleted for both events by _delete_event_anomalies "
-        "and rescored by detect.py on the next collect_metrics."
+        "Same as metric_anomalies.event_id in every respect, breakdown variant: the FK is SET "
+        "NULL, not CASCADE. MERGE: _delete_event_anomalies removes both events' rows. DELETE: "
+        "_event_reference_cleanup removes them by event_id AND scope_ref. Rescored by detect.py."
     ),
     ("release_regressions", "event_id"): (
-        "Wiped and recomputed in full per scan_config on every collect_metrics "
+        "MERGE: wiped and recomputed in full per scan_config on every collect_metrics "
         "(worker/tasks/metrics/regression.py), and event_id is re-derived from the event_metrics "
-        "rows the merge already re-pointed."
+        "rows the merge already re-pointed. DELETE: _event_reference_cleanup deletes them by both "
+        "keys, because the recompute only LOOKS like a fix. The FK is SET NULL, so until the next "
+        "collection an orphan sits there with scope_type='event' and a live scope_ref, signals "
+        "lifts it into a drift candidate, and drift candidates match on a bare "
+        "all(filter_matches_anomaly(...)) — where a NULL event_id satisfies every event filter. "
+        "Self-healing within one scan interval is not the same as harmless."
     ),
     ("search_documents", "parent_event_id"): (
         "Derived index, and the cascade does the deleting: the FK is ON DELETE CASCADE, so the "
@@ -129,11 +150,15 @@ DELIBERATELY_CASCADES: dict[tuple[str, str], str] = {
 # still not a foreign key.
 NON_FK_EVENT_REFERENCES: dict[tuple[str, str], str] = {
     ("metric_anomalies", "scope_ref"): (
-        "str(event.id) when scope_type == 'event'. Handled: _delete_event_anomalies deletes by "
-        "scope_ref as well as by event_id, for both events."
+        "str(event.id) when scope_type == 'event'. MERGE: _delete_event_anomalies deletes by "
+        "scope_ref as well as by event_id, for both events. DELETE: _event_reference_cleanup does "
+        "the same two-key delete. Two keys because there is no FK on scope_ref, which is also why "
+        "changing the event_id FK to CASCADE would not have been a fix — it could only ever reach "
+        "half the rows."
     ),
     ("metric_breakdown_anomalies", "scope_ref"): (
-        "Same as metric_anomalies.scope_ref, breakdown variant; deleted by _delete_event_anomalies."
+        "Same as metric_anomalies.scope_ref, breakdown variant. MERGE: _delete_event_anomalies. "
+        "DELETE: _event_reference_cleanup. Two-key delete on both paths."
     ),
     ("alert_delivery_items", "scope_ref"): (
         "str(event.id) copied off the anomaly. Handled: rewritten to str(target.id) alongside "
@@ -150,42 +175,62 @@ NON_FK_EVENT_REFERENCES: dict[tuple[str, str], str] = {
     ("alert_rule_states", "scope_ref"): (
         "The open/closed incident + cooldown key, keyed on str(event.id) with no event_id column. "
         "NOT rewritten, ON PURPOSE — and an earlier version of this entry claiming the incident is "
-        "stranded was simply wrong. The state closes on the very next dispatch: "
-        "_delete_event_anomalies removes BOTH events' anomaly rows, so the dead scope produces no "
-        "candidate, and _prepare_alert_deliveries closes every active state it did not match. "
-        "Re-pointing would be the actual regression — it hands the target the source's "
-        "last_notified_at and suppresses the group's first genuine alert."
+        "stranded was simply wrong. The state closes on the very next dispatch, because the dead "
+        "scope stops producing candidates and _prepare_alert_deliveries closes every active state "
+        "it did not match. What guarantees the scope goes quiet differs by path, and both have to "
+        "be named or this argument is only half checked: _delete_event_anomalies on the MERGE, "
+        "_event_reference_cleanup's two-key delete on the DELETE. Re-pointing would be the actual "
+        "regression — it hands the target the source's last_notified_at and suppresses the group's "
+        "first genuine alert."
     ),
     ("anomaly_scope_overrides", "scope_ref"): (
         "The per-scope false-positive sigma ratchet, keyed on str(event.id) with no event_id "
-        "column. Handled: _move_anomaly_scope_overrides re-points it, folding per scan_config_id "
+        "column. MERGE: _move_anomaly_scope_overrides re-points it, folding per scan_config_id "
         "(NULL matched to NULL, so both uq_anomaly_scope_override_scope and the partial "
         "uq_anomaly_scope_override_metric_scope index hold) with max sigma, max min_expected_count "
         "and summed false_positive_count — the ratchet only ever tightens, so max is 'never undo "
-        "a click'."
+        "a click'. DELETE: _event_reference_cleanup removes the row. There is no survivor to "
+        "tighten, the model says deleting the row IS the undo, and leaving it would strand a "
+        "threshold in Detection settings naming an event nobody can open."
     ),
     ("release_regressions", "scope_ref"): (
-        "str(event.id) beside the real event_id FK. Not rewritten, but harmless: the whole table "
-        "is wiped and recomputed per scan_config on every collect_metrics."
+        "str(event.id) beside the real event_id FK. MERGE: not rewritten, and harmless there — "
+        "the whole table is wiped and recomputed per scan_config on every collect_metrics. "
+        "DELETE: _event_reference_cleanup removes the row, because between the delete and that "
+        "recompute the orphan alerts past every event filter (see the event_id entry)."
     ),
     ("chart_annotations", "scope_ref"): (
-        "str(event.id) when scope_type == 'event', no event_id column. Handled: "
+        "str(event.id) when scope_type == 'event', no event_id column. MERGE: "
         "_move_chart_annotations re-points event-scoped rows only. The label and description are "
         "left exactly as written — the annotation's TEXT is history, its scope_ref is only where "
-        "the marker gets drawn."
+        "the marker gets drawn. DELETE: _event_reference_cleanup removes the row; with no event "
+        "there is no chart to draw it on and the reader can never select it again. Promoting it "
+        "to a project-wide marker was rejected — that would paint a deleted event's annotation "
+        "onto every chart in the project."
     ),
     ("implementation_tickets", "event_ids"): (
         "JSON list of event uuid STRINGS the ticket covers, read back to flip events to "
-        "'implemented' when the ticket closes. Handled: "
-        "_move_implementation_ticket_event_ids rewrites the list whole (no MutableList is mapped "
-        "anywhere in this repo, so an in-place edit is silently discarded) and de-duplicates. OPEN "
-        "tickets only — a closed one is a record of what shipped."
+        "'implemented' when the ticket closes. MERGE: _move_implementation_ticket_event_ids "
+        "rewrites the list whole (no MutableList is mapped anywhere in this repo, so an in-place "
+        "edit is silently discarded) and de-duplicates. DELETE: _event_reference_cleanup drops "
+        "the id. Inert either way on the delete path — both steps of the ticket sync already skip "
+        "ids that resolve to nothing — but dropped so the two paths state one rule rather than "
+        "one rule and an exception. OPEN tickets only on both: a closed one records what shipped."
     ),
     ("alert_rule_filters", "values"): (
-        "JSON list of str(event.id) when field == 'event'. Handled: "
-        "_move_alert_rule_filter_values rewrites the list whole and de-duplicates. Matching runs "
-        "in Python, not as JSON containment, because that operator is PostgreSQL-only and the "
-        "suite runs on SQLite — a portable predicate is what makes this testable."
+        "JSON list of str(event.id) when field == 'event'. MERGE: _move_alert_rule_filter_values "
+        "rewrites the list whole and de-duplicates. DELETE: the id is dropped, and if that empties "
+        "the list the FILTER ROW goes — an emptied 'in' matches nothing and an emptied 'not_in' "
+        "matches everything, so leaving it would silently invert the rule, and deleting the row "
+        "alone would WIDEN an 'in' rule to everything its destination watches. An emptied "
+        "inclusive filter therefore also disables its rule and clears its states (the "
+        "disable_rules_bound_to_scan precedent: inert and visibly off, never silently re-aimed); "
+        "an emptied exclusive one leaves the rule enabled, because 'exclude these three' really "
+        "does degrade to 'exclude nothing'. An empty values list is never persisted: "
+        "AlertRuleFilterResponse inherits the at-least-one-value validator, so one would 500 the "
+        "destinations endpoint for the whole project. Matching runs in Python on both paths, not "
+        "as JSON containment, because that operator is PostgreSQL-only and the suite runs on "
+        "SQLite — a portable predicate is what makes this testable."
     ),
     ("scan_jobs", "result_summary"): (
         "JSON generation snapshot embedding str(event.id) per generated event, read back by the "
@@ -219,12 +264,19 @@ NON_FK_EVENT_REFERENCES: dict[tuple[str, str], str] = {
         "The worst-hidden one: an event id HASHED into a plain uuid column. "
         "_correlation_group_id computes uuid5(ns, '{scan_config}:{rule}:{scope_type}:{scope_ref}"
         ":{direction}') and scope_ref is str(event.id) for event scope, so the reference survives "
-        "neither reflection nor a scope_ref grep. NOT rewritten: it cannot be, by a column update "
-        "— it needs both uuid5s recomputed per (config, rule, direction) and a fold on "
-        "uq_alert_correlation_state_project_group. Consequence is bounded: an acknowledged / "
-        "resolved / muted inbox decision does not follow the traffic onto the group event, so the "
-        "survivor's first incident alerts fresh. The stale row is inert, not suppressive. "
-        "Filed as tripl-crow."
+        "neither reflection nor a scope_ref grep. "
+        "NEITHER carried NOR deleted, and both halves of that are deliberate (tripl-crow). "
+        "Not carried: the decision was made about a different series, and handing it to the "
+        "survivor would suppress the group's FIRST genuine alert on a baseline the merge just "
+        "wiped — the same argument that keeps alert_rule_states.scope_ref in place. The durable "
+        "half of the judgement, the false-positive ratchet, IS carried, by "
+        "_move_anomaly_scope_overrides. "
+        "Not deleted either, which is the less obvious half: the row cannot suppress anything "
+        "once its tuple stops being minted, _reopen_closed_incidents releases acknowledged / "
+        "resolved / false-positive on the next dispatch anyway, and _effective_inbox_status reads "
+        "a missing row as 'open' — exactly what reopening produces. So deleting buys the same "
+        "status while destroying the operator's note and their acted_by/acted_at attribution. "
+        "The one accepted cost is an in-force timed mute, which does not transfer."
     ),
 }
 
@@ -247,7 +299,11 @@ _UNCLASSIFIED_HINT = (
     "    a decision nobody made.\n"
     "All three of the latter require a written reason — the whole point of this ledger is\n"
     "that the next person can see the decision instead of re-deriving it.\n"
-    "See backend/src/tripl/core/analyzers/_event_generator_merge.py."
+    "Then answer the SECOND question, because an event is removed by two kinds of path and\n"
+    "they want opposite things: a merge has a survivor to re-point at, a delete has none.\n"
+    "The buckets above classify the MERGE; say what the DELETE does too.\n"
+    "See core/analyzers/_event_generator_merge_refs.py (merge, sync) and\n"
+    "services/_event_reference_cleanup.py (delete, async)."
 )
 
 
@@ -361,4 +417,38 @@ def test_non_fk_event_references_are_pinned_and_still_invisible_to_reflection():
 
     assert not problems, "Manual event-reference ledger is out of date:\n" + "\n".join(
         f"  - {problem}" for problem in problems
+    )
+
+
+def test_the_delete_path_policy_is_pinned_against_the_executor() -> None:
+    """The ledger's delete-path claims must match what the delete path touches.
+
+    Reasons are prose, and prose drifts. This is the one mechanical tie: every
+    (table, column) the async cleanup declares it handles has to be pinned
+    somewhere in this ledger with a reason that actually mentions the delete
+    path — otherwise a column could gain a delete-path policy in the code while
+    its entry here still described only the merge, which is precisely the state
+    this file was in before tripl-xjuv.
+    """
+    pinned = {
+        **NON_FK_EVENT_REFERENCES,
+        **MIGRATED,
+        **DELIBERATELY_DROPPED,
+        **DELIBERATELY_CASCADES,
+    }
+
+    problems: list[str] = []
+    for key in sorted(DELETE_PATH_COLUMNS):
+        reason = pinned.get(key)
+        if reason is None:
+            problems.append(f"{key[0]}.{key[1]}: cleared by the delete path but not pinned here")
+            continue
+        if "DELETE" not in reason:
+            problems.append(
+                f"{key[0]}.{key[1]}: pinned, but its reason never says what the delete path does"
+            )
+
+    assert not problems, (
+        "services/_event_reference_cleanup.py and this ledger disagree:\n"
+        + "\n".join(f"  - {problem}" for problem in problems)
     )

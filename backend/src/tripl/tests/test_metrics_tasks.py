@@ -7810,3 +7810,149 @@ def test_recalculate_metric_anomalies_honours_per_scope_override(
     # dismissed, still flags the very same gap.
     assert SCOPE_EVENT not in after
     assert SCOPE_EVENT_TYPE in after
+
+
+def _unbound_composition(session: Session, config, *, composition, **refs):
+    """A composition metric whose operand refs are whatever the caller passes.
+
+    Written directly rather than through the API because the schemas REQUIRE a
+    numerator (and a denominator for ``ratio``), so the state under test is
+    unreachable by hand — it is always the footprint of an ``ondelete="SET
+    NULL"`` after a deleted event or event type.
+    """
+    from tripl.models.domain_enums import MetricKind, MetricStatus
+    from tripl.models.metric_definition import MetricDefinition
+
+    definition = MetricDefinition(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        name=f"composition-{uuid.uuid4().hex[:8]}",
+        display_name="Composition",
+        kind=MetricKind.event_composition,
+        composition=composition,
+        config={},
+        interval=None,
+        status=MetricStatus.active,
+        **refs,
+    )
+    session.add(definition)
+    session.commit()
+    return definition
+
+
+def test_a_composition_metric_with_no_operand_at_all_reports_a_failure(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The silent flatline, made loud (tripl-nmn3).
+
+    Both refs NULL means _read_event_metric_series returns {}, which the
+    collector reported as {"values": 0, "grids": 0} — a SUCCESS. The status
+    stayed green, _event_composition_due then read the same empty series and
+    returned False forever, and the metric sat at zero with nothing anywhere
+    saying why. Structurally unable to produce a value is not the same as
+    "nothing to produce yet", and only the second may stay quiet.
+    """
+    from tripl.models.domain_enums import MetricComposition
+    from tripl.worker.tasks.metrics.metric_collect import _collect_event_composition
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        definition = _unbound_composition(
+            session,
+            config,
+            composition=MetricComposition.single,
+            numerator_event_id=None,
+            numerator_event_type_id=None,
+        )
+        with pytest.raises(ScanError) as excinfo:
+            _collect_event_composition(session, definition=definition)
+
+    assert "numerator" in str(excinfo.value)
+
+
+def test_a_ratio_whose_denominator_lost_its_binding_reports_a_failure(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """And it raises BEFORE writing, so the stored series is not erased.
+
+    A ratio with a live numerator and a dead denominator divides every bucket by
+    nothing, yielding a dict of Nones — which is not empty, so the collector ran
+    on to delete the existing window and then wrote none of it back. The guard
+    has to come first or "make the failure visible" costs the user their data.
+    """
+    from tripl.models.domain_enums import MetricComposition
+    from tripl.worker.tasks.metrics.metric_collect import _collect_event_composition
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        definition = _unbound_composition(
+            session,
+            config,
+            composition=MetricComposition.ratio,
+            numerator_event_type_id=config.event_type_id,
+            denominator_event_id=None,
+            denominator_event_type_id=None,
+        )
+        with pytest.raises(ScanError) as excinfo:
+            _collect_event_composition(session, definition=definition)
+
+    assert "denominator" in str(excinfo.value)
+
+
+def test_a_bound_composition_metric_with_no_rows_yet_stays_quiet(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The boundary the guard must not cross.
+
+    A metric pointed at a real event type that simply has not been collected
+    yet is legitimately zero. Raising here would turn every newly created
+    metric red before its first scan.
+    """
+    from tripl.models.domain_enums import MetricComposition
+    from tripl.worker.tasks.metrics.metric_collect import _collect_event_composition
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        definition = _unbound_composition(
+            session,
+            config,
+            composition=MetricComposition.single,
+            numerator_event_type_id=config.event_type_id,
+        )
+        assert _collect_event_composition(session, definition=definition) == {
+            "values": 0,
+            "grids": 0,
+        }
+
+
+def test_an_unbound_composition_metric_stays_due_so_it_can_report(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Without this the guard would never fire.
+
+    Due is checked before anything else, and a metric with no operand has no
+    source bucket — so the old due check returned False forever and the
+    collector was never asked. That is the half of tripl-jtnv that made the
+    flatline permanent rather than merely quiet.
+    """
+    from tripl.models.domain_enums import MetricComposition
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        unbound = _unbound_composition(
+            session,
+            config,
+            composition=MetricComposition.single,
+            numerator_event_id=None,
+            numerator_event_type_id=None,
+        )
+        bound = _unbound_composition(
+            session,
+            config,
+            composition=MetricComposition.single,
+            numerator_event_type_id=config.event_type_id,
+        )
+
+        assert metrics_schedule._event_composition_due(session, unbound) is True
+        # ...and a properly bound metric with no newer source bucket is not.
+        assert metrics_schedule._event_composition_due(session, bound) is False

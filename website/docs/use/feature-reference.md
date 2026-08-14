@@ -649,6 +649,28 @@ so a merge does not quietly undo work you did:
 Variable data moves too — see
 [Variables and templates](./variables-and-templates.md#when-a-scan-merges-events-into-a-group).
 
+**What deleting an event clears.** A merge has a survivor to move things onto; a
+delete does not, so the same references are removed instead. Deleting an event —
+on its own, in bulk, or by deleting its event type — clears its stored
+anomalies, its tuned detector sensitivity, and its event-scoped chart markers,
+and drops it from any open implementation ticket.
+
+Two consequences are worth knowing before you delete rather than archive:
+
+- **an alert rule that named only that event is switched off.** Its filter row
+  goes, and rather than leave the rule pointing at nothing — which would quietly
+  widen it to everything its destination watches — the rule is disabled. It
+  keeps its name, thresholds and templates, and the Alerting tab shows it off
+  rather than silently re-aimed. A rule that *excluded* the event stays enabled:
+  "exclude these three" genuinely becomes "exclude nothing" once they are gone.
+- **the event's anomalies are deleted, not orphaned.** Until this changed they
+  outlived the event and, having no event to be filtered on, matched every alert
+  rule — so deleting an event could start alerts that archiving it would have
+  stopped.
+
+**Archiving remains the non-destructive option**: an archived event keeps all of
+this and simply goes quiet.
+
 ### Coverage
 
 **Where:** Govern › Coverage (route `/p/<slug>/coverage`). A read-only

@@ -5,9 +5,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
+from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.schemas.event_type import EventTypeCreate, EventTypeResponse, EventTypeUpdate
+from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.search_service import reindex_project_branch
@@ -142,6 +144,16 @@ async def delete_event_type(
     et = await get_event_type(session, slug, event_type_id, branch_id)
     project_id = et.project_id
     resolved_branch_id = et.branch_id
+    # The most common door, and the least visible one: EventType maps no
+    # ``events`` relationship, so its events go purely through the database FK
+    # cascade and no service ever sees them being deleted. Their dangling
+    # references have to be cleared here or nowhere (tripl-xjuv).
+    doomed_event_ids = list(
+        (await session.execute(select(Event.id).where(Event.event_type_id == et.id)))
+        .scalars()
+        .all()
+    )
+    await drop_dangling_event_references(session, project_id=project_id, event_ids=doomed_event_ids)
     await session.delete(et)
     await session.commit()
     await reindex_project_branch(
