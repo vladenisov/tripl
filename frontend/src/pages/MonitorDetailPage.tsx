@@ -127,6 +127,10 @@ export default function MonitorDetailPage() {
           </div>
 
           <MuteControl
+            // The same string the heading above shows: the button names have to
+            // match what the operator just read, or the announcement identifies
+            // a monitor by a noun that appears nowhere on screen (tripl-in45).
+            ruleName={monitor.rule_name}
             muted={monitor.muted}
             onMute={(ms) => muteMut.mutate(muteUntilIso(ms))}
             onUnmute={() => unmuteMut.mutate()}
@@ -170,17 +174,31 @@ function BackLink({ slug }: { slug?: string }) {
 function ActionButton({
   icon,
   label,
+  ariaLabel,
   onClick,
   disabled,
 }: {
   icon: ReactNode
   label: string
+  /**
+   * Spoken name, when the visible `label` alone does not say what the button
+   * acts ON. A mute preset reads "1h" — three of them on one page are three
+   * identically-named buttons, and none of them names the thing about to go
+   * quiet (tripl-in45).
+   *
+   * Every caller that sets this keeps the visible `label` as a SUBSTRING of it
+   * ("Mute <rule> for 1h" contains "1h"), so speech-input users can still say
+   * what they can read — WCAG 2.5.3 Label in Name, which an aria-label that
+   * replaced the visible text outright would break.
+   */
+  ariaLabel?: string
   onClick: () => void
   disabled?: boolean
 }) {
   return (
     <button
       type="button"
+      aria-label={ariaLabel}
       onClick={onClick}
       disabled={disabled}
       className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-[10px] text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
@@ -210,14 +228,33 @@ function ActionButton({
  *    the value that UN-mutes the rule. The permanent lever on a rule is the
  *    enable/disable switch, not a mute — which is why `MUTE_PRESETS` (durations
  *    only) is imported here and `INBOX_MUTE_CHOICES` is not (tripl-a50u).
+ *
+ * 3. Every button here is named by what it silences, not only by its own text.
+ *    The presets used to be called "1h" / "24h" / "7d" and Unmute just
+ *    "Unmute", so a screen reader announced a duration with no hint of WHOSE
+ *    alerts stop — and three same-named buttons if a second control ever shares
+ *    the page. The wording is lifted verbatim from the other two mute surfaces
+ *    (`Mute <target> for <duration>`, `Unmute <target>` in `MonitorsSection`
+ *    and `AlertingInbox`) rather than invented here: three surfaces describing
+ *    one action three ways is the exact defect `@/lib/mutePresets` was
+ *    extracted to end (tripl-in45, tripl-oxkt.7).
  */
 function MuteControl({
+  ruleName,
   muted,
   onMute,
   onUnmute,
   isPending,
   errorMessage,
 }: {
+  /**
+   * What the buttons name. A monitor IS an alert rule (tripl-89ps), so the noun
+   * is the rule's name — the same one the page heading shows and the same one
+   * `MonitorsSection`'s row control takes under this name. It is a prop and not
+   * a lookup because nothing else in this component identifies the monitor:
+   * `muted` and the callbacks are all anonymous.
+   */
+  ruleName: string
   muted: boolean
   onMute: (ms: number) => void
   onUnmute: () => void
@@ -230,11 +267,16 @@ function MuteControl({
         <ActionButton
           icon={<Bell className="h-3.5 w-3.5" />}
           label="Unmute"
+          ariaLabel={`Unmute ${ruleName}`}
           onClick={onUnmute}
           disabled={isPending}
         />
       ) : (
         <>
+          {/* The visible "Mute for" is a plain span, so it is never part of any
+              button's accessible name — reading the row left to right is how a
+              sighted user gets the sentence, and the aria-label below is how
+              everyone else does (tripl-in45). */}
           <span className="inline-flex items-center gap-1.5 text-[12px]" style={{ color: 'var(--fg-muted)' }}>
             <BellOff className="h-3.5 w-3.5" />
             Mute for
@@ -244,6 +286,10 @@ function MuteControl({
               key={preset.label}
               icon={null}
               label={preset.label}
+              // No open-ended branch to phrase around, unlike the Inbox's
+              // "Mute <target> until unmuted": `MUTE_PRESETS` is durations only,
+              // so every button here fits the one duration sentence (tripl-a50u).
+              ariaLabel={`Mute ${ruleName} for ${preset.label}`}
               onClick={() => onMute(preset.ms)}
               disabled={isPending}
             />

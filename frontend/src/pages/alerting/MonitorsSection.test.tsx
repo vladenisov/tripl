@@ -251,6 +251,52 @@ describe('MonitorsSection mute', () => {
     await waitFor(() => expect(unmute).toHaveBeenCalledWith('windy-ios', 'rule-1'))
   })
 
+  it('always names the instant a muted rule comes back (tripl-b82m)', async () => {
+    // READ THIS BEFORE TRUSTING IT: this test does NOT discriminate the guard
+    // tripl-b82m changed, and no honest test can. The only input that separates
+    // `rule.muted && rule.muted_until` from the old `rule.muted` plus a
+    // `: 'muted'` else-branch is `{muted: true, muted_until: null}`, which
+    // `is_rule_muted()` cannot produce — so a fixture asserting it would enshrine
+    // a state the product does not have and teach the next reader that rules can
+    // be muted indefinitely, which is the very misconception b82m removed. The
+    // value of that change is its comment; this test pins the rendered CONTRACT
+    // instead, so a later refactor toward a `muted_until`-only guard, or back to
+    // an end-date-less chip, has something to break against.
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection({ rules: [makeRule({ muted: true, muted_until: '2026-08-19T00:00:00Z' })] })
+
+    expect(await screen.findByText(/^muted until /)).toBeInTheDocument()
+    // Exact text, so it cannot match the "muted until …" chip above. The row
+    // does render plenty of other text — the rule link, the condition, the
+    // destination, the status chip, the delivery-health line — but none of it is
+    // the single word "muted", so a hit here is an end-date-less mute chip and
+    // nothing else.
+    expect(screen.queryByText('muted')).toBeNull()
+  })
+
+  it('shows no mute chip for a rule whose mute has already lapsed (tripl-b82m)', async () => {
+    // A stale `muted_until` in the past with `muted: false` is a NORMAL server
+    // response, not a corrupt one: the timestamp is the raw column and stays put
+    // after the mute lifts. The row says nothing because it leads on the
+    // EFFECTIVE flag — it does no date arithmetic of its own, and must not start
+    // doing any, since `is_rule_muted()` is the one place that comparison lives
+    // (tripl-oxkt.18). Get that ordering wrong and the row prints "muted until
+    // <a date that has passed>", which is the lapsed-mute defect the Inbox card
+    // fixed in tripl-oxkt.20.
+    //
+    // Like its neighbour above, this pins the contract rather than the guard:
+    // `muted: false` short-circuits in the old and new code alike.
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection({ rules: [makeRule({ muted: false, muted_until: '2026-08-01T00:00:00Z' })] })
+
+    await screen.findByRole('link', { name: 'Prod drops' })
+    expect(screen.queryByText(/muted until/)).toBeNull()
+    expect(screen.queryByText('muted')).toBeNull()
+    // And the control offers Mute, not Unmute — the row agrees with itself
+    // about which state the rule is in.
+    expect(screen.getByRole('button', { name: 'Mute Prod drops' })).toBeInTheDocument()
+  })
+
   it('can only mute a rule for a fixed time — no open-ended choice here (tripl-a50u)', async () => {
     // The scope boundary of the indefinite mute. On an INCIDENT a NULL
     // `muted_until` means "silenced until somebody unmutes it"; on a RULE

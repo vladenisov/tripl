@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import MonitorDetailPage from './MonitorDetailPage'
+import { MUTE_PRESETS } from '@/lib/mutePresets'
 import { formatCooldown } from './alerting/constants'
 
 function jsonResponse(body: unknown, status = 200) {
@@ -113,6 +114,29 @@ afterEach(() => {
 /** One hour, as the shared preset list defines it. */
 const HOUR_MS = 3_600_000
 
+/**
+ * How the other two mute surfaces name a mute button, spelled out once here.
+ *
+ * `MonitorsSection` renders `Mute ${ruleName} for ${preset.label}` and
+ * `Unmute ${ruleName}`; `AlertingInbox` renders the same sentence around its
+ * incident's `scopeSummary`.
+ *
+ * Be clear about what this does and does not buy. These are LOCAL literals: they
+ * import nothing from the other two surfaces, so they cannot fail when this page
+ * drifts away from them — edit the component and edit these, and the suite stays
+ * green. They exist so the sentence is written once per file instead of once per
+ * assertion, and so this comment has somewhere to live. The only real guard
+ * against the three surfaces drifting would be a shared name builder next to
+ * `MUTE_PRESETS`, which is where the labels already live for exactly this reason
+ * (tripl-in45, tripl-oxkt.7).
+ */
+const mutePresetName = (ruleName: string, presetLabel: string) =>
+  `Mute ${ruleName} for ${presetLabel}`
+const unmuteName = (ruleName: string) => `Unmute ${ruleName}`
+
+/** The rule name `BASE_MONITOR` carries, and therefore the target every button names. */
+const RULE = BASE_MONITOR.rule_name
+
 describe('MonitorDetailPage', () => {
   it('renders the monitor condition, destination, recency and fired history', async () => {
     mockApi()
@@ -189,7 +213,11 @@ describe('MonitorDetailPage', () => {
     // were passed in, or the label, or an already-absolute timestamp.
     const clickedAt = Date.parse('2026-08-14T10:00:00Z')
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(clickedAt)
-    fireEvent.click(screen.getByRole('button', { name: '1h' }))
+    // Queried by the name a screen reader hears, not by the "1h" on its face:
+    // the button is reachable by either, and picking the accessible one means
+    // this test also breaks if the label ever stops naming its target
+    // (tripl-in45).
+    fireEvent.click(screen.getByRole('button', { name: mutePresetName(RULE, '1h') }))
     nowSpy.mockRestore()
 
     await waitFor(() => {
@@ -199,8 +227,9 @@ describe('MonitorDetailPage', () => {
       expect(body.muted_until).toBe(new Date(clickedAt + HOUR_MS).toISOString())
     })
 
-    // After a successful mute the control flips to Unmute.
-    expect(await screen.findByRole('button', { name: 'Unmute' })).toBeInTheDocument()
+    // After a successful mute the control flips to Unmute — which names the
+    // monitor it will un-silence, exactly as the preset it replaced did.
+    expect(await screen.findByRole('button', { name: unmuteName(RULE) })).toBeInTheDocument()
   })
 
   it('offers the shared presets, and only those (tripl-es0f, tripl-a50u)', async () => {
@@ -211,10 +240,23 @@ describe('MonitorDetailPage', () => {
     await screen.findByRole('heading', { name: 'payment_failed spike' })
 
     // The three the shared module defines, unrenamed and unreordered — this is
-    // what stops the rewire from quietly dropping or relabelling one.
+    // what stops the rewire from quietly dropping or relabelling one. The
+    // literals stay literal on purpose: deriving them from `MUTE_PRESETS` would
+    // make a rename in the shared module invisible here, which is the one thing
+    // this test was written to catch. Only the surrounding sentence moved when
+    // the buttons started naming their target (tripl-in45).
     for (const label of ['1h', '24h', '7d']) {
-      expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: mutePresetName(RULE, label) }),
+      ).toBeInTheDocument()
     }
+    // ONLY those — the count, not just the presence of the three. Without it a
+    // fourth duration appended to `MUTE_PRESETS` would satisfy every assertion
+    // in this file, and "and only those" in the title would be a claim no
+    // assertion made.
+    expect(
+      screen.getAllByRole('button', { name: new RegExp(`^Mute ${RULE} for `) }),
+    ).toHaveLength(3)
     // …and no open-ended mute. A rule with a NULL `muted_until` is NOT muted
     // (`is_rule_muted`), so that button would do the opposite of its label here;
     // the permanent lever on a rule is the enable/disable switch.
@@ -227,8 +269,63 @@ describe('MonitorDetailPage', () => {
 
     renderDetail()
 
-    expect(await screen.findByRole('button', { name: 'Unmute' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: unmuteName(RULE) })).toBeInTheDocument()
     expect(screen.getByText(/Muted until/)).toBeInTheDocument()
+  })
+
+  // The gap tripl-in45 closed: every button in this control was named only by
+  // its own face — "1h", "24h", "7d", "Unmute" — so the announcement said how
+  // long, never whose alerts. The two assertions below are deliberately a pair:
+  // the positive one pins the wording the other surfaces use, the negative one
+  // pins that the bare duration is GONE as a button name, which is what makes
+  // three of these controls on one page tellable apart.
+  it('names the monitor in every mute preset button, not just the duration (tripl-in45)', async () => {
+    mockApi()
+
+    renderDetail()
+
+    await screen.findByRole('heading', { name: RULE })
+
+    for (const preset of MUTE_PRESETS) {
+      expect(
+        screen.getByRole('button', { name: mutePresetName(RULE, preset.label) }),
+      ).toBeInTheDocument()
+      // The duration alone is no longer a whole accessible name. It is still
+      // the visible text, and still a substring of the name above — WCAG 2.5.3,
+      // so "click 1h" keeps working for speech input.
+      expect(screen.queryByRole('button', { name: preset.label })).toBeNull()
+    }
+  })
+
+  // Proves the target is READ from the monitor rather than hardcoded: a
+  // literal 'payment_failed spike' baked into the label would satisfy every
+  // other test in this file, since that is the only rule name they load.
+  it.each<[string, boolean]>([
+    ['checkout_error drop', false],
+    ['checkout_error drop', true],
+  ])('names %s in its own mute control (muted=%s)', async (ruleName, muted) => {
+    mockApi({
+      monitor: {
+        ...BASE_MONITOR,
+        rule_name: ruleName,
+        muted,
+        muted_until: muted ? '2099-01-01T00:00:00Z' : null,
+      },
+    })
+
+    renderDetail()
+
+    await screen.findByRole('heading', { name: ruleName })
+
+    if (muted) {
+      expect(screen.getByRole('button', { name: unmuteName(ruleName) })).toBeInTheDocument()
+      return
+    }
+    expect(
+      screen.getByRole('button', { name: mutePresetName(ruleName, MUTE_PRESETS[0].label) }),
+    ).toBeInTheDocument()
+    // …and never the previous monitor's name, or the fixture's.
+    expect(screen.queryByRole('button', { name: mutePresetName(RULE, '1h') })).toBeNull()
   })
 
   it('renders an error state when the monitor cannot be loaded', async () => {

@@ -495,9 +495,44 @@ function RuleRow({
             {rule.name}
           </Link>
           {!rule.enabled && <Chip tone="neutral" size="xs">off</Chip>}
-          {rule.muted && (
+          {/* The MIRROR IMAGE of the incident card's muted line in
+              AlertingInbox.tsx — read the two together, because the difference
+              between them is deliberate and this row looks like an
+              inconsistency on its own.
+
+              An INCIDENT has THREE states and its guard must therefore stay
+              `group.muted` alone, with the timestamp branched on inside. An
+              ALERT RULE has TWO, because `is_rule_muted()`
+              (backend `_alerting_monitors.py`) returns FALSE the moment
+              `muted_until` is NULL — and NULL is the default on every rule ever
+              created:
+                - muted     → muted = true,  muted_until = <future>
+                - not muted → muted = false, muted_until = NULL or already past
+              So `muted && !muted_until` cannot occur here. The second condition
+              is NOT a second possibility being handled: it is type narrowing,
+              `string | null` down to the `string` formatDateTime needs, written
+              out rather than asserted so this row can never print an invalid
+              date if the API ever breaks its own contract.
+
+              What stood here was a `: 'muted'` else-branch — dead since it was
+              written, and actively misleading since tripl-a50u gave INCIDENTS a
+              real open-ended mute. Not because the strings match: the incident
+              card spells its open-ended case out as "muted — no end date, until
+              you unmute it". Because the SHAPE matches — silenced, with no end
+              date to show — and that shape now exists one file away, so a reader
+              skimming this row read the bare chip as a rule muted forever. That
+              is the opposite of the invariant: a rule's permanent lever is its
+              `enabled` switch, never a mute (tripl-b82m).
+
+              Do not restore the else branch. It could only ever fire on a
+              contract violation, and "muted, no end" is the one thing it would
+              be wrong to say then. The row does go quiet on that impossible
+              input — no chip, while the control still offers Unmute — and that
+              is the deliberate trade: saying nothing is recoverable, asserting a
+              state the product does not have is not. */}
+          {rule.muted && rule.muted_until && (
             <Chip tone="warning" size="xs">
-              {rule.muted_until ? `muted until ${formatDateTime(rule.muted_until)}` : 'muted'}
+              {`muted until ${formatDateTime(rule.muted_until)}`}
             </Chip>
           )}
         </span>
