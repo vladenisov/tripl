@@ -207,7 +207,28 @@ resolved** toggle in both panels, and a scan reopens an accepted row on its own
 once it observes a value outside the accepted set. The event detail repeats the
 affected event's review panel. Selection enables bulk type/description/value changes and
 delete. **Exclude from scans** keeps a restorable tombstone so a deliberately
-removed scan-owned variable is not recreated. See
+removed scan-owned variable is not recreated. Search matches a variable's
+display name and description **and** its scan source path and bindings, so a
+variable whose display name was shortened from a dotted path is still findable
+by the data path it binds to.
+
+Every catalog run ends by **retiring the scan-created variables nothing refers
+to any more** — no `${token}` in any stored event field or meta value, no
+observed context, no value drift, no per-event override — so a catalog stops
+accumulating rows minted from a JSON column keyed by free text. The pass is
+deliberately narrow: an edited description, a hand-added binding, documented
+values, an override, drift triage, or an **Exclude from scans** tombstone each
+keep the row, and a variable the run has just created is always still
+referenced by that run's own event values. When a run retires anything it says
+so in its [details list](#scan-runs).
+
+An **All / In use / Unused** control filters the table by that same rule.
+**Unused** is answered by the server with the retirement predicate itself rather
+than by an "observed in no events" shortcut, so the count sitting under the
+select-all checkbox is exactly the set a run would take — never a superset that
+quietly includes rows a live event value still names. API clients pass
+`usage=all|used|unused` on `GET /api/v1/projects/{slug}/variables`; the default
+is `all` and an unrecognised value is a `422`. See
 [Variables & templates](./variables-and-templates.md).
 
 ### Event-type relations
@@ -290,6 +311,30 @@ removes metric and breakdown anomaly records (and
 their derived active signals) across every scan/catalog metric. **Reset drifts**
 removes schema and distribution drift, but not variable-value drift. Both can be
 limited to a selected historical period and cannot be undone.
+
+**Retire unused variables** applies the same retirement rule a catalog run
+applies (see [Variables](#variables)) across a whole plan branch in one pass —
+for the backlog that accumulated before runs started sweeping. It is **two
+buttons, not one**: **Preview** commits nothing and reports what the pass would
+take, and **Retire** stays disabled until a preview says there is something to
+take. Either way the row reports the same breakdown — how many rows can be or
+were retired out of how many examined, and how many were kept because something
+still references them, because they carry observed values, because they are
+documented, because they were edited by hand, or because they are excluded from
+scans.
+
+The route behind it is
+`POST /api/v1/projects/{slug}/danger/retire-unused-variables`, body
+`{"mode": "delete" | "exclude", "dry_run": true}`. `dry_run` defaults to `true`,
+so a call that omits it only reports; the response carries `scanned`,
+`retirable`, `retired` and the `kept_*` counters the row renders.
+`mode: "exclude"` tombstones instead of deleting — for a binding still live in
+the warehouse that a later run would otherwise mint again — and is not offered
+in the UI, which always deletes. The route honours `?branch=` and defaults to
+`main`, records `project.retire_unused_variables` in the audit log when it is
+not a dry run, and takes the strict owner gate: like the other owner-only
+administration routes it refuses an API key, so it needs an owner signed in
+through the browser.
 
 ### Plan history & revisions
 
@@ -580,6 +625,52 @@ its **run summary** reports how many archived identities were seen and how many
 rows they carried, deliberately kept off the data-match percentage rather than
 folded into it. Its volume also still appears in the event type's volume series.
 
+**What a group merge carries over.** When a group rule folds several events into
+one, the survivor inherits the settings that pointed at the events it absorbed,
+so a merge does not quietly undo work you did:
+
+- **detector sensitivity.** A scope you tuned by marking false positives keeps
+  its threshold. Where both events were tuned, the stricter setting on each knob
+  wins and the false-positive counts add up — the ratchet only ever tightens, so
+  a merge can never loosen it.
+- **alert rule filters.** A rule that names the event goes on naming the
+  survivor, in both directions: an *is* filter keeps covering that traffic and an
+  *is not* filter keeps excluding it.
+- **chart annotations.** An event-scoped marker moves to the survivor's chart.
+  Its text is left exactly as written — only where it is drawn changes.
+- **open implementation tickets.** The survivor is still flipped to *implemented*
+  when the ticket closes. A closed ticket is left alone; it records what shipped.
+- **metric operands.** An event-composition metric follows the survivor, and so
+  does the volume, since the merge already sums the series onto it. The one
+  exception is a **ratio** whose numerator and denominator both end up on the
+  same event: that would compute a flat 1.0 forever, so the metric is marked
+  failed instead, naming the events involved so it can be redefined.
+
+Variable data moves too — see
+[Variables and templates](./variables-and-templates.md#when-a-scan-merges-events-into-a-group).
+
+**What deleting an event clears.** A merge has a survivor to move things onto; a
+delete does not, so the same references are removed instead. Deleting an event —
+on its own, in bulk, or by deleting its event type — clears its stored
+anomalies, its tuned detector sensitivity, and its event-scoped chart markers,
+and drops it from any open implementation ticket.
+
+Two consequences are worth knowing before you delete rather than archive:
+
+- **an alert rule that named only that event is switched off.** Its filter row
+  goes, and rather than leave the rule pointing at nothing — which would quietly
+  widen it to everything its destination watches — the rule is disabled. It
+  keeps its name, thresholds and templates, and the Alerting tab shows it off
+  rather than silently re-aimed. A rule that *excluded* the event stays enabled:
+  "exclude these three" genuinely becomes "exclude nothing" once they are gone.
+- **the event's anomalies are deleted, not orphaned.** Until this changed they
+  outlived the event and, having no event to be filtered on, matched every alert
+  rule — so deleting an event could start alerts that archiving it would have
+  stopped.
+
+**Archiving remains the non-destructive option**: an archived event keeps all of
+this and simply goes quiet.
+
 ### Coverage
 
 **Where:** Govern › Coverage (route `/p/<slug>/coverage`). A read-only
@@ -784,7 +875,9 @@ columns that carried data but had no matching field in the plan — a real
 coverage gap worth fixing. It stays quiet about columns that were empty for
 those rows, and about reserved role columns (event type, time, version,
 platform, and any column an event-group rule matches on), which tripl already
-uses elsewhere and never expects to have a plan field. Repeated identical failures collapse into
+uses elsewhere and never expects to have a plan field. The same list reports
+variables the run retired — *Retired N unused variables no event refers to*,
+see [Variables](#variables) — and says nothing when there were none. Repeated identical failures collapse into
 a streak with an expander, and **Run again** retries the config without losing
 its history.
 

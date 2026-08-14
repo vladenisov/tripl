@@ -40,7 +40,20 @@ export const planBranchesKey = (slug: string | undefined) => ['planBranches', sl
  * have caught it, which is exactly why the two shapes now have two keys.
  */
 export const variablesKey = (slug: string | undefined, branchId?: string | null) =>
-  ['variables', slug, branchId] as const
+  [...projectVariablesKey(slug), branchId] as const
+
+/**
+ * EVERY variables cache for a project, across all branches.
+ *
+ * For a caller that changes variables without knowing which branch is on
+ * screen — the owner-only retirement pass in the project danger zone resolves
+ * the branch server-side, so that button holds a slug and nothing else. React
+ * Query matches invalidations by prefix and this is a strict prefix of
+ * {@link variablesKey}, so one call refreshes the settings table whichever
+ * branch it is showing. Invalidating `variablesKey(slug)` instead would build
+ * `['variables', slug, undefined]`, which matches no branch-scoped cache at all.
+ */
+export const projectVariablesKey = (slug: string | undefined) => ['variables', slug] as const
 
 /**
  * Project variables, PAGE ENVELOPE — `variablesApi.listPage`, `{items, total}`.

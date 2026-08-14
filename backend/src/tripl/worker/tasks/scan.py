@@ -44,6 +44,7 @@ from tripl.worker.search_reindex import reindex_main_branch_from_worker
 from tripl.worker.tasks._errors import NO_EVENT_NAMING_MSG, ScanError, user_facing_error
 from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 from tripl.worker.utils.reserved_columns import reserved_catalog_columns
+from tripl.worker.variable_sweep import retire_unused_variables
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +255,26 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             raise ScanError(NO_EVENT_NAMING_MSG)
 
         session.commit()
+        # Scans mint variables and, before this, never retired one, so a project
+        # whose warehouse holds a JSON column keyed by user-typed text grew a
+        # permanent row per key (tripl-10h4). Sweeping here — after the commit,
+        # before the reindex — keeps the catalog self-healing instead of relying
+        # on somebody remembering the danger-zone button. It does not undo the
+        # run above: a path enters ``all_paths`` only by appearing in a row, and
+        # that row's event stores ``${col.path}``, so the reference check keeps
+        # what was just minted. The one exception is a path carried solely by an
+        # ARCHIVED event, whose field values a scan deliberately does not
+        # rewrite — that variable is minted and swept in the same run, which is
+        # the right outcome for a row nothing live refers to.
+        variables_retired = retire_unused_variables(
+            session,
+            project_id=config.project_id,
+            branch_id=main_branch_id(session, config.project_id),
+        )
+        if variables_retired:
+            result.details.append(
+                f"Retired {variables_retired} unused variables no event refers to"
+            )
         reindex_main_branch_from_worker(session, config.project_id)
 
         # Mark job as completed
@@ -449,6 +470,15 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             event_group_rules=config.event_group_rules,
         )
         session.commit()
+        # AFTER the commit, exactly as run_scan does and for the same reason:
+        # the reindex opens its own connection and cannot see this session's
+        # uncommitted work, so running it earlier would index the pre-merge
+        # state. Without it the group event a merge had just created carried no
+        # search document until some unrelated later task happened to reindex
+        # the branch — this was the one catalog-mutating task that never did
+        # (tripl-68l3). The source event's documents go with the FK cascade, so
+        # it is the survivor's missing row this repairs.
+        reindex_main_branch_from_worker(session, config.project_id)
 
         job.status = ScanJobStatus.completed.value
         job.completed_at = datetime.now(UTC)

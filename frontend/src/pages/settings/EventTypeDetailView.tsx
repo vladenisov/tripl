@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, ExternalLink, Settings as SettingsIcon, Trash2 } from 'lucide-react'
+import { eventsApi } from '@/api/events'
 import { eventTypeOwnersApi } from '@/api/eventTypeOwners'
 import { eventTypesApi } from '@/api/eventTypes'
 import { useActiveBranchId } from '@/hooks/useBranch'
@@ -10,7 +11,9 @@ import type { EventType, EventTypeOwner } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Chip } from '@/components/primitives/chip'
+import { EVENT_STATUSES } from '@/lib/eventStatus'
 import { getErrorMessage } from '@/lib/utils'
+import { describeEventTypeDeletionImpact } from './eventTypeDeletionImpact'
 import EventsPage from '@/pages/EventsPage'
 import {
   ColorPicker,
@@ -348,10 +351,27 @@ function DangerZoneCard({
     },
   })
 
+  // Every status, deliberately. An unqualified events list excludes archived
+  // events, so the count would omit exactly the rows the cascade still takes —
+  // and under-counting in a delete confirm is worse than not counting at all.
+  const { data: eventPage } = useQuery({
+    queryKey: ['eventTypeDeletionImpact', slug, branchId, eventType.id],
+    queryFn: () =>
+      eventsApi.list(
+        slug,
+        { event_type_id: eventType.id, status: EVENT_STATUSES, limit: 1 },
+        branchId,
+      ),
+  })
+  const impact = describeEventTypeDeletionImpact(
+    eventPage?.total ?? 0,
+    eventType.field_definitions.length,
+  )
+
   const handleDelete = async () => {
     const ok = await confirm({
       title: 'Delete event type',
-      message: `Delete "${eventType.display_name}"? All associated field definitions and events of this type will be removed.`,
+      message: `Delete "${eventType.display_name}"? ${impact}`,
       confirmLabel: 'Delete',
       variant: 'danger',
     })
@@ -365,7 +385,7 @@ function DangerZoneCard({
         <div className="flex-1">
           <div className="text-[13px] font-medium">Delete event type</div>
           <div className="mt-0.5 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-            Removes the type, its field definitions and events of this type.
+            {impact}
           </div>
         </div>
         <Button variant="destructive" size="sm" disabled={deleteMut.isPending} onClick={handleDelete}>

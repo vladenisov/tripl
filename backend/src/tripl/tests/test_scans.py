@@ -4,12 +4,15 @@ from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from tripl.core.adapters.base import ColumnInfo
 from tripl.core.analyzers.preview import build_json_paths_payload, build_preview_payload
 from tripl.models import Base, DataSource, Project, ScanConfig, ScanJob, ScanPreviewJob
+from tripl.models.event import Event
+from tripl.models.event_type import EventType
+from tripl.models.field_definition import FieldDefinition
 from tripl.models.scan_job import ScanJobStatus
 from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks import _errors as task_errors
@@ -1236,6 +1239,123 @@ class TestScanConfigsCRUD:
         assert f"startsWith('{task_errors.SCAN_FAILED_PREFIX.lower()}')" in source, (
             "scanError.ts no longer matches the prefix _errors.py guarantees"
         )
+
+    def test_apply_event_groups_reindexes_after_the_merge_commits(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The one catalog-mutating task that never rebuilt the search index.
+
+        A group event this task creates carried no search document until some
+        unrelated later task happened to reindex the branch (tripl-68l3). The
+        ORDER is the substance here, not decoration: the reindex opens its own
+        connection and cannot see this session's uncommitted work, so calling it
+        before the commit would index the pre-merge state and still look correct
+        from the outside.
+        """
+        engine = create_engine(f"sqlite:///{tmp_path / 'apply_groups.db'}")
+        try:
+            Base.metadata.create_all(engine)
+            sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+
+            project_id = uuid.uuid4()
+            data_source_id = uuid.uuid4()
+            config_id = uuid.uuid4()
+            job_id = uuid.uuid4()
+            with sync_session_factory() as session:
+                session.add_all(
+                    [
+                        Project(id=project_id, name="P", slug="p-groups", description=""),
+                        DataSource(
+                            id=data_source_id,
+                            name="DS",
+                            db_type="clickhouse",
+                            host="localhost",
+                            port=8123,
+                            database_name="default",
+                            username="default",
+                            password_encrypted="",
+                        ),
+                        ScanConfig(
+                            id=config_id,
+                            project_id=project_id,
+                            data_source_id=data_source_id,
+                            name="Daily",
+                            base_query="SELECT * FROM events",
+                            event_group_rules=[
+                                {
+                                    "name": "click events",
+                                    "condition_logic": "all",
+                                    "conditions": [{"field": "__event_name", "pattern": "^click:"}],
+                                }
+                            ],
+                        ),
+                        ScanJob(id=job_id, scan_config_id=config_id, status="pending"),
+                    ]
+                )
+                session.flush()
+                # A catalog for the rule to actually act on: the task derives
+                # its event types from existing events, and the merge skips an
+                # event type with no field definitions.
+                event_type = EventType(
+                    id=uuid.uuid4(),
+                    project_id=project_id,
+                    name="pv",
+                    display_name="Page View",
+                    description="",
+                )
+                session.add(event_type)
+                session.flush()
+                field = FieldDefinition(
+                    id=uuid.uuid4(),
+                    event_type_id=event_type.id,
+                    name="action",
+                    display_name="Action",
+                    field_type="string",
+                    order=0,
+                )
+                session.add(field)
+                session.flush()
+                session.add(
+                    Event(
+                        id=uuid.uuid4(),
+                        project_id=project_id,
+                        event_type_id=event_type.id,
+                        name="click:one",
+                        source_name="click:one",
+                        order=0,
+                        status="implemented",
+                    )
+                )
+                session.commit()
+
+            observed: list[bool] = []
+
+            def fake_reindex(session: object, project_id_arg: object) -> None:
+                # Reads through a SEPARATE session, the way the real reindex
+                # does — it opens its own engine, so anything still uncommitted
+                # in the task's session is invisible to it.
+                with sync_session_factory() as fresh:
+                    names = set(fresh.execute(select(Event.source_name)).scalars().all())
+                observed.append("click events" in names)
+
+            monkeypatch.setitem(
+                scan_tasks.apply_event_groups.run.__globals__,
+                "_get_sync_session",
+                lambda: sync_session_factory(),
+            )
+            monkeypatch.setitem(
+                scan_tasks.apply_event_groups.run.__globals__,
+                "reindex_main_branch_from_worker",
+                fake_reindex,
+            )
+
+            scan_tasks.apply_event_groups.run(str(config_id), str(job_id))
+
+            assert observed == [True], (
+                "the reindex must run exactly once, and only after the merge is committed"
+            )
+        finally:
+            engine.dispose()
 
     def test_run_scan_persists_friendly_error_and_hides_internals(
         self, tmp_path, monkeypatch

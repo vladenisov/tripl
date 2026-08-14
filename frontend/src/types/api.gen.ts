@@ -1222,6 +1222,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/danger/retire-unused-variables": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retire Unused Variables
+         * @description Owner-only: drop the variables a scan minted that nothing refers to.
+         *
+         *     A scan creates a variable for every placeholder it discovers and has never
+         *     retired one, so a project whose warehouse holds a JSON column keyed by
+         *     user-typed text accumulates a row per key forever (tripl-10h4). This deletes
+         *     only rows that a scan created, no human has edited, no event field value
+         *     names, and that carry no observed context, drift or override — see
+         *     ``core.variable_retirement`` for why "no observed context" alone is not
+         *     enough to be safe.
+         *
+         *     ``dry_run`` defaults to true, so the first call is always a preview. It
+         *     returns the same counts the real pass would, broken down by why each
+         *     surviving row was kept.
+         */
+        post: operations["retire_unused_variables_api_v1_projects__slug__danger_retire_unused_variables_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/distribution-drifts": {
         parameters: {
             query?: never;
@@ -9988,6 +10020,69 @@ export interface components {
             variable_type: components["schemas"]["VariableType"];
         };
         /**
+         * VariableRetirementCounts
+         * @description What a retirement pass did, and why it spared everything it spared.
+         *
+         *     The ``kept_*`` fields mirror ``core.variable_retirement.KeptReason`` one for
+         *     one, and a test pins that agreement: a reason the core can emit but this
+         *     schema cannot name would be dropped silently from the operator's preview,
+         *     which is the one number they are being asked to trust.
+         */
+        VariableRetirementCounts: {
+            /**
+             * Kept Documented
+             * @default 0
+             */
+            kept_documented: number;
+            /**
+             * Kept Excluded
+             * @default 0
+             */
+            kept_excluded: number;
+            /**
+             * Kept Observed
+             * @default 0
+             */
+            kept_observed: number;
+            /**
+             * Kept Referenced
+             * @default 0
+             */
+            kept_referenced: number;
+            /**
+             * Kept User Edited
+             * @default 0
+             */
+            kept_user_edited: number;
+            /** Retirable */
+            retirable: number;
+            /** Retired */
+            retired: number;
+            /** Scanned */
+            scanned: number;
+        };
+        /**
+         * VariableRetirementRequest
+         * @description How to retire the variables nothing references, and whether to commit.
+         *
+         *     ``dry_run`` defaults to true so the destructive verb takes a second,
+         *     explicit call: the counts come back broken down by reason first, and only
+         *     then does an operator decide.
+         */
+        VariableRetirementRequest: {
+            /**
+             * Dry Run
+             * @default true
+             */
+            dry_run: boolean;
+            /**
+             * Mode
+             * @default delete
+             * @enum {string}
+             */
+            mode: "delete" | "exclude";
+        };
+        /**
          * VariableType
          * @enum {string}
          */
@@ -12729,6 +12824,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DriftResetCounts"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retire_unused_variables_api_v1_projects__slug__danger_retire_unused_variables_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VariableRetirementRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VariableRetirementCounts"];
                 };
             };
             /** @description Validation Error */
@@ -16618,6 +16748,8 @@ export interface operations {
             query?: {
                 offset?: number;
                 limit?: number;
+                /** @description Narrow to the variables nothing refers to ('unused' — exactly the set the retirement sweep would take) or to their complement ('used'). Declared as an enum rather than a free string so an unknown value is a 422 and not a 500 (tripl-57g0). */
+                usage?: "all" | "used" | "unused";
             };
             header?: never;
             path: {

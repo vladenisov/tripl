@@ -18,15 +18,26 @@ from tripl.core.analyzers.event_generator import (
     merge_existing_events_for_group_rules,
 )
 from tripl.models import Base
+from tripl.models.alert_destination import AlertDestination
+from tripl.models.alert_rule import AlertRule
+from tripl.models.alert_rule_filter import AlertRuleFilter
+from tripl.models.anomaly_scope_override import AnomalyScopeOverride
+from tripl.models.chart_annotation import ChartAnnotation
+from tripl.models.domain_enums import MetricKind
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
+from tripl.models.implementation_ticket import ImplementationTicket
+from tripl.models.metric_definition import MetricDefinition
 from tripl.models.plan_branch import BranchKind, BranchStatus, PlanBranch
 from tripl.models.project import Project
 from tripl.models.variable import Variable
+from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.models.variable_value import VariableValue
+from tripl.models.variable_value_drift import VariableValueDrift
+from tripl.tests._sqlite import enable_sqlite_foreign_keys
 
 
 def _make_analysis(
@@ -57,6 +68,10 @@ def _make_analysis(
 @pytest.fixture
 def sync_session():
     engine = create_engine("sqlite:///:memory:")
+    # Before create_all: the pooled connection is opened by the first statement,
+    # and a listener registered after that never fires. Without the pragma the
+    # merge tests below cannot fail — see ``_sqlite``.
+    enable_sqlite_foreign_keys(engine)
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
     session = factory()
@@ -118,6 +133,34 @@ def project_and_type(sync_session: Session):
     sync_session.commit()
 
     return project, et, {"screen": fd_screen, "action": fd_action, "payload": fd_payload}
+
+
+def _seed_scan_config(sync_session: Session, project: Project) -> uuid.UUID:
+    """Persist the minimum data source + scan config an EventMetric can point at."""
+    from tripl.models.data_source import DataSource
+    from tripl.models.scan_config import ScanConfig
+
+    data_source = DataSource(
+        id=uuid.uuid4(),
+        name=f"wh-{uuid.uuid4().hex[:8]}",
+        db_type="clickhouse",
+        host="localhost",
+        port=9000,
+        database_name="db",
+        username="u",
+    )
+    sync_session.add(data_source)
+    sync_session.flush()
+    scan_config = ScanConfig(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        data_source_id=data_source.id,
+        name="main scan",
+        base_query="SELECT 1",
+    )
+    sync_session.add(scan_config)
+    sync_session.flush()
+    return scan_config.id
 
 
 class TestEventGeneration:
@@ -608,7 +651,9 @@ class TestEventGeneration:
         self, sync_session: Session, project_and_type
     ):
         project, et, fds = project_and_type
-        scan_config_id = uuid.uuid4()
+        # A real ScanConfig row, not a fabricated uuid: EventMetric.scan_config_id
+        # is a NOT NULL foreign key, and the engine now enforces it.
+        scan_config_id = _seed_scan_config(sync_session, project)
         bucket = datetime(2026, 4, 12, 10, 0)
         old_events: list[Event] = []
         for index, action in enumerate(["button:primary", "button:secondary"]):
@@ -1966,6 +2011,449 @@ def test_group_merge_preserves_authorship_unless_rule_overrides(
     assert values[fds["action"].id].is_authored is False
 
 
+# --- what a group merge carries off the event it deletes (tripl-xfxa) --------
+#
+# ``_merge_event_into_group`` ends in ``session.delete(source)``. Every one of
+# these rows FKs to ``events.id`` with ``ondelete="CASCADE"`` and none of them
+# is rebuilt by a later scan, so anything the merge does not explicitly move is
+# gone for good. The engine has ``PRAGMA foreign_keys=ON`` (see ``_sqlite``);
+# without it the cascade never fires and every assertion below passes vacuously.
+
+
+_CLICK_GROUP_RULE = [
+    {
+        "name": "click events",
+        "condition_logic": "all",
+        "conditions": [{"field": "action", "pattern": "^click:"}],
+    }
+]
+
+
+def _add_event(sync_session: Session, project, et, fds, *, name, screen, action, order):
+    """Persist one catalog event with its two field values."""
+    event = Event(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        event_type_id=et.id,
+        name=name,
+        source_name=name,
+        order=order,
+        status="implemented",
+    )
+    sync_session.add(event)
+    sync_session.flush()
+    sync_session.add_all(
+        [
+            EventFieldValue(
+                id=uuid.uuid4(),
+                event_id=event.id,
+                field_definition_id=fds["screen"].id,
+                value=screen,
+            ),
+            EventFieldValue(
+                id=uuid.uuid4(),
+                event_id=event.id,
+                field_definition_id=fds["action"].id,
+                value=action,
+            ),
+        ]
+    )
+    sync_session.flush()
+    return event
+
+
+def _add_variable(sync_session: Session, project, *, name, binding):
+    variable = Variable(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        name=name,
+        source_name=binding,
+        variable_type="string",
+        description="",
+        bindings=[binding],
+    )
+    sync_session.add(variable)
+    sync_session.flush()
+    return variable
+
+
+def _add_context(sync_session: Session, project, variable, event, fd, *, values, count, kind):
+    context = VariableValue(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        variable_id=variable.id,
+        event_id=event.id,
+        field_definition_id=fd.id,
+        source_column=fd.name,
+        value_kind=kind,
+        observed_count=count,
+        values=list(values),
+    )
+    sync_session.add(context)
+    sync_session.flush()
+    return context
+
+
+def _contexts(sync_session: Session, project_id) -> list[VariableValue]:
+    return list(
+        sync_session.execute(
+            select(VariableValue).where(VariableValue.project_id == project_id)
+        ).scalars()
+    )
+
+
+def test_group_merge_moves_variable_contexts_onto_the_surviving_event(
+    sync_session: Session, project_and_type
+):
+    # A context is only rewritten when the CURRENT run observes that (event,
+    # field) pair again, so one that dies with the merged-away event is never
+    # rebuilt: the variable keeps a live reference in the group event's field
+    # value and an empty /values list forever. Re-pointing is the whole fix.
+    project, et, fds = project_and_type
+    variable = _add_variable(sync_session, project, name="variant", binding="screen")
+    source = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click:one",
+        screen="${variant}",
+        action="click:one",
+        order=0,
+    )
+    _add_context(
+        sync_session,
+        project,
+        variable,
+        source,
+        fds["screen"],
+        values=["a", "b"],
+        count=7,
+        kind="low",
+    )
+    sync_session.commit()
+
+    merged = merge_existing_events_for_group_rules(
+        sync_session,
+        project_id=project.id,
+        event_type_ids=[et.id],
+        event_group_rules=_CLICK_GROUP_RULE,
+    )
+    sync_session.commit()
+
+    assert merged == 1
+    grouped_event = sync_session.execute(
+        select(Event).where(Event.project_id == project.id)
+    ).scalar_one()
+    assert grouped_event.source_name == "click events"
+    contexts = _contexts(sync_session, project.id)
+    assert len(contexts) == 1
+    # The context followed the volume, with its observations intact.
+    assert contexts[0].event_id == grouped_event.id
+    assert contexts[0].field_definition_id == fds["screen"].id
+    assert contexts[0].values == ["a", "b"]
+    assert contexts[0].observed_count == 7
+
+
+def test_group_merge_folds_colliding_contexts_instead_of_violating_the_unique_constraint(
+    sync_session: Session, project_and_type
+):
+    # uq_variable_value_context is the bare (variable_id, event_id,
+    # field_definition_id), so a blanket ``UPDATE ... SET event_id`` would raise
+    # on the second row. The fold is the one record_variable_contexts already
+    # performs when two rows collapse onto one event: larger observed_count,
+    # ``high`` wins the kind, union of the sampled values.
+    project, et, fds = project_and_type
+    variable = _add_variable(sync_session, project, name="variant", binding="screen")
+    # The group event already exists, so it — not a freshly created row — is the
+    # merge target, and the two sources collide against it in a fixed order.
+    target = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click events",
+        screen="${variant}",
+        action="/^click:/",
+        order=0,
+    )
+    _add_context(
+        sync_session, project, variable, target, fds["screen"], values=["a"], count=3, kind="low"
+    )
+    source = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click:one",
+        screen="${variant}",
+        action="click:one",
+        order=1,
+    )
+    _add_context(
+        sync_session,
+        project,
+        variable,
+        source,
+        fds["screen"],
+        values=["b", "c"],
+        count=9,
+        kind="high",
+    )
+    sync_session.commit()
+
+    merged = merge_existing_events_for_group_rules(
+        sync_session,
+        project_id=project.id,
+        event_type_ids=[et.id],
+        event_group_rules=_CLICK_GROUP_RULE,
+    )
+    sync_session.commit()
+
+    assert merged == 1
+    assert sync_session.get(Event, source.id) is None
+    contexts = _contexts(sync_session, project.id)
+    assert len(contexts) == 1
+    folded = contexts[0]
+    assert folded.event_id == target.id
+    assert folded.observed_count == 9
+    # ``high`` is the wider claim about the value space, so it wins...
+    assert folded.value_kind == "high"
+    # ...and neither side's samples are dropped.
+    assert set(folded.values) == {"a", "b", "c"}
+
+
+def test_group_merge_drops_a_context_whose_token_is_gone_from_the_target_value(
+    sync_session: Session, project_and_type
+):
+    # A rule replaces the matched field's value wholesale with /pattern/. A
+    # context migrated onto that literal would assert a ${var} reference the
+    # group event does not make. Dropping is per-field, not a blanket wipe:
+    # the untouched field's context still moves.
+    project, et, fds = project_and_type
+    variable = _add_variable(sync_session, project, name="variant", binding="screen")
+    source = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click:${variant}",
+        screen="${variant}",
+        action="click:${variant}",
+        order=0,
+    )
+    _add_context(
+        sync_session,
+        project,
+        variable,
+        source,
+        fds["action"],
+        values=["x"],
+        count=4,
+        kind="low",
+    )
+    _add_context(
+        sync_session,
+        project,
+        variable,
+        source,
+        fds["screen"],
+        values=["y"],
+        count=5,
+        kind="low",
+    )
+    sync_session.commit()
+
+    merged = merge_existing_events_for_group_rules(
+        sync_session,
+        project_id=project.id,
+        event_type_ids=[et.id],
+        event_group_rules=_CLICK_GROUP_RULE,
+    )
+    sync_session.commit()
+
+    assert merged == 1
+    grouped_event = sync_session.execute(
+        select(Event).where(Event.project_id == project.id)
+    ).scalar_one()
+    values = {
+        fv.field_definition_id: fv.value
+        for fv in sync_session.execute(
+            select(EventFieldValue).where(EventFieldValue.event_id == grouped_event.id)
+        ).scalars()
+    }
+    # The rule rewrote 'action' and left 'screen' alone...
+    assert values[fds["action"].id] == "/^click:/"
+    assert values[fds["screen"].id] == "${variant}"
+    # ...so only the 'screen' context survives, on the group event.
+    contexts = _contexts(sync_session, project.id)
+    assert len(contexts) == 1
+    assert contexts[0].field_definition_id == fds["screen"].id
+    assert contexts[0].event_id == grouped_event.id
+
+
+def test_group_merge_moves_variable_event_overrides_and_lets_the_target_win(
+    sync_session: Session, project_and_type
+):
+    # VariableEventValueOverride is written only through the API — the scan
+    # pipeline never touches one — so letting it cascade away meant a scan
+    # silently deleting a list a human typed. Nothing is folded: two authored
+    # lists are two opinions, and merging them would invent a third nobody wrote.
+    project, et, fds = project_and_type
+    contested = _add_variable(sync_session, project, name="variant", binding="screen")
+    uncontested = _add_variable(sync_session, project, name="locale", binding="payload.locale")
+    target = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click events",
+        screen="${variant}",
+        action="/^click:/",
+        order=0,
+    )
+    sync_session.add(
+        VariableEventValueOverride(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            variable_id=contested.id,
+            event_id=target.id,
+            values=["kept-by-target"],
+        )
+    )
+    source = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click:one",
+        screen="${variant}",
+        action="click:one",
+        order=1,
+    )
+    sync_session.add_all(
+        [
+            VariableEventValueOverride(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                variable_id=contested.id,
+                event_id=source.id,
+                values=["dropped-on-collision"],
+            ),
+            VariableEventValueOverride(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                variable_id=uncontested.id,
+                event_id=source.id,
+                values=["carried-over"],
+            ),
+        ]
+    )
+    sync_session.commit()
+
+    merged = merge_existing_events_for_group_rules(
+        sync_session,
+        project_id=project.id,
+        event_type_ids=[et.id],
+        event_group_rules=_CLICK_GROUP_RULE,
+    )
+    sync_session.commit()
+
+    assert merged == 1
+    overrides = {
+        row.variable_id: row
+        for row in sync_session.execute(select(VariableEventValueOverride)).scalars()
+    }
+    assert set(overrides) == {contested.id, uncontested.id}
+    assert all(row.event_id == target.id for row in overrides.values())
+    # The surviving event's own list stands; the source's uncontested one moves.
+    assert overrides[contested.id].values == ["kept-by-target"]
+    assert overrides[uncontested.id].values == ["carried-over"]
+
+
+def test_group_merge_moves_variable_value_drifts_and_lets_the_target_win(
+    sync_session: Session, project_and_type
+):
+    # A drift row carries accepted/snoozed/false_positive — a decision a person
+    # made, and an ``accepted`` row is deliberately frozen against rescan.
+    # Dropping it re-opens a question that was already answered.
+    project, et, fds = project_and_type
+    contested = _add_variable(sync_session, project, name="variant", binding="screen")
+    uncontested = _add_variable(sync_session, project, name="locale", binding="payload.locale")
+    target = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click events",
+        screen="${variant}",
+        action="/^click:/",
+        order=0,
+    )
+    sync_session.add(
+        VariableValueDrift(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            variable_id=contested.id,
+            event_id=target.id,
+            observed_values=["kept-by-target"],
+            status="accepted",
+        )
+    )
+    source = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click:one",
+        screen="${variant}",
+        action="click:one",
+        order=1,
+    )
+    sync_session.add_all(
+        [
+            VariableValueDrift(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                variable_id=contested.id,
+                event_id=source.id,
+                observed_values=["dropped-on-collision"],
+                status="open",
+            ),
+            VariableValueDrift(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                variable_id=uncontested.id,
+                event_id=source.id,
+                observed_values=["carried-over"],
+                status="false_positive",
+            ),
+        ]
+    )
+    sync_session.commit()
+
+    merged = merge_existing_events_for_group_rules(
+        sync_session,
+        project_id=project.id,
+        event_type_ids=[et.id],
+        event_group_rules=_CLICK_GROUP_RULE,
+    )
+    sync_session.commit()
+
+    assert merged == 1
+    drifts = {
+        row.variable_id: row for row in sync_session.execute(select(VariableValueDrift)).scalars()
+    }
+    assert set(drifts) == {contested.id, uncontested.id}
+    assert all(row.event_id == target.id for row in drifts.values())
+    # The surviving event's triage is the more recent judgement...
+    assert drifts[contested.id].observed_values == ["kept-by-target"]
+    assert drifts[contested.id].status == "accepted"
+    # ...and the uncontested decision moves across with its resolution intact.
+    assert drifts[uncontested.id].observed_values == ["carried-over"]
+    assert drifts[uncontested.id].status == "false_positive"
+
+
 def test_scan_short_names_extend_on_collision(sync_session: Session, project_and_type):
     from tripl.core.analyzers._event_generator_variables import (
         VariableIndex,
@@ -2033,3 +2521,442 @@ def test_excluded_variable_is_not_recreated_or_attributed(sync_session: Session,
         )
     ).scalar_one()
     assert payload_value == '{"locale": "${payload.locale}"}'
+
+
+# ---------------------------------------------------------------------------
+# References a group merge must carry that no foreign key can find
+#
+# ``_event_generator_merge_refs`` handles event ids stored as strings or inside
+# JSON lists, plus the one real FK whose ``SET NULL`` was silent. Reflection
+# cannot see any of them, so these tests are the only thing standing between a
+# merge and a reference that quietly stops meaning anything (tripl-avf4,
+# tripl-jtnv).
+# ---------------------------------------------------------------------------
+
+
+def _add_metric(
+    sync_session: Session, project, *, name, numerator, denominator=None, composition="single"
+):
+    definition = MetricDefinition(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        name=name,
+        display_name=name,
+        kind=MetricKind.event_composition.value,
+        composition=composition,
+        numerator_event_id=numerator,
+        denominator_event_id=denominator,
+    )
+    sync_session.add(definition)
+    sync_session.flush()
+    return definition
+
+
+def _click_source_and_other(sync_session: Session, project, et, fds):
+    """One event a group rule matches, plus one it does not."""
+    source = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click:one",
+        screen="s",
+        action="click:one",
+        order=0,
+    )
+    keeper = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="scroll:one",
+        screen="s",
+        action="scroll:one",
+        order=1,
+    )
+    return source, keeper
+
+
+def _merge_clicks(sync_session: Session, project, et, *, expected: int = 1) -> Event:
+    merged = merge_existing_events_for_group_rules(
+        sync_session,
+        project_id=project.id,
+        event_type_ids=[et.id],
+        event_group_rules=_CLICK_GROUP_RULE,
+    )
+    sync_session.commit()
+    assert merged == expected
+    # Re-read, never assert off the in-memory instance: these columns are plain
+    # JSON with no MutableList mapped anywhere, so an in-place edit would leave
+    # a stale object asserting happily while nothing was ever written.
+    sync_session.expire_all()
+    return sync_session.execute(
+        select(Event).where(Event.source_name == "click events")
+    ).scalar_one()
+
+
+def test_group_merge_repoints_a_metric_composition_operand_instead_of_nulling_it(
+    sync_session: Session, project_and_type
+):
+    """The FK is ON DELETE SET NULL and the resulting failure says nothing.
+
+    With the operand NULL, the collector reads no series, reports success with
+    zero values so the status never goes red, and the scheduler then never
+    marks the metric due again. The metric flatlines forever while the series
+    it wants sits under the target, already summed there by the merge.
+    """
+    project, et, fds = project_and_type
+    source, _ = _click_source_and_other(sync_session, project, et, fds)
+    definition = _add_metric(sync_session, project, name="clicks", numerator=source.id)
+    sync_session.commit()
+
+    grouped = _merge_clicks(sync_session, project, et)
+
+    refreshed = sync_session.get(MetricDefinition, definition.id)
+    assert refreshed is not None
+    assert refreshed.numerator_event_id == grouped.id
+    assert refreshed.last_collection_status is None, "a plain re-point is not a failure"
+
+
+def test_group_merge_marks_a_ratio_whose_operands_collapse_onto_one_event_as_failed(
+    sync_session: Session, project_and_type
+):
+    """A self-ratio computes a constant 1.0 — healthy-looking arithmetic that means nothing.
+
+    Re-pointing is still right (a dangling NULL is worse), so the metric is
+    re-pointed AND driven red, naming both originals so an operator can see
+    what happened instead of trusting a flat line at 100%.
+    """
+    project, et, fds = project_and_type
+    first = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click:one",
+        screen="s",
+        action="click:one",
+        order=0,
+    )
+    second = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click:two",
+        screen="s",
+        action="click:two",
+        order=1,
+    )
+    definition = _add_metric(
+        sync_session,
+        project,
+        name="ratio",
+        numerator=first.id,
+        denominator=second.id,
+        composition="ratio",
+    )
+    sync_session.commit()
+
+    # Two matching events collapse into one group, so two merges happen.
+    grouped = _merge_clicks(sync_session, project, et, expected=2)
+
+    refreshed = sync_session.get(MetricDefinition, definition.id)
+    assert refreshed is not None
+    assert refreshed.numerator_event_id == grouped.id
+    assert refreshed.denominator_event_id == grouped.id
+    assert refreshed.last_collection_status == "error"
+    assert refreshed.last_collection_failed_at is not None, "the cooldown must be stamped too"
+    message = refreshed.last_collection_error or ""
+    assert str(grouped.id) in message, "an operator needs to know which event survived"
+    assert str(first.id) in message or str(second.id) in message, "and which one was merged into it"
+
+
+def test_group_merge_leaves_a_metric_in_another_project_untouched(
+    sync_session: Session, project_and_type
+):
+    project, et, fds = project_and_type
+    source, _ = _click_source_and_other(sync_session, project, et, fds)
+    other = Project(id=uuid.uuid4(), name="Other", slug="other-eg", description="")
+    sync_session.add(other)
+    sync_session.flush()
+    # Deliberately impossible data — a metric in another project naming this
+    # event. The scoping predicate is what must skip it, not the data.
+    foreign = _add_metric(sync_session, other, name="foreign", numerator=source.id)
+    sync_session.commit()
+
+    _merge_clicks(sync_session, project, et)
+
+    refreshed = sync_session.get(MetricDefinition, foreign.id)
+    assert refreshed is not None
+    assert refreshed.numerator_event_id is None, "the FK cascade, not the mover, cleared it"
+
+
+def _add_override(
+    sync_session,
+    project,
+    *,
+    scope_ref,
+    scan_config_id,
+    sigma,
+    min_count,
+    clicks,
+    scope_type="event",
+):
+    row = AnomalyScopeOverride(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        scan_config_id=scan_config_id,
+        scope_type=scope_type,
+        scope_ref=scope_ref,
+        scope_name="whatever",
+        sigma_threshold=sigma,
+        min_expected_count=min_count,
+        false_positive_count=clicks,
+    )
+    sync_session.add(row)
+    sync_session.flush()
+    return row
+
+
+def test_group_merge_folds_an_anomaly_override_keeping_the_stricter_setting(
+    sync_session: Session, project_and_type
+):
+    """Both events were tuned; the survivor keeps the tighter of each knob.
+
+    ``max`` is not a coin toss — the ratchet only ever tightens and is capped,
+    so taking the maximum is literally "never undo a click". The click counts
+    add up because that is the number Detection settings shows.
+    """
+    project, et, fds = project_and_type
+    source, _ = _click_source_and_other(sync_session, project, et, fds)
+    scan_config_id = _seed_scan_config(sync_session, project)
+    target_seed = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click events",
+        screen="s",
+        action="click:zero",
+        order=5,
+    )
+    _add_override(
+        sync_session,
+        project,
+        scope_ref=str(source.id),
+        scan_config_id=scan_config_id,
+        sigma=5.5,
+        min_count=30,
+        clicks=3,
+    )
+    _add_override(
+        sync_session,
+        project,
+        scope_ref=str(target_seed.id),
+        scan_config_id=scan_config_id,
+        sigma=4.0,
+        min_count=45,
+        clicks=2,
+    )
+    sync_session.commit()
+
+    merge_existing_events_for_group_rules(
+        sync_session,
+        project_id=project.id,
+        event_type_ids=[et.id],
+        event_group_rules=_CLICK_GROUP_RULE,
+    )
+    sync_session.commit()
+    sync_session.expire_all()
+
+    grouped = sync_session.execute(
+        select(Event).where(Event.source_name == "click events")
+    ).scalar_one()
+    rows = list(
+        sync_session.execute(
+            select(AnomalyScopeOverride).where(AnomalyScopeOverride.project_id == project.id)
+        ).scalars()
+    )
+    assert len(rows) == 1, "the fold must not leave a duplicate to violate the unique key"
+    assert rows[0].scope_ref == str(grouped.id)
+    assert rows[0].sigma_threshold == 5.5
+    assert rows[0].min_expected_count == 45
+    assert rows[0].false_positive_count == 5
+
+
+def test_group_merge_leaves_a_non_event_scoped_anomaly_override_alone(
+    sync_session: Session, project_and_type
+):
+    """``scope_ref`` is polymorphic — a metric-scope ref that happens to collide must not move."""
+    project, et, fds = project_and_type
+    source, _ = _click_source_and_other(sync_session, project, et, fds)
+    row = _add_override(
+        sync_session,
+        project,
+        scope_ref=str(source.id),
+        scan_config_id=None,
+        sigma=6.0,
+        min_count=10,
+        clicks=1,
+        scope_type="metric",
+    )
+    sync_session.commit()
+
+    _merge_clicks(sync_session, project, et)
+
+    refreshed = sync_session.get(AnomalyScopeOverride, row.id)
+    assert refreshed is not None
+    assert refreshed.scope_ref == str(source.id)
+
+
+def test_group_merge_rewrites_event_ids_in_alert_rule_filter_values_and_dedupes(
+    sync_session: Session, project_and_type
+):
+    """A dead id in an ``in`` rule under-alerts; in a ``not_in`` rule it over-alerts."""
+    project, et, fds = project_and_type
+    source, keeper = _click_source_and_other(sync_session, project, et, fds)
+    destination = AlertDestination(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        type="webhook",
+        name="hook",
+    )
+    sync_session.add(destination)
+    sync_session.flush()
+    rule = AlertRule(id=uuid.uuid4(), destination_id=destination.id, name="rule")
+    sync_session.add(rule)
+    sync_session.flush()
+    target_seed = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click events",
+        screen="s",
+        action="click:zero",
+        order=5,
+    )
+    event_filter = AlertRuleFilter(
+        id=uuid.uuid4(),
+        rule_id=rule.id,
+        field="event",
+        operator="in",
+        values=[str(source.id), str(target_seed.id), str(keeper.id)],
+    )
+    direction_filter = AlertRuleFilter(
+        id=uuid.uuid4(),
+        rule_id=rule.id,
+        field="direction",
+        operator="eq",
+        values=[str(source.id)],
+    )
+    sync_session.add_all([event_filter, direction_filter])
+    sync_session.commit()
+
+    merge_existing_events_for_group_rules(
+        sync_session,
+        project_id=project.id,
+        event_type_ids=[et.id],
+        event_group_rules=_CLICK_GROUP_RULE,
+    )
+    sync_session.commit()
+    sync_session.expire_all()
+
+    grouped = sync_session.execute(
+        select(Event).where(Event.source_name == "click events")
+    ).scalar_one()
+    refreshed = sync_session.get(AlertRuleFilter, event_filter.id)
+    assert refreshed is not None
+    assert refreshed.values == [str(grouped.id), str(keeper.id)], (
+        "the source collapses onto the target already in the list, exactly once"
+    )
+    untouched = sync_session.get(AlertRuleFilter, direction_filter.id)
+    assert untouched is not None
+    assert untouched.values == [str(source.id)], "a non-event field is not an event reference"
+
+
+def test_group_merge_repoints_only_event_scoped_chart_annotations(
+    sync_session: Session, project_and_type
+):
+    """The marker's text is history; its scope_ref is only where it gets drawn."""
+    project, et, fds = project_and_type
+    source, _ = _click_source_and_other(sync_session, project, et, fds)
+    scoped = ChartAnnotation(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        scope_type="event",
+        scope_ref=str(source.id),
+        bucket=datetime(2026, 1, 1, tzinfo=UTC),
+        label="shipped 4.2",
+    )
+    project_wide = ChartAnnotation(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        scope_type=None,
+        scope_ref=None,
+        bucket=datetime(2026, 1, 1, tzinfo=UTC),
+        label="outage",
+    )
+    sync_session.add_all([scoped, project_wide])
+    sync_session.commit()
+
+    grouped = _merge_clicks(sync_session, project, et)
+
+    refreshed = sync_session.get(ChartAnnotation, scoped.id)
+    assert refreshed is not None
+    assert refreshed.scope_ref == str(grouped.id)
+    assert refreshed.label == "shipped 4.2", "the text is history and stays as written"
+    wide = sync_session.get(ChartAnnotation, project_wide.id)
+    assert wide is not None
+    assert wide.scope_ref is None
+
+
+def test_group_merge_repoints_an_open_ticket_and_leaves_a_closed_one(
+    sync_session: Session, project_and_type
+):
+    """An open ticket says "not built yet"; a closed one records what shipped."""
+    project, et, fds = project_and_type
+    source, _ = _click_source_and_other(sync_session, project, et, fds)
+    # The project fixture already owns a main branch; creating a second one
+    # trips uq_plan_branch_project_name.
+    branch = (
+        sync_session.execute(select(PlanBranch).where(PlanBranch.project_id == project.id))
+        .scalars()
+        .first()
+    )
+    if branch is None:
+        branch = PlanBranch(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name="main",
+            kind=BranchKind.main.value,
+            status=BranchStatus.draft.value,
+        )
+        sync_session.add(branch)
+        sync_session.flush()
+    open_ticket = ImplementationTicket(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        branch_id=branch.id,
+        status="open",
+        event_ids=[str(source.id)],
+    )
+    closed_ticket = ImplementationTicket(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        branch_id=branch.id,
+        status="closed",
+        event_ids=[str(source.id)],
+    )
+    sync_session.add_all([open_ticket, closed_ticket])
+    sync_session.commit()
+
+    grouped = _merge_clicks(sync_session, project, et)
+
+    reopened = sync_session.get(ImplementationTicket, open_ticket.id)
+    assert reopened is not None
+    assert reopened.event_ids == [str(grouped.id)]
+    closed = sync_session.get(ImplementationTicket, closed_ticket.id)
+    assert closed is not None
+    assert closed.event_ids == [str(source.id)], "history is not rewritten"

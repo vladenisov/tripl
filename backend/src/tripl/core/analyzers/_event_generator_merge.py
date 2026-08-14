@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
+from tripl.core.analyzers._event_generator_merge_refs import move_dangling_event_references
+from tripl.core.analyzers._event_generator_variables import VariableIndex, sample_variable_values
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.event import Event
 from tripl.models.event import EventStatus as _ES
@@ -21,6 +23,10 @@ from tripl.models.event_photo import EventPhoto
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
+from tripl.models.variable import Variable
+from tripl.models.variable_event_value_override import VariableEventValueOverride
+from tripl.models.variable_value import VariableValue, VariableValueKind
+from tripl.models.variable_value_drift import VariableValueDrift
 
 
 @dataclass(frozen=True)
@@ -323,6 +329,14 @@ def _merge_event_into_group(session: Session, *, source: Event, target: Event) -
     _merge_event_metric_rows(session, source_ids=[source.id], target_id=target.id)
     _merge_event_metric_breakdown_rows(session, source_ids=[source.id], target_id=target.id)
     _delete_event_anomalies(session, event_ids=[source.id, target.id])
+    _move_variable_contexts(session, source=source, target=target)
+    _move_variable_event_overrides(session, source=source, target=target)
+    _move_variable_value_drifts(session, source=source, target=target)
+    # Everything above re-points a real foreign key. This carries the references
+    # that are event ids stored as STRINGS or inside JSON lists, which no
+    # database reflection can find and which therefore went unnoticed until the
+    # FK ledger was written out by hand (tripl-avf4, tripl-jtnv).
+    move_dangling_event_references(session, source=source, target=target)
     session.execute(
         update(AlertDeliveryItem)
         .where(AlertDeliveryItem.event_id == source.id)
@@ -354,6 +368,136 @@ def _move_event_meta_values(session: Session, *, source: Event, target: Event) -
         target.meta_values.append(meta_value)
         meta_value.event_id = target.id
         target_meta_ids.add(meta_value.meta_field_definition_id)
+
+
+def _move_variable_contexts(session: Session, *, source: Event, target: Event) -> None:
+    """Carry the source's observed variable contexts onto the surviving event.
+
+    A ``VariableValue`` says "this event field's value references ``${var}``, and
+    here is what was observed for it". ``VariableValue.event_id`` is
+    ``ondelete="CASCADE"``, so before this existed the contexts died with
+    ``session.delete(source)`` and were never rebuilt — a later scan only records
+    a context when the CURRENT run observes that (event, field) pair, so a
+    variable whose key had stopped arriving lost its values permanently. That is
+    tripl-xfxa: eighteen production variables that a live event's field value
+    still names, with an empty ``/values`` list behind an HTTP 200.
+
+    Three cases, in the order the code takes them:
+
+    * **the target's value no longer names the variable** — drop the context.
+      Group rules can replace a field value wholesale
+      (``field_value_overrides``), and a context migrated onto a literal would
+      assert a reference that is not there. Attribution uses the same "any of the
+      variable's tokens" rule as ``record_variable_contexts``, so a display name
+      that was slugged away from its raw path still matches through
+      ``source_name``/``bindings``;
+    * **the target already has a context for that (variable, field)** — fold,
+      then delete the source row. ``uq_variable_value_context`` is the bare
+      ``(variable_id, event_id, field_definition_id)``, so a blanket
+      ``UPDATE ... SET event_id`` would raise on the second row instead. The fold
+      is the one ``record_variable_contexts`` already performs when two rows
+      collapse to one event: keep the larger ``observed_count``, let ``high``
+      win the kind, and union the sampled values under the same cap;
+    * **otherwise** — re-point it.
+
+    Target-wins-then-fold matches ``_move_event_tags`` and
+    ``_move_event_meta_values`` directly above.
+    """
+    contexts = list(
+        session.execute(select(VariableValue).where(VariableValue.event_id == source.id)).scalars()
+    )
+    if not contexts:
+        return
+
+    target_values = {fv.field_definition_id: fv.value for fv in target.field_values}
+    existing = {
+        (row.variable_id, row.field_definition_id): row
+        for row in session.execute(
+            select(VariableValue).where(VariableValue.event_id == target.id)
+        ).scalars()
+    }
+    variables = {
+        variable.id: variable
+        for variable in session.execute(
+            select(Variable).where(Variable.id.in_({row.variable_id for row in contexts}))
+        ).scalars()
+    }
+
+    for context in contexts:
+        variable = variables.get(context.variable_id)
+        target_value = target_values.get(context.field_definition_id)
+        tokens = VariableIndex.tokens_of(variable) if variable is not None else []
+        if target_value is None or not any(f"${{{token}}}" in target_value for token in tokens):
+            session.delete(context)
+            continue
+
+        prior = existing.get((context.variable_id, context.field_definition_id))
+        if prior is None:
+            context.event_id = target.id
+            existing[(context.variable_id, context.field_definition_id)] = context
+            continue
+
+        prior.observed_count = max(prior.observed_count, context.observed_count)
+        if context.value_kind == VariableValueKind.high.value:
+            prior.value_kind = VariableValueKind.high.value
+        prior.values = sample_variable_values(
+            [*(prior.values or []), *(context.values or [])],
+            prior.value_kind,
+        )
+        session.delete(context)
+
+
+def _move_variable_event_overrides(session: Session, *, source: Event, target: Event) -> None:
+    """Carry hand-authored per-event value lists onto the surviving event.
+
+    ``VariableEventValueOverride`` is written only through the API — the scan
+    pipeline never touches one — so letting it cascade away meant a scan
+    silently deleting a list a human typed. Target wins on collision
+    (``uq_variable_event_value_override`` is ``(variable_id, event_id)``) and
+    nothing is folded: two authored lists are two opinions, and merging them
+    would invent a third nobody wrote.
+    """
+    claimed = {
+        row.variable_id
+        for row in session.execute(
+            select(VariableEventValueOverride).where(
+                VariableEventValueOverride.event_id == target.id
+            )
+        ).scalars()
+    }
+    for override in session.execute(
+        select(VariableEventValueOverride).where(VariableEventValueOverride.event_id == source.id)
+    ).scalars():
+        if override.variable_id in claimed:
+            session.delete(override)
+            continue
+        override.event_id = target.id
+        claimed.add(override.variable_id)
+
+
+def _move_variable_value_drifts(session: Session, *, source: Event, target: Event) -> None:
+    """Carry variable value-drift triage onto the surviving event.
+
+    A drift row carries ``accepted`` / ``snoozed`` / ``false_positive`` — a
+    decision a person made — and an ``accepted`` row is deliberately frozen
+    against rescan. Dropping it re-opens a question that was already answered.
+    Target wins on ``uq_variable_value_drift_context`` ``(variable_id,
+    event_id)``; the surviving event's own triage is the more recent judgement.
+    """
+    claimed = {
+        row.variable_id
+        for row in session.execute(
+            select(VariableValueDrift).where(VariableValueDrift.event_id == target.id)
+        ).scalars()
+    }
+    for drift in session.execute(
+        select(VariableValueDrift).where(VariableValueDrift.event_id == source.id)
+    ).scalars():
+        if drift.variable_id in claimed:
+            session.delete(drift)
+            continue
+        drift.event_id = target.id
+        claimed.add(drift.variable_id)
 
 
 def _merge_event_metric_rows(

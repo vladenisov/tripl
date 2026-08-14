@@ -8,13 +8,26 @@ import type { Variable, VariableListPage, VariableType, VariableValueContext } f
 // instead of silently getting the first 200.
 export const VARIABLES_PAGE_LIMIT = 5000
 
+/** Which variables to return: everything, only what something refers to, or only
+ *  what nothing does. `unused` is decided by the backend's retirement predicate,
+ *  not by a zero event count — see the note in VariablesTab for why that
+ *  distinction matters under a select-all checkbox. */
+export type VariableUsageFilter = 'all' | 'used' | 'unused'
+
 const listPage = (
   slug: string,
   branchId?: string | null,
-  { offset = 0, limit = VARIABLES_PAGE_LIMIT }: { offset?: number; limit?: number } = {},
+  {
+    offset = 0,
+    limit = VARIABLES_PAGE_LIMIT,
+    usage = 'all',
+  }: { offset?: number; limit?: number; usage?: VariableUsageFilter } = {},
 ) =>
   api.get<VariableListPage>(
-    withBranch(`/projects/${slug}/variables?offset=${offset}&limit=${limit}`, branchId),
+    withBranch(
+      `/projects/${slug}/variables?offset=${offset}&limit=${limit}&usage=${usage}`,
+      branchId,
+    ),
   )
 
 export const variablesApi = {

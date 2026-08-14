@@ -11,7 +11,11 @@ from sqlalchemy.orm import noload
 
 from tripl import cache
 from tripl.alerting_matching import rule_covers_event
-from tripl.core.name_template import apply_name_format, resolve_dotted_keys
+from tripl.core.name_template import (
+    VARIABLE_TOKEN_PATTERN,
+    apply_name_format,
+    resolve_dotted_keys,
+)
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.event import Event, EventStatus
@@ -32,6 +36,7 @@ from tripl.schemas.event import (
     EventReorder,
     EventUpdate,
 )
+from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.scan_config_lookup import load_governing_scan_configs
@@ -43,7 +48,9 @@ from tripl.services.search_service import (
 from tripl.services.variable_value_service import attach_event_field_variable_values
 
 _TRACKED_FIELDS = ("status", "name", "description", "sunset_at")
-_TEMPLATE_TOKEN_PATTERN = re.compile(r"\$\{([^}]*)\}")
+# One ``${token}`` grammar for the codebase; this module's spelling is the one
+# it standardised on (``core.name_template``).
+_TEMPLATE_TOKEN_PATTERN = VARIABLE_TOKEN_PATTERN
 _JSON_TEMPLATE_TOKEN_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 _JSON_TEMPLATE_VALUE_PATTERN = re.compile(
     r'"\$\{[A-Za-z_][A-Za-z0-9_.-]*\}"|\$\{[A-Za-z_][A-Za-z0-9_.-]*\}'
@@ -675,6 +682,11 @@ async def delete_event(
     event = await get_event(session, slug, event_id, branch_id)
     project_id = event.project_id
     resolved_branch_id = event.branch_id
+    # Before the delete: several rows point at this event by string or JSON id,
+    # or through a SET NULL foreign key, and would otherwise outlive it. The
+    # anomalies are the sharp one — a NULL event_id satisfies every event filter,
+    # so deleting an event used to UN-suppress its alerts (tripl-xjuv).
+    await drop_dangling_event_references(session, project_id=project_id, event_ids=[event.id])
     await session.delete(event)
     await session.flush()
     _, ai_config = await _reindex_branch_documents(
@@ -709,6 +721,12 @@ async def bulk_delete_events(
     if (present or 0) != len(data.event_ids):
         raise HTTPException(status_code=404, detail="One or more events were not found")
 
+    # Same cleanup as the single delete, and it matters MORE here: this is a
+    # Core DELETE, so no ORM cascade runs at all and everything not covered by a
+    # database-level FK survives untouched.
+    await drop_dangling_event_references(
+        session, project_id=project_id, event_ids=list(data.event_ids)
+    )
     # Single DELETE with IN-list; child rows go via FK ondelete=CASCADE in the DB.
     await session.execute(
         delete(Event).where(

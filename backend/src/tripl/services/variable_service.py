@@ -4,6 +4,7 @@ import uuid
 from fastapi import HTTPException
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
@@ -18,6 +19,7 @@ from tripl.schemas.variable import (
     VariableEventOverrideUpsert,
     VariableUpdate,
 )
+from tripl.services import variable_retirement_service
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.search_service import reindex_project_branch
@@ -73,15 +75,53 @@ async def list_variables(
     *,
     offset: int = 0,
     limit: int = DEFAULT_LIST_LIMIT,
+    usage: str | None = None,
 ) -> tuple[list[Variable], int]:
     """One page of the project's variables plus the untruncated total.
 
     Paging bounds ``attach_variable_summaries`` too: it only ever fans out over
     the ids on the page, never the whole project.
+
+    ``usage="unused"`` narrows the page to exactly the rows the retirement sweep
+    would take, and ``"used"`` to its complement. It is answered by the shared
+    predicate in ``core.variable_retirement`` rather than by an "``event_count``
+    is zero" filter, and the difference is not cosmetic: a variable can have no
+    observed context and still be named by a live event's field value — that is
+    tripl-xfxa, eighteen rows on production. A cheap zero-count filter would
+    have offered precisely those for deletion, from a screen that has a
+    select-all checkbox on it.
+
+    The predicate costs one pass over the project's stored field values, so it
+    runs only when the filter is actually asked for.
     """
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
-    scope = (Variable.project_id == project_id, Variable.branch_id == branch_id)
+    scope: list[ColumnElement[bool]] = [
+        Variable.project_id == project_id,
+        Variable.branch_id == branch_id,
+    ]
+
+    if usage in {"used", "unused"}:
+        plan = await variable_retirement_service.plan_project_retirement(
+            session, project_id=project_id, branch_id=branch_id
+        )
+        # ``in_(())`` and ``not_in(())`` are both well defined on an empty
+        # sequence, so a project with nothing to retire needs no special case:
+        # "unused" correctly returns no rows, "used" correctly returns all.
+        #
+        # This one IS a literal id list, unlike the anti-joins inside
+        # ``plan_project_retirement`` which take a subquery: the retirable set
+        # is computed in Python and has no SQL expression to stand in for it.
+        # The bound is therefore PostgreSQL's 65535 bind parameters against the
+        # project's variable count — comfortable now that the end-of-scan sweep
+        # keeps that count from growing without limit, which is exactly the
+        # property this filter exists to make visible.
+        scope.append(
+            Variable.id.in_(plan.retirable)
+            if usage == "unused"
+            else Variable.id.not_in(plan.retirable)
+        )
+
     total = await session.scalar(select(func.count(Variable.id)).where(*scope)) or 0
     result = await session.execute(
         select(Variable).where(*scope).order_by(Variable.name).offset(offset).limit(limit)

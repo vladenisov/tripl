@@ -18489,6 +18489,76 @@
         "title": "VariableResponse",
         "type": "object"
       },
+      "VariableRetirementCounts": {
+        "description": "What a retirement pass did, and why it spared everything it spared.\n\nThe ``kept_*`` fields mirror ``core.variable_retirement.KeptReason`` one for\none, and a test pins that agreement: a reason the core can emit but this\nschema cannot name would be dropped silently from the operator's preview,\nwhich is the one number they are being asked to trust.",
+        "properties": {
+          "kept_documented": {
+            "default": 0,
+            "title": "Kept Documented",
+            "type": "integer"
+          },
+          "kept_excluded": {
+            "default": 0,
+            "title": "Kept Excluded",
+            "type": "integer"
+          },
+          "kept_observed": {
+            "default": 0,
+            "title": "Kept Observed",
+            "type": "integer"
+          },
+          "kept_referenced": {
+            "default": 0,
+            "title": "Kept Referenced",
+            "type": "integer"
+          },
+          "kept_user_edited": {
+            "default": 0,
+            "title": "Kept User Edited",
+            "type": "integer"
+          },
+          "retirable": {
+            "title": "Retirable",
+            "type": "integer"
+          },
+          "retired": {
+            "title": "Retired",
+            "type": "integer"
+          },
+          "scanned": {
+            "title": "Scanned",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "scanned",
+          "retirable",
+          "retired"
+        ],
+        "title": "VariableRetirementCounts",
+        "type": "object"
+      },
+      "VariableRetirementRequest": {
+        "description": "How to retire the variables nothing references, and whether to commit.\n\n``dry_run`` defaults to true so the destructive verb takes a second,\nexplicit call: the counts come back broken down by reason first, and only\nthen does an operator decide.",
+        "properties": {
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "mode": {
+            "default": "delete",
+            "enum": [
+              "delete",
+              "exclude"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "title": "VariableRetirementRequest",
+        "type": "object"
+      },
       "VariableType": {
         "enum": [
           "string",
@@ -23181,6 +23251,59 @@
           }
         },
         "summary": "Reset Drifts",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/danger/retire-unused-variables": {
+      "post": {
+        "description": "Owner-only: drop the variables a scan minted that nothing refers to.\n\nA scan creates a variable for every placeholder it discovers and has never\nretired one, so a project whose warehouse holds a JSON column keyed by\nuser-typed text accumulates a row per key forever (tripl-10h4). This deletes\nonly rows that a scan created, no human has edited, no event field value\nnames, and that carry no observed context, drift or override \u2014 see\n``core.variable_retirement`` for why \"no observed context\" alone is not\nenough to be safe.\n\n``dry_run`` defaults to true, so the first call is always a preview. It\nreturns the same counts the real pass would, broken down by why each\nsurviving row was kept.",
+        "operationId": "retire_unused_variables_api_v1_projects__slug__danger_retire_unused_variables_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VariableRetirementRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VariableRetirementCounts"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retire Unused Variables",
         "tags": [
           "projects"
         ]
@@ -30440,6 +30563,23 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "description": "Narrow to the variables nothing refers to ('unused' \u2014 exactly the set the retirement sweep would take) or to their complement ('used'). Declared as an enum rather than a free string so an unknown value is a 422 and not a 500 (tripl-57g0).",
+            "in": "query",
+            "name": "usage",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "description": "Narrow to the variables nothing refers to ('unused' \u2014 exactly the set the retirement sweep would take) or to their complement ('used'). Declared as an enum rather than a free string so an unknown value is a 422 and not a 500 (tripl-57g0).",
+              "enum": [
+                "all",
+                "used",
+                "unused"
+              ],
+              "title": "Usage",
+              "type": "string"
             }
           }
         ],

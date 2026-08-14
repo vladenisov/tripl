@@ -7,11 +7,13 @@ import {
   type AnomalyResetCounts,
   type DetectionResetPeriod,
   type DriftResetCounts,
+  type VariableRetirementCounts,
 } from '@/api/projects'
 import { searchApi } from '@/api/search'
 import { useAuth } from '@/components/auth-context'
 import { Button } from '@/components/ui/button'
 import { useConfirm } from '@/hooks/useConfirm'
+import { projectVariablesKey } from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import {
   Field,
@@ -151,6 +153,72 @@ function DangerResetRow({
   )
 }
 
+function summarizeRetirement(counts: VariableRetirementCounts, committed: boolean): string {
+  const kept = [
+    counts.kept_referenced && `${counts.kept_referenced} still referenced`,
+    counts.kept_observed && `${counts.kept_observed} with observed values`,
+    counts.kept_documented && `${counts.kept_documented} documented`,
+    counts.kept_user_edited && `${counts.kept_user_edited} edited by hand`,
+    counts.kept_excluded && `${counts.kept_excluded} excluded from scans`,
+  ].filter(Boolean)
+  const tail = kept.length ? ` Kept ${kept.join(', ')}.` : ''
+  return committed
+    ? `Retired ${counts.retired} of ${counts.scanned} variables.${tail}`
+    : `${counts.retirable} of ${counts.scanned} variables can be retired.${tail}`
+}
+
+/**
+ * The retirement row is two buttons, not one: a preview that commits nothing,
+ * and a destructive apply that only lights up once the preview has said how
+ * many rows it would take. Scans mint variables and, before this shipped, never
+ * retired one, so a project can arrive here carrying four figures of them — the
+ * count IS the decision, and asking for it separately is what makes the second
+ * click informed rather than brave.
+ */
+function DangerRetireVariablesRow({
+  onPreview,
+  onRetire,
+  busy,
+  preview,
+  feedback,
+}: {
+  onPreview: () => void
+  onRetire: () => void
+  busy: boolean
+  preview: VariableRetirementCounts | undefined
+  feedback: ReactNode
+}) {
+  return (
+    <div
+      className="flex items-center gap-[18px] px-[18px] py-[14px]"
+      style={{ borderBottom: '1px solid var(--border-subtle)' }}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="text-[13px] font-medium">Retire unused variables</div>
+        <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+          Delete variables a scan created that no event field value references and that carry no
+          observed values, drift or documented values. Nothing edited by hand is touched.
+        </div>
+        {feedback}
+      </div>
+      <div className="flex items-center gap-2">
+        <Button variant="outline" size="sm" disabled={busy} onClick={onPreview}>
+          {busy ? 'Checking…' : 'Preview'}
+        </Button>
+        <Button
+          variant="destructive"
+          size="sm"
+          disabled={busy || !preview || preview.retirable === 0}
+          onClick={onRetire}
+        >
+          <Trash2 className="h-3 w-3" />
+          Retire
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 /**
  * Project · General. Identity (name / slug / description) and the search-index
  * rebuild reuse the real projectsApi + searchApi wiring lifted from GeneralTab.
@@ -242,6 +310,35 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
       for (const key of DRIFT_INVALIDATE_KEYS) qc.invalidateQueries({ queryKey: key })
     },
   })
+
+  // Preview and apply are separate mutations on purpose. Sharing one would make
+  // the success banner ambiguous — "1284 can be retired" and "retired 1284" are
+  // the same shape and very much not the same event.
+  const [retirementPreview, setRetirementPreview] = useState<VariableRetirementCounts>()
+  const previewRetirementMut = useMutation({
+    mutationFn: () => projectsApi.retireUnusedVariables(slug, { dry_run: true }),
+    onSuccess: setRetirementPreview,
+  })
+  const retireVariablesMut = useMutation({
+    mutationFn: () => projectsApi.retireUnusedVariables(slug, { dry_run: false }),
+    onSuccess: () => {
+      setRetirementPreview(undefined)
+      // Across every branch: the pass resolves the branch server-side, so this
+      // button does not know which one the settings table is showing.
+      qc.invalidateQueries({ queryKey: projectVariablesKey(slug) })
+    },
+  })
+
+  const handleRetireVariables = async () => {
+    const retirable = retirementPreview?.retirable ?? 0
+    const ok = await confirm({
+      title: 'Retire unused variables',
+      message: `Permanently delete ${retirable} variable${retirable === 1 ? '' : 's'} that no event field value references. Variables you edited, documented, excluded from scans, or that carry observed values or drift are not touched. This cannot be undone.`,
+      confirmLabel: 'Retire variables',
+      variant: 'danger',
+    })
+    if (ok) retireVariablesMut.mutate()
+  }
 
   const handleResetAnomalies = async () => {
     const ok = await confirm({
@@ -493,6 +590,33 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
                     ) : resetDriftsMut.isError ? (
                       <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
                         {getErrorMessage(resetDriftsMut.error)}
+                      </div>
+                    ) : null
+                  }
+                />
+                <DangerRetireVariablesRow
+                  onPreview={() => previewRetirementMut.mutate()}
+                  onRetire={() => {
+                    void handleRetireVariables()
+                  }}
+                  busy={previewRetirementMut.isPending || retireVariablesMut.isPending}
+                  preview={retirementPreview}
+                  feedback={
+                    retireVariablesMut.isSuccess ? (
+                      <div className="mt-2 text-[12px]" style={{ color: 'var(--success)' }}>
+                        {summarizeRetirement(retireVariablesMut.data, true)}
+                      </div>
+                    ) : retireVariablesMut.isError ? (
+                      <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
+                        {getErrorMessage(retireVariablesMut.error)}
+                      </div>
+                    ) : previewRetirementMut.isError ? (
+                      <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
+                        {getErrorMessage(previewRetirementMut.error)}
+                      </div>
+                    ) : retirementPreview ? (
+                      <div className="mt-2 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+                        {summarizeRetirement(retirementPreview, false)}
                       </div>
                     ) : null
                   }

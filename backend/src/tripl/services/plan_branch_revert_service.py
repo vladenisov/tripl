@@ -40,6 +40,7 @@ from tripl.models.variable_event_value_override import VariableEventValueOverrid
 from tripl.schemas.plan_branch import BranchRevertRequest, PlanBranchDiff
 from tripl.schemas.plan_revision import PlanDiffEntry
 from tripl.services import plan_branch_service
+from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services.project_lookup import get_project_by_slug
 
 # Fields whose base value is a plain column write. Everything else on an entity
@@ -229,6 +230,31 @@ def _base_item(base_payload: dict[str, Any], data: BranchRevertRequest) -> dict[
             detail="The base snapshot does not describe this entity, so it cannot be restored",
         )
     return match
+
+
+async def _doomed_event_ids(
+    session: AsyncSession, entity_type: str, entity: object
+) -> list[uuid.UUID]:
+    """The events that will disappear when *entity* is deleted.
+
+    An ``event`` is itself; an ``event_type`` takes its events with it through
+    the database cascade — ``EventType`` maps no ``events`` relationship, so
+    nothing in the ORM reports those rows going. Every other entity type kills
+    no events at all.
+    """
+    if entity_type == "event":
+        return [entity.id]  # type: ignore[attr-defined]
+    if entity_type == "event_type":
+        return list(
+            (
+                await session.execute(
+                    select(Event.id).where(Event.event_type_id == entity.id)  # type: ignore[attr-defined]
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return []
 
 
 async def _find_entity(
@@ -796,6 +822,15 @@ async def revert_change(
                 ),
             )
         entity = await _find_entity(session, project.id, branch.id, data)
+        # Reverting an "added" entity deletes it outright — no survivor — so the
+        # references to it are DROPPED, the same rule the CRUD delete doors use.
+        # An event_type takes its events with it through the database cascade
+        # that no service can see, which is why it is expanded here (tripl-a64t).
+        await drop_dangling_event_references(
+            session,
+            project_id=project.id,
+            event_ids=await _doomed_event_ids(session, data.entity_type, entity),
+        )
         await session.delete(entity)
         await session.commit()
         return await plan_branch_service.diff_branch(session, slug, branch_id)

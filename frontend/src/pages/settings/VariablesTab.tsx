@@ -41,9 +41,30 @@ const TYPE_LABELS: Record<VariableType, string> = {
   datetime: 'Datetime', json: 'JSON', string_array: 'String[]', number_array: 'Number[]',
 }
 
+// Matching spans every token the SCAN would resolve — display name, scan
+// identity and user-editable bindings — not just what the row leads with. On a
+// project whose variables were slugged by derive_display_name the raw path is
+// the only name a person knows: 576 of production's windy-ios rows render as
+// `${aalter}` over `property.Aalter`, so a search for "property" found none of
+// them.
 const matchesQuery = (variable: Variable, needle: string) =>
   variable.name.toLowerCase().includes(needle) ||
-  variable.description.toLowerCase().includes(needle)
+  variable.description.toLowerCase().includes(needle) ||
+  (variable.source_name ?? '').toLowerCase().includes(needle) ||
+  (variable.bindings ?? []).some(binding => binding.toLowerCase().includes(needle))
+
+// Server-side, because the honest answer needs data this page does not hold.
+// "Unused" is NOT "event_count is zero": a variable can have no observed
+// context and still be named by a live event's field value (tripl-xfxa, 18 rows
+// on production). Only the backend sees every stored value, so it decides — and
+// the count sitting under a select-all checkbox is then exactly the set the
+// retirement sweep would take, not a superset that includes rows still in use.
+const USAGE_FILTERS = [
+  { value: 'all', label: 'All' },
+  { value: 'used', label: 'In use' },
+  { value: 'unused', label: 'Unused' },
+] as const
+type UsageFilter = (typeof USAGE_FILTERS)[number]['value']
 
 /** Keeps a handler's identity stable across renders so the memoized rows do not
  * re-render every time an unrelated closure above them is recreated. The ref is
@@ -123,6 +144,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const [showResolvedDrifts, setShowResolvedDrifts] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [filterText, setFilterText] = useState('')
+  const [usageFilter, setUsageFilter] = useState<UsageFilter>('all')
   // Page the reviewer picked, tagged with the focus target it was picked under
   // (undefined = never picked, so a ?focus= link still gets to choose).
   const [pickedPage, setPickedPage] = useState<{ focusId?: string; page: number }>({ page: 0 })
@@ -152,8 +174,11 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     // The PAGE key, not the items key: this is the one caller that needs
     // `total`, and caching the envelope under the shared key is what fed the
     // events rows an object instead of an array (tripl-lqxb).
-    queryKey: variablesPageKey(slug, branchId),
-    queryFn: () => variablesApi.listPage(slug, branchId),
+    // The usage filter is part of the key because it is answered server-side —
+    // the page cannot narrow to "unused" itself without every event's stored
+    // field values.
+    queryKey: [...variablesPageKey(slug, branchId), usageFilter],
+    queryFn: () => variablesApi.listPage(slug, branchId, { usage: usageFilter }),
     placeholderData: keepPreviousData,
   })
   const variables = useMemo(() => variablePage?.items ?? [], [variablePage])
@@ -664,13 +689,34 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
         ) : activeVariables.length > 0 ? (
           <>
             <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2">
-              <Input
-                aria-label="Filter variables"
-                className="h-8 max-w-64"
-                placeholder="Filter by name or description…"
-                value={filterText}
-                onChange={e => { setFilterText(e.target.value); goToPage(0) }}
-              />
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  aria-label="Filter variables"
+                  className="h-8 max-w-64"
+                  placeholder="Filter by name, path or description…"
+                  value={filterText}
+                  onChange={e => { setFilterText(e.target.value); goToPage(0) }}
+                />
+                <div className="flex items-center gap-1" role="group" aria-label="Filter by usage">
+                  {USAGE_FILTERS.map(option => (
+                    <Button
+                      key={option.value}
+                      type="button"
+                      size="sm"
+                      variant={usageFilter === option.value ? 'secondary' : 'ghost'}
+                      className="h-7 px-2 text-xs"
+                      aria-pressed={usageFilter === option.value}
+                      onClick={() => {
+                        setUsageFilter(option.value)
+                        setSelectedIds(new Set())
+                        goToPage(0)
+                      }}
+                    >
+                      {option.label}
+                    </Button>
+                  ))}
+                </div>
+              </div>
               <span className="text-xs text-muted-foreground">
                 {matchingVariables.length === 0
                   ? 'No matches'
@@ -746,6 +792,27 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
               </div>
             )}
           </>
+        ) : usageFilter === 'unused' ? (
+          // "No variables" would be a lie here — there are plenty, none of them
+          // dead. Say which, since this is the answer the operator came for.
+          <div className="px-4 py-8">
+            <EmptyState
+              icon={VariableIcon}
+              title="Nothing to retire"
+              // Every reason the backend predicate can keep a row for. The
+              // first version named three of seven, so an operator staring at
+              // an empty list would have been told the wrong thing about why.
+              description="Every variable here is kept by something: a field or meta value that names it, observed values, documented values, a value drift, a per-event override, an exclusion from scans, or an edit someone made."
+            />
+          </div>
+        ) : usageFilter === 'used' ? (
+          <div className="px-4 py-8">
+            <EmptyState
+              icon={VariableIcon}
+              title="No variables in use"
+              description="No variable here is referenced by an event field value or carries observed values yet."
+            />
+          </div>
         ) : (
           <div className="px-4 py-8">
             <EmptyState icon={VariableIcon} title="No variables" description="Define template placeholders to reuse across event field values." />

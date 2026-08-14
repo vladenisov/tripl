@@ -197,6 +197,47 @@ describe('VariablesTab', () => {
     expect(screen.queryByText('Page 1 of 3')).not.toBeInTheDocument()
   })
 
+  it('finds a variable by the warehouse path it binds to, not just its display name', async () => {
+    // derive_display_name slugs a dotted path down to its last segment, so the
+    // name on screen is `${aalter}` while the only name a person knows is
+    // `property.Aalter`. 576 production rows are in exactly this state.
+    mockList([
+      makeVariable({
+        id: 'var-1',
+        name: 'aalter',
+        source_name: 'property.Aalter',
+        bindings: ['property.Aalter'],
+      }),
+      makeVariable({ id: 'var-2', name: 'user_id', source_name: 'user_id' }),
+    ])
+
+    renderVariablesTab()
+    await screen.findByText('${aalter}')
+
+    fireEvent.change(screen.getByLabelText('Filter variables'), { target: { value: 'property.' } })
+
+    expect(await screen.findByText('${aalter}')).toBeInTheDocument()
+    expect(screen.queryByText('${user_id}')).not.toBeInTheDocument()
+  })
+
+  it('asks the server for the unused set instead of narrowing it here', async () => {
+    // "Unused" cannot be computed on this page: it depends on whether any event
+    // field or meta value still names the token, which the page never loads.
+    // Deciding it locally would put rows that ARE referenced under a select-all
+    // checkbox (tripl-xfxa).
+    mockList([makeVariable({ id: 'var-1', name: 'spot_id', source_name: 'spot_id' })])
+
+    renderVariablesTab()
+    await screen.findByText('${spot_id}')
+    expect(variablesApi.listPage).toHaveBeenCalledWith('demo', null, { usage: 'all' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unused' }))
+
+    await waitFor(() =>
+      expect(variablesApi.listPage).toHaveBeenCalledWith('demo', null, { usage: 'unused' }),
+    )
+  })
+
   it('paginates to the page holding the focused variable', async () => {
     mockList(
       Array.from({ length: 120 }, (_, index) =>

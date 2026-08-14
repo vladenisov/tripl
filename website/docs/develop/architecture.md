@@ -322,12 +322,21 @@ photos, comments) and merge back via a
 1. The api creates or updates a `ScanConfig`.
 2. Running it creates a `ScanJob`.
 3. A Celery task executes the query against the warehouse via the adapter.
-4. Cardinality analysis decides whether observed values become event fields or
-   variables; bindings adopt existing variables and naming/group rules produce
-   stable event identities.
+4. Cardinality analysis shapes each column: a low-cardinality scalar column is
+   enumerated into event identities, a high-cardinality one collapses into a
+   `${token}` template whose placeholders become variables. It does **not** gate
+   variable creation on a JSON column — every discovered path that is not a
+   declared passthrough (`json_value_paths`, the scan's *JSON values to keep
+   as-is*) becomes a variable whatever its cardinality, which is why a JSON map
+   keyed by user-typed text mints one variable per key. Bindings adopt existing
+   variables and naming/group rules produce stable event identities.
 5. Events and variables are created or updated in PostgreSQL. Scan writes do
    not overwrite user-authored field values or recreate excluded variables.
-6. `ScanJob.result_summary` is filled in for the UI.
+6. The run retires the scan-created variables nothing refers to any more
+   (`worker/variable_sweep`), after the commit and before the search reindex, so
+   the reindex sees the retired set and a later failure cannot roll the
+   deletions back.
+7. `ScanJob.result_summary` is filled in for the UI.
 
 Steps 4 and 5 are two modules, not one. `core/analyzers/event_plan.plan_events`
 is the **pure** half: it turns breakdown rows into event identities by applying
@@ -350,6 +359,33 @@ Two invariants the split must preserve:
   `variables_needed` list. `ensure_variable` creates a variable with the first
   type it is asked for, so a `set` would make the stored type depend on hash
   order.
+
+Step 6's predicate lives in `core/variable_retirement` and is shared verbatim
+with the owner-only `POST /projects/{slug}/danger/retire-unused-variables`
+service; the worker runs it on the sync `Session`, the endpoint on the
+`AsyncSession`, and only the queries differ. A variable is retirable only when a
+scan created it (`description` still the scan's provenance string, `bindings`
+still `[source_name]`), no human evidence sits on it (documented values, an
+exclusion tombstone, a per-event override, value-drift triage), it has no
+observed `VariableValue` context, **and** none of its tokens — `name`,
+`source_name`, `bindings` — appears as `${token}` in any stored `EventFieldValue`
+**or** `EventMetaValue`.
+
+Two things about that last pair are load-bearing. Both value tables are read
+because both accept a token but only the first produces a `VariableValue`
+context (that model is keyed by `field_definition_id`), so reading field values
+alone retires a variable referenced solely from a meta value —
+`event_service._attach_template_warnings` reads both, and so must this. And the
+context check and the token check are independent on purpose: a group-rule merge
+can leave a variable that a live event value still names but that carries no
+contexts at all, and a predicate resting on contexts alone would delete exactly
+those.
+
+`variable_service.list_variables` reuses the same predicate to answer
+`usage=used|unused` on the list endpoint, rather than approximating it with a
+zero-usage-count filter — the count under the Variables page's select-all
+checkbox has to be the set a run would take, not a superset. It runs the pass
+only when the filter is asked for.
 
 ### Scan dry-run flow
 

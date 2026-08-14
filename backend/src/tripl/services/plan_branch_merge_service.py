@@ -32,6 +32,7 @@ from tripl.models.project_tracker_config import ProjectTrackerConfig
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.schemas.plan_branch import PlanBranchDetailResponse
+from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services.event_type_owner_service import load_owner_user_ids
 from tripl.services.plan_branch_conflicts import (
     _ET_CHANGE_KEYS,
@@ -287,6 +288,35 @@ async def _apply_merge(
                     order=b_et.order,
                 )
             )
+    removed_main_ets = [
+        m_et
+        for name, m_et in main_et_by_name.items()
+        if name in base_et_by_name and name not in branch_et_by_name
+    ]
+    if removed_main_ets:
+        # BEFORE the delete, and this placement is the substance of the fix.
+        # Deleting the event type takes its events with it through the database
+        # cascade at the flush below — EventType maps no ``events`` relationship,
+        # so no service ever sees those rows go. Their dangling references have
+        # to be cleared here or nowhere.
+        #
+        # There is no survivor to re-point at: these main events lose their event
+        # type outright, so the rule is DROP, exactly as on the three CRUD delete
+        # doors (tripl-a64t).
+        doomed_event_ids = list(
+            (
+                await session.execute(
+                    select(Event.id).where(
+                        Event.event_type_id.in_([m_et.id for m_et in removed_main_ets])
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        await drop_dangling_event_references(
+            session, project_id=project_id, event_ids=doomed_event_ids
+        )
     for name, m_et in list(main_et_by_name.items()):
         if name in base_et_by_name and name not in branch_et_by_name:
             await session.delete(m_et)
@@ -652,9 +682,21 @@ async def _apply_merge(
                 )
             for tag in b_ev.tags:
                 session.add(EventTag(id=uuid.uuid4(), event_id=new_ev_id, name=tag.name))
-    for key, m_ev in list(main_event_by_key.items()):
-        if key in base_event_by_key and key not in branch_event_by_key:
-            await session.delete(m_ev)
+    # Collect, clear, then delete. These are main events the branch removed on
+    # purpose, so again there is no survivor and the rule is DROP.
+    doomed_main_events = [
+        m_ev
+        for key, m_ev in main_event_by_key.items()
+        if key in base_event_by_key and key not in branch_event_by_key
+    ]
+    if doomed_main_events:
+        await drop_dangling_event_references(
+            session,
+            project_id=project_id,
+            event_ids=[m_ev.id for m_ev in doomed_main_events],
+        )
+    for m_ev in doomed_main_events:
+        await session.delete(m_ev)
     await session.flush()
 
     # --- photos + comments: replace only when the branch's design canvas

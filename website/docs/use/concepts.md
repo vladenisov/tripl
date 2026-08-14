@@ -76,7 +76,9 @@ your team documents from the values a scan observes. A variable can hold a
 global documented-value list, warehouse column or dotted JSON-path bindings,
 and a complete per-event override when one event is the exception. Scans use the
 bindings to adopt the same variable, report novel values as drift, and preserve
-hand-authored event field values instead of overwriting them. See
+hand-authored event field values instead of overwriting them. A scan-created
+variable that nothing in the plan refers to any more is retired at the end of a
+later run; one a person edited, documented, or excluded from scans is kept. See
 [Variables & templates](./variables-and-templates.md) for the full workflow.
 
 ### Relation

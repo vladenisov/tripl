@@ -679,7 +679,24 @@ re-enqueued automatically by the maintenance reaper.
 The scan rediscovered its warehouse column or JSON-path binding. Delete removes
 the plan row, while **Exclude from scans** keeps a tombstone that prevents
 recreation and stops new contexts/drift. Open **Plan → Variables**, exclude the
-variable, and use **Restore** if the decision changes later.
+variable, and use **Restore** if the decision changes later. Automatic
+retirement (below) behaves the same way — it deletes the row, it does not leave
+a tombstone — so a retired variable reappears if its source path starts
+arriving again. Exclusion is what makes a removal stick.
+
+**A scan-created variable vanished from the plan. Where did it go?**
+Every catalog run ends by retiring the scan-created variables nothing refers to
+any more, so a catalog stops growing a permanent row per key of a JSON column
+keyed by free text. A row is removed only when all of this holds: its
+description is still the scan's own, its bindings are still only the source path
+the scan gave it, it documents no values, and it has no per-event override, no
+value drift, no observed context, and no stored event field or meta value naming
+any of its tokens as `${token}`. Anything you edited, documented, overrode,
+triaged, or excluded is kept — and so is a variable that a single `${token}`
+still names, even with no observed contexts. The run's details list reports the
+count, and **Plan → Variables** has an **Unused** filter that shows exactly what
+a run would take. See
+[Variables & templates](./variables-and-templates.md#unreferenced-scan-created-variables-are-retired-automatically).
 
 **Why does a variable show value drift?**
 The scan observed values outside the effective documented list (the event

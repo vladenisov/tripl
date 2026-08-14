@@ -9,8 +9,9 @@ that asymmetry that a production audit of tripl.windyapp.co turned up:
 * a rescan that rewrites a field value but KEEPS the ``${token}`` must re-record
   the context — dropping it there is what leaves a variable showing "0 events"
   while an event visibly still references it;
-* a JSON column whose KEYS are free text mints one permanent ``Variable`` per
-  distinct key, and those variables outlive the contexts by design.
+* a JSON column whose KEYS are free text mints one ``Variable`` per distinct
+  key, and those variables outlive their contexts — generation never retires
+  one, and the end-of-run sweep is what does (tripl-10h4).
 """
 
 import uuid
@@ -30,6 +31,7 @@ from tripl.models.field_definition import FieldDefinition
 from tripl.models.project import Project
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
+from tripl.worker.variable_sweep import retire_unused_variables
 
 
 @pytest.fixture
@@ -189,23 +191,29 @@ def test_only_one_event_is_kept_so_links_are_not_double_counted(
     assert [event.name for event in events] == ["/home"]
 
 
-def test_vanished_json_keys_leave_permanent_orphan_variables(
+def test_generating_events_never_retires_the_variables_it_minted(
     sync_session: Session, project_and_type
 ):
-    """A free-text JSON key mints a Variable that outlives its own context.
+    """A vanished JSON key leaves an orphan behind — and generation is right to.
 
     ``plan_column_meta`` needs a variable for EVERY distinct JSON path it sees,
-    with no cardinality guard — unlike a regular column, which only yields
-    variables through ``detect_variables`` under ``cardinality_threshold``. So a
-    column whose keys are user-typed text mints one permanent ``Variable`` per
-    distinct key. When the key stops appearing, the next scan rewrites the value
-    without it and the context is correctly dropped, but nothing ever retires the
-    ``Variable`` row — it just sits in the Variables tab with no event.
+    with no cardinality guard, so a column whose keys are user-typed text mints
+    one ``Variable`` per distinct key. When a key stops appearing, the next scan
+    rewrites the value without it and the context is correctly dropped; the
+    ``Variable`` row survives.
 
-    This is characterization, not an endorsement: on production this accounts for
-    1230 of the 1636 variables (windy-ios' ``property`` column is keyed by
-    user-typed place names). Retiring or hiding these belongs in
-    ``event_plan.plan_column_meta`` / ``_event_generator_variables``.
+    That used to be permanent, and on production it accounted for 1279 of
+    windy-ios' 1518 variables (tripl-10h4). It is now swept up by
+    ``worker.variable_sweep`` — but deliberately at the END of a scan run, once
+    every event type has been generated, and NOT inside ``generate_events``. The
+    reason is scope: contexts are deleted per event type, so a variable this
+    event type no longer references may still be the live property of another
+    one, and a sweep running inside generation would judge it on a fraction of
+    the evidence.
+
+    So this pins the boundary rather than the defect: generation leaves the row,
+    and something later, holding the whole project, decides.
+    ``test_the_sweep_retires_what_generation_left_behind`` is the other half.
     """
     project, et, fds = project_and_type
 
@@ -229,3 +237,31 @@ def test_vanished_json_keys_leave_permanent_orphan_variables(
         "alicante": 0,
         "caorle": 1,
     }
+
+
+def test_the_sweep_retires_what_generation_left_behind(sync_session: Session, project_and_type):
+    """The other half: a scan run ends by clearing the orphans, keeping the live one.
+
+    ``caorle`` is the key the second window actually carried, so its token is in
+    the stored value and its context exists — the sweep must not touch it. The
+    two place names nobody typed again have neither, and go.
+
+    This is the end-to-end shape of tripl-10h4: the catalog stops growing
+    without anyone pressing anything.
+    """
+    project, et, fds = project_and_type
+
+    _scan(sync_session, project, et, fds, ("Bodrum", "Alicante"))
+    _scan(sync_session, project, et, fds, ("Caorle",))
+    assert set(_contexts_by_variable(sync_session, project.id)) == {
+        "bodrum",
+        "alicante",
+        "caorle",
+    }
+
+    retired = retire_unused_variables(sync_session, project_id=project.id, branch_id=None)
+
+    assert retired == 2
+    assert _contexts_by_variable(sync_session, project.id) == {"caorle": 1}
+    # Idempotent: a second run over a swept project deletes nothing.
+    assert retire_unused_variables(sync_session, project_id=project.id, branch_id=None) == 0

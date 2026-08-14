@@ -23,6 +23,7 @@ from tripl.core.adapters.base import ColumnInfo
 from tripl.core.analyzers.cardinality import _is_json_type
 from tripl.core.analyzers.event_generator import GenerationResult, event_name_format_columns
 from tripl.core.intervals import get_interval
+from tripl.core.name_template import VARIABLE_TOKEN_PATTERN
 from tripl.json_paths import format_json_path_value
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
@@ -38,7 +39,9 @@ from tripl.worker.tasks.metrics.metric_rows import _get_scan_json_value_path_map
 logger = logging.getLogger(__name__)
 
 _VARIABLE_TEMPLATE_PATTERN = re.compile(r"\$\{[^}]+\}")
-_VARIABLE_NAME_PATTERN = re.compile(r"\$\{([^}]+)\}")
+# One ``${token}`` grammar for the codebase (``core.name_template``); the
+# non-capturing sibling above answers a different question and stays local.
+_VARIABLE_NAME_PATTERN = VARIABLE_TOKEN_PATTERN
 _JSON_PATH_PART_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 

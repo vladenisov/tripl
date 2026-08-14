@@ -194,6 +194,18 @@ paged envelope `{"items": [...], "total": <int>}` — the first 200 variables of
 the project. Compare `total` against `len(items)` before concluding a variable
 does not exist; on a large catalog, fall back to `search_plan` with
 `types=variable` to find a specific one.
+
+A missing variable is not always a paging artefact either: every catalog scan
+run retires the scan-created variables nothing refers to any more, so an id from
+an earlier listing can stop resolving. Variables that were edited, documented,
+bound, or excluded from scans are never retired — see
+[Variables & templates](../use/variables-and-templates.md#unreferenced-scan-created-variables-are-retired-automatically).
+
+The REST endpoint's `usage=all|used|unused` filter — `unused` being exactly the
+set a retirement pass would take — is **not** plumbed through this tool, which
+passes only `slug`, `branch_id`, `offset` and `limit`. An agent that needs
+"which variables does nothing reference" has to call
+`GET /api/v1/projects/{slug}/variables?usage=unused` over HTTP.
 :::
 
 ### Write tools
