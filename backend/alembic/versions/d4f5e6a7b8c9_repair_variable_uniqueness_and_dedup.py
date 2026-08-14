@@ -88,5 +88,28 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("ALTER TABLE variables DROP CONSTRAINT IF EXISTS uq_variable_project_source_name")
-    op.execute("ALTER TABLE variables DROP CONSTRAINT IF EXISTS uq_variable_project_name")
+    # Deliberately a no-op, and the comment is the point.
+    #
+    # This revision's upgrade is a REPAIR, not a schema change. Both constraint
+    # blocks above are guarded by IF NOT EXISTS, and on a chain-ordered database
+    # 4e5f60718293 has already created both in exactly this branch-aware form —
+    # so on any database built by running the migrations in order, this upgrade
+    # creates NOTHING. The correct inverse of "added nothing" is "drop nothing".
+    #
+    # It used to drop both constraints unconditionally: constraints it does not
+    # own. 4e5f60718293's downgrade then tried to drop them again — correctly,
+    # since its own upgrade really did create them — and `alembic downgrade
+    # base` died fourteen revisions later on
+    #
+    #   UndefinedObjectError: constraint "uq_variable_project_name" of relation
+    #   "variables" does not exist
+    #
+    # Note that _OLD_UNIQUE reaches uq_variable_project_SOURCE_name first, so
+    # restoring only the name constraint would move the failure one iteration
+    # along rather than fix it. Neither is dropped here (tripl-eyrs).
+    #
+    # The dedup DELETEs above are genuinely irreversible. A downgrade that
+    # cannot restore data is a documented no-op in this repository, never a
+    # raise — a chain you cannot unwind at all is worse than one that unwinds to
+    # a schema whose duplicate rows are gone.
+    pass

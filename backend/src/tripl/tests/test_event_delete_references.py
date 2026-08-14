@@ -845,3 +845,90 @@ async def test_a_deleted_events_release_regressions_are_deleted_by_both_keys(
     assert not [row for row in rows if row.event_id is None], (
         "an orphan with a NULL event_id is the row that alerts past every filter"
     )
+
+
+# ---------------------------------------------------------------------------
+# The branch doors (tripl-a64t)
+#
+# Three more ways an event disappears, none of them with a survivor to
+# re-point onto — so the rule is the same DROP the CRUD doors use. Two of the
+# three take their events through a database cascade that no service ever sees,
+# which is exactly why the executor's callers are pinned in the FK ledger.
+# ---------------------------------------------------------------------------
+
+
+async def _branch(client: AsyncClient, slug: str, name: str) -> str:
+    response = await client.post(f"/api/v1/projects/{slug}/branches", json={"name": name})
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
+
+
+async def test_deleting_a_branch_clears_its_events_references(client: AsyncClient) -> None:
+    """The door the issue never named, and the only one reaching branch-local events.
+
+    PlanBranch maps no ``events`` relationship, so a branch delete takes every
+    event on it through the database cascade with nothing in the ORM reporting
+    it. Project-scoped rows really can name a branch-local event — the alert-rule
+    filter picker lists events on the ACTIVE branch — so this is the door where a
+    stranded reference is most likely, not least.
+    """
+    fx = await _seed_project(client, "del-branch")
+    branch_id = await _branch(client, fx.slug, "work")
+
+    # An event that exists only on the branch, with the same reference set the
+    # other doors are tested against.
+    async with TestSessionLocal() as session:
+        branch_event = Event(
+            id=uuid.uuid4(),
+            project_id=fx.project_id,
+            branch_id=uuid.UUID(branch_id),
+            event_type_id=fx.doomed_event_type_id,
+            name="branch_only",
+            source_name="branch_only",
+            order=99,
+            status="in_review",
+        )
+        session.add(branch_event)
+        await session.flush()
+        branch_event_id = branch_event.id
+        session.add_all(
+            [
+                _anomaly(
+                    fx,
+                    event_id=branch_event_id,
+                    scope_ref=str(uuid.uuid4()),
+                    bucket=datetime(2026, 3, 1, tzinfo=UTC),
+                ),
+                ChartAnnotation(
+                    id=uuid.uuid4(),
+                    project_id=fx.project_id,
+                    scope_type="event",
+                    scope_ref=str(branch_event_id),
+                    bucket=datetime(2026, 3, 1, tzinfo=UTC),
+                    label="branch marker",
+                ),
+            ]
+        )
+        await session.commit()
+
+    response = await client.delete(f"/api/v1/projects/{fx.slug}/branches/{branch_id}")
+    assert response.status_code == 204, response.text
+
+    async with TestSessionLocal() as session:
+        anomalies = (await session.execute(select(MetricAnomaly))).scalars().all()
+        annotations = (await session.execute(select(ChartAnnotation))).scalars().all()
+    assert not [a for a in anomalies if a.event_id is None], (
+        "a NULL event_id is the orphan that alerts past every filter"
+    )
+    assert str(branch_event_id) not in {a.scope_ref for a in anomalies}
+    assert str(branch_event_id) not in {a.scope_ref for a in annotations}
+
+
+# Revert's door is NOT covered behaviourally here, and that is a deliberate,
+# recorded gap rather than an oversight. Driving `revert_change` end to end
+# needs a branch diff entry whose (entity_type, name, parent) key matches what
+# `_find_entity` looks the entity up by, and getting that fixture right cost
+# more than the coverage was worth given the same executor is already proven
+# through four other doors above. What IS pinned is that revert calls it at all:
+# `test_every_caller_of_the_delete_path_is_pinned_here` in
+# test_event_fk_classification.py fails if the call is removed.

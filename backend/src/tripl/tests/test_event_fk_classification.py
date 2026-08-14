@@ -21,6 +21,8 @@ The behavioural counterparts live in ``test_event_generator.py``.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import tripl.models  # noqa: F401  (imports every model so Base.metadata is complete)
 from tripl.models.base import Base
 from tripl.services._event_reference_cleanup import DELETE_PATH_COLUMNS
@@ -452,3 +454,62 @@ def test_the_delete_path_policy_is_pinned_against_the_executor() -> None:
         "services/_event_reference_cleanup.py and this ledger disagree:\n"
         + "\n".join(f"  - {problem}" for problem in problems)
     )
+
+
+# Every module that calls the delete-path executor.
+#
+# The buckets above classify what a MERGE does, because that is the path with a
+# survivor to re-point onto. Every other way an event disappears drops the
+# references instead — and the list of those ways is exactly the thing that
+# lived nowhere before this file existed, which is how the merge came to handle
+# six columns out of eighteen.
+#
+# All five drop, and none of them has a survivor to consider: the merge's two
+# deletes remove MAIN rows whose event type the branch removed or that the
+# branch deleted on purpose, and revert and delete_branch remove branch-local
+# rows outright (tripl-a64t).
+DELETE_PATH_CALLERS: dict[str, str] = {
+    "services/event_service.py": "delete_event, bulk_delete_events",
+    "services/event_type_service.py": "delete_event_type — its events go by DB cascade, unseen",
+    "services/plan_branch_merge_service.py": (
+        "_apply_merge, twice: main events orphaned by an event type the branch removed, "
+        "and main events the branch deleted"
+    ),
+    "services/plan_branch_revert_service.py": (
+        "revert_change, the 'added' arm — the branch-local event, or its event type's "
+        "events via the same invisible cascade"
+    ),
+    "services/plan_branch_service.py": "delete_branch — every event on the branch, by cascade",
+}
+
+
+def test_every_caller_of_the_delete_path_is_pinned_here() -> None:
+    """A new door must decide, in writing, that dropping is right for it.
+
+    The merge spent months handling six of eighteen columns because nothing
+    listed what a merge had to think about. The same hole is open one level up:
+    nothing lists the ways an event can disappear. A source scan closes it — add
+    a caller and this fails until the caller is named and explained.
+    """
+    backend_src = Path(__file__).resolve().parents[2]
+    found: set[str] = set()
+    for path in backend_src.rglob("*.py"):
+        relative = path.relative_to(backend_src).as_posix()
+        if relative.startswith("tripl/tests/") or relative.endswith("_event_reference_cleanup.py"):
+            continue
+        if "drop_dangling_event_references(" in path.read_text(encoding="utf-8"):
+            found.add(relative.removeprefix("tripl/"))
+
+    assert found, (
+        "no caller of drop_dangling_event_references was found at all — the scan is broken, "
+        "and a scan that finds nothing would let every assertion below pass vacuously"
+    )
+    assert found == set(DELETE_PATH_CALLERS), (
+        "the delete path's callers and DELETE_PATH_CALLERS disagree.\n"
+        f"  in code, not pinned: {sorted(found - set(DELETE_PATH_CALLERS))}\n"
+        f"  pinned, not in code: {sorted(set(DELETE_PATH_CALLERS) - found)}\n"
+        "Every way an event can disappear has to say, here, what it does with the "
+        "references to it — that list living nowhere is the defect this file exists for."
+    )
+    for module, reason in DELETE_PATH_CALLERS.items():
+        assert reason.strip(), f"{module}: pinned without saying which function or why"

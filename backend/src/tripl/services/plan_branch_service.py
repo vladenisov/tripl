@@ -49,6 +49,7 @@ from tripl.schemas.plan_branch import (
     PlanBranchList,
     PlanBranchResponse,
 )
+from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services.plan_revision_service import (
     build_plan_snapshot,
     compute_plan_diff_entries,
@@ -740,6 +741,18 @@ async def delete_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) 
     branch = await _get_branch(session, project_id, branch_id)
     if branch.kind == BranchKind.main.value:
         raise HTTPException(status_code=400, detail="The main branch cannot be deleted")
+    # PlanBranch maps no ``events`` relationship either, so deleting a branch
+    # takes every event on it through the database cascade with nothing in the
+    # ORM reporting it. This is the door the issue did not name, and the only one
+    # that reaches BRANCH-LOCAL events — which project-scoped rows really can
+    # reference, because the alert-rule filter picker lists events on the active
+    # branch. No survivor, so DROP (tripl-a64t).
+    doomed_event_ids = list(
+        (await session.execute(select(Event.id).where(Event.branch_id == branch.id)))
+        .scalars()
+        .all()
+    )
+    await drop_dangling_event_references(session, project_id=project_id, event_ids=doomed_event_ids)
     await session.delete(branch)
     await session.commit()
 
