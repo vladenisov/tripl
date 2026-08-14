@@ -18,7 +18,13 @@ import {
 } from '@/lib/alertStatus'
 import { formatDateTime } from '@/lib/datetime'
 import { getScopeMonitoringPath } from '@/lib/monitoring'
-import { INBOX_MUTE_CHOICES, muteChoiceUntilIso } from '@/lib/mutePresets'
+import {
+  INBOX_MUTE_CHOICES,
+  muteChoiceName,
+  muteChoiceUntilIso,
+  muteName,
+  unmuteName,
+} from '@/lib/mutePresets'
 import { VIEWER_READ_ONLY_NOTICE, useCanWrite } from '@/lib/permissions'
 import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
@@ -616,7 +622,17 @@ function IncidentCard({
             variant="outline"
             className="h-7 px-2 text-[10px]"
             aria-expanded={muteOpen}
-            aria-label={`${isMuted ? 'Change mute on' : 'Mute'} ${target}`}
+            // Two WHOLE names, not one verb fragment glued to the target: the
+            // "Mute <target>" half is the vocabulary the Monitors surfaces
+            // announce too, so it comes from the shared module, while
+            // "Change mute on <target>" stays a literal here. This surface is
+            // the only one that can change a mute in place — a muted rule gets
+            // a direct Unmute on both Monitors surfaces — so that half has no
+            // second surface to drift from and hosting it in `mutePresets`
+            // would push inbox-only state into their module. The asymmetry is
+            // deliberate; the slot below is written the same way for the same
+            // reason (tripl-yapg, tripl-oxkt.3).
+            aria-label={isMuted ? `Change mute on ${target}` : muteName(target)}
             title="Silences this exact scan + rule + scope + signal kind + direction — for a preset duration, or until you unmute it. The only action that survives the scope going quiet."
             disabled={isPending}
             onClick={() => setMuteOpen(current => !current)}
@@ -628,12 +644,18 @@ function IncidentCard({
               labelled "Reopen", a word that does a second, different job on a
               resolved card, and "Unmute" appeared nowhere on the page while
               MonitorDetailPage had a literal Unmute button for the other mute
-              system (tripl-oxkt.3). */}
+              system (tripl-oxkt.3).
+
+              Only the Unmute half is imported from `@/lib/mutePresets`. "Reopen
+              <target>" is this surface's own word for lifting acknowledge,
+              resolve and false-positive — it is not mute vocabulary and must
+              never move into the mute module, or a rename there would silently
+              relabel three non-mute actions (tripl-yapg). */}
           <Button
             size="sm"
             variant="outline"
             className="h-7 px-2 text-[10px]"
-            aria-label={`${isMuted ? 'Unmute' : 'Reopen'} ${target}`}
+            aria-label={isMuted ? unmuteName(target) : `Reopen ${target}`}
             title={
               isMuted
                 ? 'Lifts the mute now — alerts for this resume immediately.'
@@ -673,7 +695,10 @@ function IncidentCard({
               all (`is_rule_muted`), so the same button on the Monitors surfaces
               would do the opposite of its label (tripl-a50u). The list is
               composed in the shared module so this file cannot grow its own
-              wording for it. */}
+              wording for it — and since tripl-yapg the SENTENCE each button is
+              announced by comes from that module too, not just the list, so
+              this surface cannot drift from the other two by rewording one
+              `aria-label` in place. */}
           <span>{isMuted ? 'Change mute to' : 'Mute for'}</span>
           {INBOX_MUTE_CHOICES.map(choice => (
             <Button
@@ -681,14 +706,12 @@ function IncidentCard({
               size="sm"
               variant="outline"
               className="h-6 px-2 text-[10px]"
-              // "for Until I unmute" is not English, so the open-ended button
-              // gets its own phrasing rather than the label spliced into the
-              // duration sentence.
-              aria-label={
-                choice.ms === null
-                  ? `Mute ${target} until unmuted`
-                  : `Mute ${target} for ${choice.label}`
-              }
+              // The open-ended button's visible face and its accessible name
+              // differ on purpose, and the reason now lives with the branch
+              // that makes them differ — see `muteChoiceName` (tripl-yapg).
+              // This is the only surface that can reach that branch at all: it
+              // is the only one that maps INBOX_MUTE_CHOICES.
+              aria-label={muteChoiceName(target, choice)}
               disabled={isPending}
               onClick={() => runAction('mute', muteChoiceUntilIso(choice))}
             >

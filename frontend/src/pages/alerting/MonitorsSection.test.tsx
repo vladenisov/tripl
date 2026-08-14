@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { alertingApi } from '@/api/alerting'
+import { INDEFINITE_MUTE, muteChoiceName } from '@/lib/mutePresets'
 import type { AlertDestination, AlertRule, MonitorsSummaryResponse } from '@/types'
 
 import { MonitorsSection, type RuleWithDestination } from './MonitorsSection'
@@ -220,6 +221,22 @@ describe('MonitorsSection rule settings', () => {
   })
 })
 
+/**
+ * Every mute button name below is written out as a literal, and stays that way.
+ *
+ * Since tripl-yapg this row's component does not compose those sentences: it
+ * calls `muteName`, `muteChoiceName` and `unmuteName` from `@/lib/mutePresets`,
+ * exactly as `MonitorDetailPage` and `AlertingInbox` do. Deriving the
+ * expectations here from those same functions would make these assertions move
+ * whenever the wording moved, so they would prove only that the component maps
+ * the list it maps. Left literal they are one of the three independent
+ * witnesses that the shared sentence is still the sentence every surface's
+ * authors read — `mutePresets.test.ts` is the fourth, and is the module's own
+ * oracle.
+ *
+ * The one deliberate exception is the open-ended NEGATIVE below, which is built
+ * from the shared module on purpose; the reason is stated where it is asserted.
+ */
 describe('MonitorsSection mute', () => {
   it('mutes from the row, on the same screen that shows the rule is muted', async () => {
     // Mute lived on a separate page while the mute STATE was rendered here, and
@@ -316,8 +333,33 @@ describe('MonitorsSection mute', () => {
       expect(screen.getByRole('button', { name: `Mute Prod drops for ${label}` }))
         .toBeInTheDocument()
     }
+    // The COUNT as well, per surface. Three surfaces map `MUTE_PRESETS` and each
+    // one can also grow a button of its own, so "only these three" is a property
+    // of this row — not something one assertion in another file can hold for it.
+    // A predicate, not an interpolated RegExp: the target is a rule name a user
+    // typed, and a `(` in it would quietly match something else.
+    const presetPrefix = 'Mute Prod drops for '
+    expect(
+      screen.getAllByRole('button', { name: (name: string) => name.startsWith(presetPrefix) }),
+    ).toHaveLength(3)
     expect(screen.queryByRole('button', { name: /until unmuted/i })).toBeNull()
     expect(screen.queryByText(/Until I unmute/i)).toBeNull()
+    // …and the same two negatives built from the shared module, which is what
+    // keeps this guard alive through a rename. A frozen negative matches
+    // nothing by construction the day the open-ended phrasing is reworded, and
+    // then passes forever while guarding nothing — a silently dead test, unlike
+    // a positive assertion, which fails loudly when it goes stale.
+    //
+    // It also replaces a canary this row gave up in tripl-yapg. The component
+    // used to write `Mute ${ruleName} for ${preset.label}` as a literal, so it
+    // was LEXICALLY incapable of the open-ended phrasing: a leak would have
+    // rendered the visibly broken "Mute Prod drops for Until I unmute". It now
+    // calls `muteChoiceName`, which contains that branch, so the same leak
+    // would read as grammatical English. This assertion is the replacement.
+    expect(
+      screen.queryByRole('button', { name: muteChoiceName('Prod drops', INDEFINITE_MUTE) }),
+    ).toBeNull()
+    expect(screen.queryByText(INDEFINITE_MUTE.label)).toBeNull()
   })
 })
 

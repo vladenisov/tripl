@@ -9,7 +9,13 @@ import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
-import { MUTE_PRESETS, muteUntilIso, type MutePreset } from '@/lib/mutePresets'
+import {
+  MUTE_PRESETS,
+  muteChoiceName,
+  muteUntilIso,
+  unmuteName,
+  type MutePreset,
+} from '@/lib/mutePresets'
 import {
   ALERT_DELIVERY_TONE as DELIVERY_TONE,
   MONITOR_STATUS_LABEL as STATUS_LABEL,
@@ -233,11 +239,12 @@ function ActionButton({
  *    The presets used to be called "1h" / "24h" / "7d" and Unmute just
  *    "Unmute", so a screen reader announced a duration with no hint of WHOSE
  *    alerts stop — and three same-named buttons if a second control ever shares
- *    the page. The wording is lifted verbatim from the other two mute surfaces
- *    (`Mute <target> for <duration>`, `Unmute <target>` in `MonitorsSection`
- *    and `AlertingInbox`) rather than invented here: three surfaces describing
- *    one action three ways is the exact defect `@/lib/mutePresets` was
- *    extracted to end (tripl-in45, tripl-oxkt.7).
+ *    the page. The wording is no longer lifted from the other two mute
+ *    surfaces, it is IMPORTED: `muteChoiceName` and `unmuteName` live next to
+ *    `MUTE_PRESETS` in `@/lib/mutePresets`, so the three surfaces cannot
+ *    describe one action three ways without the edit landing in the one module
+ *    all three read. Copying — which is what "lifted verbatim" used to mean
+ *    here — is what tripl-yapg replaced (tripl-in45, tripl-oxkt.7).
  */
 function MuteControl({
   ruleName,
@@ -267,7 +274,7 @@ function MuteControl({
         <ActionButton
           icon={<Bell className="h-3.5 w-3.5" />}
           label="Unmute"
-          ariaLabel={`Unmute ${ruleName}`}
+          ariaLabel={unmuteName(ruleName)}
           onClick={onUnmute}
           disabled={isPending}
         />
@@ -286,10 +293,19 @@ function MuteControl({
               key={preset.label}
               icon={null}
               label={preset.label}
-              // No open-ended branch to phrase around, unlike the Inbox's
-              // "Mute <target> until unmuted": `MUTE_PRESETS` is durations only,
-              // so every button here fits the one duration sentence (tripl-a50u).
-              ariaLabel={`Mute ${ruleName} for ${preset.label}`}
+              // This page maps `MUTE_PRESETS`, whose `ms` is `number`, so this
+              // call is statically confined to the "for <duration>" branch of
+              // `muteChoiceName`. The open-ended phrasing does exist inside
+              // that builder — it has to, the Inbox needs it — but it is
+              // unreachable from here without importing `INDEFINITE_MUTE` or
+              // `INBOX_MUTE_CHOICES` by name, which is the greppable act
+              // tripl-a50u forbids on a rule surface: `is_rule_muted()` reads
+              // the NULL `muted_until` such a button writes as NOT MUTED. The
+              // guard is the typing of `MUTE_PRESETS`, not the phrasing here —
+              // and the negatives in this page's test file are what would catch
+              // a leak now that it would read as grammatical English
+              // (tripl-yapg).
+              ariaLabel={muteChoiceName(ruleName, preset)}
               onClick={() => onMute(preset.ms)}
               disabled={isPending}
             />

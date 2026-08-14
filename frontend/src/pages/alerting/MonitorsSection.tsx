@@ -17,7 +17,7 @@ import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { useConfirm } from '@/hooks/useConfirm'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { countOf } from '@/lib/plural'
-import { MUTE_PRESETS, muteUntilIso } from '@/lib/mutePresets'
+import { MUTE_PRESETS, muteChoiceName, muteName, muteUntilIso, unmuteName } from '@/lib/mutePresets'
 import { VIEWER_READ_ONLY_NOTICE } from '@/lib/permissions'
 import {
   MONITOR_STATUS_LABEL as STATUS_LABEL,
@@ -706,6 +706,12 @@ function RuleSetting({ label, value }: { label: string; value: string }) {
  * durations in place, with the same `Mute <target> for <duration>` labels. Two
  * mute controls on one page that behave differently is the smaller version of
  * the problem this whole merge is fixing.
+ *
+ * Those labels are now the same because they are the same FUNCTION, not because
+ * three files were kept in step by hand: `muteName`, `muteChoiceName` and
+ * `unmuteName` come from `@/lib/mutePresets` alongside the durations. Rewording
+ * one surface in place is no longer possible without editing the module every
+ * mute surface reads (tripl-yapg).
  */
 function MuteControl({
   ruleName,
@@ -728,7 +734,7 @@ function MuteControl({
         className="h-8 w-8"
         disabled={isPending}
         onClick={() => onMute(null)}
-        aria-label={`Unmute ${ruleName}`}
+        aria-label={unmuteName(ruleName)}
         title="Unmute this rule"
       >
         <Bell aria-hidden="true" className="h-4 w-4" />
@@ -745,7 +751,11 @@ function MuteControl({
         disabled={isPending}
         aria-expanded={open}
         onClick={() => setOpen(current => !current)}
-        aria-label={`Mute ${ruleName}`}
+        // A disclosure toggle, not a mute: it reveals the durations below and
+        // writes nothing, which is why it is named by `muteName` and not by
+        // `muteChoiceName`. The button that commits carries its duration
+        // (tripl-oxkt.7).
+        aria-label={muteName(ruleName)}
         title="Mute this rule for a while"
       >
         <BellOff aria-hidden="true" className="h-4 w-4" />
@@ -759,7 +769,13 @@ function MuteControl({
               size="sm"
               variant="outline"
               className="h-6 px-2 text-[10px]"
-              aria-label={`Mute ${ruleName} for ${preset.label}`}
+              // MUTE_PRESETS' `ms` is `number`, so this call is statically
+              // confined to the "for <duration>" branch of `muteChoiceName`.
+              // The open-ended phrasing exists inside that builder but is
+              // unreachable from here without importing INDEFINITE_MUTE by
+              // name — which would be the leak tripl-a50u forbids, since
+              // `is_rule_muted()` reads a NULL `muted_until` as NOT MUTED.
+              aria-label={muteChoiceName(ruleName, preset)}
               disabled={isPending}
               onClick={() => {
                 setOpen(false)
