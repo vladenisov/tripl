@@ -19,6 +19,8 @@ from tripl.schemas.alerting import (
     AlertDestinationUpdate,
     AlertInboxActionRequest,
     AlertInboxActionResponse,
+    AlertInboxBulkActionRequest,
+    AlertInboxBulkActionResponse,
     AlertInboxGroupResponse,
     AlertInboxListResponse,
     AlertRuleCreate,
@@ -422,6 +424,76 @@ async def list_alert_inbox(
         offset=offset,
         limit=limit,
     )
+
+
+# Registered BEFORE the /{correlation_group_id} routes below, and it must STAY
+# there. "bulk-actions" is a literal segment competing with a path parameter that
+# FastAPI coerces to a UUID, so whichever route is registered first wins the
+# match: registered after, any route on the /{correlation_group_id} template that
+# shares this one's method would swallow the request and 422 it as a malformed
+# UUID — a rejection of a URL that is spelled exactly right, and one that reads
+# like a client bug. Today only the POST .../actions and GET /{id} routes sit on
+# that template, so nothing collides on POST yet; the ordering is what keeps that
+# true when the next route is added, since nothing else in the file would stop
+# it. The variables router has the identical hazard with its literal "drifts"
+# segment and solves it the same way (api/v1/variables.py).
+@router.post("/alert-inbox/bulk-actions", response_model=AlertInboxBulkActionResponse)
+async def apply_alert_inbox_bulk_action(
+    session: SessionDep,
+    slug: str,
+    data: AlertInboxBulkActionRequest,
+    current_user: EditorUserDep,
+) -> AlertInboxBulkActionResponse:
+    """Apply one triage decision to a selection of incidents (tripl-gpfr).
+
+    A shortcut for N clicks on the sibling single-incident route, not a new kind
+    of object: the decision is copied into each incident's own state. The service
+    validates every id before mutating anything and commits once, so this either
+    applies to the whole selection or to none of it.
+    """
+    result = await alerting_service.apply_alert_inbox_bulk_action(
+        session,
+        slug,
+        data,
+        current_user.id,
+    )
+    # One audit row PER GROUP, reusing the single route's own
+    # ``alert_inbox.{action}`` names and its ``alert_correlation_group`` target
+    # type, so a bulk mute is searchable by exactly the same query as a
+    # hand-clicked one. NOT one batch row with ``target_id=None``:
+    # ``audit_log.target_id`` holds a single UUID, and an audit trail that cannot
+    # say WHICH incident was muted is worse than no trail at all. ``batch_id`` in
+    # the payload is what re-joins the N rows into the one click that wrote them.
+    #
+    # The id list is excluded from the per-row payload: it would repeat the same
+    # (up to 200) ids in all 200 rows, and ``target_id`` already names the one
+    # incident this row is about. ``batch_size`` keeps the "how big was that
+    # click" question answerable from any single row.
+    acted_group_ids = alerting_service.dedupe_correlation_group_ids(data.correlation_group_ids)
+    action_payload = data.model_dump(exclude={"correlation_group_ids"})
+    for group_id in acted_group_ids:
+        await audit_service.record(
+            session,
+            user=current_user,
+            action=f"alert_inbox.{data.action}",
+            target_type="alert_correlation_group",
+            target_id=group_id,
+            target_name=str(group_id),
+            project_slug=slug,
+            payload={
+                **action_payload,
+                "batch_id": result.batch_id,
+                "batch_size": len(acted_group_ids),
+            },
+            # One transaction for the whole batch. ``record`` commits per call by
+            # default, which for 200 incidents meant 200 separate transactions
+            # after the state change was already durable — a failure partway
+            # through left incidents silenced with only a partial record of who
+            # silenced them, and the response still said 200 OK (tripl-gpfr).
+            commit=False,
+        )
+    await session.commit()
+    return result
 
 
 @router.get("/alert-inbox/{correlation_group_id}", response_model=AlertInboxGroupResponse)

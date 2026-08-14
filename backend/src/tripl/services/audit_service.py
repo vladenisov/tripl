@@ -56,7 +56,22 @@ async def record(
     project: Project | None = None,
     project_slug: str | None = None,
     payload: dict[str, Any] | None = None,
+    commit: bool = True,
 ) -> AuditLog:
+    """Write one audit row.
+
+    ``commit`` exists for the one caller that writes a BATCH of rows for a single
+    user action: the inbox bulk route files one row per incident, and committing
+    inside that loop made a 200-incident mute 200 separate transactions, any of
+    which could fail after the earlier ones were already durable — leaving
+    incidents silenced with no record of who silenced them. Passing
+    ``commit=False`` and committing once after the loop makes the batch atomic
+    (tripl-gpfr).
+
+    It defaults to True because every other caller writes exactly one row and
+    relies on this function to land it; flipping that default would silently
+    leave audit rows uncommitted across the whole API.
+    """
     project_id: uuid.UUID | None
     slug = ""
     if project is not None:
@@ -88,7 +103,8 @@ async def record(
         payload=_redact(_jsonable(payload or {})),
     )
     session.add(entry)
-    await session.commit()
+    if commit:
+        await session.commit()
     return entry
 
 

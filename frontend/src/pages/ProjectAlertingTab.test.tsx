@@ -9,6 +9,24 @@ import type { Role } from '@/types'
 
 import ProjectAlertingTab from './ProjectAlertingTab'
 
+/**
+ * The toaster, stubbed, so a success message can be asserted as the words an
+ * operator reads rather than inferred from a request.
+ *
+ * The bulk route is the first thing on this page whose only feedback is a
+ * toast: a single-incident action reports on its own row (tripl-oxkt.11), but a
+ * batch spans N cards and belongs to none of them, so the sentence IS the
+ * result and has to be pinned somewhere (tripl-gpfr).
+ */
+const { toastSuccess, toastError } = vi.hoisted(() => ({
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
+}))
+vi.mock('sonner', () => ({
+  toast: { success: toastSuccess, error: toastError },
+  Toaster: () => null,
+}))
+
 function jsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -233,6 +251,11 @@ function authValue(role: Role): AuthContextValue {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  // The toast stubs are module-level `vi.fn()`s, not spies, so they survive
+  // `restoreAllMocks` and would otherwise carry one test's message into the
+  // next one's assertion.
+  toastSuccess.mockClear()
+  toastError.mockClear()
 })
 
 describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
@@ -668,6 +691,339 @@ describe('ProjectAlertingTab — an open-ended mute is confirmed and sent explic
     const body = actionBodies[0] as { action: string; muted_until: string }
     expect(body.action).toBe('mute')
     expect(new Date(body.muted_until).getTime()).toBeGreaterThan(Date.now())
+  })
+})
+
+describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', () => {
+  /** The bar's accessible name, so its presence is one query in every test. */
+  const BULK_BAR = 'Bulk incident actions'
+
+  /*
+   * The two checkboxes, named the way the cards name them: the REASON, then the
+   * scope. Direction and signal kind are part of the correlation key, so one
+   * scope firing both ways is two cards — and two checkboxes both announced
+   * "Select checkout_started" would be two identical controls deciding two
+   * different blast radii (tripl-gpfr). Spelled out here rather than built from
+   * `incidentReasonLabel` so these tests assert the English an operator hears
+   * instead of re-running the helper that produces it.
+   */
+  const SELECT_FIRST = 'Select spike · volume on payment_failed'
+  const SELECT_SECOND = 'Select spike · volume on checkout_started'
+
+  const OTHER_GROUP = {
+    correlation_group_id: 'grp-2',
+    scope_ref: 'scope-2',
+    scope_names: ['checkout_started'],
+  }
+
+  /**
+   * An inbox server that also answers the batch route.
+   *
+   * It filters by status like the real one, because dropping rows out from
+   * under a selection is half of what is under test here.
+   */
+  function mockInboxWithBulk(groups: Record<string, unknown>[]) {
+    const bulkBodies: Record<string, unknown>[] = []
+    const singleActionUrls: string[] = []
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      // Matched FIRST, ahead of the fetch-one-group pattern below. "bulk-actions"
+      // is a literal segment sitting exactly where a correlation group id goes —
+      // the same collision the router itself has to solve by registration order —
+      // so a mock that tested the id shape first would answer the batch with a
+      // single card and this whole block would pass against nothing.
+      if (url.endsWith('/alert-inbox/bulk-actions')) {
+        const body = JSON.parse(String(init?.body)) as {
+          correlation_group_ids: string[]
+          action: string
+        }
+        bulkBodies.push(body)
+        return jsonResponse({
+          // The contract: one rebuilt card per acted-on incident, in request
+          // order after de-duplication.
+          groups: body.correlation_group_ids.map(id => ({
+            ...(groups.find(group => group.correlation_group_id === id) ?? groups[0]),
+            correlation_group_id: id,
+            status: body.action === 'mute' ? 'muted' : 'acknowledged',
+            muted: body.action === 'mute',
+          })),
+          batch_id: 'batch-1',
+          // Always SENT and always null on this route: `false_positive` is the
+          // only action that ratchets anything and it is refused here, so null
+          // means "not applicable" and never "no scopes tightened".
+          overrides_written: null,
+        })
+      }
+      // Held, never answered: a bulk click that fell through to the
+      // single-incident route would otherwise look like a success.
+      if (url.includes('/alert-inbox/') && url.endsWith('/actions')) {
+        singleActionUrls.push(url)
+        return new Promise<Response>(() => {})
+      }
+      if (/\/alert-inbox\/[^/?]+$/.test(url)) return new Response('null', { status: 404 })
+      if (/\/alert-inbox(\?|$)/.test(url)) {
+        const status = new URL(url, 'http://test').searchParams.get('status')
+        const matching = status ? groups.filter(group => group.status === status) : groups
+        return jsonResponse({ items: matching, total: matching.length })
+      }
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: false })
+      }
+      if (url.includes('/alert-destinations')) {
+        return jsonResponse([makeDestination({ rules: [makeRule()] })])
+      }
+      if (url.includes('/alert-deliveries')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.includes('/events')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/scans')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    return { bulkBodies, singleActionUrls }
+  }
+
+  /**
+   * The Inbox section at one role. No role means no provider, i.e. "no role
+   * information" — which writes (see lib/permissions.ts).
+   *
+   * `setRole` re-renders the SAME page with a different session, which is how
+   * the role can be changed without unmounting anything: React keeps the subtree
+   * mounted because the element type at every level is unchanged, so page state
+   * — the selection above all — survives the switch. That is the only way to
+   * exercise a gate that is downstream of a selection, and it is also the real
+   * sequence, since `refresh()` can rewrite the session mid-visit. It is only
+   * meaningful on a render that supplied a role to begin with: adding the
+   * provider where there was none changes the tree shape and remounts the page,
+   * taking the selection with it.
+   */
+  function renderInboxSection(role?: Role) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const treeAtRole = (current?: Role) => {
+      const tree = (
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=inbox']}>
+            <ProjectAlertingTab slug="demo" />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+      return current
+        ? <AuthContext.Provider value={authValue(current)}>{tree}</AuthContext.Provider>
+        : tree
+    }
+    const view = render(treeAtRole(role))
+    return {
+      ...view,
+      setRole: (next: Role) => { view.rerender(treeAtRole(next)) },
+    }
+  }
+
+  it('stays out of the way until incidents are picked, then counts them', async () => {
+    mockInboxWithBulk([makeInboxGroup(), makeInboxGroup(OTHER_GROUP)])
+    renderInboxSection()
+
+    await screen.findByText('Showing 2 of 2 · last 30 days')
+    // A fixed bar over an untouched list is chrome charging rent on the queue
+    // it sits on top of.
+    expect(screen.queryByRole('group', { name: BULK_BAR })).toBeNull()
+
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
+    const bar = screen.getByRole('group', { name: BULK_BAR })
+    // The events bar's phrasing, unchanged: this is the second bulk surface in
+    // the app and an operator who has met the first should not have to learn
+    // that it is the same idea.
+    expect(bar).toHaveTextContent('1 selected')
+
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_SECOND }))
+    expect(bar).toHaveTextContent('2 selected')
+
+    // NOT on the bar, at any count. Direction is part of the correlation key,
+    // so one scope's spike and drop are two incidents in this list, and marking
+    // both would take two permanent ratchet steps on that scope for one human
+    // decision. It stays available one incident at a time, which is what the
+    // second assertion holds onto.
+    expect(within(bar).queryByRole('button', { name: /false positive/i })).toBeNull()
+    expect(screen.getAllByRole('button', { name: /as a false positive$/ })).toHaveLength(2)
+  })
+
+  it('acts on every picked incident in ONE request, and lets go of the selection', async () => {
+    const { bulkBodies, singleActionUrls } = mockInboxWithBulk([
+      makeInboxGroup(),
+      makeInboxGroup(OTHER_GROUP),
+    ])
+    renderInboxSection()
+
+    await screen.findByText('Showing 2 of 2 · last 30 days')
+    // Picked in reverse list order deliberately: the endpoint answers in
+    // REQUEST order, so the order the boxes were ticked in is load-bearing and
+    // must not be quietly re-sorted into the order the rows happen to render.
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_SECOND }))
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
+    fireEvent.click(screen.getByRole('button', { name: 'Acknowledge 2 selected incidents' }))
+
+    await waitFor(() => expect(bulkBodies).toHaveLength(1))
+    // One request, not two. The whole point of tripl-gpfr is that a screenful
+    // of incidents is one decision and one audit batch, not N clicks.
+    expect(bulkBodies[0]).toEqual({
+      correlation_group_ids: ['grp-2', 'grp-1'],
+      action: 'acknowledge',
+    })
+    // …and emphatically not N trips through the single-incident route.
+    expect(singleActionUrls).toHaveLength(0)
+
+    // The decision has been spent, so the selection that expressed it is gone —
+    // otherwise the same batch is one stray click away from being applied twice.
+    await waitFor(() => expect(screen.queryByRole('group', { name: BULK_BAR })).toBeNull())
+    // Counted from what was ASKED FOR. The response may legitimately carry
+    // fewer cards (an incident whose deliveries were deleted concurrently has
+    // none left to render from) while every one of them was still mutated and
+    // audited, so counting the response would under-report the decision.
+    expect(toastSuccess).toHaveBeenCalledWith('Acknowledged 2 incidents.')
+  })
+
+  it('names how many are about to go quiet, and sends muted_until: null explicitly', async () => {
+    const { bulkBodies } = mockInboxWithBulk([makeInboxGroup(), makeInboxGroup(OTHER_GROUP)])
+    renderInboxSection()
+
+    await screen.findByText('Showing 2 of 2 · last 30 days')
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_SECOND }))
+
+    // The bar's mute is a DISCLOSURE, like the card's: a control labelled just
+    // "Mute" that silently posts seven days is what tripl-oxkt.7 removed, and
+    // it would be worse here where one click covers a screenful.
+    fireEvent.click(screen.getByRole('button', { name: 'Mute 2 selected incidents' }))
+    for (const label of ['1h', '24h', '7d']) {
+      expect(
+        screen.getByRole('button', { name: `Mute 2 selected incidents for ${label}` }),
+      ).toBeInTheDocument()
+    }
+    // The open-ended choice IS offered here, and that is the scope rule
+    // `mutePresets` documents rather than an oversight: these are INCIDENTS, and
+    // a NULL `muted_until` on an incident is a mute that never lapses — the same
+    // NULL on an alert rule means not muted at all (tripl-a50u).
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Mute 2 selected incidents until unmuted' }),
+    )
+
+    const dialog = await screen.findByRole('alertdialog')
+    // The fact a bulk mute adds, and the one the single-incident confirmation
+    // has never had to state: HOW MANY are about to be silenced.
+    expect(within(dialog).getByText(/Silences 2 incidents at once/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/until you unmute it/i)).toBeInTheDocument()
+    expect(within(dialog).queryByText(/Invalid Date/)).toBeNull()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Mute' }))
+
+    await waitFor(() => expect(bulkBodies).toHaveLength(1))
+    // `null`, and the KEY IS PRESENT. An `action === 'mute' && mutedUntil`
+    // spread drops it for exactly this choice, posting a request that says
+    // nothing about how long the silence lasts — for the furthest-reaching
+    // request this page can send.
+    expect(bulkBodies[0]).toEqual({
+      correlation_group_ids: ['grp-1', 'grp-2'],
+      action: 'mute',
+      muted_until: null,
+    })
+    expect('muted_until' in bulkBodies[0]).toBe(true)
+    expect(toastSuccess).toHaveBeenCalledWith(
+      'Muted 2 incidents — no end date. They stay quiet until you unmute them.',
+    )
+  })
+
+  it('lets the confirmation stop a bulk mute without sending anything', async () => {
+    const { bulkBodies } = mockInboxWithBulk([makeInboxGroup(), makeInboxGroup(OTHER_GROUP)])
+    renderInboxSection()
+
+    await screen.findByText('Showing 2 of 2 · last 30 days')
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
+    fireEvent.click(screen.getByRole('button', { name: 'Mute 1 selected incident' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Mute 1 selected incident for 24h' }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+
+    expect(bulkBodies).toHaveLength(0)
+    // Backing out is not the same as changing your mind about the selection:
+    // the boxes stay ticked so a different duration is one click away.
+    expect(screen.getByRole('group', { name: BULK_BAR })).toHaveTextContent('1 selected')
+  })
+
+  it('drops a selection the list has stopped showing, and does not resurrect it', async () => {
+    mockInboxWithBulk([
+      makeInboxGroup(),
+      makeInboxGroup({
+        ...OTHER_GROUP,
+        status: 'muted',
+        muted: true,
+        muted_until: '2026-08-19T10:00:00Z',
+      }),
+    ])
+    renderInboxSection()
+
+    await screen.findByText('Showing 2 of 2 · last 30 days')
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
+    expect(screen.getByRole('group', { name: BULK_BAR })).toHaveTextContent('1 selected')
+
+    // The open incident is not in the Muted list. Keeping its id would leave a
+    // bar reading "1 selected" over a list that does not contain it — and the
+    // cheapest button on that bar silences alerting for a whole scope.
+    fireEvent.click(screen.getByRole('button', { name: 'Muted' }))
+    await waitFor(() => expect(screen.queryByRole('group', { name: BULK_BAR })).toBeNull())
+
+    // …and it does not come back when the row does. A selection that survives a
+    // round trip through a filter is a selection the operator has forgotten
+    // making.
+    fireEvent.click(screen.getByRole('button', { name: 'All' }))
+    expect(await screen.findByText('Showing 2 of 2 · last 30 days')).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: BULK_BAR })).toBeNull()
+    expect(screen.getByRole('checkbox', { name: SELECT_FIRST })).not.toBeChecked()
+  })
+
+  it('offers a viewer neither a checkbox nor a bar', async () => {
+    mockInboxWithBulk([makeInboxGroup(), makeInboxGroup(OTHER_GROUP)])
+    renderInboxSection('viewer')
+
+    await screen.findByText('Showing 2 of 2 · last 30 days')
+    // The bulk route is editor-only server-side like every other inbox write,
+    // so a viewer must not be able to assemble a batch they cannot spend
+    // (tripl-oxkt.9).
+    //
+    // What this pins is the OUTCOME — a viewer sees neither affordance — and not
+    // which of the two guards produces it: with no checkbox there is no
+    // selection, and the bar renders nothing at zero selection whether or not it
+    // is wrapped in `canWrite &&`. The test below is the one that holds the
+    // wrapper itself.
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
+    expect(screen.queryByRole('group', { name: BULK_BAR })).toBeNull()
+  })
+
+  it('takes the bar away from a session demoted while a selection is live', async () => {
+    mockInboxWithBulk([makeInboxGroup(), makeInboxGroup(OTHER_GROUP)])
+    const { setRole } = renderInboxSection('editor')
+
+    await screen.findByText('Showing 2 of 2 · last 30 days')
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
+    expect(screen.getByRole('group', { name: BULK_BAR })).toHaveTextContent('1 selected')
+
+    // `refresh()` can rewrite the session mid-visit, and the selection is page
+    // state that knows nothing about roles: it is still one incident long after
+    // the demotion, because the ids are pruned against what the LIST holds and
+    // the list did not change. So this is the one moment where the bar's
+    // `canWrite &&` wrapper is load-bearing on its own — with the wrapper gone,
+    // a non-empty selection keeps a fully enabled bar in front of a viewer whose
+    // every button round-trips to a 403 (tripl-oxkt.9, tripl-gpfr).
+    setRole('viewer')
+
+    expect(screen.queryByRole('group', { name: BULK_BAR })).toBeNull()
+    // The checkboxes go with it, so the selection cannot be rebuilt either.
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
+    // …and the queue itself is still on screen: this is a write gate, not a
+    // curtain over the incidents.
+    expect(screen.getByText('Showing 2 of 2 · last 30 days')).toBeInTheDocument()
   })
 })
 

@@ -72,6 +72,10 @@ function renderInbox(
   role: Role = 'editor',
 ) {
   const onAction = vi.fn<(variables: InboxActionVariables) => void>()
+  // Selection is page-held state threaded in as props, exactly like the note
+  // drafts and the expanded set above it (tripl-gpfr), so the default here is
+  // "nothing picked" and a test that cares supplies its own set.
+  const toggleIncidentSelected = vi.fn<(id: string, selected: boolean) => void>()
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const utils = render(
     <AuthContext.Provider value={authValue(role)}>
@@ -94,6 +98,8 @@ function renderInbox(
           setNoteDrafts={vi.fn()}
           expandedIncidents={new Set()}
           toggleIncident={vi.fn()}
+          selectedIncidents={new Set()}
+          toggleIncidentSelected={toggleIncidentSelected}
           onAction={onAction}
           pendingGroupId={null}
           errorGroupId={null}
@@ -105,7 +111,7 @@ function renderInbox(
     </QueryClientProvider>
     </AuthContext.Provider>,
   )
-  return { ...utils, onAction }
+  return { ...utils, onAction, toggleIncidentSelected }
 }
 
 /**
@@ -518,6 +524,88 @@ describe('AlertingInbox — the header says how much of the queue is on screen (
 
     expect(screen.getByText(/Linked from an alert/)).toBeInTheDocument()
     expect(document.getElementById('incident-grp-old')).not.toBeNull()
+  })
+})
+
+describe('AlertingInbox — incidents can be picked for one decision (tripl-gpfr)', () => {
+  /** A second incident, on a scope whose name is nothing like the first's. */
+  const OTHER_TARGET = 'checkout_started'
+  /*
+   * How each checkbox is announced: the REASON, then the scope. `makeGroup` is a
+   * drop on an event scope, so the reason is "drop · volume" for both incidents
+   * and only the scope tells them apart here — while on one scope firing both
+   * ways it is the reason that does, which is the case the scope alone could not
+   * name (tripl-oxkt.4, tripl-gpfr). Literals, not `incidentReasonLabel`, so
+   * these assert the sentence rather than re-running the helper that builds it.
+   */
+  const SELECT_TARGET = `Select drop · volume on ${TARGET}`
+  const SELECT_OTHER_TARGET = `Select drop · volume on ${OTHER_TARGET}`
+  const twoIncidents = {
+    items: [
+      makeGroup(),
+      makeGroup({
+        correlation_group_id: 'grp-2',
+        scope_ref: 'scope-b',
+        scope_names: [OTHER_TARGET],
+      }),
+    ],
+    total: 2,
+  }
+
+  it('names each checkbox by its incident: the reason, then the scope', () => {
+    renderInbox({ inbox: twoIncidents })
+
+    // Reason + `scopeSummary`, NOT the rule and not the position. "Select
+    // incident 2 of 2" would be the one control on the card that cannot say
+    // which incident it belongs to — and it is the control that decides what a
+    // bulk mute silences. The scope alone is not enough either: direction and
+    // signal kind are part of the correlation key, so one scope firing both ways
+    // is two cards (tripl-oxkt.4) and two identically announced checkboxes.
+    expect(screen.getByRole('checkbox', { name: SELECT_TARGET })).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: SELECT_OTHER_TARGET })).toBeInTheDocument()
+    // The cards stay cards. Turning the inbox into a table to get a selection
+    // column would have cost the magnitude line, the sibling cross-links, the
+    // note and the deliveries disclosure that live inside each card.
+    expect(screen.queryByRole('table')).toBeNull()
+  })
+
+  it('raises the id and the new state, and holds no selection of its own', () => {
+    const { toggleIncidentSelected } = renderInbox({ inbox: twoIncidents })
+
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_OTHER_TARGET }))
+    expect(toggleIncidentSelected).toHaveBeenCalledWith('grp-2', true)
+    // Still unticked afterwards: the component renders the page's set and never
+    // its own. That is what lets the page drop a selected id the moment a
+    // filter change or a refetch stops rendering its row — a card holding its
+    // own `useState` would keep the tick over a row the page had forgotten.
+    expect(screen.getByRole('checkbox', { name: SELECT_OTHER_TARGET })).not.toBeChecked()
+  })
+
+  it('reflects the page-held selection, and asks to unpick an already-picked row', () => {
+    const { toggleIncidentSelected } = renderInbox({
+      inbox: twoIncidents,
+      selectedIncidents: new Set(['grp-1']),
+    })
+
+    const picked = screen.getByRole('checkbox', { name: SELECT_TARGET })
+    expect(picked).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: SELECT_OTHER_TARGET })).not.toBeChecked()
+
+    fireEvent.click(picked)
+    expect(toggleIncidentSelected).toHaveBeenCalledWith('grp-1', false)
+  })
+
+  it('gives a viewer no checkbox to build a selection with', () => {
+    renderInbox({ inbox: twoIncidents }, 'viewer')
+
+    // Every inbox action is editor-only server-side, so a selection a viewer
+    // can build is a selection nothing on the page will let them spend — the
+    // same reasoning that removed the action row for them (tripl-oxkt.9), and
+    // the checkbox has to be inside the same gate or the bulk bar becomes
+    // reachable by a reader who can do nothing with it.
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
+    // …and everything they came to read is still there.
+    expect(screen.getByText(TARGET)).toBeInTheDocument()
   })
 })
 

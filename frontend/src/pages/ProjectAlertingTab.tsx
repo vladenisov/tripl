@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   keepPreviousData,
@@ -22,9 +22,12 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useConfirm } from '@/hooks/useConfirm'
 import {
+  bulkInboxActionSuccessMessage,
+  bulkMuteConfirmMessage,
   falsePositiveConfirmMessage,
   inboxActionSuccessMessage,
   muteConfirmMessage,
+  stripValueErrorPrefix,
 } from '@/lib/alertStatus'
 import { useCanWrite } from '@/lib/permissions'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
@@ -39,6 +42,10 @@ import {
   type InboxActionVariables,
   type InboxStatusFilter,
 } from './alerting/AlertingInbox'
+import {
+  InboxBulkActionBar,
+  type InboxBulkActionRequest,
+} from './alerting/InboxBulkActionBar'
 import { DestinationsSection } from './alerting/DestinationsSection'
 import { MonitorsSection } from './alerting/MonitorsSection'
 import { CHANNEL_META } from './alerting/channelMeta'
@@ -93,6 +100,20 @@ const INBOX_PAGE_SIZE = 50
 // there, so the Older step and the request that answers it cannot disagree
 // about how big a page is (tripl-oxkt.12).
 const DELIVERY_PAGE_SIZE = 50
+
+/**
+ * A bulk request once the page has attached the incidents it applies to.
+ *
+ * Split from `InboxBulkActionRequest` — which is what the bar raises — because
+ * the bar is deliberately kept ignorant of the ids: it knows a count, the page
+ * knows which rows are on screen, and only the page can prune a selection that
+ * a filter change or a refetch has invalidated (tripl-gpfr). Extending rather
+ * than restating the bar's type keeps `mutedUntil`'s three states and their
+ * documented meanings in exactly one place (tripl-a50u).
+ */
+interface InboxBulkActionVariables extends InboxBulkActionRequest {
+  correlationGroupIds: string[]
+}
 
 export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey, focusScanId, focusIncidentId }: { slug: string; focusDeliveryId?: string; focusItemKey?: string; focusScanId?: string; focusIncidentId?: string }) {
   const qc = useQueryClient()
@@ -188,6 +209,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // automatic-activation pattern) and the focus has to travel with it — a
   // second arrow press otherwise starts from the button the reader left.
   const tabRefs = useRef<Partial<Record<AlertingSection, HTMLButtonElement | null>>>({})
+  /** What is selected AND still on screen, as of the last render. See its write site. */
+  const selectedIncidentIdsInViewRef = useRef<string[]>([])
   const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, value: AlertingSection) => {
     const last = ALERTING_SECTIONS.length - 1
     const index = ALERTING_SECTIONS.indexOf(value)
@@ -511,6 +534,87 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       return next
     })
 
+  // Which incidents the bulk bar will act on (tripl-gpfr).
+  //
+  // An ARRAY and not a Set, because insertion order is meaningful all the way
+  // to the wire: the endpoint answers with the rebuilt cards "in request order
+  // after de-duplication", so the order a reader ticked the boxes in is the
+  // order the response comes back in. It also lives here rather than inside
+  // `AlertingInbox` for the same reason the note drafts and the expanded set do
+  // — that component is conditionally rendered, so state inside it dies on a
+  // section switch — plus one reason of its own: only this level holds the query
+  // whose rows these ids point at, and pruning them is that query's business.
+  const [selectedIncidentIds, setSelectedIncidentIds] = useState<string[]>([])
+  // Everything an operator can currently SEE and therefore could have ticked:
+  // the loaded pages, plus the pinned deep-linked card that sits outside them.
+  const visibleIncidentIds = useMemo(() => {
+    const loaded = (inbox?.items ?? []).map(item => item.correlation_group_id)
+    return pinnedIncident ? [pinnedIncident.correlation_group_id, ...loaded] : loaded
+  }, [inbox, pinnedIncident])
+  const visibleIncidentIdSet = useMemo(
+    () => new Set(visibleIncidentIds),
+    [visibleIncidentIds],
+  )
+  /*
+   * A selected id that is no longer on screen is DROPPED, here, on the render
+   * that stops showing it — never carried silently and never posted.
+   *
+   * The alternative was tempting and wrong. The ids stay valid server-side, so
+   * a selection could survive a narrowing filter and be spent later; that is
+   * precisely the failure to avoid, because the bar would then say "6 selected"
+   * over a list showing two, and a bulk MUTE is not an action anyone should
+   * take on incidents they cannot see. The events page keeps out-of-view ids on
+   * purpose, but it does so in service of an explicit "Select all N matching"
+   * affordance that names the number — this bar has no such control (see
+   * `InboxBulkActionBar`), so an invisible selection here would have no way to
+   * announce itself at all.
+   *
+   * Three things drop rows and all three are covered by pruning against what is
+   * rendered, rather than by a handler on each: a status filter change (the
+   * query key changes, so `inbox` goes undefined and the whole selection
+   * clears), the 60s adaptive refetch or a colleague's action removing a row
+   * from the filtered set, and leaving the Inbox section entirely (the query is
+   * gated on `section`, so the selection does not outlive the tab that built
+   * it).
+   *
+   * Adjusting state during render is React's documented way to react to a
+   * change in derived data; the length guard makes it converge in one extra
+   * render. An effect would let one paint through with a stale count on screen,
+   * and — worse — would leave a window in which a click could post an id the
+   * page had already decided to forget.
+   */
+  const selectedIncidentIdsInView = selectedIncidentIds.filter(id =>
+    visibleIncidentIdSet.has(id),
+  )
+  if (selectedIncidentIdsInView.length !== selectedIncidentIds.length) {
+    setSelectedIncidentIds(selectedIncidentIdsInView)
+  }
+  // The same list, readable from inside an async handler that has already
+  // awaited. `selectedIncidentIdsInView` is a render-scoped const, so a handler
+  // that captured it before opening the mute confirmation still holds the list
+  // as it was when the dialog opened — and the pruning above, which runs on
+  // render, cannot reach that closure. A colleague resolving three of those rows
+  // while the dialog sits open would otherwise have their work undone by the
+  // confirm (tripl-gpfr).
+  //
+  // Synced in an effect, not assigned during render: writing a ref while
+  // rendering is what `react-hooks/refs` forbids, and an effect is soon enough
+  // here by construction — the value is only ever read after an `await` that
+  // spans at least one paint.
+  useEffect(() => {
+    selectedIncidentIdsInViewRef.current = selectedIncidentIdsInView
+  })
+  const toggleIncidentSelected = (correlationGroupId: string, selected: boolean) =>
+    setSelectedIncidentIds(current => {
+      if (!selected) return current.filter(id => id !== correlationGroupId)
+      // Idempotent on purpose: the checkbox is controlled, but a double event
+      // must not be able to put one id in the list twice. The server drops
+      // duplicates too — this keeps the COUNT the confirmation quotes honest,
+      // which the server cannot do for us.
+      return current.includes(correlationGroupId) ? current : [...current, correlationGroupId]
+    })
+  const clearIncidentSelection = () => setSelectedIncidentIds([])
+
   const inboxActionMut = useMutation({
     mutationFn: ({ group, action, mutedUntil }: InboxActionVariables) => {
       const draft = (noteDrafts[group.correlation_group_id] ?? '').trim()
@@ -611,6 +715,154 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       if (!ok) return
     }
     inboxActionMut.mutate(variables)
+  }
+
+  /**
+   * One triage decision, applied to every selected incident in ONE request
+   * (tripl-gpfr).
+   *
+   * A SEPARATE mutation from `inboxActionMut`, not a widened one, and that is
+   * deliberate: the single-incident mutation's response contract, its optimistic
+   * cache write and its toast wording were each fixed in response to a specific
+   * reported defect (tripl-oxkt.11, tripl-oxkt.6, tripl-a50u), and the row-level
+   * `pendingGroupId` / `errorGroupId` it feeds have no meaning for a batch that
+   * has no single row. Sharing one mutation would have meant teaching all of
+   * that to tell the two apart.
+   *
+   * The batch is ALL-OR-NOTHING server-side: every id is validated in one query
+   * before anything is written, and an unknown id rejects the whole request with
+   * a 404 having mutated nothing. So there is no partial-success state to model
+   * here, no per-item error list, and nothing to reconcile — the selection
+   * either all moved or none of it did.
+   */
+  const inboxBulkActionMut = useMutation({
+    mutationFn: ({ correlationGroupIds, action, mutedUntil }: InboxBulkActionVariables) =>
+      alertingApi.applyInboxBulkAction(slug, {
+        correlation_group_ids: correlationGroupIds,
+        action,
+        // Keyed on the ACTION, never on the truthiness of `mutedUntil` — the
+        // exact rule the single route follows, and for the exact same reason:
+        // `null` IS the open-ended mute and has to arrive as an explicit
+        // `muted_until: null`, which an `&& mutedUntil` spread would drop
+        // (tripl-a50u). A bulk indefinite mute is the furthest-reaching request
+        // this page can send, so it is the last one that should be ambiguous
+        // about how long it lasts.
+        ...(action === 'mute' ? { muted_until: mutedUntil ?? null } : {}),
+      }),
+    onSuccess: (data, variables) => {
+      // Redraw every card the batch rebuilt, from the response, exactly as the
+      // single route does for its one card (tripl-oxkt.11) — the difference is
+      // only that the lookup is a Map instead of an equality test. Without this
+      // an operator who just acknowledged twelve incidents watches twelve rows
+      // sit unchanged until a refetch lands.
+      //
+      // Indexed by `correlation_group_id` and NOT zipped by position: the
+      // response may legitimately be shorter than the request when an
+      // incident's deliveries were deleted concurrently, and a positional join
+      // would then write the wrong card into the wrong row.
+      const rebuiltById = new Map(
+        data.groups.map(group => [group.correlation_group_id, group]),
+      )
+      qc.setQueryData<InfiniteData<AlertInboxListResponse, number>>(inboxKey, current =>
+        current && {
+          ...current,
+          pages: current.pages.map(page => ({
+            ...page,
+            items: page.items.map(
+              item => rebuiltById.get(item.correlation_group_id) ?? item,
+            ),
+          })),
+        },
+      )
+      // …and the pinned deep-linked copy under its own key, which can be one of
+      // the selected incidents and would otherwise keep rendering the
+      // pre-action status beside a list that has moved on.
+      for (const group of data.groups) {
+        qc.setQueryData(['alertInboxGroup', slug, group.correlation_group_id], group)
+      }
+      // The decision has been spent, so the selection that expressed it is
+      // gone. Leaving it ticked invites the same batch being applied twice, and
+      // re-reading a bar that says "12 selected" after acting on twelve is the
+      // page asking a question it has already answered.
+      clearIncidentSelection()
+      toast.success(
+        bulkInboxActionSuccessMessage(
+          variables.action,
+          // What was ASKED FOR, not `data.groups.length`. A group missing from
+          // the response was still mutated and still audited — it merely has no
+          // deliveries left to render a card from — so counting the response
+          // would under-report a decision that fully landed.
+          variables.correlationGroupIds.length,
+          variables.mutedUntil ?? null,
+        ),
+      )
+    },
+    // A toast, because there is no row to put this in. The single route renders
+    // its failure inside the card it belongs to (tripl-oxkt.11); a batch spans
+    // N cards and belongs to none of them, and the one thing worse than a toast
+    // here would be the same message stamped onto twelve rows.
+    onError: error => {
+      toast.error(stripValueErrorPrefix(getErrorMessage(error)))
+    },
+    // On settled, not on success — same reasoning as the single route: an action
+    // can commit and then fail to render its response, and a list left showing
+    // the pre-action state with no refetch coming is the worst of the outcomes.
+    // Unconditional, unlike the single route's `note` exemption: the bar offers
+    // only actions that move status, so every batch it can send changes what
+    // this list holds, how it is sorted and what the filter admits.
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['alertInbox', slug] })
+      qc.invalidateQueries({ queryKey: ['alertDeliveries', slug] })
+    },
+  })
+
+  /**
+   * Every bulk action, with the one that needs asking first.
+   *
+   * The ids are read ONCE, here, and travel with the request. The confirmation
+   * below is awaited, so the selection could change while the dialog is open —
+   * and the sentence the operator agreed to names a count. Acting on anything
+   * other than what that sentence described would make the confirmation a lie.
+   *
+   * `false_positive` is absent by TYPE rather than by an early return: the bar
+   * cannot raise it (see `AlertInboxBulkAction`), so there is no branch here to
+   * forget to write. The server refuses it independently with a 422.
+   */
+  const handleInboxBulkAction = async ({ action, mutedUntil }: InboxBulkActionRequest) => {
+    const chosen = selectedIncidentIdsInView
+    if (chosen.length === 0) return
+    // Re-read after any await, then INTERSECT with what was chosen: the ref
+    // holds what is selected and visible right now, and the intersection means
+    // the request can only ever shrink relative to what the operator ticked. It
+    // can never grow into a row they did not choose, and it can never include a
+    // row the page pruned while the dialog was open (tripl-gpfr).
+    const stillSelected = () => {
+      const live = new Set(selectedIncidentIdsInViewRef.current)
+      return chosen.filter(id => live.has(id))
+    }
+    let correlationGroupIds = chosen
+    if (action === 'mute') {
+      // Mute is confirmed here for the same reason it is on a single incident —
+      // it is the only action that survives the scope going quiet — plus the
+      // reason that only exists in bulk: the single-incident sentence names the
+      // blast radius of ONE incident, and the number of incidents about to go
+      // silent is the fact a bulk mute adds and the one an operator cannot
+      // recover from not knowing.
+      const ok = await confirm({
+        title: 'Mute these incidents',
+        message: bulkMuteConfirmMessage(chosen.length, mutedUntil ?? null),
+        confirmLabel: 'Mute',
+      })
+      if (!ok) return
+      correlationGroupIds = stillSelected()
+      // Everything they ticked went away while they read the sentence. Silently
+      // posting nothing would read as a mute that worked.
+      if (correlationGroupIds.length === 0) {
+        toast.error('Those incidents are no longer in view — nothing was muted.')
+        return
+      }
+    }
+    inboxBulkActionMut.mutate({ correlationGroupIds, action, mutedUntil })
   }
 
   // Which row is busy, and which row failed — read off the mutation's own
@@ -793,6 +1045,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           setNoteDrafts={setNoteDrafts}
           expandedIncidents={expandedIncidents}
           toggleIncident={toggleIncident}
+          selectedIncidents={new Set(selectedIncidentIdsInView)}
+          toggleIncidentSelected={toggleIncidentSelected}
           onAction={handleInboxAction}
           pendingGroupId={actingGroupId}
           errorGroupId={failedGroupId}
@@ -801,6 +1055,26 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           focusDeliveryId={focusDeliveryId}
           focusItemKey={focusItemKey}
         />
+        {/* Fixed to the viewport, so its position in the DOM is free — and it
+            belongs INSIDE the Inbox panel, because a bulk bar reachable from
+            the Delivery log would be a control acting on rows that tab does not
+            show. It renders nothing at zero selection, so this costs an empty
+            component on every other visit to the section.
+
+            Gated on `canWrite` as well as on the selection being non-empty: the
+            cards hide their checkboxes from a viewer, so this is belt and
+            braces — but `refresh()` can rewrite the session mid-visit, and a
+            selection built as an editor and spent after a demotion is a request
+            that round-trips to a 403 for no reason. The destination dialog a few
+            lines below is gated for exactly the same reason (tripl-oxkt.9). */}
+        {canWrite && (
+          <InboxBulkActionBar
+            selectedCount={selectedIncidentIdsInView.length}
+            isPending={inboxBulkActionMut.isPending}
+            onAction={request => { void handleInboxBulkAction(request) }}
+            onClear={clearIncidentSelection}
+          />
+        )}
         </div>
       )}
 

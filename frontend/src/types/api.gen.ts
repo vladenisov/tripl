@@ -724,6 +724,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/alert-inbox/bulk-actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply Alert Inbox Bulk Action
+         * @description Apply one triage decision to a selection of incidents (tripl-gpfr).
+         *
+         *     A shortcut for N clicks on the sibling single-incident route, not a new kind
+         *     of object: the decision is copied into each incident's own state. The service
+         *     validates every id before mutating anything and commits once, so this either
+         *     applies to the whole selection or to none of it.
+         */
+        post: operations["apply_alert_inbox_bulk_action_api_v1_projects__slug__alert_inbox_bulk_actions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/alert-inbox/{correlation_group_id}": {
         parameters: {
             query?: never;
@@ -3772,6 +3797,68 @@ export interface components {
          */
         AlertInboxActionResponse: {
             group: components["schemas"]["AlertInboxGroupResponse"];
+            /** Overrides Written */
+            overrides_written: number | null;
+        };
+        /**
+         * AlertInboxBulkActionRequest
+         * @description One triage decision applied to several incidents at once (tripl-gpfr).
+         *
+         *     A TRIAGE SHORTCUT, not an incident record. There is no group-of-groups
+         *     object, no new table and no migration behind this body: whatever it says is
+         *     COPIED into each selected incident's own correlation state, so afterwards
+         *     every selected row carries the same note, the same ``acted_at`` and the same
+         *     ``acted_by`` and is indistinguishable from N single-incident clicks.
+         *
+         *     A persistent supergroup was costed and rejected (tripl-5cc9):
+         *     ``_reopen_closed_incidents`` runs inside the per-rule loop and resets member
+         *     incidents individually, so a parent row would either never release — because
+         *     no single member's release can speak for it — or leak the moment one member
+         *     went quiet. Copying the decision into the members has neither failure.
+         *
+         *     ``correlation_group_ids`` comes FIRST to match the ``<entity>_ids``-first
+         *     convention every other bulk body in the repo already uses
+         *     (``EventBulkUpdate``, ``EventBulkDelete``, ``VariableBulkUpdate``,
+         *     ``MetricBulkUpdate``, ``DeadEventArchiveRequest``); the action fields that
+         *     follow are exactly ``AlertInboxActionRequest``'s, and mean exactly the same
+         *     things, so the two bodies stay readable side by side.
+         */
+        AlertInboxBulkActionRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "acknowledge" | "resolve" | "mute" | "reopen" | "false_positive" | "note";
+            /** Correlation Group Ids */
+            correlation_group_ids: string[];
+            /** Muted Until */
+            muted_until?: string | null;
+            /** Note */
+            note?: string | null;
+        };
+        /**
+         * AlertInboxBulkActionResponse
+         * @description The rebuilt cards for every incident the batch touched (tripl-gpfr).
+         *
+         *     DELIBERATELY NOT the house 204 that ``/bulk-update`` and ``/bulk-delete``
+         *     return on events, variables and metrics. Those routes mutate rows the caller
+         *     is about to re-fetch anyway; this one replaces cards the operator is LOOKING
+         *     AT, and its single-incident sibling ``AlertInboxActionResponse`` already
+         *     answers with the rebuilt group for exactly that reason. A 204 would force the
+         *     client to re-list the whole inbox to redraw N rows it had just changed, and
+         *     would throw away ``overrides_written``, which that sibling documents as
+         *     nullable and ALWAYS SENT. ``DeadEventArchiveResponse``
+         *     (services/reconciliation_service.py) is the standing precedent in this repo
+         *     for a bulk route answering with a body instead of 204.
+         */
+        AlertInboxBulkActionResponse: {
+            /**
+             * Batch Id
+             * Format: uuid
+             */
+            batch_id: string;
+            /** Groups */
+            groups: components["schemas"]["AlertInboxGroupResponse"][];
             /** Overrides Written */
             overrides_written: number | null;
         };
@@ -11760,6 +11847,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AlertInboxListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_alert_inbox_bulk_action_api_v1_projects__slug__alert_inbox_bulk_actions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertInboxBulkActionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertInboxBulkActionResponse"];
                 };
             };
             /** @description Validation Error */

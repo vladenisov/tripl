@@ -833,6 +833,140 @@ class AlertInboxActionResponse(BaseModel):
     overrides_written: int | None
 
 
+# The largest selection this route accepts in one call, pinned to the largest
+# page ``list_alert_inbox`` can hand the operator: its ``limit`` is
+# ``Query(50, ge=1, le=200)`` (api/v1/alerting.py). The selection this route
+# serves is made by ticking rows on ONE page, so a lower cap would 422 the
+# "select all" the feature exists for, and a higher one would admit a list no
+# page of the UI can produce.
+#
+# Nothing else in this repo caps its bulk id list — ``EventBulkUpdate``,
+# ``EventBulkDelete``, ``VariableBulkUpdate``, ``VariableBulkDelete`` and
+# ``MetricBulkUpdate`` all take an unbounded one — and those five are
+# deliberately NOT retrofitted here (tripl-gpfr). They each mutate every named
+# row in a single UPDATE statement, so list length costs them almost nothing;
+# this route does per-group work — a correlation-state row, a rebuilt card and an
+# audit row EACH — so length is a real cost here and only a theoretical one
+# there. Retrofitting them would be a behavior change to four shipped endpoints
+# bought with this feature's budget.
+MAX_BULK_INBOX_ACTION_GROUPS = 200
+
+
+class AlertInboxBulkActionRequest(BaseModel):
+    """One triage decision applied to several incidents at once (tripl-gpfr).
+
+    A TRIAGE SHORTCUT, not an incident record. There is no group-of-groups
+    object, no new table and no migration behind this body: whatever it says is
+    COPIED into each selected incident's own correlation state, so afterwards
+    every selected row carries the same note, the same ``acted_at`` and the same
+    ``acted_by`` and is indistinguishable from N single-incident clicks.
+
+    A persistent supergroup was costed and rejected (tripl-5cc9):
+    ``_reopen_closed_incidents`` runs inside the per-rule loop and resets member
+    incidents individually, so a parent row would either never release — because
+    no single member's release can speak for it — or leak the moment one member
+    went quiet. Copying the decision into the members has neither failure.
+
+    ``correlation_group_ids`` comes FIRST to match the ``<entity>_ids``-first
+    convention every other bulk body in the repo already uses
+    (``EventBulkUpdate``, ``EventBulkDelete``, ``VariableBulkUpdate``,
+    ``MetricBulkUpdate``, ``DeadEventArchiveRequest``); the action fields that
+    follow are exactly ``AlertInboxActionRequest``'s, and mean exactly the same
+    things, so the two bodies stay readable side by side.
+    """
+
+    correlation_group_ids: list[uuid.UUID] = Field(
+        min_length=1, max_length=MAX_BULK_INBOX_ACTION_GROUPS
+    )
+    action: AlertInboxAction
+    note: str | None = Field(None, max_length=2000)
+    # ``None`` on a ``mute`` is the INDEFINITE mute here too — "muted until I
+    # unmute" — exactly as on ``AlertInboxActionRequest``, and for the same
+    # reason (tripl-a50u). Bulk-muting a screenful of incidents an operator
+    # already knows are broken is the case that most needs it, so this route
+    # must not be the one place that demands an invented expiry date.
+    muted_until: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_action(self) -> AlertInboxBulkActionRequest:
+        """Reject the two bodies this route cannot honour.
+
+        Mirrors ``AlertInboxActionRequest.validate_action`` for ``note`` — a
+        ``note`` action whose entire effect is the note, sent without one, is a
+        silent 200 that changes nothing — and adds the refusal that is specific
+        to acting on MANY incidents at once.
+        """
+        # Same guard, same reason as the single-incident body: the note write is
+        # conditional on ``note is not None``, so a ``{"action": "note"}`` with
+        # no note is a request that looks accepted and saves nothing.
+        # An EMPTY STRING stays valid: it is the documented way to clear a note.
+        if self.action == "note" and self.note is None:
+            raise ValueError("note is required when action is note")
+        # ``false_positive`` is refused in bulk, and this is the ONLY action that
+        # is. Direction is part of the correlation key (see
+        # worker/tasks/metrics/dispatch.py), so ONE scope's spike and ONE scope's
+        # drop are two separate incidents sitting side by side in this list —
+        # which is precisely what an operator sweeping a noisy scope selects
+        # together. ``_tune_false_positive_thresholds`` dedupes only WITHIN a
+        # single call (its ``seen`` set) and each step compounds off the scope's
+        # own current value, so selecting both would take two ratchet steps on
+        # one scope for one human decision, permanently desensitising detection
+        # there with nothing in the record to say it was a single click. The
+        # per-scope override carries a ``false_positive_count``, not a batch id.
+        #
+        # This is a REFUSAL rather than a silent dedupe on purpose: deduping
+        # would have to guess which of the two incidents the operator meant, and
+        # the ratchet is not undoable from the inbox — the undo is deleting the
+        # override in Detection settings.
+        if self.action == "false_positive":
+            raise ValueError(
+                "false_positive cannot be applied in bulk. Alert direction is part of the "
+                "correlation key, so a single scope's spike and drop are two separate "
+                "incidents here, and marking both would tighten that scope's detection "
+                "thresholds twice for one decision. Mark false positives one incident at a "
+                "time from the incident's own actions."
+            )
+        return self
+
+
+class AlertInboxBulkActionResponse(BaseModel):
+    """The rebuilt cards for every incident the batch touched (tripl-gpfr).
+
+    DELIBERATELY NOT the house 204 that ``/bulk-update`` and ``/bulk-delete``
+    return on events, variables and metrics. Those routes mutate rows the caller
+    is about to re-fetch anyway; this one replaces cards the operator is LOOKING
+    AT, and its single-incident sibling ``AlertInboxActionResponse`` already
+    answers with the rebuilt group for exactly that reason. A 204 would force the
+    client to re-list the whole inbox to redraw N rows it had just changed, and
+    would throw away ``overrides_written``, which that sibling documents as
+    nullable and ALWAYS SENT. ``DeadEventArchiveResponse``
+    (services/reconciliation_service.py) is the standing precedent in this repo
+    for a bulk route answering with a body instead of 204.
+    """
+
+    # In the order the request listed them, with duplicates dropped. It can be
+    # SHORTER than the request in one case only: an incident whose deliveries
+    # were deleted between this call's commit and its rebuild has no rows left to
+    # render a card from, and is omitted rather than 404ing a change that already
+    # landed (the failure tripl-oxkt.20 fixed on the single route). The state
+    # change still happened and the audit row still names it, so a client that
+    # wants certainty should match on ``correlation_group_id`` rather than
+    # position.
+    groups: list[AlertInboxGroupResponse]
+    # The id shared by every audit row this call wrote. One row is recorded PER
+    # GROUP — ``audit_log.target_id`` holds a single UUID, and a trail that
+    # cannot name WHICH incident was muted is worse than none — so this is the
+    # only thing tying those N rows back to the one click that made them.
+    batch_id: uuid.UUID
+    # ALWAYS ``None`` here, and sent anyway. ``false_positive`` is the only
+    # action that can ratchet anything and this route refuses it, so there is
+    # never a count to report. The key is still present so a client sharing one
+    # handler with the single-incident response cannot read a MISSING key as 0
+    # and announce "no scopes tightened" after a bulk acknowledge — the exact
+    # defect tripl-oxkt.6 fixed on the single route.
+    overrides_written: int | None
+
+
 class SimulatedRuleFiring(BaseModel):
     """One virtual delivery the rule would have triggered during the window."""
 

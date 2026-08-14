@@ -336,6 +336,57 @@ export type AlertInboxAction =
   | 'false_positive'
   | 'note'
 
+/**
+ * The actions POST /alert-inbox/bulk-actions will accept (tripl-gpfr).
+ *
+ * Written as an `Exclude` of the full union rather than as a fresh list of five
+ * literals, for the same reason `MUTE_PRESETS` and `INDEFINITE_MUTE` are two
+ * types instead of one list in `lib/mutePresets`: the exclusion is the CONTRACT,
+ * so it should be a compile error to offer the refused action in bulk, not a
+ * review comment. A hand-written copy of the union would also silently go stale
+ * the day a seventh action is added — this one grows with its parent.
+ *
+ * WHY `false_positive` is the one refusal, restated here because this is where
+ * a reader meets it first. Direction is part of the correlation key, so one
+ * scope's spike and one scope's drop are two separate incidents sitting side by
+ * side in the list — exactly what an operator sweeping a noisy scope selects
+ * together. `_tune_false_positive_thresholds` dedupes only within a single call
+ * and each step compounds off the scope's current value, so bulk-marking both
+ * would take two permanent ratchet steps on one scope for one human decision,
+ * with nothing in the record saying it was a single click. The server refuses it
+ * with a 422; this type is the client-side half of the same rule, so the bulk
+ * bar cannot render the button at all. Marking a false positive stays available
+ * one incident at a time, on the incident's own action row.
+ */
+export type AlertInboxBulkAction = Exclude<AlertInboxAction, 'false_positive'>
+
+/**
+ * What a bulk triage decision DID — the rebuilt cards, and the audit batch id.
+ *
+ * A body, not the house 204 that the events/variables/metrics bulk routes
+ * answer with: this route replaces cards the operator is LOOKING AT, so the
+ * client can redraw N rows without re-listing the whole inbox. The standing
+ * precedent for a bulk route with a body is `DeadEventArchiveResponse`.
+ *
+ * `groups` comes back in REQUEST ORDER with duplicates dropped, and can only be
+ * SHORTER than the request when an incident's deliveries were deleted
+ * concurrently, leaving no rows to render a card from — the state change still
+ * landed and was still audited. Match on `correlation_group_id`, never on
+ * position, and never count these to decide how many incidents were acted on.
+ *
+ * `overrides_written` is ALWAYS null here and is always SENT. Null means "not
+ * applicable" — `false_positive` is the only action that can ratchet anything
+ * and this route refuses it. Never read a missing key as 0 and announce "no
+ * scopes tightened" after a bulk acknowledge (the defect tripl-oxkt.6 fixed on
+ * the single-incident route).
+ */
+export interface AlertInboxBulkActionResponse {
+  groups: AlertInboxGroup[]
+  /** The id shared by every audit row this one call wrote — one row per group. */
+  batch_id: string
+  overrides_written: number | null
+}
+
 export interface AlertInboxListResponse {
   items: AlertInboxGroup[]
   total: number

@@ -37,6 +37,8 @@ from tripl.schemas.alerting import (
     AlertDeliveryResponse,
     AlertInboxActionRequest,
     AlertInboxActionResponse,
+    AlertInboxBulkActionRequest,
+    AlertInboxBulkActionResponse,
     AlertInboxGroupResponse,
     AlertInboxListResponse,
     AlertInboxRuleRef,
@@ -883,6 +885,94 @@ async def _tune_false_positive_thresholds(
     return len(seen)
 
 
+async def _apply_inbox_action_to_state(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    state: AlertCorrelationState,
+    action: str,
+    note: str | None,
+    muted_until: datetime | None,
+    user_id: uuid.UUID,
+    now: datetime,
+) -> int | None:
+    """Apply ONE triage decision to ONE already-loaded state row. DOES NOT COMMIT.
+
+    Extracted from ``apply_alert_inbox_action`` so the bulk route can reuse it
+    (tripl-gpfr). The commit that used to sit in the middle of that function was
+    the single thing making it undecomposable: a bulk caller needs to mutate N
+    rows and commit ONCE, and a helper that commits per group would hand back
+    partial success on any failure — which nothing in this repo does. The commit
+    now belongs to the caller, and it is the caller's job to make it exactly one.
+
+    Takes the four action fields rather than a request model because the two
+    callers pass two DIFFERENT models — ``AlertInboxActionRequest`` and
+    ``AlertInboxBulkActionRequest`` — whose only common ground is these fields.
+    Typing the parameter as either one would make the other caller build a fake
+    instance of it just to call this.
+
+    ``now`` is passed in rather than read here so that a bulk call stamps every
+    incident it touched with the SAME ``acted_at``: the batch was one human
+    decision and the inbox has to be able to show it as one.
+
+    Returns the number of scope overrides written, which is ``None`` for every
+    action that cannot tighten anything — see the assignment below.
+    """
+    # ``None`` = "this action cannot tighten anything", which is every action but
+    # false_positive. Reporting 0 for them let a client render "no scopes
+    # tightened" off ``== 0`` after an Acknowledge, announcing a detection
+    # decision nobody took (tripl-oxkt.6).
+    overrides_written: int | None = None
+    if action == "acknowledge":
+        state.status = "acknowledged"
+        state.muted_until = None
+    elif action == "resolve":
+        state.status = "resolved"
+        state.muted_until = None
+    elif action == "mute":
+        state.status = "muted"
+        state.muted_until = muted_until
+    elif action == "reopen":
+        state.status = "open"
+        state.muted_until = None
+    elif action == "false_positive":
+        state.status = "false_positive"
+        state.muted_until = None
+        state.false_positive_count = (state.false_positive_count or 0) + 1
+        overrides_written = await _tune_false_positive_thresholds(
+            session,
+            project_id=project_id,
+            # Off the STATE row, not a separate parameter: the two must name the
+            # same incident, and threading the id alongside a row that already
+            # carries it is how they would eventually disagree.
+            correlation_group_id=state.correlation_group_id,
+        )
+    elif action == "note":
+        # Documents the incident and changes NOTHING else — see the acted_at
+        # stamp below.
+        pass
+    else:
+        raise HTTPException(status_code=422, detail="Unsupported alert inbox action")
+
+    # Only a supplied note replaces the stored one. Assigning unconditionally
+    # meant every later action — acknowledge, then resolve — silently erased the
+    # note written with the previous one, which is the opposite of what a note
+    # on an incident is for (tripl-jfm3.91).
+    if note is not None:
+        state.note = note.strip() or None
+    # Stamped only by an action that actually decided something. The card's
+    # "already handled by X on <date>" line is derived from acted_at, so a
+    # note-only save that stamped it would forge a decision nobody took and
+    # destroy the signal that tells a re-fired incident from a fresh one
+    # (tripl-oxkt.20).
+    if action != "note":
+        state.acted_at = now
+        state.acted_by = user_id
+    # NO COMMIT — see this function's docstring. The caller owns it, and the bulk
+    # caller owns exactly one for the whole batch.
+    return overrides_written
+
+
 async def apply_alert_inbox_action(
     session: AsyncSession,
     slug: str,
@@ -897,53 +987,16 @@ async def apply_alert_inbox_action(
         correlation_group_id=correlation_group_id,
     )
     now = datetime.now(UTC)
-    # ``None`` = "this action cannot tighten anything", which is every action but
-    # false_positive. Reporting 0 for them let a client render "no scopes
-    # tightened" off ``== 0`` after an Acknowledge, announcing a detection
-    # decision nobody took (tripl-oxkt.6).
-    overrides_written: int | None = None
-    if data.action == "acknowledge":
-        state.status = "acknowledged"
-        state.muted_until = None
-    elif data.action == "resolve":
-        state.status = "resolved"
-        state.muted_until = None
-    elif data.action == "mute":
-        state.status = "muted"
-        state.muted_until = data.muted_until
-    elif data.action == "reopen":
-        state.status = "open"
-        state.muted_until = None
-    elif data.action == "false_positive":
-        state.status = "false_positive"
-        state.muted_until = None
-        state.false_positive_count = (state.false_positive_count or 0) + 1
-        overrides_written = await _tune_false_positive_thresholds(
-            session,
-            project_id=project.id,
-            correlation_group_id=correlation_group_id,
-        )
-    elif data.action == "note":
-        # Documents the incident and changes NOTHING else — see the acted_at
-        # stamp below.
-        pass
-    else:
-        raise HTTPException(status_code=422, detail="Unsupported alert inbox action")
-
-    # Only a supplied note replaces the stored one. Assigning unconditionally
-    # meant every later action — acknowledge, then resolve — silently erased the
-    # note written with the previous one, which is the opposite of what a note
-    # on an incident is for (tripl-jfm3.91).
-    if data.note is not None:
-        state.note = data.note.strip() or None
-    # Stamped only by an action that actually decided something. The card's
-    # "already handled by X on <date>" line is derived from acted_at, so a
-    # note-only save that stamped it would forge a decision nobody took and
-    # destroy the signal that tells a re-fired incident from a fresh one
-    # (tripl-oxkt.20).
-    if data.action != "note":
-        state.acted_at = now
-        state.acted_by = user_id
+    overrides_written = await _apply_inbox_action_to_state(
+        session,
+        project_id=project.id,
+        state=state,
+        action=data.action,
+        note=data.note,
+        muted_until=data.muted_until,
+        user_id=user_id,
+        now=now,
+    )
     await session.commit()
 
     # Built for THIS group alone, not by re-listing the inbox: rebuilding every
@@ -964,3 +1017,289 @@ async def apply_alert_inbox_action(
         cutoff=_inbox_cutoff(now),
     )
     return AlertInboxActionResponse(group=group, overrides_written=overrides_written)
+
+
+def dedupe_correlation_group_ids(correlation_group_ids: list[uuid.UUID]) -> list[uuid.UUID]:
+    """Request order, duplicates dropped — the ONE definition of "what this batch acted on".
+
+    Shared by the service (which mutates, then rebuilds cards, in this order) and
+    by the route (which writes one audit row per entry), because those two have to
+    agree exactly: a repeated id reaching the route's loop would file two audit
+    rows claiming two separate decisions on one incident, and a repeated id
+    reaching the rebuild would render the same card twice (tripl-gpfr).
+
+    It is also load-bearing for CORRECTNESS, not only for tidiness. MEASURED by
+    neutering this call: ``_load_or_create_correlation_states`` creates a row for
+    every id it did not find, so a duplicate becomes two INSERTs for one
+    ``(project_id, correlation_group_id)`` and the request dies on that unique
+    constraint with a 500. A client that sends one id twice — trivially, a
+    double-submitted selection — must get a 200, not a server error.
+
+    Order is PRESERVED rather than going through a ``set`` — which is how
+    ``bulk_update_events`` dedupes — because that function only needs membership
+    for an ``IN`` clause, while here the order is part of the response contract
+    and of the order the audit rows are written in.
+    """
+    return list(dict.fromkeys(correlation_group_ids))
+
+
+async def _load_or_create_correlation_states(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    correlation_group_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, AlertCorrelationState]:
+    """Validate EVERY id, then get-or-create every state row — all BEFORE any mutation.
+
+    **The validation predicate, and why it is this one.** An id is valid iff the
+    inbox could SHOW it — some ``AlertDeliveryItem`` in this project carries that
+    ``correlation_group_id`` — and NOT iff an ``AlertCorrelationState`` row exists
+    for it. The state row is written LAZILY by three separate writers (this
+    function, ``_get_or_create_correlation_state``, and the suppression path), so
+    an incident nobody has ever acted on has no state row at all. That is the
+    overwhelmingly common member of a bulk selection — untouched incidents are
+    exactly what this feature exists to clear — so validating on the presence of
+    a state row would 404 almost every real batch.
+
+    It is the SAME predicate ``_get_or_create_correlation_state`` uses for the
+    single-incident route, and deliberately so: bulk must not be stricter than
+    clicking the rows one at a time. It is also deliberately UNWINDOWED — no
+    ``INBOX_LOOKBACK_DAYS`` cutoff and no ``INBOX_MAX_SOURCE_ITEMS`` cap.
+    Validating against the LIST's windowed, capped row set instead would mean
+    that an incident reachable through its deep link, or one that slipped past
+    the cap between the page rendering and the operator clicking, would 404 the
+    WHOLE batch. ``_build_inbox_group_batch`` carries the matching fallback that
+    still renders those groups.
+
+    **Why it runs first.** ONE query covers the whole list, and it runs to
+    completion before anything is created or mutated. ``apply_alert_inbox_action``
+    validates INSIDE a call that has already done work, which is harmless when
+    there is one group and is not when there are 200: it would leave a
+    half-applied batch behind a 404 (tripl-gpfr). The transaction rule for this
+    route is all-or-nothing — validate everything, mutate everything, commit
+    once — with no partial success and no per-item error array, because nothing
+    in this repo does that.
+
+    The 404 does not name the offending id, matching ``bulk_update_events``'s
+    "One or more events were not found". Naming it would also confirm whether a
+    given correlation group exists in some OTHER project to a caller who cannot
+    read that project.
+    """
+    known = set(
+        (
+            await session.execute(
+                select(AlertDeliveryItem.correlation_group_id)
+                .join(AlertDelivery, AlertDelivery.id == AlertDeliveryItem.delivery_id)
+                .where(
+                    AlertDelivery.project_id == project_id,
+                    AlertDeliveryItem.correlation_group_id.in_(correlation_group_ids),
+                )
+                .distinct()
+            )
+        ).scalars()
+    )
+    if known != set(correlation_group_ids):
+        raise HTTPException(
+            status_code=404, detail="One or more alert correlation groups were not found"
+        )
+
+    states = {
+        state.correlation_group_id: state
+        for state in (
+            await session.execute(
+                select(AlertCorrelationState).where(
+                    AlertCorrelationState.project_id == project_id,
+                    AlertCorrelationState.correlation_group_id.in_(correlation_group_ids),
+                )
+            )
+        ).scalars()
+    }
+    # Created in ONE flush rather than one per group: the lazily-created rows are
+    # the majority of a real batch, so a flush each would be the dominant cost of
+    # the whole call.
+    missing = [
+        AlertCorrelationState(
+            project_id=project_id,
+            correlation_group_id=group_id,
+            status="open",
+        )
+        for group_id in correlation_group_ids
+        if group_id not in states
+    ]
+    if missing:
+        session.add_all(missing)
+        await session.flush()
+        states.update({state.correlation_group_id: state for state in missing})
+    return states
+
+
+async def _build_inbox_group_batch(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    correlation_group_ids: list[uuid.UUID],
+    now: datetime,
+) -> list[AlertInboxGroupResponse]:
+    """Rebuild N incident cards from ONE load of the inbox's source rows.
+
+    The reason this exists instead of a loop over ``_build_one_inbox_group``:
+    that function re-runs ``_load_inbox_source_rows`` — the whole project's
+    windowed, capped inbox query — every time it is called with a cutoff. Calling
+    it once per selected group would run that query N times for one click, which
+    at the 200-group cap is 200 full inbox scans (tripl-gpfr). The rows are loaded
+    ONCE here and bucketed by group.
+
+    Every other per-group read is batched the same way: ONE query for all the
+    correlation states, and ONE for the acting users' display names via
+    ``_load_acting_user_names`` — which already exists precisely so a page of
+    cards does not put a SELECT behind each row.
+
+    The window matches ``apply_alert_inbox_action``'s for the same reason it does
+    there: these cards REPLACE the ones the operator just clicked, so they must be
+    built from the rows the list built them from. An aged group with nothing in
+    the window falls back to the unwindowed per-group read, exactly as
+    ``_build_one_inbox_group`` does — one query, but only for the aged minority,
+    and only because the alternative is a card that cannot be drawn at all.
+
+    Cards are returned in the caller's order (see ``dedupe_correlation_group_ids``).
+    A group with no rows under EITHER reading is dropped with a warning rather
+    than raising: validation already proved its items existed, so reaching here
+    means they were deleted concurrently, and 404ing would report an error for a
+    state change that has already committed — the failure tripl-oxkt.20 fixed.
+    """
+    wanted = set(correlation_group_ids)
+    rows_by_group: dict[uuid.UUID, list[InboxGroupRow]] = {}
+    for row in await _load_inbox_source_rows(
+        session, project_id=project_id, cutoff=_inbox_cutoff(now)
+    ):
+        group_id = row[0].correlation_group_id
+        if group_id in wanted:
+            rows_by_group.setdefault(group_id, []).append(row)
+
+    for group_id in correlation_group_ids:
+        if group_id in rows_by_group:
+            continue
+        # Unwindowed fallback, capped like every other inbox query. Kept PER
+        # GROUP rather than folded into one ``IN`` query because
+        # ``INBOX_MAX_SOURCE_ITEMS`` counts item rows: a single combined query
+        # under one LIMIT would let the first aged group spend the whole budget
+        # and return nothing for the rest.
+        aged = list(
+            (
+                await session.execute(
+                    _INBOX_GROUP_SELECT.where(
+                        AlertDelivery.project_id == project_id,
+                        AlertDeliveryItem.correlation_group_id == group_id,
+                    )
+                    .order_by(*_INBOX_SOURCE_ORDER)
+                    .limit(INBOX_MAX_SOURCE_ITEMS)
+                )
+            )
+            .tuples()
+            .all()
+        )
+        if aged:
+            rows_by_group[group_id] = aged
+
+    states = {
+        state.correlation_group_id: state
+        for state in (
+            await session.execute(
+                select(AlertCorrelationState).where(
+                    AlertCorrelationState.project_id == project_id,
+                    AlertCorrelationState.correlation_group_id.in_(correlation_group_ids),
+                )
+            )
+        ).scalars()
+    }
+    group_states = {group_id: states.get(group_id) for group_id in correlation_group_ids}
+    acted_by_names = await _load_acting_user_names(session, _acting_user_ids(group_states.values()))
+
+    responses: list[AlertInboxGroupResponse] = []
+    for group_id in correlation_group_ids:
+        group_rows = rows_by_group.get(group_id)
+        if not group_rows:
+            logger.warning(
+                "alert inbox bulk action: no delivery rows left to rebuild group %s "
+                "in project %s; the action committed and was audited",
+                group_id,
+                project_id,
+            )
+            continue
+        responses.append(
+            _build_inbox_group_response(
+                correlation_group_id=group_id,
+                state=group_states[group_id],
+                rows=group_rows,
+                now=now,
+                acted_by_name=_acted_by_name(group_states[group_id], acted_by_names),
+            )
+        )
+    return responses
+
+
+async def apply_alert_inbox_bulk_action(
+    session: AsyncSession,
+    slug: str,
+    data: AlertInboxBulkActionRequest,
+    user_id: uuid.UUID,
+) -> AlertInboxBulkActionResponse:
+    """Apply one triage decision to every selected incident, atomically (tripl-gpfr).
+
+    The decision is COPIED into each incident's own state row — there is no group
+    object and no new table — so afterwards every selected row carries the same
+    note, the same ``acted_at`` and the same ``acted_by``, and is
+    indistinguishable from having been clicked individually. See
+    ``AlertInboxBulkActionRequest`` for why a persistent supergroup was rejected.
+
+    The shape of the call is fixed by the transaction rule: validate every id in
+    ONE query up front and 404 the whole request if any is unknown, mutate all N,
+    commit ONCE. There is no partial success and no per-item error array. A single
+    ``now`` is taken before the loop so the batch reads as the one decision it
+    was.
+
+    ``false_positive`` never reaches here — ``AlertInboxBulkActionRequest``
+    refuses it at the schema, so the request cannot be constructed — which is why
+    ``overrides_written`` below is unconditionally ``None``.
+    """
+    project = await _get_project(session, slug)
+    group_ids = dedupe_correlation_group_ids(data.correlation_group_ids)
+    # Validation and lazy state creation, both batched, both BEFORE the first
+    # mutation. A 404 raised from here has changed nothing.
+    states = await _load_or_create_correlation_states(
+        session,
+        project_id=project.id,
+        correlation_group_ids=group_ids,
+    )
+    # ONE timestamp for the whole batch — see ``_apply_inbox_action_to_state``.
+    now = datetime.now(UTC)
+    for group_id in group_ids:
+        await _apply_inbox_action_to_state(
+            session,
+            project_id=project.id,
+            state=states[group_id],
+            action=data.action,
+            note=data.note,
+            muted_until=data.muted_until,
+            user_id=user_id,
+            now=now,
+        )
+    # The one and only commit. Every state row above lands together or none does.
+    await session.commit()
+
+    groups = await _build_inbox_group_batch(
+        session,
+        project_id=project.id,
+        correlation_group_ids=group_ids,
+        now=now,
+    )
+    return AlertInboxBulkActionResponse(
+        groups=groups,
+        # Minted HERE, not in the route, so the id the response advertises and the
+        # id stamped into all N audit rows cannot drift apart: the route reads it
+        # back off this response rather than generating a second one.
+        batch_id=uuid.uuid4(),
+        # Always ``None``; the only action that can ratchet anything is refused
+        # for this route. See ``AlertInboxBulkActionResponse``.
+        overrides_written=None,
+    )

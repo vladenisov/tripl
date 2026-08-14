@@ -3,6 +3,8 @@ import type {
   AlertDeliveryDetail,
   AlertInboxAction,
   AlertInboxActionResponse,
+  AlertInboxBulkAction,
+  AlertInboxBulkActionResponse,
   AlertInboxGroup,
   AlertInboxListResponse,
   AlertInboxStatus,
@@ -15,6 +17,30 @@ import type {
   MonitorDetail,
   MonitorsSummaryResponse,
 } from '../types'
+
+/**
+ * The largest selection {@link alertingApi.applyInboxBulkAction} may send
+ * (tripl-gpfr).
+ *
+ * The server's half of this number is `MAX_BULK_INBOX_ACTION_GROUPS` in
+ * backend/src/tripl/schemas/alerting.py, where it is a `max_length` on the id
+ * list: a longer list is a 422 that never touches the database. This is the ONE
+ * place the frontend spells it, so the bar that stops an operator at the cap and
+ * the request that would be refused by it cannot drift apart — a second literal
+ * `200` typed into a component is a cap that silently stops matching the server
+ * the day the server's changes.
+ *
+ * It lives here, beside the client function bound by it, rather than in
+ * `pages/alerting/constants.ts`: that module holds this page's form options and
+ * message templates, none of which the server constrains, while this is a wire
+ * contract and belongs with the wire. `VARIABLES_PAGE_LIMIT` in api/variables.ts
+ * is the same shape of constant in the same place, for the same reason.
+ *
+ * Reachable in practice, which is why the UI must not leave it to the 422: the
+ * inbox is an ACCUMULATING infinite list at 50 rows per page, so four "Load
+ * more" clicks put 200 tickable rows on screen and the fifth puts 250 there.
+ */
+export const MAX_BULK_INBOX_ACTION_GROUPS = 200
 
 export const alertingApi = {
   listDestinations: (slug: string) =>
@@ -308,6 +334,48 @@ export const alertingApi = {
   ) =>
     api.post<AlertInboxActionResponse>(
       `/projects/${slug}/alert-inbox/${correlationGroupId}/actions`,
+      data,
+    ),
+
+  /**
+   * One triage decision, applied to several incidents in ONE request
+   * (tripl-gpfr).
+   *
+   * A triage shortcut, not an incident record: the server copies this body into
+   * each selected incident's own state, so afterwards every selected row
+   * carries the same note, `acted_at` and `acted_by` and is indistinguishable
+   * from N single-incident clicks. There is no group-of-groups object to fetch
+   * afterwards, which is why the response hands back the rebuilt cards.
+   *
+   * ALL-OR-NOTHING. Every id is validated in one query up front; if any is
+   * unknown to this project the whole batch is rejected with a 404 and NOTHING
+   * was mutated. There is no partial success and no per-item error array, so a
+   * caller never has to reconcile "which of my twelve went through".
+   *
+   * `action` is {@link AlertInboxBulkAction}, so `false_positive` cannot even be
+   * spelled here — see that type for why the server refuses it with a 422.
+   *
+   * `muted_until` follows the single-incident route exactly: pass it only with
+   * a `mute`, and pass it EXPLICITLY as `null` for the open-ended mute rather
+   * than omitting the key (tripl-a50u). Every other action nulls the column
+   * server-side regardless of what is sent.
+   */
+  applyInboxBulkAction: (
+    slug: string,
+    data: {
+      // First, matching the `<entity>_ids`-first convention of every other bulk
+      // body in the repo — and matching the server schema field order, so the
+      // two read side by side. Capped at {@link MAX_BULK_INBOX_ACTION_GROUPS} by
+      // the server (the only bulk id list in the repo that is capped); a longer
+      // list is a 422, not a slow request.
+      correlation_group_ids: string[]
+      action: AlertInboxBulkAction
+      note?: string | null
+      muted_until?: string | null
+    },
+  ) =>
+    api.post<AlertInboxBulkActionResponse>(
+      `/projects/${slug}/alert-inbox/bulk-actions`,
       data,
     ),
 }
