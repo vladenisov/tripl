@@ -470,6 +470,15 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             event_group_rules=config.event_group_rules,
         )
         session.commit()
+        # AFTER the commit, exactly as run_scan does and for the same reason:
+        # the reindex opens its own connection and cannot see this session's
+        # uncommitted work, so running it earlier would index the pre-merge
+        # state. Without it the group event a merge had just created carried no
+        # search document until some unrelated later task happened to reindex
+        # the branch — this was the one catalog-mutating task that never did
+        # (tripl-68l3). The source event's documents go with the FK cascade, so
+        # it is the survivor's missing row this repairs.
+        reindex_main_branch_from_worker(session, config.project_id)
 
         job.status = ScanJobStatus.completed.value
         job.completed_at = datetime.now(UTC)

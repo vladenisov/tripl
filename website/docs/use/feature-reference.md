@@ -625,6 +625,30 @@ its **run summary** reports how many archived identities were seen and how many
 rows they carried, deliberately kept off the data-match percentage rather than
 folded into it. Its volume also still appears in the event type's volume series.
 
+**What a group merge carries over.** When a group rule folds several events into
+one, the survivor inherits the settings that pointed at the events it absorbed,
+so a merge does not quietly undo work you did:
+
+- **detector sensitivity.** A scope you tuned by marking false positives keeps
+  its threshold. Where both events were tuned, the stricter setting on each knob
+  wins and the false-positive counts add up — the ratchet only ever tightens, so
+  a merge can never loosen it.
+- **alert rule filters.** A rule that names the event goes on naming the
+  survivor, in both directions: an *is* filter keeps covering that traffic and an
+  *is not* filter keeps excluding it.
+- **chart annotations.** An event-scoped marker moves to the survivor's chart.
+  Its text is left exactly as written — only where it is drawn changes.
+- **open implementation tickets.** The survivor is still flipped to *implemented*
+  when the ticket closes. A closed ticket is left alone; it records what shipped.
+- **metric operands.** An event-composition metric follows the survivor, and so
+  does the volume, since the merge already sums the series onto it. The one
+  exception is a **ratio** whose numerator and denominator both end up on the
+  same event: that would compute a flat 1.0 forever, so the metric is marked
+  failed instead, naming the events involved so it can be redefined.
+
+Variable data moves too — see
+[Variables and templates](./variables-and-templates.md#when-a-scan-merges-events-into-a-group).
+
 ### Coverage
 
 **Where:** Govern › Coverage (route `/p/<slug>/coverage`). A read-only

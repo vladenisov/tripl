@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     JSON,
@@ -25,6 +25,15 @@ from tripl.models.domain_enums import (
     ScanInterval,
 )
 from tripl.models.enum_types import db_enum
+
+# Persisted ``last_collection_status`` markers (String(32) below).
+#
+# Here rather than in the collector because ``mark_collection_error`` is here,
+# and a status constant that lived one import away from the only method that
+# writes it would be the same split this relocation exists to close.
+COLLECTION_STATUS_RUNNING = "running"
+COLLECTION_STATUS_SUCCESS = "success"
+COLLECTION_STATUS_ERROR = "error"
 
 
 class MetricDefinition(UUIDMixin, TimestampMixin, Base):
@@ -169,3 +178,31 @@ class MetricDefinition(UUIDMixin, TimestampMixin, Base):
     last_collection_failed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    def mark_collection_error(self, message: str) -> None:
+        """Put this metric into the error state — the only way it is entered.
+
+        Stamps the timestamp alongside the status because the dispatcher's
+        post-error cooldown measures from it: a site that set the status alone
+        would leave the metric cooling down from whenever it last failed, or —
+        on a first failure — not cooling down at all, which is the retry storm
+        the backoff exists to stop. That exact shape has taken this repository's
+        production down twice (tripl-os3v).
+
+        It lives on the MODEL rather than in ``worker.tasks.metrics.metric_collect``
+        where it was written, because the seventh caller is not a worker: the
+        group-rule merge in ``core.analyzers`` has to fail a metric whose two
+        ratio operands have just collapsed onto one event, and ``core`` must
+        never import ``worker``. The old home's own docstring named the hazard —
+        "a rule six call sites must remember is one the seventh forgets" — so
+        the rule moved somewhere every caller can reach rather than being
+        copied. ``metric_collect.mark_collection_error`` delegates here, so no
+        existing import site changed.
+
+        Does NOT commit. The callers differ on that — one rolls a partial write
+        back first, another must preserve an earlier commit — and folding a
+        commit in here would take the decision away from them.
+        """
+        self.last_collection_status = COLLECTION_STATUS_ERROR
+        self.last_collection_error = message
+        self.last_collection_failed_at = datetime.now(UTC)

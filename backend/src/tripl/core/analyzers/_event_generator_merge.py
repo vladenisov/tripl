@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
+from tripl.core.analyzers._event_generator_merge_refs import move_dangling_event_references
 from tripl.core.analyzers._event_generator_variables import VariableIndex, sample_variable_values
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.event import Event
@@ -331,6 +332,11 @@ def _merge_event_into_group(session: Session, *, source: Event, target: Event) -
     _move_variable_contexts(session, source=source, target=target)
     _move_variable_event_overrides(session, source=source, target=target)
     _move_variable_value_drifts(session, source=source, target=target)
+    # Everything above re-points a real foreign key. This carries the references
+    # that are event ids stored as STRINGS or inside JSON lists, which no
+    # database reflection can find and which therefore went unnoticed until the
+    # FK ledger was written out by hand (tripl-avf4, tripl-jtnv).
+    move_dangling_event_references(session, source=source, target=target)
     session.execute(
         update(AlertDeliveryItem)
         .where(AlertDeliveryItem.event_id == source.id)

@@ -78,6 +78,20 @@ from tripl.models.domain_enums import (
 )
 from tripl.models.event_metric import EventMetric
 from tripl.models.fact_table import FactTable
+
+# Re-exported deliberately (``X as X`` is the explicit-re-export form): the
+# constants moved to the model beside the one method that writes them, and
+# ``schedule.py`` plus four test modules import them from HERE. Keeping the name
+# reachable is what makes the relocation cost zero call sites.
+from tripl.models.metric_definition import (
+    COLLECTION_STATUS_ERROR as COLLECTION_STATUS_ERROR,
+)
+from tripl.models.metric_definition import (
+    COLLECTION_STATUS_RUNNING as COLLECTION_STATUS_RUNNING,
+)
+from tripl.models.metric_definition import (
+    COLLECTION_STATUS_SUCCESS as COLLECTION_STATUS_SUCCESS,
+)
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
 from tripl.models.scan_config import ScanConfig
@@ -99,31 +113,23 @@ from tripl.worker.tasks.metrics.metric_rows import (
 
 logger = logging.getLogger(__name__)
 
-# Persisted ``last_collection_status`` markers (String(32) on MetricDefinition).
-COLLECTION_STATUS_RUNNING = "running"
-COLLECTION_STATUS_SUCCESS = "success"
-COLLECTION_STATUS_ERROR = "error"
-
 
 def mark_collection_error(definition: MetricDefinition, message: str) -> None:
     """Put one metric into the error state — the only way it is entered.
 
-    Stamps the timestamp alongside the status because the dispatcher's post-error
-    cooldown measures from it: a site that set the status alone would leave the
-    metric cooling down from whenever it last failed, or — on a first failure —
-    not cooling down at all, which is the retry storm the backoff exists to stop.
+    The rule itself now lives on ``MetricDefinition.mark_collection_error``;
+    read it there. It moved because the seventh call site is not a worker: the
+    group-rule merge in ``core.analyzers`` has to fail a metric whose two ratio
+    operands have collapsed onto one event, and ``core`` must never import
+    ``worker``. Copying three assignments into a second module was the one
+    option ruled out — that is exactly the drift
+    ``test_no_error_path_can_set_the_status_without_the_timestamp`` exists to
+    catch, and that test now walks the model module too.
 
-    Six sites across two modules reach this state, and a rule six call sites must
-    remember is one the seventh forgets. Not hypothetical here: that exact shape
-    has taken this repository's production down twice (tripl-os3v).
-
-    Does NOT commit. The callers differ on that — one rolls a partial write back
-    first, another must preserve an earlier commit — and folding a commit in here
-    would take the decision away from them.
+    Kept as a delegator so the six existing call sites, and the tests importing
+    it from here, do not move. Does NOT commit.
     """
-    definition.last_collection_status = COLLECTION_STATUS_ERROR
-    definition.last_collection_error = message
-    definition.last_collection_failed_at = datetime.now(UTC)
+    definition.mark_collection_error(message)
 
 
 # Same per-task budget shape as collect_metrics, scaled down: catalog metrics do

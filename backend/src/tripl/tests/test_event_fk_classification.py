@@ -56,6 +56,17 @@ MIGRATED: dict[tuple[str, str], str] = {
     ("variable_value_drifts", "event_id"): (
         "_move_variable_value_drifts: re-points, target wins on uq_variable_value_drift_context"
     ),
+    ("metric_definitions", "numerator_event_id"): (
+        "_move_metric_composition_operands: re-points. No fold — nothing constrains the operand "
+        "columns, and two metrics may legally name the same event. When BOTH operands of a ratio "
+        "land on the target the metric would compute a constant 1.0, so it is re-pointed and then "
+        "driven to the error state naming both originals (tripl-jtnv)."
+    ),
+    ("metric_definitions", "denominator_event_id"): (
+        "_move_metric_composition_operands, same rule as numerator_event_id. Read for 'ratio' "
+        "only — 'single' and 'per_distinct_user' ignore it — but re-pointed regardless, because a "
+        "dangling NULL is worse than an unread id."
+    ),
 }
 
 # The merge intentionally lets these go. Nothing rebuilds them; losing them is
@@ -79,18 +90,7 @@ DELIBERATELY_DROPPED: dict[tuple[str, str], str] = {
 # and a ledger like this gets skimmed by set NAME years after anyone remembers
 # why. A fourth name means an open gap cannot be mistaken for a decision.
 # Entries move to MIGRATED when fixed; the healthy state of this set is empty.
-KNOWN_GAPS: dict[tuple[str, str], str] = {
-    ("metric_definitions", "numerator_event_id"): (
-        "tripl-jtnv: the merge NULLs a user-configured event_composition operand and the metric "
-        "collects zero rows forever with nothing surfaced — _collect_event_composition returns "
-        "a SUCCESS carrying values=0, so last_collection_status never goes red — even though "
-        "_merge_event_metric_rows moved the underlying series onto the target."
-    ),
-    ("metric_definitions", "denominator_event_id"): (
-        "tripl-jtnv: the ratio's other operand, same silent NULL on merge, same flatline with no "
-        "reported failure."
-    ),
-}
+KNOWN_GAPS: dict[tuple[str, str], str] = {}
 
 # Recreated by a later step, so losing them on merge is harmless.
 DELIBERATELY_CASCADES: dict[tuple[str, str], str] = {
@@ -114,8 +114,10 @@ DELIBERATELY_CASCADES: dict[tuple[str, str], str] = {
         "rows the merge already re-pointed."
     ),
     ("search_documents", "parent_event_id"): (
-        "Derived index. worker/tasks/scan.py reindex_main_branch_from_worker rebuilds documents "
-        "from the live entities after the merge commits, deleting rows no live entity produces."
+        "Derived index, and the cascade does the deleting: the FK is ON DELETE CASCADE, so the "
+        "SOURCE's documents go with the source row — the reindex's actual job here is minting the "
+        "TARGET's missing document. Both catalog-mutating tasks in worker/tasks/scan.py now "
+        "reindex after their commit; apply_event_groups did not until tripl-68l3."
     ),
 }
 
@@ -146,34 +148,52 @@ NON_FK_EVENT_REFERENCES: dict[tuple[str, str], str] = {
         "details_path; NOT rewritten by the merge."
     ),
     ("alert_rule_states", "scope_ref"): (
-        "The open/closed incident + cooldown key, keyed on str(event.id) with no event_id column "
-        "at all. NOT rewritten: a merge strands the open incident where no FK sweep can see it."
+        "The open/closed incident + cooldown key, keyed on str(event.id) with no event_id column. "
+        "NOT rewritten, ON PURPOSE — and an earlier version of this entry claiming the incident is "
+        "stranded was simply wrong. The state closes on the very next dispatch: "
+        "_delete_event_anomalies removes BOTH events' anomaly rows, so the dead scope produces no "
+        "candidate, and _prepare_alert_deliveries closes every active state it did not match. "
+        "Re-pointing would be the actual regression — it hands the target the source's "
+        "last_notified_at and suppresses the group's first genuine alert."
     ),
     ("anomaly_scope_overrides", "scope_ref"): (
         "The per-scope false-positive sigma ratchet, keyed on str(event.id) with no event_id "
-        "column. NOT rewritten: the tuned threshold is stranded and the group event starts from "
-        "project defaults."
+        "column. Handled: _move_anomaly_scope_overrides re-points it, folding per scan_config_id "
+        "(NULL matched to NULL, so both uq_anomaly_scope_override_scope and the partial "
+        "uq_anomaly_scope_override_metric_scope index hold) with max sigma, max min_expected_count "
+        "and summed false_positive_count — the ratchet only ever tightens, so max is 'never undo "
+        "a click'."
     ),
     ("release_regressions", "scope_ref"): (
         "str(event.id) beside the real event_id FK. Not rewritten, but harmless: the whole table "
         "is wiped and recomputed per scan_config on every collect_metrics."
     ),
     ("chart_annotations", "scope_ref"): (
-        "str(event.id) when scope_type == 'event', no event_id column. NOT rewritten: a "
-        "hand-authored chart marker silently stops rendering after a merge."
+        "str(event.id) when scope_type == 'event', no event_id column. Handled: "
+        "_move_chart_annotations re-points event-scoped rows only. The label and description are "
+        "left exactly as written — the annotation's TEXT is history, its scope_ref is only where "
+        "the marker gets drawn."
     ),
     ("implementation_tickets", "event_ids"): (
         "JSON list of event uuid STRINGS the ticket covers, read back to flip events to "
-        "'implemented' when the ticket closes. NOT rewritten: a merged event never gets marked."
+        "'implemented' when the ticket closes. Handled: "
+        "_move_implementation_ticket_event_ids rewrites the list whole (no MutableList is mapped "
+        "anywhere in this repo, so an in-place edit is silently discarded) and de-duplicates. OPEN "
+        "tickets only — a closed one is a record of what shipped."
     ),
     ("alert_rule_filters", "values"): (
-        "JSON list of str(event.id) when field == 'event'. NOT rewritten: an in/eq rule silently "
-        "stops covering the merged traffic and a not_in rule silently stops excluding it."
+        "JSON list of str(event.id) when field == 'event'. Handled: "
+        "_move_alert_rule_filter_values rewrites the list whole and de-duplicates. Matching runs "
+        "in Python, not as JSON containment, because that operator is PostgreSQL-only and the "
+        "suite runs on SQLite — a portable predicate is what makes this testable."
     ),
     ("scan_jobs", "result_summary"): (
-        "JSON generation snapshot embedding str(event.id) per generated event, read back as a "
-        "live id by the metric replay path. NOT rewritten: a replay off a pre-merge job "
-        "reconstructs an Event with a deleted id."
+        "JSON generation snapshot embedding str(event.id) per generated event, read back by the "
+        "metric replay path. NOT rewritten, and the earlier version of this entry overstated the "
+        "danger: a snapshot records what one run produced, and poisoning a replay takes a "
+        "crash-committed merge PLUS a failed follow-up run PLUS a manual replay — after which the "
+        "insert dies on a real FK having written nothing, which is loud rather than silent. The "
+        "fix belongs in the reader, not in rewriting a record."
     ),
     ("search_documents", "entity_id"): (
         "event.id for entity_type == 'event', no FK of its own. Covered anyway: the same row's "
@@ -194,6 +214,17 @@ NON_FK_EVENT_REFERENCES: dict[tuple[str, str], str] = {
     ("audit_log", "payload"): (
         "JSON audit entries embedding str(event_id). Deliberately immutable — an audit trail that "
         "gets rewritten is not an audit trail."
+    ),
+    ("alert_correlation_states", "correlation_group_id"): (
+        "The worst-hidden one: an event id HASHED into a plain uuid column. "
+        "_correlation_group_id computes uuid5(ns, '{scan_config}:{rule}:{scope_type}:{scope_ref}"
+        ":{direction}') and scope_ref is str(event.id) for event scope, so the reference survives "
+        "neither reflection nor a scope_ref grep. NOT rewritten: it cannot be, by a column update "
+        "— it needs both uuid5s recomputed per (config, rule, direction) and a fold on "
+        "uq_alert_correlation_state_project_group. Consequence is bounded: an acknowledged / "
+        "resolved / muted inbox decision does not follow the traffic onto the group event, so the "
+        "survivor's first incident alerts fresh. The stale row is inert, not suppressive. "
+        "Filed as tripl-crow."
     ),
 }
 

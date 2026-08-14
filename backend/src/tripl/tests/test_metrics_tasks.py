@@ -7647,15 +7647,24 @@ def test_no_error_path_can_set_the_status_without_the_timestamp() -> None:
     walks the source rather than trusting a convention: an assignment of
     ``COLLECTION_STATUS_ERROR`` anywhere but inside ``mark_collection_error`` is
     the bug (tripl-os3v).
+
+    The seventh site arrived, and it was not a worker: a group-rule merge fails
+    a metric whose two ratio operands have collapsed onto one event, and
+    ``core`` may not import ``worker``. So ``mark_collection_error`` moved onto
+    the model — and this walk had to move with it, or the one module now holding
+    the real assignment would be the one module nobody checks. Adding
+    ``metric_definition`` here is what keeps the guard honest; without it the
+    test would have gone on passing while covering strictly less.
     """
     import ast
     from pathlib import Path
 
+    from tripl.models import metric_definition as model_module
     from tripl.worker.tasks.metrics import metric_collect as collect_module
     from tripl.worker.tasks.metrics import schedule as schedule_module
 
     offenders: list[str] = []
-    for module in (collect_module, schedule_module):
+    for module in (collect_module, schedule_module, model_module):
         path = Path(str(module.__file__))
         tree = ast.parse(path.read_text(encoding="utf-8"))
         # By line range, not by skipping the FunctionDef node: ``ast.walk``
