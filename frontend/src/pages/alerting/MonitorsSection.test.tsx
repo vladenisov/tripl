@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { alertingApi } from '@/api/alerting'
+import { INDEFINITE_MUTE, muteChoiceName } from '@/lib/mutePresets'
 import type { AlertDestination, AlertRule, MonitorsSummaryResponse } from '@/types'
 
 import { MonitorsSection, type RuleWithDestination } from './MonitorsSection'
@@ -220,6 +221,22 @@ describe('MonitorsSection rule settings', () => {
   })
 })
 
+/**
+ * Every mute button name below is written out as a literal, and stays that way.
+ *
+ * Since tripl-yapg this row's component does not compose those sentences: it
+ * calls `muteName`, `muteChoiceName` and `unmuteName` from `@/lib/mutePresets`,
+ * exactly as `MonitorDetailPage` and `AlertingInbox` do. Deriving the
+ * expectations here from those same functions would make these assertions move
+ * whenever the wording moved, so they would prove only that the component maps
+ * the list it maps. Left literal they are one of the three independent
+ * witnesses that the shared sentence is still the sentence every surface's
+ * authors read — `mutePresets.test.ts` is the fourth, and is the module's own
+ * oracle.
+ *
+ * The one deliberate exception is the open-ended NEGATIVE below, which is built
+ * from the shared module on purpose; the reason is stated where it is asserted.
+ */
 describe('MonitorsSection mute', () => {
   it('mutes from the row, on the same screen that shows the rule is muted', async () => {
     // Mute lived on a separate page while the mute STATE was rendered here, and
@@ -249,6 +266,100 @@ describe('MonitorsSection mute', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Unmute Prod drops' }))
 
     await waitFor(() => expect(unmute).toHaveBeenCalledWith('windy-ios', 'rule-1'))
+  })
+
+  it('always names the instant a muted rule comes back (tripl-b82m)', async () => {
+    // READ THIS BEFORE TRUSTING IT: this test does NOT discriminate the guard
+    // tripl-b82m changed, and no honest test can. The only input that separates
+    // `rule.muted && rule.muted_until` from the old `rule.muted` plus a
+    // `: 'muted'` else-branch is `{muted: true, muted_until: null}`, which
+    // `is_rule_muted()` cannot produce — so a fixture asserting it would enshrine
+    // a state the product does not have and teach the next reader that rules can
+    // be muted indefinitely, which is the very misconception b82m removed. The
+    // value of that change is its comment; this test pins the rendered CONTRACT
+    // instead, so a later refactor toward a `muted_until`-only guard, or back to
+    // an end-date-less chip, has something to break against.
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection({ rules: [makeRule({ muted: true, muted_until: '2026-08-19T00:00:00Z' })] })
+
+    expect(await screen.findByText(/^muted until /)).toBeInTheDocument()
+    // Exact text, so it cannot match the "muted until …" chip above. The row
+    // does render plenty of other text — the rule link, the condition, the
+    // destination, the status chip, the delivery-health line — but none of it is
+    // the single word "muted", so a hit here is an end-date-less mute chip and
+    // nothing else.
+    expect(screen.queryByText('muted')).toBeNull()
+  })
+
+  it('shows no mute chip for a rule whose mute has already lapsed (tripl-b82m)', async () => {
+    // A stale `muted_until` in the past with `muted: false` is a NORMAL server
+    // response, not a corrupt one: the timestamp is the raw column and stays put
+    // after the mute lifts. The row says nothing because it leads on the
+    // EFFECTIVE flag — it does no date arithmetic of its own, and must not start
+    // doing any, since `is_rule_muted()` is the one place that comparison lives
+    // (tripl-oxkt.18). Get that ordering wrong and the row prints "muted until
+    // <a date that has passed>", which is the lapsed-mute defect the Inbox card
+    // fixed in tripl-oxkt.20.
+    //
+    // Like its neighbour above, this pins the contract rather than the guard:
+    // `muted: false` short-circuits in the old and new code alike.
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection({ rules: [makeRule({ muted: false, muted_until: '2026-08-01T00:00:00Z' })] })
+
+    await screen.findByRole('link', { name: 'Prod drops' })
+    expect(screen.queryByText(/muted until/)).toBeNull()
+    expect(screen.queryByText('muted')).toBeNull()
+    // And the control offers Mute, not Unmute — the row agrees with itself
+    // about which state the rule is in.
+    expect(screen.getByRole('button', { name: 'Mute Prod drops' })).toBeInTheDocument()
+  })
+
+  it('can only mute a rule for a fixed time — no open-ended choice here (tripl-a50u)', async () => {
+    // The scope boundary of the indefinite mute. On an INCIDENT a NULL
+    // `muted_until` means "silenced until somebody unmutes it"; on a RULE
+    // `is_rule_muted()` returns FALSE for a NULL `muted_until`, so the very same
+    // button would UN-mute the rule it promises to silence forever. The
+    // permanent lever on a rule is its enable/disable switch.
+    //
+    // This fails the moment the open-ended option leaks in — whether by growing
+    // MUTE_PRESETS (which all three surfaces map) or by copy-pasting the Inbox
+    // control onto this row.
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Mute Prod drops' }))
+
+    for (const label of ['1h', '24h', '7d']) {
+      expect(screen.getByRole('button', { name: `Mute Prod drops for ${label}` }))
+        .toBeInTheDocument()
+    }
+    // The COUNT as well, per surface. Three surfaces map `MUTE_PRESETS` and each
+    // one can also grow a button of its own, so "only these three" is a property
+    // of this row — not something one assertion in another file can hold for it.
+    // A predicate, not an interpolated RegExp: the target is a rule name a user
+    // typed, and a `(` in it would quietly match something else.
+    const presetPrefix = 'Mute Prod drops for '
+    expect(
+      screen.getAllByRole('button', { name: (name: string) => name.startsWith(presetPrefix) }),
+    ).toHaveLength(3)
+    expect(screen.queryByRole('button', { name: /until unmuted/i })).toBeNull()
+    expect(screen.queryByText(/Until I unmute/i)).toBeNull()
+    // …and the same two negatives built from the shared module, which is what
+    // keeps this guard alive through a rename. A frozen negative matches
+    // nothing by construction the day the open-ended phrasing is reworded, and
+    // then passes forever while guarding nothing — a silently dead test, unlike
+    // a positive assertion, which fails loudly when it goes stale.
+    //
+    // It also replaces a canary this row gave up in tripl-yapg. The component
+    // used to write `Mute ${ruleName} for ${preset.label}` as a literal, so it
+    // was LEXICALLY incapable of the open-ended phrasing: a leak would have
+    // rendered the visibly broken "Mute Prod drops for Until I unmute". It now
+    // calls `muteChoiceName`, which contains that branch, so the same leak
+    // would read as grammatical English. This assertion is the replacement.
+    expect(
+      screen.queryByRole('button', { name: muteChoiceName('Prod drops', INDEFINITE_MUTE) }),
+    ).toBeNull()
+    expect(screen.queryByText(INDEFINITE_MUTE.label)).toBeNull()
   })
 })
 

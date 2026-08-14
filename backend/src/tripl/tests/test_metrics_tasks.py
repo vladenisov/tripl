@@ -1894,6 +1894,163 @@ def test_closing_an_incident_does_not_cancel_a_timed_mute(
     assert states[lapsed_id] == ("open", None)
 
 
+def test_closing_an_incident_does_not_cancel_an_indefinite_mute(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A NULL ``muted_until`` is "muted until I unmute", not "expired long ago".
+
+    The timed mute above survives a quiet collection; the INDEFINITE one is the
+    case a fall-through hurts most, because its release is a deliberate human
+    act and nothing downstream would ever restore the row. The old check read
+    ``muted_until is not None and muted_until > now``, which answers False for a
+    NULL and silently reopened the strongest mute in the product on the first
+    quiet scan (tripl-a50u).
+
+    The other two rows pin that the fix did not over-correct: a LAPSED mute and
+    an ACKNOWLEDGE must still reset, or "do not tell me before T" and "I am on
+    this incident" would both become permanent by accident.
+    """
+    from tripl.models.alert_correlation_state import AlertCorrelationState
+    from tripl.worker.tasks.metrics.dispatch import (
+        _correlation_group_id,
+        _reopen_closed_incidents,
+    )
+
+    with sync_session_factory() as session:
+        project = Project(name="Forever", slug="mute-forever", description="")
+        session.add(project)
+        session.flush()
+        scan_config_id = uuid.uuid4()
+        rule_id = uuid.uuid4()
+        scope = ("event", str(uuid.uuid4()))
+        other_scope = ("event", str(uuid.uuid4()))
+
+        def group(scope_key: tuple[str, str], direction: str) -> uuid.UUID:
+            return _correlation_group_id(
+                scan_config_id=scan_config_id,
+                rule_id=rule_id,
+                scope_type=scope_key[0],
+                scope_ref=scope_key[1],
+                direction=direction,
+            )
+
+        # AnomalyDirection is spike|drop, so one scope carries exactly two
+        # groups — enough to sit the indefinite and the lapsed mute side by side
+        # under a single set of scope_keys.
+        indefinite_id = group(scope, "drop")
+        lapsed_id = group(scope, "spike")
+        acknowledged_id = group(other_scope, "drop")
+        now = datetime.now(UTC)
+        session.add_all(
+            [
+                AlertCorrelationState(
+                    project_id=project.id,
+                    correlation_group_id=indefinite_id,
+                    status="muted",
+                    muted_until=None,
+                ),
+                AlertCorrelationState(
+                    project_id=project.id,
+                    correlation_group_id=lapsed_id,
+                    status="muted",
+                    muted_until=now - timedelta(minutes=1),
+                ),
+                AlertCorrelationState(
+                    project_id=project.id,
+                    correlation_group_id=acknowledged_id,
+                    status="acknowledged",
+                ),
+            ]
+        )
+        session.flush()
+
+        _reopen_closed_incidents(
+            session,
+            project_id=project.id,
+            scan_config_id=scan_config_id,
+            rule_id=rule_id,
+            scope_keys=[scope, other_scope],
+        )
+        session.flush()
+
+        states = {
+            state.correlation_group_id: (state.status, state.muted_until)
+            for state in session.execute(select(AlertCorrelationState)).scalars()
+        }
+
+    assert states[indefinite_id] == ("muted", None)
+    assert states[lapsed_id] == ("open", None)
+    assert states[acknowledged_id] == ("open", None)
+
+
+def test_indefinitely_muted_groups_stay_suppressed_and_are_never_lapsed(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The mute lifecycle lives here, and a NULL expiry must never run out.
+
+    ``_suppressed_correlation_group_ids`` is the one place that expires a mute,
+    and it is ALREADY null-correct — so this test passes on the code it was
+    written against. It is a regression lock, not a reproduction: the instinct
+    when fixing the sibling check in ``_reopen_closed_incidents`` is to make this
+    one "symmetric" by writing ``muted_until is None or muted_until <= now``,
+    which would expire every indefinite mute on the very next collection while
+    every other test still passed and the API still reported the mute as taken
+    (tripl-a50u). Nothing else pins this line's NULL behaviour.
+
+    The lapsed row is asserted alongside it so a fix in the other direction —
+    never expiring anything — cannot pass either.
+    """
+    from tripl.models.alert_correlation_state import AlertCorrelationState
+    from tripl.worker.tasks.metrics.dispatch import _suppressed_correlation_group_ids
+
+    with sync_session_factory() as session:
+        project = Project(name="Suppress", slug="mute-suppression", description="")
+        session.add(project)
+        session.flush()
+        indefinite = uuid.uuid4()
+        lapsed = uuid.uuid4()
+        still_open = uuid.uuid4()
+        now = datetime.now(UTC)
+        session.add_all(
+            [
+                AlertCorrelationState(
+                    project_id=project.id,
+                    correlation_group_id=indefinite,
+                    status="muted",
+                    muted_until=None,
+                ),
+                AlertCorrelationState(
+                    project_id=project.id,
+                    correlation_group_id=lapsed,
+                    status="muted",
+                    muted_until=now - timedelta(minutes=1),
+                ),
+                AlertCorrelationState(
+                    project_id=project.id,
+                    correlation_group_id=still_open,
+                    status="open",
+                ),
+            ]
+        )
+        session.flush()
+
+        suppressed = _suppressed_correlation_group_ids(session, project_id=project.id)
+        session.flush()
+
+        states = {
+            state.correlation_group_id: (state.status, state.muted_until)
+            for state in session.execute(select(AlertCorrelationState)).scalars()
+        }
+
+    assert indefinite in suppressed
+    assert states[indefinite] == ("muted", None)
+    # A mute with an expiry still runs out here, and reopening it is this
+    # function's job — not _reopen_closed_incidents'.
+    assert lapsed not in suppressed
+    assert states[lapsed] == ("open", None)
+    assert still_open not in suppressed
+
+
 def test_ensure_event_type_skips_reserved_columns(
     sync_session_factory: sessionmaker[Session],
 ) -> None:

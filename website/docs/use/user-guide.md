@@ -492,8 +492,12 @@ Tune it until it's signal rather than noise before turning it on.
 
 - **Deliveries** records every alert that went out — its full content and whether
   it succeeded — with filters by status, channel, destination, rule, and scan.
-- The **Inbox** groups correlated alerts so you can **acknowledge**, **resolve**,
-  **mute**, mark **false positive**, or **reopen** a whole incident at once.
+- The **Inbox** is one row per incident, with six actions: **acknowledge**,
+  **resolve**, **mute** (1h / 24h / 7d / indefinitely), **reopen**, **false
+  positive**, and a **note** on its own. The first four of those stop further
+  alerts for that incident — but only a mute lasts beyond the incident, and only
+  a false positive tells the detector anything. See
+  [Silencing an incident](./alerting.md#silencing-an-incident).
 
 :::note "My alert never fired"
 If you expected an alert and the Deliveries list says *"No deliveries yet"* or the
@@ -508,6 +512,10 @@ Inbox says *"No correlated alert groups"*, work through this checklist:
    suppress the next one until the cooldown elapses.
 5. **Did delivery fail?** Set the Deliveries status filter to **Failed** to see
    transport errors (a bad Slack URL, an SMTP problem, etc.).
+6. **Did you silence it yourself?** An incident you acknowledged, resolved, muted
+   or marked a false positive stops delivering — and **acknowledged** counts,
+   which is the one people do not expect. Handled incidents sort below open ones,
+   so use the Inbox's **status** filter to find it rather than scrolling.
 
 Replaying the rule against recent data is the quickest way to confirm whether it
 *would* match before you wait for the next real anomaly.

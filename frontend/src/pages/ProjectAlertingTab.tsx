@@ -517,7 +517,12 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       return alertingApi.applyInboxAction(slug, group.correlation_group_id, {
         action,
         ...(draft ? { note: draft } : {}),
-        ...(action === 'mute' && mutedUntil ? { muted_until: mutedUntil } : {}),
+        // Keyed on the ACTION, never on the truthiness of `mutedUntil`: `null`
+        // is the open-ended mute and has to reach the wire as an explicit
+        // `muted_until: null` (tripl-a50u). A `&& mutedUntil` here dropped the
+        // key entirely, so the most far-reaching mute on the page was the one
+        // request that said nothing about how long it lasts.
+        ...(action === 'mute' ? { muted_until: mutedUntil ?? null } : {}),
       })
     },
     onSuccess: (data, variables) => {
@@ -593,10 +598,14 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       })
       if (!ok) return
     }
-    if (variables.action === 'mute' && variables.mutedUntil) {
+    // Gated on the action alone. `mutedUntil` is `null` for the open-ended mute
+    // (tripl-a50u), so the previous `&& variables.mutedUntil` skipped the
+    // confirmation for the single most far-reaching mute the page can send —
+    // the one that never lapses and can only be lifted by hand.
+    if (variables.action === 'mute') {
       const ok = await confirm({
         title: 'Mute this incident',
-        message: muteConfirmMessage(variables.group, variables.mutedUntil),
+        message: muteConfirmMessage(variables.group, variables.mutedUntil ?? null),
         confirmLabel: 'Mute',
       })
       if (!ok) return

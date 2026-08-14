@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
@@ -108,6 +108,36 @@ function renderInbox(
   return { ...utils, onAction }
 }
 
+/**
+ * The scope summary `makeGroup` produces, and therefore the target every button
+ * on the card names.
+ *
+ * It contains a `/`, which is why the mute queries below are exact NAMES rather
+ * than regexes: interpolating this into a `RegExp` would need escaping, and the
+ * prefix forms are ambiguous anyway — "Mute <target>" is a strict prefix of
+ * "Mute <target> for 1h", so `/^Mute onboarding/` matched the disclosure toggle
+ * AND all four duration buttons and only ever passed because the panel happens
+ * to be closed at click time. An exact string is matched in full by RTL, so it
+ * picks out one button in either state.
+ */
+const TARGET = 'onboarding/reviews_carousel'
+
+/**
+ * Every mute sentence in this file is written out as a literal, and stays that
+ * way after tripl-yapg.
+ *
+ * The card no longer composes those sentences itself — it calls `muteName`,
+ * `muteChoiceName` and `unmuteName` from `@/lib/mutePresets`, the same
+ * functions `MonitorsSection` and `MonitorDetailPage` now call. Deriving these
+ * expectations from those functions would make both sides move together and
+ * assert nothing about the wording; kept literal, this file is one of three
+ * independent witnesses that a reword inside the shared module is deliberate.
+ *
+ * "Reopen <target>" is NOT one of those shared sentences and its assertions
+ * must never be derived from `mutePresets`: it is this surface's own word for
+ * lifting acknowledge, resolve and false-positive (tripl-oxkt.3), and the
+ * button that carries it is the same slot that says "Unmute" on a muted card.
+ */
 describe('AlertingInbox — the undo for a mute is called Unmute (tripl-oxkt.3)', () => {
   it('names the muted card\'s undo "Unmute", not "Reopen"', () => {
     renderInbox({
@@ -121,17 +151,22 @@ describe('AlertingInbox — the undo for a mute is called Unmute (tripl-oxkt.3)'
     // mute was labelled "Reopen", which does a different job on a resolved
     // card, while MonitorDetailPage had a literal Unmute for the other mute
     // system. Two vocabularies, one idea.
-    expect(screen.getByRole('button', { name: /^Unmute / })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: `Unmute ${TARGET}` })).toBeInTheDocument()
+    // Negative stays a prefix regex on purpose: the claim is that NO button on
+    // this card starts with that verb, whatever it goes on to name.
     expect(screen.queryByRole('button', { name: /^Reopen / })).toBeNull()
     // …and the mute button becomes the way to CHANGE it, not a second silent
-    // seven-day extension.
-    expect(screen.getByRole('button', { name: /^Change mute on / })).toBeInTheDocument()
+    // seven-day extension. "Change mute on" is this surface's own vocabulary —
+    // no other mute surface can change a mute in place, so it is written here
+    // and in the component as a literal rather than hosted in the shared module
+    // (tripl-yapg).
+    expect(screen.getByRole('button', { name: `Change mute on ${TARGET}` })).toBeInTheDocument()
   })
 
   it('keeps the same slot named "Reopen" on a card that was never muted', () => {
     renderInbox({ inbox: { items: [makeGroup({ status: 'resolved' })], total: 1 } })
 
-    expect(screen.getByRole('button', { name: /^Reopen / })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: `Reopen ${TARGET}` })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Unmute / })).toBeNull()
   })
 
@@ -140,19 +175,102 @@ describe('AlertingInbox — the undo for a mute is called Unmute (tripl-oxkt.3)'
 
     // Every mute used to be a hardcoded seven days with nothing on screen
     // saying so (tripl-oxkt.7).
-    fireEvent.click(screen.getByRole('button', { name: /^Mute onboarding/ }))
+    fireEvent.click(screen.getByRole('button', { name: `Mute ${TARGET}` }))
     for (const label of ['1h', '24h', '7d']) {
-      expect(screen.getByRole('button', { name: `Mute onboarding/reviews_carousel for ${label}` }))
+      expect(screen.getByRole('button', { name: `Mute ${TARGET} for ${label}` }))
         .toBeInTheDocument()
     }
 
-    fireEvent.click(screen.getByRole('button', { name: /for 24h$/ }))
+    // Named in full, not `/for 24h$/`: the old suffix regex asserted the
+    // duration and said nothing about WHOSE incident was about to be silenced,
+    // which is the half of the sentence tripl-in45 added.
+    fireEvent.click(screen.getByRole('button', { name: `Mute ${TARGET} for 24h` }))
     expect(onAction).toHaveBeenCalledTimes(1)
     const variables = onAction.mock.calls[0][0]
     expect(variables.action).toBe('mute')
     // Resolved to an absolute future instant here, so the sentence the confirm
     // shows and the value that is written are the same one.
     expect(new Date(variables.mutedUntil!).getTime()).toBeGreaterThan(Date.now())
+  })
+})
+
+describe('AlertingInbox — an incident can be silenced with no end date (tripl-a50u)', () => {
+  it('offers the open-ended choice beside the timed presets, and asks for null', () => {
+    const { onAction } = renderInbox()
+
+    fireEvent.click(screen.getByRole('button', { name: `Mute ${TARGET}` }))
+
+    // Supplementing the presets, not replacing them: a snooze is still the
+    // common case and must stay one click away.
+    for (const label of ['1h', '24h', '7d']) {
+      expect(screen.getByRole('button', { name: `Mute ${TARGET} for ${label}` }))
+        .toBeInTheDocument()
+    }
+    // And only three of them — the open-ended choice is counted separately
+    // below, so a fourth DURATION appearing here would be caught rather than
+    // absorbed into "presets and an indefinite". Per surface, because each one
+    // can grow a button of its own on top of whatever `MUTE_PRESETS` holds. A
+    // predicate, not an interpolated RegExp: the target is a scope name that
+    // came from the warehouse and may carry anything.
+    const presetPrefix = `Mute ${TARGET} for `
+    expect(
+      screen.getAllByRole('button', { name: (name: string) => name.startsWith(presetPrefix) }),
+    ).toHaveLength(3)
+    const indefinite = screen.getByRole('button', {
+      name: `Mute ${TARGET} until unmuted`,
+    })
+    // BOTH halves literal, and that is the point of this pair: it is the only
+    // assertion in the repo that proves, against a real DOM node, that the
+    // visible face and the accessible name of the open-ended button are
+    // deliberately DIFFERENT strings — "for Until I unmute" is not English, so
+    // `muteChoiceName` phrases that branch separately. Deriving either side
+    // from `INDEFINITE_MUTE.label` or from the builder would degrade this to
+    // "the constant equals the constant" and leave the asymmetry pinned nowhere
+    // at any surface. It is also the one accepted WCAG 2.5.3 deviation in the
+    // mute vocabulary: the visible phrase is not inside the name, so speech
+    // input cannot activate this button by reading it aloud (tripl-yapg).
+    expect(indefinite).toHaveTextContent('Until I unmute')
+
+    fireEvent.click(indefinite)
+    expect(onAction).toHaveBeenCalledTimes(1)
+    const variables = onAction.mock.calls[0][0]
+    expect(variables.action).toBe('mute')
+    // STRICTLY null, and the key present. `undefined` is indistinguishable from
+    // "no duration chosen" two hops downstream, where an object spread would
+    // drop `muted_until` from the request body altogether.
+    expect(variables.mutedUntil).toBeNull()
+    expect('mutedUntil' in variables).toBe(true)
+  })
+
+  it('says on the card that a mute with no end date is in force', () => {
+    renderInbox({
+      inbox: {
+        items: [makeGroup({ status: 'muted', muted: true, muted_until: null })],
+        total: 1,
+      },
+    })
+
+    // The line used to be guarded on `muted && muted_until`, so an incident
+    // silenced forever rendered a "Muted" chip and not one word about how long
+    // for or how to undo it — the silent mute of tripl-oxkt.7, back again.
+    const card = document.getElementById('incident-grp-1')!
+    expect(within(card).getByText(/no end date/i)).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: `Unmute ${TARGET}` })).toBeInTheDocument()
+  })
+
+  it('still says nothing about a mute that has already lapsed (tripl-oxkt.20)', () => {
+    // The backend reports a LAPSED mute as status open, muted false, and
+    // `muted_until` NULLED — the same null the open-ended case carries, so
+    // `muted` is the only signal separating them. Making the test above pass by
+    // keying the line off `muted_until` brings back the card that showed an
+    // "Open" badge and a mute line at once.
+    renderInbox({
+      inbox: { items: [makeGroup({ status: 'open', muted: false, muted_until: null })], total: 1 },
+    })
+
+    const card = document.getElementById('incident-grp-1')!
+    expect(within(card).queryByText(/^muted/i)).toBeNull()
+    expect(within(card).getByText('Open')).toBeInTheDocument()
   })
 })
 

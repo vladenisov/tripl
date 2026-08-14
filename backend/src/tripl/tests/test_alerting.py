@@ -6257,8 +6257,10 @@ async def test_note_action_without_a_note_is_rejected(client: AsyncClient) -> No
     """`{"action": "note"}` with no note was a silent 200 no-op.
 
     The note write is conditional on ``note is not None``, so the request looked
-    accepted, changed nothing, and still inserted a correlation-state row. The
-    guard mirrors the one mute/muted_until already had.
+    accepted, changed nothing, and still inserted a correlation-state row. It
+    used to mirror a guard on mute/muted_until; that one is gone, because a null
+    ``muted_until`` is now the indefinite mute rather than a missing field
+    (tripl-a50u). This guard stands alone and is still needed.
     """
     project_resp = await client.post(
         "/api/v1/projects",
@@ -6310,6 +6312,133 @@ async def test_note_action_without_a_note_is_rejected(client: AsyncClient) -> No
     )
     assert cleared.status_code == 200
     assert cleared.json()["group"]["note"] is None
+
+
+async def _seed_inbox_group(client: AsyncClient, slug: str, name: str) -> uuid.UUID:
+    """One project, one seeded delivery, one correlation group to act on.
+
+    The indefinite-mute tests below both need exactly this and nothing else, and
+    the eight-line seed is the bulk of either one.
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": name, "slug": slug, "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    group_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=now - timedelta(hours=1),
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=now - timedelta(hours=1),
+                percent_delta=100.0,
+                correlation_group_id=group_id,
+            )
+        ],
+    )
+    return group_id
+
+
+@pytest.mark.asyncio
+async def test_inbox_mute_without_an_expiry_is_an_indefinite_mute(client: AsyncClient) -> None:
+    """`{"action": "mute"}` with no expiry means "muted until I unmute".
+
+    The validator used to reject it with a 422, so an operator watching a scope
+    they already KNEW was broken had to invent an end date, and got paged again
+    the moment they guessed too short (tripl-a50u). A null ``muted_until`` on a
+    muted row is the encoding, and it has to survive the whole round trip: the
+    column stays NULL, the group still reads ``muted``, and the card gets
+    ``muted: true`` with ``muted_until: null`` — which is the pair the frontend
+    renders as "muted indefinitely" instead of "muted until <date>".
+    """
+    group_id = await _seed_inbox_group(client, "mute-forever", "Mute Forever")
+
+    mute_resp = await client.post(
+        f"/api/v1/projects/mute-forever/alert-inbox/{group_id}/actions",
+        json={"action": "mute"},
+    )
+    assert mute_resp.status_code == 200
+    group = mute_resp.json()["group"]
+    assert group["status"] == "muted"
+    assert group["muted"] is True
+    # NOT coerced into some default expiry on the way in.
+    assert group["muted_until"] is None
+
+    # The stored row carries the same NULL, so nothing downstream can mistake it
+    # for a mute that ran out.
+    async with TestSessionLocal() as session:
+        state = await session.scalar(
+            select(AlertCorrelationState).where(
+                AlertCorrelationState.correlation_group_id == group_id
+            )
+        )
+        assert state is not None
+        assert state.status == "muted"
+        assert state.muted_until is None
+
+    # An indefinitely muted group sinks in the default view forever — it records
+    # no further deliveries — so `?status=muted` is the ONLY practical way back
+    # to it, and it must not read as "open" to the filter.
+    filtered = await client.get(
+        "/api/v1/projects/mute-forever/alert-inbox", params={"status": "muted"}
+    )
+    assert filtered.status_code == 200
+    assert [item["correlation_group_id"] for item in filtered.json()["items"]] == [str(group_id)]
+
+    detail = await client.get(f"/api/v1/projects/mute-forever/alert-inbox/{group_id}")
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "muted"
+    assert detail.json()["muted"] is True
+    assert detail.json()["muted_until"] is None
+
+
+@pytest.mark.asyncio
+async def test_reopen_lifts_an_indefinite_inbox_mute(client: AsyncClient) -> None:
+    """Reopen is the ONLY exit from a mute with no expiry — nothing else can end it.
+
+    A timed mute is released by the passage of time in
+    ``_suppressed_correlation_group_ids``; an indefinite one is released by a
+    human and by nobody else, so if ``reopen`` ever stopped nulling the column or
+    stopped resetting the status, the operator would hold an unbreakable mute
+    with no way out through the API. That is a worse failure than the one
+    tripl-a50u fixed, and it is what this test stands guard over.
+    """
+    group_id = await _seed_inbox_group(client, "unmute-forever", "Unmute Forever")
+
+    mute_resp = await client.post(
+        f"/api/v1/projects/unmute-forever/alert-inbox/{group_id}/actions",
+        json={"action": "mute"},
+    )
+    assert mute_resp.status_code == 200
+    assert mute_resp.json()["group"]["muted"] is True
+
+    reopen_resp = await client.post(
+        f"/api/v1/projects/unmute-forever/alert-inbox/{group_id}/actions",
+        json={"action": "reopen"},
+    )
+    assert reopen_resp.status_code == 200
+    group = reopen_resp.json()["group"]
+    assert group["status"] == "open"
+    assert group["muted"] is False
+    assert group["muted_until"] is None
+
+    async with TestSessionLocal() as session:
+        state = await session.scalar(
+            select(AlertCorrelationState).where(
+                AlertCorrelationState.correlation_group_id == group_id
+            )
+        )
+        assert state is not None
+        assert state.status == "open"
+        assert state.muted_until is None
 
 
 async def _seed_slack_destination_with_rule(
@@ -6394,6 +6523,57 @@ async def test_rule_carries_the_same_mute_state_as_its_monitor(client: AsyncClie
     # The stored instant survives, so the card can still offer "unmute" on a rule
     # whose mute has lapsed; `muted` is the claim about NOW.
     assert rule["muted_until"] is not None
+
+
+@pytest.mark.asyncio
+async def test_rule_mute_still_requires_an_expiry(client: AsyncClient) -> None:
+    """A null ``muted_until`` means the OPPOSITE thing on a rule, and must stay 422.
+
+    tripl-a50u made "null = muted forever" true on ``AlertCorrelationState``. On
+    ``AlertRule`` null means NOT MUTED — ``is_rule_muted`` answers False for it,
+    and null is the default on every rule ever created — so relaxing
+    ``MonitorMuteRequest.muted_until`` to match the inbox payload would report
+    every monitor in the fleet as muted at once, with no test objecting.
+
+    This is cheap insurance directly proportional to the blast radius of the
+    semantic split: one column name, one domain, two opposite readings. The
+    rule's permanent lever is ``enabled``, not a null expiry.
+    """
+    await client.post(
+        "/api/v1/projects",
+        json={"name": "Rule Mute Guard", "slug": "rule-mute-guard", "description": ""},
+    )
+    _destination_id, rule_id = await _seed_slack_destination_with_rule(client, "rule-mute-guard")
+
+    # Neither spelling of "no expiry" is a rule mute.
+    omitted = await client.post(
+        f"/api/v1/projects/rule-mute-guard/monitors/{rule_id}/mute",
+        json={},
+    )
+    assert omitted.status_code == 422
+    explicit_null = await client.post(
+        f"/api/v1/projects/rule-mute-guard/monitors/{rule_id}/mute",
+        json={"muted_until": None},
+    )
+    assert explicit_null.status_code == 422
+
+    # ...and the rule it failed to mute still carries the null it was born with,
+    # which every payload must keep reading as NOT muted.
+    async with TestSessionLocal() as session:
+        db_rule = await session.get(AlertRule, uuid.UUID(rule_id))
+        assert db_rule is not None
+        assert db_rule.muted_until is None
+
+    monitor = (await client.get(f"/api/v1/projects/rule-mute-guard/monitors/{rule_id}")).json()
+    assert monitor["muted"] is False
+    assert monitor["muted_until"] is None
+
+    destinations = (await client.get("/api/v1/projects/rule-mute-guard/alert-destinations")).json()
+    assert destinations[0]["rules"][0]["muted"] is False
+
+    summary = (await client.get("/api/v1/projects/rule-mute-guard/monitors-summary")).json()
+    summary_monitor = next(item for item in summary["monitors"] if item["rule_id"] == rule_id)
+    assert summary_monitor["muted"] is False
 
 
 @pytest.mark.asyncio

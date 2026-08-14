@@ -10,6 +10,13 @@ import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import {
+  MUTE_PRESETS,
+  muteChoiceName,
+  muteUntilIso,
+  unmuteName,
+  type MutePreset,
+} from '@/lib/mutePresets'
+import {
   ALERT_DELIVERY_TONE as DELIVERY_TONE,
   MONITOR_STATUS_LABEL as STATUS_LABEL,
   MONITOR_STATUS_TONE as STATUS_TONE,
@@ -17,20 +24,6 @@ import {
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import { formatCooldown } from './alerting/constants'
 import type { AlertDelivery, MonitorDetail } from '@/types'
-
-const HOUR_MS = 60 * 60 * 1000
-
-// Preset mute durations. The contract requires `muted_until` to be a future
-// instant, so each preset is rendered into an absolute ISO timestamp at click.
-const MUTE_PRESETS: readonly { label: string; ms: number }[] = [
-  { label: '1h', ms: HOUR_MS },
-  { label: '24h', ms: 24 * HOUR_MS },
-  { label: '7d', ms: 7 * 24 * HOUR_MS },
-]
-
-function futureIso(ms: number): string {
-  return new Date(Date.now() + ms).toISOString()
-}
 
 export default function MonitorDetailPage() {
   const { slug, monitorId } = useParams<{ slug: string; monitorId: string }>()
@@ -140,8 +133,12 @@ export default function MonitorDetailPage() {
           </div>
 
           <MuteControl
+            // The same string the heading above shows: the button names have to
+            // match what the operator just read, or the announcement identifies
+            // a monitor by a noun that appears nowhere on screen (tripl-in45).
+            ruleName={monitor.rule_name}
             muted={monitor.muted}
-            onMute={(ms) => muteMut.mutate(futureIso(ms))}
+            onMute={(ms) => muteMut.mutate(muteUntilIso(ms))}
             onUnmute={() => unmuteMut.mutate()}
             isPending={muteMut.isPending || unmuteMut.isPending}
             errorMessage={muteError instanceof Error ? muteError.message : null}
@@ -183,17 +180,31 @@ function BackLink({ slug }: { slug?: string }) {
 function ActionButton({
   icon,
   label,
+  ariaLabel,
   onClick,
   disabled,
 }: {
   icon: ReactNode
   label: string
+  /**
+   * Spoken name, when the visible `label` alone does not say what the button
+   * acts ON. A mute preset reads "1h" — three of them on one page are three
+   * identically-named buttons, and none of them names the thing about to go
+   * quiet (tripl-in45).
+   *
+   * Every caller that sets this keeps the visible `label` as a SUBSTRING of it
+   * ("Mute <rule> for 1h" contains "1h"), so speech-input users can still say
+   * what they can read — WCAG 2.5.3 Label in Name, which an aria-label that
+   * replaced the visible text outright would break.
+   */
+  ariaLabel?: string
   onClick: () => void
   disabled?: boolean
 }) {
   return (
     <button
       type="button"
+      aria-label={ariaLabel}
       onClick={onClick}
       disabled={disabled}
       className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-[10px] text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
@@ -205,13 +216,52 @@ function ActionButton({
   )
 }
 
+/**
+ * Mute / unmute for one alert RULE.
+ *
+ * Two things a reader should not have to reconstruct:
+ *
+ * 1. The durations come from `@/lib/mutePresets`. This page owned a third copy
+ *    of the list plus its own `futureIso` resolver while that module existed
+ *    for exactly the purpose of there being one — and a private copy is how the
+ *    surfaces drift apart again, which is the defect the module was extracted
+ *    to fix (tripl-es0f, tripl-oxkt.7). The shared resolver also takes an
+ *    injectable `now`, so a test can pin the instant instead of racing it.
+ *
+ * 2. There is deliberately NO open-ended option here, even though the incident
+ *    Inbox has one. `is_rule_muted()` returns false the moment a rule's
+ *    `muted_until` is NULL, so a button promising "until I unmute" would write
+ *    the value that UN-mutes the rule. The permanent lever on a rule is the
+ *    enable/disable switch, not a mute — which is why `MUTE_PRESETS` (durations
+ *    only) is imported here and `INBOX_MUTE_CHOICES` is not (tripl-a50u).
+ *
+ * 3. Every button here is named by what it silences, not only by its own text.
+ *    The presets used to be called "1h" / "24h" / "7d" and Unmute just
+ *    "Unmute", so a screen reader announced a duration with no hint of WHOSE
+ *    alerts stop — and three same-named buttons if a second control ever shares
+ *    the page. The wording is no longer lifted from the other two mute
+ *    surfaces, it is IMPORTED: `muteChoiceName` and `unmuteName` live next to
+ *    `MUTE_PRESETS` in `@/lib/mutePresets`, so the three surfaces cannot
+ *    describe one action three ways without the edit landing in the one module
+ *    all three read. Copying — which is what "lifted verbatim" used to mean
+ *    here — is what tripl-yapg replaced (tripl-in45, tripl-oxkt.7).
+ */
 function MuteControl({
+  ruleName,
   muted,
   onMute,
   onUnmute,
   isPending,
   errorMessage,
 }: {
+  /**
+   * What the buttons name. A monitor IS an alert rule (tripl-89ps), so the noun
+   * is the rule's name — the same one the page heading shows and the same one
+   * `MonitorsSection`'s row control takes under this name. It is a prop and not
+   * a lookup because nothing else in this component identifies the monitor:
+   * `muted` and the callbacks are all anonymous.
+   */
+  ruleName: string
   muted: boolean
   onMute: (ms: number) => void
   onUnmute: () => void
@@ -224,20 +274,38 @@ function MuteControl({
         <ActionButton
           icon={<Bell className="h-3.5 w-3.5" />}
           label="Unmute"
+          ariaLabel={unmuteName(ruleName)}
           onClick={onUnmute}
           disabled={isPending}
         />
       ) : (
         <>
+          {/* The visible "Mute for" is a plain span, so it is never part of any
+              button's accessible name — reading the row left to right is how a
+              sighted user gets the sentence, and the aria-label below is how
+              everyone else does (tripl-in45). */}
           <span className="inline-flex items-center gap-1.5 text-[12px]" style={{ color: 'var(--fg-muted)' }}>
             <BellOff className="h-3.5 w-3.5" />
             Mute for
           </span>
-          {MUTE_PRESETS.map((preset) => (
+          {MUTE_PRESETS.map((preset: MutePreset) => (
             <ActionButton
               key={preset.label}
               icon={null}
               label={preset.label}
+              // This page maps `MUTE_PRESETS`, whose `ms` is `number`, so this
+              // call is statically confined to the "for <duration>" branch of
+              // `muteChoiceName`. The open-ended phrasing does exist inside
+              // that builder — it has to, the Inbox needs it — but it is
+              // unreachable from here without importing `INDEFINITE_MUTE` or
+              // `INBOX_MUTE_CHOICES` by name, which is the greppable act
+              // tripl-a50u forbids on a rule surface: `is_rule_muted()` reads
+              // the NULL `muted_until` such a button writes as NOT MUTED. The
+              // guard is the typing of `MUTE_PRESETS`, not the phrasing here —
+              // and the negatives in this page's test file are what would catch
+              // a leak now that it would read as grammatical English
+              // (tripl-yapg).
+              ariaLabel={muteChoiceName(ruleName, preset)}
               onClick={() => onMute(preset.ms)}
               disabled={isPending}
             />

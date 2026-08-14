@@ -142,17 +142,40 @@ sends. A break anywhere in that chain produces silence.
    are skipped entirely so noise doesn't flood you. Brand-new scans, sparse data,
    or a too-high `sigma_threshold` all legitimately produce zero anomalies.
    Review the project's anomaly settings (baseline window, sigma threshold,
-   minimum expected count) and let more history accumulate.
+   minimum expected count) and let more history accumulate. If you have marked
+   incidents on this scope a **false positive**, check **Settings → Monitoring →
+   Scope overrides** too: each click permanently raised that scope's
+   `sigma_threshold` and `min_expected_count`, and the ratchet never decays — see
+   [False positives self-tune the thresholds](anomaly-detection.md#false-positives-self-tune-the-thresholds).
 2. **No enabled alert destination.** If the project has no destinations, or
    none are enabled, no deliveries are created. Add and enable a destination.
 3. **No enabled rule, or the rule doesn't match.** A destination with no
    enabled rules is skipped. A rule only fires for anomalies it matches
    (by scope/direction/etc.). Check the rule is enabled and its scope covers the
    anomaly you expect.
-4. **Cooldown or correlation suppression.** A rule won't re-notify the same
-   scope until its `cooldown_minutes` elapses. Correlation groups you've marked
-   **resolved**, **false positive**, or **muted** are suppressed; a mute auto-
-   expires at its `muted_until` time. If you muted/resolved a group, that's why.
+4. **Cooldown, or a decision you made in the Inbox.** A rule won't re-notify
+   the same scope until its `cooldown_minutes` elapses. Separately, an incident
+   you marked **acknowledged**, **resolved**, **false positive** or **muted**
+   produces no further deliveries at all — it is dropped before any message is
+   built. All **four** suppress. **Acknowledged** is the one people forget,
+   because it reads like a receipt; it is not, and an acknowledged incident is a
+   common answer to "the rule is on, the destination is on, and nothing
+   arrives". Suppression is per incident, meaning per *(scan, rule, scope,
+   direction)*, so it silences one scope of one rule and nothing else.
+
+   They do not expire alike. **Acknowledged**, **resolved** and **false
+   positive** last only as long as the incident: the first collection in which
+   that scope stops firing puts the row back to `open`, so the next occurrence
+   is a *new* incident and alerts normally. A **mute** is the exception — it
+   holds for its full `muted_until` whatever the signal does in between, and an
+   **indefinite** mute (Inbox only) holds until you press **Reopen**. A lapsed
+   mute counts as `open` again on its own.
+
+   Open incidents sort above handled ones, so a silenced row is reached with the
+   **status** filter (`?status=acknowledged` / `resolved` / `muted` /
+   `false_positive`) rather than by scrolling. **Reopen** lifts any of the four.
+   Which decision you actually wanted is
+   [Silencing an incident](alerting.md#silencing-an-incident).
 5. **Email destination but SMTP isn't configured.** Email sends fail with:
    *"Email destination is configured but SMTP is not — set SMTP_HOST (and
    SMTP_USERNAME/SMTP_PASSWORD if your relay requires auth)."* Set `SMTP_HOST`,
@@ -184,6 +207,71 @@ Use the in-app rule simulator to confirm a rule matches a given anomaly before
 blaming delivery — the simulator and the live pipeline share the same matcher
 (`tripl.alerting_matching`), so if it doesn't match in the simulator it won't
 match live either.
+:::
+
+---
+
+## An incident I acknowledged fired again
+
+**Symptom.** You acknowledged an incident in the Inbox — probably with a note
+saying what it was — and hours or days later the same scope paged you again. The
+obvious conclusion is that **acknowledge** does nothing, and the obvious next move
+is to mute it. Both are wrong, and muting is often the wrong lever for what you
+meant.
+
+**What actually happened.** Acknowledge *does* suppress. An acknowledged incident
+creates no further deliveries: it is dropped before the messages are built, not
+built and quietly withheld. But the decision is scoped to that incident, and an
+incident ends when its scope stops firing — at that moment the row returns to
+`open` by itself. The next time the scope deviates it is a **new** incident, and a
+new incident has never been acknowledged, so it alerts. That is deliberate:
+whatever you decided about last Tuesday's drop must not silence next month's
+outage.
+
+So "it came back" almost always means *the problem came back*, with a quiet
+stretch in between that ended your incident. Check by expanding the row: a
+different row with a later first delivery is a genuine relapse; the same row still
+open means somebody pressed **Reopen** or a mute lapsed; a second row under
+another rule's name means two rules watch that scope and you silenced one of them.
+
+**Which lever you want depends on what you meant.**
+[Silencing an incident](alerting.md#silencing-an-incident) sets all of them side
+by side; the short form:
+
+- **"I am working on it and want quiet meanwhile."** Acknowledge was already the
+  right action and nothing is broken. Re-acknowledge the new incident, or fix the
+  cause.
+- **"I want a guaranteed quiet window regardless of the signal."** **Mute** — 1h,
+  24h, 7d, or indefinitely. A mute is the one decision that survives the incident
+  ending: it holds for its whole duration whatever the data does, and an
+  indefinite mute holds until you **Reopen** it. It changes nothing else, so the
+  cause is still there when it lifts.
+- **"The alert is wrong for this scope."** **False positive.** It silences the
+  incident exactly as an acknowledge does *and* permanently raises that scope's
+  `sigma_threshold` and `min_expected_count`, so the same benign pattern needs a
+  bigger, higher-volume deviation to be flagged next time. Repeat clicks compound,
+  the ratchet never decays, and every scope it has tightened is listed under
+  **Settings → Monitoring → Scope overrides** — see
+  [False positives self-tune the thresholds](anomaly-detection.md#false-positives-self-tune-the-thresholds).
+  This is the lever for "the detector is wrong here", and the only one of the four
+  that changes what gets detected.
+- **"This event must never reach this channel again."** Add a **filter** to the
+  rule — `event` `not_in` […]. It is permanent, per rule, and has no expiry. One
+  catch: it excludes that event's *own* signals only. The project-total and
+  event-type rollups the event contributes to carry no event id, and a filter on a
+  field a signal does not carry passes through — so a rule watching project totals
+  will still tell you when the total moves, event filter or not.
+- **"This event should not be monitored at all."** **Archive** the event. Scans
+  stop collecting for it and detection skips it on every scope it appears in, so
+  there is no signal left for any rule to match. Archiving is reversible; set
+  another status and collection resumes.
+
+:::tip Acknowledge is not a weaker mute
+They answer different questions. Acknowledge answers *"is somebody on this?"* and
+is worth pressing even when you know it will lapse, because the row then says
+**handled by you** and your colleagues stop opening the same incident. Mute
+answers *"when may I be told again?"*. Pressing mute to mean "seen" loses the
+first answer and buys a silence you did not want.
 :::
 
 ---
@@ -663,6 +751,16 @@ Walk the delivery chain in [Alerts never fire](#alerts-never-fire): destination
 enabled? rule enabled and matching? cooldown/mute? (email) SMTP set? Then check
 the worker logs for `Failed to send alert delivery` — the failure reason is
 persisted on the delivery.
+
+**I acknowledged an incident and wrote down why, and it alerted again. Do I need
+to mute it?**
+Probably not. Acknowledge really does stop deliveries, but only for as long as
+that incident lives — once the scope goes quiet the row reopens itself, so the
+next occurrence is a new incident and alerts. Mute is for "do not tell me before
+*T*" and is the only decision that survives the incident ending; **false
+positive** is for "the detector is wrong about this scope" and permanently
+tightens its thresholds. See
+[An incident I acknowledged fired again](#an-incident-i-acknowledged-fired-again).
 
 **The app won't start after I set `DEBUG` off.**
 That's the production readiness gate. Read the `Production startup checks

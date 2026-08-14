@@ -383,8 +383,17 @@ delivery health (`115 deliveries · 57 incidents · last 3h ago · sent`, or *Ne
 delivered*). A firing/warning/healthy rollup sits above the list. Each row
 expands to the full labelled settings — scan binding, scopes, direction,
 cooldown, thresholds, message template, filters — and carries its own controls:
-enable, **mute** (with the duration on the button), **replay**, edit, delete.
+enable, **mute** (**1h / 24h / 7d**, the duration written on the button),
+**replay**, edit, delete.
 Open a rule for its detail page, which adds the fired history.
+
+A rule has no **indefinite** mute, and the asymmetry with the Inbox is
+deliberate: muting a rule silences every scope it watches, so a rule you never
+want to hear from again is a rule that should be **off**, and the enable switch
+says that on the list where a permanent mute would read as *healthy, just quiet*.
+The Inbox's per-incident mute does offer *indefinitely*, because it silences one
+scope of one rule — see
+[Silencing an incident](./alerting.md#silencing-an-incident).
 
 This used to be a **separate nav item** with its own page, rendering the same
 `AlertRule` rows under a second noun: a rule was read there and edited under
@@ -585,7 +594,13 @@ and message and items templates with variables such as `${channel}`,
 `${matched_count}`, and `${items_text}`. Metric-scope anomalies are also safe-off
 and are enabled by the rule editor's **Metrics** box (`include_metrics`). A rule can be
 **simulated/replayed** over the last N days (default 7), optionally overriding
-the saved cooldown. The **Inbox** groups correlated deliveries; the **Delivery
+the saved cooldown. The **Inbox** is one row per incident — keyed by *(scan, rule,
+scope, direction)* — with six actions: **acknowledge**, **resolve**, **mute**
+(**1h / 24h / 7d / indefinitely**), **reopen**, **false positive**, and a
+standalone **note**. Acknowledge, resolve, mute and false positive all stop
+further deliveries for that incident; only a mute outlives the incident, and only
+a false positive changes detection. See
+[Silencing an incident](./alerting.md#silencing-an-incident). The **Delivery
 log** lists deliveries filterable by status (pending / sent / failed) with retry
 on failures, plus channel, destination, rule, and **scan**. That third section's
 `?section=` key is still `audit` — the label changed, the link did not, and it is

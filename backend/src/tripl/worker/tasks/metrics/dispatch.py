@@ -158,12 +158,31 @@ def _reopen_closed_incidents(
     every scope of the rule to be quiet at once, which a suppressed scope could
     never be — it kept firing, unseen, holding its own release hostage.
 
-    A TIMED mute is deliberately excluded. "Acknowledged" means "I am on this
-    incident" and dies with it; "muted until T" means "do not tell me before T"
-    regardless of what the signal does in between. Resetting it here killed a
-    seven-day mute on the first quiet collection and paged the user again hours
-    later (tripl-jfm3.98). A lapsed mute is already reopened by
-    ``_suppressed_correlation_group_ids``, so mutes have their own lifecycle.
+    A mute is deliberately excluded, timed or indefinite. "Acknowledged" means
+    "I am on this incident" and dies with it; "muted until T" means "do not tell
+    me before T" regardless of what the signal does in between. Resetting it here
+    killed a seven-day mute on the first quiet collection and paged the user
+    again hours later (tripl-jfm3.98).
+
+    An INDEFINITE mute (``muted_until`` NULL — "muted until I unmute") is the
+    same promise with no T at all, and is the one a fall-through hurts most: its
+    release is a deliberate human act, so nothing downstream would ever restore
+    the row. The check below is therefore ``muted_until is None or muted_until >
+    now`` and NOT ``is not None and > now``, which read a NULL as an expiry
+    infinitely far in the past and silently released the strongest mute in the
+    product on the first quiet scan (tripl-a50u). Unreachable until the inbox
+    validator started accepting a mute with no expiry, which is precisely why it
+    had to be fixed in the same change.
+
+    Note the OPPOSITE shape at the rule-mute check in
+    ``_prepare_alert_deliveries``: on an ``AlertRule`` a NULL ``muted_until``
+    means NOT MUTED, because a rule carries no status column to tell "never
+    muted" from "muted forever" and NULL is the default on every rule ever
+    created. The two lines look alike and must not be made to agree — see
+    ``AlertInboxActionRequest.validate_action``.
+
+    A LAPSED mute is still reopened, by ``_suppressed_correlation_group_ids``, so
+    mutes have their own lifecycle and this function does not run it.
     """
     group_ids = [
         _correlation_group_id(
@@ -187,7 +206,7 @@ def _reopen_closed_incidents(
         )
     ).scalars():
         muted_until = _as_utc(state.muted_until)
-        if state.status == "muted" and muted_until is not None and muted_until > now:
+        if state.status == "muted" and (muted_until is None or muted_until > now):
             continue
         state.status = "open"
         state.muted_until = None
@@ -474,6 +493,14 @@ def _prepare_alert_deliveries(
             # model comment called worker-side suppression "a separate
             # follow-up" — so the Monitors UI shipped a Mute button that wrote a
             # column and changed nothing (tripl-jfm3.99).
+            #
+            # ``is not None and > now`` is correct HERE and must stay: a NULL on
+            # an AlertRule means NOT MUTED (it is the default on every rule ever
+            # created, and the rule has no status column to say otherwise). The
+            # near-identical line in ``_reopen_closed_incidents`` reads a NULL
+            # the OPPOSITE way — there it is the indefinite inbox mute — so do
+            # not unify them (tripl-a50u). A rule's permanent lever is
+            # ``enabled``.
             rule_muted_until = _as_utc(rule.muted_until)
             if rule_muted_until is not None and rule_muted_until > now:
                 continue

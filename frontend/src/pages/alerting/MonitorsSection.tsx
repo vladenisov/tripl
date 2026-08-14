@@ -17,7 +17,7 @@ import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { useConfirm } from '@/hooks/useConfirm'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { countOf } from '@/lib/plural'
-import { MUTE_PRESETS, muteUntilIso } from '@/lib/mutePresets'
+import { MUTE_PRESETS, muteChoiceName, muteName, muteUntilIso, unmuteName } from '@/lib/mutePresets'
 import { VIEWER_READ_ONLY_NOTICE } from '@/lib/permissions'
 import {
   MONITOR_STATUS_LABEL as STATUS_LABEL,
@@ -495,9 +495,44 @@ function RuleRow({
             {rule.name}
           </Link>
           {!rule.enabled && <Chip tone="neutral" size="xs">off</Chip>}
-          {rule.muted && (
+          {/* The MIRROR IMAGE of the incident card's muted line in
+              AlertingInbox.tsx — read the two together, because the difference
+              between them is deliberate and this row looks like an
+              inconsistency on its own.
+
+              An INCIDENT has THREE states and its guard must therefore stay
+              `group.muted` alone, with the timestamp branched on inside. An
+              ALERT RULE has TWO, because `is_rule_muted()`
+              (backend `_alerting_monitors.py`) returns FALSE the moment
+              `muted_until` is NULL — and NULL is the default on every rule ever
+              created:
+                - muted     → muted = true,  muted_until = <future>
+                - not muted → muted = false, muted_until = NULL or already past
+              So `muted && !muted_until` cannot occur here. The second condition
+              is NOT a second possibility being handled: it is type narrowing,
+              `string | null` down to the `string` formatDateTime needs, written
+              out rather than asserted so this row can never print an invalid
+              date if the API ever breaks its own contract.
+
+              What stood here was a `: 'muted'` else-branch — dead since it was
+              written, and actively misleading since tripl-a50u gave INCIDENTS a
+              real open-ended mute. Not because the strings match: the incident
+              card spells its open-ended case out as "muted — no end date, until
+              you unmute it". Because the SHAPE matches — silenced, with no end
+              date to show — and that shape now exists one file away, so a reader
+              skimming this row read the bare chip as a rule muted forever. That
+              is the opposite of the invariant: a rule's permanent lever is its
+              `enabled` switch, never a mute (tripl-b82m).
+
+              Do not restore the else branch. It could only ever fire on a
+              contract violation, and "muted, no end" is the one thing it would
+              be wrong to say then. The row does go quiet on that impossible
+              input — no chip, while the control still offers Unmute — and that
+              is the deliberate trade: saying nothing is recoverable, asserting a
+              state the product does not have is not. */}
+          {rule.muted && rule.muted_until && (
             <Chip tone="warning" size="xs">
-              {rule.muted_until ? `muted until ${formatDateTime(rule.muted_until)}` : 'muted'}
+              {`muted until ${formatDateTime(rule.muted_until)}`}
             </Chip>
           )}
         </span>
@@ -671,6 +706,12 @@ function RuleSetting({ label, value }: { label: string; value: string }) {
  * durations in place, with the same `Mute <target> for <duration>` labels. Two
  * mute controls on one page that behave differently is the smaller version of
  * the problem this whole merge is fixing.
+ *
+ * Those labels are now the same because they are the same FUNCTION, not because
+ * three files were kept in step by hand: `muteName`, `muteChoiceName` and
+ * `unmuteName` come from `@/lib/mutePresets` alongside the durations. Rewording
+ * one surface in place is no longer possible without editing the module every
+ * mute surface reads (tripl-yapg).
  */
 function MuteControl({
   ruleName,
@@ -693,7 +734,7 @@ function MuteControl({
         className="h-8 w-8"
         disabled={isPending}
         onClick={() => onMute(null)}
-        aria-label={`Unmute ${ruleName}`}
+        aria-label={unmuteName(ruleName)}
         title="Unmute this rule"
       >
         <Bell aria-hidden="true" className="h-4 w-4" />
@@ -710,7 +751,11 @@ function MuteControl({
         disabled={isPending}
         aria-expanded={open}
         onClick={() => setOpen(current => !current)}
-        aria-label={`Mute ${ruleName}`}
+        // A disclosure toggle, not a mute: it reveals the durations below and
+        // writes nothing, which is why it is named by `muteName` and not by
+        // `muteChoiceName`. The button that commits carries its duration
+        // (tripl-oxkt.7).
+        aria-label={muteName(ruleName)}
         title="Mute this rule for a while"
       >
         <BellOff aria-hidden="true" className="h-4 w-4" />
@@ -724,7 +769,13 @@ function MuteControl({
               size="sm"
               variant="outline"
               className="h-6 px-2 text-[10px]"
-              aria-label={`Mute ${ruleName} for ${preset.label}`}
+              // MUTE_PRESETS' `ms` is `number`, so this call is statically
+              // confined to the "for <duration>" branch of `muteChoiceName`.
+              // The open-ended phrasing exists inside that builder but is
+              // unreachable from here without importing INDEFINITE_MUTE by
+              // name — which would be the leak tripl-a50u forbids, since
+              // `is_rule_muted()` reads a NULL `muted_until` as NOT MUTED.
+              aria-label={muteChoiceName(ruleName, preset)}
               disabled={isPending}
               onClick={() => {
                 setOpen(false)

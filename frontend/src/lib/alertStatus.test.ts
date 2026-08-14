@@ -147,6 +147,24 @@ describe('the confirmation names the whole suppression key (tripl-oxkt.7)', () =
     // silenced and did not.
     expect(message).toContain('Nothing else is silenced')
   })
+
+  it('says an open-ended mute has no end date, instead of printing "Invalid Date"', () => {
+    // The Inbox can now mute with no end at all (tripl-a50u), which arrives here
+    // as a null. Handing that to `formatDateTime` renders "Invalid Date" in the
+    // middle of the one sentence whose entire job is to state the blast radius
+    // before anything goes quiet — on the most far-reaching mute of the lot.
+    const message = muteConfirmMessage(makeGroup(), null)
+
+    expect(message).toMatch(/until you unmute/i)
+    expect(message).not.toContain('Invalid Date')
+    // The whole key is still spelled: the open-ended branch replaces the date,
+    // not the sentence.
+    expect(message).toContain('drop · volume')
+    expect(message).toContain('onboarding/reviews_carousel')
+    expect(message).toContain('Snowplow Pageviews (iOS)')
+    expect(message).toContain('Volume rule')
+    expect(message).toContain('Nothing else is silenced')
+  })
 })
 
 describe('an action says what it actually did (tripl-oxkt.6)', () => {
@@ -188,5 +206,19 @@ describe('an action says what it actually did (tripl-oxkt.6)', () => {
       response({ group: makeGroup({ status: 'muted', muted: true, muted_until: '2026-08-19T10:00:00Z' }) }),
     )
     expect(message).toMatch(/^Muted until /)
+  })
+
+  it('does not let an open-ended mute read like a timed one', () => {
+    // This branch was unreachable while the API demanded a `muted_until`, and
+    // it was a bare "Muted." — indistinguishable from a seven-day snooze, for
+    // the one mute that never lapses on its own (tripl-a50u).
+    const message = inboxActionSuccessMessage(
+      'mute',
+      'open',
+      response({ group: makeGroup({ status: 'muted', muted: true, muted_until: null }) }),
+    )
+    expect(message).toMatch(/no end date/i)
+    expect(message).toMatch(/until you unmute/i)
+    expect(message).not.toBe('Muted.')
   })
 })
