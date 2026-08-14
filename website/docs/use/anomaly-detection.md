@@ -383,6 +383,14 @@ Two details worth knowing:
 
 **Undoing it.** The ratchet is permanent — it never decays on its own. Every scope it has tightened is listed under **Settings → Monitoring → Scope overrides**, showing the scope, the scan, the values in force, and how many false positives produced them. **Remove** an override and that scope goes straight back to the project settings; nothing else moves. The project-wide `sigma_threshold` and `min_expected_count` are never changed by this feedback — they remain whatever you set. An empty list there means what it says: if the list cannot be loaded the card reports the error and offers a retry, rather than telling you nothing has been tightened.
 
+**False positive is the "the detector is wrong here" lever, and it is the only
+inbox action that changes detection at all.** Acknowledging or muting the same
+incident buys silence and leaves both thresholds exactly where they were, so the
+next occurrence is scored identically and alerts identically. Pick between them by
+intent, not by which button is nearest —
+[Silencing an incident](./alerting.md#silencing-an-incident) sets the levers side
+by side.
+
 :::tip Troubleshooting
 If a series you expect to be watched is never flagged, the usual causes are: detection is disabled, the series sits below `min_expected_count`, the series is too young for a phase baseline (and too sparse for the rolling fallback), or a false-positive **scope override** has raised the thresholds for that series (check **Settings → Monitoring → Scope overrides**). If instead it is flagged but *late*, that is the [ingestion-settling allowance](#detection-latency) — the newest buckets are deliberately held unscored until they have settled. See [Troubleshooting](./troubleshooting.md).
 :::

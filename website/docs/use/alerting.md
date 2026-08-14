@@ -613,6 +613,8 @@ The **By version** tab on an event's monitoring page shows the same check for
 the *current* latest release, with the comparability verdict; see
 [Release regression](anomaly-detection.md#release-regression).
 
+### The Inbox — one row per incident {#the-inbox}
+
 The **Inbox** is one row per **incident** — a rule firing in one direction on one
 scope of a scan — over the last 30 days. An incident stays the same row for as
 long as it keeps firing, however many buckets it spans, so a decision you make
@@ -623,12 +625,76 @@ it, but you no longer have to change an incident's status to write one down:
 saying why something was a false positive used to mean first undoing the false
 positive.
 
-**Acknowledge, resolve and mute all stop further deliveries** for that incident.
+### Silencing an incident: acknowledge, mute, resolve, false positive {#silencing-an-incident}
+
+**Four of the six actions stop further deliveries** for that incident:
+**acknowledge**, **resolve**, **mute** and **false positive**. Acknowledge is in
+that list, which surprises people who read it as a receipt rather than as a
+silencer — and it was one, until an operator who had acked an incident and was
+still being paged for it every hour reported the Inbox as decorative, which it
+then was, because ack was the single action with no effect on delivery at all. A
+suppressed incident produces no delivery: it is dropped before the messages are
+built, not built and then withheld. **Reopen** lifts any of the four by hand, and
+a **note** on its own decides nothing.
+
 Because the row is per scope, silencing one screen leaves every other scope the
-rule watches alerting normally. The suppression lasts until that scope stops
-firing, at which point the row returns to `open` on its own, so the next
-occurrence alerts and an old decision can never silence a new problem.
-**Reopen** lifts the suppression by hand.
+rule watches alerting normally. An incident is keyed by *(scan, rule, scope,
+direction)*, so two rules watching the same event keep two incidents — silence
+one and the other still pages you, from its own row.
+
+**The four do not last alike, and that is the whole answer to "I acknowledged it
+and it fired again".** Acknowledge, resolve and false positive last exactly as
+long as the incident does: the first collection in which that scope stops firing
+returns the row to `open` by itself, so the next occurrence is a *new* incident
+and alerts. That is deliberate — an old decision can never silence a new problem.
+A **mute** is the single exception. It holds for the whole duration you chose
+whatever the signal does in between, because *acknowledged* means "I am on this
+incident" and dies with it, while *muted until Thursday* means "do not tell me
+before Thursday". Releasing mutes on the first quiet collection once killed a
+seven-day mute and paged its owner again hours later.
+
+**Mute durations.** The Inbox offers **1h**, **24h**, **7d** and
+**indefinitely**, with the duration written on the button, so no mute is silent
+about how long it is — an unlabelled Mute button that quietly meant a week, and
+quietly extended by another week when clicked again, is what made the labels
+necessary. The first three are resolved into a `muted_until` instant at the moment
+you click, and the row counts as `open` again on its own once it passes.
+**Indefinitely** stores no `muted_until` at all: it never lapses, it is not
+released when the incident ends, and the only thing that lifts it is **Reopen**.
+
+**A rule has 1h / 24h / 7d and no indefinite option**, on purpose. Muting a rule
+silences every scope it watches, not one, and a rule you never want to hear from
+again is not a muted rule — it is a disabled one. The **enable** switch on the
+Monitors tab is that lever, and it is the honest one: a permanently muted rule
+would sit in the list reading *healthy, just quiet*.
+
+Which lever fits which intent:
+
+| What you actually mean | Reach for | How long it holds | What else it does |
+|---|---|---|---|
+| I am on this — stop paging me while I work | **Acknowledge** | Until this incident ends | Stamps the row *handled by you* |
+| This is over | **Resolve** | Until this incident ends | Same suppression; a different statement to whoever reads the row next |
+| Do not tell me before *T*, whatever the signal does | **Mute 1h / 24h / 7d** | Exactly that long | The only decision that outlives the incident |
+| Do not tell me until I say so | **Mute indefinitely** (Inbox only) | Until you press **Reopen** | Outlives everything except Reopen |
+| The detector is wrong about this scope | **False positive** | Until this incident ends | **Permanently** raises that scope's `sigma_threshold` (+0.5, capped at 10) and `min_expected_count` (+5, capped at 1000), compounding on repeat clicks. It never decays; it is listed and removable under **Settings → Monitoring → Scope overrides**. Volume scopes only — on a schema drift, distribution drift or release regression it suppresses like an acknowledge and tunes nothing, because those are not scored by these two knobs, and the confirmation says how many scopes it actually tightened |
+| This event must never reach this channel again | A rule **filter**, `event` `not_in` […] | Permanent, per rule, no expiry | Excludes that event's *own* signals only. The project-total and event-type rollups it feeds carry no `event_id`, and a filter on a field a signal does not carry passes through — so those keep alerting |
+| This event should not be monitored at all | **Archive** the event | Until you un-archive it | Takes it out of detection entirely: no metric points scored, no signals raised, so there is nothing left to alert on |
+
+Read that table as "how permanent do you want this to be". The common mistake is
+reaching for **mute** when the honest answer is one of the last three: a mute buys
+silence and changes nothing, so whatever made the alert fire is still there,
+unchanged, when the mute lifts.
+
+:::tip It fired again — did it come back, or did it never stop?
+Expand the incident row and read its deliveries. A *different* row with a later
+first delivery means the scope genuinely recovered and relapsed, and your
+acknowledge did its job for the incident it was about. The *same* row still open
+means the suppression was lifted — by **Reopen**, or by a mute running out. A
+second row for the same scope under a different rule name means two rules are
+watching it and you silenced one of them.
+:::
+
+### Notes on an incident {#incident-notes}
 
 The note is attached to the incident, survives later actions, and is only
 replaced when you write a new one.
@@ -639,6 +705,8 @@ handled it or when, so the row does not start claiming "already handled by
 you". Send an empty note to clear the stored one. The other five actions do stamp
 it, which is what the row's *handled by* line is read from — and what tells a
 re-fired incident from a fresh one.
+
+### Finding and reading an incident row {#finding-an-incident}
 
 The scope name on an incident row links to the thing that fired — the event,
 event type, project-total or metric monitoring page — so you can check whether
@@ -661,7 +729,8 @@ A muted, resolved, acknowledged or false-positive incident is therefore reached
 with the **status** filter — `?status=open` / `acknowledged` / `resolved` /
 `muted` / `false_positive`, and an unrecognised value is a 422 rather than a
 silent empty page — and not by scrolling. A mute that has run out counts as
-`open` again and rejoins the top run on its own.
+`open` again and rejoins the top run on its own; an indefinite mute never runs
+out, so it stays under `?status=muted` until you reopen it.
 
 The Inbox lists the last **30 days**, but an alert's link is not bound by that
 window: `GET /api/v1/projects/{slug}/alert-inbox/{correlation_group_id}` resolves
@@ -701,7 +770,7 @@ The fields worth knowing before you read one:
 | `rules` | Every rule behind the incident, as `{id, name}` pairs sorted by name. |
 | `rule_names` | The same names as plain sorted text, which is what the row renders as its label line. |
 | `acted_by`, `acted_by_name` | Who last acted on it, and their display name. |
-| `muted`, `muted_until` | Whether it is silenced, and until when. |
+| `muted`, `muted_until` | Whether it is silenced, and until when. `muted_until` is `null` both when the incident is not muted and when it is muted **indefinitely**, which has no end to report — so read `muted` for the fact and `muted_until` only for the deadline. |
 
 Several of those need a sentence more.
 
@@ -746,8 +815,10 @@ repair it either. `rules` carries the id and the name **together**, sorted by na
 
 :::note An incident's `muted` and a rule's `muted` are not built alike
 On an incident, `muted` is true exactly while the mute is in force **and**
-`muted_until` is nulled the moment it lapses, so the pair can never contradict
-itself. On a rule (and on a monitor) `muted` is likewise the effective flag, but
+`muted_until` is nulled the moment it lapses, so the pair can never say the mute
+is still running when it is not. An **indefinite** mute is the one case where
+`muted` is true with `muted_until` `null` — there is no lapse instant because
+there is no lapse. On a rule (and on a monitor) `muted` is likewise the effective flag, but
 `muted_until` is the raw stored timestamp and keeps being emitted after it has
 passed — see
 [What a rule reports about its own state](#what-a-rule-reports-about-its-own-state).

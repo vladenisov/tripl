@@ -9,6 +9,7 @@ import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
+import { MUTE_PRESETS, muteUntilIso, type MutePreset } from '@/lib/mutePresets'
 import {
   ALERT_DELIVERY_TONE as DELIVERY_TONE,
   MONITOR_STATUS_LABEL as STATUS_LABEL,
@@ -17,20 +18,6 @@ import {
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import { formatCooldown } from './alerting/constants'
 import type { AlertDelivery, MonitorDetail } from '@/types'
-
-const HOUR_MS = 60 * 60 * 1000
-
-// Preset mute durations. The contract requires `muted_until` to be a future
-// instant, so each preset is rendered into an absolute ISO timestamp at click.
-const MUTE_PRESETS: readonly { label: string; ms: number }[] = [
-  { label: '1h', ms: HOUR_MS },
-  { label: '24h', ms: 24 * HOUR_MS },
-  { label: '7d', ms: 7 * 24 * HOUR_MS },
-]
-
-function futureIso(ms: number): string {
-  return new Date(Date.now() + ms).toISOString()
-}
 
 export default function MonitorDetailPage() {
   const { slug, monitorId } = useParams<{ slug: string; monitorId: string }>()
@@ -141,7 +128,7 @@ export default function MonitorDetailPage() {
 
           <MuteControl
             muted={monitor.muted}
-            onMute={(ms) => muteMut.mutate(futureIso(ms))}
+            onMute={(ms) => muteMut.mutate(muteUntilIso(ms))}
             onUnmute={() => unmuteMut.mutate()}
             isPending={muteMut.isPending || unmuteMut.isPending}
             errorMessage={muteError instanceof Error ? muteError.message : null}
@@ -205,6 +192,25 @@ function ActionButton({
   )
 }
 
+/**
+ * Mute / unmute for one alert RULE.
+ *
+ * Two things a reader should not have to reconstruct:
+ *
+ * 1. The durations come from `@/lib/mutePresets`. This page owned a third copy
+ *    of the list plus its own `futureIso` resolver while that module existed
+ *    for exactly the purpose of there being one — and a private copy is how the
+ *    surfaces drift apart again, which is the defect the module was extracted
+ *    to fix (tripl-es0f, tripl-oxkt.7). The shared resolver also takes an
+ *    injectable `now`, so a test can pin the instant instead of racing it.
+ *
+ * 2. There is deliberately NO open-ended option here, even though the incident
+ *    Inbox has one. `is_rule_muted()` returns false the moment a rule's
+ *    `muted_until` is NULL, so a button promising "until I unmute" would write
+ *    the value that UN-mutes the rule. The permanent lever on a rule is the
+ *    enable/disable switch, not a mute — which is why `MUTE_PRESETS` (durations
+ *    only) is imported here and `INBOX_MUTE_CHOICES` is not (tripl-a50u).
+ */
 function MuteControl({
   muted,
   onMute,
@@ -233,7 +239,7 @@ function MuteControl({
             <BellOff className="h-3.5 w-3.5" />
             Mute for
           </span>
-          {MUTE_PRESETS.map((preset) => (
+          {MUTE_PRESETS.map((preset: MutePreset) => (
             <ActionButton
               key={preset.label}
               icon={null}

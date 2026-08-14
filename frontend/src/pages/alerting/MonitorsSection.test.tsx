@@ -250,6 +250,29 @@ describe('MonitorsSection mute', () => {
 
     await waitFor(() => expect(unmute).toHaveBeenCalledWith('windy-ios', 'rule-1'))
   })
+
+  it('can only mute a rule for a fixed time — no open-ended choice here (tripl-a50u)', async () => {
+    // The scope boundary of the indefinite mute. On an INCIDENT a NULL
+    // `muted_until` means "silenced until somebody unmutes it"; on a RULE
+    // `is_rule_muted()` returns FALSE for a NULL `muted_until`, so the very same
+    // button would UN-mute the rule it promises to silence forever. The
+    // permanent lever on a rule is its enable/disable switch.
+    //
+    // This fails the moment the open-ended option leaks in — whether by growing
+    // MUTE_PRESETS (which all three surfaces map) or by copy-pasting the Inbox
+    // control onto this row.
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Mute Prod drops' }))
+
+    for (const label of ['1h', '24h', '7d']) {
+      expect(screen.getByRole('button', { name: `Mute Prod drops for ${label}` }))
+        .toBeInTheDocument()
+    }
+    expect(screen.queryByRole('button', { name: /until unmuted/i })).toBeNull()
+    expect(screen.queryByText(/Until I unmute/i)).toBeNull()
+  })
 })
 
 describe('MonitorsSection rule writes', () => {

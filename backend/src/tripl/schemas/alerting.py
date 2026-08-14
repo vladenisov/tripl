@@ -769,17 +769,41 @@ class AlertInboxListResponse(BaseModel):
 class AlertInboxActionRequest(BaseModel):
     action: AlertInboxAction
     note: str | None = Field(None, max_length=2000)
+    # ``None`` on a ``mute`` is the INDEFINITE mute — "muted until I unmute" —
+    # not a missing field; see ``validate_action``. Every other action nulls the
+    # column anyway, so a value sent with them is ignored.
     muted_until: datetime | None = None
 
     @model_validator(mode="after")
     def validate_action(self) -> AlertInboxActionRequest:
-        if self.action == "mute" and self.muted_until is None:
-            raise ValueError("muted_until is required when action is mute")
+        """Reject the action bodies that would be accepted and then do nothing.
+
+        A ``mute`` with NO ``muted_until`` is no longer one of them. On the INBOX
+        a null means "muted until I unmute": the operator watching a scope they
+        already know is broken had to invent an expiry date, and got paged again
+        the moment they guessed too short (tripl-a50u). The column is nullable
+        and every reader already agrees on that reading —
+        ``_effective_inbox_status`` leaves a null-muted row at ``muted``,
+        ``_suppressed_correlation_group_ids`` never lapses it, and
+        ``_build_inbox_group_response`` emits ``muted: true`` with a null
+        ``muted_until``. ``reopen`` is the only exit, which is the point.
+
+        This is TRUE OF THE INBOX ONLY. On an ``AlertRule`` a null
+        ``muted_until`` means NOT MUTED — ``_alerting_monitors.is_rule_muted``
+        returns False for it — because the rule carries no status column to tell
+        "never muted" from "muted forever", and NULL is what every rule ever
+        created already has. Relaxing ``MonitorMuteRequest.muted_until`` to match
+        this model would therefore mute every monitor in the fleet at once. The
+        rule's permanent lever is its ``enabled`` switch; the two payloads read
+        the same column name in opposite directions and must not be unified.
+        """
         # ``note`` is the one action whose entire effect is the note, and the
         # write below is conditional on ``note is not None``. Without this guard
         # a ``{"action": "note"}`` body was a silent 200 that changed nothing
         # while still inserting a correlation-state row — the request looked
-        # accepted and the note was never saved. Mirrors the mute guard above.
+        # accepted and the note was never saved. It is now the ONLY guard here;
+        # the mute guard it used to mirror went away when a null ``muted_until``
+        # became the indefinite mute (tripl-a50u).
         # An EMPTY STRING stays valid: it is the documented way to clear a note
         # (``apply_alert_inbox_action`` stores ``strip() or None``).
         if self.action == "note" and self.note is None:
@@ -945,6 +969,11 @@ class MonitorDetailResponse(MonitorSummaryItem):
 
 
 class MonitorMuteRequest(BaseModel):
-    # Timed mute, like the inbox mute action: the monitor stays muted until this
-    # instant, which must be in the future.
+    # Timed mute ONLY: the monitor stays muted until this instant, which must be
+    # in the future. REQUIRED and non-null, unlike the inbox mute action this
+    # used to mirror — there a null ``muted_until`` now means "muted until I
+    # unmute" (tripl-a50u), but here it means NOT MUTED: ``is_rule_muted``
+    # answers False for a null, and null is the default on every AlertRule ever
+    # created. Making this optional to match the inbox would mute the whole
+    # fleet at once. A rule's permanent lever is ``enabled``.
     muted_until: datetime

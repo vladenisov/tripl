@@ -577,6 +577,100 @@ describe('ProjectAlertingTab — an inbox action reports on its own row (tripl-o
   })
 })
 
+describe('ProjectAlertingTab — an open-ended mute is confirmed and sent explicitly (tripl-a50u)', () => {
+  /**
+   * Records the action request body and never answers it.
+   *
+   * Holding the response keeps the assertion on the REQUEST — the only thing
+   * under test here — and keeps the success toast out of a test with no
+   * `<Toaster />` mounted.
+   */
+  function mockInboxCapturingAction(groups: Record<string, unknown>[]) {
+    const actionBodies: Record<string, unknown>[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/alert-inbox/') && url.endsWith('/actions')) {
+        actionBodies.push(JSON.parse(String(init?.body)))
+        return new Promise<Response>(() => {})
+      }
+      if (/\/alert-inbox(\?|$)/.test(url)) {
+        return jsonResponse({ items: groups, total: groups.length })
+      }
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: false })
+      }
+      if (url.includes('/alert-destinations')) {
+        return jsonResponse([makeDestination({ rules: [makeRule()] })])
+      }
+      if (url.includes('/alert-deliveries')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.includes('/events')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/scans')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    return { actionBodies }
+  }
+
+  function renderInbox() {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=inbox']}>
+          <ProjectAlertingTab slug="demo" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('asks first, and posts muted_until: null with the key present', async () => {
+    const { actionBodies } = mockInboxCapturingAction([makeInboxGroup()])
+    renderInbox()
+
+    // Named by the SCOPE, not the rule: `scopeSummary` joins `scope_names`, so
+    // this fixture's button is "Mute payment_failed" while its rule happens to be
+    // called "payment_failed spike".
+    fireEvent.click(await screen.findByRole('button', { name: 'Mute payment_failed' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Mute payment_failed until unmuted' }))
+
+    // The confirmation was gated on `variables.mutedUntil` being truthy, so the
+    // ONE mute that never lapses on its own — and can only be lifted by hand —
+    // was the only mute on the page that went through without asking.
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/until you unmute it/i)).toBeInTheDocument()
+    expect(within(dialog).getByText(/Nothing else is silenced/)).toBeInTheDocument()
+    expect(within(dialog).queryByText(/Invalid Date/)).toBeNull()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Mute' }))
+
+    // `null`, and the KEY IS PRESENT: the body was assembled with a
+    // `action === 'mute' && mutedUntil` spread, which dropped `muted_until`
+    // entirely for exactly this choice and posted a request that said nothing
+    // about how long the silence lasts.
+    await waitFor(() => expect(actionBodies).toHaveLength(1))
+    expect(actionBodies[0]).toEqual({ action: 'mute', muted_until: null })
+    expect('muted_until' in actionBodies[0]).toBe(true)
+  })
+
+  it('still sends a timed mute as an instant', async () => {
+    const { actionBodies } = mockInboxCapturingAction([makeInboxGroup()])
+    renderInbox()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Mute payment_failed' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Mute payment_failed for 24h' }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Mute' }))
+
+    await waitFor(() => expect(actionBodies).toHaveLength(1))
+    const body = actionBodies[0] as { action: string; muted_until: string }
+    expect(body.action).toBe('mute')
+    expect(new Date(body.muted_until).getTime()).toBeGreaterThan(Date.now())
+  })
+})
+
 describe('ProjectAlertingTab — demo workspaces are zero-egress (tripl-2su6.12)', () => {
   it('offers no external channel to add, and says why', async () => {
     mockAlertingFetch([makeDestination({ rules: [makeRule()] })], { isDemo: true })

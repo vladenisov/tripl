@@ -214,15 +214,31 @@ function nameList(names: readonly string[], fallback: string): string {
  * exact match on (scan, rule, scope, scope kind, direction). Every gap between
  * those two is an incident the operator believes they silenced and did not, so
  * the sentence spells all five parts and then says what is NOT covered.
+ *
+ * `mutedUntilIso` is nullable because the Inbox can mute with no end date at
+ * all (tripl-a50u), and that case gets its own clause rather than a formatted
+ * timestamp: `formatDateTime(null)` would print "Invalid Date" inside the one
+ * sentence whose entire job is to state the blast radius before anything goes
+ * quiet. The open-ended clause also names the way back, because an indefinite
+ * mute never lapses server-side — its sort key is frozen, so the incident sinks
+ * out of the 30-day window and the Muted filter becomes the only route to the
+ * Unmute button that lifts it.
  */
-export function muteConfirmMessage(group: AlertInboxGroup, mutedUntilIso: string): string {
+export function muteConfirmMessage(
+  group: AlertInboxGroup,
+  mutedUntilIso: string | null,
+): string {
   const scopes = nameList(group.scope_names, 'this scope')
   const reason = incidentReasonLabel(group.direction, group.scope_types)
   const scans = nameList(group.scan_names, 'this scan')
   const rules = nameList(group.rule_names, 'this rule')
+  const duration = mutedUntilIso
+    ? `until ${formatDateTime(mutedUntilIso)}`
+    : 'with no end date — it stays silenced until you unmute it, and you will '
+      + 'find it again under the Muted filter'
   return (
-    `Silences "${reason}" on ${scopes}, from ${scans} via ${rules}, until ` +
-    `${formatDateTime(mutedUntilIso)}. Nothing else is silenced: the same scope ` +
+    `Silences "${reason}" on ${scopes}, from ${scans} via ${rules}, ` +
+    `${duration}. Nothing else is silenced: the same scope ` +
     'moving the other way, a different kind of signal on it, another scan or ' +
     'another rule all still alert.'
   )
@@ -269,10 +285,16 @@ export function inboxActionSuccessMessage(
       return 'Acknowledged. It stays quiet until the scope goes quiet, then reopens.'
     case 'resolve':
       return 'Resolved. It stays quiet until the scope goes quiet, then reopens.'
+    // A NULL `muted_until` on a mute that just succeeded is the open-ended
+    // mute (tripl-a50u), not a missing value — the branch used to be an
+    // unreachable bare "Muted." because the API required a timestamp. Left as
+    // that one word it would be the only feedback for a permanent silence and
+    // would read exactly like a seven-day snooze, so it says which one it is
+    // and how it ends.
     case 'mute':
       return response.group.muted_until
         ? `Muted until ${formatDateTime(response.group.muted_until)}.`
-        : 'Muted.'
+        : 'Muted — no end date. It stays quiet until you unmute it.'
     case 'reopen':
       return previousStatus === 'muted' ? 'Unmuted — alerts resume.' : 'Reopened.'
     case 'note':

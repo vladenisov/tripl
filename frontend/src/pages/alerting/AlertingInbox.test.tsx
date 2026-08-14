@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
@@ -153,6 +153,66 @@ describe('AlertingInbox — the undo for a mute is called Unmute (tripl-oxkt.3)'
     // Resolved to an absolute future instant here, so the sentence the confirm
     // shows and the value that is written are the same one.
     expect(new Date(variables.mutedUntil!).getTime()).toBeGreaterThan(Date.now())
+  })
+})
+
+describe('AlertingInbox — an incident can be silenced with no end date (tripl-a50u)', () => {
+  it('offers the open-ended choice beside the timed presets, and asks for null', () => {
+    const { onAction } = renderInbox()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mute onboarding/reviews_carousel' }))
+
+    // Supplementing the presets, not replacing them: a snooze is still the
+    // common case and must stay one click away.
+    for (const label of ['1h', '24h', '7d']) {
+      expect(screen.getByRole('button', { name: `Mute onboarding/reviews_carousel for ${label}` }))
+        .toBeInTheDocument()
+    }
+    const indefinite = screen.getByRole('button', {
+      name: 'Mute onboarding/reviews_carousel until unmuted',
+    })
+    expect(indefinite).toHaveTextContent('Until I unmute')
+
+    fireEvent.click(indefinite)
+    expect(onAction).toHaveBeenCalledTimes(1)
+    const variables = onAction.mock.calls[0][0]
+    expect(variables.action).toBe('mute')
+    // STRICTLY null, and the key present. `undefined` is indistinguishable from
+    // "no duration chosen" two hops downstream, where an object spread would
+    // drop `muted_until` from the request body altogether.
+    expect(variables.mutedUntil).toBeNull()
+    expect('mutedUntil' in variables).toBe(true)
+  })
+
+  it('says on the card that a mute with no end date is in force', () => {
+    renderInbox({
+      inbox: {
+        items: [makeGroup({ status: 'muted', muted: true, muted_until: null })],
+        total: 1,
+      },
+    })
+
+    // The line used to be guarded on `muted && muted_until`, so an incident
+    // silenced forever rendered a "Muted" chip and not one word about how long
+    // for or how to undo it — the silent mute of tripl-oxkt.7, back again.
+    const card = document.getElementById('incident-grp-1')!
+    expect(within(card).getByText(/no end date/i)).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: /^Unmute / })).toBeInTheDocument()
+  })
+
+  it('still says nothing about a mute that has already lapsed (tripl-oxkt.20)', () => {
+    // The backend reports a LAPSED mute as status open, muted false, and
+    // `muted_until` NULLED — the same null the open-ended case carries, so
+    // `muted` is the only signal separating them. Making the test above pass by
+    // keying the line off `muted_until` brings back the card that showed an
+    // "Open" badge and a mute line at once.
+    renderInbox({
+      inbox: { items: [makeGroup({ status: 'open', muted: false, muted_until: null })], total: 1 },
+    })
+
+    const card = document.getElementById('incident-grp-1')!
+    expect(within(card).queryByText(/^muted/i)).toBeNull()
+    expect(within(card).getByText('Open')).toBeInTheDocument()
   })
 })
 

@@ -110,6 +110,9 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+/** One hour, as the shared preset list defines it. */
+const HOUR_MS = 3_600_000
+
 describe('MonitorDetailPage', () => {
   it('renders the monitor condition, destination, recency and fired history', async () => {
     mockApi()
@@ -171,23 +174,52 @@ describe('MonitorDetailPage', () => {
     expect(screen.queryByText('360m between alerts')).toBeNull()
   })
 
-  it('mutes the monitor for a preset duration', async () => {
+  it('mutes the monitor for a preset duration, at the exact instant that preset means', async () => {
     const fetchMock = mockApi()
 
     renderDetail()
 
     await screen.findByRole('heading', { name: 'payment_failed spike' })
-    fireEvent.click(screen.getByRole('button', { name: '24h' }))
+
+    // The clock is pinned across the click only. This page used to own a
+    // private `futureIso` beside a private copy of the preset list; the rewire
+    // onto the shared `muteUntilIso` (tripl-es0f) is only behaviour-preserving
+    // if the instant is identical, so assert the instant rather than merely
+    // "some time in the future" — which would also pass if the wrong number
+    // were passed in, or the label, or an already-absolute timestamp.
+    const clickedAt = Date.parse('2026-08-14T10:00:00Z')
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(clickedAt)
+    fireEvent.click(screen.getByRole('button', { name: '1h' }))
+    nowSpy.mockRestore()
 
     await waitFor(() => {
       const muteCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/mute'))
       expect(muteCall).toBeTruthy()
       const body = JSON.parse(String((muteCall?.[1] as RequestInit).body)) as { muted_until: string }
-      expect(new Date(body.muted_until).getTime()).toBeGreaterThan(Date.now())
+      expect(body.muted_until).toBe(new Date(clickedAt + HOUR_MS).toISOString())
     })
 
     // After a successful mute the control flips to Unmute.
     expect(await screen.findByRole('button', { name: 'Unmute' })).toBeInTheDocument()
+  })
+
+  it('offers the shared presets, and only those (tripl-es0f, tripl-a50u)', async () => {
+    mockApi()
+
+    renderDetail()
+
+    await screen.findByRole('heading', { name: 'payment_failed spike' })
+
+    // The three the shared module defines, unrenamed and unreordered — this is
+    // what stops the rewire from quietly dropping or relabelling one.
+    for (const label of ['1h', '24h', '7d']) {
+      expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
+    }
+    // …and no open-ended mute. A rule with a NULL `muted_until` is NOT muted
+    // (`is_rule_muted`), so that button would do the opposite of its label here;
+    // the permanent lever on a rule is the enable/disable switch.
+    expect(screen.queryByRole('button', { name: /until unmuted/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Until I unmute/i })).toBeNull()
   })
 
   it('shows an unmute control for an already-muted monitor', async () => {
