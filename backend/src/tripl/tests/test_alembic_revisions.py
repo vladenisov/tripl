@@ -155,6 +155,130 @@ def test_missing_timestamp_server_defaults_migration_is_noop_off_postgresql(
     assert statements == []
 
 
+def _search_stemming_statements(monkeypatch, direction: str) -> list[str]:
+    """Run one direction of ``a7c3e1b9d5f2`` with ``op.execute`` captured.
+
+    The revision is pure ``op.execute``, so its SQL is the whole of it and can be
+    asserted without a database — which is the only kind of coverage available
+    here, since the suite's schema comes from ``Base.metadata.create_all`` and
+    never runs the chain. The executing coverage is the CI round trip
+    (empty -> head -> base -> head) plus the relevance harness, which upgrades a
+    real PostgreSQL to head before it ranks anything.
+    """
+    backend_root = Path(__file__).resolve().parents[3]
+    migration_path = (
+        backend_root / "alembic" / "versions" / "a7c3e1b9d5f2_stem_search_text_configuration.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        f"search_stemming_migration_{direction}", migration_path
+    )
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    statements: list[str] = []
+    monkeypatch.setattr(
+        migration.op, "execute", lambda statement: statements.append(str(statement))
+    )
+    getattr(migration, direction)()
+    return [" ".join(statement.split()) for statement in statements]
+
+
+def test_search_stemming_migration_routes_each_script_to_its_own_stemmer(
+    monkeypatch,
+) -> None:
+    """tripl-nh5s: ASCII words stem as English, non-ASCII words as Russian.
+
+    This is the shape of the fix, and it is the shape that is easy to get wrong.
+    A single chain (``unaccent, english_stem, russian_stem``) looks equivalent
+    and is not: a Snowball dictionary never returns NULL, so nothing after the
+    first stemmer is ever reached and Cyrillic would silently go unstemmed. The
+    split therefore has to live in the token-type mapping, and that is what is
+    asserted here — together with ``unaccent`` staying FIRST in both chains,
+    because it is a filtering dictionary that must hand the token on to the
+    stemmer rather than be shadowed by it.
+    """
+    statements = _search_stemming_statements(monkeypatch, "upgrade")
+    joined = "\n".join(statements)
+
+    assert "CREATE TEXT SEARCH DICTIONARY tripl_english_stem" in joined
+    assert "CREATE TEXT SEARCH DICTIONARY tripl_russian_stem" in joined
+    # No stopword list on either: event names in this catalog are built out of
+    # English function words (sign_in / sign_out, opt_in / opt_out), and the
+    # parser splits them on the underscore, so a stopword list would index those
+    # two names to the identical single lexeme.
+    assert "StopWords" not in joined
+
+    ascii_mapping = next(
+        statement for statement in statements if "ALTER MAPPING FOR asciiword" in statement
+    )
+    assert "WITH unaccent, tripl_english_stem" in ascii_mapping
+    cyrillic_mapping = next(
+        statement for statement in statements if "ALTER MAPPING FOR word," in statement
+    )
+    assert "WITH unaccent, tripl_russian_stem" in cyrillic_mapping
+
+
+def test_search_stemming_migration_rebuilds_stored_vectors_in_both_directions(
+    monkeypatch,
+) -> None:
+    """tripl-nh5s: a configuration change does not touch an existing tsvector.
+
+    Queries are parsed with the NEW configuration the instant the mapping
+    changes, while every stored ``text_vector`` still holds lexemes produced by
+    the old one — a state strictly worse than the bug, because ``q='purchase'``
+    would stem to ``purchas`` and stop matching the stored ``purchase``. The
+    rebuild has to happen in the same transaction as the mapping change, in BOTH
+    directions, which is what this pins.
+    """
+    for direction in ("upgrade", "downgrade"):
+        statements = _search_stemming_statements(monkeypatch, direction)
+        rebuild = [statement for statement in statements if statement.startswith("UPDATE")]
+        assert len(rebuild) == 1, f"{direction}() must rebuild the vectors exactly once"
+        # Identical to search_service._refresh_text_vectors, or an incremental
+        # reindex would produce vectors that disagree with the migration's.
+        assert (
+            "SET text_vector = to_tsvector( 'tripl_search', "
+            "concat_ws(' ', title, subtitle, body, keywords) )" in rebuild[0]
+        )
+
+
+def test_search_stemming_migration_downgrade_restores_the_simple_mapping(
+    monkeypatch,
+) -> None:
+    """The CI round trip runs empty -> head -> base -> head (tripl-nh5s).
+
+    So ``downgrade()`` has to put the configuration back exactly as
+    e8f9a0b1c2d3 left it — all six word token types on ``unaccent, simple`` —
+    and it has to DROP both dictionaries. ``CREATE TEXT SEARCH DICTIONARY`` has
+    no ``IF NOT EXISTS``: a dictionary left behind at base would survive into the
+    re-upgrade and fail it, and no leftover-object check in CI looks at the
+    text-search catalogs.
+    """
+    statements = _search_stemming_statements(monkeypatch, "downgrade")
+
+    mapping = next(statement for statement in statements if "ALTER MAPPING" in statement)
+    for token_type in (
+        "asciiword",
+        "asciihword",
+        "hword_asciipart",
+        "word",
+        "hword",
+        "hword_part",
+    ):
+        assert token_type in mapping
+    assert "WITH unaccent, simple" in mapping
+
+    drops = [statement for statement in statements if statement.startswith("DROP")]
+    assert drops == [
+        "DROP TEXT SEARCH DICTIONARY IF EXISTS tripl_russian_stem",
+        "DROP TEXT SEARCH DICTIONARY IF EXISTS tripl_english_stem",
+    ]
+    # A dictionary still referenced by a configuration cannot be dropped, so the
+    # mapping must be restored first.
+    assert statements.index(mapping) < statements.index(drops[0])
+
+
 def _string_literal(node: ast.expr) -> str | None:
     return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 

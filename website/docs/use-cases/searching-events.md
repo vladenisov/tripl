@@ -121,10 +121,23 @@ fields under them:
 
 ### Understanding `confidence` and the cutoff
 
-`confidence` is **relative ranking, not an absolute score**. Each hit's relevance is
-normalized to the **top hit**, so the best match is always `1.0` and the rest trail
-off toward `0`. It tells you how each result compares to the strongest match in *this*
-query — it does not mean "X% correct".
+`confidence` is an **absolute score in `[0, 1]`**, comparable between queries. It is
+the hit's relevance measured against the score a result reaches when it *is* the thing
+you typed — an exact title match — capped at `1.0`. A query that found nothing good
+therefore comes back with low confidence on every item, including the first one; a
+top hit of `1.0` means the search really did find an exact match.
+
+It used to be normalized to the top hit of the same response, which made the best
+result `1.0` by construction — a keyboard mash was served as a perfect answer. If you
+built a cutoff against that behaviour, re-check it: thresholds now mean the same thing
+on every query, and the numbers are lower than they used to be for weak queries.
+
+When semantic search is on, a hit the **meaning** match found reports that leg's own
+cosine similarity instead, which is already a `0..1` certainty. So a result that no
+keyword touched but that the vector index is sure about — a misspelling, or a phrase
+that describes an event without naming it — is reported as the strong answer it is,
+rather than being scaled down for having arrived by the other route. A single cutoff
+therefore works across both legs.
 
 Because the tail of a semantic search is always populated with loosely related
 results, **trim it with a minimum-confidence cutoff** (a threshold of `0.6` is a
@@ -137,14 +150,30 @@ curl -s \
   | jq '[.items[] | select(.confidence >= 0.6)]'
 ```
 
+### Word forms and plurals
+
+Keyword matching is **stemmed**, in English and in Russian, so a query finds the
+other forms of the words you typed: `purchases` finds `purchase_completed`,
+`spots` finds the `spot` event, and `экрана спота` finds the event whose
+description is «Показ экрана спота». Both scripts work in the same project and
+even in the same entity — an event named in `snake_case` with a Russian
+description is matched from either side.
+
+Two consequences worth knowing:
+
+- Stemming is about word **forms**, not meaning: `purchase` and `buy` are still
+  unrelated to keyword matching. That is what the semantic engine is for.
+- Exact names still win. A query that IS an entity's name ranks that entity
+  first, ahead of anything that merely stems to it.
+
 ### The `semantic_used` flag
 
 `semantic_used` tells you which engine answered:
 
 - `true` — embeddings were used (true semantic ranking by meaning).
 - `false` — the instance has no embedding provider configured, so search fell back
-  to keyword/substring matching. `/search` still works, but it ranks by literal
-  token overlap rather than meaning.
+  to keyword/substring matching. `/search` still works, but it ranks by word
+  overlap (stemmed, as above) rather than by meaning.
 
 Semantic ranking normally requires an embedding provider. See
 [AI and search configuration](../run/ai-and-search.md) for how to enable it (and what

@@ -307,3 +307,43 @@ After any `docker compose up -d` (deploy, rollback, or recovery):
 
 If any step fails, see [Troubleshooting](../use/troubleshooting.md) for
 symptom-driven diagnosis, or roll back per the section above.
+
+### One-off: rebuild the search index after the ranking release
+
+:::warning Required once, per project **and** per plan branch
+The release that fixed search ranking changed **what text is indexed** for a
+document — harvested field values left a variable's keywords, and every
+snake_case / dotted identifier gained a spaced alias. The migration that ships
+with it re-tokenizes the text already stored, but it does **not** rebuild that
+text. Until a branch is rebuilt, its documents are ranked on the old text, and a
+branch where some rows have been rebuilt and others have not is ranked on both
+at once.
+:::
+
+Most branches repair themselves: **any** write to an event, event type, field,
+meta field, variable, relation, metric or fact table rebuilds that branch's
+whole index, as do a plan-branch merge, a demo reset, and the scan/catalog
+refresh the Celery worker runs. An actively used project needs nothing from you.
+
+Branches nobody writes to — archived plan branches, projects kept for reference
+— keep the old documents indefinitely. Rebuild those explicitly:
+
+```bash
+# Editor role or above. Once per project AND per plan branch.
+# $TRIPL_API_KEY is a write-scoped personal API key (tk_w_…), see Security.
+curl -fsS -X POST \
+  -H "Authorization: Bearer $TRIPL_API_KEY" \
+  "http://localhost:8000/api/v1/projects/<slug>/search/reindex?branch_id=<branch_id>"
+# -> {"documents_indexed": N, "embeddings_scheduled": true|false}
+```
+
+This is intentionally **not** done for you by the migration. Rebuilding drops
+and re-inserts the affected rows, which discards their stored embeddings — with
+`SEARCH_EMBEDDINGS_ENABLED=true` that means the catalog is re-embedded against
+your provider, at your cost. Deciding when to pay that is an operator call, not
+a side effect of `alembic upgrade head`. With embeddings disabled (the default)
+a rebuild is free apart from the CPU it takes.
+
+Verify by searching for an entity whose name contains an underscore, using a
+space instead (`screen spot` for `screen_spot`): the entity itself should come
+back first rather than the variables that merely mention it.

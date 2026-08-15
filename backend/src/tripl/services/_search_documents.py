@@ -8,6 +8,7 @@ stored as ``SearchDocument`` rows.
 from __future__ import annotations
 
 import hashlib
+import re
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -44,6 +45,56 @@ def _join(parts: Sequence[object | None]) -> str:
 
 def _is_sensitive(sensitivity: str | None) -> bool:
     return (sensitivity or "none") != "none"
+
+
+#: What glues an identifier together in this product: ``screen_spot``,
+#: ``page_data.extra.spot_id``, ``properties.session_key``.
+_IDENTIFIER_SEPARATORS = re.compile(r"[._]+")
+
+
+def _spaced_identifiers(values: Sequence[object | None]) -> str:
+    """Space-separated aliases for the snake_case / dotted names in ``values``.
+
+    INDEX-TIME HALF OF tripl-h9x2
+    -----------------------------
+    Entities are named ``screen_spot`` and people type ``screen spot``. The
+    tsvector already survives that (the text-search parser splits on ``_``), but
+    the ranking's boost ladder does not: its tiers are ``LIKE``/regex
+    comparisons against the STORED text, so ``lower(title) = 'screen spot'``,
+    ``LIKE 'screen spot%'`` and ``LIKE '%screen spot%'`` all miss a title that is
+    spelled ``screen_spot``. Measured: ``q='screen spot'`` ranked the
+    ``screen_spot`` event 5th at 4.545.
+
+    So each identifier is ALSO indexed in its spaced form. Together with the
+    query-time half (``_search_query.token_boundary_regex`` folds a spaced query
+    into the underscored form) the two spellings reach each other from either
+    side. Two properties are load-bearing:
+
+    * only the ALIAS is added, once per distinct identifier and only when it
+      actually differs — this is not a second copy of the document text, which
+      would feed the very term-frequency inflation tripl-gbxj is about;
+    * it is applied to ``keywords`` and never to a tag document, whose
+      ``keywords`` is exactly ``tag.name`` and is compared for EQUALITY by the
+      4.0 tier — appending anything there would silently delete that tier.
+
+    Dots are folded in the same pass (``page_data.extra.spot_id`` ->
+    ``page data extra spot id``) because the text-search parser classifies a
+    dotted name as a single host-like token and indexes it WHOLE — unlike the
+    underscore, which it splits — so without the alias a search for ``spot_id``
+    cannot reach the variable literally called ``page_data.extra.spot_id``.
+    """
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = _clean(value)
+        if not cleaned:
+            continue
+        spaced = _IDENTIFIER_SEPARATORS.sub(" ", cleaned).strip()
+        if not spaced or spaced == cleaned or spaced in seen:
+            continue
+        seen.add(spaced)
+        aliases.append(spaced)
+    return " ".join(aliases)
 
 
 # Cap on the text embedded per document. The embedding model accepts 8191
@@ -292,7 +343,13 @@ def _event_type_document(event_type: EventType, slug: str) -> BuiltDocument:
         subtitle=event_type.name,
         description=_clean(event_type.description),
         body=_join([event_type.description, field_text]),
-        keywords=_join([event_type.name, event_type.display_name]),
+        keywords=_join(
+            [
+                event_type.name,
+                event_type.display_name,
+                _spaced_identifiers([event_type.name]),
+            ]
+        ),
         route_path=f"/p/{slug}/events/{event_type.name}",
     )
 
@@ -314,7 +371,15 @@ def _field_document(field: FieldDefinition, event_type: EventType, slug: str) ->
                 " ".join(field.enum_options or []),
             ]
         ),
-        keywords=_join([field.name, field.display_name, event_type.name, event_type.display_name]),
+        keywords=_join(
+            [
+                field.name,
+                field.display_name,
+                event_type.name,
+                event_type.display_name,
+                _spaced_identifiers([field.name, event_type.name]),
+            ]
+        ),
         route_path=f"/p/{slug}/settings/event-types",
     )
 
@@ -335,7 +400,13 @@ def _meta_field_document(meta_field: MetaFieldDefinition, slug: str) -> BuiltDoc
                 meta_field.default_value if not _is_sensitive(meta_field.sensitivity) else "",
             ]
         ),
-        keywords=_join([meta_field.name, meta_field.display_name]),
+        keywords=_join(
+            [
+                meta_field.name,
+                meta_field.display_name,
+                _spaced_identifiers([meta_field.name]),
+            ]
+        ),
         route_path=f"/p/{slug}/settings/meta-fields",
     )
 
@@ -418,6 +489,7 @@ def _event_document(
                 " ".join(event.metric_breakdown_columns),
                 " ".join(safe_values),
                 " ".join(variable_context_text),
+                _spaced_identifiers([event.name, event.source_name]),
             ]
         ),
         route_path=f"/p/{slug}/monitoring/event/{event.id}",
@@ -446,6 +518,10 @@ def _tag_document(
                 event_type.display_name if event_type is not None else "",
             ]
         ),
+        # Deliberately NOT run through ``_spaced_identifiers`` (tripl-h9x2): a
+        # tag document's keywords are exactly the tag name, which is what the
+        # 4.0 "keywords ARE the query" tier compares for equality. Appending an
+        # alias here would delete that tier for every tag.
         keywords=tag.name,
         route_path=f"/p/{slug}/monitoring/event/{event.id}",
         archived=(event.status == "archived"),
@@ -457,8 +533,40 @@ def _variable_document(
     slug: str,
     contexts: list[VariableValue],
 ) -> BuiltDocument:
+    """Build the search document for one variable.
+
+    HARVESTED VALUES ARE BODY TEXT, NOT KEYWORDS (tripl-gbxj)
+    ---------------------------------------------------------
+    A variable is bound to many (event, field) contexts, and every context
+    repeats the variable name, the event name, the source column AND all of its
+    observed values. This document used to put that text into ``body`` and into
+    ``keywords``, and then append a deduplicated copy of the values on top — so
+    a value appeared roughly ``2 * contexts + 1`` times in the indexed text of a
+    single document, while the entity actually named after it appeared once.
+
+    That is what an unbounded ``ts_rank_cd`` was multiplying (see
+    ``_search_query.postgres_lexical_search``). Measured: one production project
+    holds 1526 auto-detected "variables" that are really harvested field values,
+    and ``q='spot'`` returned ``${property.spot_id}`` at 73.69 and
+    ``${property.cube}`` at 55.68 — the latter only because one harvested value
+    is ``spot:reload:bento`` — while the events named ``spot`` and
+    ``screen_spot`` did not appear at all.
+
+    Keywords are the high-weight field, and a value someone's app happened to
+    emit is not a keyword of the variable: the variable's own name, the columns
+    it comes from and the events it is bound to are. So the values stay in
+    ``body`` — searching a concrete observed value still finds both the variable
+    and its owning event, which is behaviour the product documents — and they
+    are simply no longer joined into ``keywords``. Both halves of tripl-gbxj had
+    to land together: the measured 73.69-vs-4.55 gap was the duplication and the
+    missing normalization compounding.
+    """
     context_text = _variable_context_text(contexts, include_event_names=True)
-    value_keywords = _variable_value_keywords(contexts)
+    context_keywords = _variable_context_text(
+        contexts,
+        include_event_names=True,
+        include_values=False,
+    )
     return BuiltDocument(
         entity_type="variable",
         entity_id=variable.id,
@@ -467,35 +575,36 @@ def _variable_document(
         subtitle=variable.variable_type,
         description=_clean(variable.description),
         body=_join([variable.name, variable.source_name, variable.description, context_text]),
-        keywords=_join([variable.name, variable.source_name, context_text, value_keywords]),
+        keywords=_join(
+            [
+                variable.name,
+                variable.source_name,
+                context_keywords,
+                _spaced_identifiers([variable.name, variable.source_name]),
+            ]
+        ),
         route_path=f"/p/{slug}/settings/variables",
     )
-
-
-def _variable_value_keywords(contexts: list[VariableValue]) -> str:
-    values: list[str] = []
-    seen: set[str] = set()
-    for context in contexts:
-        field = context.field_definition
-        if _is_sensitive(field.sensitivity):
-            continue
-        for value in context.values or []:
-            if value in seen:
-                continue
-            seen.add(value)
-            values.append(value)
-    return " ".join(values)
 
 
 def _variable_context_text(
     contexts: list[VariableValue],
     *,
     include_event_names: bool,
+    include_values: bool = True,
 ) -> str:
+    """Flatten a variable's bindings into indexable text.
+
+    ``include_values=False`` yields the same text without the observed values,
+    which is what a variable's ``keywords`` is built from (tripl-gbxj): the
+    binding is a keyword of the variable, the harvested value is not. Sensitive
+    fields never contribute values under either setting.
+    """
     parts: list[str] = []
     for context in contexts:
         field = context.field_definition
-        safe_values = "" if _is_sensitive(field.sensitivity) else " ".join(context.values or [])
+        include_field_values = include_values and not _is_sensitive(field.sensitivity)
+        safe_values = " ".join(context.values or []) if include_field_values else ""
         parts.append(
             _join(
                 [
@@ -539,7 +648,14 @@ def _relation_document(relation: EventTypeRelation, slug: str) -> BuiltDocument:
                 target_field.display_name,
             ]
         ),
-        keywords=_join([relation.relation_type, source_field.name, target_field.name]),
+        keywords=_join(
+            [
+                relation.relation_type,
+                source_field.name,
+                target_field.name,
+                _spaced_identifiers([source_field.name, target_field.name]),
+            ]
+        ),
         route_path=f"/p/{slug}/settings/relations",
     )
 
@@ -564,7 +680,15 @@ def _metric_document(metric: MetricDefinition, slug: str) -> BuiltDocument:
                 metric.platform_column,
             ]
         ),
-        keywords=_join([metric.name, metric.display_name, metric.unit, metric.kind]),
+        keywords=_join(
+            [
+                metric.name,
+                metric.display_name,
+                metric.unit,
+                metric.kind,
+                _spaced_identifiers([metric.name]),
+            ]
+        ),
         route_path=f"/p/{slug}/monitoring/metric/{metric.id}",
         archived=(metric.status == "archived"),
     )
@@ -597,6 +721,13 @@ def _fact_table_document(fact_table: FactTable, slug: str) -> BuiltDocument:
                 " ".join(filter_names),
             ]
         ),
-        keywords=_join([fact_table.name, fact_table.display_name, " ".join(column_names)]),
+        keywords=_join(
+            [
+                fact_table.name,
+                fact_table.display_name,
+                " ".join(column_names),
+                _spaced_identifiers([fact_table.name, *column_names]),
+            ]
+        ),
         route_path=f"/p/{slug}/metrics/fact-tables/{fact_table.id}/edit",
     )
