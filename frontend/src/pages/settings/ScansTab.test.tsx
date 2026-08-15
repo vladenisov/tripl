@@ -168,11 +168,16 @@ function setupFetchWithJobs(jobs: unknown[], runCalls?: { method: string; url: s
   })
 }
 
+// The scan rows now carry a real <Link> to the detail page, so the tab needs a
+// router. useNavigate is still the mock above — Link resolves its href through
+// react-router's own internals, which the mock does not intercept.
 function renderTab() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <ScansTab slug="demo" />
+      <MemoryRouter initialEntries={['/p/demo/scans']}>
+        <ScansTab slug="demo" />
+      </MemoryRouter>
     </QueryClientProvider>,
   )
 }
@@ -429,7 +434,16 @@ describe('ScansTab', () => {
     setupFetch()
     renderTab()
 
-    fireEvent.click(await screen.findByText('Main events scan'))
+    // The name is the row's link, and its href is the live /p/:slug/scans/:id
+    // route. The legacy /p/:slug/settings/scans/:id form is only a redirect in
+    // App.tsx, so shipping it here would send every keyboard user through a
+    // bounce (tripl-np3p).
+    const link = await screen.findByRole('link', { name: 'Main events scan' })
+    expect(link).toHaveAttribute('href', '/p/demo/scans/scan-1')
+
+    // The mouse shortcut on the rest of the row goes to the same place — one
+    // href feeds both, so they cannot drift.
+    fireEvent.click(link.closest('tr')!)
     expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans/scan-1')
   })
 

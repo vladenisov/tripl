@@ -673,37 +673,49 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                 No metrics match the current filters.
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <div role="table" aria-label="Metrics" className="min-w-[748px]">
-                  <div role="rowgroup">
-                    <div
-                      role="row"
-                      className={`${METRIC_GRID} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
-                      style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
-                    >
-                      <span role="columnheader" aria-label="Reorder" />
-                      <span role="columnheader">
-                        <Checkbox
-                          aria-label="Select all metrics"
-                          checked={allSelected}
-                          onCheckedChange={toggleAll}
-                        />
-                      </span>
-                      <span role="columnheader">Metric</span>
-                      <span role="columnheader">Latest</span>
-                      <span role="columnheader">
-                        {trendPoints > 0 ? `Trend · ${trendPoints} pts` : 'Trend'}
-                      </span>
-                      <span role="columnheader">Status</span>
-                      <span role="columnheader" className="text-right">Updated</span>
-                      <span role="columnheader" aria-label="Actions" />
+              // DndContext renders dnd-kit's own <div role="status"> live region as
+              // an INLINE child (@dnd-kit/core 6.3.1 only portals it when an
+              // `accessibility.container` DOM node is handed to it, and a ref to
+              // one is null on the render that mounts the region). Left inside
+              // role="table" that is a child with no permitted role — ARIA allows
+              // only row, rowgroup and caption there — so axe reports
+              // aria-required-children and assistive tech can no longer trust the
+              // table's row structure. Hoisting the provider ABOVE the table keeps
+              // the drag announcements and moves them out of the grid; it is the
+              // shape EventsTable.tsx already uses. SortableContext renders no DOM
+              // and every useSortable in MetricRow is still inside the provider, so
+              // nothing about dragging changes (tripl-np3p).
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleDragEnd}
+              >
+                <div className="overflow-x-auto">
+                  <div role="table" aria-label="Metrics" className="min-w-[748px]">
+                    <div role="rowgroup">
+                      <div
+                        role="row"
+                        className={`${METRIC_GRID} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
+                        style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
+                      >
+                        <span role="columnheader" aria-label="Reorder" />
+                        <span role="columnheader">
+                          <Checkbox
+                            aria-label="Select all metrics"
+                            checked={allSelected}
+                            onCheckedChange={toggleAll}
+                          />
+                        </span>
+                        <span role="columnheader">Metric</span>
+                        <span role="columnheader">Latest</span>
+                        <span role="columnheader">
+                          {trendPoints > 0 ? `Trend · ${trendPoints} pts` : 'Trend'}
+                        </span>
+                        <span role="columnheader">Status</span>
+                        <span role="columnheader" className="text-right">Updated</span>
+                        <span role="columnheader" aria-label="Actions" />
+                      </div>
                     </div>
-                  </div>
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleDragEnd}
-                  >
                     <SortableContext
                       items={visibleMetrics.map(m => m.id)}
                       strategy={verticalListSortingStrategy}
@@ -724,9 +736,9 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                         ))}
                       </div>
                     </SortableContext>
-                  </DndContext>
+                  </div>
                 </div>
-              </div>
+              </DndContext>
             )}
           </Panel>
         ))}

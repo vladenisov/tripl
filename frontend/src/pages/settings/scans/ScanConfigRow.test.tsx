@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { DataSource, ScanConfig } from '@/types'
 import { ScanBadges, ScanListRow } from './ScanConfigRow'
@@ -7,26 +8,85 @@ import type { ScanRunInfo } from './scanUtils'
 const sc = { id: 'sc-1', name: 'Orders scan', base_query: 'select 1' } as unknown as ScanConfig
 const runInfo = { status: 'idle', lastRunLabel: '', lastJob: null } as unknown as ScanRunInfo
 
+// The row's name is a real <Link> now, so it needs a router. Nothing else here
+// routes; MemoryRouter is the cheapest one that gives Link an href to resolve.
 function renderRow(overrides: Partial<Parameters<typeof ScanListRow>[0]> = {}) {
   const onNavigate = vi.fn()
   const onReviewEvents = vi.fn()
   render(
-    <table>
-      <tbody>
-        <ScanListRow
-          sc={sc}
-          dataSource={null as DataSource | null}
-          runInfo={runInfo}
-          intervalLabel={{}}
-          onNavigate={onNavigate}
-          onReviewEvents={onReviewEvents}
-          {...overrides}
-        />
-      </tbody>
-    </table>,
+    <MemoryRouter>
+      <table>
+        <tbody>
+          <ScanListRow
+            sc={sc}
+            dataSource={null as DataSource | null}
+            runInfo={runInfo}
+            intervalLabel={{}}
+            detailHref="/p/demo/scans/sc-1"
+            onNavigate={onNavigate}
+            onReviewEvents={onReviewEvents}
+            {...overrides}
+          />
+        </tbody>
+      </table>
+    </MemoryRouter>,
   )
   return { onNavigate, onReviewEvents }
 }
+
+// This block asserts DOM STRUCTURE, not rendering: which element carries the
+// widget role and which element sits inside which. That is the whole defect —
+// axe's nested-interactive fired because the <tr> wrapping the Run and Review
+// buttons was itself role="button" + tabIndex={0}, so a screen reader announced
+// one control where there were three and could activate none of the inner two.
+describe('ScanListRow is inert markup, not an interactive row (tripl-np3p)', () => {
+  it('gives the <tr> no widget role and no tab stop of its own', () => {
+    renderRow()
+    const row = screen.getByRole('link', { name: 'Orders scan' }).closest('tr')
+
+    expect(row).not.toBeNull()
+    expect(row).not.toHaveAttribute('role')
+    expect(row).not.toHaveAttribute('tabindex')
+    // The old row role was announced as "View scan Orders scan"; nothing may
+    // claim it back, or the two buttons are swallowed again.
+    expect(screen.queryByRole('button', { name: /View scan/ })).toBeNull()
+  })
+
+  it('routes into the scan through the name link, which is the replacement tab stop', () => {
+    renderRow()
+    const link = screen.getByRole('link', { name: 'Orders scan' })
+
+    expect(link).toHaveAttribute('href', '/p/demo/scans/sc-1')
+    // It is the row's only link — the trailing "›" chevron is aria-hidden text,
+    // not a second competing route to the same page.
+    expect(screen.getAllByRole('link')).toHaveLength(1)
+  })
+
+  it('keeps the row buttons addressable now that nothing nests them', () => {
+    renderRow({ onRun: vi.fn() })
+    const row = screen.getByRole('link', { name: 'Orders scan' }).closest('tr')
+
+    for (const name of ['Run Orders scan now', 'Review events from Orders scan']) {
+      const button = screen.getByRole('button', { name })
+      expect(row).toContainElement(button)
+      // No interactive ancestor between the button and the row.
+      expect(button.parentElement?.closest('[role="button"],button,a')).toBeNull()
+    }
+  })
+
+  it('does not double-navigate when the link itself is clicked', () => {
+    const { onNavigate } = renderRow()
+    fireEvent.click(screen.getByRole('link', { name: 'Orders scan' }))
+    // stopPropagation: the router handles it, the row's mouse shortcut stays out.
+    expect(onNavigate).not.toHaveBeenCalled()
+  })
+
+  it('keeps the whole row clickable for the mouse', () => {
+    const { onNavigate } = renderRow()
+    fireEvent.click(screen.getByRole('link', { name: 'Orders scan' }).closest('tr')!)
+    expect(onNavigate).toHaveBeenCalledTimes(1)
+  })
+})
 
 describe('ScanListRow review-events action (tripl-7l83.11.3)', () => {
   it('triggers review navigation without opening the scan detail', () => {

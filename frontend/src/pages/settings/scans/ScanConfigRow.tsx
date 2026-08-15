@@ -1,4 +1,5 @@
 import type { DataSource, ScanConfig } from '@/types'
+import { Link } from 'react-router-dom'
 import { Chip } from '@/components/primitives/chip'
 import { Ban, CheckCircle2, Clock, Loader2, MinusCircle, Play, XCircle, type LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -110,6 +111,7 @@ export function ScanListRow({
   dataSource,
   runInfo,
   intervalLabel,
+  detailHref,
   onNavigate,
   onRun,
   runPending,
@@ -120,6 +122,18 @@ export function ScanListRow({
   dataSource: DataSource | null
   runInfo: ScanRunInfo
   intervalLabel: Record<string, string>
+  /**
+   * Where this scan's detail page lives, as a URL.
+   *
+   * Required, not optional: it is the row's ONLY keyboard and screen-reader
+   * route into the scan. The <tr> used to carry role="button" + tabIndex so the
+   * whole row was one widget, which put the Run and Review buttons inside an
+   * interactive element — axe's nested-interactive, and in practice a screen
+   * reader could address neither the row nor the controls it swallowed. The
+   * name link below replaces that affordance (tripl-np3p).
+   */
+  detailHref: string
+  /** Mouse-only convenience: the whole row is still a click target. */
   onNavigate: () => void
   /** Trigger a manual scan run for this row (POST /scans/{id}/run). */
   onRun?: () => void
@@ -160,7 +174,6 @@ export function ScanListRow({
       className="inline-flex items-center gap-1 whitespace-nowrap rounded border px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
       style={{ borderColor: 'var(--border-strong)', color: 'var(--fg-muted)' }}
       onClick={e => { e.stopPropagation(); onRun() }}
-      onKeyDown={e => e.stopPropagation()}
     >
       <Play className="size-3" aria-hidden="true" />
       {runPending ? 'Starting…' : 'Run now'}
@@ -168,14 +181,15 @@ export function ScanListRow({
   ) : null
 
   return (
+    // Deliberately inert markup: no role, no tabIndex, no key handler. The row
+    // holds two buttons, so giving it a widget role of its own nested them
+    // inside one (nested-interactive). onClick stays because a plain <tr> with a
+    // click handler is not in the accessibility tree at all — it is a mouse
+    // shortcut layered over the name link, not the way in (tripl-np3p).
     <tr
-      role="button"
-      tabIndex={0}
-      aria-label={`View scan ${sc.name}`}
       className="cursor-pointer border-t transition-colors hover:bg-[var(--surface-hover)]"
       style={{ borderColor: 'var(--border-subtle)' }}
       onClick={onNavigate}
-      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onNavigate() } }}
     >
       {/* Lead with a human summary — name over "source · cadence". The raw SQL is
           demoted to a faint secondary line (full query on hover) rather than its
@@ -185,7 +199,17 @@ export function ScanListRow({
           <SrcIcon dbType={dataSource?.db_type ?? null} size={28} />
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="truncate text-[13px] font-semibold">{sc.name}</span>
+              {/* The row's one real control, and the only thing that puts this
+                  scan in the tab order. stopPropagation keeps the row's mouse
+                  shortcut from firing a second navigation on top of the link's. */}
+              <Link
+                to={detailHref}
+                onClick={e => e.stopPropagation()}
+                className="truncate text-[13px] font-semibold no-underline hover:underline"
+                style={{ color: 'inherit' }}
+              >
+                {sc.name}
+              </Link>
               {/* The list is where a never-monitoring config has to announce
                   itself: its runs go green and its row otherwise reads exactly
                   like a healthy monitoring scan. */}
@@ -241,8 +265,7 @@ export function ScanListRow({
               className="whitespace-nowrap rounded border px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
               style={{ borderColor: 'var(--border-strong)', color: 'var(--fg-muted)' }}
               onClick={e => { e.stopPropagation(); onReviewEvents() }}
-              onKeyDown={e => e.stopPropagation()}
-            >
+                    >
               Review events
             </button>
           )}
