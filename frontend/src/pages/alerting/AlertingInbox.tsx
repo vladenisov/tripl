@@ -75,6 +75,23 @@ export interface InboxActionVariables {
 /** How long the list reaches back, server-side (INBOX_LOOKBACK_DAYS). */
 const LOOKBACK_LABEL = 'last 30 days'
 
+/**
+ * What the list actually covers, which is no longer only the window
+ * (tripl-zfr3).
+ *
+ * The window is a window on DELIVERIES, and silencing an incident is the act of
+ * stopping its deliveries — so a still-silenced incident used to fall out of the
+ * list 30 days after somebody muted it, taking its own Unmute control with it.
+ * The server now holds those past the window, which makes a bare "last 30 days"
+ * a promise the page no longer keeps: the count beside it includes them.
+ *
+ * Said on the subtitle rather than only in the docs, because this line IS the
+ * page's statement of what it is showing — and an operator reading "last 30
+ * days" above a two-month-old muted incident would reasonably conclude the page
+ * was broken.
+ */
+const COVERAGE_LABEL = `${LOOKBACK_LABEL} + still silenced`
+
 interface AlertingInboxProps {
   slug: string
   // Optional, not defaulted to an empty list: the empty state below has to tell
@@ -201,7 +218,7 @@ export function AlertingInbox({
     ? 'Loading…'
     : isError
       ? 'Could not load'
-      : `Showing ${items.length} of ${total} · ${LOOKBACK_LABEL}`
+      : `Showing ${items.length} of ${total} · ${COVERAGE_LABEL}`
 
   const renderCard = (group: AlertInboxGroup, isPinned: boolean) => (
     <IncidentCard
@@ -281,8 +298,14 @@ export function AlertingInbox({
                   {/* Naming the filter is the difference between "nothing has
                       ever happened here" and "nothing matches what you asked
                       for" — and the second one is undoable. */}
-                  No {alertInboxStatusLabel(statusFilter).toLowerCase()} incidents in the{' '}
-                  {LOOKBACK_LABEL}.{' '}
+                  {/* The window is deliberately NOT named here any more
+                      (tripl-zfr3). A silenced incident is now held past it, so
+                      "no muted incidents in the last 30 days" would state a
+                      bound that does not govern the very filter it describes —
+                      and ?status=muted is precisely the filter the rescue
+                      serves. The filter's own name still does the work this
+                      sentence exists for. */}
+                  No {alertInboxStatusLabel(statusFilter).toLowerCase()} incidents.{' '}
                   <button
                     type="button"
                     onClick={() => onStatusFilterChange('')}
