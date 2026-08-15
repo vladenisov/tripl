@@ -102,7 +102,19 @@ to the provider in exchange for semantic relevance.
 
 If your provider is a self-hosted or in-VPC OpenAI-compatible endpoint, you can
 keep both features on while keeping all text inside your own infrastructure —
-point `SEARCH_EMBEDDING_*` and `AI_BASE_URL` at that endpoint.
+point `SEARCH_EMBEDDING_BASE_URL` and `AI_BASE_URL` at that endpoint. Both take a
+**base**, not a full path: tripl appends `/embeddings` and `/chat/completions`
+respectively, the way an OpenAI-compatible server lays them out.
+
+:::warning Repointing it later means re-indexing
+`SEARCH_EMBEDDING_BASE_URL` is env-only on purpose, and so is
+`SEARCH_EMBEDDING_DIMENSIONS`. Vectors already stored came from whatever endpoint
+produced them, and a similarity score between two different embedding spaces is
+meaningless — so changing either *after* documents have been indexed quietly
+degrades every result involving an older vector, with nothing logged. Set it
+before you enable embeddings; if you change it afterwards, re-index the project
+so the whole corpus is embedded by one provider.
+:::
 
 ---
 

@@ -136,6 +136,28 @@ class Settings(BaseSettings):
     search_embedding_model: str = "text-embedding-3-small"
     search_embedding_dimensions: int = 1536
     search_embedding_api_key: str = ""
+    # Where the OpenAI-COMPATIBLE embeddings endpoint lives (tripl-0tt4).
+    #
+    # The docs have told self-hosters since this feature shipped that they can
+    # "keep all text inside your own infrastructure — point SEARCH_EMBEDDING_*
+    # and AI_BASE_URL at that endpoint". AI_BASE_URL existed; this did not, and
+    # embedding_service.py hardcoded api.openai.com. So a reader who followed the
+    # written instruction shipped their tracking-plan text to OpenAI while
+    # believing it stayed internal, with their own credential attached.
+    #
+    # ENV-ONLY, deliberately, and not an oversight for someone to "complete"
+    # later by threading it through AiConfig: the vectors already in pgvector
+    # came from whatever endpoint produced them, and similarity between two
+    # different embedding spaces is meaningless. Repointing this at runtime would
+    # silently poison the index for every document written before the change,
+    # with no error anywhere. It is the argument search_embedding_dimensions is
+    # env-only for, stated at its use site in embedding_service.py: changing
+    # either means re-embedding the corpus, which is a deploy and not a toggle.
+    #
+    # A BASE, not a full URL, matching ai_base_url — llm_service builds
+    # `ai_base_url.rstrip("/") + "/chat/completions"` and this is read the same
+    # way, so one provider's two endpoints are configured alike.
+    search_embedding_base_url: str = "https://api.openai.com/v1"
     openai_api_key: str = ""
 
     # OpenTelemetry tracing. Setting `otel_exporter_otlp_endpoint` to a non-
