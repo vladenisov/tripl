@@ -235,8 +235,13 @@ def test_search_stemming_migration_rebuilds_stored_vectors_in_both_directions(
         statements = _search_stemming_statements(monkeypatch, direction)
         rebuild = [statement for statement in statements if statement.startswith("UPDATE")]
         assert len(rebuild) == 1, f"{direction}() must rebuild the vectors exactly once"
-        # Identical to search_service._refresh_text_vectors, or an incremental
-        # reindex would produce vectors that disagree with the migration's.
+        # The stem-only expression this revision shipped, pinned as HISTORY. It
+        # was identical to search_service._refresh_text_vectors on the day it
+        # ran; tripl-uojz has since added a surface leg to the live expression,
+        # so the two are deliberately no longer the same string and this
+        # assertion must NOT be "corrected" to follow the service. What the live
+        # expression has to agree with is b6d1f0a3c7e2 — see
+        # test_surface_form_migration_matches_the_service_expression.
         assert (
             "SET text_vector = to_tsvector( 'tripl_search', "
             "concat_ws(' ', title, subtitle, body, keywords) )" in rebuild[0]
@@ -277,6 +282,131 @@ def test_search_stemming_migration_downgrade_restores_the_simple_mapping(
     # A dictionary still referenced by a configuration cannot be dropped, so the
     # mapping must be restored first.
     assert statements.index(mapping) < statements.index(drops[0])
+
+
+SURFACE_FORM_MIGRATION = "b6d1f0a3c7e2_index_surface_forms_beside_stems.py"
+
+
+def _load_migration(module_name: str, filename: str):
+    backend_root = Path(__file__).resolve().parents[3]
+    migration_path = backend_root / "alembic" / "versions" / filename
+    spec = importlib.util.spec_from_file_location(module_name, migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return migration
+
+
+def _surface_form_statements(monkeypatch, direction: str) -> list[str]:
+    """Run one direction of ``b6d1f0a3c7e2`` with ``op.execute`` captured.
+
+    Same shape as :func:`_search_stemming_statements` and for the same reason:
+    the revision is pure ``op.execute``, the suite's schema comes from
+    ``Base.metadata.create_all`` and never runs the chain, so asserting the SQL
+    is the only coverage available without a database.
+    """
+    migration = _load_migration(f"surface_form_migration_{direction}", SURFACE_FORM_MIGRATION)
+    statements: list[str] = []
+    monkeypatch.setattr(
+        migration.op, "execute", lambda statement: statements.append(str(statement))
+    )
+    getattr(migration, direction)()
+    return [" ".join(statement.split()) for statement in statements]
+
+
+def test_surface_form_migration_matches_the_service_expression() -> None:
+    """tripl-uojz: the migration and the service must build the SAME tsvector.
+
+    The migration rebuilds every stored vector once; ``_refresh_text_vectors``
+    writes every vector produced afterwards. If the two expressions drift apart,
+    nothing raises: half the table is indexed one way, half the other, and the
+    only symptom is that some documents stop being reachable by some forms of
+    some words — the very bug being fixed, reintroduced silently and partially.
+
+    a7c3e1b9d5f2 guarded that with a copied string literal and a docstring saying
+    the two were byte-identical. That is a convention, and the assertion above it
+    could only ever check the literal it was written against. This compares the
+    two constants themselves, so editing either one alone turns this red.
+
+    The duplication is kept on purpose: a migration must not import application
+    code, or it stops meaning what it meant on the day it ran.
+    """
+    from tripl.services.search_service import TEXT_VECTOR_EXPRESSION
+
+    migration = _load_migration("surface_form_migration_expression", SURFACE_FORM_MIGRATION)
+
+    def normalized(sql: str) -> str:
+        return " ".join(sql.split())
+
+    assert normalized(migration._TEXT_VECTOR_EXPRESSION) == normalized(TEXT_VECTOR_EXPRESSION)
+    # And the live expression really is the two-leg one, so a revert of both
+    # halves at once cannot pass this by making them identically stem-only.
+    assert "tripl_search_surface" in normalized(TEXT_VECTOR_EXPRESSION)
+    assert "'tripl_search'," in normalized(TEXT_VECTOR_EXPRESSION)
+
+
+def test_surface_form_migration_creates_the_unstemmed_configuration(monkeypatch) -> None:
+    """``tripl_search_surface`` must be the PRE-stemming configuration, exactly.
+
+    Two properties are load-bearing and easy to lose:
+
+    * ``unaccent`` stays in the chain. The stem leg unaccents before stemming, so
+      ``зачёты`` stems via ``зачеты``; a surface leg without ``unaccent`` would
+      index ``зачёт`` and the ``surface(A) == stem(B)`` identity the whole fix
+      rests on would fail for every word containing ``ё``.
+    * All six word token types are mapped. Anything left on the bare ``simple``
+      dictionary is fine (that is what ``tripl_search`` does too), but a word type
+      MISSING from this list would be accent-sensitive on one leg and not the
+      other.
+    """
+    statements = _surface_form_statements(monkeypatch, "upgrade")
+    joined = "\n".join(statements)
+
+    assert "CREATE TEXT SEARCH CONFIGURATION tripl_search_surface (COPY = simple)" in joined
+    # No stemmer of any kind on this leg -- that is the entire point of it.
+    assert "tripl_english_stem" not in joined
+    assert "tripl_russian_stem" not in joined
+
+    mapping = next(statement for statement in statements if "ALTER MAPPING" in statement)
+    for token_type in (
+        "asciiword",
+        "asciihword",
+        "hword_asciipart",
+        "word",
+        "hword",
+        "hword_part",
+    ):
+        assert token_type in mapping
+    assert "WITH unaccent, simple" in mapping
+
+    rebuild = [statement for statement in statements if statement.startswith("UPDATE")]
+    assert len(rebuild) == 1, "upgrade() must rebuild the vectors exactly once"
+    assert "tripl_search_surface" in rebuild[0]
+    # The configuration has to exist before the UPDATE that references it.
+    assert statements.index(mapping) < statements.index(rebuild[0])
+
+
+def test_surface_form_migration_downgrade_returns_to_the_stem_only_state(monkeypatch) -> None:
+    """CI runs empty -> head -> base -> head (tripl-uojz).
+
+    So ``downgrade()`` has to leave exactly what ``upgrade()`` found: vectors
+    rebuilt with a7c3e1b9d5f2's stem-only expression, and the configuration
+    dropped. A configuration surviving at base would fail the re-upgrade —
+    ``CREATE TEXT SEARCH CONFIGURATION`` has no ``IF NOT EXISTS`` — and no
+    leftover-object check in CI looks at the text-search catalogs.
+    """
+    statements = _surface_form_statements(monkeypatch, "downgrade")
+
+    rebuild = [statement for statement in statements if statement.startswith("UPDATE")]
+    assert len(rebuild) == 1, "downgrade() must rebuild the vectors exactly once"
+    assert (
+        "SET text_vector = to_tsvector( 'tripl_search', "
+        "concat_ws(' ', title, subtitle, body, keywords) )" in rebuild[0]
+    )
+    assert "tripl_search_surface" not in rebuild[0]
+
+    drops = [statement for statement in statements if statement.startswith("DROP")]
+    assert drops == ["DROP TEXT SEARCH CONFIGURATION IF EXISTS tripl_search_surface"]
 
 
 def _string_literal(node: ast.expr) -> str | None:

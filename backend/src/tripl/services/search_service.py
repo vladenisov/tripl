@@ -489,11 +489,125 @@ async def _ensure_index_exists(
         )
 
 
+#: The stored-vector expression: the STEMMED lexemes of a document, plus its
+#: SURFACE lexemes, in one tsvector (tripl-uojz).
+#:
+#: WHY BOTH, WHEN a7c3e1b9d5f2 JUST FINISHED ARGUING FOR THE STEM
+#: --------------------------------------------------------------
+#: Stemming was right and is kept. What it did not anticipate is that Snowball
+#: OVER-stems, and that it over-stems the shortest form of a word — the bare
+#: nominative — hardest. Measured on production: ``to_tsvector('tripl_search',
+#: 'уловы улов уловов')`` is ``'ул':2 'улов':1,3``. Russian Snowball computes its
+#: RV region for ``улов`` as ``лов``, that region ends in ``ов`` (the masculine
+#: genitive-plural ending), so the ending is stripped and the nominative lands on
+#: ``ул`` — a lexeme NO inflected form of the same word ever produces. Every
+#: inflected form lands on ``улов``. The word is therefore split into two
+#: disjoint lexical classes by the very dictionary that was supposed to unify it.
+#:
+#: This is not one unlucky word. Measured lemma / over-stem, with the number of
+#: production ``search_documents`` rows holding each:
+#:
+#:     экран/экра 414/3971 · показа/показ 341/429 · открыт/откр 302/260
+#:     закрыт/закр 183/100 · создан/созда 124/172 · найден/найд 18/181
+#:     выключен/выключ 10/137 · архив/арх 23/53 · улов/ул 151/0
+#:
+#: Which FORM produces which lexeme is looked up, not inferred — the natural
+#: guess is wrong for the word with the biggest numbers::
+#:
+#:     экран -> экра · экрана -> экра · экраны -> экра · экране -> экран
+#:
+#: That table also kills the cheap fix. A query-side-only expansion assumes the
+#: documents stranded on the over-stem are a negligible tail. They are the
+#: MAJORITY for ``экран``: 3971 rows store the over-stem ``экра`` and 414 store
+#: ``экран``. Under a stem-only index ``q='экране'`` expands to
+#: ``'экран' | 'экране'``, reaches the 414 and misses the 3971 — and nothing on
+#: the query side can ever reach them, because they store a lexeme (``экра``)
+#: that is not a word anyone types. (``q='экрана'`` is the mirror trap: it
+#: expands to ``'экра' | 'экрана'``, reaches the 3971 on its stem exactly as it
+#: did before, and its surface term matches nothing at all, since a stem-only
+#: index stores ``экрана`` nowhere.) The breakage is bidirectional and the
+#: DOCUMENT side is the one that has to carry the surface form.
+#:
+#: WHAT THE SECOND LEG BUYS, STATED AS A CONDITION AND NOT AS A SLOGAN
+#: -------------------------------------------------------------------
+#: A document (and a query) now carries ``{stem(w), surface(w)}`` for every token
+#: ``w``. Two forms A and B of one word meet iff those two sets intersect. They
+#: already met when ``stem(A) == stem(B)``; the new leg adds the case that was
+#: missing, ``surface(A) == stem(B)`` — which is EXACTLY the over-stem failure,
+#: because the form that gets over-stripped is spelled the same as the stem the
+#: forms in the OTHER class produce. ``улов`` indexes ``{ул, улов}``, ``уловы``
+#: indexes ``{улов, уловы}``, and they meet on ``улов`` from either direction;
+#: ``экран`` ``{экра, экран}`` and ``экране`` ``{экран, экране}`` meet on
+#: ``экран``, having met nowhere before.
+#:
+#: It is not a universal guarantee and should not be sold as one: two forms that
+#: BOTH over-stem, to different lexemes, and whose surfaces match neither stem,
+#: still miss each other — measured, not hypothetical: ``экрана``
+#: ``{экра, экрана}`` against ``экране`` ``{экран, экране}`` is disjoint and this
+#: change does not repair it. What it repairs is every pair with an over-stemmed
+#: form on one side, which is the population the row counts above are about.
+#:
+#: It also does not, and cannot, guarantee that two DIFFERENT words stay apart.
+#: ``surface(A) == stem(B)`` is a string equality; nothing in it asks whether A
+#: and B are forms of one word, so an unrelated word spelled like another's stem
+#: now matches it. What IS guaranteed is that the change is purely additive (both
+#: legs OR-ed on both sides, the stem leg unchanged, so no existing match is
+#: lost) and that new matches require a whole shared spelling rather than a
+#: prefix. The residue is checked empirically over this vocabulary by
+#: ``tests/relevance/test_stemming_invariants.py``, not argued.
+#:
+#: WHY A SECOND CONFIGURATION RATHER THAN ``'simple'``
+#: ---------------------------------------------------
+#: ``tripl_search_surface`` (created by the migration that introduced this
+#: expression) is byte-for-byte what ``tripl_search`` was BEFORE a7c3e1b9d5f2:
+#: ``COPY = simple`` with the six word token types on ``unaccent, simple``. The
+#: ``unaccent`` is load-bearing, not decoration. The stem leg unaccents a token
+#: before stemming it, so ``зачёты`` stems via ``зачеты``; if the surface leg
+#: skipped ``unaccent`` it would index ``зачёт`` while the stem leg of every
+#: inflected form produced ``зачет``, and the ``surface(A) == stem(B)`` identity
+#: the whole fix rests on would break on every word containing ``ё``.
+#:
+#: This is NOT the per-language pair a7c3e1b9d5f2 rejected. That rejection was
+#: about needing to CLASSIFY a query (``spot`` vs ``спот`` vs ``screen спота``)
+#: to pick one configuration, and about two stored columns and two indexes. Here
+#: both configurations are applied unconditionally to every token, nothing is
+#: classified, and the two results are concatenated into the ONE existing
+#: ``text_vector`` behind the ONE existing GIN index.
+TEXT_VECTOR_EXPRESSION = """
+    to_tsvector(
+        'tripl_search',
+        concat_ws(' ', title, subtitle, body, keywords)
+    )
+    || to_tsvector(
+        'tripl_search_surface',
+        concat_ws(' ', title, subtitle, body, keywords)
+    )
+"""
+
+
 async def _refresh_text_vectors(
     session: AsyncSession,
     project_id: uuid.UUID,
     branch_id: uuid.UUID,
 ) -> None:
+    """Vectorize the rows a reindex just inserted, with the stem+surface expression.
+
+    THIS EXPRESSION AND THE MIGRATION'S MUST STAY BYTE-IDENTICAL (tripl-uojz)
+    ------------------------------------------------------------------------
+    A migration rebuilds every stored vector once; this function writes every
+    vector produced after that. If the two expressions disagree, half the table
+    is indexed one way and half the other, no error is raised anywhere, and the
+    only symptom is that some documents are unreachable by some forms of some
+    words — which is the bug being fixed, reintroduced silently and partially.
+    a7c3e1b9d5f2 kept them in sync by copying the string and saying so in a
+    docstring; that is a convention and a convention is not a check.
+
+    So the string now lives in :data:`TEXT_VECTOR_EXPRESSION`, the migration
+    keeps its own frozen copy (a migration must not import application code — it
+    has to keep meaning what it meant on the day it ran), and
+    ``tests/test_alembic_revisions.py`` compares the two constants directly. The
+    duplication is deliberate; the silence about it was the defect.
+    """
     from sqlalchemy import text
 
     # Only freshly inserted rows need vectorizing: rows kept by the
@@ -501,15 +615,12 @@ async def _refresh_text_vectors(
     # content_hash) and therefore still carry a valid text_vector.
     await session.execute(
         text(
-            """
+            f"""
             UPDATE search_documents
-            SET text_vector = to_tsvector(
-                'tripl_search',
-                concat_ws(' ', title, subtitle, body, keywords)
-            )
+            SET text_vector = {TEXT_VECTOR_EXPRESSION}
             WHERE project_id = :project_id AND branch_id = :branch_id
               AND text_vector IS NULL
-            """
+            """  # noqa: S608 - no interpolation of user input; the operand is a module constant
         ),
         {"project_id": project_id, "branch_id": branch_id},
     )

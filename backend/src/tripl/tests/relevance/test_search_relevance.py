@@ -1,4 +1,25 @@
-"""The search-relevance harness: one test per measured ranking case (tripl-338u).
+"""The search-relevance harness: three tests per measured ranking case (tripl-338u).
+
+ONE CASE, THREE CLAIMS, THREE TEST FUNCTIONS (tripl-uojz)
+---------------------------------------------------------
+A case asserts up to three different things and they do not deserve the same
+treatment, so they are asserted separately:
+
+* :func:`test_relevance_case_retrieves_what_it_names` — the document comes back
+  at all. Never xfailable.
+* :func:`test_relevance_case_ranks_the_expected_document_first` — it comes back
+  first, ahead of the competitors that beat it on production. This is the ONLY
+  one an ``xfail_ordering`` marker can excuse.
+* :func:`test_relevance_case_does_not_overstate_confidence` — the top hit is not
+  served as certain. Never xfailable.
+
+They were one function, and ``pytest.mark.xfail`` marks a function, so a marker
+filed against a ranking nuance also excused the document vanishing from the
+results entirely. That is not hypothetical: ``russian-phrase-finds-the-event-it-
+describes`` is xfailed for a scoring gap (tripl-9t2s) while the fault four
+earlier fixes were aimed at is precisely ``screen_spot`` not being RETRIEVED —
+so the harness was carrying a ranking marker that would have hidden the
+regression it exists to catch.
 
 This is the first test in the repository that executes the production ranking
 SQL. Everything else about search is asserted either against generated SQL
@@ -10,6 +31,17 @@ all, and any weight in them could be changed without a single test noticing.
 Read :mod:`tripl.tests.relevance.cases` for the case table and what each case was
 measured to do on production, and :mod:`tripl.tests.relevance.corpus` for the
 fixed corpus every case is ranked against.
+
+WHAT THIS FILE IS NOT THE RIGHT TOOL FOR
+----------------------------------------
+Everything here is ranking over a corpus, and a corpus supplies many paths to
+the right answer — trigram similarity, the ``LIKE`` tiers, term frequency. That
+makes it strong evidence about ORDER and weak evidence about whether a
+RETRIEVAL mechanism works, because the mechanism under test is rarely the only
+thing that could have produced the result. Claims about the text-search
+mechanism itself belong in
+:mod:`tripl.tests.relevance.test_stemming_invariants`, which seeds nothing and
+asks Postgres a question with exactly one possible cause.
 """
 
 from __future__ import annotations
@@ -108,55 +140,158 @@ async def test_the_harness_executes_the_postgres_ranking_path(
     )
 
 
+#: Each claim gets its own parametrization, and a case only appears where it
+#: actually asserts something. Filtering here rather than returning early inside
+#: the test bodies matters: a case that silently checked nothing would otherwise
+#: be REPORTED as a passing check of something it never looked at — the same
+#: self-deception as a case that is green for the wrong reason, one level down.
+RETRIEVAL_CASES: tuple[RelevanceCase, ...] = tuple(
+    case for case in CASES if case.expect_top or case.must_retrieve
+)
+ORDERING_CASES: tuple[RelevanceCase, ...] = tuple(case for case in CASES if case.expect_top)
+CONFIDENCE_CASES: tuple[RelevanceCase, ...] = tuple(
+    case for case in CASES if case.max_top_confidence is not None
+)
+
+
+def test_every_case_makes_at_least_one_assertion() -> None:
+    """No case may be collected three times and checked zero times.
+
+    ``RelevanceCase.__post_init__`` refuses such a case at import time, so this
+    is a second lock on the same door — but it is the lock that is readable from
+    the test side, where someone debugging a suspiciously green run will look. It
+    also fails loudly if the dataclass validation is ever softened.
+    """
+    for case in CASES:
+        asserted = (
+            bool(case.expect_top) or bool(case.must_retrieve) or case.max_top_confidence is not None
+        )
+        assert asserted, f"case {case.id!r} is parametrized into every test and checked by none"
+
+
+@pytest.mark.parametrize(
+    "case",
+    RETRIEVAL_CASES,
+    ids=[case.id for case in RETRIEVAL_CASES],
+)
+async def test_relevance_case_retrieves_what_it_names(
+    case: RelevanceCase,
+    relevance_session: AsyncSession,
+    seeded_corpus: Corpus,
+) -> None:
+    """The documents a case names must come back. NEVER xfailable (tripl-uojz).
+
+    THIS FUNCTION READS NO ``xfail_ordering`` FIELD, AND THAT IS THE FEATURE
+    ------------------------------------------------------------------------
+    Retrieval and ordering used to be asserted by one function, so a marker filed
+    against a RANKING nuance also excused the document disappearing from the
+    result set entirely. ``russian-phrase-finds-the-event-it-describes`` is the
+    live instance: it is xfailed because a short almost-exact title outranks a
+    complete match, and under the old arrangement the ``screen_spot`` event could
+    have gone back to being ABSENT — the production fault four fixes were aimed
+    at — with the case still reporting a tidy expected failure. A ranking
+    regression and a retrieval regression are different failures with different
+    causes, and the harness now has to say which one it is looking at.
+
+    ``must_retrieve`` is asserted here too, with no position claim: it carries the
+    cases about the retrieval MECHANISM that have no measured ranking (the
+    over-stem case), and the competitors whose presence the ordering assertions
+    silently depend on.
+    """
+    items = await _search(relevance_session, seeded_corpus, case.query)
+    ranking = _describe(items)
+
+    expected = tuple(title for title in (case.expect_top,) if title) + case.must_retrieve
+    assert items, (
+        f"q={case.query!r} returned nothing at all, so none of {expected} can be "
+        f"found. Measured {case.measured}."
+    )
+    for title in expected:
+        assert _rank_of(items, title) is not None, (
+            f"q={case.query!r} did not return {title!r} anywhere in {len(items)} "
+            f"results. Got: {ranking}. Measured {case.measured}."
+        )
+
+
 @pytest.mark.parametrize(
     "case",
     [
         pytest.param(
             case,
             id=case.id,
-            marks=pytest.mark.xfail(strict=True, reason=case.xfail) if case.xfail else (),
+            marks=(
+                pytest.mark.xfail(strict=True, reason=case.xfail_ordering)
+                if case.xfail_ordering
+                else ()
+            ),
         )
-        for case in CASES
+        for case in ORDERING_CASES
     ],
 )
-async def test_relevance_case(
+async def test_relevance_case_ranks_the_expected_document_first(
     case: RelevanceCase,
     relevance_session: AsyncSession,
     seeded_corpus: Corpus,
 ) -> None:
+    """The ORDER claim, and the only claim an ``xfail_ordering`` may excuse.
+
+    Retrieval is re-derived here rather than assumed, because a strict xfail on
+    this function must fail for the reason the marker names. If the document were
+    missing the ``_rank_of`` below would return ``None`` and this would raise a
+    confusing ``TypeError`` instead — so it is asserted first, with a message
+    that points at the retrieval test, which is where that failure belongs.
+    """
     items = await _search(relevance_session, seeded_corpus, case.query)
     ranking = _describe(items)
+    assert case.expect_top is not None  # guaranteed by the parametrization filter
 
-    if case.expect_top is not None:
-        assert items, (
-            f"q={case.query!r} returned nothing at all, so {case.expect_top!r} "
-            f"cannot rank first. Measured {case.measured}."
+    rank = _rank_of(items, case.expect_top)
+    assert rank is not None, (
+        f"q={case.query!r} did not return {case.expect_top!r} at all, so there is "
+        f"no order to check — this is a RETRIEVAL failure and "
+        f"test_relevance_case_retrieves_what_it_names is reporting it too. "
+        f"Got: {ranking}. Measured {case.measured}."
+    )
+    for competitor in case.must_not_outrank:
+        competitor_rank = _rank_of(items, competitor)
+        assert competitor_rank is None or competitor_rank > rank, (
+            f"q={case.query!r}: {competitor!r} outranks {case.expect_top!r} "
+            f"(#{competitor_rank} vs #{rank}). Got: {ranking}. "
+            f"Measured {case.measured}."
         )
-        rank = _rank_of(items, case.expect_top)
-        assert rank is not None, (
-            f"q={case.query!r} did not return {case.expect_top!r} anywhere in "
-            f"{len(items)} results. Got: {ranking}. Measured {case.measured}."
-        )
-        for competitor in case.must_not_outrank:
-            competitor_rank = _rank_of(items, competitor)
-            assert competitor_rank is None or competitor_rank > rank, (
-                f"q={case.query!r}: {competitor!r} outranks {case.expect_top!r} "
-                f"(#{competitor_rank} vs #{rank}). Got: {ranking}. "
-                f"Measured {case.measured}."
-            )
-        assert rank == 0, (
-            f"q={case.query!r}: {case.expect_top!r} ranked #{rank}, not first. "
-            f"Got: {ranking}. Measured {case.measured}."
-        )
+    assert rank == 0, (
+        f"q={case.query!r}: {case.expect_top!r} ranked #{rank}, not first. "
+        f"Got: {ranking}. Measured {case.measured}."
+    )
 
-    if case.max_top_confidence is not None:
-        assert items, (
-            f"q={case.query!r} returned nothing, so the confidence claim cannot be "
-            f"observed. The corpus is supposed to contain a weak match for it "
-            f"(see corpus._SESSION_KEYS). Measured {case.measured}."
-        )
-        assert items[0].confidence <= case.max_top_confidence, (
-            f"q={case.query!r} is served at confidence {items[0].confidence} on an "
-            f"absolute score of {items[0].score:.3f}; nothing this weak may be "
-            f"presented as a certain answer. Got: {ranking}. Measured {case.measured}."
-        )
+
+@pytest.mark.parametrize(
+    "case",
+    CONFIDENCE_CASES,
+    ids=[case.id for case in CONFIDENCE_CASES],
+)
+async def test_relevance_case_does_not_overstate_confidence(
+    case: RelevanceCase,
+    relevance_session: AsyncSession,
+    seeded_corpus: Corpus,
+) -> None:
+    """The score claim (tripl-txcz). Also never xfailable.
+
+    A confidence bound is not an ordering nuance — "we told the user this was a
+    certain answer when it was not" is a user-visible defect on its own — so it
+    does not live in the function a marker can excuse.
+    """
+    items = await _search(relevance_session, seeded_corpus, case.query)
+    ranking = _describe(items)
+    assert case.max_top_confidence is not None  # guaranteed by the parametrization filter
+
+    assert items, (
+        f"q={case.query!r} returned nothing, so the confidence claim cannot be "
+        f"observed. The corpus is supposed to contain a weak match for it "
+        f"(see corpus._SESSION_KEYS). Measured {case.measured}."
+    )
+    assert items[0].confidence <= case.max_top_confidence, (
+        f"q={case.query!r} is served at confidence {items[0].confidence} on an "
+        f"absolute score of {items[0].score:.3f}; nothing this weak may be "
+        f"presented as a certain answer. Got: {ranking}. Measured {case.measured}."
+    )

@@ -189,6 +189,31 @@ async def postgres_search(
     return merged, semantic_used
 
 
+#: The tsquery every lexical search runs with: the STEMMED reading of what was
+#: typed, OR-ed with its SURFACE reading (tripl-uojz). ``||`` on ``tsquery`` is
+#: OR, not concatenation.
+#:
+#: WHY THIS IS A MODULE CONSTANT AND NOT JUST A LINE OF SQL
+#: --------------------------------------------------------
+#: It is the QUERY half of an identity the whole fix rests on: a document
+#: indexes ``{stem(w), surface(w)}`` (``search_service.TEXT_VECTOR_EXPRESSION``)
+#: and a query asks for ``{stem(q), surface(q)}``, so two forms of one word meet
+#: iff those sets intersect. Half of that identity being right is worth nothing —
+#: a surface-indexed document under a stem-only query is unreachable in exactly
+#: the way the bug was.
+#:
+#: ``tests/relevance/test_stemming_invariants.py`` asserts the identity directly,
+#: over production-harvested word forms, with no corpus and no ranking involved.
+#: It IMPORTS this constant and ``TEXT_VECTOR_EXPRESSION`` rather than copying
+#: the SQL, so the thing it proves is the thing that ships. A copied literal
+#: would have gone on passing after either side was edited — which is precisely
+#: how the previous harness certified a repair that was wrong on production.
+TEXT_QUERY_EXPRESSION = """
+    websearch_to_tsquery('tripl_search', :query)
+    || websearch_to_tsquery('tripl_search_surface', :query)
+"""
+
+
 async def postgres_lexical_search(
     session: AsyncSession,
     *,
@@ -292,13 +317,86 @@ async def postgres_lexical_search(
     It is computed in the projection of the ``ranked`` CTE, i.e. only for rows
     that already passed the WHERE, and never over ``body`` — the column that can
     be megabytes on a harvested-value variable.
+
+    THE QUERY IS NOW TWO TSQUERIES OR-ED (tripl-uojz)
+    -------------------------------------------------
+    Snowball over-stems the bare nominative — ``улов`` -> ``ул``, ``экран`` ->
+    ``экра`` — onto a lexeme no inflected form of the same word reaches, so a
+    stem-only index splits a word into two disjoint classes. The repair is
+    symmetric: every document indexes ``stem(w) || surface(w)`` (see
+    ``search_service.TEXT_VECTOR_EXPRESSION``) and every query is
+    ``websearch_to_tsquery('tripl_search', q) || websearch_to_tsquery(
+    'tripl_search_surface', q)``. There is exactly ONE place the tsquery is
+    built — the ``q`` CTE — and exactly one place that derives from it and needs
+    the same treatment on the DOCUMENT side, the 3.25 tier above; the WHERE and
+    ``ts_rank_cd`` consume ``q.tsq`` unchanged.
+
+    WHAT THIS DOES TO RANKING, INCLUDING WHAT IS NOT CERTIFIED
+    ----------------------------------------------------------
+    A document now holds roughly twice the lexeme occurrences, so a raw
+    ``ts_rank_cd`` roughly doubles — but not uniformly, and the difference is
+    where the risk lives.
+
+    * **The tripl-gbxj guarantees survive by construction.** Normalization flag
+      32 is ``rank / (rank + 1)``, so the lexical leg is bounded by 4.0 no matter
+      how large the raw rank grows. ``spot-event-beats-harvested-variables`` and
+      ``screen_spot-exact-title-beats-harvested-variables`` are won by a 5.0
+      exact-title boost against a leg that CANNOT reach 5.0, and doubling the raw
+      rank cannot change that. For ``q='spot'`` and ``q='screen_spot'`` the two
+      legs of the tsquery are identical anyway (``stem('spot') == 'spot'``), so
+      the query is literally unchanged.
+    * **``repetition-outlier-does-not-outrank-the-screen-it-names`` survives with
+      room.** ``q='screen_settings'``: the outlier's raw rank of 18.0 can at most
+      approach 4.0 after normalization (it is 3.79 today), so its total moves
+      from ~6.24 to at most ~6.45 against an event at 8.33 that also gains. A
+      tsvector additionally caps a lexeme at 256 positions, so the 180
+      occurrences of ``screen`` merge to 256 rather than 360 — the outlier gains
+      less than double, not more.
+    * **``spaced-query-finds-underscored-event`` is untouched.** Both legs of
+      ``q='screen spot'`` are the same lexemes; ``token_boundary_regex`` and the
+      3.5/3.0 tiers are literal and see no tsquery at all.
+    * **The plural cases are NOT certified, and this says so instead of
+      asserting.** ``purchase-plural`` / ``spots-plural`` / ``ulov-plural`` are
+      won by 0.25 — the gap between the 3.25 stemmed tier the entity earns and
+      the 3.0 literal body tier the harvested value earns. The harvested value
+      spells the queried form LITERALLY, so after this change it matches BOTH
+      legs of the tsquery while the correctly-named entity still matches only the
+      stem leg. Its lexical leg therefore grows and the entity's does not. On a
+      small raw rank the normalized leg is nearly linear, so a raw 0.1 -> 0.2
+      moves the leg by ~0.30 — more than the 0.25 the case is won by. Whether it
+      actually flips depends on occurrence counts this docstring cannot know.
+      Run the relevance harness; do not read a green suite as a prediction, and
+      do not read this paragraph as one either.
+
+    A second, smaller semantic change: ``websearch_to_tsquery`` ANDs the terms
+    WITHIN each leg, so the result is ``(a1 & b1) | (a2 & b2)`` and not the
+    per-term ``(a1|a2) & (b1|b2)``. A multi-word query whose terms need DIFFERENT
+    legs (one word matched by its stem, another only by its surface) still
+    misses. That is strictly less broken than today, where only the stem leg
+    exists, but it is not zero. Building the per-term form would mean parsing
+    websearch syntax — quotes, ``or``, ``-`` negation — in Python, and a
+    hand-rolled parser of that grammar is a larger risk than the residue.
+
+    The same OR also weakens ``-`` exclusion: excluding ``-спота`` no longer
+    excludes a document spelling ``спот``, because that document fails the stem
+    leg's ``!спот`` but satisfies the surface leg's ``!спота``. Detecting
+    negation in Python to skip the surface leg was rejected — a bare ``-`` scan
+    misfires on the hyphenated identifiers this catalog is full of, and a
+    heuristic that is wrong on identifiers is worse than a narrower NOT.
     """
     token_regex = token_boundary_regex(query)
     has_token_regex = bool(token_regex)
     statement = text(
-        """
+        f"""
         WITH q AS (
-            SELECT websearch_to_tsquery('tripl_search', :query) AS tsq
+            -- THE ONE TSQUERY CONSTRUCTION SITE (tripl-uojz). The expression
+            -- itself lives in TEXT_QUERY_EXPRESSION above so the invariant test
+            -- can assert the SHIPPED string instead of a copy of it; the stem
+            -- leg is what a7c3e1b9d5f2 built, and the surface leg is what lets a
+            -- query reach a document stranded on an over-stem (`экран` -> `экра`,
+            -- a lexeme no inflected form produces). Both legs are also indexed
+            -- into every document's text_vector, so the two sides meet.
+            SELECT ({TEXT_QUERY_EXPRESSION}) AS tsq
         ),
         ranked AS (
             SELECT
@@ -331,8 +429,18 @@ async def postgres_lexical_search(
                     -- the ladder through a document that spells the plural --
                     -- which is the harvested value, not the entity. See the
                     -- docstring: this fires only on title/keywords, never body.
-                    WHEN to_tsvector('tripl_search', concat_ws(' ', d.title, d.keywords))
-                         @@ q.tsq THEN 3.25
+                    -- DERIVED FROM THE `q` CTE ABOVE, NOT A SECOND CONSTRUCTION
+                    -- SITE: it consumes `q.tsq` and only builds the DOCUMENT
+                    -- side. That document side has to carry the same two legs
+                    -- as the stored text_vector (tripl-uojz) or the tier would
+                    -- answer a two-leg query with a one-leg document and fire
+                    -- for a strictly narrower set than it retrieves.
+                    WHEN (
+                        to_tsvector('tripl_search', concat_ws(' ', d.title, d.keywords))
+                        || to_tsvector(
+                            'tripl_search_surface', concat_ws(' ', d.title, d.keywords)
+                        )
+                    ) @@ q.tsq THEN 3.25
                     WHEN :has_token_regex AND d.body ~* :token_regex THEN 3.0
                     WHEN lower(d.title) LIKE lower(:prefix) THEN 3.0
                     WHEN lower(d.body) LIKE lower(:contains) THEN 2.25
@@ -369,7 +477,7 @@ async def postgres_lexical_search(
         FROM ranked
         ORDER BY score DESC, title ASC
         LIMIT :limit
-        """
+        """  # noqa: S608 - no user input is interpolated; the operand is a module constant
     )
     filter_entity_types = bool(entity_types)
     statement = statement.bindparams(bindparam("entity_types", expanding=True))
@@ -570,7 +678,11 @@ def fallback_score(
       does NOT reach ``purchase_completed`` on SQLite, and ``q='уловы'`` does not
       reach ``улов``. Every stemming case in the relevance table
       (``tests/relevance/cases.py``: purchase-plural, ulov-plural, spots-plural,
-      russian-phrase) is a Postgres-only guarantee.
+      russian-phrase) is a Postgres-only guarantee. tripl-uojz — indexing and
+      querying the SURFACE form beside the stem, so an over-stemmed nominative
+      (``улов`` -> ``ул``) is still reachable from its own inflections — is the
+      same story for the same reason: no stemmer here means no over-stemmer
+      either, so this dialect never had the fault and cannot demonstrate the fix.
     * **``ts_rank_cd`` and trigram similarity.** There is no lexical rank and no
       fuzzy-match leg beyond the crude ``SequenceMatcher`` tail below, so the
       x4.0/x2.0 weighting the whole boost ladder is calibrated against does not
