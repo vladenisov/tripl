@@ -467,12 +467,38 @@ async def test_global_search_matches_multilingual_plan_content(client: AsyncClie
     assert variable_contexts[0]["observed_count"] == 1
     assert variable_contexts[0]["values"] == ["vip_segment"]
     assert event_hit["description"] == "Fires when покупка успешно завершена"
-    assert 0.0 <= event_hit["confidence"] <= 1.0
     # tripl-txcz: the top hit is no longer 1.0 by construction — this query
     # matches a field value rather than a title, so it is served as a strong but
-    # not certain answer. The exact arithmetic is pinned in the unit tests above,
-    # where the scores are controlled.
-    assert 0.0 < ru_items[0]["confidence"] <= 1.0
+    # not certain answer.
+    #
+    # Pinned to the TIER and to the tier ORDER, not to a range (tripl-u7wf).
+    # `0.0 <= confidence <= 1.0` and `0.0 < confidence <= 1.0` are the entire
+    # domain of the field: every confidence this endpoint can return satisfies
+    # them — including the 1.0-for-a-nonsense-query that tripl-txcz was filed
+    # about — so the assertions this replaces would have passed against the very
+    # bug they were added to prevent.
+    #
+    # Read the three lines below for what each one can actually catch, because
+    # the first two deliberately CANNOT catch a re-tuning and that is correct:
+    #
+    #   - `== _SQLITE_KEYWORD_TOKEN` says WHICH TIER served this hit. Comparing
+    #     against the constant rather than a literal means retuning the tier
+    #     leaves it green — which is the point, since the claim is about routing
+    #     ("a field-value match, not a title match"), not about the number. It
+    #     fails when a scoring change moves this query to a different tier.
+    #   - the confidence line says confidence is that tier's share of a full
+    #     score, i.e. that the ratio is the reported number.
+    #   - `< _SQLITE_EXACT_TITLE` is the one that compares two INDEPENDENT
+    #     constants, so it is the one a bad re-tuning trips: it fails the moment
+    #     a field-value match can score at or above an exact title match, which
+    #     is the inversion tripl-txcz's "strong but not certain" wording rests
+    #     on.
+    assert ru_items[0] == event_hit
+    assert ru_items[0]["score"] == pytest.approx(_SQLITE_KEYWORD_TOKEN)
+    assert ru_items[0]["confidence"] == pytest.approx(
+        _SQLITE_KEYWORD_TOKEN / _FULL_CONFIDENCE_SCORE, abs=1e-4
+    )
+    assert ru_items[0]["score"] < _SQLITE_EXACT_TITLE
 
     en_resp = await client.get("/api/v1/projects/search-ml/search?q=checkout")
     assert en_resp.status_code == 200
