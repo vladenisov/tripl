@@ -11,7 +11,30 @@ from tripl.services.app_settings_service import AiConfig, env_ai_config
 
 logger = logging.getLogger(__name__)
 
-OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings"
+#: Default only. The endpoint actually used is resolved per call from
+#: ``settings.search_embedding_base_url`` — see :func:`embeddings_url`.
+OPENAI_EMBEDDINGS_BASE_URL = "https://api.openai.com/v1"
+
+
+def embeddings_url() -> str:
+    """The embeddings endpoint this instance posts to (tripl-0tt4).
+
+    Read at CALL time rather than bound at import, so a test — and an operator
+    reading the value back out of a running process — sees the configured
+    endpoint rather than whatever the environment held when this module was
+    first imported.
+
+    Built from a BASE exactly as ``llm_service`` builds its chat endpoint
+    (``ai_base_url.rstrip("/") + "/chat/completions"``), so one provider's two
+    endpoints are configured alike rather than one taking a base and the other a
+    full URL.
+
+    This was a hardcoded api.openai.com constant while the docs told self-hosters
+    to point ``SEARCH_EMBEDDING_*`` at their own endpoint to keep plan text
+    inside their infrastructure. Following that instruction sent the text to
+    OpenAI anyway, with the operator's own credential attached.
+    """
+    return settings.search_embedding_base_url.rstrip("/") + "/embeddings"
 
 
 def embed_query(text: str, *, config: AiConfig | None = None) -> list[float]:
@@ -44,7 +67,7 @@ def embed_texts(texts: list[str], *, config: AiConfig | None = None) -> list[lis
         payload["dimensions"] = settings.search_embedding_dimensions
 
     request = urllib.request.Request(
-        OPENAI_EMBEDDINGS_URL,
+        embeddings_url(),
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",

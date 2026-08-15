@@ -8,6 +8,8 @@ failures (sanitize rejection, short response tail) keep the old semantics.
 
 from __future__ import annotations
 
+import json
+import urllib.request
 import uuid
 from dataclasses import replace
 from unittest.mock import MagicMock
@@ -17,6 +19,7 @@ from celery.exceptions import Retry
 
 from tripl.config import settings
 from tripl.models.search_document import SearchDocument
+from tripl.services import embedding_service
 from tripl.services.app_settings_service import env_ai_config
 from tripl.worker.tasks import search as search_tasks
 
@@ -179,3 +182,63 @@ def test_stranded_chaser_noop_when_embeddings_disabled(
     assert result == {"branches_requeued": 0}
     session.execute.assert_not_called()
     fake_task.delay.assert_not_called()
+
+
+def test_embeddings_are_posted_to_the_configured_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The endpoint was hardcoded to api.openai.com while the docs told
+    self-hosters to point SEARCH_EMBEDDING_* at their own provider "to keep all
+    text inside your own infrastructure" — so following the written instruction
+    sent tracking-plan text to OpenAI with the operator's own key on it
+    (tripl-0tt4).
+
+    Asserted at the REQUEST, not at the helper that builds the string: what
+    matters is where the bytes actually go, and a test on the builder alone would
+    stay green if the call site kept using the old constant.
+    """
+    captured: list[str] = []
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"data": [{"embedding": [0.1, 0.2]}]}).encode("utf-8")
+
+    def _fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> _Response:
+        captured.append(request.full_url)
+        return _Response()
+
+    monkeypatch.setattr(embedding_service.urllib.request, "urlopen", _fake_urlopen)
+    # Trailing slash on purpose: this is a BASE, and an operator who pastes their
+    # provider's URL with one must not end up posting to a doubled path.
+    monkeypatch.setattr(settings, "search_embedding_base_url", "https://llm.internal.example/v1/")
+    config = replace(
+        env_ai_config(),
+        search_embeddings_enabled=True,
+        search_embedding_provider="openai",
+        search_embedding_api_key="test-key",
+    )
+
+    vectors = embedding_service.embed_texts(["hello"], config=config)
+
+    assert vectors == [[0.1, 0.2]]
+    assert captured == ["https://llm.internal.example/v1/embeddings"]
+
+
+def test_the_shipped_default_still_points_at_openai(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Adding the setting must not move anybody's endpoint.
+
+    Every instance that never sets SEARCH_EMBEDDING_BASE_URL has to keep talking
+    to exactly the URL the old hardcoded constant named, or this "make it
+    configurable" change quietly becomes "break every existing deployment".
+    """
+    monkeypatch.setattr(
+        settings, "search_embedding_base_url", embedding_service.OPENAI_EMBEDDINGS_BASE_URL
+    )
+
+    assert embedding_service.embeddings_url() == "https://api.openai.com/v1/embeddings"
