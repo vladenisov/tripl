@@ -498,6 +498,107 @@ describe('AlertingInbox — the note is reachable without taking an action (trip
   })
 })
 
+describe('AlertingInbox — writing the note is not the hard part (tripl-gwrd)', () => {
+  const noteBox = () => screen.getByRole('textbox', { name: /^Note on onboarding/ })
+
+  it('hands the caret to the box it just revealed', () => {
+    // "Add note" used to cost two clicks and a hunt — reveal the box, then go
+    // find it — which is most of what made writing one feel like paperwork.
+    renderInbox()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add note' }))
+
+    expect(noteBox()).toHaveFocus()
+  })
+
+  it('does not seize the caret from a card that merely has a note already', () => {
+    // The editor also starts open on a card carrying a stored note or a
+    // surviving draft, and the inbox is a 50-row list. A blanket `autoFocus`
+    // would have every such card race for the caret on load and drop it into
+    // whichever one React committed last — which is why focus is armed by the
+    // click and not by the mount.
+    renderInbox({ inbox: { items: [makeGroup({ note: 'ticket FOO-12' })], total: 1 } })
+
+    expect(noteBox()).toBeInTheDocument()
+    expect(noteBox()).not.toHaveFocus()
+  })
+
+  it('saves on Ctrl+Enter without leaving the box', () => {
+    const { onAction } = renderInbox({ noteDrafts: { 'grp-1': 'expected, we retired the screen' } })
+
+    fireEvent.keyDown(noteBox(), { key: 'Enter', ctrlKey: true })
+
+    expect(onAction).toHaveBeenCalledWith(expect.objectContaining({ action: 'note' }))
+  })
+
+  it('leaves a bare Enter to make paragraphs', () => {
+    // The reason this is a textarea rather than the one-line input it was: a
+    // note is prose that wraps, and 2000 characters through a 28px slot shows
+    // about one line of them at a time. A bare Enter that submitted would put
+    // the second paragraph out of reach.
+    const { onAction } = renderInbox({ noteDrafts: { 'grp-1': 'first line' } })
+
+    fireEvent.keyDown(noteBox(), { key: 'Enter' })
+
+    expect(onAction).not.toHaveBeenCalled()
+  })
+
+  it('offers to delete a note that turned out to be wrong (tripl-pdb2)', () => {
+    // Emptying the box is how the server has always deleted a note —
+    // `state.note = note.strip() or None` — and it was the one gesture the
+    // editor refused, so a wrong note was permanent unless somebody thought to
+    // overwrite it with a correction. The button has to NAME the case, because
+    // "Save note" over an empty box reads as a no-op.
+    const { onAction } = renderInbox({
+      inbox: { items: [makeGroup({ note: 'wrong, this was the ios release' })], total: 1 },
+      noteDrafts: { 'grp-1': '' },
+    })
+
+    const clear = screen.getByRole('button', { name: 'Clear note' })
+    expect(clear).toBeEnabled()
+    fireEvent.click(clear)
+
+    expect(onAction).toHaveBeenCalledWith(expect.objectContaining({ action: 'note' }))
+  })
+
+  it('has nothing to offer on an empty box over an incident with no note', () => {
+    // The third state, and the only one where the control is genuinely inert:
+    // there is neither a note to write nor one to delete.
+    renderInbox()
+    fireEvent.click(screen.getByRole('button', { name: 'Add note' }))
+
+    expect(screen.getByRole('button', { name: 'Save note' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Clear note' })).toBeNull()
+  })
+
+  it('says nothing about length on a note anybody would actually write', () => {
+    // A counter pinned to every card is noise: incident notes are a sentence,
+    // and the cap is roughly a page and a half.
+    renderInbox({ noteDrafts: { 'grp-1': 'x'.repeat(1799) } })
+
+    expect(screen.queryByText(/characters left$/)).toBeNull()
+  })
+
+  it('warns before the box starts silently dropping keystrokes', () => {
+    // `maxLength` does not warn, error or truncate visibly — it simply stops
+    // accepting input, and somebody pasting a stack trace reads that as the page
+    // having frozen.
+    renderInbox({ noteDrafts: { 'grp-1': 'x'.repeat(1800) } })
+
+    expect(screen.getByText('200 characters left')).toBeInTheDocument()
+  })
+
+  it('says what is happening once the box is full, not just that it is zero', () => {
+    // "0 characters left" states the number without stating the consequence, and
+    // the consequence is the entire reason the line exists.
+    renderInbox({ noteDrafts: { 'grp-1': 'x'.repeat(2000) } })
+
+    expect(
+      screen.getByText('Full — further characters are not being accepted'),
+    ).toBeInTheDocument()
+  })
+})
+
 describe('AlertingInbox — the header says how much of the queue is on screen (tripl-oxkt.1)', () => {
   it('counts what is shown against the server total, and offers the rest', () => {
     renderInbox({

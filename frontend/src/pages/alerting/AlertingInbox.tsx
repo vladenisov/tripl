@@ -1,11 +1,12 @@
-import { useMemo, useState, type Dispatch, type SetStateAction } from 'react'
+import { useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { Link } from 'react-router-dom'
 
+import { MAX_INBOX_NOTE_LENGTH } from '@/api/alerting'
 import { Chip } from '@/components/primitives/chip'
 import { Panel } from '@/components/settings/kit'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import {
   ALERT_INBOX_STATUSES,
   alertInboxStatusLabel,
@@ -36,6 +37,7 @@ import type {
   AlertInboxStatus,
 } from '@/types'
 
+import { noteBudgetLabel } from './constants'
 import { IncidentDeliveries } from './IncidentDeliveries'
 
 /** The status filter, where `''` is "All" — the state with no `status=` param. */
@@ -423,6 +425,31 @@ function IncidentCard({
   // (tripl-oxkt.14). Drafts outlive a section switch, so a returning reader
   // must not have to re-find the box holding what they typed.
   const [noteOpen, setNoteOpen] = useState(!!group.note || noteDraft.length > 0)
+  // Hands the caret to the editor when — and only when — the operator opened it
+  // (tripl-gwrd). "Add note" used to cost two clicks and a hunt: reveal the box,
+  // then go find it, which is most of what made writing one feel like paperwork.
+  //
+  // A flag armed by the click and a callback ref that spends it, rather than
+  // `autoFocus`, for two independent reasons. `autoFocus` fires on MOUNT, and
+  // `noteOpen` also starts true on a card that arrives with a stored note or a
+  // surviving draft — so every such card on a 50-row page would race for the
+  // caret on load and it would land in whichever one React committed last. And
+  // jsx-a11y/no-autofocus rejects the prop outright, correctly: focus moved by a
+  // user's own gesture is a different thing from focus seized at page load, and
+  // this is the first.
+  const noteFocusPending = useRef(false)
+  const openNote = () => {
+    noteFocusPending.current = true
+    setNoteOpen(true)
+  }
+  // Guarded, because a callback ref re-runs on every render whose identity
+  // changed — unguarded, this would drag focus back into the box each time the
+  // draft changed, i.e. on every keystroke, from wherever the reader had tabbed.
+  const focusNoteWhenOpened = (node: HTMLTextAreaElement | null) => {
+    if (!node || !noteFocusPending.current) return
+    noteFocusPending.current = false
+    node.focus()
+  }
 
   const id = group.correlation_group_id
   const target = scopeSummary(group)
@@ -431,6 +458,24 @@ function IncidentCard({
   const worstDelta = incidentWorstDeltaLabel(group)
   const decision = priorDecisionLabel(group)
   const isMuted = group.status === 'muted'
+
+  // Emptying the box is how a note is DELETED, and it used to be the one
+  // gesture the editor refused (tripl-pdb2). The server has always supported it
+  // — `_apply_inbox_action_to_state` writes `state.note = note.strip() or None`,
+  // so an empty string clears the column, and both request schemas keep the
+  // empty string valid for exactly this — but the button was disabled at an
+  // empty box and the request omitted the key anyway, so a wrong note was
+  // permanent unless someone thought to overwrite it with a correction.
+  //
+  // The three states are distinct and the button has to name which one it is
+  // in, because "Save note" over an empty box reads as a no-op:
+  //   text, or text over a stored note → Save note
+  //   empty over a stored note         → Clear note   (sends "")
+  //   empty, nothing stored            → nothing to do, disabled
+  const trimmedNoteDraft = noteDraft.trim()
+  const isClearingNote = trimmedNoteDraft.length === 0 && !!group.note
+  const canSaveNote = trimmedNoteDraft.length > 0 || isClearingNote
+  const noteBudget = noteBudgetLabel(noteDraft.length)
 
   const runAction = (action: AlertInboxAction, mutedUntil?: string | null) => {
     setMuteOpen(false)
@@ -607,36 +652,64 @@ function IncidentCard({
       <div className="mt-2 flex flex-col gap-2">
         <div className="order-2">
           {noteOpen ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <Input
+            <div className="flex flex-col gap-1">
+              {/* A textarea and not the one-line Input this used to be: the cap
+                  is MAX_INBOX_NOTE_LENGTH, and two thousand characters through a
+                  28px slot shows about one line of them at a time, so the reader
+                  cannot see the sentence they are writing — let alone the pasted
+                  error it is quoting (tripl-gwrd). Three rows is the whole of
+                  a normal note without turning an untouched card into a form. */}
+              <Textarea
+                ref={focusNoteWhenOpened}
+                rows={3}
                 aria-label={`Note on ${target}`}
                 placeholder={group.note ? 'Replace the note…' : 'Why does this matter?'}
-                maxLength={2000}
+                maxLength={MAX_INBOX_NOTE_LENGTH}
                 value={noteDraft}
                 onChange={event =>
                   setNoteDrafts(current => ({ ...current, [id]: event.target.value }))
                 }
-                className="h-7 min-w-40 flex-1 text-[11px]"
+                // Ctrl/Cmd+Enter, never bare Enter. This is a textarea BECAUSE a
+                // note is prose, so Enter has to go on making paragraphs; the
+                // modifier is the shortcut every comment box already uses, which
+                // is why it needs no teaching — and the button says so anyway.
+                onKeyDown={event => {
+                  if (!(event.metaKey || event.ctrlKey) || event.key !== 'Enter') return
+                  if (isPending || !canSaveNote) return
+                  event.preventDefault()
+                  runAction('note')
+                }}
+                className="min-h-0 w-full py-1.5 text-[11px] leading-5"
               />
-              {/* An explicit save, because a note used to be reachable only as a
-                  passenger on an action — so writing down WHY something was a
-                  false positive meant first undoing the false positive
-                  (tripl-oxkt.14). `note` moves no status and stamps no
-                  `acted_at`. */}
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 px-2 text-[10px]"
-                disabled={isPending || noteDraft.trim().length === 0}
-                onClick={() => runAction('note')}
-              >
-                Save note
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                {/* An explicit save, because a note used to be reachable only as a
+                    passenger on an action — so writing down WHY something was a
+                    false positive meant first undoing the false positive
+                    (tripl-oxkt.14). `note` moves no status and stamps no
+                    `acted_at`. */}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-[10px]"
+                  title="Ctrl+Enter (⌘+Enter on a Mac) saves without leaving the box."
+                  disabled={isPending || !canSaveNote}
+                  onClick={() => runAction('note')}
+                >
+                  {isClearingNote ? 'Clear note' : 'Save note'}
+                </Button>
+                {noteBudget && (
+                  // `role="status"`: it appears mid-sentence, while the reader is
+                  // looking at their own typing rather than at the row below it.
+                  <span role="status" className="text-[10px] text-muted-foreground">
+                    {noteBudget}
+                  </span>
+                )}
+              </div>
             </div>
           ) : (
             <button
               type="button"
-              onClick={() => setNoteOpen(true)}
+              onClick={openNote}
               className="text-[10.5px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
             >
               {group.note ? 'Edit note' : 'Add note'}

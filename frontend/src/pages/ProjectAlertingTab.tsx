@@ -620,7 +620,16 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       const draft = (noteDrafts[group.correlation_group_id] ?? '').trim()
       return alertingApi.applyInboxAction(slug, group.correlation_group_id, {
         action,
-        ...(draft ? { note: draft } : {}),
+        // Two rules, and the split is what makes a note DELETABLE (tripl-pdb2).
+        // The server reads an absent note as "leave the stored one alone" and an
+        // empty string as "clear it", so:
+        //   any other action  → send it only when there is something to say, or
+        //                       pressing Acknowledge with an untouched box would
+        //                       erase the note already on the incident;
+        //   action === 'note' → send it ALWAYS, empty included, because that is
+        //                       exactly the request an emptied box is making and
+        //                       omitting the key turned it into a silent no-op.
+        ...(action === 'note' || draft ? { note: draft } : {}),
         // Keyed on the ACTION, never on the truthiness of `mutedUntil`: `null`
         // is the open-ended mute and has to reach the wire as an explicit
         // `muted_until: null` (tripl-a50u). A `&& mutedUntil` here dropped the
@@ -736,10 +745,16 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
    * either all moved or none of it did.
    */
   const inboxBulkActionMut = useMutation({
-    mutationFn: ({ correlationGroupIds, action, mutedUntil }: InboxBulkActionVariables) =>
+    mutationFn: ({ correlationGroupIds, action, mutedUntil, note }: InboxBulkActionVariables) =>
       alertingApi.applyInboxBulkAction(slug, {
         correlation_group_ids: correlationGroupIds,
         action,
+        // Present or absent, never empty — the bar drops an untouched box before
+        // it ever reaches here (see `InboxBulkActionRequest.note`). The single
+        // route's `action === 'note'` branch has no counterpart because clearing
+        // in bulk is not offered: an empty string would wipe whatever each of N
+        // incidents separately had to say, from a box showing none of it.
+        ...(note ? { note } : {}),
         // Keyed on the ACTION, never on the truthiness of `mutedUntil` — the
         // exact rule the single route follows, and for the exact same reason:
         // `null` IS the open-ended mute and has to arrive as an explicit
@@ -807,10 +822,15 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     // On settled, not on success — same reasoning as the single route: an action
     // can commit and then fail to render its response, and a list left showing
     // the pre-action state with no refetch coming is the worst of the outcomes.
-    // Unconditional, unlike the single route's `note` exemption: the bar offers
-    // only actions that move status, so every batch it can send changes what
-    // this list holds, how it is sorted and what the filter admits.
-    onSettled: () => {
+    onSettled: (_data, _error, variables) => {
+      // …carrying the single route's `note` exemption, which this branch used to
+      // say it did not need because "the bar offers only actions that move
+      // status". That stopped being true the moment the bar grew a note
+      // (tripl-saq1), and it is the exemption that matters MOST here: a
+      // note-only batch moves no status on any of up to 200 incidents, so
+      // invalidating would refetch every loaded page of an accumulating list to
+      // arrive at the cards `onSuccess` has already written.
+      if (variables.action === 'note') return
       qc.invalidateQueries({ queryKey: ['alertInbox', slug] })
       qc.invalidateQueries({ queryKey: ['alertDeliveries', slug] })
     },
@@ -828,7 +848,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
    * cannot raise it (see `AlertInboxBulkAction`), so there is no branch here to
    * forget to write. The server refuses it independently with a 422.
    */
-  const handleInboxBulkAction = async ({ action, mutedUntil }: InboxBulkActionRequest) => {
+  const handleInboxBulkAction = async ({ action, mutedUntil, note }: InboxBulkActionRequest) => {
     const chosen = selectedIncidentIdsInView
     if (chosen.length === 0) return
     // Re-read after any await, then INTERSECT with what was chosen: the ref
@@ -862,7 +882,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
         return
       }
     }
-    inboxBulkActionMut.mutate({ correlationGroupIds, action, mutedUntil })
+    inboxBulkActionMut.mutate({ correlationGroupIds, action, mutedUntil, note })
   }
 
   // Which row is busy, and which row failed — read off the mutation's own

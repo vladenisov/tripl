@@ -702,9 +702,20 @@ replaced when you write a new one.
 **A note-only save is the one action that decides nothing**, and it is treated
 that way: it does not change the incident's status and it does not stamp who
 handled it or when, so the row does not start claiming "already handled by
-you". Send an empty note to clear the stored one. The other five actions do stamp
-it, which is what the row's *handled by* line is read from — and what tells a
-re-fired incident from a fresh one.
+you". The other five actions do stamp it, which is what the row's *handled by*
+line is read from — and what tells a re-fired incident from a fresh one.
+
+**Add note** opens the box with the cursor already in it, and **Ctrl+Enter**
+(**⌘+Enter** on a Mac) saves without reaching for the button. Enter itself makes
+a new line: a note is prose. The box holds 2000 characters and says so once you
+are inside the last 200, because past the limit it simply stops accepting what
+you type.
+
+**Emptying the box and pressing Clear note deletes the stored note.** The button
+renames itself to say so, since "Save note" over an empty box reads as doing
+nothing. Taking any *other* action with an empty box leaves the stored note
+alone, so acknowledging an incident never quietly erases what someone wrote on
+it earlier.
 
 ### Acting on several incidents at once {#bulk-actions}
 
@@ -739,6 +750,18 @@ mind later therefore means selecting those same incidents again and writing a
 new note: there is no one note to edit, and a reader who assumes there is finds
 out weeks later, editing one row and wondering why the other nineteen still say
 the old thing.
+
+**Note** on the bar opens a box that works two ways. **Save note** writes it and
+moves nothing, and pressing any other action *while it holds text* sends the note
+with that action — one request, so "mute these and say why" costs one click, not
+two. The box stays open while it has text in it, precisely so a note can never
+ride along invisibly, and it empties when the selection does: a sentence written
+about one batch is not a sentence about the next one.
+
+**Clearing is not offered in bulk.** An empty box on the bar means *no note*, not
+*erase theirs* — the selected incidents may each carry a different note, and none
+of them is on screen to be looked at first. Delete a note on the incident's own
+row, where the note you are about to lose is in front of you.
 
 **A bulk mute asks before it silences anything**, naming how many incidents are
 about to go quiet. A mute is the one decision that outlives its incident, so

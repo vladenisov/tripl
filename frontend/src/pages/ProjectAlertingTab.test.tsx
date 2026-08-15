@@ -725,6 +725,10 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
   function mockInboxWithBulk(groups: Record<string, unknown>[]) {
     const bulkBodies: Record<string, unknown>[] = []
     const singleActionUrls: string[] = []
+    // How many times the LIST has been re-read. A note moves no status, so the
+    // batch route's `onSettled` skips invalidation for it, and counting the
+    // requests is the only way to hold that (tripl-saq1).
+    const listFetches = { count: 0 }
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
@@ -742,12 +746,19 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
         return jsonResponse({
           // The contract: one rebuilt card per acted-on incident, in request
           // order after de-duplication.
-          groups: body.correlation_group_ids.map(id => ({
-            ...(groups.find(group => group.correlation_group_id === id) ?? groups[0]),
-            correlation_group_id: id,
-            status: body.action === 'mute' ? 'muted' : 'acknowledged',
-            muted: body.action === 'mute',
-          })),
+          groups: body.correlation_group_ids.map(id => {
+            const source = groups.find(group => group.correlation_group_id === id) ?? groups[0]
+            // `note` moves NO status — that is the whole of what separates it
+            // from the other four. A mock that "acknowledged" a note batch would
+            // let a bug which really did move status pass unseen.
+            if (body.action === 'note') return { ...source, correlation_group_id: id }
+            return {
+              ...source,
+              correlation_group_id: id,
+              status: body.action === 'mute' ? 'muted' : 'acknowledged',
+              muted: body.action === 'mute',
+            }
+          }),
           batch_id: 'batch-1',
           // Always SENT and always null on this route: `false_positive` is the
           // only action that ratchets anything and it is refused here, so null
@@ -763,6 +774,7 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
       }
       if (/\/alert-inbox\/[^/?]+$/.test(url)) return new Response('null', { status: 404 })
       if (/\/alert-inbox(\?|$)/.test(url)) {
+        listFetches.count += 1
         const status = new URL(url, 'http://test').searchParams.get('status')
         const matching = status ? groups.filter(group => group.status === status) : groups
         return jsonResponse({ items: matching, total: matching.length })
@@ -783,7 +795,7 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
       throw new Error(`Unhandled fetch: ${url}`)
     })
 
-    return { bulkBodies, singleActionUrls }
+    return { bulkBodies, singleActionUrls, listFetches }
   }
 
   /**
@@ -1024,6 +1036,165 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
     // …and the queue itself is still on screen: this is a write gate, not a
     // curtain over the incidents.
     expect(screen.getByText('Showing 2 of 2 · last 30 days')).toBeInTheDocument()
+  })
+
+  it('gives the whole batch one shared note (tripl-saq1)', async () => {
+    // The half of "select a group and give it one comment" that was missing.
+    // The server has accepted a note on this route since it shipped; the bar had
+    // no field for one, so the only way to say why twelve incidents were handled
+    // together was to type the same sentence twelve times.
+    const { bulkBodies } = mockInboxWithBulk([makeInboxGroup(), makeInboxGroup(OTHER_GROUP)])
+    renderInboxSection()
+
+    await screen.findByText('Showing 2 of 2 · last 30 days')
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_SECOND }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add a note to 2 selected incidents' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Note on 2 selected incidents' }), {
+      target: { value: 'one bad deploy, all of it' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save this note on 2 selected incidents' }))
+
+    await waitFor(() => expect(bulkBodies).toHaveLength(1))
+    expect(bulkBodies[0]).toEqual({
+      correlation_group_ids: ['grp-1', 'grp-2'],
+      action: 'note',
+      note: 'one bad deploy, all of it',
+    })
+    expect(toastSuccess).toHaveBeenCalledWith('Note saved on 2 incidents.')
+  })
+
+  it('carries that note on the action instead, in the same request', async () => {
+    // "Give them a common comment AND mute them" was one ask, and it should cost
+    // one round trip. The note is attached in the bar's `run`, so this holds for
+    // every verb rather than for the ones a later edit remembers to wire.
+    const { bulkBodies } = mockInboxWithBulk([makeInboxGroup(), makeInboxGroup(OTHER_GROUP)])
+    renderInboxSection()
+
+    await screen.findByText('Showing 2 of 2 · last 30 days')
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_SECOND }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add a note to 2 selected incidents' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Note on 2 selected incidents' }), {
+      target: { value: 'known bad release, rolling back' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Acknowledge 2 selected incidents' }))
+
+    await waitFor(() => expect(bulkBodies).toHaveLength(1))
+    expect(bulkBodies[0]).toEqual({
+      correlation_group_ids: ['grp-1', 'grp-2'],
+      action: 'acknowledge',
+      note: 'known bad release, rolling back',
+    })
+  })
+
+  it('does not refetch the queue for a note, and still does for a status change', async () => {
+    // The batch `onSettled` used to invalidate unconditionally, on the argument
+    // that "the bar offers only actions that move status". Adding a note made
+    // that false, and this is where it costs the most: a note-only batch moves
+    // no status on up to 200 incidents, so invalidating would refetch every
+    // loaded page of an accumulating list to arrive at cards `onSuccess` has
+    // already written.
+    //
+    // Both halves matter. Asserting only that the count held still would pass
+    // just as happily against a page that never invalidates for anything.
+    const { listFetches } = mockInboxWithBulk([makeInboxGroup(), makeInboxGroup(OTHER_GROUP)])
+    renderInboxSection()
+
+    await screen.findByText('Showing 2 of 2 · last 30 days')
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add a note to 1 selected incident' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Note on 1 selected incident' }), {
+      target: { value: 'watching it' },
+    })
+    const afterLoad = listFetches.count
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save this note on 1 selected incident' }))
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Note saved on 1 incident.'))
+    expect(listFetches.count).toBe(afterLoad)
+
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
+    fireEvent.click(screen.getByRole('button', { name: 'Acknowledge 1 selected incident' }))
+    await waitFor(() => expect(listFetches.count).toBeGreaterThan(afterLoad))
+  })
+})
+
+describe('ProjectAlertingTab — a note that is wrong can be taken back (tripl-pdb2)', () => {
+  /** Records the action request body and never answers it — see tripl-a50u. */
+  function mockInboxCapturingAction(groups: Record<string, unknown>[]) {
+    const actionBodies: Record<string, unknown>[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/alert-inbox/') && url.endsWith('/actions')) {
+        actionBodies.push(JSON.parse(String(init?.body)))
+        return new Promise<Response>(() => {})
+      }
+      if (/\/alert-inbox(\?|$)/.test(url)) {
+        return jsonResponse({ items: groups, total: groups.length })
+      }
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: false })
+      }
+      if (url.includes('/alert-destinations')) {
+        return jsonResponse([makeDestination({ rules: [makeRule()] })])
+      }
+      if (url.includes('/alert-deliveries')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.includes('/events')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/scans')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    return { actionBodies }
+  }
+
+  function renderInbox() {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=inbox']}>
+          <ProjectAlertingTab slug="demo" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('sends the empty string the server reads as "delete this"', async () => {
+    // `_apply_inbox_action_to_state` writes `state.note = note.strip() or None`,
+    // so an empty string clears the column and both schemas keep it valid for
+    // exactly that. The page spread was `...(draft ? { note: draft } : {})`,
+    // which omitted the key — and an omitted note means "leave the stored one
+    // alone", so emptying the box could not reach the one request it was making.
+    const { actionBodies } = mockInboxCapturingAction([
+      makeInboxGroup({ note: 'wrong, this was the ios release' }),
+    ])
+    renderInbox()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Clear note' }))
+
+    await waitFor(() => expect(actionBodies).toHaveLength(1))
+    expect(actionBodies[0]).toEqual({ action: 'note', note: '' })
+    expect('note' in actionBodies[0]).toBe(true)
+  })
+
+  it('still leaves a stored note alone when some other action is taken', async () => {
+    // The other half of the same spread, and the reason it cannot simply always
+    // send the key: acknowledging an incident with an untouched note box must
+    // not erase what somebody wrote on it earlier.
+    const { actionBodies } = mockInboxCapturingAction([
+      makeInboxGroup({ note: 'still true, still relevant' }),
+    ])
+    renderInbox()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Acknowledge payment_failed' }))
+
+    await waitFor(() => expect(actionBodies).toHaveLength(1))
+    expect(actionBodies[0]).toEqual({ action: 'acknowledge' })
+    expect('note' in actionBodies[0]).toBe(false)
   })
 })
 

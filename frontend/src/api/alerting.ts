@@ -42,6 +42,22 @@ import type {
  */
 export const MAX_BULK_INBOX_ACTION_GROUPS = 200
 
+/**
+ * The longest note either inbox route will store (tripl-gwrd).
+ *
+ * The server's half is `max_length=2000` on `AlertInboxActionRequest.note` AND
+ * on `AlertInboxBulkActionRequest.note` (schemas/alerting.py) — already written
+ * twice there, and a third time as a bare `maxLength={2000}` on the incident
+ * card's editor. The bulk bar's editor would have made four, so it is named once
+ * here for the reason the cap above is: a wire contract, beside the wire.
+ *
+ * Unlike the bulk cap, this one is NOT enforced by refusing the request. Both
+ * editors hand it to `maxLength`, which stops accepting keystrokes SILENTLY —
+ * so the only way an operator learns the limit exists is by being told before
+ * they reach it (see `noteBudgetLabel`).
+ */
+export const MAX_INBOX_NOTE_LENGTH = 2000
+
 export const alertingApi = {
   listDestinations: (slug: string) =>
     api.get<AlertDestination[]>(`/projects/${slug}/alert-destinations`),
