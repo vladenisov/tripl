@@ -155,6 +155,22 @@ def test_missing_timestamp_server_defaults_migration_is_noop_off_postgresql(
     assert statements == []
 
 
+#: The stem-only vector rebuild, as BOTH revisions that write it normalise to.
+#:
+#: Named once and asserted by EQUALITY rather than with ``in`` (tripl-u7wf). A
+#: substring check passes on any statement that merely contains this text, so it
+#: would have gone on passing if a surface leg — or anything else — had been
+#: appended to the historical expression. Since the whole point of these two
+#: assertions is that a7c3e1b9d5f2 keeps writing exactly what it wrote on the day
+#: it ran, and that b6d1f0a3c7e2's downgrade restores exactly that, containment
+#: was the one property they were not there to check.
+_STEM_ONLY_REBUILD = (
+    "UPDATE search_documents "
+    "SET text_vector = to_tsvector( 'tripl_search', "
+    "concat_ws(' ', title, subtitle, body, keywords) )"
+)
+
+
 def _search_stemming_statements(monkeypatch, direction: str) -> list[str]:
     """Run one direction of ``a7c3e1b9d5f2`` with ``op.execute`` captured.
 
@@ -242,10 +258,7 @@ def test_search_stemming_migration_rebuilds_stored_vectors_in_both_directions(
         # assertion must NOT be "corrected" to follow the service. What the live
         # expression has to agree with is b6d1f0a3c7e2 — see
         # test_surface_form_migration_matches_the_service_expression.
-        assert (
-            "SET text_vector = to_tsvector( 'tripl_search', "
-            "concat_ws(' ', title, subtitle, body, keywords) )" in rebuild[0]
-        )
+        assert rebuild[0] == _STEM_ONLY_REBUILD
 
 
 def test_search_stemming_migration_downgrade_restores_the_simple_mapping(
@@ -399,10 +412,10 @@ def test_surface_form_migration_downgrade_returns_to_the_stem_only_state(monkeyp
 
     rebuild = [statement for statement in statements if statement.startswith("UPDATE")]
     assert len(rebuild) == 1, "downgrade() must rebuild the vectors exactly once"
-    assert (
-        "SET text_vector = to_tsvector( 'tripl_search', "
-        "concat_ws(' ', title, subtitle, body, keywords) )" in rebuild[0]
-    )
+    # Equality, so a downgrade that restored the stem leg AND left the surface
+    # one appended would fail here rather than satisfy a containment check. The
+    # `not in` below then reads as the explanation it is, not as the only guard.
+    assert rebuild[0] == _STEM_ONLY_REBUILD
     assert "tripl_search_surface" not in rebuild[0]
 
     drops = [statement for statement in statements if statement.startswith("DROP")]
