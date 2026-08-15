@@ -2902,6 +2902,59 @@
         }
       }
     },
+    "/api/v1/projects/{slug}/alert-inbox/bulk-actions": {
+      "post": {
+        "tags": [
+          "alerting"
+        ],
+        "summary": "Apply Alert Inbox Bulk Action",
+        "description": "Apply one triage decision to a selection of incidents (tripl-gpfr).\n\nA shortcut for N clicks on the sibling single-incident route, not a new kind\nof object: the decision is copied into each incident's own state. The service\nvalidates every id before mutating anything and commits once, so this either\napplies to the whole selection or to none of it.",
+        "operationId": "apply_alert_inbox_bulk_action_api_v1_projects__slug__alert_inbox_bulk_actions_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertInboxBulkActionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertInboxBulkActionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{slug}/alert-inbox/{correlation_group_id}": {
       "get": {
         "tags": [
@@ -14546,6 +14599,98 @@
         ],
         "title": "AlertInboxActionResponse",
         "description": "What the action DID, not only what the group looks like afterwards.\n\n``false_positive`` writes no scope override for scope types the ratchet does\nnot tune \u2014 release regressions among them \u2014 so the button promised a\ndetection change it never made, on 10 of 57 production groups (tripl-oxkt.6).\nThe count is reported so the UI can say \"tightened 2 scopes\" or \"no scopes\ntightened\"; it must NOT be guessed client-side from ``scope_type``, which is\nonly the newest item's."
+      },
+      "AlertInboxBulkActionRequest": {
+        "properties": {
+          "correlation_group_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Correlation Group Ids"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "acknowledge",
+              "resolve",
+              "mute",
+              "reopen",
+              "false_positive",
+              "note"
+            ],
+            "title": "Action"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "muted_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Muted Until"
+          }
+        },
+        "type": "object",
+        "required": [
+          "correlation_group_ids",
+          "action"
+        ],
+        "title": "AlertInboxBulkActionRequest",
+        "description": "One triage decision applied to several incidents at once (tripl-gpfr).\n\nA TRIAGE SHORTCUT, not an incident record. There is no group-of-groups\nobject, no new table and no migration behind this body: whatever it says is\nCOPIED into each selected incident's own correlation state, so afterwards\nevery selected row carries the same note, the same ``acted_at`` and the same\n``acted_by`` and is indistinguishable from N single-incident clicks.\n\nA persistent supergroup was costed and rejected (tripl-5cc9):\n``_reopen_closed_incidents`` runs inside the per-rule loop and resets member\nincidents individually, so a parent row would either never release \u2014 because\nno single member's release can speak for it \u2014 or leak the moment one member\nwent quiet. Copying the decision into the members has neither failure.\n\n``correlation_group_ids`` comes FIRST to match the ``<entity>_ids``-first\nconvention every other bulk body in the repo already uses\n(``EventBulkUpdate``, ``EventBulkDelete``, ``VariableBulkUpdate``,\n``MetricBulkUpdate``, ``DeadEventArchiveRequest``); the action fields that\nfollow are exactly ``AlertInboxActionRequest``'s, and mean exactly the same\nthings, so the two bodies stay readable side by side."
+      },
+      "AlertInboxBulkActionResponse": {
+        "properties": {
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/AlertInboxGroupResponse"
+            },
+            "type": "array",
+            "title": "Groups"
+          },
+          "batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Batch Id"
+          },
+          "overrides_written": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overrides Written"
+          }
+        },
+        "type": "object",
+        "required": [
+          "groups",
+          "batch_id",
+          "overrides_written"
+        ],
+        "title": "AlertInboxBulkActionResponse",
+        "description": "The rebuilt cards for every incident the batch touched (tripl-gpfr).\n\nDELIBERATELY NOT the house 204 that ``/bulk-update`` and ``/bulk-delete``\nreturn on events, variables and metrics. Those routes mutate rows the caller\nis about to re-fetch anyway; this one replaces cards the operator is LOOKING\nAT, and its single-incident sibling ``AlertInboxActionResponse`` already\nanswers with the rebuilt group for exactly that reason. A 204 would force the\nclient to re-list the whole inbox to redraw N rows it had just changed, and\nwould throw away ``overrides_written``, which that sibling documents as\nnullable and ALWAYS SENT. ``DeadEventArchiveResponse``\n(services/reconciliation_service.py) is the standing precedent in this repo\nfor a bulk route answering with a body instead of 204."
       },
       "AlertInboxGroupResponse": {
         "properties": {

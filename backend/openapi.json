@@ -1823,6 +1823,98 @@
         "title": "AlertInboxActionResponse",
         "type": "object"
       },
+      "AlertInboxBulkActionRequest": {
+        "description": "One triage decision applied to several incidents at once (tripl-gpfr).\n\nA TRIAGE SHORTCUT, not an incident record. There is no group-of-groups\nobject, no new table and no migration behind this body: whatever it says is\nCOPIED into each selected incident's own correlation state, so afterwards\nevery selected row carries the same note, the same ``acted_at`` and the same\n``acted_by`` and is indistinguishable from N single-incident clicks.\n\nA persistent supergroup was costed and rejected (tripl-5cc9):\n``_reopen_closed_incidents`` runs inside the per-rule loop and resets member\nincidents individually, so a parent row would either never release \u2014 because\nno single member's release can speak for it \u2014 or leak the moment one member\nwent quiet. Copying the decision into the members has neither failure.\n\n``correlation_group_ids`` comes FIRST to match the ``<entity>_ids``-first\nconvention every other bulk body in the repo already uses\n(``EventBulkUpdate``, ``EventBulkDelete``, ``VariableBulkUpdate``,\n``MetricBulkUpdate``, ``DeadEventArchiveRequest``); the action fields that\nfollow are exactly ``AlertInboxActionRequest``'s, and mean exactly the same\nthings, so the two bodies stay readable side by side.",
+        "properties": {
+          "action": {
+            "enum": [
+              "acknowledge",
+              "resolve",
+              "mute",
+              "reopen",
+              "false_positive",
+              "note"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "correlation_group_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Correlation Group Ids",
+            "type": "array"
+          },
+          "muted_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Muted Until"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "correlation_group_ids",
+          "action"
+        ],
+        "title": "AlertInboxBulkActionRequest",
+        "type": "object"
+      },
+      "AlertInboxBulkActionResponse": {
+        "description": "The rebuilt cards for every incident the batch touched (tripl-gpfr).\n\nDELIBERATELY NOT the house 204 that ``/bulk-update`` and ``/bulk-delete``\nreturn on events, variables and metrics. Those routes mutate rows the caller\nis about to re-fetch anyway; this one replaces cards the operator is LOOKING\nAT, and its single-incident sibling ``AlertInboxActionResponse`` already\nanswers with the rebuilt group for exactly that reason. A 204 would force the\nclient to re-list the whole inbox to redraw N rows it had just changed, and\nwould throw away ``overrides_written``, which that sibling documents as\nnullable and ALWAYS SENT. ``DeadEventArchiveResponse``\n(services/reconciliation_service.py) is the standing precedent in this repo\nfor a bulk route answering with a body instead of 204.",
+        "properties": {
+          "batch_id": {
+            "format": "uuid",
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/AlertInboxGroupResponse"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "overrides_written": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overrides Written"
+          }
+        },
+        "required": [
+          "groups",
+          "batch_id",
+          "overrides_written"
+        ],
+        "title": "AlertInboxBulkActionResponse",
+        "type": "object"
+      },
       "AlertInboxGroupResponse": {
         "properties": {
           "acted_at": {
@@ -21477,6 +21569,59 @@
           }
         },
         "summary": "List Alert Inbox",
+        "tags": [
+          "alerting"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/alert-inbox/bulk-actions": {
+      "post": {
+        "description": "Apply one triage decision to a selection of incidents (tripl-gpfr).\n\nA shortcut for N clicks on the sibling single-incident route, not a new kind\nof object: the decision is copied into each incident's own state. The service\nvalidates every id before mutating anything and commits once, so this either\napplies to the whole selection or to none of it.",
+        "operationId": "apply_alert_inbox_bulk_action_api_v1_projects__slug__alert_inbox_bulk_actions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertInboxBulkActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertInboxBulkActionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Apply Alert Inbox Bulk Action",
         "tags": [
           "alerting"
         ]

@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { Chip } from '@/components/primitives/chip'
 import { Panel } from '@/components/settings/kit'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import {
   ALERT_INBOX_STATUSES,
@@ -99,6 +100,18 @@ interface AlertingInboxProps {
   setNoteDrafts: Dispatch<SetStateAction<Record<string, string>>>
   expandedIncidents: ReadonlySet<string>
   toggleIncident: (correlationGroupId: string) => void
+  // …and so is the bulk selection, threaded in exactly the way those two are
+  // (tripl-gpfr). It lives on the page and not here for a reason this component
+  // cannot serve: the page owns the query whose rows these ids index into, so it
+  // is the only thing that can prune a selection when a status filter changes or
+  // a refetch drops rows. It also owns the floating bulk bar, which is fixed to
+  // the viewport rather than to this list.
+  //
+  // These are always passed as a matched pair with the bar; a card renders its
+  // checkbox from the same `canWrite` gate that decides its action row, so a
+  // viewer cannot build a selection they would not be allowed to act on.
+  selectedIncidents: ReadonlySet<string>
+  toggleIncidentSelected: (correlationGroupId: string, selected: boolean) => void
   onAction: (variables: InboxActionVariables) => void
   // The ONE row an action is in flight for. A single shared `isActionPending`
   // disabled all ~80 buttons on the page, so triage was strictly serial and the
@@ -137,6 +150,8 @@ export function AlertingInbox({
   setNoteDrafts,
   expandedIncidents,
   toggleIncident,
+  selectedIncidents,
+  toggleIncidentSelected,
   onAction,
   pendingGroupId,
   errorGroupId,
@@ -197,6 +212,8 @@ export function AlertingInbox({
       setNoteDrafts={setNoteDrafts}
       isExpanded={expandedIncidents.has(group.correlation_group_id)}
       toggleIncident={toggleIncident}
+      isSelected={selectedIncidents.has(group.correlation_group_id)}
+      toggleIncidentSelected={toggleIncidentSelected}
       onAction={onAction}
       canWrite={canWrite}
       isPending={pendingGroupId === group.correlation_group_id}
@@ -369,6 +386,8 @@ interface IncidentCardProps {
   setNoteDrafts: Dispatch<SetStateAction<Record<string, string>>>
   isExpanded: boolean
   toggleIncident: (correlationGroupId: string) => void
+  isSelected: boolean
+  toggleIncidentSelected: (correlationGroupId: string, selected: boolean) => void
   onAction: (variables: InboxActionVariables) => void
   // Read from the auth context ONCE by the section above and threaded down, so
   // fifty cards cannot answer the same question fifty different ways.
@@ -388,6 +407,8 @@ function IncidentCard({
   setNoteDrafts,
   isExpanded,
   toggleIncident,
+  isSelected,
+  toggleIncidentSelected,
   onAction,
   canWrite,
   isPending,
@@ -422,7 +443,41 @@ function IncidentCard({
       className="rounded-md border p-3 text-xs"
       style={isPinned ? { borderColor: 'var(--accent)' } : undefined}
     >
-      <div className="min-w-0">
+      <div className="flex items-start gap-2">
+      {/* The leading checkbox, and the ONE thing that turns this list into a
+          queue you can sweep (tripl-gpfr). Gated on the same `canWrite` as the
+          action row below, and for the same reason: every inbox action is
+          editor-only server-side, so a selection a viewer could build is a
+          selection nothing on the page would let them spend (tripl-oxkt.9).
+
+          Named by the SCOPE, through the same `scopeSummary` every action button
+          on this card is named by. That is deliberate reuse and not convenience:
+          two incidents on one scope differ only in direction or signal kind, and
+          a checkbox announced as "Select incident 3 of 12" would be the one
+          control on the card that cannot tell them apart. It also means a test
+          — and a speech-input user — addresses the checkbox and the buttons
+          beside it by the same words.
+
+          Outside the `canWrite &&` block that wraps the actions further down
+          because it sits ABOVE the card body in the DOM, not below it; the guard
+          is therefore repeated here rather than the block being stretched
+          around half the card. */}
+      {canWrite && (
+        <Checkbox
+          className="mt-0.5 shrink-0"
+          checked={isSelected}
+          onCheckedChange={checked => toggleIncidentSelected(id, checked === true)}
+          // Names the INCIDENT, not just the scope. Direction is part of the
+          // correlation key, so one scope firing both ways is two cards — the
+          // sibling line below says exactly that — and two checkboxes both
+          // announced "Select checkout_started" are two identical controls a
+          // screen-reader operator cannot tell apart. Same reason-then-scope
+          // wording as the mute confirmation, so the control and the sentence
+          // that follows it name the same thing (tripl-gpfr).
+          aria-label={`Select ${reason} on ${target}`}
+        />
+      )}
+      <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <Chip size="xs" tone={alertInboxStatusTone(group.status)}>
             {alertInboxStatusLabel(group.status)}
@@ -502,6 +557,7 @@ function IncidentCard({
         {decision && (
           <div className="mt-1 text-[10px] text-muted-foreground">{decision}</div>
         )}
+      </div>
       </div>
       {/* Guarded on the EFFECTIVE flag, not on the timestamp: a lapsed mute
           used to render an "open" badge and "muted until <a date in the past>"

@@ -16,6 +16,7 @@ import type { ChipTone } from '@/components/primitives/chip'
 import type {
   AlertInboxAction,
   AlertInboxActionResponse,
+  AlertInboxBulkAction,
   AlertInboxGroup,
   AlertInboxStatus,
   MetricScopeType,
@@ -224,6 +225,28 @@ function nameList(names: readonly string[], fallback: string): string {
  * out of the 30-day window and the Muted filter becomes the only route to the
  * Unmute button that lifts it.
  */
+/**
+ * "until 20 Aug 2026 12:00", or the whole open-ended clause.
+ *
+ * Extracted so the single-incident confirmation and the bulk one below cannot
+ * describe the SAME wire value differently (tripl-gpfr). The open-ended branch
+ * is a sentence rather than a phrase because it has to carry two facts a
+ * timestamp carries implicitly: that the silence never lapses on its own, and
+ * where the incident will be found afterwards — an indefinite mute freezes the
+ * row's sort key, so it sinks out of the 30-day window and the Muted filter is
+ * the only route back to the Unmute that lifts it (tripl-oxkt.2, tripl-a50u).
+ *
+ * Never `formatDateTime(mutedUntilIso)` on the null branch: it prints "Invalid
+ * Date" inside the one sentence whose entire job is to state a blast radius
+ * before anything goes quiet.
+ */
+function muteDurationClause(mutedUntilIso: string | null): string {
+  return mutedUntilIso
+    ? `until ${formatDateTime(mutedUntilIso)}`
+    : 'with no end date — it stays silenced until you unmute it, and you will '
+      + 'find it again under the Muted filter'
+}
+
 export function muteConfirmMessage(
   group: AlertInboxGroup,
   mutedUntilIso: string | null,
@@ -232,10 +255,7 @@ export function muteConfirmMessage(
   const reason = incidentReasonLabel(group.direction, group.scope_types)
   const scans = nameList(group.scan_names, 'this scan')
   const rules = nameList(group.rule_names, 'this rule')
-  const duration = mutedUntilIso
-    ? `until ${formatDateTime(mutedUntilIso)}`
-    : 'with no end date — it stays silenced until you unmute it, and you will '
-      + 'find it again under the Muted filter'
+  const duration = muteDurationClause(mutedUntilIso)
   return (
     `Silences "${reason}" on ${scopes}, from ${scans} via ${rules}, ` +
     `${duration}. Nothing else is silenced: the same scope ` +
@@ -306,4 +326,120 @@ export function inboxActionSuccessMessage(
         : 'Marked as a false positive — no scopes tightened, this kind of signal is not tuned this way.'
     }
   }
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Acting on SEVERAL incidents at once (tripl-gpfr). Everything below describes
+ * a batch; everything above it describes one incident. The two are kept apart
+ * deliberately rather than folded into count-aware variants of the same
+ * functions — see `bulkInboxActionSuccessMessage` for why the sentences differ
+ * by more than a plural.
+ * ---------------------------------------------------------------------------
+ */
+
+/**
+ * How many incidents are about to go quiet, said before any of them do.
+ *
+ * The single-incident confirmation ({@link muteConfirmMessage}) spells out the
+ * whole five-part suppression key, because the user's model of a mute is "not
+ * this thing again" and the system's is an exact match on (scan, rule, scope,
+ * scope kind, direction). That sentence cannot be scaled up: at ten incidents
+ * it is ten five-part keys, which nobody reads, and abbreviating it to the
+ * union of the parts would state a blast radius that is WIDER than what is
+ * actually silenced — the exact misreading the single sentence exists to stop.
+ *
+ * So the bulk sentence answers the question a bulk mute actually raises, which
+ * the single one never has to: HOW MANY am I silencing? The count is the blast
+ * radius here, because each selected incident keeps its own key and nothing
+ * else is touched. The last clause says so, in the same words as the single
+ * confirmation, so an operator who has read one recognises the other.
+ *
+ * `count`, not the groups themselves: this sentence deliberately names no
+ * incident, so growing it a list later would be a decision someone makes on
+ * purpose rather than a `.map()` that quietly appears.
+ */
+export function bulkMuteConfirmMessage(count: number, mutedUntilIso: string | null): string {
+  return (
+    `Silences ${countOf(count, 'incident', 'incidents')} at once, ` +
+    `${muteDurationClause(mutedUntilIso)}. Each one keeps its own suppression ` +
+    'key — its scan, its rule, its scope, the kind of signal and the direction ' +
+    '— so nothing beyond the ones you selected is silenced: the same scopes ' +
+    'moving the other way, a different kind of signal on them, another scan or ' +
+    'another rule all still alert.'
+  )
+}
+
+/**
+ * What a batch just did, said out loud — one toast for N incidents.
+ *
+ * NOT `inboxActionSuccessMessage` with a plural patched in, and the difference
+ * is behavioural rather than grammatical:
+ *
+ *  - It takes a COUNT and no response. The batch response's `groups` can be
+ *    shorter than the request when an incident's deliveries were deleted
+ *    concurrently, and that incident WAS still acted on and audited. Announcing
+ *    `groups.length` would under-report a decision that fully landed, so the
+ *    caller passes how many it asked for.
+ *  - It must never read `overrides_written`. On this route the key is always
+ *    sent and always null, meaning "not applicable" — `false_positive` is the
+ *    only action that ratchets anything and the route refuses it. The single
+ *    version's false-positive branch reads that number, which is precisely why
+ *    reusing it here would be wrong even if `AlertInboxBulkAction` allowed the
+ *    action to arrive (tripl-oxkt.6).
+ *  - The per-incident promises stay off it. "It reopens once the scope goes
+ *    quiet" is true of each member individually and reads, over a batch, as a
+ *    promise about the batch — which is not a thing that exists: there is no
+ *    group object, so there is nothing to reopen as a unit (tripl-5cc9).
+ *
+ * The mute branch still distinguishes a timed silence from an open-ended one,
+ * because that distinction is the whole of tripl-a50u and a bulk mute is the
+ * case that reaches furthest.
+ */
+export function bulkInboxActionSuccessMessage(
+  action: AlertInboxBulkAction,
+  count: number,
+  mutedUntilIso: string | null,
+): string {
+  const incidents = countOf(count, 'incident', 'incidents')
+  switch (action) {
+    case 'acknowledge':
+      return `Acknowledged ${incidents}.`
+    case 'resolve':
+      return `Resolved ${incidents}.`
+    case 'mute':
+      return mutedUntilIso
+        ? `Muted ${incidents} until ${formatDateTime(mutedUntilIso)}.`
+        : `Muted ${incidents} — no end date. They stay quiet until you unmute them.`
+    case 'reopen':
+      // Both words, because one slot does both jobs: `reopen` clears an
+      // acknowledge, a resolve and a false positive AND lifts a mute, and a
+      // mixed selection is the normal case for a bulk reopen — there is no
+      // single previous status to key the wording off, the way the
+      // single-incident message does (tripl-oxkt.3).
+      return `Reopened ${incidents} — alerts resume.`
+    case 'note':
+      return `Note saved on ${incidents}.`
+  }
+}
+
+/**
+ * Pydantic prepends "Value error, " to every message a `model_validator` raises,
+ * and it must not reach a toast.
+ *
+ * The prefix is an artefact of how the server DECLARED the rule, not part of
+ * what it is telling the operator, and the one message a bulk caller can
+ * realistically provoke is the long false-positive refusal — which ends by
+ * naming the way to do it anyway, one incident at a time. Prefixing that with
+ * "Value error," makes a deliberate, well-argued policy read like the page
+ * broke.
+ *
+ * Applied to an already-flattened message string rather than to the raw error,
+ * so this stays pure and testable and `lib/` gains no dependency on the API
+ * client: `api/client.ts` already turns a FastAPI 422 `detail` array into one
+ * string (dropping the `body` path segment), and this is the last step of that
+ * same flattening.
+ */
+export function stripValueErrorPrefix(message: string): string {
+  return message.startsWith('Value error, ') ? message.slice('Value error, '.length) : message
 }

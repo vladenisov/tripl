@@ -706,6 +706,68 @@ you". Send an empty note to clear the stored one. The other five actions do stam
 it, which is what the row's *handled by* line is read from — and what tells a
 re-fired incident from a fresh one.
 
+### Acting on several incidents at once {#bulk-actions}
+
+A bad deploy leaves the Inbox holding twenty rows that all say the same thing,
+and the decision about them is one decision. Each incident carries a
+**checkbox**, and ticking any of them raises a bar at the bottom of the list
+reading **N selected** — the same bar the events catalog puts there, in the same
+place, so it is not a second thing to learn. The bar offers
+**Acknowledge**, **Resolve**, **Reopen** and **Note**, plus **Mute** with the
+same **1h / 24h / 7d / indefinitely** durations a single incident offers.
+Applying one needs the **editor** role, like every other action in the Inbox.
+
+These are not new levers, which is why the table above has no bulk row: a bulk
+acknowledge is an acknowledge, holding exactly as long and stamping exactly what
+it stamps, done to twenty incidents instead of one. Read that table for *which*
+decision you mean; the selection only decides how many rows it lands on.
+
+**False positive is not on the bar, deliberately and permanently.** Direction is
+part of an incident's key, so one scope spiking and that same scope dropping are
+two rows in this list — and marking both would ratchet that scope's
+`sigma_threshold` and `min_expected_count` **twice** for a single human
+judgement, permanently and compounding, with nothing in the record to say the
+two nudges were one click. It stays on each incident's own action row, where the
+scope it will tune is in front of you. The server refuses it in bulk with a
+**422** even when something other than the UI asks.
+
+**A bulk note is copied into each incident, not shared between them.** There is
+no group object behind a selection: afterwards each of the twenty rows shows the
+same note text, the same *handled by* and the same status, but as twenty
+independent copies, exactly as if you had typed it twenty times. Changing your
+mind later therefore means selecting those same incidents again and writing a
+new note: there is no one note to edit, and a reader who assumes there is finds
+out weeks later, editing one row and wondering why the other nineteen still say
+the old thing.
+
+**A bulk mute asks before it silences anything**, naming how many incidents are
+about to go quiet. A mute is the one decision that outlives its incident, so
+twenty of them is the mistake worth spending a confirmation on.
+
+**The selection stops at 200 incidents.** Past that the bar's actions switch off
+and it says how many to untick, rather than leaving a button that would be
+refused.
+
+**It applies to the whole selection or to none of it.** Every id is validated
+before anything is changed, so a selection carrying an id this project does not
+have writes nothing at all — never eleven incidents acted on and nine not, which
+is the state the list can no longer tell you apart afterwards.
+
+**The audit log still keeps one row per incident.** A bulk action writes an
+audit entry for each incident it touched, all sharing one **batch id**, so the
+log can answer *which* incident was muted and by whom — a single row saying
+twenty were muted could not — while the batch id groups them back into the one
+click they were.
+
+`POST /api/v1/projects/{slug}/alert-inbox/bulk-actions` takes
+`correlation_group_ids` alongside the same action fields as the single-incident
+route, and answers with the rebuilt incident cards, the batch id, and
+`overrides_written` — always `null` here, since the one action that writes
+overrides is the one this route refuses. It deliberately returns a body where
+most bulk routes in this API answer `204`, matching the single-incident action,
+which likewise gives you back the card you were looking at when you pressed the
+button.
+
 ### Finding and reading an incident row {#finding-an-incident}
 
 The scope name on an incident row links to the thing that fired — the event,

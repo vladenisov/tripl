@@ -5,6 +5,8 @@ import type { AlertInboxActionResponse, AlertInboxGroup } from '@/types'
 import {
   ALERT_INBOX_STATUS,
   alertInboxStatusLabel,
+  bulkInboxActionSuccessMessage,
+  bulkMuteConfirmMessage,
   inboxActionSuccessMessage,
   incidentMagnitudeLabel,
   incidentReasonLabel,
@@ -12,6 +14,7 @@ import {
   isHandledInboxStatus,
   muteConfirmMessage,
   priorDecisionLabel,
+  stripValueErrorPrefix,
 } from './alertStatus'
 
 function makeGroup(overrides: Partial<AlertInboxGroup> = {}): AlertInboxGroup {
@@ -220,5 +223,124 @@ describe('an action says what it actually did (tripl-oxkt.6)', () => {
     expect(message).toMatch(/no end date/i)
     expect(message).toMatch(/until you unmute/i)
     expect(message).not.toBe('Muted.')
+  })
+})
+
+describe('one sentence for a whole batch (tripl-gpfr)', () => {
+  it('counts the incidents it silences, and says what stays loud', () => {
+    // The count IS the blast radius here: the single-incident sentence spells
+    // the whole five-part suppression key, which cannot be scaled up — at ten
+    // incidents it is ten keys nobody reads, and the union of the parts would
+    // state a radius WIDER than what is actually silenced.
+    const message = bulkMuteConfirmMessage(3, '2026-08-19T10:00:00Z')
+
+    expect(message).toContain('Silences 3 incidents at once')
+    expect(message).toContain('Each one keeps its own suppression key')
+    expect(message).toContain('nothing beyond the ones you selected is silenced')
+  })
+
+  it('says one incident in the singular, so the sentence is English at N=1', () => {
+    // The bar appears at a selection of one, and this is the sentence an
+    // operator reads before the very first bulk mute they ever send.
+    expect(bulkMuteConfirmMessage(1, '2026-08-19T10:00:00Z')).toContain(
+      'Silences 1 incident at once',
+    )
+  })
+
+  it('carries the open-ended clause instead of printing "Invalid Date"', () => {
+    // Shared with `muteConfirmMessage` through `muteDurationClause` precisely so
+    // the two confirmations cannot describe the same wire value differently
+    // (tripl-a50u). A bulk indefinite mute is the furthest-reaching thing this
+    // page can do, so it is the last sentence that may go vague.
+    const message = bulkMuteConfirmMessage(4, null)
+
+    expect(message).toContain('Silences 4 incidents at once')
+    expect(message).toContain('with no end date')
+    expect(message).toMatch(/until you unmute it/i)
+    // Where it will be found afterwards: an indefinite mute freezes the row's
+    // sort key, so it sinks out of the 30-day window.
+    expect(message).toContain('Muted filter')
+    expect(message).not.toContain('Invalid Date')
+  })
+})
+
+describe('a batch says what it did, in the plural (tripl-gpfr)', () => {
+  it('acknowledges and resolves by the number asked for', () => {
+    expect(bulkInboxActionSuccessMessage('acknowledge', 1, null)).toBe('Acknowledged 1 incident.')
+    expect(bulkInboxActionSuccessMessage('acknowledge', 12, null)).toBe(
+      'Acknowledged 12 incidents.',
+    )
+    expect(bulkInboxActionSuccessMessage('resolve', 1, null)).toBe('Resolved 1 incident.')
+    expect(bulkInboxActionSuccessMessage('resolve', 3, null)).toBe('Resolved 3 incidents.')
+  })
+
+  it('makes no per-incident promise about what happens next', () => {
+    // "It stays quiet until the scope goes quiet, then reopens" is true of each
+    // member individually and, over a batch, reads as a promise about the batch
+    // — which is not a thing that exists: there is no group object, so there is
+    // nothing to reopen as a unit (tripl-5cc9).
+    const message = bulkInboxActionSuccessMessage('acknowledge', 12, null)
+    expect(message).not.toMatch(/scope goes quiet/i)
+    expect(message).not.toMatch(/reopens/i)
+  })
+
+  it('names the instant a bulk mute lifts, and never says "Invalid Date"', () => {
+    const message = bulkInboxActionSuccessMessage('mute', 4, '2026-08-19T10:00:00Z')
+    expect(message).toMatch(/^Muted 4 incidents until /)
+    expect(message).not.toContain('Invalid Date')
+  })
+
+  it('does not let an open-ended bulk mute read like a timed one', () => {
+    expect(bulkInboxActionSuccessMessage('mute', 1, null)).toBe(
+      'Muted 1 incident — no end date. They stay quiet until you unmute them.',
+    )
+    expect(bulkInboxActionSuccessMessage('mute', 7, null)).toBe(
+      'Muted 7 incidents — no end date. They stay quiet until you unmute them.',
+    )
+  })
+
+  it('uses both words for a reopen, because one slot does both jobs', () => {
+    // `reopen` clears an acknowledge, a resolve and a false positive AND lifts a
+    // mute. A mixed selection is the normal case in bulk, so there is no single
+    // previous status to key the wording off the way the single-incident message
+    // does (tripl-oxkt.3).
+    expect(bulkInboxActionSuccessMessage('reopen', 2, null)).toBe(
+      'Reopened 2 incidents — alerts resume.',
+    )
+  })
+
+  it('says where a note landed', () => {
+    expect(bulkInboxActionSuccessMessage('note', 1, null)).toBe('Note saved on 1 incident.')
+    expect(bulkInboxActionSuccessMessage('note', 5, null)).toBe('Note saved on 5 incidents.')
+  })
+})
+
+describe('a server rule reaches the toast as English (tripl-gpfr)', () => {
+  it('drops the "Value error, " Pydantic prepends to a model_validator message', () => {
+    // The one message a bulk caller can realistically provoke is the long
+    // false-positive refusal, which ends by naming the way to do it anyway, one
+    // incident at a time. Prefixed, that well-argued policy reads like the page
+    // broke.
+    expect(
+      stripValueErrorPrefix(
+        'Value error, false_positive cannot be applied in bulk — mark them one incident at a time.',
+      ),
+    ).toBe('false_positive cannot be applied in bulk — mark them one incident at a time.')
+  })
+
+  it('leaves a message that never carried the prefix exactly as it is', () => {
+    // The other 422 this route can raise is the length cap, which comes from a
+    // field constraint and is not prefixed at all.
+    expect(stripValueErrorPrefix('List should have at most 200 items after validation')).toBe(
+      'List should have at most 200 items after validation',
+    )
+  })
+
+  it('only strips a LEADING prefix, and only one', () => {
+    // Anywhere but the front, those two words are the server's own text.
+    expect(stripValueErrorPrefix('Rejected: Value error, nope')).toBe(
+      'Rejected: Value error, nope',
+    )
+    expect(stripValueErrorPrefix('Value error, Value error, nope')).toBe('Value error, nope')
   })
 })

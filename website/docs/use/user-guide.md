@@ -498,6 +498,12 @@ Tune it until it's signal rather than noise before turning it on.
   alerts for that incident — but only a mute lasts beyond the incident, and only
   a false positive tells the detector anything. See
   [Silencing an incident](./alerting.md#silencing-an-incident).
+- After a bad deploy you rarely want to press those buttons twenty times: tick
+  the incidents' checkboxes and the **N selected** bar acknowledges, resolves,
+  reopens, notes or mutes all of them at once. It is the same decision applied N
+  times, with one exception — **false positive** stays per incident, because it
+  permanently retunes the scope it fired on. See
+  [Acting on several incidents at once](./alerting.md#bulk-actions).
 
 :::note "My alert never fired"
 If you expected an alert and the Deliveries list says *"No deliveries yet"* or the

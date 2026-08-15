@@ -6441,6 +6441,486 @@ async def test_reopen_lifts_an_indefinite_inbox_mute(client: AsyncClient) -> Non
         assert state.muted_until is None
 
 
+async def _seed_inbox_groups(
+    client: AsyncClient, slug: str, name: str, *, count: int
+) -> list[uuid.UUID]:
+    """One project holding ``count`` distinct, never-acted-on correlation groups.
+
+    Never-acted-on ON PURPOSE: none of them has an ``AlertCorrelationState`` row
+    until something acts on it, and that is what a real bulk selection is mostly
+    made of. It is also the case the bulk route's id validation has to get right
+    — validating on the presence of a state row would 404 every one of these
+    (tripl-gpfr).
+
+    Deliveries are staggered an hour apart so the inbox ordering is deterministic
+    and the returned list is newest-first, matching what the list endpoint hands
+    the operator to tick.
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": name, "slug": slug, "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    now = datetime.now(UTC)
+    group_ids: list[uuid.UUID] = []
+    for index in range(count):
+        group_id = uuid.uuid4()
+        await _seed_inbox_delivery(
+            project_id,
+            scan_config_id=scan_config_id,
+            destination_id=destination_id,
+            rule_id=rule_ids[0],
+            created_at=now - timedelta(hours=index + 1),
+            items=[
+                _inbox_item(
+                    scope_type="event",
+                    bucket=now - timedelta(hours=index + 1),
+                    percent_delta=100.0 + index,
+                    correlation_group_id=group_id,
+                )
+            ],
+        )
+        group_ids.append(group_id)
+    return group_ids
+
+
+@pytest.mark.asyncio
+async def test_bulk_action_copies_the_decision_into_every_selected_incident(
+    client: AsyncClient,
+) -> None:
+    """The batch is a SHORTCUT for N clicks, so every selected row ends up identical.
+
+    tripl-gpfr deliberately built no group object and no new table: the note,
+    ``acted_at`` and ``acted_by`` are COPIED into each incident's own state, so
+    afterwards nothing distinguishes a bulk-acknowledged incident from a
+    hand-clicked one. That is the whole contract, and these three assertions are
+    it — same status, same note, same stamp, on every selected row.
+
+    The single shared ``acted_at`` matters on its own: the service takes ONE
+    ``now`` before the loop, because the batch was one human decision and the
+    inbox has to be able to show it as one rather than as N decisions milliseconds
+    apart.
+
+    Reaching this route at all also proves the registration order: "bulk-actions"
+    sits above ``/alert-inbox/{correlation_group_id}``, and if it did not, FastAPI
+    would try to parse the literal segment as a UUID and 422 a correctly spelled
+    request.
+    """
+    group_ids = await _seed_inbox_groups(client, "bulk-triage", "Bulk Triage", count=3)
+
+    resp = await client.post(
+        "/api/v1/projects/bulk-triage/alert-inbox/bulk-actions",
+        json={
+            "correlation_group_ids": [str(group_id) for group_id in group_ids],
+            "action": "acknowledge",
+            "note": "Known deploy window",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # Cards come back in the order they were asked for, so the client can pair
+    # request to response without matching on id.
+    assert [group["correlation_group_id"] for group in body["groups"]] == [
+        str(group_id) for group_id in group_ids
+    ]
+    # A body, not the house 204 — these cards replace the ones the operator is
+    # looking at, and re-listing the whole inbox to redraw three rows it just
+    # changed is what the body exists to avoid.
+    for group in body["groups"]:
+        assert group["status"] == "acknowledged"
+        assert group["note"] == "Known deploy window"
+        assert group["acted_by_name"] == "Test User"
+    # ``false_positive`` is refused on this route, so nothing here can ever ratchet
+    # a threshold and the count is structurally null — never 0, which a shared
+    # client handler would render as "no scopes tightened" (tripl-oxkt.6).
+    assert body["overrides_written"] is None
+    assert body["batch_id"] is not None
+
+    async with TestSessionLocal() as session:
+        states = (
+            (
+                await session.execute(
+                    select(AlertCorrelationState).where(
+                        AlertCorrelationState.correlation_group_id.in_(group_ids)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # A state row is created lazily for each — none of these groups had one.
+        assert len(states) == 3
+        assert {state.status for state in states} == {"acknowledged"}
+        assert {state.note for state in states} == {"Known deploy window"}
+        # ONE decision, so ONE timestamp and one actor across the whole batch.
+        assert len({state.acted_at for state in states}) == 1
+        assert states[0].acted_at is not None
+        assert len({state.acted_by for state in states}) == 1
+        assert states[0].acted_by is not None
+
+
+@pytest.mark.asyncio
+async def test_bulk_action_404s_the_whole_request_and_mutates_nothing(
+    client: AsyncClient,
+) -> None:
+    """One unknown id fails the WHOLE batch, before anything has been written.
+
+    The single-incident route validates inside a call that has already done work,
+    which is harmless at N=1. At N groups that ordering would leave a half-applied
+    batch sitting behind a 404, so the bulk route validates every id in one query
+    up front and mutates only after all of them pass (tripl-gpfr). There is no
+    partial success and no per-item error array — nothing in this repo has one.
+
+    The second half of this test is the half that matters: a 404 that had already
+    acknowledged two of the three incidents would be far worse than the error it
+    reports, because the operator has no way to see it happened.
+    """
+    group_ids = await _seed_inbox_groups(client, "bulk-partial", "Bulk Partial", count=2)
+    unknown_id = uuid.uuid4()
+
+    resp = await client.post(
+        "/api/v1/projects/bulk-partial/alert-inbox/bulk-actions",
+        json={
+            "correlation_group_ids": [
+                str(group_ids[0]),
+                str(unknown_id),
+                str(group_ids[1]),
+            ],
+            "action": "resolve",
+        },
+    )
+
+    assert resp.status_code == 404
+    # Does not name the offending id — matching ``bulk_update_events``, and so the
+    # error cannot confirm whether that group exists in some other project.
+    assert resp.json()["detail"] == "One or more alert correlation groups were not found"
+
+    async with TestSessionLocal() as session:
+        states = (
+            (
+                await session.execute(
+                    select(AlertCorrelationState).where(
+                        AlertCorrelationState.correlation_group_id.in_(group_ids)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # Not merely "not resolved" — not even CREATED. The valid ids never
+        # reached the get-or-create, so the failed batch left no trace at all.
+        assert states == []
+
+    # The incidents are still open and still actionable afterwards.
+    listing = await client.get("/api/v1/projects/bulk-partial/alert-inbox")
+    assert listing.status_code == 200
+    assert {item["status"] for item in listing.json()["items"]} == {"open"}
+
+
+@pytest.mark.asyncio
+async def test_bulk_action_refuses_false_positive_with_the_reason(client: AsyncClient) -> None:
+    """``false_positive`` is the ONE action this route will not take, and it says why.
+
+    Direction is part of the correlation key (worker/tasks/metrics/dispatch.py),
+    so one scope's spike and one scope's drop are two separate incidents sitting
+    side by side in the list — exactly what an operator sweeping a noisy scope
+    would select together. ``_tune_false_positive_thresholds`` dedupes only
+    within a single call and each step compounds off the scope's own current
+    value, so marking both would take two ratchet steps on one scope for one
+    human decision, permanently desensitising detection there with nothing in the
+    record to say it was one click (tripl-gpfr).
+
+    A refusal rather than a silent dedupe: deduping would have to guess which of
+    the two incidents the operator meant, and the ratchet is not undoable from
+    the inbox. The message therefore has to carry the reason AND the way to get
+    the job done, or the operator just retries the same click.
+    """
+    group_ids = await _seed_inbox_groups(client, "bulk-fp", "Bulk FP", count=2)
+
+    resp = await client.post(
+        "/api/v1/projects/bulk-fp/alert-inbox/bulk-actions",
+        json={
+            "correlation_group_ids": [str(group_id) for group_id in group_ids],
+            "action": "false_positive",
+        },
+    )
+
+    assert resp.status_code == 422
+    message = " ".join(item["msg"] for item in resp.json()["detail"])
+    assert "false_positive cannot be applied in bulk" in message
+    # Names the REASON, not just the refusal.
+    assert "direction" in message
+    assert "correlation key" in message
+    # And points at the action that still works.
+    assert "one incident at a time" in message
+
+    async with TestSessionLocal() as session:
+        # Refused at the schema, so nothing downstream ran: no state rows, and
+        # above all no scope override — the thing that cannot be undone here.
+        assert (
+            (
+                await session.execute(
+                    select(AlertCorrelationState).where(
+                        AlertCorrelationState.correlation_group_id.in_(group_ids)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        ) == []
+        assert (await session.execute(select(AnomalyScopeOverride))).scalars().all() == []
+
+    # The single-incident route the message points at still accepts it.
+    single = await client.post(
+        f"/api/v1/projects/bulk-fp/alert-inbox/{group_ids[0]}/actions",
+        json={"action": "false_positive"},
+    )
+    assert single.status_code == 200
+    assert single.json()["group"]["status"] == "false_positive"
+
+
+@pytest.mark.asyncio
+async def test_bulk_action_caps_the_selection_and_rejects_an_empty_one(
+    client: AsyncClient,
+) -> None:
+    """The id list is bounded, and this route is the first in the repo to bound one.
+
+    The cap is pinned to ``list_alert_inbox``'s own page ceiling (``limit`` is
+    ``le=200``), because the selection is made by ticking rows on ONE page: any
+    lower and "select all" on a full page would 422, any higher and it would admit
+    a list no page of the UI can produce (tripl-gpfr). Unlike the other bulk
+    routes, which mutate every named row in a single UPDATE, this one does
+    per-group work — a state row, a rebuilt card and an audit row EACH — so the
+    length of the list is a real cost here.
+
+    Rejected before any database work, so an over-long list is cheap to refuse.
+    """
+    from tripl.schemas.alerting import MAX_BULK_INBOX_ACTION_GROUPS
+
+    await _seed_inbox_groups(client, "bulk-cap", "Bulk Cap", count=1)
+
+    too_many = await client.post(
+        "/api/v1/projects/bulk-cap/alert-inbox/bulk-actions",
+        json={
+            "correlation_group_ids": [
+                str(uuid.uuid4()) for _ in range(MAX_BULK_INBOX_ACTION_GROUPS + 1)
+            ],
+            "action": "acknowledge",
+        },
+    )
+    assert too_many.status_code == 422
+    assert any(item["type"] == "too_long" for item in too_many.json()["detail"])
+
+    # An empty selection is refused too: it would otherwise be a 200 that changed
+    # nothing, and a "0 incidents acknowledged" toast reads as a failure anyway.
+    empty = await client.post(
+        "/api/v1/projects/bulk-cap/alert-inbox/bulk-actions",
+        json={"correlation_group_ids": [], "action": "acknowledge"},
+    )
+    assert empty.status_code == 422
+    assert any(item["type"] == "too_short" for item in empty.json()["detail"])
+
+    async with TestSessionLocal() as session:
+        assert (await session.execute(select(AlertCorrelationState))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_bulk_action_writes_one_audit_row_per_group_sharing_a_batch_id(
+    client: AsyncClient,
+) -> None:
+    """The trail has to name WHICH incident was muted, so it is one row per group.
+
+    ``audit_log.target_id`` holds a single UUID. One batch row with
+    ``target_id=None`` would be an audit trail that records that somebody muted
+    "some incidents" — worse than none, because it looks like coverage. So the
+    route writes a row per group under the SAME ``alert_inbox.{action}`` name and
+    the same ``alert_correlation_group`` target type the single route uses, which
+    keeps a bulk mute searchable by exactly the query that finds a hand-clicked
+    one, and a shared ``batch_id`` in the payload re-joins them into the one click
+    that wrote them (tripl-gpfr).
+    """
+    from tripl.models.audit_log import AuditLog
+
+    group_ids = await _seed_inbox_groups(client, "bulk-audit", "Bulk Audit", count=3)
+
+    resp = await client.post(
+        "/api/v1/projects/bulk-audit/alert-inbox/bulk-actions",
+        json={
+            "correlation_group_ids": [str(group_id) for group_id in group_ids],
+            "action": "mute",
+            "note": "Vendor outage",
+        },
+    )
+    assert resp.status_code == 200
+    batch_id = resp.json()["batch_id"]
+
+    async with TestSessionLocal() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(AuditLog).where(AuditLog.target_type == "alert_correlation_group")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 3
+        # Same action name as the single route — not a separate "bulk_mute" verb
+        # that an existing audit query would silently miss.
+        assert {row.action for row in rows} == {"alert_inbox.mute"}
+        # Each row names its OWN incident.
+        assert {row.target_id for row in rows} == set(group_ids)
+        assert {row.target_name for row in rows} == {str(group_id) for group_id in group_ids}
+        # And every row carries the batch id the response advertised, so the three
+        # rows can be recognised as one decision after the fact.
+        assert {row.payload["batch_id"] for row in rows} == {batch_id}
+        assert {row.payload["batch_size"] for row in rows} == {3}
+        assert {row.payload["action"] for row in rows} == {"mute"}
+        # The id LIST is not repeated into every row: target_id already says which
+        # incident this row is about.
+        assert all("correlation_group_ids" not in row.payload for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_bulk_action_treats_a_repeated_id_as_one_incident(client: AsyncClient) -> None:
+    """``[A, A, B]`` is TWO incidents — two cards and two audit rows, not three.
+
+    ``dedupe_correlation_group_ids`` is the one definition of "what this batch
+    acted on", and it is read twice: by the service, which mutates and then
+    rebuilds a card per entry, and by the route, which writes an audit row per
+    entry (tripl-gpfr). Both readings go wrong on a repeat, and the audit one
+    goes wrong silently — two rows under one ``batch_id``, each claiming its own
+    decision on the same incident, which is a trail that reports two mutes where
+    an operator made one. Nothing about the response would say so.
+
+    A repeat is not hypothetical from the client: the inbox is an accumulating
+    infinite list, a deep-linked incident is pinned ABOVE the pages it also
+    appears in, and any caller assembling ids from both sources can send the same
+    one twice.
+
+    First-seen order is asserted, not merely the count: order is part of the
+    response contract (the cards come back in request order so the client can
+    pair them up without matching on id), so a dedupe through a ``set`` would
+    pass a length check and still hand back the two cards in an arbitrary order.
+    """
+    from tripl.models.audit_log import AuditLog
+
+    group_ids = await _seed_inbox_groups(client, "bulk-dupe", "Bulk Dupe", count=2)
+    first, second = group_ids
+
+    resp = await client.post(
+        "/api/v1/projects/bulk-dupe/alert-inbox/bulk-actions",
+        json={
+            "correlation_group_ids": [str(first), str(first), str(second)],
+            "action": "acknowledge",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # Two cards, in the order the ids were first seen — the repeat is dropped
+    # where it sits, not moved to the end and not rendered twice.
+    assert [group["correlation_group_id"] for group in body["groups"]] == [
+        str(first),
+        str(second),
+    ]
+
+    async with TestSessionLocal() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(AuditLog).where(AuditLog.target_type == "alert_correlation_group")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # Two rows, one per incident. Sorted rather than set-compared on purpose:
+        # a set would hide the very failure this test exists for, which is the
+        # SAME target_id appearing twice.
+        assert sorted(str(row.target_id) for row in rows) == sorted([str(first), str(second)])
+        # …and every row agrees the click was two incidents wide. A row reading
+        # ``batch_size: 3`` beside two rows is a trail that contradicts itself.
+        assert {row.payload["batch_size"] for row in rows} == {2}
+        assert {row.payload["batch_id"] for row in rows} == {body["batch_id"]}
+
+    # The incident named twice was acted on ONCE and looks like every other
+    # acknowledged incident afterwards — the batch is a shortcut for N clicks,
+    # and a duplicate must not become a second click.
+    async with TestSessionLocal() as session:
+        states = (
+            (
+                await session.execute(
+                    select(AlertCorrelationState).where(
+                        AlertCorrelationState.correlation_group_id == first
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(states) == 1
+        assert states[0].status == "acknowledged"
+
+
+@pytest.mark.asyncio
+async def test_bulk_mute_without_an_expiry_is_indefinite_here_too(client: AsyncClient) -> None:
+    """A null ``muted_until`` means "muted until I unmute" on this route as well.
+
+    The single route already allows it (tripl-a50u): an operator watching a scope
+    they know is broken should not have to invent an end date and get paged again
+    the moment they guess too short. Bulk-muting a screenful of incidents is the
+    case that needs it MOST, so this route must not become the one place that
+    demands an expiry — and the null has to survive the whole round trip, since a
+    ``muted`` row with a null column is the encoding every reader agrees on.
+    """
+    group_ids = await _seed_inbox_groups(client, "bulk-mute", "Bulk Mute", count=2)
+
+    resp = await client.post(
+        "/api/v1/projects/bulk-mute/alert-inbox/bulk-actions",
+        json={
+            "correlation_group_ids": [str(group_id) for group_id in group_ids],
+            "action": "mute",
+        },
+    )
+
+    assert resp.status_code == 200
+    for group in resp.json()["groups"]:
+        assert group["status"] == "muted"
+        assert group["muted"] is True
+        # NOT coerced into some default expiry on the way in.
+        assert group["muted_until"] is None
+
+    async with TestSessionLocal() as session:
+        states = (
+            (
+                await session.execute(
+                    select(AlertCorrelationState).where(
+                        AlertCorrelationState.correlation_group_id.in_(group_ids)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(states) == 2
+        assert {state.status for state in states} == {"muted"}
+        assert {state.muted_until for state in states} == {None}
+
+    # Indefinitely muted rows sink out of the default view, so ``?status=muted``
+    # is the way back to them — and they must not read as "open" to that filter.
+    filtered = await client.get(
+        "/api/v1/projects/bulk-mute/alert-inbox", params={"status": "muted"}
+    )
+    assert filtered.status_code == 200
+    assert {item["correlation_group_id"] for item in filtered.json()["items"]} == {
+        str(group_id) for group_id in group_ids
+    }
+
+
 async def _seed_slack_destination_with_rule(
     client: AsyncClient,
     slug: str,

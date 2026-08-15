@@ -600,7 +600,21 @@ scope, direction)* — with six actions: **acknowledge**, **resolve**, **mute**
 standalone **note**. Acknowledge, resolve, mute and false positive all stop
 further deliveries for that incident; only a mute outlives the incident, and only
 a false positive changes detection. See
-[Silencing an incident](./alerting.md#silencing-an-incident). The **Delivery
+[Silencing an incident](./alerting.md#silencing-an-incident). Incidents also
+carry a **checkbox**, and a selection raises an **N selected** bar offering
+**acknowledge**, **resolve**, **reopen**, **note** and **mute** (the same 1h /
+24h / 7d / indefinitely) — the same levers applied N times, not new ones.
+**False positive is not offered in bulk** and the API refuses it with a **422**:
+direction is part of the incident key, so a scope's spike and its drop are two
+rows, and marking both would ratchet that scope's thresholds twice for one
+decision. A bulk note is **copied** into each incident rather than shared, a
+bulk mute confirms first, the selection is capped at **200**, and the action
+applies to the whole selection or to none of it.
+`POST /api/v1/projects/{slug}/alert-inbox/bulk-actions` (editor role) takes
+`correlation_group_ids` plus the single route's action fields and returns the
+rebuilt cards, a **batch id** and `overrides_written` (always `null`); each
+affected incident gets its own audit-log row under that shared batch id. See
+[Acting on several incidents at once](./alerting.md#bulk-actions). The **Delivery
 log** lists deliveries filterable by status (pending / sent / failed) with retry
 on failures, plus channel, destination, rule, and **scan**. That third section's
 `?section=` key is still `audit` — the label changed, the link did not, and it is
