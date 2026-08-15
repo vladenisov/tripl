@@ -68,14 +68,32 @@ def _spaced_identifiers(values: Sequence[object | None]) -> str:
     So each identifier is ALSO indexed in its spaced form. Together with the
     query-time half (``_search_query.token_boundary_regex`` folds a spaced query
     into the underscored form) the two spellings reach each other from either
-    side. Two properties are load-bearing:
+    side. Three properties are load-bearing:
 
     * only the ALIAS is added, once per distinct identifier and only when it
       actually differs — this is not a second copy of the document text, which
       would feed the very term-frequency inflation tripl-gbxj is about;
     * it is applied to ``keywords`` and never to a tag document, whose
       ``keywords`` is exactly ``tag.name`` and is compared for EQUALITY by the
-      4.0 tier — appending anything there would silently delete that tier.
+      4.0 tier — appending anything there would silently delete that tier;
+    * every call site passes an entity's NAME — never a value. Check that when
+      adding one. What ``keywords`` means for the 3.5/3.25 tiers is an entity's
+      IDENTITY, and this function's whole job is to make the segments of an
+      identity reachable; a value spelled into the same column would take the
+      same tiers without being anything anyone named (tripl-gbxj, tripl-0qld).
+
+    "IDENTITY" AND NOT "CURATED", DELIBERATELY (tripl-0qld)
+    -------------------------------------------------------
+    A variable that the scanner auto-detected is still passed through here by
+    ``_variable_document`` — ``variable.name`` is derived from the source column,
+    so ``${property.spot_id}`` gains the alias ``property spot id`` and
+    ``q='spot'`` can reach it at the 3.5 tier on a name nobody typed. That is
+    intended, and calling it "curated" would be a lie this docstring is not going
+    to tell: the entity exists, that IS what it is called, and the ranking's
+    complaint in tripl-gbxj was never about names — it was about one document
+    repeating a harvested VALUE more often than the entity named after it. The
+    event named ``spot`` still wins ``q='spot'`` on the 5.0 exact-title tier,
+    which is above anything an alias can buy.
 
     Dots are folded in the same pass (``page_data.extra.spot_id`` ->
     ``page data extra spot id``) because the text-search parser classifies a
@@ -427,9 +445,65 @@ def _event_document(
     slug: str,
     contexts_by_event_field: Mapping[tuple[uuid.UUID, uuid.UUID], list[VariableValue]],
 ) -> BuiltDocument:
+    """Build the search document for one event.
+
+    OBSERVED VALUES ARE BODY TEXT HERE TOO (tripl-0qld)
+    ---------------------------------------------------
+    ``_variable_document`` stopped joining harvested values into ``keywords``
+    for tripl-gbxj; this builder was missed, and it feeds the SAME column that
+    two ranking tiers read — the 3.5 literal keyword-token tier and the 3.25
+    stemmed-identity tier, whose docstring in
+    ``_search_query.postgres_lexical_search`` states the premise as "keywords is
+    the curated field". It was not true for events: every ``VariableValue.values``
+    entry a bound variable had harvested reached an EVENT's keywords through
+    ``_variable_context_text(..., include_values=True)``.
+
+    MEASURED ON THE RELEVANCE CORPUS, WHICH IS WHAT MAKES THIS A DEFECT AND NOT A
+    PREFERENCE: ``${property.screen_name}`` harvests the plurals ``purchases``,
+    ``spots`` and ``уловы`` on the ``view_id`` field of ``app_open``,
+    ``screen_home`` and ``screen_settings``. So ``q='purchases'`` paid those
+    three unrelated pageview events ``keywords ~* '\\mpurchases\\M'`` = 3.5 while
+    ``purchase_completed`` — the entity the query is about — reached only the
+    3.25 stemmed tier. tripl-nh5s built that ladder to say "a stemmed match on
+    the entity's own name outranks the literal token appearing somewhere in its
+    body"; for those three the order was inverted, and ``purchase-plural`` was
+    green only because the trigram leg covered the 0.25 the ladder gave away.
+
+    So ``keywords`` gets ``authored_values`` and the VALUES-FREE context text,
+    while ``body`` keeps ``safe_values`` and the full context text unchanged —
+    harvested values are real evidence about the event and stay searchable, they
+    are simply not curation.
+
+    WHY ``is_authored`` AND NOT "no values at all"
+    ----------------------------------------------
+    An ``EventFieldValue`` is not a ``VariableValue``: when a person types a
+    field's example value into the spec, ``event_service`` records
+    ``is_authored=True`` (:540/:635/:954), and a scan writes ``is_authored=False``
+    (``core/analyzers/event_generator.py``:395). That flag IS the curation line,
+    and dropping every value instead would demote a hand-typed value from the
+    3.5 keyword-token tier to the 3.0 body tier — a user-visible routing change
+    pinned by ``tests/test_search.py::test_global_search_matches_multilingual_plan_content``,
+    which asserts ``q='завершение покупки'`` is served at ``_SQLITE_KEYWORD_TOKEN``.
+
+    KNOWN HAZARD, WRITTEN DOWN RATHER THAN DISCOVERED LATER: the flag is not
+    immutable. ``core/analyzers/_event_generator_merge.py``:304 recomputes it as
+    ``fv.is_authored and value == fv.value``, and
+    ``plan_branch_revert_service.py``:400 restores it from a snapshot, so a scan
+    that observes a different value for a hand-typed field silently demotes that
+    value out of ``keywords`` on the next reindex. That is a demotion of a
+    curated string to body text, never a promotion of harvested text into
+    keywords, so it cannot re-break the premise above — but it does mean a
+    ranking can move without anyone editing search code.
+
+    The sensitivity guard is unchanged and still the outer condition: an authored
+    value on a ``sensitivity != 'none'`` field must not reach the index at all,
+    and nesting the new append inside it is what keeps that true.
+    """
     field_names: list[str] = []
     safe_values: list[str] = []
+    authored_values: list[str] = []
     variable_context_text: list[str] = []
+    variable_context_keywords: list[str] = []
     # field_values / meta_values / tags are selectin relationships with no
     # order_by; iterate them sorted so the embed text (and therefore the demo
     # fixture's sha256 key) is identical across dialects.
@@ -441,10 +515,21 @@ def _event_document(
         field_names.extend([field.name, field.display_name, field.description])
         if not _is_sensitive(field.sensitivity):
             safe_values.append(field_value.value)
+            # Nested inside the sensitivity guard on purpose: it is the outer
+            # precondition for ANY value of this field reaching the index, and a
+            # sibling `if field_value.is_authored` at loop level would leak a
+            # hand-typed secret into keywords and into `embed_text_for`.
+            if field_value.is_authored:
+                authored_values.append(field_value.value)
+            contexts = contexts_by_event_field.get((event.id, field_value.field_definition_id), [])
             variable_context_text.append(
+                _variable_context_text(contexts, include_event_names=False)
+            )
+            variable_context_keywords.append(
                 _variable_context_text(
-                    contexts_by_event_field.get((event.id, field_value.field_definition_id), []),
+                    contexts,
                     include_event_names=False,
+                    include_values=False,
                 )
             )
 
@@ -480,6 +565,12 @@ def _event_document(
                 " ".join(tag_names),
             ]
         ),
+        # Curated text only (tripl-0qld): the event's identity, its type, its
+        # tags, its breakdown columns, the values a person AUTHORED, and the
+        # bindings — but not a single observed value. `safe_values` and the
+        # values-carrying `variable_context_text` above stay in `body`, which is
+        # what the 3.0 body-token tier reads. Read the docstring before putting
+        # either of them back: two tiers rest on this column meaning curation.
         keywords=_join(
             [
                 event.name,
@@ -487,8 +578,8 @@ def _event_document(
                 " ".join(event_type_names),
                 " ".join(tag_names),
                 " ".join(event.metric_breakdown_columns),
-                " ".join(safe_values),
-                " ".join(variable_context_text),
+                " ".join(authored_values),
+                " ".join(variable_context_keywords),
                 _spaced_identifiers([event.name, event.source_name]),
             ]
         ),
@@ -560,6 +651,16 @@ def _variable_document(
     are simply no longer joined into ``keywords``. Both halves of tripl-gbxj had
     to land together: the measured 73.69-vs-4.55 gap was the duplication and the
     missing normalization compounding.
+
+    THIS RULE IS NOW SYMMETRIC (tripl-0qld)
+    ---------------------------------------
+    tripl-gbxj drew the line here and nowhere else, so ``_event_document`` went
+    on joining the SAME harvested values — the ones it picks up through the
+    contexts bound to its own fields — into an EVENT's ``keywords``. The two
+    builders now draw the identical line, which is what lets the 3.5 and 3.25
+    tiers say anything about the column at all. If you add a third builder that
+    reads ``_variable_context_text``, decide which column its values belong in
+    before writing the join, not after the harness disagrees with you.
     """
     context_text = _variable_context_text(contexts, include_event_names=True)
     context_keywords = _variable_context_text(
@@ -596,9 +697,21 @@ def _variable_context_text(
     """Flatten a variable's bindings into indexable text.
 
     ``include_values=False`` yields the same text without the observed values,
-    which is what a variable's ``keywords`` is built from (tripl-gbxj): the
-    binding is a keyword of the variable, the harvested value is not. Sensitive
-    fields never contribute values under either setting.
+    which is what a variable's ``keywords`` is built from (tripl-gbxj) and, since
+    tripl-0qld, an EVENT's keywords too: the binding is a keyword of both, the
+    harvested value is a keyword of neither. Sensitive fields never contribute
+    values under either setting.
+
+    WHAT ``include_values=False`` STILL LETS THROUGH, SAID PLAINLY
+    --------------------------------------------------------------
+    ``context.value_kind`` and ``str(context.observed_count)`` below are written
+    by the scanner, not by a person, and they reach ``keywords`` under BOTH
+    settings. So "keywords holds only text a human wrote" is false even after
+    tripl-0qld, and ``postgres_lexical_search``'s docstring says the narrower
+    true thing instead of the tidy one. Removing them is a separate change with
+    its own blast radius — it moves every variable document's keywords, which
+    the relevance harness ranks — and it was not folded in here so that this
+    commit's effect on the harness stays attributable.
     """
     parts: list[str] = []
     for context in contexts:

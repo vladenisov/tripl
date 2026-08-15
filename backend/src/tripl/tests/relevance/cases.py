@@ -124,6 +124,20 @@ except the one that carries an ``xfail`` (see ``russian-phrase-...``):
   RETRIEVAL and left the RANKING where it was: every other tier compares literal
   characters, so a plural query could still only reach the ladder through the
   harvested value that happens to spell the plural.
+* **tripl-0qld** (``_event_document`` joined harvested values into an EVENT's
+  ``keywords``, so the tier above it rested on a false premise) — the fix
+  tripl-gbxj made to ``_variable_document`` was never made to the event builder,
+  and ``keywords`` is the column BOTH the 3.5 literal-token tier and the 3.25
+  stemmed tier read. ``${property.screen_name}`` is bound to the ``view_id``
+  field of ``app_open``, ``screen_home`` and ``screen_settings``, so its
+  harvested plurals sat in those three events' keywords and paid them 3.5 for
+  ``q='purchases'``, ``q='spots'`` and ``q='уловы'`` — above the 3.25 the
+  correctly-named entity earns, and none of the three was named in any
+  ``must_not_outrank``. All three plural cases below were green anyway, on the
+  trigram leg; that is the point of the entry. The ladder now orders them, the
+  three carriers take the 3.0 body tier, and the claim is asserted on the boost
+  column itself by :mod:`tripl.tests.relevance.test_keyword_tier_premise` rather
+  than inferred from a total score.
 
 Two cases (``purchase``, ``улов``) are load-bearing in the opposite direction:
 they are the singular halves of the stemming pairs and they already passed on
@@ -404,8 +418,28 @@ CASES: tuple[RelevanceCase, ...] = (
         # 'purchases' and 'purchase_completed' to the same 'purchas', which gets
         # the event RETRIEVED, but the harvested screen name literally spells
         # 'purchases' in its body and was still collecting the 3.0 body-token
-        # boost the event could not reach. The 3.25 stemmed tier over
-        # title/keywords is what puts the event back on top.
+        # boost the event could not reach.
+        #
+        # WHAT THIS COMMENT USED TO CLAIM, AND WHAT WAS ACTUALLY HAPPENING
+        # It said the 3.25 stemmed tier "is what puts the event back on top". On
+        # the ladder it did not. `${property.screen_name}` is bound to the
+        # `view_id` field of `app_open`, `screen_home` and `screen_settings`, and
+        # `_search_documents._event_document` joined a bound variable's harvested
+        # values into an EVENT's keywords as well as its body — so those three
+        # unrelated pageview events spelled `purchases` in their KEYWORDS and
+        # took the 3.5 literal keyword-token tier, a quarter of a point ABOVE the
+        # 3.25 `purchase_completed` earns. This case was green regardless,
+        # because the trigram leg (similarity('purchase_completed','purchases')
+        # ~ 0.38 -> +0.76) covered the 0.25 the ladder had given away. A green
+        # ordering case sitting on top of an inverted ladder is exactly the kind
+        # of evidence this table has been wrong about before.
+        #
+        # tripl-0qld removed the harvested values from event keywords, so the
+        # three carriers now take the 3.0 body-token tier and the TIER ORDERING
+        # decides this case. That claim is not re-derived from the total score
+        # here — it is asserted on the boost column directly by
+        # `test_keyword_tier_premise.test_a_harvested_value_does_not_buy_an_event
+        # _the_keyword_tier`, which is where to look when this goes red.
         #
         # AUDIT (tripl-uojz): this one does pin what it claims. Without the
         # stemmer, `purchases` reaches `purchase_completed` by no path at all —
