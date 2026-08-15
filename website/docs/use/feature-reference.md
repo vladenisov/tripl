@@ -1002,6 +1002,30 @@ metrics, and fact tables, each with a confidence badge; **Ask AI** (when AI is
 enabled and the query is at least 8 characters, with cited sources); and **Sign
 out**.
 
+The two halves of the list narrow differently, and on purpose.
+
+The **menu rows** — Navigate, Current project, Projects, Event types, Sign out —
+are matched on a plain substring of what you have typed, against both the label
+and the grey hint beside it (a route, a project slug, an event type's raw name).
+So a project is findable by its slug as well as its name, but the match is
+literal: `monitoring` finds *Monitoring settings* and `monset` does not. A group
+whose rows have all been narrowed away takes its heading with it.
+
+The **knowledge results** are ranked by the search service and are shown in
+exactly the order it returned them: best match first, grouped by type, strongest
+group first. Nothing is re-scored or re-sorted in the browser, so what you see is
+the ranking the server computed — including semantic hits, which a literal
+in-browser match would have pushed down or dropped. One consequence
+of keeping each type together: a result can sit above a slightly stronger one of
+a *different* type, when the weaker one's type opened higher up the list.
+
+While a search is running the list shows a **Searching knowledge…** group; if it
+comes back with nothing you get **No knowledge matches** under the query you
+typed; and if the request fails you are told the search *failed*, which is not
+the same statement as "there is nothing there". When a query matches no menu row
+and is too short to search on (one character), the list simply reads **No
+matches.**
+
 ### Activity feed ("Now")
 
 A toggleable live panel (header label "Now") of recent activity for the project,
