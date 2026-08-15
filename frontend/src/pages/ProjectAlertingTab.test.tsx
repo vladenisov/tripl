@@ -343,7 +343,7 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
     // queue is on screen against the server total, because printing 57 above a
     // list of 20 with no control of any kind is what made 37 incidents
     // unreachable (tripl-oxkt.1).
-    expect(await screen.findByText('Showing 1 of 1 · last 30 days')).toBeInTheDocument()
+    expect(await screen.findByText('Showing 1 of 1 · last 30 days + still silenced')).toBeInTheDocument()
 
     // The two subtitles now live on different tabs, so checking both means
     // switching — which is also the cheapest proof the strip works.
@@ -477,11 +477,11 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
     const { inboxUrls } = mockPagedInbox(groups, { pageSize: 2 })
     renderInboxTab()
 
-    expect(await screen.findByText('Showing 2 of 3 · last 30 days')).toBeInTheDocument()
+    expect(await screen.findByText('Showing 2 of 3 · last 30 days + still silenced')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Load more (1 left)' }))
 
     // Appended, not swapped: the third row joins the first two.
-    expect(await screen.findByText('Showing 3 of 3 · last 30 days')).toBeInTheDocument()
+    expect(await screen.findByText('Showing 3 of 3 · last 30 days + still silenced')).toBeInTheDocument()
     expect(screen.getByText('event_0')).toBeInTheDocument()
     expect(screen.getByText('event_2')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Load more/ })).toBeNull()
@@ -837,7 +837,7 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
     mockInboxWithBulk([makeInboxGroup(), makeInboxGroup(OTHER_GROUP)])
     renderInboxSection()
 
-    await screen.findByText('Showing 2 of 2 · last 30 days')
+    await screen.findByText('Showing 2 of 2 · last 30 days + still silenced')
     // A fixed bar over an untouched list is chrome charging rent on the queue
     // it sits on top of.
     expect(screen.queryByRole('group', { name: BULK_BAR })).toBeNull()
@@ -868,7 +868,7 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
     ])
     renderInboxSection()
 
-    await screen.findByText('Showing 2 of 2 · last 30 days')
+    await screen.findByText('Showing 2 of 2 · last 30 days + still silenced')
     // Picked in reverse list order deliberately: the endpoint answers in
     // REQUEST order, so the order the boxes were ticked in is load-bearing and
     // must not be quietly re-sorted into the order the rows happen to render.
@@ -900,7 +900,7 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
     const { bulkBodies } = mockInboxWithBulk([makeInboxGroup(), makeInboxGroup(OTHER_GROUP)])
     renderInboxSection()
 
-    await screen.findByText('Showing 2 of 2 · last 30 days')
+    await screen.findByText('Showing 2 of 2 · last 30 days + still silenced')
     fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
     fireEvent.click(screen.getByRole('checkbox', { name: SELECT_SECOND }))
 
@@ -950,7 +950,7 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
     const { bulkBodies } = mockInboxWithBulk([makeInboxGroup(), makeInboxGroup(OTHER_GROUP)])
     renderInboxSection()
 
-    await screen.findByText('Showing 2 of 2 · last 30 days')
+    await screen.findByText('Showing 2 of 2 · last 30 days + still silenced')
     fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
     fireEvent.click(screen.getByRole('button', { name: 'Mute 1 selected incident' }))
     fireEvent.click(screen.getByRole('button', { name: 'Mute 1 selected incident for 24h' }))
@@ -976,7 +976,7 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
     ])
     renderInboxSection()
 
-    await screen.findByText('Showing 2 of 2 · last 30 days')
+    await screen.findByText('Showing 2 of 2 · last 30 days + still silenced')
     fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
     expect(screen.getByRole('group', { name: BULK_BAR })).toHaveTextContent('1 selected')
 
@@ -990,7 +990,7 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
     // round trip through a filter is a selection the operator has forgotten
     // making.
     fireEvent.click(screen.getByRole('button', { name: 'All' }))
-    expect(await screen.findByText('Showing 2 of 2 · last 30 days')).toBeInTheDocument()
+    expect(await screen.findByText('Showing 2 of 2 · last 30 days + still silenced')).toBeInTheDocument()
     expect(screen.queryByRole('group', { name: BULK_BAR })).toBeNull()
     expect(screen.getByRole('checkbox', { name: SELECT_FIRST })).not.toBeChecked()
   })
@@ -999,7 +999,7 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
     mockInboxWithBulk([makeInboxGroup(), makeInboxGroup(OTHER_GROUP)])
     renderInboxSection('viewer')
 
-    await screen.findByText('Showing 2 of 2 · last 30 days')
+    await screen.findByText('Showing 2 of 2 · last 30 days + still silenced')
     // The bulk route is editor-only server-side like every other inbox write,
     // so a viewer must not be able to assemble a batch they cannot spend
     // (tripl-oxkt.9).
@@ -1017,7 +1017,7 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
     mockInboxWithBulk([makeInboxGroup(), makeInboxGroup(OTHER_GROUP)])
     const { setRole } = renderInboxSection('editor')
 
-    await screen.findByText('Showing 2 of 2 · last 30 days')
+    await screen.findByText('Showing 2 of 2 · last 30 days + still silenced')
     fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
     expect(screen.getByRole('group', { name: BULK_BAR })).toHaveTextContent('1 selected')
 
@@ -1035,7 +1035,7 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
     expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
     // …and the queue itself is still on screen: this is a write gate, not a
     // curtain over the incidents.
-    expect(screen.getByText('Showing 2 of 2 · last 30 days')).toBeInTheDocument()
+    expect(screen.getByText('Showing 2 of 2 · last 30 days + still silenced')).toBeInTheDocument()
   })
 
   it('gives the whole batch one shared note (tripl-saq1)', async () => {
@@ -1046,7 +1046,7 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
     const { bulkBodies } = mockInboxWithBulk([makeInboxGroup(), makeInboxGroup(OTHER_GROUP)])
     renderInboxSection()
 
-    await screen.findByText('Showing 2 of 2 · last 30 days')
+    await screen.findByText('Showing 2 of 2 · last 30 days + still silenced')
     fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
     fireEvent.click(screen.getByRole('checkbox', { name: SELECT_SECOND }))
 
@@ -1072,7 +1072,7 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
     const { bulkBodies } = mockInboxWithBulk([makeInboxGroup(), makeInboxGroup(OTHER_GROUP)])
     renderInboxSection()
 
-    await screen.findByText('Showing 2 of 2 · last 30 days')
+    await screen.findByText('Showing 2 of 2 · last 30 days + still silenced')
     fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
     fireEvent.click(screen.getByRole('checkbox', { name: SELECT_SECOND }))
 
@@ -1103,7 +1103,7 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
     const { listFetches } = mockInboxWithBulk([makeInboxGroup(), makeInboxGroup(OTHER_GROUP)])
     renderInboxSection()
 
-    await screen.findByText('Showing 2 of 2 · last 30 days')
+    await screen.findByText('Showing 2 of 2 · last 30 days + still silenced')
     fireEvent.click(screen.getByRole('checkbox', { name: SELECT_FIRST }))
     fireEvent.click(screen.getByRole('button', { name: 'Add a note to 1 selected incident' }))
     fireEvent.change(screen.getByRole('textbox', { name: 'Note on 1 selected incident' }), {

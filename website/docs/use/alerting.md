@@ -806,6 +806,18 @@ change to explain it. The list's `total` counts what is inside the window (and
 matching the status filter), so it is "incidents to triage now", never "incidents
 this project has ever had".
 
+**One exception, and it exists because the window would otherwise swallow your own
+decisions.** An incident that is *still silenced* — effective status not `open` —
+is held in the list however long ago it last fired. Silencing an incident is the
+act of stopping its deliveries, and the window is a window on deliveries; without
+this, a muted incident would leave the page exactly 30 days after you muted it
+while its suppression carried on being enforced forever — and the only Unmute
+control lives on the row that vanished. A mute that has *run out* gets no such
+treatment: it is `open` again, so it stopped being a decision. The number held
+past the window is capped per status, so this is a safety net under decisions
+somebody made by hand and not a second, unbounded inbox. The page says
+`last 30 days + still silenced` for the same reason.
+
 **Open incidents sort above handled ones.** Effective openness is the list's
 primary ordering term, so something nobody has dealt with can never be pushed off
 page one by something already triaged; within each run the newest activity leads,

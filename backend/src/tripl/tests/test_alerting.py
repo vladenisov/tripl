@@ -5944,6 +5944,122 @@ async def test_inbox_action_succeeds_on_a_group_outside_the_lookback_window(
 
 
 @pytest.mark.asyncio
+async def test_an_indefinite_mute_stays_reachable_after_its_deliveries_age_out(
+    client: AsyncClient,
+) -> None:
+    """Muting is the act of stopping deliveries, and the list only sees
+    deliveries — so 30 days later the incident dropped out of every filter while
+    its suppression went on being enforced forever, taking the only Unmute
+    control with it (tripl-zfr3)."""
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Silenced Window", "slug": "silenced-window", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    group_id = uuid.uuid4()
+    aged_at = datetime.now(UTC) - timedelta(days=45)
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=aged_at,
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=aged_at,
+                percent_delta=100.0,
+                correlation_group_id=group_id,
+            )
+        ],
+    )
+
+    # `muted_until: null` IS the indefinite mute, and it is the one status
+    # nothing ever releases: `_reopen_closed_incidents` skips it on purpose
+    # (tripl-a50u) and `_suppressed_correlation_group_ids` has no time bound.
+    mute = await client.post(
+        f"/api/v1/projects/silenced-window/alert-inbox/{group_id}/actions",
+        json={"action": "mute", "muted_until": None},
+    )
+    assert mute.status_code == 200
+    assert mute.json()["group"]["muted"] is True
+
+    listing = await client.get("/api/v1/projects/silenced-window/alert-inbox")
+    assert listing.status_code == 200
+    assert [item["correlation_group_id"] for item in listing.json()["items"]] == [str(group_id)]
+
+    # The filter the docs name as the only route back to Unmute. Before the fix
+    # this was empty, because the status filter runs over groups already built
+    # from windowed rows — it can subtract, never add.
+    muted_only = await client.get(
+        "/api/v1/projects/silenced-window/alert-inbox", params={"status": "muted"}
+    )
+    assert muted_only.status_code == 200
+    assert [item["correlation_group_id"] for item in muted_only.json()["items"]] == [str(group_id)]
+    assert muted_only.json()["total"] == 1
+
+    # …and once the decision is lifted the incident is an aged incident like any
+    # other again, i.e. OUT of the list. The rescue is gated on the suppression
+    # still being in force, not on a state row merely existing.
+    reopen = await client.post(
+        f"/api/v1/projects/silenced-window/alert-inbox/{group_id}/actions",
+        json={"action": "reopen"},
+    )
+    assert reopen.status_code == 200
+    after = await client.get("/api/v1/projects/silenced-window/alert-inbox")
+    assert after.json()["items"] == []
+    assert after.json()["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_lapsed_mute_on_an_aged_incident_is_not_rescued(
+    client: AsyncClient,
+) -> None:
+    """The rescue reads `_effective_inbox_status`, not `state.status`.
+
+    A mute whose expiry has passed is OPEN again — the whole of tripl-oxkt.20 —
+    and an open incident that stopped delivering is exactly the resolved-by-time
+    case the 30-day window exists to forget. Keying the rescue on the stored
+    string instead would turn the inbox into an unbounded archive of everything
+    that ever fired and was once muted.
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Lapsed Window", "slug": "lapsed-window", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    group_id = uuid.uuid4()
+    aged_at = datetime.now(UTC) - timedelta(days=45)
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=aged_at,
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=aged_at,
+                percent_delta=100.0,
+                correlation_group_id=group_id,
+            )
+        ],
+    )
+    lapsed = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    mute = await client.post(
+        f"/api/v1/projects/lapsed-window/alert-inbox/{group_id}/actions",
+        json={"action": "mute", "muted_until": lapsed},
+    )
+    assert mute.status_code == 200
+
+    listing = await client.get("/api/v1/projects/lapsed-window/alert-inbox")
+    assert listing.json()["items"] == []
+    assert listing.json()["total"] == 0
+
+
+@pytest.mark.asyncio
 async def test_inbox_group_reports_no_baseline_as_null_not_zero(client: AsyncClient) -> None:
     """A scope firing from a ZERO baseline is the loudest class there is, and the
     stored 0.0 is a placeholder, not a measurement.

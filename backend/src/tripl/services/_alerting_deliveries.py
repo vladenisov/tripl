@@ -50,6 +50,34 @@ logger = logging.getLogger(__name__)
 INBOX_LOOKBACK_DAYS = 30
 INBOX_MAX_SOURCE_ITEMS = 2000
 
+#: How many still-silenced incidents the list holds PAST the window, per status
+#: (tripl-zfr3).
+#:
+#: The window above is a window on DELIVERIES, and silencing an incident is
+#: precisely the act of stopping its deliveries. A suppressed group's newest
+#: delivery therefore freezes at the moment it was suppressed and, 30 days later,
+#: the group contributes no rows, gets no entry in ``groups``, and drops out of
+#: the list — while ``_suppressed_correlation_group_ids``
+#: (worker/tasks/metrics/dispatch.py) goes on enforcing the suppression with no
+#: time bound at all. For an INDEFINITE mute that is terminal: nothing releases
+#: it, and the only Unmute control lives on the card that disappeared.
+#:
+#: PER STATUS, not one shared budget, and that is why this is a rule and not just
+#: a number. The orphan population is dominated by ``resolved`` and
+#: ``acknowledged`` groups whose scope stopped existing — those never reach
+#: ``_reopen_closed_incidents``'s ``closed_keys``, so they accumulate without
+#: bound. One shared budget would let them starve every muted one, and
+#: ``?status=muted`` would answer "nothing" with an indefinite mute still in
+#: force: the filed bug surviving its own fix.
+#:
+#: 50 because this is a safety net under decisions a human took by hand, not a
+#: second inbox. Measured on production 2026-08-15: 12 correlation states, 5 of
+#: them indefinitely muted, against 271 delivery items inside the window.
+INBOX_MAX_SILENCED_RESCUES = 50
+
+#: Sorts a state that was never acted on to the bottom of the rescue ranking.
+_NEVER_ACTED = datetime.min.replace(tzinfo=UTC)
+
 # One joined row behind an inbox group: the item that fired plus the delivery
 # that carried it and the three names the card renders.
 InboxGroupRow = tuple[AlertDeliveryItem, AlertDelivery, AlertDestination, AlertRule, ScanConfig]
@@ -327,6 +355,135 @@ def _effective_inbox_status(state: AlertCorrelationState | None, now: datetime) 
     ):
         return "open"
     return state.status
+
+
+def _silenced_orphan_group_ids(
+    states: Iterable[AlertCorrelationState],
+    *,
+    windowed_group_ids: set[uuid.UUID],
+    now: datetime,
+    status: str | None,
+) -> list[uuid.UUID]:
+    """Incidents still under a human decision that the window can no longer see.
+
+    An orphan is a correlation state whose group produced no delivery inside
+    ``INBOX_LOOKBACK_DAYS`` — so ``list_alert_inbox`` built no card for it — and
+    whose EFFECTIVE status is not ``open``. Both halves matter:
+
+    * Not in ``windowed_group_ids``, because a group the window already covers
+      must keep the windowed reading. Rescuing it too would widen every aggregate
+      on a card that is on screen, which is the drift ``_build_one_inbox_group``
+      documents at length.
+    * ``_effective_inbox_status``, not ``state.status``, because a LAPSED mute is
+      open again — and an open incident that stopped delivering is exactly the
+      resolved-by-time case the window is FOR. Rescuing those would turn the
+      inbox into an unbounded archive of everything that ever fired.
+
+    Ranked by ``acted_at`` newest-first and truncated per status to
+    {@link INBOX_MAX_SILENCED_RESCUES}; see that constant for why the budget is
+    per status rather than shared. ``correlation_group_id`` is the last sort term
+    for the reason ``_INBOX_SOURCE_ORDER`` has one: several incidents acted on in
+    a single bulk click share an ``acted_at`` to the microsecond (that is what
+    tripl-gpfr's batch DOES), so without it the cap could admit a different set
+    on each request and a card would flicker in and out of the list.
+
+    Pure, and takes the states rather than a session, so the selection rule can
+    be tested without a database behind it.
+    """
+    by_status: dict[str, list[AlertCorrelationState]] = {}
+    for state in states:
+        if state.correlation_group_id in windowed_group_ids:
+            continue
+        effective = _effective_inbox_status(state, now)
+        if effective == "open":
+            continue
+        # When the caller asked for one status, the whole budget goes to it. The
+        # request is "show me the muted ones"; spending half the cap on resolved
+        # orphans that the filter at the end will discard anyway is how the
+        # answer comes back empty.
+        if status is not None and effective != status:
+            continue
+        by_status.setdefault(effective, []).append(state)
+
+    def rescue_rank(state: AlertCorrelationState) -> tuple[datetime, str]:
+        # A NULL `acted_at` sorts last rather than raising. `note` is the one
+        # action that deliberately does not stamp it, so a state can carry a
+        # status without one — and a comparison against `None` would take the
+        # whole list down instead of ranking that row low.
+        acted_at = _as_utc(state.acted_at) if state.acted_at is not None else _NEVER_ACTED
+        return (acted_at, str(state.correlation_group_id))
+
+    rescued: list[uuid.UUID] = []
+    for candidates in by_status.values():
+        candidates.sort(key=rescue_rank, reverse=True)
+        rescued.extend(
+            state.correlation_group_id for state in candidates[:INBOX_MAX_SILENCED_RESCUES]
+        )
+    return rescued
+
+
+async def _load_orphan_group_rows(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    correlation_group_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, list[InboxGroupRow]]:
+    """The delivery rows behind rescued groups, read WITHOUT the window.
+
+    One query for the whole set, not one per group. ``_build_one_inbox_group``
+    already knows how to read a single incident unwindowed — that is what the
+    deep link uses — but calling it in a loop is two round trips per orphan, and
+    ``AlertCorrelationState`` is never pruned, so the orphan population only
+    grows. The cost of the rescue has to be bounded by a constant, not by how
+    long the instance has been running.
+
+    Capped PER GROUP with a window function rather than by a plain ``LIMIT``, and
+    for the reason ``count_open_incidents`` partitions by project: a single global
+    limit over the whole id set lets one long-lived incident spend the entire
+    budget and return nothing at all for the others. Every column the subquery is
+    read back by is labelled, because an unlabelled ``row_number()`` has no name
+    to select on.
+    """
+    if not correlation_group_ids:
+        return {}
+
+    ranked = (
+        select(
+            AlertDeliveryItem.id.label("item_id"),
+            func.row_number()
+            .over(
+                partition_by=AlertDeliveryItem.correlation_group_id,
+                order_by=_INBOX_SOURCE_ORDER,
+            )
+            .label("row_number"),
+        )
+        .select_from(AlertDeliveryItem)
+        .join(AlertDelivery, AlertDelivery.id == AlertDeliveryItem.delivery_id)
+        .where(
+            AlertDelivery.project_id == project_id,
+            AlertDeliveryItem.correlation_group_id.in_(correlation_group_ids),
+        )
+        .subquery()
+    )
+    rows = (
+        (
+            await session.execute(
+                _INBOX_GROUP_SELECT.join(ranked, ranked.c.item_id == AlertDeliveryItem.id)
+                .where(ranked.c.row_number <= INBOX_MAX_SOURCE_ITEMS)
+                .order_by(*_INBOX_SOURCE_ORDER)
+            )
+        )
+        .tuples()
+        .all()
+    )
+
+    grouped: dict[uuid.UUID, list[InboxGroupRow]] = {}
+    for row in rows:
+        group_id = row[0].correlation_group_id
+        if group_id is None:
+            continue
+        grouped.setdefault(group_id, []).append(row)
+    return grouped
 
 
 async def _load_acting_user_names(
@@ -612,6 +769,41 @@ async def list_alert_inbox(
         groups.setdefault(item.correlation_group_id, []).append(
             (item, delivery, destination, rule, scan)
         )
+
+    # Incidents the window can no longer see but whose suppression is still in
+    # force, merged in BEFORE the status filter so `?status=muted` can reach them
+    # (tripl-zfr3). `states` is a dict keyed by group id, so the selection helper
+    # gets `.values()` — iterating the dict itself hands it UUIDs.
+    #
+    # The merge happens here, ahead of `group_states`, so a rescued group goes
+    # through exactly the same response build, the same sort and the same paging
+    # as every other one. Nothing downstream is allowed to know a card came from
+    # the rescue; a second code path for them is how the two readings would drift.
+    orphan_ids = _silenced_orphan_group_ids(
+        states.values(),
+        windowed_group_ids=set(groups),
+        now=now,
+        status=status,
+    )
+    if orphan_ids:
+        rescued = await _load_orphan_group_rows(
+            session, project_id=project.id, correlation_group_ids=orphan_ids
+        )
+        for group_id in orphan_ids:
+            group_rows = rescued.get(group_id)
+            if group_rows is None:
+                # A suppressed state whose deliveries are gone entirely — the
+                # delivery rows cascade on destination or rule deletion while the
+                # state does not. There is nothing to render a card from, so it
+                # cannot be shown; log it rather than fail the whole list, since
+                # every other incident on the page is still answerable.
+                logger.warning(
+                    "inbox: correlation group %s is %s but has no deliveries to render",
+                    group_id,
+                    _effective_inbox_status(states.get(group_id), now),
+                )
+                continue
+            groups[group_id] = group_rows
 
     group_states = {group_id: states.get(group_id) for group_id in groups}
     acted_by_names = await _load_acting_user_names(session, _acting_user_ids(group_states.values()))

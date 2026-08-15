@@ -433,7 +433,7 @@ describe('AlertingInbox — three states, three branches (tripl-oxkt.10)', () =>
 
     // "No correlated alert groups" is a claim about the project; this is a
     // claim about the question, and it comes with the way back.
-    expect(screen.getByText(/No muted incidents in the last 30 days/)).toBeInTheDocument()
+    expect(screen.getByText(/No muted incidents\./)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Show all' })).toBeInTheDocument()
   })
 })
@@ -608,7 +608,7 @@ describe('AlertingInbox — the header says how much of the queue is on screen (
 
     // The header used to print 57 above a list of 20, with no control of any
     // kind — 37 incidents reachable by no means at all.
-    expect(screen.getByText('Showing 2 of 57 · last 30 days')).toBeInTheDocument()
+    expect(screen.getByText('Showing 2 of 57 · last 30 days + still silenced')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Load more (55 left)' })).toBeInTheDocument()
     expect(screen.getByText(/Of the 2 incidents loaded: 2 open · 0 handled/)).toBeInTheDocument()
   })
