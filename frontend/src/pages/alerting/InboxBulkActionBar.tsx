@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { X } from 'lucide-react'
 
-import { MAX_BULK_INBOX_ACTION_GROUPS } from '@/api/alerting'
+import { MAX_BULK_INBOX_ACTION_GROUPS, MAX_INBOX_NOTE_LENGTH } from '@/api/alerting'
 import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
 import {
   INBOX_MUTE_CHOICES,
   muteChoiceName,
@@ -11,6 +12,8 @@ import {
 } from '@/lib/mutePresets'
 import { countOf } from '@/lib/plural'
 import type { AlertInboxBulkAction } from '@/types'
+
+import { noteBudgetLabel } from './constants'
 
 /**
  * One triage decision raised by the bar, before it knows which incidents it
@@ -32,6 +35,17 @@ import type { AlertInboxBulkAction } from '@/types'
 export interface InboxBulkActionRequest {
   action: AlertInboxBulkAction
   mutedUntil?: string | null
+  /**
+   * The one sentence explaining the whole batch, copied onto every selected
+   * incident (tripl-saq1).
+   *
+   * Absent, not empty, when there is nothing to say. The server's rule is that
+   * a note it is not GIVEN is a stored note it does not touch, while an empty
+   * string is an explicit clear — so an empty string sent from here would not
+   * mean "no note", it would wipe the note off every selected row at once,
+   * which is not a decision this bar offers.
+   */
+  note?: string
 }
 
 /**
@@ -121,6 +135,21 @@ export function InboxBulkActionBar({
   // `mutePresets` was extracted to end (tripl-oxkt.7), and it would be worse
   // here, where one click covers a screenful of incidents.
   const [muteOpen, setMuteOpen] = useState(false)
+  // The batch's shared note (tripl-saq1). Owned HERE, unlike the per-incident
+  // drafts on `ProjectAlertingTab`, because those are keyed by an incident that
+  // outlives any one decision while this belongs to a selection that does not:
+  // it is written for the batch in front of you and is meaningless against the
+  // next one. The lifetimes then line up for free — a FAILED batch keeps its
+  // selection, so the bar stays open and the typing survives to be retried,
+  // while a successful one clears the selection and takes the draft with it.
+  const [noteOpen, setNoteOpen] = useState(false)
+  const [note, setNote] = useState('')
+  const noteFocusPending = useRef(false)
+  const focusNoteWhenOpened = (node: HTMLTextAreaElement | null) => {
+    if (!node || !noteFocusPending.current) return
+    noteFocusPending.current = false
+    node.focus()
+  }
 
   if (selectedCount === 0) {
     // The bar hides itself here but stays MOUNTED, so an expanded duration row
@@ -130,6 +159,13 @@ export function InboxBulkActionBar({
     // it. Adjusting state during render is React's documented way to follow a
     // prop, and the guard makes it converge in one extra render (tripl-gpfr).
     if (muteOpen) setMuteOpen(false)
+    // The note is reset for a sharper version of the same reason. It does not
+    // merely reappear — it RIDES ALONG with whatever is pressed next, so a
+    // sentence typed about one batch would be copied verbatim onto the next
+    // operator's unrelated incidents. Clearing it at zero selection is what
+    // keeps a note the property of the batch it describes.
+    if (noteOpen) setNoteOpen(false)
+    if (note) setNote('')
     return null
   }
 
@@ -141,14 +177,24 @@ export function InboxBulkActionBar({
   const overCapBy = selectedCount - MAX_BULK_INBOX_ACTION_GROUPS
   const isOverCap = overCapBy > 0
   const actionsDisabled = isPending || isOverCap
+  const trimmedNote = note.trim()
+  const noteBudget = noteBudgetLabel(note.length)
+  // The note is attached HERE rather than by each button, so there is exactly
+  // one place that decides whether a batch carries one and no button can be
+  // added later that quietly forgets to (tripl-saq1). Omitted when empty — see
+  // `InboxBulkActionRequest.note` for why an empty string is not the same
+  // request. `setMuteOpen(false)` collapses the duration row because it is a
+  // menu that has been used; the note box deliberately stays as the operator
+  // left it, since a note that rides along invisibly is the failure this whole
+  // control is supposed to avoid.
   const run = (request: InboxBulkActionRequest) => {
     setMuteOpen(false)
-    onAction(request)
+    onAction(trimmedNote ? { ...request, note: trimmedNote } : request)
   }
 
   return (
     <div
-      className="fixed bottom-[18px] left-1/2 z-30 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center gap-2.5 rounded-[10px] border py-1.5 pl-3.5 pr-2"
+      className="fixed bottom-[18px] left-1/2 z-30 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-col gap-1.5 rounded-[10px] border py-1.5 pl-3.5 pr-2"
       style={{
         background: 'var(--bg-elevated)',
         borderColor: 'var(--border-strong)',
@@ -160,15 +206,81 @@ export function InboxBulkActionBar({
       role="group"
       aria-label="Bulk incident actions"
     >
+      {/* The note comes FIRST in the DOM, which is the same rule the incident
+          card follows and for the same reason: its text is sent BY the action
+          buttons, so a keyboard user who meets the buttons first spends the
+          decision and the note never goes anywhere (tripl-oxkt.14).
+
+          It differs from the card in being first VISUALLY too — the card pushes
+          its editor back underneath with `order`, because there the actions are
+          the point of the row and the note is a footnote to one incident. Here
+          the box only exists because somebody asked for it, and a compose area
+          above the buttons that send it is the arrangement every other one of
+          these has. */}
+      {noteOpen && (
+        <div className="flex flex-col gap-1 pr-1.5 pt-0.5">
+          {/* Focus is moved imperatively, not with `autoFocus` — the same call
+              the incident card makes, for the same two reasons (jsx-a11y rejects
+              the prop, and focus a user asked for is not focus seized at load).
+              The flag is armed by the toggle below and spent once here; without
+              the guard a callback ref would drag the caret back on every
+              keystroke, since each one re-renders with a new ref identity. */}
+          <Textarea
+            ref={focusNoteWhenOpened}
+            rows={2}
+            aria-label={`Note on ${target}`}
+            placeholder="Why are these being handled together?"
+            maxLength={MAX_INBOX_NOTE_LENGTH}
+            value={note}
+            onChange={event => setNote(event.target.value)}
+            onKeyDown={event => {
+              if (!(event.metaKey || event.ctrlKey) || event.key !== 'Enter') return
+              if (actionsDisabled || trimmedNote.length === 0) return
+              event.preventDefault()
+              run({ action: 'note' })
+            }}
+            className="min-h-0 w-full min-w-60 py-1.5 text-[11px] leading-5"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Saves the note and NOTHING else — `note` moves no status and
+                stamps no `acted_at`, on this route exactly as on the single one.
+                Disabled at an empty box rather than offering the card's "Clear
+                note": clearing is defined as sending an empty string, and doing
+                that from here would wipe whatever each of N incidents
+                separately had to say. The card can offer it because it is
+                looking at the one note it would erase. */}
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 px-2 text-[10px]"
+              aria-label={`Save this note on ${target}`}
+              title="Copies this note onto every selected incident, and moves no status. Ctrl+Enter (⌘+Enter on a Mac) does the same."
+              disabled={actionsDisabled || trimmedNote.length === 0}
+              onClick={() => run({ action: 'note' })}
+            >
+              Save note
+            </Button>
+            <span className="text-[10px]" style={{ color: 'var(--fg-subtle)' }}>
+              …or press an action below to save it with that.
+            </span>
+            {noteBudget && (
+              <span role="status" className="text-[10px]" style={{ color: 'var(--fg-muted)' }}>
+                {noteBudget}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2.5">
       <span className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
         <span className="mono font-semibold" style={{ color: 'var(--fg)' }}>{selectedCount}</span> selected
       </span>
       {isOverCap && (
-        // `role="status"`, so it is ANNOUNCED and not merely visible: the four
-        // buttons beside it go disabled in the same render, and a row of
-        // controls that stops working without saying why is the failure this
-        // line exists to prevent. Warning rather than danger — nothing has gone
-        // wrong, the operator simply has to untick some rows.
+        // `role="status"`, so it is ANNOUNCED and not merely visible: every
+        // button beside it — Note included — goes disabled in the same render,
+        // and a row of controls that stops working without saying why is the
+        // failure this line exists to prevent. Warning rather than danger —
+        // nothing has gone wrong, the operator simply has to untick some rows.
         <span role="status" className="text-[11px]" style={{ color: 'var(--warning)' }}>
           {overCapNotice(overCapBy)}
         </span>
@@ -181,6 +293,33 @@ export function InboxBulkActionBar({
           row that never moves, and a selection spanning several statuses has no
           single status to disable against — every action here is meaningful on
           a mixed selection, and the server applies each one idempotently. */}
+      {/* First among the verbs, which is a tab-order decision and not a visual
+          one: everything to the right of it SPENDS the batch, and a note is
+          only worth typing before that happens. Put after Reopen it would read
+          the same and be unreachable in time. */}
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-7 px-2 text-[11px]"
+        aria-expanded={noteOpen}
+        aria-label={`Add a note to ${target}`}
+        title="One sentence, copied onto every selected incident. Saved on its own, or carried by whichever action you press next."
+        disabled={actionsDisabled}
+        onClick={() => {
+          // Collapses only while EMPTY. Text that is about to ride along with
+          // the next action must not be hideable — an invisible passenger note
+          // landing on incidents nobody saw it attached to is the one failure
+          // this control has to not have.
+          if (noteOpen && trimmedNote.length === 0) {
+            setNoteOpen(false)
+            return
+          }
+          noteFocusPending.current = true
+          setNoteOpen(true)
+        }}
+      >
+        Note
+      </Button>
       <Button
         size="sm"
         variant="outline"
@@ -275,6 +414,7 @@ export function InboxBulkActionBar({
       >
         <X className="h-3.5 w-3.5" />
       </button>
+      </div>
     </div>
   )
 }

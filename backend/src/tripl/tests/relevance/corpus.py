@@ -52,6 +52,20 @@ It is a deliberate miniature of three ranking faults measured on production
   variable are BOTH in the index, so a plural query has a wrong answer available
   to it and has to out-rank it rather than merely retrieve something.
 
+* **The stemmer splits a word into two unreachable halves** (tripl-uojz).
+  a7c3e1b9d5f2 fixed the bullet above and introduced this one: Snowball
+  over-stems the bare nominative onto a lexeme none of that word's own
+  inflections produce (``улов`` -> ``ул``, ``экран`` -> ``экра``), so the word
+  becomes two disjoint lexical classes. Measured on the deployed database, the
+  over-stem class is the MAJORITY for the commonest vocabulary — ``экра`` 3971
+  rows against ``экран`` 414 — which is what makes the breakage bidirectional.
+  Reproduced by ``property.screen_kind``, the one document here that holds a bare
+  nominative and NO inflected form of the same word; ``catch_report_created`` was
+  simultaneously stripped of the bare nominative it should never have had, so it
+  now holds the lemma class and nothing else. Read both of their comments before
+  editing either: this corpus previously put both classes into every Russian
+  document, which is why it certified a repair that was wrong on production.
+
 * **The boost ladder cannot see a phrase or Cyrillic.**
   ``token_boundary_regex`` returns ``None`` for anything outside ``[a-z0-9_]+``,
   which removes the 3.5/3.0 tiers for every query with a space or Cyrillic, and
@@ -224,13 +238,58 @@ EVENTS: tuple[SeedEvent, ...] = (
         "Открытие карточки спота",
         (("view_id", "spot"), ("card_id", "spot_1042")),
     ),
-    # Fault B, Russian half. Carries the bare token "улов" twice so the singular
-    # query has a real lexical hit and the plural query provably has none.
+    # Fault B, Russian half — and the seed that CERTIFIED A BROKEN FIX (tripl-uojz).
+    #
+    # WHAT THIS SEED USED TO BE, AND WHY IT WAS A LIE
+    # It carried the bare nominative "улов" twice in the description and once
+    # more as the `catch_kind` VALUE, which `_search_documents._event_document`
+    # folds into both `body` (via safe_values) and `keywords`. Production
+    # contains ZERO documents holding that lexeme: measured улов/ул = 151/0, i.e.
+    # 151 rows hold the lemma every INFLECTED form produces and not one row holds
+    # the over-stem "ул" the bare nominative produces. The surface form seeded
+    # here was one the product does not emit.
+    #
+    # Worse, this ONE document was what BOTH ulov cases asserted on, and it
+    # carried BOTH lexemes at once: "ул" from the bare nominative, and "улов"
+    # from the stem of "Отчёт об улове" / "Тип улова" / "Вес улова". Either query
+    # retrieved it, by a DIFFERENT lexeme each time, so the asymmetry between
+    # them was invisible. A query-side-only repair for tripl-uojz passed this
+    # table and was wrong on production — the harness's third false green.
+    #
+    # WHAT IT IS NOW
+    # Only INFLECTED forms: "улове" and "улова" in the description, and a
+    # `catch_kind` value that is an actual catch kind ("щука") rather than the
+    # word "улов" repeated back. Nothing in this document's title, subtitle, body
+    # or keywords tokenizes to the bare nominative any more, so the document
+    # holds the lemma class and NOT the over-stem class — which is the shape all
+    # 151 production rows have.
+    #
+    # WHAT THAT BUYS, AND WHAT IT STILL DOES NOT BUY — READ BEFORE TRUSTING IT
+    # It buys honesty: `q='улов'` now has to cross from the over-stem class into
+    # the lemma class to reach this document, which is the production fault. It
+    # does NOT buy a discriminating RETRIEVAL case, and pretending otherwise
+    # would repeat the mistake this comment is about. Every Russian nominative is
+    # a PREFIX of its own inflections, so `lower(concat_ws(...)) LIKE '%улов%'`
+    # in `postgres_lexical_search`'s WHERE matches "улове" and retrieves this
+    # document even with the stemmer misbehaving and the surface leg absent. The
+    # boost drops from the 3.25 stemmed tier to the 2.25 body-LIKE tier, so the
+    # fault is visible in the ORDER, not in the retrieval set — and an ordering
+    # margin is exactly the kind of evidence this harness has already been wrong
+    # about twice.
+    #
+    # The direction that IS pinned through retrieval, immune to LIKE and to
+    # trigram, is the mirror one: a document holding ONLY a bare nominative,
+    # queried by an inflected form the document does not contain as a substring.
+    # That lives on `property.screen_kind` below, on `экран` — the word whose
+    # over-stem class is the production MAJORITY (3971 rows vs 414) — because
+    # `улов` has no production document in that class to imitate. The mechanism
+    # itself, in both directions and with no corpus at all, is asserted by
+    # `test_stemming_invariants.py`, which is where the real guard lives.
     SeedEvent(
         "catch_report_created",
         "catch_report",
-        "Отправлен улов: пользователь подтвердил улов в отчёте",
-        (("catch_kind", "улов"), ("catch_weight", "3.2")),
+        "Пользователь отправил отчёт об улове и подтвердил вес улова",
+        (("catch_kind", "щука"), ("catch_weight", "3.2")),
     ),
     # Fault B, English half.
     SeedEvent(
@@ -271,6 +330,68 @@ _CUBE_KEYS: tuple[str, ...] = (
 #: body-token boost that no correctly-spelled entity can earn — the reason a
 #: stemmer alone did not move these queries and the ladder needed the 3.25 tier.
 _SCREEN_NAMES: tuple[str, ...] = ("purchases", "уловы", "spots", "экран_поиска")
+
+#: Harvested surface kinds. THE OVER-STEM DOCUMENT (tripl-uojz).
+#:
+#: WHY A DOCUMENT THAT HOLDS ONLY A BARE NOMINATIVE HAD TO BE ADDED
+#: Snowball splits a word into two disjoint lexical classes: the bare nominative
+#: over-stems onto a lexeme that SOME of its inflections never reach (`экран` ->
+#: `экра`) while those inflections land on the lemma (`экране` -> `экран`).
+#:
+#: Which inflections, exactly, is the thing to look up rather than guess, and
+#: guessing it is what produced a case that passed with the fix reverted
+#: (tripl-uojz). Measured: `экран`, `экрана` and `экраны` ALL stem to `экра`;
+#: only `экране` stems to `экран`. So the query that reaches this document ONLY
+#: through the surface leg is `q='экране'` — `q='экрана'` reaches it on the stem
+#: leg like any other word.
+#:
+#: Before this variable existed, EVERY Russian document in this corpus carried both
+#: classes at once — `catch_report_created` held the nominative "улов" beside the
+#: inflected "улове"/"улова", the `Экран` field holds its own display name beside
+#: "Идентификатор показанного экрана", and each pageview event holds
+#: "экран_поиска" beside "Показ экрана ...". A document that holds both classes
+#: is reachable by either query through whichever lexeme happens to match, so the
+#: split is invisible and a repair for it cannot be falsified. That is not a gap
+#: in coverage, it is a corpus that reports success either way.
+#:
+#: WHY `экран` AND NOT `улов`
+#: `улов` has no production document in the over-stem class at all (улов/ул =
+#: 151/0), so seeding one would be inventing traffic. `экран` is the opposite
+#: case and the strongest one measured: 3971 production rows hold the over-stem
+#: `экра` against 414 holding the lemma `экран`. A document in that class is the
+#: MAJORITY shape, and it is what killed the query-side-only repair.
+#:
+#: WHY THIS DOCUMENT IS CLEAN, CHECKED AGAINST `_search_documents`
+#: `_variable_document` builds body from the variable name, its source name, its
+#: description and `_variable_context_text`, and keywords from the same minus the
+#: harvested VALUES (tripl-gbxj). So the only Cyrillic that can reach this
+#: document's indexed text is: the description, the bound field's `display_name`,
+#: and these values. The description below carries no form of `экран`; the bound
+#: field is `card_id` / "Карточка"; and of the values only "экран" is a form of
+#: it, in the bare nominative. The document therefore holds `экра` and the
+#: surface `экран`, and no lexeme from the lemma class.
+#:
+#: WHY THE RESULTING CASE CANNOT PASS FOR THE WRONG REASON
+#: `q='экране'` reaches it ONLY through the surface leg, because every other path
+#: in `postgres_lexical_search`'s WHERE is closed by construction: the values are
+#: body-only so `keywords % :query` sees no Cyrillic at all, `title` is
+#: `${property.screen_kind}` and `subtitle` is `string` so neither is
+#: trigram-similar to a Russian word, and `LIKE '%экране%'` cannot match a
+#: document whose longest spelling is the five letters "экран". Delete the surface
+#: leg from either side and the document is not retrieved at all — a retrieval
+#: failure, not an ordering one, which is the only kind of evidence this harness
+#: has not already been wrong about.
+#:
+#: WHY THESE BINDINGS, WHICH LOOK ARBITRARY
+#: Same reason `property.card_target` uses them, and the same warning applies:
+#: `_event_document` folds a variable's values into an EVENT's body and keywords,
+#: but only for fields that event has a recorded value for. `app_open` and
+#: `screen_home` declare a `view_id` value and no `card_id` value, so binding
+#: here reaches exactly one document — this variable's — and no event document
+#: acquires a bare `экран`. Binding to `view_id` instead would put the nominative
+#: into three event documents that already hold the lemma class, which would undo
+#: the isolation this seed exists to create.
+_SCREEN_KINDS: tuple[str, ...] = ("экран", "модалка", "шторка", "оверлей")
 
 #: Harvested town names — the shape of the 1526 auto-detected "variables" that are
 #: really field values. They match none of the queries; they are here so the
@@ -460,6 +581,29 @@ VARIABLES: tuple[SeedVariable, ...] = (
             _SETTINGS_CARD_TARGETS,
             (("app_open", "card_id"), ("screen_home", "card_id")),
             5188,
+        ),
+    ),
+    # The over-stem document (tripl-uojz). See _SCREEN_KINDS for why it exists,
+    # why the word is `экран`, and why nothing but the surface leg can retrieve
+    # it for an inflected query.
+    #
+    # THE DESCRIPTION IS LOAD-BEARING AND MUST STAY FREE OF EVERY FORM OF `экран`.
+    # The document may hold `экра` (from the bare `экран` value) and nothing else
+    # of this word. Any wording carrying a form that stems to `экран` — "на
+    # экране", "Тип экрана на экране" — hands the document the lemma lexeme and
+    # `q='экране'` then reaches it on the stem leg alone, so the case passes with
+    # the fix reverted. That is the exact failure this seed was added to end, and
+    # it is not the failure the obvious guess protects against: `экрана` stems to
+    # `экра`, the same class the document already holds, so wording built around
+    # THAT form would be harmless here and is not what to look for (tripl-uojz).
+    SeedVariable(
+        name="property.screen_kind",
+        description="Тип поверхности, определено автоматически",
+        contexts=_contexts(
+            "properties.screen_kind",
+            _SCREEN_KINDS,
+            (("app_open", "card_id"), ("screen_home", "card_id")),
+            2874,
         ),
     ),
 )

@@ -347,3 +347,120 @@ a rebuild is free apart from the CPU it takes.
 Verify by searching for an entity whose name contains an underscore, using a
 space instead (`screen spot` for `screen_spot`): the entity itself should come
 back first rather than the variables that merely mention it.
+
+### The surface-form release: check BEFORE you deploy, no rebuild after
+
+The release that indexes a word's **surface form beside its stem** (so that
+`экран` and `экране` reach the same documents — Snowball over-stems some forms
+of a word onto a lexeme its other forms never produce) rebuilds every stored
+`text_vector` inside its migration. Unlike the ranking release above it does
+**not** change what text a document contains, so no `search/reindex` call is
+needed anywhere, archived branches included, and no embedding is discarded or
+re-billed.
+
+What it does need is one check *before* the deploy, because a `tsvector` cannot
+exceed 1 MB and every document's vector roughly doubles. If any row would cross
+that limit the migration aborts — with the API entrypoint running
+`alembic upgrade head` before uvicorn, that is a failed start, not a warning.
+
+**Step 1 — triage the whole table (cheap, cannot fail).** A tsvector's lexemes
+are substrings of its input and its position list is bounded by the token count,
+so both legs together stay under 1 MB for any document text below ~250 KB. This
+finds the rows that need the exact check:
+
+```bash
+docker compose exec -T postgres psql -U tripl -d tripl -c "
+SELECT count(*)                                   AS documents,
+       count(*) FILTER (WHERE octet_length(txt) > 250000) AS rows_to_inspect,
+       pg_size_pretty(max(octet_length(txt))::bigint)     AS largest_document
+FROM (
+    SELECT concat_ws(' ', title, subtitle, body, keywords) AS txt
+    FROM search_documents
+) s;"
+# rows_to_inspect = 0  ->  no row can reach the 1 MB cap. You are done; deploy.
+```
+
+**Step 2 — only if `rows_to_inspect > 0`: measure those rows exactly.**
+
+Do **not** reach for `SELECT length((to_tsvector(...) || to_tsvector(...))::text)
+FROM search_documents`. That is the obvious formulation and it cannot report the
+condition it is looking for: building an oversized `tsvector` is precisely what
+raises `string is too long for tsvector`, so the query aborts on the first
+offending row with the same error the migration would have raised. It tells you
+nothing about how many rows are affected or which ones, and an operator who runs
+it sees a broken check rather than an answer.
+
+This does the same measurement per row and traps that error instead of
+propagating it, so every offending row is named. It is read-only — no `CREATE`,
+no writes, nothing to clean up:
+
+```bash
+docker compose exec -T postgres psql -U tripl -d tripl -c "
+DO \$\$
+DECLARE
+    doc record;
+    bytes int;
+    offenders int := 0;
+BEGIN
+    FOR doc IN
+        SELECT id, entity_type, entity_id,
+               concat_ws(' ', title, subtitle, body, keywords) AS txt
+        FROM search_documents
+        WHERE octet_length(concat_ws(' ', title, subtitle, body, keywords)) > 250000
+    LOOP
+        BEGIN
+            bytes := pg_column_size(
+                to_tsvector('tripl_search', doc.txt)
+                || to_tsvector('simple', unaccent(doc.txt))
+            );
+            IF bytes > 1000000 THEN
+                offenders := offenders + 1;
+                RAISE NOTICE 'OVER LIMIT: % bytes  doc=%  %/%',
+                    bytes, doc.id, doc.entity_type, doc.entity_id;
+            END IF;
+        EXCEPTION WHEN program_limit_exceeded THEN
+            offenders := offenders + 1;
+            RAISE NOTICE 'OVER LIMIT: % (doc=%  %/%)',
+                SQLERRM, doc.id, doc.entity_type, doc.entity_id;
+        END;
+    END LOOP;
+    RAISE NOTICE 'check complete: % row(s) over the 1 MB tsvector cap', offenders;
+END \$\$;"
+# Expect: "check complete: 0 row(s) over the 1 MB tsvector cap".
+# Anything above 0 must be resolved before deploying: the offending document's
+# body is a harvested-value blob and needs trimming at the source. Deploying
+# without resolving it is a failed container start, not a degraded search.
+```
+
+Three notes on that block. `program_limit_exceeded` (SQLSTATE 54000) is the error
+class Postgres raises for `string is too long for tsvector`; any *other* error
+still propagates and aborts, which is what you want — a check that swallowed
+everything would be as useless as one that aborts on everything. The `EXCEPTION`
+branch is the authoritative signal: a row that raises there is a row the
+migration will fail on, while the `bytes > 1000000` branch is the near-boundary
+warning, so treat anything it reports as needing the same trimming.
+`to_tsvector('simple', unaccent(…))` stands in for `tripl_search_surface`, which
+does not exist yet on the database you are checking; it is the same dictionary
+chain the migration installs, so the byte counts match to within the handful of
+non-word tokens the two treat differently.
+
+Afterwards, a full-table `UPDATE` has left dead tuples and a bloated GIN index.
+Autovacuum will get there; if search feels slow immediately after the deploy,
+hurry it along:
+
+```bash
+docker compose exec -T postgres psql -U tripl -d tripl -c \
+  "VACUUM (ANALYZE) search_documents;"
+```
+
+Verify with a Russian noun in two cases — but not just any two. Snowball puts
+`экран`, `экрана` and `экраны` in one class and `экране` in another, so
+`экран`/`экрана` returned the same entities before this release as well and
+proves nothing. Use a pair that actually straddles the split:
+
+- `улов` and `уловы`
+- `архив` and `архивы`
+- `экран` and `экране`
+
+Both spellings of a pair should return the same entities. Before this release one
+of the two returned nothing at all.

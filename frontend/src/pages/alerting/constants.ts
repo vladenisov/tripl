@@ -1,3 +1,4 @@
+import { MAX_INBOX_NOTE_LENGTH } from "@/api/alerting"
 import type {
   AlertDestinationType,
   AlertMessageFormat,
@@ -402,6 +403,39 @@ export function ruleFormToPayload(ruleForm: RuleFormState) {
         ? null
         : normalizedItemsTemplate,
   }
+}
+
+/**
+ * How much room is left in a note, said only once it is worth saying
+ * (tripl-gwrd).
+ *
+ * Both note editors hand {@link MAX_INBOX_NOTE_LENGTH} to `maxLength`, and a
+ * `maxLength` that has been reached does not warn, error or truncate visibly —
+ * it silently stops accepting keystrokes. Somebody pasting a stack trace into an
+ * incident note therefore watches their typing stop with nothing on screen
+ * saying why, and the obvious reading is that the page has frozen.
+ *
+ * Returns `null` for the overwhelmingly common case, because a counter that is
+ * always on screen is noise on every note anyone actually writes: incident notes
+ * are a sentence, and 2000 characters is roughly a page and a half. It appears
+ * only inside the last {@link NOTE_BUDGET_WARNING_AT} characters — far enough
+ * ahead that a reader can still choose to be brief, close enough not to be
+ * decoration.
+ *
+ * The exhausted case gets its own sentence rather than "0 characters left",
+ * which states the number without stating the consequence — and the consequence
+ * (keystrokes are being dropped right now) is the entire reason this exists.
+ */
+export const NOTE_BUDGET_WARNING_AT = 200
+
+export function noteBudgetLabel(length: number): string | null {
+  const remaining = MAX_INBOX_NOTE_LENGTH - length
+  if (remaining > NOTE_BUDGET_WARNING_AT) return null
+  // `<= 0` and not `=== 0`: `maxLength` makes a negative unreachable by typing,
+  // but a draft restored from state is not typing, and "-12 characters left"
+  // would be the one number here nobody can act on.
+  if (remaining <= 0) return 'Full — further characters are not being accepted'
+  return `${remaining} characters left`
 }
 
 export function formatCooldown(minutes: number) {
