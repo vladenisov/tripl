@@ -8,10 +8,12 @@ from sqlalchemy import insert
 from sqlalchemy.dialects.postgresql.asyncpg import PGDialect_asyncpg
 
 from tripl.models.event import Event
+from tripl.models.event_field_value import EventFieldValue
 from tripl.models.search_document import SearchDocument
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
 from tripl.schemas.search import SearchResult
+from tripl.services._search_documents import build_documents
 from tripl.services._search_query import (
     _FULL_CONFIDENCE_SCORE,
     _SEMANTIC_SCORE_WEIGHT,
@@ -619,6 +621,163 @@ async def test_search_filters_archived_and_excludes_sensitive_values(client: Asy
     )
     assert secret_resp.status_code == 200
     assert secret_resp.json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_event_keywords_carry_only_curated_text_while_body_keeps_the_harvest(
+    client: AsyncClient,
+) -> None:
+    """tripl-0qld: an EVENT's ``keywords`` is identity text, its ``body`` is evidence.
+
+    WHAT THIS PINS AND WHY IT IS ASSERTED ON THE DOCUMENT, NOT ON A RANKING
+    -----------------------------------------------------------------------
+    Two tiers of ``_search_query``'s boost ladder read ``d.keywords`` — the 3.5
+    literal keyword-token tier and the 3.25 stemmed-identity tier — and the
+    second one's docstring states the premise the first one also depends on. For
+    EVENT documents the premise was false: ``_event_document`` joined
+    ``safe_values`` (including every value a SCAN wrote) and the values-carrying
+    ``_variable_context_text`` into ``keywords``, so a value harvested from
+    production traffic bought unrelated events a tier above the one a correctly
+    named entity can earn.
+
+    A ranking assertion cannot pin this on its own — the relevance harness's
+    ``purchase-plural`` case stayed green through the whole inversion because the
+    trigram leg covered the 0.25 the ladder gave away. So the claim is asserted
+    where it is exact: on the built document's two columns. The ladder-level
+    consequence is asserted separately, against a real PostgreSQL, by
+    ``tests/relevance/test_keyword_tier_premise.py``.
+
+    FOUR MARKERS, ONE PER RULE
+    --------------------------
+    * ``authored_marker`` — a value a person typed into the spec
+      (``event_service`` records ``is_authored=True``). Curated: stays in
+      ``keywords``.
+    * ``scanned_marker`` — the same shape of value written by a scan
+      (``is_authored=False``). Body only.
+    * ``harvest_marker`` — a ``VariableValue`` observed on a bound field. Body
+      only, and its BINDING (``properties.probe``) stays in ``keywords``, which
+      is what separates "values left" from "the context text was deleted".
+    * ``secret_marker`` — authored AND on a ``sensitivity='secret'`` field. In
+      neither column: the sensitivity guard is the outer condition and the
+      ``is_authored`` test is nested inside it, so curation can never re-admit a
+      value the guard excluded.
+    """
+    await client.post("/api/v1/projects", json={"name": "Curated", "slug": "search-curated"})
+    event_type_id, authored_field_id = await _create_event_type(
+        client,
+        "search-curated",
+        name="probe",
+        display_name="Probe",
+    )
+    scanned_field_resp = await client.post(
+        f"/api/v1/projects/search-curated/event-types/{event_type_id}/fields",
+        json={"name": "scanned_field", "display_name": "Scanned", "field_type": "string"},
+    )
+    assert scanned_field_resp.status_code == 201, scanned_field_resp.text
+    scanned_field_id = scanned_field_resp.json()["id"]
+    secret_field_resp = await client.post(
+        f"/api/v1/projects/search-curated/event-types/{event_type_id}/fields",
+        json={
+            "name": "secret_field",
+            "display_name": "Secret",
+            "field_type": "string",
+            "sensitivity": "secret",
+        },
+    )
+    assert secret_field_resp.status_code == 201, secret_field_resp.text
+    secret_field_id = secret_field_resp.json()["id"]
+
+    # Posted through the spec API, so event_service stamps is_authored=True on
+    # both of these — that is what makes the sensitivity assertion below a test
+    # of the NESTING rather than of the authored flag by itself.
+    event_resp = await client.post(
+        "/api/v1/projects/search-curated/events",
+        json={
+            "event_type_id": event_type_id,
+            "name": "probe_fired",
+            "field_values": [
+                {"field_definition_id": authored_field_id, "value": "authored_marker"},
+                {"field_definition_id": secret_field_id, "value": "secret_marker"},
+            ],
+        },
+    )
+    assert event_resp.status_code == 201, event_resp.text
+    event_id = uuid.UUID(event_resp.json()["id"])
+
+    variable_resp = await client.post(
+        "/api/v1/projects/search-curated/variables",
+        json={"name": "probe_property", "description": "Auto-detected from traffic"},
+    )
+    assert variable_resp.status_code == 201, variable_resp.text
+    variable_id = uuid.UUID(variable_resp.json()["id"])
+
+    # The two rows no endpoint writes: a scan-authored field value and a
+    # harvested variable context. Both are ordinary production shapes — the
+    # scanner and the spec are different pipelines — and neither has an API.
+    async with TestSessionLocal() as session, session.begin():
+        event = await session.get(Event, event_id)
+        assert event is not None
+        project_id = event.project_id
+        branch_id = event.branch_id
+        session.add(
+            EventFieldValue(
+                event_id=event.id,
+                field_definition_id=uuid.UUID(scanned_field_id),
+                value="scanned_marker",
+                is_authored=False,
+            )
+        )
+        session.add(
+            VariableValue(
+                project_id=project_id,
+                branch_id=branch_id,
+                variable_id=variable_id,
+                event_id=event.id,
+                field_definition_id=uuid.UUID(authored_field_id),
+                source_column="properties.probe",
+                value_kind="high",
+                observed_count=4402,
+                values=["harvest_marker"],
+            )
+        )
+
+    async with TestSessionLocal() as session:
+        documents = await build_documents(session, project_id, branch_id, "search-curated")
+    document = next(
+        doc for doc in documents if doc.entity_type == "event" and doc.title == "probe_fired"
+    )
+
+    assert "authored_marker" in document.keywords, (
+        "a hand-typed spec value is curated text and belongs in keywords; dropping "
+        "every value instead demotes it from the 3.5 keyword-token tier to 3.0"
+    )
+    assert "authored_marker" in document.body
+
+    assert "scanned_marker" not in document.keywords, (
+        "a scan-written field value is not curated text and must not buy the event "
+        "the 3.5 keyword-token tier (tripl-0qld)"
+    )
+    assert "scanned_marker" in document.body, (
+        "harvested values stay searchable — they are evidence about the event, and "
+        "the 3.0 body-token tier is where they are paid"
+    )
+
+    assert "harvest_marker" not in document.keywords, (
+        "a VariableValue observed on a bound field is the exact text tripl-gbxj "
+        "removed from a VARIABLE's keywords; an EVENT's keywords is the same column"
+    )
+    assert "harvest_marker" in document.body
+    assert "properties.probe" in document.keywords, (
+        "the BINDING is still a keyword of the event — only the observed values "
+        "left, and a fix that deleted the whole context text would pass the "
+        "assertions above while losing real signal"
+    )
+
+    assert "secret_marker" not in document.keywords, (
+        "sensitivity is the OUTER guard: an authored value on a secret field must "
+        "not reach keywords, or the is_authored branch has been hoisted out of it"
+    )
+    assert "secret_marker" not in document.body
 
 
 @pytest.mark.asyncio

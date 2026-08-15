@@ -157,7 +157,13 @@ class SeedContext:
 
     This is the row that makes a variable document heavy — every context repeats
     the variable name, the event name, the source column and all observed values
-    into both ``body`` and ``keywords``.
+    into ``body``.
+
+    ``keywords`` gets the same text MINUS the observed values, on the variable
+    document since tripl-gbxj and on the EVENT document since tripl-0qld. The
+    values are still indexed and still searchable; they are just body text on
+    both sides now, because two boost tiers read ``keywords`` and neither is
+    meant to pay for a string a user's app happened to emit.
     """
 
     event: str
@@ -243,7 +249,13 @@ EVENTS: tuple[SeedEvent, ...] = (
     # WHAT THIS SEED USED TO BE, AND WHY IT WAS A LIE
     # It carried the bare nominative "улов" twice in the description and once
     # more as the `catch_kind` VALUE, which `_search_documents._event_document`
-    # folds into both `body` (via safe_values) and `keywords`. Production
+    # folded into both `body` (via safe_values) and `keywords`. Since tripl-0qld
+    # a field value reaches `keywords` only when `EventFieldValue.is_authored` is
+    # set, and `seed_corpus` below leaves it at the model default False — so on
+    # today's code that value would be body text alone. The lie was in the
+    # SURFACE FORM either way, and it is the surface form this seed fixes;
+    # rewriting the mechanism half of this comment does not make the old seed
+    # any less anti-representative. Production
     # contains ZERO documents holding that lexeme: measured улов/ул = 151/0, i.e.
     # 151 rows hold the lemma every INFLECTED form produces and not one row holds
     # the over-stem "ул" the bare nominative produces. The surface form seeded
@@ -329,6 +341,23 @@ _CUBE_KEYS: tuple[str, ...] = (
 #: OUT-RANK: each of them still spells the plural literally, which is worth a 3.0
 #: body-token boost that no correctly-spelled entity can earn — the reason a
 #: stemmer alone did not move these queries and the ladder needed the 3.25 tier.
+#:
+#: THEY ALSO LANDED IN THREE EVENT DOCUMENTS, AND THAT WAS THE BUG (tripl-0qld)
+#: This variable binds to the `view_id` field of `app_open`, `screen_home` and
+#: `screen_settings`, all of which declare a `view_id` value — so
+#: `_event_document` picked their contexts up, and until tripl-0qld it joined the
+#: harvested values into those events' `keywords` as well as their `body`. The
+#: three of them therefore took the 3.5 LITERAL KEYWORD-TOKEN tier for
+#: `q='purchases'`, `q='spots'` and `q='уловы'`: strictly above the 3.25 the
+#: actually-correct entity earns, on text nobody wrote, for three events that
+#: have nothing to do with any of those words. No case named them in
+#: `must_not_outrank`, so had one of them ever won, the failure would have
+#: surfaced as "wrong document on top" with no indication of why.
+#:
+#: They now take 3.0, the body-token tier — the same tier this comment already
+#: described for the VARIABLE document — and the three plural cases are decided
+#: by the ladder instead of by the trigram leg covering an inversion in it.
+#: `test_keyword_tier_premise.py` asserts that on the boost column directly.
 _SCREEN_NAMES: tuple[str, ...] = ("purchases", "уловы", "spots", "экран_поиска")
 
 #: Harvested surface kinds. THE OVER-STEM DOCUMENT (tripl-uojz).
@@ -384,13 +413,16 @@ _SCREEN_NAMES: tuple[str, ...] = ("purchases", "уловы", "spots", "экра�
 #:
 #: WHY THESE BINDINGS, WHICH LOOK ARBITRARY
 #: Same reason `property.card_target` uses them, and the same warning applies:
-#: `_event_document` folds a variable's values into an EVENT's body and keywords,
-#: but only for fields that event has a recorded value for. `app_open` and
-#: `screen_home` declare a `view_id` value and no `card_id` value, so binding
-#: here reaches exactly one document — this variable's — and no event document
-#: acquires a bare `экран`. Binding to `view_id` instead would put the nominative
-#: into three event documents that already hold the lemma class, which would undo
-#: the isolation this seed exists to create.
+#: `_event_document` folds a variable's values into an EVENT's body (and, until
+#: tripl-0qld, its keywords too), but only for fields that event has a recorded
+#: value for. `app_open` and `screen_home` declare a `view_id` value and no
+#: `card_id` value, so binding here reaches exactly one document — this
+#: variable's — and no event document acquires a bare `экран`. Binding to
+#: `view_id` instead would put the nominative into three event documents that
+#: already hold the lemma class, which would undo the isolation this seed exists
+#: to create. Note that tripl-0qld did NOT make this warning obsolete: the values
+#: still reach `body`, and `body` is half of `text_vector`, which is the leg the
+#: isolation is about.
 _SCREEN_KINDS: tuple[str, ...] = ("экран", "модалка", "шторка", "оверлей")
 
 #: Harvested town names — the shape of the 1526 auto-detected "variables" that are
@@ -551,22 +583,32 @@ VARIABLES: tuple[SeedVariable, ...] = (
     # Both contexts bind to `card_id` on events that declare no card_id value of
     # their own: EVENTS gives `app_open` and `screen_home` a `view_id` value and
     # nothing else. That is deliberate. `_search_documents._event_document` folds a
-    # variable's harvested values into an event's body AND its keywords, but it
-    # iterates the event's own `field_values` and only picks up contexts for
-    # fields the event actually has a recorded value for — so with these bindings
-    # the 180 repetitions reach exactly ONE document, this variable's.
+    # variable's harvested values into an event's body, but it iterates the
+    # event's own `field_values` and only picks up contexts for fields the event
+    # actually has a recorded value for — so with these bindings the 180
+    # repetitions reach exactly ONE document, this variable's.
     #
     # Binding to `view_id` instead (the obvious-looking choice, since that is
     # where every other pageview variable binds) would copy 180 `screen_settings`
     # occurrences into the `app_open` and `screen_home` event documents and hand
-    # both of them a saturated lexical leg plus the 3.25 stemmed tier. `app_open`
-    # already carries `spot` lexemes from `property.spot_id`, so it would newly
-    # match `q='screen spot'` at ~7.0 and start competing with the `screen_spot`
-    # event the `spaced-query-finds-underscored-event` case expects on top — a
-    # green case re-baselined by a test-only addition, which is exactly what this
-    # change is required not to do. Binding to `screen_settings` itself is wrong
-    # for the mirror-image reason: the event name would enter this document's
-    # keywords and buy it the 3.5 token tier, closing the margin the case needs.
+    # both of them a saturated LEXICAL leg. `app_open` already carries `spot`
+    # lexemes from `property.spot_id`, so it would newly match `q='screen spot'`
+    # and start competing with the `screen_spot` event the
+    # `spaced-query-finds-underscored-event` case expects on top — a green case
+    # re-baselined by a test-only addition, which is exactly what this change is
+    # required not to do.
+    #
+    # The BOOST half of that hazard is smaller since tripl-0qld and this says so
+    # rather than leaving a stale number: those values now land in `body` only,
+    # so a `view_id` rebinding would no longer hand the two events the 3.5
+    # keyword-token tier, and the 3.25 stemmed tier reads title+keywords and so
+    # would not see them either. The saturated lexical leg is the whole of what
+    # is left, and it is enough — `ts_rank_cd` is weighted x4.0 and `body` is
+    # half of `text_vector`.
+    #
+    # Binding to `screen_settings` itself is wrong for the mirror-image reason:
+    # the event name would enter this document's keywords and buy it the 3.5
+    # token tier, closing the margin the case needs.
     #
     # A harvested variable with no matching EventFieldValue is the production
     # shape, not a workaround: variables are auto-detected from ingested traffic

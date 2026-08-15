@@ -214,6 +214,61 @@ TEXT_QUERY_EXPRESSION = """
 """
 
 
+#: The boost ladder, as a constant so a test can assert the SHIPPED expression.
+#:
+#: WHY IT IS OUT HERE AND NOT INLINE (tripl-0qld)
+#: The ladder is where "which text counts as what" turns into a number, and two
+#: of its tiers read the same ``keywords`` column. Whether a harvested value can
+#: buy a document the 3.5 tier is therefore a question with an exact answer, and
+#: it was previously only askable by ranking a corpus and reading a total score
+#: — a number the ladder, the trigram leg and ``ts_rank_cd`` all contribute to,
+#: so a tier inversion could hide inside a green case. It did:
+#: ``tests/relevance/cases.purchase-plural`` passed while three unrelated events
+#: outranked ``purchase_completed`` ON THE LADDER, rescued by the trigram leg.
+#: ``tests/relevance/test_keyword_tier_premise.py`` imports this and reads the
+#: boost column alone.
+#:
+#: It expects the same bind parameters as :func:`postgres_lexical_search`
+#: (``:query``, ``:has_token_regex``, ``:token_regex``, ``:prefix``,
+#: ``:contains``) and a ``q.tsq`` in scope — i.e. it is only meaningful joined
+#: against the ``q`` CTE built from :data:`TEXT_QUERY_EXPRESSION`.
+BOOST_LADDER_EXPRESSION = """
+                CASE
+                    WHEN lower(d.title) = lower(:query) THEN 5.0
+                    WHEN lower(d.keywords) = lower(:query) THEN 4.0
+                    -- 3.5 READS THE SAME COLUMN AS 3.25 AND RESTS ON THE SAME
+                    -- PREMISE (tripl-0qld): `keywords` is identity text, not the
+                    -- stream of values a user's app emitted. When that stopped
+                    -- being true for events, BOTH tiers paid for text nobody
+                    -- wrote -- so the two move together or not at all, and the
+                    -- docstring's 3.25 bullet is the statement of record for
+                    -- both.
+                    WHEN :has_token_regex AND d.keywords ~* :token_regex THEN 3.5
+                    -- The stemmed tier (tripl-nh5s). Every other tier compares
+                    -- literal characters, so a plural query can only ever reach
+                    -- the ladder through a document that spells the plural --
+                    -- which is the harvested value, not the entity. See the
+                    -- docstring: this fires only on title/keywords, never body.
+                    -- DERIVED FROM THE `q` CTE ABOVE, NOT A SECOND CONSTRUCTION
+                    -- SITE: it consumes `q.tsq` and only builds the DOCUMENT
+                    -- side. That document side has to carry the same two legs
+                    -- as the stored text_vector (tripl-uojz) or the tier would
+                    -- answer a two-leg query with a one-leg document and fire
+                    -- for a strictly narrower set than it retrieves.
+                    WHEN (
+                        to_tsvector('tripl_search', concat_ws(' ', d.title, d.keywords))
+                        || to_tsvector(
+                            'tripl_search_surface', concat_ws(' ', d.title, d.keywords)
+                        )
+                    ) @@ q.tsq THEN 3.25
+                    WHEN :has_token_regex AND d.body ~* :token_regex THEN 3.0
+                    WHEN lower(d.title) LIKE lower(:prefix) THEN 3.0
+                    WHEN lower(d.body) LIKE lower(:contains) THEN 2.25
+                    WHEN lower(d.keywords) LIKE lower(:contains) THEN 1.5
+                    ELSE 0.0
+                END"""
+
+
 async def postgres_lexical_search(
     session: AsyncSession,
     *,
@@ -294,11 +349,25 @@ async def postgres_lexical_search(
     stemming, matches this document's own identity text. Three properties are
     load-bearing:
 
-    * **title and keywords only, never body.** ``keywords`` is the curated field
-      — a name, its spaced alias, the event type, the bindings — and tripl-gbxj
-      already removed harvested values from a variable's keywords for exactly
-      this reason. ``body`` is where the harvested text lives, and paying a
-      stemmed body match would hand the noise documents the tier a second time.
+    * **title and keywords only, never body.** ``keywords`` carries an entity's
+      IDENTITY — its name, that name's spaced alias, its type, its tags, the
+      values a person authored into its spec, and its bindings. It carries no
+      OBSERVED VALUE, for any entity type: tripl-gbxj took them out of a
+      variable's keywords and tripl-0qld took them out of an event's, which is
+      the same rule stated twice because it was implemented once. ``body`` is
+      where the harvested text lives, and paying a stemmed body match would hand
+      the noise documents the tier a second time.
+
+      NOT "curated", and the difference is load-bearing. Two scan-written
+      strings still reach this column — ``value_kind`` and ``observed_count``,
+      from ``_search_documents._variable_context_text`` under
+      ``include_values=False`` — and an auto-detected variable's own NAME was
+      derived by the scanner rather than typed by anyone. What the tier can
+      honestly rest on is that ``keywords`` is identity-and-binding text of
+      bounded size, never the unbounded stream of values a user's app emitted.
+      This bullet used to claim curation outright while ``_event_document``
+      joined every harvested value into the column; do not restore the shorter
+      sentence without first making it true.
     * **3.25, between the 3.5 literal-keyword-token tier and the 3.0 literal
       body-token tier.** A stemmed match on the entity's name is weaker evidence
       than the literal token appearing in its keywords, and stronger than the
@@ -420,33 +489,7 @@ async def postgres_lexical_search(
                     similarity(d.keywords, :query),
                     similarity(d.body, :query) * 0.5
                 ) AS fuzzy_score,
-                CASE
-                    WHEN lower(d.title) = lower(:query) THEN 5.0
-                    WHEN lower(d.keywords) = lower(:query) THEN 4.0
-                    WHEN :has_token_regex AND d.keywords ~* :token_regex THEN 3.5
-                    -- The stemmed tier (tripl-nh5s). Every other tier compares
-                    -- literal characters, so a plural query can only ever reach
-                    -- the ladder through a document that spells the plural --
-                    -- which is the harvested value, not the entity. See the
-                    -- docstring: this fires only on title/keywords, never body.
-                    -- DERIVED FROM THE `q` CTE ABOVE, NOT A SECOND CONSTRUCTION
-                    -- SITE: it consumes `q.tsq` and only builds the DOCUMENT
-                    -- side. That document side has to carry the same two legs
-                    -- as the stored text_vector (tripl-uojz) or the tier would
-                    -- answer a two-leg query with a one-leg document and fire
-                    -- for a strictly narrower set than it retrieves.
-                    WHEN (
-                        to_tsvector('tripl_search', concat_ws(' ', d.title, d.keywords))
-                        || to_tsvector(
-                            'tripl_search_surface', concat_ws(' ', d.title, d.keywords)
-                        )
-                    ) @@ q.tsq THEN 3.25
-                    WHEN :has_token_regex AND d.body ~* :token_regex THEN 3.0
-                    WHEN lower(d.title) LIKE lower(:prefix) THEN 3.0
-                    WHEN lower(d.body) LIKE lower(:contains) THEN 2.25
-                    WHEN lower(d.keywords) LIKE lower(:contains) THEN 1.5
-                    ELSE 0.0
-                END AS boost
+                {BOOST_LADDER_EXPRESSION} AS boost
             FROM search_documents d
             CROSS JOIN q
             WHERE d.project_id = :project_id
