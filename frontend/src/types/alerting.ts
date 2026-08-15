@@ -390,6 +390,17 @@ export interface AlertInboxBulkActionResponse {
 export interface AlertInboxListResponse {
   items: AlertInboxGroup[]
   total: number
+  /**
+   * Where the list's window really starts, or `null` when the documented
+   * 30-day one held.
+   *
+   * Non-null means the server's per-project row cap bit before the window did,
+   * so incidents that last fired before this instant are absent — and absent
+   * looks exactly like handled unless the page says otherwise (tripl-39n6).
+   * ALWAYS SENT: required here and required in `api.gen.ts`, so the two cannot
+   * disagree about a key the server never omits.
+   */
+  window_truncated_at: string | null
 }
 
 export type MonitorStatus = 'firing' | 'warning' | 'healthy'

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
@@ -621,19 +622,51 @@ def _inbox_sort_key(group: AlertInboxGroupResponse) -> tuple[bool, datetime, str
     return (group.status == AlertInboxStatus.open, activity, str(group.correlation_group_id))
 
 
+@dataclass(frozen=True)
+class InboxSourceRows:
+    """What the inbox can see, and whether that is what it promised to see.
+
+    ``truncated_at`` is ``None`` when the whole ``INBOX_LOOKBACK_DAYS`` window
+    fitted under ``INBOX_MAX_SOURCE_ITEMS`` — the only case any deployment has
+    ever been in. Otherwise it is the instant the VISIBLE window really starts:
+    the ``created_at`` of the oldest delivery the cap admitted. One nullable
+    field rather than a bool beside a datetime, so "truncated" and "starts here"
+    cannot be reported inconsistently by a future caller.
+    """
+
+    rows: list[InboxGroupRow]
+    truncated_at: datetime | None
+
+
 async def _load_inbox_source_rows(
     session: AsyncSession,
     *,
     project_id: uuid.UUID,
     cutoff: datetime,
-) -> list[InboxGroupRow]:
+) -> InboxSourceRows:
     """The rows the inbox list is built from: windowed, ordered and capped.
 
     The ONE definition of "what the inbox can see", so the list, the action's
     rebuild of a single card and the sidebar's open-incident count cannot
     disagree about it.
+
+    Selects ONE MORE row than the cap admits, the same probe
+    ``analyzers/cardinality`` uses on a warehouse row limit, because the cap and
+    the window are two different bounds and only the query knows which one bit.
+    The page says "last 30 days"; the code says min(30 days, newest 2000 item
+    rows), and until this probe existed a caller could not tell "exactly 2000
+    rows in the window" from "the window was cut short" — so a shortened list
+    was indistinguishable from a quiet project and nothing on the page said
+    otherwise (tripl-39n6).
+
+    The instant reported is the oldest ADMITTED row's, not the first REJECTED
+    one's: an incident is only fully readable if every one of its rows got in,
+    and the extra row proves nothing about how many more share its timestamp.
+    Reporting the boundary this way makes the claim "the list starts here" true
+    at the cost of being one row conservative, which is the direction that
+    cannot mislead.
     """
-    return list(
+    fetched = list(
         (
             await session.execute(
                 _INBOX_GROUP_SELECT.where(
@@ -642,12 +675,16 @@ async def _load_inbox_source_rows(
                     AlertDelivery.created_at >= cutoff,
                 )
                 .order_by(*_INBOX_SOURCE_ORDER)
-                .limit(INBOX_MAX_SOURCE_ITEMS)
+                .limit(INBOX_MAX_SOURCE_ITEMS + 1)
             )
         )
         .tuples()
         .all()
     )
+    if len(fetched) <= INBOX_MAX_SOURCE_ITEMS:
+        return InboxSourceRows(rows=fetched, truncated_at=None)
+    rows = fetched[:INBOX_MAX_SOURCE_ITEMS]
+    return InboxSourceRows(rows=rows, truncated_at=_as_utc(rows[-1][1].created_at))
 
 
 def _inbox_cutoff(now: datetime) -> datetime:
@@ -753,7 +790,9 @@ async def list_alert_inbox(
 ) -> AlertInboxListResponse:
     project = await _get_project(session, slug)
     now = datetime.now(UTC)
-    rows = await _load_inbox_source_rows(session, project_id=project.id, cutoff=_inbox_cutoff(now))
+    source = await _load_inbox_source_rows(
+        session, project_id=project.id, cutoff=_inbox_cutoff(now)
+    )
     states = {
         state.correlation_group_id: state
         for state in (
@@ -763,7 +802,7 @@ async def list_alert_inbox(
         ).scalars()
     }
     groups: dict[uuid.UUID, list[InboxGroupRow]] = {}
-    for item, delivery, destination, rule, scan in rows:
+    for item, delivery, destination, rule, scan in source.rows:
         if item.correlation_group_id is None:
             continue
         groups.setdefault(item.correlation_group_id, []).append(
@@ -821,7 +860,14 @@ async def list_alert_inbox(
         responses = [group for group in responses if group.status == status]
     responses.sort(key=_inbox_sort_key, reverse=True)
     total = len(responses)
-    return AlertInboxListResponse(items=responses[offset : offset + limit], total=total)
+    return AlertInboxListResponse(
+        items=responses[offset : offset + limit],
+        total=total,
+        # Reported off the SOURCE load, not off `responses`: the status filter
+        # and paging both shrink the list for reasons the reader asked for, and
+        # only this one is a bound they did not.
+        window_truncated_at=source.truncated_at,
+    )
 
 
 async def get_alert_inbox_group(
@@ -889,11 +935,8 @@ async def _build_one_inbox_group(
     """
     rows: list[InboxGroupRow] = []
     if cutoff is not None:
-        rows = [
-            row
-            for row in await _load_inbox_source_rows(session, project_id=project_id, cutoff=cutoff)
-            if row[0].correlation_group_id == correlation_group_id
-        ]
+        source = await _load_inbox_source_rows(session, project_id=project_id, cutoff=cutoff)
+        rows = [row for row in source.rows if row[0].correlation_group_id == correlation_group_id]
     if not rows:
         rows = list(
             (
@@ -1361,9 +1404,9 @@ async def _build_inbox_group_batch(
     """
     wanted = set(correlation_group_ids)
     rows_by_group: dict[uuid.UUID, list[InboxGroupRow]] = {}
-    for row in await _load_inbox_source_rows(
-        session, project_id=project_id, cutoff=_inbox_cutoff(now)
-    ):
+    for row in (
+        await _load_inbox_source_rows(session, project_id=project_id, cutoff=_inbox_cutoff(now))
+    ).rows:
         group_id = row[0].correlation_group_id
         if group_id in wanted:
             rows_by_group.setdefault(group_id, []).append(row)

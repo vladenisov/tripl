@@ -363,7 +363,16 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     if (!pages || pages.length === 0) return undefined
     // `total` is the FILTERED total the first page reported, which is what
     // "of M" has to mean once a status filter is on.
-    return { items: pages.flatMap(page => page.items), total: pages[0].total }
+    //
+    // `window_truncated_at` comes from the same page for the same reason: it is
+    // a fact about the whole source load, not about the slice, so every page
+    // reports the same one and reducing over them could only invent a
+    // disagreement.
+    return {
+      items: pages.flatMap(page => page.items),
+      total: pages[0].total,
+      window_truncated_at: pages[0].window_truncated_at,
+    }
   }, [inboxQuery.data])
   // A Telegram alert names its incident, and `?incident=` only pre-expanded a
   // card it never fetched — so a link to anything outside the newest page

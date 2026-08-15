@@ -14927,12 +14927,25 @@
           "total": {
             "type": "integer",
             "title": "Total"
+          },
+          "window_truncated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Truncated At"
           }
         },
         "type": "object",
         "required": [
           "items",
-          "total"
+          "total",
+          "window_truncated_at"
         ],
         "title": "AlertInboxListResponse"
       },
