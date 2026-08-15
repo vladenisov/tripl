@@ -168,6 +168,41 @@ afterEach(() => {
   window.localStorage.clear()
 })
 
+// A structural assertion on purpose: the defect is not "does it render", it is
+// "what is a child of what". @dnd-kit/core 6.3.1 renders its <div role="status">
+// live region inline under DndContext, and ARIA's table role admits only row,
+// rowgroup and caption children — so a DndContext placed inside role="table"
+// puts a foreign role in the grid and axe reports aria-required-children.
+describe('MetricsCatalog — the ARIA table owns no live region (tripl-np3p)', () => {
+  it("keeps dnd-kit's drag announcements, but outside the table", async () => {
+    const { container } = renderCatalog()
+    await screen.findByText('Checkout conversion')
+
+    // Half one: the live region still exists. Deleting DndContext would also
+    // silence axe, and would cost every screen reader its drag feedback.
+    const liveRegion = container.querySelector('[role="status"]')
+    expect(liveRegion).not.toBeNull()
+
+    // Half two: it is not inside the grid.
+    const table = container.querySelector('[role="table"]')
+    expect(table).not.toBeNull()
+    // Only the live region is asserted, and that is deliberate. DndContext
+    // renders TWO hidden nodes — this one and a `DndDescribedBy-*` div — but
+    // both come out of a single Fragment that `Accessibility` either portals
+    // whole or leaves inline (@dnd-kit/core 6.3.1,
+    // core.cjs.development.js:172-179: `return container ?
+    // createPortal(markup, container) : markup`). They can never be on opposite
+    // sides of the table, so a second assertion on the describedBy node could
+    // not fail on its own — and an assertion that cannot fail is what
+    // tripl-u7wf was about.
+    expect(table!.querySelector('[role="status"]')).toBeNull()
+
+    // And the table still has the rowgroups it is required to have, so this is
+    // not passing because the table lost its contents.
+    expect(table!.querySelectorAll(':scope > [role="rowgroup"]').length).toBe(2)
+  })
+})
+
 describe('MetricsCatalog — the collect the user fired advances the scenario', () => {
   it('binds the scenario to the metric whose row menu was used', async () => {
     writeScenarioState(SLUG, collectMetricState())

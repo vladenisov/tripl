@@ -283,22 +283,31 @@ export function ScansTab({ slug }: { slug: string }) {
               </tr>
             </thead>
             <tbody>
-              {scanConfigs.map((sc: ScanConfig, index: number) => (
-                <ScanListRow
-                  key={sc.id}
-                  sc={sc}
-                  dataSource={dsMap.get(sc.data_source_id) ?? null}
-                  runInfo={runInfoById.get(sc.id) ?? LOADING_SCAN_RUN_INFO}
-                  intervalLabel={INTERVAL_LABEL}
-                  onNavigate={() => navigate(`/p/${slug}/scans/${sc.id}`)}
-                  onRun={() => runScan.mutate(sc.id)}
-                  runPending={pendingScanId === sc.id}
-                  // The step-1 CTA opens this list; point the coach at the first
-                  // row's Run control (inert unless the demo scenario is active).
-                  runCoachMark={index === 0}
-                  onReviewEvents={() => navigate(reviewEventsHref(sc))}
-                />
-              ))}
+              {scanConfigs.map((sc: ScanConfig, index: number) => {
+                // One href, two consumers: the row's name link (the keyboard and
+                // screen-reader route) and the row's mouse click. Deriving them
+                // from separate literals is how they drift apart — and this is
+                // the live route, NOT the /settings/scans/ form, which App.tsx
+                // only keeps as a redirect (tripl-np3p).
+                const detailHref = `/p/${slug}/scans/${sc.id}`
+                return (
+                  <ScanListRow
+                    key={sc.id}
+                    sc={sc}
+                    dataSource={dsMap.get(sc.data_source_id) ?? null}
+                    runInfo={runInfoById.get(sc.id) ?? LOADING_SCAN_RUN_INFO}
+                    intervalLabel={INTERVAL_LABEL}
+                    detailHref={detailHref}
+                    onNavigate={() => navigate(detailHref)}
+                    onRun={() => runScan.mutate(sc.id)}
+                    runPending={pendingScanId === sc.id}
+                    // The step-1 CTA opens this list; point the coach at the first
+                    // row's Run control (inert unless the demo scenario is active).
+                    runCoachMark={index === 0}
+                    onReviewEvents={() => navigate(reviewEventsHref(sc))}
+                  />
+                )
+              })}
             </tbody>
           </table>
         )}
