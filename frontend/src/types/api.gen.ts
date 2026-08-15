@@ -3939,6 +3939,8 @@ export interface components {
             items: components["schemas"]["AlertInboxGroupResponse"][];
             /** Total */
             total: number;
+            /** Window Truncated At */
+            window_truncated_at: string | null;
         };
         /**
          * AlertInboxRuleRef

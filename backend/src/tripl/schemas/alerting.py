@@ -764,6 +764,28 @@ class AlertInboxGroupResponse(BaseModel):
 class AlertInboxListResponse(BaseModel):
     items: list[AlertInboxGroupResponse]
     total: int
+    # Where the list's window ACTUALLY starts when `INBOX_MAX_SOURCE_ITEMS` cut
+    # it shorter than `INBOX_LOOKBACK_DAYS`, and `None` when the documented
+    # window held — which is every deployment measured so far.
+    #
+    # It exists because the page states its own coverage ("last 30 days + still
+    # silenced") and that sentence was unconditional while the bound behind it
+    # was not: the cap is applied on DELIVERY recency before grouping, so a
+    # loud-enough project would silently get a shorter window with nothing
+    # saying so, and a missing incident would be indistinguishable from a
+    # handled one (tripl-39n6).
+    #
+    # ONE nullable instant rather than a `window_truncated` bool beside a
+    # `window_start` datetime: two fields can disagree — truncated with no
+    # start, or a start that is really just the cutoff — and the client would
+    # then have to decide which to believe. Null IS "not truncated", and the
+    # only thing a client does with the value is name it.
+    #
+    # Nullable but ALWAYS SENT, no default, like `event_id` and `acted_by_name`
+    # above: with a default the generated client calls the key optional while
+    # the hand-written type calls it required, and the two disagree about a
+    # field the server never omits.
+    window_truncated_at: datetime | None
 
 
 class AlertInboxActionRequest(BaseModel):

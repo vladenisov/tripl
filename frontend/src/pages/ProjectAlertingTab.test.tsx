@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { alertingApi } from '@/api/alerting'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
+import { formatDateTime } from '@/lib/datetime'
 import type { Role } from '@/types'
 
 import ProjectAlertingTab from './ProjectAlertingTab'
@@ -174,7 +175,15 @@ function makeDelivery(overrides: Record<string, unknown> = {}) {
 // `inbox` / `deliveries` when a test cares what the Inbox and Audit panels count.
 function mockAlertingFetch(
   destinations: unknown[] = [],
-  { isDemo = false, inbox = [] as unknown[], deliveries = [] as unknown[] } = {},
+  {
+    isDemo = false,
+    inbox = [] as unknown[],
+    deliveries = [] as unknown[],
+    // Null is the ordinary answer — the server reached back the whole 30 days.
+    // A string is the shortened window it reports when its row cap bit first
+    // (tripl-39n6).
+    windowTruncatedAt = null as string | null,
+  } = {},
 ) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input)
@@ -189,7 +198,11 @@ function mockAlertingFetch(
     // The list, not the per-group route below it: a deep-linked incident is
     // fetched by id and would otherwise be answered with a list body.
     if (/\/alert-inbox(\?|$)/.test(url)) {
-      return jsonResponse({ items: inbox, total: inbox.length })
+      return jsonResponse({
+        items: inbox,
+        total: inbox.length,
+        window_truncated_at: windowTruncatedAt,
+      })
     }
     if (url.includes('/monitors-summary')) {
       return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
@@ -358,6 +371,23 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
     // group, so the disagreement is visible in a single glance.
     expect(await screen.findByText('1 item')).toBeInTheDocument()
     expect(screen.queryByText('1 items')).toBeNull()
+  })
+
+  it('carries the server\'s shortened window through to the subtitle (tripl-39n6)', async () => {
+    // The page merges its inbox pages by hand, so the flag can be honest on the
+    // wire and still never reach the component that says it. Asserted here and
+    // not only in AlertingInbox.test.tsx for that reason: dropping the key from
+    // the merge is a silent regression every component test would still pass.
+    mockAlertingFetch([makeDestination({ rules: [makeRule()] })], {
+      inbox: [makeInboxGroup()],
+      windowTruncatedAt: '2026-08-09T04:30:00Z',
+    })
+    renderTab('inbox')
+
+    const start = formatDateTime('2026-08-09T04:30:00Z')
+    expect(
+      await screen.findByText(`Showing 1 of 1 · since ${start} + still silenced`),
+    ).toBeInTheDocument()
   })
 })
 

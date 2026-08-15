@@ -616,7 +616,10 @@ the *current* latest release, with the comparability verdict; see
 ### The Inbox — one row per incident {#the-inbox}
 
 The **Inbox** is one row per **incident** — a rule firing in one direction on one
-scope of a scan — over the last 30 days. An incident stays the same row for as
+scope of a scan — over the last 30 days, give or take the two exceptions under
+[Finding and reading an incident row](#finding-an-incident): a still-silenced
+incident is held past that window, and a very loud project can get less than it.
+An incident stays the same row for as
 long as it keeps firing, however many buckets it spans, so a decision you make
 about it holds. From the Inbox you can **acknowledge**, **resolve**, **mute**,
 **reopen**, mark it a **false positive**, or save a **note** — six actions, and
@@ -817,6 +820,25 @@ treatment: it is `open` again, so it stopped being a decision. The number held
 past the window is capped per status, so this is a safety net under decisions
 somebody made by hand and not a second, unbounded inbox. The page says
 `last 30 days + still silenced` for the same reason.
+
+**A second bound, which normally never bites.** The list also reads at most a
+fixed number of alert rows per project — 2,000 — newest first, and that cap is
+applied *before* incidents are grouped. A project loud enough to exceed it gets
+a window shorter than 30 days, and the incidents that fall off would otherwise
+be indistinguishable from ones somebody had dealt with. So when it happens the
+page stops saying `last 30 days`: the subtitle names the date the list really
+starts at, and a line at the top of the list says why and what is missing. It is
+not a state anything measured has been near — the busiest project on record uses
+about an eighth of the cap — but it is the one shortening of the window nobody
+asked for, so it is never silent. Those incidents still open from their own
+links, and are still held here if they are still silenced.
+
+What they do **not** do is keep counting. The sidebar's open-incident badge is
+computed over the same capped row set, so an incident the cap dropped leaves the
+badge as well as the list. Nothing about the incident changed — it was not
+resolved and nobody handled it — but the number beside **Alerting** stops
+including it, and that is the one respect in which a shortened window is lossy
+rather than merely narrower.
 
 **Open incidents sort above handled ones.** Effective openness is the list's
 primary ordering term, so something nobody has dealt with can never be pushed off

@@ -2150,11 +2150,24 @@
           "total": {
             "title": "Total",
             "type": "integer"
+          },
+          "window_truncated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Truncated At"
           }
         },
         "required": [
           "items",
-          "total"
+          "total",
+          "window_truncated_at"
         ],
         "title": "AlertInboxListResponse",
         "type": "object"

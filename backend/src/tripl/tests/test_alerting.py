@@ -6060,6 +6060,77 @@ async def test_a_lapsed_mute_on_an_aged_incident_is_not_rescued(
 
 
 @pytest.mark.asyncio
+async def test_inbox_says_where_its_window_really_starts_when_the_cap_shortens_it(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The page claims "last 30 days"; the cap can make that untrue in silence.
+
+    ``INBOX_MAX_SOURCE_ITEMS`` is applied to DELIVERY-ordered item rows before
+    grouping, so a project loud enough to exceed it gets a window shorter than
+    the documented one, with the oldest incidents simply absent — and absent
+    looks exactly like handled. The response now names the instant the visible
+    window really starts, and names nothing when the documented window held
+    (tripl-39n6).
+
+    Both branches are pinned, because "exactly at the cap" and "cut short by the
+    cap" are the two the limit+1 probe exists to tell apart: fetching only the
+    cap makes them identical and the honest case would report truncation too.
+    """
+    from tripl.services import _alerting_deliveries
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Capped Window", "slug": "capped-window", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    now = datetime.now(UTC)
+    # Three incidents, each one item, each a day apart and all well inside the
+    # 30-day window: the only bound that can drop one here is the cap.
+    sent_at = [now - timedelta(days=days) for days in (1, 2, 3)]
+    group_ids = [uuid.uuid4() for _ in sent_at]
+    for created_at, group_id in zip(sent_at, group_ids, strict=True):
+        await _seed_inbox_delivery(
+            project_id,
+            scan_config_id=scan_config_id,
+            destination_id=destination_id,
+            rule_id=rule_ids[0],
+            created_at=created_at,
+            items=[
+                _inbox_item(
+                    scope_type="event",
+                    bucket=created_at,
+                    percent_delta=100.0,
+                    correlation_group_id=group_id,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(_alerting_deliveries, "INBOX_MAX_SOURCE_ITEMS", 2)
+    truncated = await client.get("/api/v1/projects/capped-window/alert-inbox")
+    assert truncated.status_code == 200
+    body = truncated.json()
+    # The two newest survive; the third is gone with no other explanation.
+    assert [item["correlation_group_id"] for item in body["items"]] == [
+        str(group_ids[0]),
+        str(group_ids[1]),
+    ]
+    assert body["total"] == 2
+    # …and the start reported is the OLDEST ADMITTED row's, not the cutoff and
+    # not the first rejected row's.
+    assert body["window_truncated_at"] is not None
+    assert datetime.fromisoformat(body["window_truncated_at"]) == sent_at[1]
+
+    # Exactly at the cap is NOT truncation: nothing was dropped, so the page is
+    # entitled to go on saying "last 30 days".
+    monkeypatch.setattr(_alerting_deliveries, "INBOX_MAX_SOURCE_ITEMS", 3)
+    exact = await client.get("/api/v1/projects/capped-window/alert-inbox")
+    assert exact.status_code == 200
+    assert exact.json()["total"] == 3
+    assert exact.json()["window_truncated_at"] is None
+
+
+@pytest.mark.asyncio
 async def test_inbox_group_reports_no_baseline_as_null_not_zero(client: AsyncClient) -> None:
     """A scope firing from a ZERO baseline is the loudest class there is, and the
     stored 0.0 is a placeholder, not a measurement.

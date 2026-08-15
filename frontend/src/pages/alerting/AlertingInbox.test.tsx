@@ -4,7 +4,8 @@ import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
-import type { AlertInboxGroup, Role } from '@/types'
+import { formatDateTime } from '@/lib/datetime'
+import type { AlertInboxGroup, AlertInboxListResponse, Role } from '@/types'
 
 import { AlertingInbox, type InboxActionVariables } from './AlertingInbox'
 
@@ -67,6 +68,19 @@ function makeGroup(overrides: Partial<AlertInboxGroup> = {}): AlertInboxGroup {
   }
 }
 
+/**
+ * One list response, defaulted to the ordinary case: the whole documented
+ * window fitted, so `window_truncated_at` is null.
+ *
+ * A helper rather than object literals for the same reason `makeGroup` is one —
+ * the response grows fields, and every fixture that spells the shape out by
+ * hand has to be revisited when it does. `window_truncated_at` is required and
+ * always sent (tripl-39n6), so a literal cannot omit it.
+ */
+function makeInbox(overrides: Partial<AlertInboxListResponse> = {}): AlertInboxListResponse {
+  return { items: [makeGroup()], total: 1, window_truncated_at: null, ...overrides }
+}
+
 function renderInbox(
   overrides: Partial<Parameters<typeof AlertingInbox>[0]> = {},
   role: Role = 'editor',
@@ -83,7 +97,7 @@ function renderInbox(
       <MemoryRouter>
         <AlertingInbox
           slug="demo"
-          inbox={{ items: [makeGroup()], total: 1 }}
+          inbox={makeInbox({ items: [makeGroup()], total: 1 })}
           isLoading={false}
           isError={false}
           loadError={null}
@@ -147,10 +161,10 @@ const TARGET = 'onboarding/reviews_carousel'
 describe('AlertingInbox — the undo for a mute is called Unmute (tripl-oxkt.3)', () => {
   it('names the muted card\'s undo "Unmute", not "Reopen"', () => {
     renderInbox({
-      inbox: {
+      inbox: makeInbox({
         items: [makeGroup({ status: 'muted', muted: true, muted_until: '2026-08-19T10:00:00Z' })],
         total: 1,
-      },
+      }),
     })
 
     // The word did not exist anywhere on this page: the control that lifts a
@@ -170,7 +184,7 @@ describe('AlertingInbox — the undo for a mute is called Unmute (tripl-oxkt.3)'
   })
 
   it('keeps the same slot named "Reopen" on a card that was never muted', () => {
-    renderInbox({ inbox: { items: [makeGroup({ status: 'resolved' })], total: 1 } })
+    renderInbox({ inbox: makeInbox({ items: [makeGroup({ status: 'resolved' })], total: 1 }) })
 
     expect(screen.getByRole('button', { name: `Reopen ${TARGET}` })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Unmute / })).toBeNull()
@@ -250,10 +264,10 @@ describe('AlertingInbox — an incident can be silenced with no end date (tripl-
 
   it('says on the card that a mute with no end date is in force', () => {
     renderInbox({
-      inbox: {
+      inbox: makeInbox({
         items: [makeGroup({ status: 'muted', muted: true, muted_until: null })],
         total: 1,
-      },
+      }),
     })
 
     // The line used to be guarded on `muted && muted_until`, so an incident
@@ -271,7 +285,10 @@ describe('AlertingInbox — an incident can be silenced with no end date (tripl-
     // keying the line off `muted_until` brings back the card that showed an
     // "Open" badge and a mute line at once.
     renderInbox({
-      inbox: { items: [makeGroup({ status: 'open', muted: false, muted_until: null })], total: 1 },
+      inbox: makeInbox({
+        items: [makeGroup({ status: 'open', muted: false, muted_until: null })],
+        total: 1,
+      }),
     })
 
     const card = document.getElementById('incident-grp-1')!
@@ -283,7 +300,7 @@ describe('AlertingInbox — an incident can be silenced with no end date (tripl-
 describe('AlertingInbox — the card says what fired (tripl-oxkt.4)', () => {
   it('renders direction and scope kind, so two incidents on one scope are distinguishable', () => {
     renderInbox({
-      inbox: {
+      inbox: makeInbox({
         items: [
           makeGroup(),
           makeGroup({
@@ -296,7 +313,7 @@ describe('AlertingInbox — the card says what fired (tripl-oxkt.4)', () => {
           }),
         ],
         total: 2,
-      },
+      }),
     })
 
     // Production's ranks 4 and 12: same event, same direction, same rule, same
@@ -307,7 +324,7 @@ describe('AlertingInbox — the card says what fired (tripl-oxkt.4)', () => {
 
   it('cross-links two groups that share a scope', () => {
     renderInbox({
-      inbox: {
+      inbox: makeInbox({
         items: [
           makeGroup(),
           makeGroup({
@@ -317,7 +334,7 @@ describe('AlertingInbox — the card says what fired (tripl-oxkt.4)', () => {
           }),
         ],
         total: 2,
-      },
+      }),
     })
 
     // The answer to "I muted it and it came back for a different reason".
@@ -327,10 +344,10 @@ describe('AlertingInbox — the card says what fired (tripl-oxkt.4)', () => {
 
   it('states a zero baseline in words and never prints it as a percentage', () => {
     renderInbox({
-      inbox: {
+      inbox: makeInbox({
         items: [makeGroup({ actual_count: 412, expected_count: 0, percent_delta: null })],
         total: 1,
-      },
+      }),
     })
 
     // The percent gate deliberately admits anomalies with no baseline, and the
@@ -342,7 +359,7 @@ describe('AlertingInbox — the card says what fired (tripl-oxkt.4)', () => {
 
   it('says a re-fired incident was already handled, and by whom', () => {
     renderInbox({
-      inbox: {
+      inbox: makeInbox({
         items: [
           makeGroup({
             status: 'open',
@@ -352,7 +369,7 @@ describe('AlertingInbox — the card says what fired (tripl-oxkt.4)', () => {
           }),
         ],
         total: 1,
-      },
+      }),
     })
 
     expect(screen.getByText(/Closed .* by V\. Denisov · firing again/)).toBeInTheDocument()
@@ -360,7 +377,7 @@ describe('AlertingInbox — the card says what fired (tripl-oxkt.4)', () => {
 
   it('links each rule by its own id, not by position', () => {
     renderInbox({
-      inbox: {
+      inbox: makeInbox({
         items: [
           makeGroup({
             rules: [
@@ -371,7 +388,7 @@ describe('AlertingInbox — the card says what fired (tripl-oxkt.4)', () => {
           }),
         ],
         total: 1,
-      },
+      }),
     })
 
     // `rules` pairs id with name. The parallel arrays could not be zipped —
@@ -386,13 +403,13 @@ describe('AlertingInbox — the card says what fired (tripl-oxkt.4)', () => {
 describe('AlertingInbox — action slots do not move between rows (tripl-oxkt.8)', () => {
   it('renders every slot on every row, disabling the inapplicable one', () => {
     renderInbox({
-      inbox: {
+      inbox: makeInbox({
         items: [
           makeGroup(),
           makeGroup({ correlation_group_id: 'grp-2', status: 'resolved' }),
         ],
         total: 2,
-      },
+      }),
     })
 
     // Before this, an open row read [Ack][Resolve][Mute][False positive] and a
@@ -429,7 +446,7 @@ describe('AlertingInbox — three states, three branches (tripl-oxkt.10)', () =>
   })
 
   it('names the filter when a filter is what emptied the list', () => {
-    renderInbox({ inbox: { items: [], total: 0 }, statusFilter: 'muted' })
+    renderInbox({ inbox: makeInbox({ items: [], total: 0 }), statusFilter: 'muted' })
 
     // "No correlated alert groups" is a claim about the project; this is a
     // claim about the question, and it comes with the way back.
@@ -441,10 +458,10 @@ describe('AlertingInbox — three states, three branches (tripl-oxkt.10)', () =>
 describe('AlertingInbox — feedback lands on the row it belongs to (tripl-oxkt.11)', () => {
   it('disables only the acting row, and renders its error inside its own card', () => {
     renderInbox({
-      inbox: {
+      inbox: makeInbox({
         items: [makeGroup(), makeGroup({ correlation_group_id: 'grp-2' })],
         total: 2,
-      },
+      }),
       pendingGroupId: 'grp-1',
       errorGroupId: 'grp-1',
       actionError: new Error('Only failed deliveries can be retried'),
@@ -517,7 +534,7 @@ describe('AlertingInbox — writing the note is not the hard part (tripl-gwrd)',
     // would have every such card race for the caret on load and drop it into
     // whichever one React committed last — which is why focus is armed by the
     // click and not by the mount.
-    renderInbox({ inbox: { items: [makeGroup({ note: 'ticket FOO-12' })], total: 1 } })
+    renderInbox({ inbox: makeInbox({ items: [makeGroup({ note: 'ticket FOO-12' })], total: 1 }) })
 
     expect(noteBox()).toBeInTheDocument()
     expect(noteBox()).not.toHaveFocus()
@@ -550,7 +567,7 @@ describe('AlertingInbox — writing the note is not the hard part (tripl-gwrd)',
     // overwrite it with a correction. The button has to NAME the case, because
     // "Save note" over an empty box reads as a no-op.
     const { onAction } = renderInbox({
-      inbox: { items: [makeGroup({ note: 'wrong, this was the ios release' })], total: 1 },
+      inbox: makeInbox({ items: [makeGroup({ note: 'wrong, this was the ios release' })], total: 1 }),
       noteDrafts: { 'grp-1': '' },
     })
 
@@ -602,7 +619,10 @@ describe('AlertingInbox — writing the note is not the hard part (tripl-gwrd)',
 describe('AlertingInbox — the header says how much of the queue is on screen (tripl-oxkt.1)', () => {
   it('counts what is shown against the server total, and offers the rest', () => {
     renderInbox({
-      inbox: { items: [makeGroup(), makeGroup({ correlation_group_id: 'grp-2' })], total: 57 },
+      inbox: makeInbox({
+        items: [makeGroup(), makeGroup({ correlation_group_id: 'grp-2' })],
+        total: 57,
+      }),
       hasMore: true,
     })
 
@@ -613,9 +633,48 @@ describe('AlertingInbox — the header says how much of the queue is on screen (
     expect(screen.getByText(/Of the 2 incidents loaded: 2 open · 0 handled/)).toBeInTheDocument()
   })
 
+  it('stops claiming 30 days when the server could not reach back that far (tripl-39n6)', () => {
+    // The list is capped on delivery rows as well as by the window, and the cap
+    // is applied before incidents are grouped — so a loud enough project gets a
+    // shorter window with the oldest incidents simply gone. The page said "last
+    // 30 days" regardless, which made an absent incident look like a handled
+    // one.
+    const truncatedAt = '2026-08-09T04:30:00Z'
+    renderInbox({
+      inbox: makeInbox({
+        items: [makeGroup(), makeGroup({ correlation_group_id: 'grp-2' })],
+        total: 57,
+        window_truncated_at: truncatedAt,
+      }),
+    })
+
+    // Through `formatDateTime`, not a literal, so this does not depend on the
+    // runner's locale or zone (as AlertDeliveryRow's timestamp test does).
+    const start = formatDateTime(truncatedAt)
+    expect(screen.getByText(`Showing 2 of 57 · since ${start} + still silenced`)).toBeInTheDocument()
+    // The window clause is REPLACED, not joined: two answers on one line is the
+    // failure the line exists to prevent. (The notice below still SAYS "the
+    // last 30 days" — as the period that overflowed, which is the true claim.)
+    expect(screen.queryByText(/last 30 days \+ still silenced/)).toBeNull()
+    // …and the date alone reads as a setting somebody chose, so the list says
+    // what it means for the incidents that fell off.
+    expect(
+      screen.getByRole('status'),
+    ).toHaveTextContent(/more alerts in the last 30 days than the Inbox reads at once/)
+  })
+
+  it('says nothing about truncation when the whole window fitted', () => {
+    // Which is every deployment measured so far: a permanent caveat about a
+    // bound nobody is near is the noise that teaches people to skip this spot.
+    renderInbox({ inbox: makeInbox({ items: [makeGroup()], total: 1 }) })
+
+    expect(screen.getByText('Showing 1 of 1 · last 30 days + still silenced')).toBeInTheDocument()
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
   it('pins a deep-linked incident that is outside the loaded pages (tripl-oxkt.13)', () => {
     renderInbox({
-      inbox: { items: [makeGroup()], total: 57 },
+      inbox: makeInbox({ items: [makeGroup()], total: 57 }),
       pinnedGroup: makeGroup({
         correlation_group_id: 'grp-old',
         scope_names: ['settings/choose_model'],
@@ -641,7 +700,7 @@ describe('AlertingInbox — incidents can be picked for one decision (tripl-gpfr
    */
   const SELECT_TARGET = `Select drop · volume on ${TARGET}`
   const SELECT_OTHER_TARGET = `Select drop · volume on ${OTHER_TARGET}`
-  const twoIncidents = {
+  const twoIncidents = makeInbox({
     items: [
       makeGroup(),
       makeGroup({
@@ -651,7 +710,7 @@ describe('AlertingInbox — incidents can be picked for one decision (tripl-gpfr
       }),
     ],
     total: 2,
-  }
+  })
 
   it('names each checkbox by its incident: the reason, then the scope', () => {
     renderInbox({ inbox: twoIncidents })
@@ -747,7 +806,12 @@ describe('AlertingInbox — viewer gating (tripl-oxkt.9)', () => {
 
   it('says why once for the section, not once per card', () => {
     renderInbox(
-      { inbox: { items: [makeGroup(), makeGroup({ correlation_group_id: 'grp-2' })], total: 2 } },
+      {
+        inbox: makeInbox({
+          items: [makeGroup(), makeGroup({ correlation_group_id: 'grp-2' })],
+          total: 2,
+        }),
+      },
       'viewer',
     )
 

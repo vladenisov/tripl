@@ -92,6 +92,27 @@ const LOOKBACK_LABEL = 'last 30 days'
  */
 const COVERAGE_LABEL = `${LOOKBACK_LABEL} + still silenced`
 
+/**
+ * The same sentence when the server could NOT reach back 30 days (tripl-39n6).
+ *
+ * The list is capped at a fixed number of delivery rows as well as by the
+ * window, and the cap is applied on delivery recency BEFORE incidents are
+ * grouped — so a loud enough project gets a shorter window, with the oldest
+ * incidents simply missing. Missing is indistinguishable from handled, which
+ * makes {@link COVERAGE_LABEL} an unconditional claim the page cannot always
+ * keep.
+ *
+ * `+ still silenced` survives the swap: the rescue that clause names runs
+ * whatever the cap did, so dropping it here would trade one wrong sentence for
+ * another. The truncation is stated as a REPLACEMENT for the window clause, not
+ * alongside it, because "last 30 days" and "since 3 Aug" in one line are two
+ * answers to the question the line exists to answer.
+ */
+function coverageLabel(windowTruncatedAt: string | null): string {
+  if (!windowTruncatedAt) return COVERAGE_LABEL
+  return `since ${formatDateTime(windowTruncatedAt)} + still silenced`
+}
+
 interface AlertingInboxProps {
   slug: string
   // Optional, not defaulted to an empty list: the empty state below has to tell
@@ -214,11 +235,12 @@ export function AlertingInbox({
   const openCount = items.filter(group => !isHandledInboxStatus(group.status)).length
   const handledCount = items.length - openCount
 
+  const windowTruncatedAt = inbox?.window_truncated_at ?? null
   const subtitle = isLoading
     ? 'Loading…'
     : isError
       ? 'Could not load'
-      : `Showing ${items.length} of ${total} · ${COVERAGE_LABEL}`
+      : `Showing ${items.length} of ${total} · ${coverageLabel(windowTruncatedAt)}`
 
   const renderCard = (group: AlertInboxGroup, isPinned: boolean) => (
     <IncidentCard
@@ -283,6 +305,28 @@ export function AlertingInbox({
         }
       >
         <div className="space-y-3 p-4">
+          {/* ABOVE the loading/error/empty/list ternary, not inside its last
+              branch. The cap drops rows before grouping and before the status
+              filter, so a filter whose matching incidents were the dropped ones
+              renders ZERO cards — and that reader is the one who most needs to
+              know the window was cut, because a bare "No resolved incidents."
+              reads as an answer about the project rather than about the page
+              (tripl-39n6).
+
+              Safe in every branch: `window_truncated_at` comes off the response,
+              so it is null while loading and null on an error, and this renders
+              nothing in both. */}
+          {windowTruncatedAt && (
+            <p
+              role="status"
+              className="rounded-md border border-dashed p-3 text-xs text-muted-foreground"
+            >
+              This project sent more alerts in the last 30 days than the Inbox reads at
+              once, so the list starts at {formatDateTime(windowTruncatedAt)}. An incident
+              whose last delivery was before then is not here unless it is still silenced —
+              it has not been resolved, and its own link still opens it.
+            </p>
+          )}
           {isLoading ? (
             <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
               Loading incidents…
