@@ -100,8 +100,11 @@ retired ones, pass `status=archived`.
 | `include_archived` | Include archived entities (default `false`) |
 | `limit` | Max results (default `20`, max `100`) |
 
-Each hit carries a `confidence` in `[0, 1]` (relevance normalized to the top hit
-of that response) and `semantic_used` reports whether embeddings were used.
+Each hit carries a `confidence` in `[0, 1]` (an absolute relevance score, comparable
+between queries — a weak query returns low confidence on every item, first one
+included; a hit found by meaning rather than by keyword reports that leg's cosine
+similarity, so one cutoff works for both) and `semantic_used` reports whether
+embeddings were used.
 Event hits also include `event_id`, `name`, `implemented`, and
 `variable_values`. Use search for feature phrases, not exact keys — see
 [Searching events](./searching-events.md).

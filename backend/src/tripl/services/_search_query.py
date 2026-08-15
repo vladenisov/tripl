@@ -34,6 +34,55 @@ from tripl.services.embedding_service import embed_query
 # How strongly a matching event type lifts the events that belong to it.
 _TYPE_BOOST_WEIGHT = 0.75
 
+# Cosine similarity a semantic hit must clear to be merged into the result set
+# (tripl-txcz). Below this the vector leg is not "a weaker answer", it is noise:
+# it is a plain nearest-neighbour scan, so it returns `limit` rows for ANY query
+# a branch's embedded documents can be ranked against — there is no such thing
+# as "no match" in it — and `merge_results` then pays each of those rows
+# `cosine * 2.5`, which is enough to displace a real lexical hit.
+#
+# 0.35 is deliberately at the LOW end of the useful band. The semantic leg is
+# what rescues the measured misspellings ('пейволл', 'forcast', 'screan_spot',
+# 'onboarding quiz'), which land around 0.45-0.65 with the shipped embedding
+# model, while unrelated text sits under 0.25. A higher floor would start
+# cutting into the rescues this leg exists for, so the floor removes the flat
+# tail and nothing else.
+_SEMANTIC_MIN_COSINE = 0.35
+
+# The score at which a result is presented as a certain answer (tripl-txcz).
+# 5.0 (the boost for "the title IS what you typed") + 2.0 (a perfect trigram
+# similarity on that same title) = the score of a document that is exactly the
+# thing the user asked for. Confidence is that fraction, capped at 1.0 — an
+# ABSOLUTE scale, so a query that matched nothing well cannot be dressed up as
+# a perfect match just by being the best of a bad set.
+#
+# ONLY IDENTITY TIERS MAY REACH THIS LINE, ON EITHER DIALECT
+# ----------------------------------------------------------
+# An earlier version of this comment claimed the SQLite fallback's top three
+# tiers "sit at or above the same line, so the two dialects agree on what
+# 'certain' means". They did not: ``fallback_score`` paid a BARE
+# ``title.startswith(query)`` exactly 7.0, so a prefix match — the weakest kind
+# of evidence there is, ``s`` matching ``screen_spot`` — was served at
+# confidence 1.0. That is the "asdkjhasd at 100%" defect this issue exists to
+# remove, reintroduced on the dialect the entire backend suite runs on.
+#
+# The rule the two dialects now actually share: a result reaches 1.0 only when
+# the document IS what was typed. On Postgres that is the 5.0 exact-title (or
+# 4.0 exact-keywords) boost plus a near-perfect trigram similarity on the same
+# short field; on SQLite it is the two identity tiers, ``title == query`` and
+# ``keywords == query``. Every partial-evidence tier in ``fallback_score`` sits
+# strictly below this constant — see its docstring for the ladder.
+_FULL_CONFIDENCE_SCORE = 7.0
+
+# How much a semantic hit's cosine similarity is worth to the RANKING, i.e. how
+# a vector-only hit is placed among lexical ones (tripl-txcz). It is not, and
+# cannot be, the scale confidence is read on: it caps a perfect cosine at 2.5,
+# which is a deliberate ranking statement ("a pure vector match ranks around a
+# literal body-token match") and a nonsense certainty statement ("a perfect
+# semantic match is 36% sure"). :func:`finalize_results` therefore scores the
+# two legs on one scale and reports certainty on another; see both docstrings.
+_SEMANTIC_SCORE_WEIGHT = 2.5
+
 
 def sanitize_query(query: str) -> str:
     """Trim the incoming query and drop codepoints no backend can carry.
@@ -150,6 +199,100 @@ async def postgres_lexical_search(
     include_archived: bool,
     limit: int,
 ) -> list[SearchResult]:
+    """Rank one branch's documents: ts_rank_cd + trigram similarity + boost ladder.
+
+    The three legs are meant to be on comparable scales: the boost ladder is a
+    set of fixed constants (5.0 for "the title IS the query" down to 1.5), the
+    trigram leg is a similarity in [0, 1] weighted x2.0, and the lexical leg is
+    a ``ts_rank_cd`` weighted x4.0. That only holds if ``ts_rank_cd`` is
+    bounded, and until tripl-gbxj it was called with NO normalization flag —
+    i.e. as a raw sum over occurrences, which grows without limit as a document
+    repeats a term.
+
+    WHAT THAT COST (measured, 26 queries over three real projects)
+    -------------------------------------------------------------
+    ``q='spot'`` returned ``${property.spot_id}`` at 73.69 and ``${property.cube}``
+    at 55.68 — the latter only because one harvested value is ``spot:reload:bento``
+    — while the events actually NAMED ``spot`` and ``screen_spot`` did not appear
+    at all. A harvested-value variable that repeats a token ~180 times reached a
+    lexical leg of ~68: an order of magnitude more than the entire boost ladder,
+    so no exact-title constant could ever catch up. ``q='screen_spot'`` fired the
+    5.0 exact-title boost and the event still ranked 3rd.
+
+    WHY FLAG 32 AND NOT 2
+    ---------------------
+    ``32`` is ``rank / (rank + 1)``: a monotone squash of [0, inf) onto [0, 1),
+    so the lexical leg can never exceed 4.0 — below the 5.0 an exact title
+    scores — while the NORMAL range is left almost untouched. A single ordinary
+    match has a raw ``ts_rank_cd`` around 0.1 and still scores 0.09; the 18.4
+    outlier above collapses to 0.95. It bends the outliers and nothing else,
+    which is exactly the shape of the measured fault.
+
+    ``2`` (divide by document length) was considered and rejected. It turns the
+    score into a term DENSITY, but length in this index is an artifact of how
+    many contexts an entity happens to be bound to rather than a property of the
+    text, so an ordinary match lands near 0.0007 — three orders of magnitude
+    below the boost ladder. That does not stop the lexical leg from dominating,
+    it stops it from discriminating at all, and every ranking decision would
+    fall to the ladder and the trigram leg.
+
+    Normalization is only half of tripl-gbxj: harvested values are no longer
+    joined into a variable's ``keywords`` either (see
+    ``_search_documents._variable_document``), which removes the duplication
+    that made those documents long in the first place. The measured 73.69 vs
+    4.55 gap was the two compounding, so both landed together.
+
+    ``token_boundary_regex`` below carries the query-time half of tripl-h9x2: a
+    spaced query is folded into its underscored form, so the 3.5/3.0
+    word-boundary tiers are reachable for ``q='screen spot'`` instead of being
+    dead for every multi-word query.
+
+    THE 3.25 TIER: THE BOOST LADDER HAD TO LEARN THE STEMMER TOO (tripl-nh5s)
+    ------------------------------------------------------------------------
+    Migration ``a7c3e1b9d5f2`` gives ``tripl_search`` an English and a Russian
+    stemmer, which fixes RETRIEVAL: ``q='purchases'`` matches the
+    ``purchase_completed`` event's tsvector at all, for the first time. It does
+    NOT by itself fix the RANKING, because every tier of the ladder is a literal
+    comparison
+    (``=``, ``LIKE``, a regex), and the ladder is worth up to 5.0 against a
+    lexical leg capped at 4.0. So a plural query kept losing to the same
+    documents it lost to before:
+
+        ``q='purchases'``: the ``purchase_completed`` event spells the SINGULAR
+        everywhere, so no literal tier can fire for it and its boost is 0. The
+        harvested-value variable ``${property.screen_name}`` literally contains
+        the string ``purchases`` in its body, so ``body ~* '\\mpurchases\\M'``
+        fires and pays it 3.0 — more than the entire stemming gain. Same shape
+        for ``q='уловы'`` and ``q='spots'``.
+
+    The 3.25 tier is the missing half: it asks whether the query, AFTER
+    stemming, matches this document's own identity text. Three properties are
+    load-bearing:
+
+    * **title and keywords only, never body.** ``keywords`` is the curated field
+      — a name, its spaced alias, the event type, the bindings — and tripl-gbxj
+      already removed harvested values from a variable's keywords for exactly
+      this reason. ``body`` is where the harvested text lives, and paying a
+      stemmed body match would hand the noise documents the tier a second time.
+    * **3.25, between the 3.5 literal-keyword-token tier and the 3.0 literal
+      body-token tier.** A stemmed match on the entity's name is weaker evidence
+      than the literal token appearing in its keywords, and stronger than the
+      literal token appearing somewhere in its body. Ordered that way, the
+      measured pairs invert: ``purchase_completed`` reaches 3.25 + rank + trigram
+      while the harvested variable stays at its 3.0.
+    * **No document's own boost can FALL because of it.** ``CASE`` returns the
+      first branch that matches, so a document that already qualified for 5.0,
+      4.0 or 3.5 never reaches this tier, and any document that does reach it
+      was going to score 3.0 or less. The tier therefore adds evidence and never
+      removes it: a result changes position only by being overtaken by a
+      document whose name genuinely stems to what was typed, which is the whole
+      point of the change.
+
+    The cost is one ``to_tsvector`` per candidate row over two short columns.
+    It is computed in the projection of the ``ranked`` CTE, i.e. only for rows
+    that already passed the WHERE, and never over ``body`` — the column that can
+    be megabytes on a harvested-value variable.
+    """
     token_regex = token_boundary_regex(query)
     has_token_regex = bool(token_regex)
     statement = text(
@@ -169,7 +312,10 @@ async def postgres_lexical_search(
                 d.body,
                 d.keywords,
                 d.route_path,
-                COALESCE(ts_rank_cd(d.text_vector, q.tsq), 0.0) AS lexical_score,
+                -- Normalization 32 == rank/(rank+1): bounded, so raw term
+                -- frequency can no longer outweigh the boost ladder (tripl-gbxj,
+                -- see the docstring for why not 2).
+                COALESCE(ts_rank_cd(d.text_vector, q.tsq, 32), 0.0) AS lexical_score,
                 GREATEST(
                     similarity(d.title, :query),
                     similarity(d.subtitle, :query),
@@ -180,6 +326,13 @@ async def postgres_lexical_search(
                     WHEN lower(d.title) = lower(:query) THEN 5.0
                     WHEN lower(d.keywords) = lower(:query) THEN 4.0
                     WHEN :has_token_regex AND d.keywords ~* :token_regex THEN 3.5
+                    -- The stemmed tier (tripl-nh5s). Every other tier compares
+                    -- literal characters, so a plural query can only ever reach
+                    -- the ladder through a document that spells the plural --
+                    -- which is the harvested value, not the entity. See the
+                    -- docstring: this fires only on title/keywords, never body.
+                    WHEN to_tsvector('tripl_search', concat_ws(' ', d.title, d.keywords))
+                         @@ q.tsq THEN 3.25
                     WHEN :has_token_regex AND d.body ~* :token_regex THEN 3.0
                     WHEN lower(d.title) LIKE lower(:prefix) THEN 3.0
                     WHEN lower(d.body) LIKE lower(:contains) THEN 2.25
@@ -250,6 +403,32 @@ async def postgres_semantic_search(
     include_archived: bool,
     limit: int,
 ) -> list[SearchResult]:
+    """Nearest documents by cosine similarity, above a floor (tripl-txcz).
+
+    This leg is a pure ``ORDER BY <=> LIMIT``: it has no notion of "no good
+    answer". Every indexed document carries an embedding, so it always returned
+    exactly ``limit`` rows for ANY query, and ``merge_results`` then paid each
+    of them ``cosine * 2.5`` — enough for the nearest junk row to be served as a
+    result, and (before the same issue's confidence fix) as a CERTAIN one.
+
+    ``_SEMANTIC_MIN_COSINE`` is applied in SQL rather than after the fetch so
+    the floor cannot be defeated by the ``LIMIT``: filtering in Python would
+    still have had the k nearest rows chosen first and then thrown most of them
+    away, returning fewer results than requested for no reason.
+
+    This deliberately does NOT de-weight or disable the semantic leg. Measured,
+    it is what rescues 'пейволл', 'forcast', 'screan_spot' and 'onboarding
+    quiz', none of which the lexical leg can reach; the floor only removes the
+    tail below the point where cosine stops carrying meaning.
+
+    The ``* _SEMANTIC_SCORE_WEIGHT`` this leg's cosine is multiplied by in
+    :func:`merge_results` is likewise untouched — but that number is a RANKING
+    weight and nothing else. Reporting confidence as ``score / 7.0`` would have
+    de-weighted this leg where the user can see it (a perfect cosine served at
+    0.357), which is why :func:`finalize_results` reads a semantic hit's
+    certainty off its cosine instead. The score says where the row goes; the
+    cosine says how sure we are about it.
+    """
     vector = "[" + ",".join(f"{value:.8f}" for value in embedding) + "]"
     statement = text(
         """
@@ -272,6 +451,8 @@ async def postgres_semantic_search(
           AND d.embedding IS NOT NULL
           AND d.embedding_status = 'ready'
           AND (:filter_entity_types IS FALSE OR d.entity_type IN :entity_types)
+          -- A nearest neighbour is not automatically a match (tripl-txcz).
+          AND (1.0 - (d.embedding <=> CAST(:embedding AS vector))) >= :min_cosine
         ORDER BY d.embedding <=> CAST(:embedding AS vector)
         LIMIT :limit
         """
@@ -282,6 +463,7 @@ async def postgres_semantic_search(
         "project_id": project_id,
         "branch_id": branch_id,
         "embedding": vector,
+        "min_cosine": _SEMANTIC_MIN_COSINE,
         "include_archived": include_archived,
         "filter_entity_types": filter_entity_types,
         # See postgres_lexical_search: a placeholder list keeps the expanding
@@ -330,44 +512,195 @@ def _join_str(parts: list[str | None]) -> str:
     return " ".join(p for p in parts if p)
 
 
+# The SQLite fallback's tier ladder. Values are on the same absolute scale as
+# the Postgres score, so ``finalize_results`` can divide both by
+# _FULL_CONFIDENCE_SCORE and mean the same thing. See :func:`fallback_score` for
+# why every tier is the old value x 0.8, and for what that does and does not
+# make the two dialects agree about.
+_SQLITE_EXACT_TITLE = 8.0
+_SQLITE_EXACT_KEYWORDS = 7.2
+_SQLITE_TITLE_PREFIX = 5.6
+_SQLITE_KEYWORD_TOKEN = 5.44
+_SQLITE_BODY_TOKEN = 5.2
+_SQLITE_TITLE_OR_KEYWORD_SUBSTRING = 4.8
+_SQLITE_HAYSTACK_SUBSTRING = 3.2
+_SQLITE_ALL_TOKENS = 2.4
+_SQLITE_FUZZY_WEIGHT = 1.6
+_SQLITE_FUZZY_MIN_RATIO = 0.55
+
+
 def fallback_score(
     query_norm: str,
     query_tokens: list[str],
     haystack: str,
     document: SearchDocument,
 ) -> float:
+    """Score one document for the SQLite path. READ THE GUARANTEES BELOW.
+
+    This is not a port of ``postgres_lexical_search`` and cannot be one. It is a
+    tier ladder over Python string operations, and the backend test suite runs
+    on SQLite — so it is what almost every search assertion in the repo actually
+    executes. Being explicit about the gap is the point of this docstring:
+    silence here is how the next person concludes the suite covers ranking.
+
+    WHAT HOLDS ON BOTH DIALECTS
+    ---------------------------
+    * **The identity tiers.** ``title == query`` and ``keywords == query`` are
+      the only tiers that reach ``_FULL_CONFIDENCE_SCORE``, matching Postgres's
+      5.0/4.0 exact boosts. See below for what that cost.
+    * **Half of tripl-gbxj.** Harvested values are no longer joined into a
+      variable's ``keywords`` (``_search_documents._variable_document``), which
+      is an INDEXING change and therefore applies to every dialect. Its other
+      half — bounding ``ts_rank_cd`` with normalization flag 32 — has no analogue
+      here and needs none: this scorer returns one tier value per document and
+      has no term-frequency term to run away with in the first place.
+    * **tripl-h9x2, both halves.** The spaced alias of every identifier is in
+      the index (again a document-building change), and the word-boundary tiers
+      below additionally fold the QUERY into its identifier form through the
+      same :func:`identifier_form` the Postgres regex tiers use. So
+      ``q='screen spot'`` reaches the ``screen_spot`` event from either side
+      here too.
+
+    WHAT IS POSTGRESQL-ONLY — NOT APPROXIMATED, NOT TESTED HERE
+    -----------------------------------------------------------
+    * **All of tripl-nh5s: stemming, and the 3.25 boost tier that depends on
+      it.** Both are ``tripl_search`` — a text-search configuration and a
+      ``to_tsvector`` comparison. Python's standard library has no stemmer and
+      this project has no dependency that provides one, so ``q='purchases'``
+      does NOT reach ``purchase_completed`` on SQLite, and ``q='уловы'`` does not
+      reach ``улов``. Every stemming case in the relevance table
+      (``tests/relevance/cases.py``: purchase-plural, ulov-plural, spots-plural,
+      russian-phrase) is a Postgres-only guarantee.
+    * **``ts_rank_cd`` and trigram similarity.** There is no lexical rank and no
+      fuzzy-match leg beyond the crude ``SequenceMatcher`` tail below, so the
+      x4.0/x2.0 weighting the whole boost ladder is calibrated against does not
+      exist here. Two documents that Postgres separates by rank are separated
+      here only if they land on different tiers.
+
+    The consequence, stated plainly: **the SQLite suite does not cover ranking.**
+    A green ``uv run pytest`` says the search endpoint returns the right rows and
+    the right shapes; only the relevance harness (``tests/relevance/``, a real
+    PostgreSQL, its own CI job) says they come back in the right ORDER. See
+    CONTRIBUTING.md, "Search relevance harness".
+
+    WHY THE PARTIAL TIERS MOVED (tripl-txcz)
+    ----------------------------------------
+    The ladder used to run 10.0 / 9.0 / 7.0 / 6.8 / 6.5 / 6.0 / 4.0 / 3.0, with
+    ``_FULL_CONFIDENCE_SCORE`` at 7.0 — so a bare ``title.startswith(query)``
+    was served at confidence 1.0. A one-character query is a prefix of a great
+    many titles; that is the weakest evidence in the ladder being presented as
+    the strongest possible answer, i.e. exactly the "asdkjhasd at 100%" defect
+    on the other dialect.
+
+    The whole ladder — every tier AND the fuzzy tail's weight — is therefore
+    multiplied by one uniform factor of 0.8. Uniform is the load-bearing word:
+    the two identity tiers land on 8.0 and 7.2, still above the certainty line,
+    while the strongest partial tier lands on 5.6 (confidence 0.80), and because
+    every value moved by the same factor, EVERY ratio in the ladder is
+    preserved. Ranking on this dialect is provably unchanged — all comparisons
+    are between scaled values, and :func:`_apply_event_type_boost` is
+    multiplicative, so it cannot reorder them either. Only the number painted on
+    a result moves, which is the whole of tripl-txcz.
+    """
     if not query_norm:
         return 0.0
     title = _normalize(document.title)
     keywords = _normalize(document.keywords)
     if title == query_norm:
-        return 10.0
+        return _SQLITE_EXACT_TITLE
     if keywords == query_norm:
-        return 9.0
+        return _SQLITE_EXACT_KEYWORDS
+    # The identifier fold is applied ONLY to the word-boundary tiers, never to
+    # the identity tiers above (tripl-h9x2). That mirrors Postgres exactly:
+    # there ``token_boundary_regex`` feeds the 3.5/3.0 tiers while
+    # ``lower(title) = lower(:query)`` compares the raw query, so ``q='screen
+    # spot'`` is a strong token match on ``screen_spot`` and not an exact-title
+    # match. Folding it into the identity tiers here would make SQLite MORE
+    # certain than Postgres about the same query.
+    identifier_query = identifier_form(query_norm)
     if title.startswith(query_norm):
-        return 7.0
-    if _contains_exact_token(document.keywords or "", query_norm):
-        return 6.8
-    if _contains_exact_token(document.body or "", query_norm):
-        return 6.5
+        return _SQLITE_TITLE_PREFIX
+    if _matches_token(document.keywords, query_norm, identifier_query):
+        return _SQLITE_KEYWORD_TOKEN
+    if _matches_token(document.body, query_norm, identifier_query):
+        return _SQLITE_BODY_TOKEN
     if query_norm in title or query_norm in keywords:
-        return 6.0
+        return _SQLITE_TITLE_OR_KEYWORD_SUBSTRING
     if query_norm in haystack:
-        return 4.0
+        return _SQLITE_HAYSTACK_SUBSTRING
     if query_tokens and all(token in haystack for token in query_tokens):
-        return 3.0
+        return _SQLITE_ALL_TOKENS
     similarity = SequenceMatcher(None, query_norm, title or haystack[:200]).ratio()
-    return similarity * 2.0 if similarity >= 0.55 else 0.0
+    return similarity * _SQLITE_FUZZY_WEIGHT if similarity >= _SQLITE_FUZZY_MIN_RATIO else 0.0
+
+
+def _matches_token(source: str | None, query_norm: str, identifier_query: str | None) -> bool:
+    """Whether ``source`` carries the query as a whole word, spaced or underscored.
+
+    The SQLite half of tripl-h9x2's query-time fold: ``q='screen spot'`` has to
+    reach a document whose text spells ``screen_spot``, the same way
+    ``token_boundary_regex`` lets it on Postgres.
+    """
+    if _contains_exact_token(source or "", query_norm):
+        return True
+    return identifier_query is not None and _contains_exact_token(source or "", identifier_query)
 
 
 def token_boundary_regex(query: str) -> str | None:
-    normalized_query = _normalize(query)
-    # PostgreSQL word boundaries (\m ... \M) reliably work for token-like
-    # values such as "ecmwf" / "vip_segment". For phrase-like queries with
-    # spaces or punctuation we keep regular LIKE/fuzzy logic.
-    if not re.fullmatch(r"[a-z0-9_]+", normalized_query):
+    """PostgreSQL word-boundary pattern for the query, or ``None`` if it is not a token.
+
+    QUERY-TIME HALF OF tripl-h9x2
+    -----------------------------
+    Entities in this product are named in snake_case (``screen_spot``,
+    ``vip_segment``, ``catch_report_created``) but people type them with spaces.
+    This function used to require ``[a-z0-9_]+`` over the RAW query, so it
+    returned ``None`` for anything containing a space — which silently deleted
+    the 3.5 (keywords) and 3.0 (body) word-boundary tiers from the ranking of
+    every multi-word query, and for Cyrillic, which is not in ``[a-z0-9]`` at
+    all. Measured: ``q='screen spot'`` ranked the ``screen_spot`` event 5th at
+    4.545, behind harvested-value variables, because the only tiers left compare
+    the spaced query against an underscored title and all miss.
+
+    So the query is folded INTO the identifier form (spaces -> underscores)
+    instead of being rejected for having spaces, and the token test is Unicode
+    (``\\w``) instead of ASCII-only, so a Cyrillic query is a token like any
+    other. ``\\m``/``\\M`` are PostgreSQL word boundaries and treat ``_`` as a
+    word character, so ``\\mscreen_spot\\M`` still matches only the whole
+    identifier and never a fragment of ``screen_spot_v2``.
+
+    The index-time half lives in ``_search_documents._spaced_identifiers``,
+    which puts the SPACED alias of each identifier into the document's
+    keywords; between the two, ``screen_spot`` and ``screen spot`` reach each
+    other whichever side the underscore is on. The SQLite fallback scorer gets
+    the index-time half for free and applies the query-time half itself, through
+    the shared :func:`identifier_form` — see :func:`fallback_score`, which also
+    lists what it CANNOT reproduce.
+
+    Queries that are not identifier-shaped (punctuation, quotes, ``100%``) still
+    return ``None`` and keep the LIKE/trigram behaviour they always had — this
+    only converts a whitespace-separated identifier, it does not invent tokens.
+    """
+    identifier_query = identifier_form(query)
+    if identifier_query is None:
         return None
-    return rf"\m{re.escape(normalized_query)}\M"
+    return rf"\m{re.escape(identifier_query)}\M"
+
+
+def identifier_form(query: str) -> str | None:
+    """The query folded into its snake_case identifier form, or ``None``.
+
+    Extracted from :func:`token_boundary_regex` (tripl-h9x2) so the SQLite
+    fallback scorer can apply the identical fold to its own word-boundary tiers
+    rather than carrying a second, subtly different idea of what an identifier
+    is — see :func:`fallback_score`. Both dialects therefore agree on which
+    queries are identifier-shaped, which is the part of tripl-h9x2 that does not
+    need PostgreSQL to hold.
+    """
+    normalized_query = _normalize(query)
+    identifier_query = re.sub(r"\s+", "_", normalized_query)
+    if not re.fullmatch(r"\w+", identifier_query, flags=re.UNICODE):
+        return None
+    return identifier_query
 
 
 def _contains_exact_token(source: str, query_norm: str) -> bool:
@@ -381,30 +714,86 @@ def merge_results(
     semantic_results: list[SearchResult],
     limit: int,
 ) -> list[SearchResult]:
+    """Fold the semantic leg into the lexical one: one ranking, two certainties.
+
+    A semantic row arrives with ``score`` set to its raw cosine similarity in
+    [0, 1] (see :func:`postgres_semantic_search`). For RANKING it is converted
+    onto the lexical score's scale by ``_SEMANTIC_SCORE_WEIGHT``, and a document
+    both legs found keeps the sum — that arithmetic is unchanged.
+
+    The raw cosine is recorded on the result before it is overwritten, because
+    it is the only honest measure of how sure the semantic leg is and the merged
+    score destroys it (tripl-txcz). ``finalize_results`` reads it back; nothing
+    else does, and it never reaches the API response.
+    """
     merged: dict[uuid.UUID, SearchResult] = {item.id: item for item in lexical_results}
     for item in semantic_results:
         existing = merged.get(item.id)
-        semantic_score = max(0.0, item.score) * 2.5
+        cosine = max(0.0, item.score)
+        semantic_score = cosine * _SEMANTIC_SCORE_WEIGHT
         if existing is None:
             item.score = semantic_score
             item.semantic_used = True
+            item.record_semantic_cosine(cosine)
             merged[item.id] = item
             continue
         existing.score += semantic_score
         existing.semantic_used = True
+        existing.record_semantic_cosine(cosine)
     return sorted(merged.values(), key=lambda item: (-item.score, item.title))[:limit]
 
 
 def finalize_results(items: list[SearchResult], limit: int) -> list[SearchResult]:
-    """Apply the cross-entity event-type boost, then rank, trim, and stamp each
-    returned result with a confidence normalized to the top hit (0..1)."""
+    """Apply the cross-entity event-type boost, then rank, trim, and stamp confidence.
+
+    CONFIDENCE IS ABSOLUTE, NOT RELATIVE TO THE TOP HIT (tripl-txcz)
+    ---------------------------------------------------------------
+    This used to divide every score by the top score, which makes the best
+    result of ANY result set exactly 1.0 by construction. The number therefore
+    could not express the one thing a user needs from it — "I did not really
+    find what you asked for" — and the UI paints it as a percentage badge.
+    Measured on production: ``q='asdkjhasd'`` (pure keyboard mash) was served at
+    confidence 1.0 on an absolute score of 0.636.
+
+    The fraction is now taken against ``_FULL_CONFIDENCE_SCORE``, the score a
+    document reaches when it IS the thing that was typed, so confidence means
+    the same thing across queries: it is comparable between two searches, it
+    falls when the match is weak, and it reaches 1.0 only when the ranking
+    arithmetic actually says so. The relative ORDER of results is untouched —
+    this changes the number attached to a result, not which result wins.
+
+    BOTH LEGS HAVE TO BE ABLE TO SAY "CERTAIN"
+    ------------------------------------------
+    Taking that fraction off the merged score alone would have quietly done to
+    the semantic leg what the same issue forbids doing to it deliberately. A
+    vector-only hit is scored ``cosine * _SEMANTIC_SCORE_WEIGHT`` for ranking,
+    so its score cannot exceed 2.5 and a PERFECT cosine of 1.0 would have been
+    reported at 2.5 / 7.0 = 0.357 — a semantic rescue of 'пейволл' or 'forcast',
+    the queries that leg exists for, served to the user as barely-a-guess.
+
+    So confidence is the maximum of the two certainties the result actually
+    carries:
+
+    * the ABSOLUTE score certainty, ``score / _FULL_CONFIDENCE_SCORE`` capped at
+      1.0, which is what the lexical ladder (and the SQLite fallback's tiers)
+      express;
+    * for a result the semantic leg produced, its cosine similarity, which is
+      already a [0, 1] certainty and needs no rescaling at all.
+
+    ``max`` rather than a sum or a blend: the two are alternative pieces of
+    evidence for the same claim ("this is what you meant"), so a document that
+    one leg is sure about is a confident answer even when the other leg is
+    indifferent to it, and neither can drag the other down. The RANKING still
+    sees only the merged score — this function decides what number is painted on
+    a result, never where it sits.
+    """
     boosted = _apply_event_type_boost(items)
     boosted.sort(key=lambda item: (-item.score, item.title))
     trimmed = boosted[:limit]
-    top_score = trimmed[0].score if trimmed else 0.0
-    if top_score > 0:
-        for item in trimmed:
-            item.confidence = round(min(1.0, max(0.0, item.score) / top_score), 4)
+    for item in trimmed:
+        score_confidence = min(1.0, max(0.0, item.score) / _FULL_CONFIDENCE_SCORE)
+        semantic_confidence = item.semantic_cosine or 0.0
+        item.confidence = round(max(score_confidence, semantic_confidence), 4)
     return trimmed
 
 

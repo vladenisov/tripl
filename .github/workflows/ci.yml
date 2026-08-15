@@ -44,10 +44,11 @@ jobs:
       - name: Mypy
         run: uv run mypy
 
-      # The conformance gates need real warehouses, so they run in their own job
-      # (below) rather than skipping noisily here.
+      # The conformance gates need real warehouses, and the relevance harness needs
+      # a real PostgreSQL, so both run in their own jobs (below) rather than
+      # skipping noisily here.
       - name: Pytest
-        run: uv run pytest -q -m "not conformance"
+        run: uv run pytest -q -m "not conformance and not relevance"
 
   # The two client packages. NEITHER ran in PR CI before tripl-ey6j.1 —
   # mcp-server's suite executed only in publish-mcp.yml, at tag time, and cli/
@@ -272,6 +273,145 @@ jobs:
       - name: Emulator logs (on failure)
         if: failure()
         run: docker logs bqemu 2>&1 | tail -100 || true
+
+  # The search ranking had NO executable coverage at all. The backend suite runs on
+  # in-memory SQLite, and search keeps a Python fallback (`_search_query.sqlite_search`)
+  # for exactly that reason — so `postgres_lexical_search`'s ts_rank_cd/trigram/boost
+  # arithmetic, `merge_results`, and the `tripl_search` text-search configuration were
+  # executed by nothing, and any weight in them could be changed without a single test
+  # noticing. This job ranks a fixed corpus with the real SQL on a real PostgreSQL
+  # (tripl-338u).
+  #
+  # NO case is xfailed today. The harness and the four ranking fixes landed together in
+  # one commit, so the "delete an xfail to prove the fix" workflow the case table
+  # describes has never actually been exercised here — every case is expected to PASS.
+  # The xfail counting in the post-check below stays because RelevanceCase still carries
+  # the field for the next measured fault (write the case first, fix it second, delete
+  # the marker as the proof), and because pytest reports an xfail as a skip in the JUnit
+  # XML — so the check has to tell the two apart before it can trust a skip count.
+  relevance:
+    name: Search relevance harness (postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        # THE image the compose stack runs, and the same one the alembic round trip
+        # uses — for the same reason: the harness migrates a real database to head, and
+        # e8f9a0b1c2d3 does `CREATE EXTENSION vector`, which stock postgres cannot
+        # satisfy. Pinned by digest: a gate whose database can change underneath it is
+        # not a gate.
+        image: pgvector/pgvector:0.8.2-pg18-trixie@sha256:b7337db8fe39d12fe8ecb0003c72680f24479813a744b43154eee6f2eab5a5f3
+        env:
+          POSTGRES_USER: tripl
+          POSTGRES_PASSWORD: tripl
+          # Deliberately not `tripl`: the harness drops and recreates schema `public`
+          # on every run, so it must never share a database name with anything else.
+          POSTGRES_DB: tripl_relevance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tripl -d tripl_relevance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 24
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Wait for postgres
+        # pg_isready answers happily on a server that will still reject the login, so
+        # the probe authenticates and runs a real query — same reasoning as the
+        # conformance and migration jobs.
+        run: |
+          uv run python - <<'PY'
+          import sys
+          import time
+
+          import psycopg
+
+          dsn = (
+              "host=localhost port=5432 dbname=tripl_relevance "
+              "user=tripl password=tripl connect_timeout=3"
+          )
+          for attempt in range(1, 31):
+              try:
+                  with psycopg.connect(dsn) as conn:
+                      conn.execute("SELECT 1")
+                  break
+              except psycopg.OperationalError as exc:
+                  print(f"attempt {attempt}: {exc}")
+                  time.sleep(2)
+          else:
+              sys.exit("::error::postgres never accepted an authenticated connection")
+          print("postgres is up and authenticated")
+          PY
+
+      - name: Relevance harness
+        env:
+          # Turns "no PostgreSQL" from a graceful local SKIP into a hard CI FAILURE.
+          TRIPL_RELEVANCE_REQUIRED: "1"
+          TRIPL_RELEVANCE_PG_HOST: localhost
+          TRIPL_RELEVANCE_PG_PORT: "5432"
+          TRIPL_RELEVANCE_PG_DB: tripl_relevance
+          TRIPL_RELEVANCE_PG_USER: tripl
+          TRIPL_RELEVANCE_PG_PASSWORD: tripl
+        run: |
+          uv run pytest -q -m relevance \
+            --junitxml=relevance.xml \
+            src/tripl/tests/relevance
+
+      - name: Prove the harness actually ran
+        # The belt to TRIPL_RELEVANCE_REQUIRED's braces, and it has to be smarter than
+        # the conformance job's version: pytest reports an xfail AS a skip in the JUnit
+        # XML. Today that count is 0 (no case is marked), but it must be separated out
+        # anyway — the moment the next fault is written down as an xfail, a check that
+        # treated it as a real skip would fail the job for the harness working exactly
+        # as designed. So skips are counted by `type`: `pytest.xfail` is expected,
+        # anything else is a database that never came up and a gate that tested nothing.
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          try:
+              root = ET.parse("relevance.xml").getroot()
+          except (OSError, ET.ParseError) as exc:
+              sys.exit(f"::error::no relevance JUnit report: {exc}. The harness did not run.")
+          total = xfailed = 0
+          skipped: list[str] = []
+          broken: list[str] = []
+          for case in root.iter("testcase"):
+              total += 1
+              name = case.get("name") or "<unnamed>"
+              for node in case.findall("skipped"):
+                  if node.get("type") == "pytest.xfail":
+                      xfailed += 1
+                  else:
+                      skipped.append(name)
+              if case.find("failure") is not None or case.find("error") is not None:
+                  broken.append(name)
+          print(f"relevance: {total} collected, {xfailed} xfailed, "
+                f"{len(skipped)} skipped, {len(broken)} failed/errored")
+          if total == 0:
+              sys.exit("::error::0 relevance tests ran. A gate that collects nothing is a no-op.")
+          if skipped:
+              sys.exit(
+                  "::error::relevance test(s) SKIPPED in CI: "
+                  + ", ".join(skipped)
+                  + ". PostgreSQL was unreachable; the ranking SQL was not executed."
+              )
+          if broken:
+              sys.exit("::error::relevance failures: " + ", ".join(broken))
+          PY
 
   # Everything else this repo does about alembic is STATIC. The backend job lints
   # and format-checks alembic/versions, and test_alembic_revisions.py parses the

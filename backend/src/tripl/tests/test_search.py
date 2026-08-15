@@ -12,10 +12,21 @@ from tripl.models.search_document import SearchDocument
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
 from tripl.schemas.search import SearchResult
+from tripl.services._search_query import (
+    _FULL_CONFIDENCE_SCORE,
+    _SEMANTIC_SCORE_WEIGHT,
+    _SQLITE_ALL_TOKENS,
+    _SQLITE_EXACT_TITLE,
+    _SQLITE_KEYWORD_TOKEN,
+    _SQLITE_TITLE_PREFIX,
+    identifier_form,
+)
 from tripl.services.search_service import (
     _finalize_results,
     _sanitize_query,
     _token_boundary_regex,
+    fallback_score,
+    merge_results,
 )
 from tripl.tests.conftest import TestSessionLocal
 
@@ -51,12 +62,21 @@ def test_event_type_match_boosts_member_events_above_unrelated_ones() -> None:
 
     titles = [item.title for item in finalized]
     assert titles.index("Spot Screen") < titles.index("Order Placed")
-    # Confidence is normalized to the top hit and stays within [0, 1].
-    assert finalized[0].confidence == 1.0
+    # tripl-txcz: confidence is a fraction of an absolute reference score, not of
+    # the top hit, so the best of a mediocre set is NOT automatically 1.0.
+    assert finalized[0].confidence == pytest.approx(5.0 / _FULL_CONFIDENCE_SCORE, abs=1e-4)
     assert all(0.0 <= item.confidence <= 1.0 for item in finalized)
 
 
 def test_finalize_assigns_confidence_without_event_type_match() -> None:
+    """Confidence is an absolute property of a result, not of the result set.
+
+    tripl-txcz: the old rule divided every score by the top score, which made the
+    best hit of ANY set exactly 1.0 — measured, a keyboard-mash query was served
+    at confidence 1.0 on an absolute score of 0.636. The second half of this test
+    is the part that could not be true before: the same document keeps the same
+    confidence whether or not a stronger result is standing next to it.
+    """
     items = [
         _result(entity_type="event", title="Alpha", score=8.0),
         _result(entity_type="event", title="Beta", score=4.0),
@@ -64,8 +84,186 @@ def test_finalize_assigns_confidence_without_event_type_match() -> None:
 
     finalized = _finalize_results(items, limit=10)
 
+    # 8.0 clears the full-confidence score, 4.0 is the fraction of it.
     assert finalized[0].confidence == 1.0
-    assert finalized[1].confidence == 0.5
+    assert finalized[1].confidence == pytest.approx(4.0 / _FULL_CONFIDENCE_SCORE, abs=1e-4)
+
+    alone = _finalize_results([_result(entity_type="event", title="Beta", score=4.0)], limit=10)
+    assert alone[0].confidence == finalized[1].confidence
+
+
+def _semantic_result(
+    *,
+    title: str,
+    cosine: float,
+    result_id: uuid.UUID | None = None,
+) -> SearchResult:
+    """A row as ``postgres_semantic_search`` returns it: ``score`` IS the cosine."""
+    item = _result(entity_type="event", title=title, score=cosine)
+    if result_id is not None:
+        item.id = result_id
+    return item
+
+
+def test_a_strong_semantic_only_hit_is_not_served_as_a_weak_answer() -> None:
+    """tripl-txcz: both legs must be able to say "certain".
+
+    ``merge_results`` scores a vector-only hit ``cosine * 2.5``, so its score can
+    never exceed 2.5. Dividing that by ``_FULL_CONFIDENCE_SCORE`` reported a
+    PERFECT cosine of 1.0 at 0.357 — the semantic leg de-weighted where the user
+    can see it, on exactly the misspelling rescues ('пейволл', 'forcast') the leg
+    exists for. Confidence is now the max of the score certainty and the leg's
+    own cosine, which is already a [0, 1] certainty.
+
+    The RANKING weight is deliberately unchanged, and the first assertion pins
+    that: this is a presentation fix, not a re-weighting.
+    """
+    merged = merge_results([], [_semantic_result(title="Пейволл", cosine=1.0)], 10)
+    assert merged[0].score == pytest.approx(_SEMANTIC_SCORE_WEIGHT)
+
+    finalized = _finalize_results(merged, limit=10)
+    assert finalized[0].confidence == 1.0
+    # The old rule, spelled out so the regression is unmistakable.
+    assert finalized[0].confidence > _SEMANTIC_SCORE_WEIGHT / _FULL_CONFIDENCE_SCORE
+
+
+def test_semantic_confidence_still_falls_with_the_cosine() -> None:
+    """The fix must not turn every semantic hit into a certain one.
+
+    A hit just above ``_SEMANTIC_MIN_COSINE`` is a weak answer and has to read as
+    one; replacing the confidence rule with a constant, or with "semantic_used
+    means 1.0", fails here.
+    """
+    weak = _finalize_results(
+        merge_results([], [_semantic_result(title="Forcast", cosine=0.4)], 10),
+        limit=10,
+    )
+    assert weak[0].confidence == pytest.approx(0.4, abs=1e-4)
+
+    strong = _finalize_results(
+        merge_results([], [_semantic_result(title="Пейволл", cosine=0.9)], 10),
+        limit=10,
+    )
+    assert weak[0].confidence < strong[0].confidence
+
+
+def test_a_hybrid_hit_keeps_the_stronger_of_its_two_certainties() -> None:
+    """Neither leg may drag the other down: confidence is a ``max``, not a blend.
+
+    A document both legs found gets the SUM for ranking, and that sum is still
+    well under the certainty line here — but the vector leg is very sure about
+    it, and that is what the user is told.
+    """
+    document_id = uuid.uuid4()
+    lexical = _result(entity_type="event", title="purchase_completed", score=3.0)
+    lexical.id = document_id
+
+    merged = merge_results(
+        [lexical],
+        [_semantic_result(title="purchase_completed", cosine=0.8, result_id=document_id)],
+        10,
+    )
+    assert len(merged) == 1, "the two legs found the same document; it must merge, not duplicate"
+    # Ranking: the legs are summed on the score scale, exactly as before.
+    assert merged[0].score == pytest.approx(3.0 + 0.8 * _SEMANTIC_SCORE_WEIGHT)
+
+    finalized = _finalize_results(merged, limit=10)
+    # 5.0 / 7.0 = 0.714 from the score, 0.8 from the cosine — the stronger wins.
+    assert finalized[0].confidence == pytest.approx(0.8, abs=1e-4)
+
+
+def test_sqlite_prefix_match_is_not_served_as_a_certain_answer() -> None:
+    """tripl-txcz on the OTHER dialect: confidence must not depend on the engine.
+
+    ``fallback_score`` paid a bare ``title.startswith(query)`` exactly 7.0, which
+    is ``_FULL_CONFIDENCE_SCORE`` — so a one-character query was served at
+    confidence 1.0 on the dialect the entire backend suite runs on. Only the two
+    identity tiers may reach the certainty line, on either dialect.
+    """
+    document = SearchDocument(
+        project_id=uuid.uuid4(),
+        branch_id=uuid.uuid4(),
+        entity_type="event",
+        entity_id=uuid.uuid4(),
+        title="screen_spot",
+        subtitle="Просмотры экранов",
+        body="Показ экрана спота",
+        keywords="screen_spot pageviews",
+        route_path="/",
+        content_hash="0" * 64,
+    )
+    haystack = "screen_spot просмотры экранов показ экрана спота screen_spot pageviews"
+
+    prefix = fallback_score("s", ["s"], haystack, document)
+    exact = fallback_score("screen_spot", ["screen_spot"], haystack, document)
+    assert prefix == _SQLITE_TITLE_PREFIX
+    assert exact == _SQLITE_EXACT_TITLE
+
+    prefix_confidence = _finalize_results(
+        [_result(entity_type="event", title="screen_spot", score=prefix)], limit=10
+    )[0].confidence
+    exact_confidence = _finalize_results(
+        [_result(entity_type="event", title="screen_spot", score=exact)], limit=10
+    )[0].confidence
+
+    assert exact_confidence == 1.0
+    assert prefix_confidence < 1.0
+    # A prefix is the weakest evidence in the ladder; it may not read as nearly
+    # certain either, which a cosmetic 7.0 -> 6.9 nudge would have left true.
+    assert prefix_confidence <= 0.8
+
+
+def test_sqlite_fallback_folds_a_spaced_query_onto_an_identifier_token() -> None:
+    """tripl-h9x2 is expressible without PostgreSQL, so the fallback implements it.
+
+    The Postgres path folds ``screen spot`` into ``screen_spot`` before its
+    word-boundary tiers (``token_boundary_regex``). The SQLite scorer used to do
+    nothing of the kind, so the same query fell all the way to the
+    "every token appears somewhere" tier. Both now go through
+    :func:`identifier_form`, which is the point of extracting it.
+    """
+    assert identifier_form("screen spot") == "screen_spot"
+    assert _token_boundary_regex("screen spot") == r"\mscreen_spot\M"
+
+    document = SearchDocument(
+        project_id=uuid.uuid4(),
+        branch_id=uuid.uuid4(),
+        entity_type="event",
+        entity_id=uuid.uuid4(),
+        title="Показ экрана спота",
+        subtitle="Просмотры экранов",
+        body="",
+        keywords="screen_spot pageviews",
+        route_path="/",
+        content_hash="0" * 64,
+    )
+    haystack = "показ экрана спота просмотры экранов screen_spot pageviews"
+
+    assert fallback_score("screen spot", ["screen", "spot"], haystack, document) == (
+        _SQLITE_KEYWORD_TOKEN
+    )
+    # Without the fold the query lands here instead: both tokens appear as
+    # substrings of `screen_spot`, and no stronger tier can fire.
+    assert _SQLITE_ALL_TOKENS < _SQLITE_KEYWORD_TOKEN
+
+    # And the fold does not over-fire: `\m..\M` on Postgres matches the whole
+    # identifier only, so the Python side must not match a longer one either.
+    longer = SearchDocument(
+        project_id=uuid.uuid4(),
+        branch_id=uuid.uuid4(),
+        entity_type="event",
+        entity_id=uuid.uuid4(),
+        title="Показ экрана спота",
+        subtitle="Просмотры экранов",
+        body="",
+        keywords="screen_spot_v2 pageviews",
+        route_path="/",
+        content_hash="0" * 64,
+    )
+    longer_haystack = "показ экрана спота просмотры экранов screen_spot_v2 pageviews"
+    assert fallback_score("screen spot", ["screen", "spot"], longer_haystack, longer) == (
+        _SQLITE_ALL_TOKENS
+    )
 
 
 def test_search_document_insert_does_not_write_generated_text_vector() -> None:
@@ -88,7 +286,26 @@ def test_search_document_insert_does_not_write_generated_text_vector() -> None:
 def test_token_boundary_regex_uses_single_postgres_escapes() -> None:
     assert _token_boundary_regex("ecmwf") == r"\mecmwf\M"
     assert _token_boundary_regex("vip_segment") == r"\mvip_segment\M"
-    assert _token_boundary_regex("ecmwf model") is None
+
+
+def test_token_boundary_regex_folds_a_spaced_query_into_an_identifier() -> None:
+    """tripl-h9x2: a query with a space used to return ``None``.
+
+    That silently deleted the 3.5 (keywords) and 3.0 (body) word-boundary tiers
+    from every multi-word query, so ``q='screen spot'`` could not reach the event
+    named ``screen_spot`` through any tier and ranked 5th behind harvested-value
+    variables. Entities here are named in snake_case and typed with spaces, so
+    the query is folded into the identifier form instead of being rejected for
+    having one.
+    """
+    assert _token_boundary_regex("screen spot") == r"\mscreen_spot\M"
+    assert _token_boundary_regex("  ECMWF   Model ") == r"\mecmwf_model\M"
+    # Cyrillic is a token like any other; the old ASCII-only test rejected it.
+    assert _token_boundary_regex("экран спота") == r"\mэкран_спота\M"
+    # A query that is not identifier-shaped still falls through to LIKE/trigram.
+    assert _token_boundary_regex('"exact phrase"') is None
+    assert _token_boundary_regex("100%") is None
+    assert _token_boundary_regex("spot:reload:bento") is None
 
 
 def test_sanitize_query_removes_nul_bytes_and_nothing_else() -> None:
@@ -233,7 +450,8 @@ async def test_global_search_matches_multilingual_plan_content(client: AsyncClie
     )
     assert event_hit is not None
     # The event's own description is returned verbatim for display, and every
-    # result carries a confidence normalized to the top hit.
+    # result carries an absolute confidence in [0, 1] (tripl-txcz — it is no
+    # longer normalized to the top hit of the response).
     assert event_hit["event_id"] == str(event_id)
     assert event_hit["name"] == "Checkout Completed"
     assert event_hit["implemented"] is False
@@ -250,7 +468,11 @@ async def test_global_search_matches_multilingual_plan_content(client: AsyncClie
     assert variable_contexts[0]["values"] == ["vip_segment"]
     assert event_hit["description"] == "Fires when покупка успешно завершена"
     assert 0.0 <= event_hit["confidence"] <= 1.0
-    assert ru_items[0]["confidence"] == 1.0
+    # tripl-txcz: the top hit is no longer 1.0 by construction — this query
+    # matches a field value rather than a title, so it is served as a strong but
+    # not certain answer. The exact arithmetic is pinned in the unit tests above,
+    # where the scores are controlled.
+    assert 0.0 < ru_items[0]["confidence"] <= 1.0
 
     en_resp = await client.get("/api/v1/projects/search-ml/search?q=checkout")
     assert en_resp.status_code == 200
@@ -567,5 +789,9 @@ def test_finalize_confidence_prefers_exact_token_value_matches() -> None:
     finalized = _finalize_results(items, limit=10)
 
     assert finalized[0].title == "spot:choose:models"
-    assert finalized[0].confidence == 1.0
-    assert finalized[1].confidence < 1.0
+    # tripl-txcz: 6.5 is a strong hit but it is not an exact-title match, so it
+    # is served as a strong hit — nothing under the full-confidence score is
+    # dressed up as certain just because it came first.
+    assert finalized[0].confidence == pytest.approx(6.5 / _FULL_CONFIDENCE_SCORE, abs=1e-4)
+    assert finalized[0].confidence < 1.0
+    assert finalized[1].confidence < finalized[0].confidence

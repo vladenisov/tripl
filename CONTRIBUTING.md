@@ -142,6 +142,56 @@ Notes:
 - mypy runs in `strict` mode over `src/tripl` and excludes the test tree.
 - Run the checks for the side you touched before opening a PR.
 
+### Search relevance harness (needs a real PostgreSQL)
+
+Because the suite runs on SQLite, search keeps a Python fallback and the
+**production ranking SQL** — `ts_rank_cd`, the trigram/boost tiers,
+`merge_results`, and the `tripl_search` text-search configuration — is executed by
+nothing else in the repo. `src/tripl/tests/relevance/` ranks a fixed, readable
+corpus with that real SQL on a real PostgreSQL (tripl-338u). Without a server it
+SKIPS, so a plain `uv run pytest` is unaffected; CI runs it as its own job with
+`TRIPL_RELEVANCE_REQUIRED=1`, which turns that skip into a failure.
+
+```bash
+docker run --rm -d --name tripl-relevance -p 55442:5432 \
+  -e POSTGRES_USER=tripl -e POSTGRES_PASSWORD=tripl -e POSTGRES_DB=tripl_relevance \
+  pgvector/pgvector:0.8.2-pg18-trixie
+
+cd backend
+TRIPL_RELEVANCE_PG_PORT=55442 \
+  uv run pytest -q -m relevance src/tripl/tests/relevance
+```
+
+The pgvector image is required, not stock postgres: the harness migrates the
+database to head with the real revision chain (so it tests the shipped
+`tripl_search` configuration, not a hand-rolled copy of it), and one revision
+creates the `vector` extension. It drops and recreates schema `public` on every
+run, which is why the database name defaults to `tripl_relevance` and never
+`tripl`.
+
+All **ten** cases in `relevance/cases.py` pass, alongside a self-test that proves
+the harness really is on PostgreSQL with the semantic leg off, and
+`relevance/test_semantic_floor.py`, which covers the semantic leg's cosine floor
+and confidence using hand-built vectors (no provider, no API key).
+
+`RelevanceCase` carries an `xfail` field and `test_search_relevance.py` turns it
+into `xfail(strict=True)`, so the intended workflow for the **next** measured
+fault is: write the case down with the marker first, fix it second, and delete
+the marker as the proof. **No case uses it today** — the harness and the four
+ranking fixes landed in a single commit, so there was never a marker to delete.
+Do not weaken an assertion to make a case pass.
+
+**Which guarantees are PostgreSQL-only.** The rest of the backend suite runs on
+in-memory SQLite against `_search_query.fallback_score`, a tier ladder with no
+`ts_rank_cd`, no trigram similarity and **no stemmer**. So the SQLite suite does
+**not** cover ranking: everything tripl-nh5s fixed (stemming, and the 3.25 boost
+tier that depends on it — the `purchases` / `уловы` / `spots` / `экран спота`
+cases) holds only on PostgreSQL and only this job executes it. What does hold on
+both dialects is anything implemented at document-build time (tripl-gbxj's
+keyword change, tripl-h9x2's spaced aliases and its query fold) and the rule that
+only an exact title/keywords match may be reported at confidence 1.0. The
+`fallback_score` docstring carries the same list next to the code.
+
 ## Frontend Workflow
 
 The frontend lives in [`frontend/`](https://github.com/vladenisov/tripl/blob/main/frontend)

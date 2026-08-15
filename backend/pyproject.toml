@@ -78,6 +78,17 @@ markers = [
     # conformance job excludes this marker and keeps using the emulator analyzer.
     "bigquery_value: executes value assertions against real BigQuery",
     "bigquery_pipeline: executes the full worker pipeline against real BigQuery",
+    # The search relevance harness (src/tripl/tests/relevance/). The suite runs on
+    # SQLite, so the PRODUCTION ranking SQL — ts_rank_cd, the trigram/boost tiers,
+    # merge_results, and the tripl_search text-search configuration — is executed
+    # by nothing else. It needs a real PostgreSQL (the pgvector image, because the
+    # revision chain creates the vector extension), so it SKIPS when none is
+    # reachable. CI runs it with TRIPL_RELEVANCE_REQUIRED=1, which turns that skip
+    # into a failure. Every case is expected to PASS: the harness and the four
+    # ranking fixes landed in one commit, so no case has ever carried the
+    # xfail(strict=True) marker RelevanceCase still supports for the next measured
+    # fault (tripl-338u). See CONTRIBUTING.md, "Search relevance harness".
+    "relevance: ranks a fixed corpus with the real PostgreSQL search SQL",
 ]
 filterwarnings = [
     # Third-party deprecations we don't control — keep the run summary clean
