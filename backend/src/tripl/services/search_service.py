@@ -633,14 +633,45 @@ async def _ensure_index_exists(
 #: both configurations are applied unconditionally to every token, nothing is
 #: classified, and the two results are concatenated into the ONE existing
 #: ``text_vector`` behind the ONE existing GIN index.
+#: THE TITLE IS WEIGHTED, EVERYTHING ELSE IS NOT (tripl-dito)
+#: ----------------------------------------------------------
+#: ``setweight`` was never used, so every lexeme was weight D and ``ts_rank_cd``
+#: scaled all of them by the same 0.1 from its default ``{0.1, 0.2, 0.4, 1.0}``.
+#: The lexical leg therefore could not tell a title match from a body match at
+#: all — measured, 1305 inverted pairs out of 8224 on the final score.
+#:
+#: WHY ONLY THE TITLE, AND WHY THE REST IS PINNED AT D RATHER THAN LEFT ALONE
+#: Three variants were measured on production against the three real inversions.
+#: Lifting ``keywords`` to B (the intuitive choice) FAILED: the documents in the
+#: fault carry the query IN their keywords, because ``_variable_document``
+#: writes the bound event's name there — ``${property.query}`` holds ``search``
+#: from ``spotlight_search`` — so weighting keywords lifted the offender almost
+#: as much as the victim and the inversion survived (paywall gap 0.92, lift
+#: +0.689). Title-only closed all three and is also the simplest.
+#:
+#: ``'D'`` is written explicitly rather than relied on as the default because
+#: that is what makes the guarantee readable: a document with no title match is
+#: scored exactly as it was before this change. Measured, not argued — for
+#: ``${property.newValue}``, ``${property.query}`` and
+#: ``spot_screen_community_open_feed`` the final score moved 0.000.
+#:
+#: The leg is still bounded: flag 32 is ``rank/(rank+1)``, so ``lexical_score``
+#: cannot exceed 1.0 however far an A-weighted rank climbs, and the ladder it is
+#: calibrated against is untouched. What changes is discrimination WITHIN the
+#: leg, which is the whole point.
 TEXT_VECTOR_EXPRESSION = """
-    to_tsvector(
-        'tripl_search',
-        concat_ws(' ', title, subtitle, body, keywords)
+    setweight(to_tsvector('tripl_search', coalesce(title, '')), 'A')
+    || setweight(to_tsvector('tripl_search_surface', coalesce(title, '')), 'A')
+    || setweight(
+        to_tsvector('tripl_search', concat_ws(' ', subtitle, body, keywords)),
+        'D'
     )
-    || to_tsvector(
-        'tripl_search_surface',
-        concat_ws(' ', title, subtitle, body, keywords)
+    || setweight(
+        to_tsvector(
+            'tripl_search_surface',
+            concat_ws(' ', subtitle, body, keywords)
+        ),
+        'D'
     )
 """
 

@@ -199,6 +199,7 @@ VAR_SCREEN_KIND = "${property.screen_kind}"
 
 FIELD_SCREEN = "Экран"
 FIELD_CATCH_KIND = "Тип улова"
+FIELD_CATCH_WEIGHT = "Вес улова"
 
 
 @dataclass(frozen=True)
@@ -532,8 +533,36 @@ CASES: tuple[RelevanceCase, ...] = (
         # `test_stemming_invariants.py` (no corpus, no ranking) and, through
         # retrieval, by `over-stemmed-nominative-is-reachable-from-an-inflected-
         # query` below.
-        expect_top=EVENT_CATCH_REPORT,
-        must_not_outrank=(VAR_SCREEN_NAME, FIELD_CATCH_KIND),
+        # THE EXPECTATION FLIPPED, BY AN OWNER DECISION, NOT BY A GREEN RUN
+        # (tripl-dito, 2026-08-16)
+        # This case asserted that the EVENT wins. Weighting the title (setweight
+        # 'A') puts the two fields whose names ARE the query above it:
+        #
+        #     q='улов'  Вес улова 7.238  Тип улова 7.238
+        #               Отчёт об улове 7.044  catch_report_created 6.678
+        #
+        # `catch_report_created` is spelled in English and gains nothing from a
+        # Russian query; the fields are literally called "catch type" and "catch
+        # weight". Whether a field titled exactly the query should outrank an
+        # event that only describes it is a PRODUCT question, not an
+        # implementation detail — quietly updating the expectation to match new
+        # output is how a regression gets laundered — so it was put to the owner,
+        # who chose the field: "I typed a name, give me the thing with that name".
+        #
+        # WHY `Вес улова` AND NOT `Тип улова`
+        # The two fields score IDENTICALLY (7.238 both), because both titles
+        # carry the same one matching word. The order between them is the
+        # tie-break in the ranking SQL, `ORDER BY score DESC, title ASC`, and
+        # 'В' precedes 'Т'. Pinning it here pins that tie-break; if a future
+        # change separates the two scores this case will say so rather than
+        # silently accepting either.
+        #
+        # WHAT IS DELIBERATELY UNCHANGED: `${property.screen_name}`, the
+        # harvested-value variable, still must not outrank. That was the original
+        # tripl-gbxj fault and it is not what the owner decided about.
+        expect_top=FIELD_CATCH_WEIGHT,
+        must_not_outrank=(VAR_SCREEN_NAME,),
+        must_retrieve=(EVENT_CATCH_REPORT, FIELD_CATCH_KIND),
     ),
     RelevanceCase(
         id="ulov-plural",
@@ -558,9 +587,20 @@ CASES: tuple[RelevanceCase, ...] = (
         # 'уловы' stems to 'улов' and the document has held 'улов' since
         # a7c3e1b9d5f2, so it is retrieved on the stem leg alone. Green here is
         # not evidence about tripl-uojz and never was.
-        expect_top=EVENT_CATCH_REPORT,
+        # SAME FLIP, SAME DECISION (tripl-dito). The plural behaves like the
+        # singular once the title carries weight:
+        #
+        #     q='уловы'  Вес улова 7.178  Тип улова 7.178
+        #                Отчёт об улове 7.011  catch_report_created 6.645
+        #
+        # The stemming property this case exists for is untouched: 'уловы',
+        # 'улове' and 'улова' still all stem to 'улов', so the event, its type
+        # and both fields are all RETRIEVED by the plural — which is what
+        # tripl-nh5s fixed and what `must_retrieve` below now pins explicitly
+        # instead of leaving implied by a first-place assertion that has moved.
+        expect_top=FIELD_CATCH_WEIGHT,
         must_not_outrank=(VAR_SCREEN_NAME,),
-        must_retrieve=(VAR_SCREEN_NAME,),
+        must_retrieve=(VAR_SCREEN_NAME, EVENT_CATCH_REPORT, FIELD_CATCH_KIND),
     ),
     RelevanceCase(
         id="spots-plural",
