@@ -299,6 +299,13 @@ def test_search_stemming_migration_downgrade_restores_the_simple_mapping(
 
 SURFACE_FORM_MIGRATION = "b6d1f0a3c7e2_index_surface_forms_beside_stems.py"
 
+#: The revision that last rewrote every ``text_vector``, and therefore the one
+#: whose frozen expression must equal the live one (tripl-dito). This moves with
+#: each such revision, and the OLD ones deliberately keep their historical copies
+#: — a migration that changed meaning retroactively would stop describing the
+#: database it actually produced.
+TEXT_VECTOR_MIGRATION = "b2d3f4a5c6e7_weight_the_title_in_the_search_vector.py"
+
 
 def _load_migration(module_name: str, filename: str):
     backend_root = Path(__file__).resolve().parents[3]
@@ -346,12 +353,17 @@ def test_surface_form_migration_matches_the_service_expression() -> None:
     """
     from tripl.services.search_service import TEXT_VECTOR_EXPRESSION
 
-    migration = _load_migration("surface_form_migration_expression", SURFACE_FORM_MIGRATION)
+    migration = _load_migration("text_vector_migration_expression", TEXT_VECTOR_MIGRATION)
 
     def normalized(sql: str) -> str:
         return " ".join(sql.split())
 
     assert normalized(migration._TEXT_VECTOR_EXPRESSION) == normalized(TEXT_VECTOR_EXPRESSION)
+    # tripl-dito: the title carries weight A and nothing else may, so a revision
+    # that promotes another column has to come here and say so.
+    assert "coalesce(title, '')), 'A')" in normalized(TEXT_VECTOR_EXPRESSION)
+    assert normalized(TEXT_VECTOR_EXPRESSION).count("'A')") == 2
+    assert normalized(TEXT_VECTOR_EXPRESSION).count("'D'") == 2
     # And the live expression really is the two-leg one, so a revert of both
     # halves at once cannot pass this by making them identically stem-only.
     assert "tripl_search_surface" in normalized(TEXT_VECTOR_EXPRESSION)

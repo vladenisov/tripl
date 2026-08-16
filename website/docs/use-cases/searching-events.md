@@ -179,6 +179,23 @@ Two consequences worth knowing:
 - Exact names still win. A query that IS an entity's name ranks that entity
   first, ahead of anything that merely stems to it.
 
+### Names outrank descriptions
+
+A match in an entity's **name** counts for more than the same word buried in its
+description, its field values, or the values a scan harvested from your warehouse.
+So searching `paywall` surfaces the event *called* paywall-something ahead of an
+unrelated variable that merely happens to have observed the string `paywall` in
+production data.
+
+This matters most for **auto-detected variables**, which accumulate whatever your
+app emitted. Before, a variable holding a common word thousands of times could
+outrank the event actually named after it. It no longer can.
+
+A caveat worth knowing: entities whose names are in one language are not favoured
+by queries in another. An event named `catch_report_created` gains nothing from a
+Russian query, while a field displayed as `Тип улова` does — so for a mixed-language
+plan, search in the language the thing is *named* in.
+
 ### The `semantic_used` flag
 
 `semantic_used` tells you which engine answered:
