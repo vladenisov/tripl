@@ -121,12 +121,11 @@ second configuration.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.services._search_query import TEXT_QUERY_EXPRESSION
 from tripl.services.search_service import TEXT_VECTOR_EXPRESSION
@@ -328,21 +327,9 @@ DISTINCT_WORDS: tuple[tuple[str, str], ...] = (
 )
 
 
-@pytest.fixture
-async def unseeded_session(
-    relevance_sessions: async_sessionmaker[AsyncSession],
-) -> AsyncIterator[AsyncSession]:
-    """A session on the migrated database with NOTHING seeded into it.
-
-    Deliberately not ``relevance_session``: that fixture depends on
-    ``seeded_corpus``, and a corpus is the one thing this file must not have. The
-    engine fixture underneath still runs ``alembic upgrade head``, so both text
-    search configurations are the ones the migrations create — asserting against
-    a hand-rolled configuration would test a copy of the code rather than the
-    code.
-    """
-    async with relevance_sessions() as session:
-        yield session
+# ``unseeded_session`` (the corpus-free session every test here runs on) lives in
+# this package's conftest since tripl-9t2s, because test_coverage_invariants.py
+# needs the identical fixture.
 
 
 async def _reaches(session: AsyncSession, *, form: str, query: str) -> bool:

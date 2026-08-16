@@ -211,3 +211,26 @@ async def relevance_session(
     """A read-only session per test against the already-seeded corpus."""
     async with relevance_sessions() as session:
         yield session
+
+
+@pytest.fixture
+async def unseeded_session(
+    relevance_sessions: async_sessionmaker[AsyncSession],
+) -> AsyncIterator[AsyncSession]:
+    """A session on the migrated database with NOTHING seeded into it.
+
+    Deliberately not ``relevance_session``: that fixture depends on
+    ``seeded_corpus``, and a corpus is the one thing the invariant modules must
+    not have. The engine fixture underneath still runs ``alembic upgrade head``,
+    so both text search configurations are the ones the migrations create —
+    asserting against a hand-rolled configuration would test a copy of the code
+    rather than the code.
+
+    It lived in ``test_stemming_invariants.py`` until a SECOND corpus-free module
+    needed it (``test_coverage_invariants.py``, tripl-9t2s). Importing a fixture
+    across test modules is how two subtly different versions of it appear, and a
+    hand-rolled copy in the new file would have been free to drop the "no corpus"
+    property that is the whole point.
+    """
+    async with relevance_sessions() as session:
+        yield session
