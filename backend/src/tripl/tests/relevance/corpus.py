@@ -86,14 +86,17 @@ It is a deliberate miniature of three ranking faults measured on production
 TWO DELIBERATE OMISSIONS
 ------------------------
 The ``pageviews`` field definitions are named ``view_id`` / ``card_id`` rather
-than ``screen`` / ``spot_id``. Field names are copied into the event-type
-document (``_event_type_document`` folds ``field_text`` into ``body``), and any
-event-type document that matches the query multiplies EVERY event of that type by
-up to 1.75 (``_search_query._apply_event_type_boost``). Naming the fields after
-the query terms would silently apply that multiplier to the very events under
-measurement and turn each case into a test of the type boost instead of a test of
-the lexical ranking. The events, their values and the variables still carry
-``screen``/``spot`` exactly as production does.
+than ``screen`` / ``spot_id``. This was originally forced: field names are copied
+into the event-type document (``_event_type_document`` folds ``field_text`` into
+``body``), and any event-type document that matched the query multiplied EVERY
+event of that type by up to 1.75 (``_search_query._apply_event_type_boost``), so
+naming a field after a query term turned that case into a test of the type boost
+instead of a test of the lexical ranking. That boost was deleted in tripl-0tt4
+item 4 and the trap no longer exists. The names are kept anyway, because every
+recorded score in this corpus was measured under them and renaming a field would
+move numbers for reasons unrelated to whatever change is under test. The events,
+their values and the variables still carry ``screen``/``spot`` exactly as
+production does.
 
 No event tags are seeded. A tag document has ``keywords = tag.name``, which trips
 the ``lower(d.keywords) = lower(:query)`` 4.0 tier and would add a fourth,
@@ -211,9 +214,10 @@ EVENT_TYPES: tuple[SeedEventType, ...] = (
     SeedEventType(
         name="commerce",
         display_name="Commerce",
-        # Deliberately free of the word "purchase": the commerce event-type
-        # document must not match `q='purchase'`, or the event-type boost lifts
-        # every commerce event at once and the case stops measuring the ranking.
+        # Deliberately free of the word "purchase". This guarded against the
+        # event-type boost, which lifted every commerce event at once whenever
+        # the commerce type document matched; the boost is gone (tripl-0tt4
+        # item 4), and the wording is kept so recorded scores stay comparable.
         description="Payments and refunds",
         fields=(
             SeedField("product", "Product", "Product identifier"),

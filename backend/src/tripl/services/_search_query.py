@@ -31,9 +31,6 @@ from tripl.services import app_settings_service
 from tripl.services.demo.search_embeddings import demo_query_embedding
 from tripl.services.embedding_service import embed_query
 
-# How strongly a matching event type lifts the events that belong to it.
-_TYPE_BOOST_WEIGHT = 0.75
-
 # Cosine similarity a semantic hit must clear to be merged into the result set
 # (tripl-txcz). Below this the vector leg is not "a weaker answer", it is noise:
 # it is a plain nearest-neighbour scan, so it returns `limit` rows for ANY query
@@ -586,16 +583,16 @@ async def postgres_lexical_search(
       as "the text legs stay below the exact-title boost": with
       ``fuzzy_score * 2.0`` in the same sum that was already false, at 6.0 before
       this change and 7.0 after it.
-    * **It is uniform in the SQL and NOT uniform in the result.**
-      :func:`_apply_event_type_boost` runs AFTER this query and is
-      MULTIPLICATIVE, so an event whose type matched banks ``1.75 x`` the bonus
-      while a sibling field or variable banks ``1.0 x``. Measured on the harness:
-      ``q='улов'`` moves ``catch_report_created`` by +1.75 and ``Тип улова`` by
-      +1.00. So "it cannot reorder inside the matched class" is FALSE and this
-      docstring will not claim it. What is true is a measurement and not a
-      construction: across all twelve harness cases the non-uniformity always
-      favoured the document the case expects, and no case changed order except
-      the one this issue is about.
+    * **It is now uniform in the result as well as in the SQL.** It was not,
+      when this was written: ``_apply_event_type_boost`` ran after this query and
+      was MULTIPLICATIVE, so an event whose type matched banked ``1.75 x`` the
+      bonus while a sibling field or variable banked ``1.0 x`` — measured on the
+      harness, ``q='улов'`` moved ``catch_report_created`` by +1.75 and ``Тип
+      улова`` by +1.00. That boost was deleted (tripl-0tt4 item 4, see
+      :func:`finalize_results`), and it was the only multiplicative step between
+      this SQL and the final order. Every term downstream of here is additive,
+      so a constant added to two documents cannot reorder them against each
+      other any more.
     * **The residue is confidence, not ranking.** Confidence is
       ``score / _FULL_CONFIDENCE_SCORE``, so every tsquery-matching hit's reported
       certainty rises by up to 0.143 and some non-identity documents cross 1.0
@@ -936,9 +933,10 @@ def fallback_score(
     while the strongest partial tier lands on 5.6 (confidence 0.80), and because
     every value moved by the same factor, EVERY ratio in the ladder is
     preserved. Ranking on this dialect is provably unchanged — all comparisons
-    are between scaled values, and :func:`_apply_event_type_boost` is
-    multiplicative, so it cannot reorder them either. Only the number painted on
-    a result moves, which is the whole of tripl-txcz.
+    are between scaled values, and nothing downstream reorders them: the one
+    step that could have, the multiplicative ``_apply_event_type_boost``, was
+    deleted in tripl-0tt4 item 4. Only the number painted on a result moves,
+    which is the whole of tripl-txcz.
     """
     if not query_norm:
         return 0.0
@@ -1082,7 +1080,39 @@ def merge_results(
 
 
 def finalize_results(items: list[SearchResult], limit: int) -> list[SearchResult]:
-    """Apply the cross-entity event-type boost, then rank, trim, and stamp confidence.
+    """Rank, trim, and stamp confidence on a merged candidate set.
+
+    WHAT USED TO HAPPEN FIRST HERE, AND WHY IT NO LONGER DOES (tripl-0tt4 item 4)
+    ----------------------------------------------------------------------------
+    An ``_apply_event_type_boost`` pass ran ahead of the sort: every event whose
+    ``subtitle`` named an ``event_type`` document present in the candidate set was
+    multiplied by up to 1.75. It was written for descriptive queries — "экран
+    спота" resolving to the ``pageviews`` type and lifting that type's events.
+
+    MEASURED ON PRODUCTION 2026-08-16, at the same 100-row window this function
+    now receives, that intended case never occurred: across seven descriptive
+    queries on each of the three real projects, no ``event_type`` document ever
+    entered the window, so there was nothing to boost. The only queries that DID
+    reach it were the type's own name — ``pv``, ``se``, ``old`` — and there the
+    boost did the opposite of its purpose. Multiplying every event of the type
+    while leaving the TYPE document itself unmultiplied buried the one document
+    the query was actually naming:
+
+        q='pv'  windy-web      "Pageview"          rank 100 of 100 -> 1 without it
+        q='pv'  windy-ios      "Pageview"          rank 100 of 100 -> 1 without it
+        q='se'  windy-android  "Structured Event"  rank  36 of 100 -> 1 without it
+        q='old' windy-ios      "Old"               rank 100 of 100 -> 2 without it
+
+    (Rank without the boost is exact, not estimated: with one type dominating the
+    set its relevance is 1.0, so dividing a boosted score by 1.75 recovers the
+    pre-boost score, and limit=100 equals the candidate window so nothing had
+    been trimmed before the reading.)
+
+    Ranking is now the merged score alone. Nothing replaced the boost: a document
+    that answered the whole query is already paid for it by ``COVERAGE_BONUS``,
+    which is the signal the type boost was reaching for and which does not
+    require guessing a category.
+
 
     CONFIDENCE IS ABSOLUTE, NOT RELATIVE TO THE TOP HIT (tripl-txcz)
     ---------------------------------------------------------------
@@ -1125,42 +1155,13 @@ def finalize_results(items: list[SearchResult], limit: int) -> list[SearchResult
     sees only the merged score — this function decides what number is painted on
     a result, never where it sits.
     """
-    boosted = _apply_event_type_boost(items)
-    boosted.sort(key=lambda item: (-item.score, item.title))
-    trimmed = boosted[:limit]
+    ranked = sorted(items, key=lambda item: (-item.score, item.title))
+    trimmed = ranked[:limit]
     for item in trimmed:
         score_confidence = min(1.0, max(0.0, item.score) / _FULL_CONFIDENCE_SCORE)
         semantic_confidence = item.semantic_cosine or 0.0
         item.confidence = round(max(score_confidence, semantic_confidence), 4)
     return trimmed
-
-
-def _apply_event_type_boost(items: list[SearchResult]) -> list[SearchResult]:
-    """Lift events whose event type matches the query.
-
-    When a descriptive query resolves to an event type (e.g. "экран спота"
-    matching the ``pageviews`` type), every event of that type gets a
-    multiplicative score boost proportional to how strongly the type matched.
-    Type relevance is derived from the candidate set itself (the ``event_type``
-    documents present in it), so this works for both the Postgres
-    (lexical + semantic) and SQLite paths without an extra query.
-    """
-    type_scores: dict[str, float] = {}
-    for item in items:
-        if item.entity_type == "event_type":
-            key = _normalize(item.title)
-            if key:
-                type_scores[key] = max(type_scores.get(key, 0.0), item.score)
-    top_type = max(type_scores.values(), default=0.0)
-    if top_type <= 0:
-        return items
-    for item in items:
-        if item.entity_type != "event" or not item.subtitle:
-            continue
-        relevance = type_scores.get(_normalize(item.subtitle), 0.0) / top_type
-        if relevance > 0:
-            item.score *= 1.0 + _TYPE_BOOST_WEIGHT * relevance
-    return items
 
 
 async def enrich_event_hits(
