@@ -626,6 +626,10 @@ async def test_shipped_fixture_covers_current_demo_documents() -> None:
         missing_identities: list[str] = []
         disagreeing: list[str] = []
         unresolvable: list[str] = []
+        # identity -> the distinct embed-text keys documents under it produced.
+        # More than one means two documents share an identity, which is the only
+        # thing that may make the two lookups disagree.
+        identity_texts: dict[str, set[str]] = {}
         tag_documents = 0
         for branch_id in branch_ids:
             documents = await build_documents(session, project.id, branch_id, project.slug)
@@ -653,22 +657,38 @@ async def test_shipped_fixture_covers_current_demo_documents() -> None:
 
                 if by_identity is None:
                     missing_identities.append(f"{doc.entity_type}:{doc.title}")
+                elif by_embed_text is not None and by_embed_text != by_identity:
+                    disagreeing.append(f"{doc.entity_type}:{doc.title}|{identity}")
+                identity_texts.setdefault(identity, set()).add(embed_key)
                 # The sidecar maps identity -> embed-text key, so when both
                 # lookups hit they must land on the SAME vector. A disagreement
                 # means the sidecar was derived from a different archive than the
                 # one shipped beside it, and the fallback would hand a document
                 # some other entity's vector — a failure no other assertion here
                 # can see, because both halves are individually "present".
-                # NOT asserted when BOTH lookups hit, deliberately. `vector_for`
-                # reads the embed-text vector first and falls back to the identity
-                # one only when that misses, so a disagreement between them is
-                # never consulted at runtime — the current text's vector always
-                # wins. Asserting it anyway fails on the artifacts main ships
-                # today: three documents (one event, two tags) already disagree.
-                # That is real drift between the archive and its sidecar, but it
-                # changes nothing the demo searches with, and regenerating both
-                # needs a paid provider (embeddings are hardcoded to OpenAI), so
-                # it is filed rather than fixed by a test (tripl-338u review).
+                # A DISAGREEMENT IS ONLY ACCEPTABLE WHEN A COLLISION EXPLAINS IT.
+                #
+                # tripl-khnz recorded three documents whose two lookups land on
+                # different vectors and diagnosed it as the archive and the sidecar
+                # having been generated from different demo builds. That diagnosis
+                # was wrong: both artifacts were regenerated from ONE build on
+                # 2026-08-16 and the same three documents still disagree.
+                #
+                # The cause is structural. `identity_key` is (entity_type, title,
+                # subtitle) and deliberately carries NO branch: a shipped fixture
+                # cannot name branch ids, because the demo mints fresh ones on every
+                # provisioning. The demo has two branches, and the feature branch
+                # edits one event's description, so that event — and the tag
+                # documents whose body quotes it — exist twice under one identity
+                # with different text. The sidecar maps an identity to one vector,
+                # so the other copy necessarily disagrees.
+                #
+                # That is benign: the loser's fallback vector is the SAME entity
+                # from the sibling branch, which is what you would want an
+                # approximation to be. What would not be benign is a disagreement
+                # with no collision behind it — that really would mean the two
+                # artifacts came from different builds, and the fallback would hand
+                # a document some unrelated entity's vector.
 
                 if fixture.vector_for(embed_key=embed_key, identity=identity) is None:
                     unresolvable.append(f"{doc.entity_type}:{doc.title}")
@@ -690,10 +710,15 @@ async def test_shipped_fixture_covers_current_demo_documents() -> None:
         "demo documents missing from the fixture's identity sidecar (regenerate via "
         f"scripts/generate_demo_search_embeddings.py): {missing_identities}"
     )
-    assert not disagreeing, (
+    unexplained = [
+        entry for entry in disagreeing if len(identity_texts.get(entry.split("|", 1)[1], ())) < 2
+    ]
+    assert not unexplained, (
         "the identity sidecar and the fixture archive disagree about these documents' "
-        "vectors; they were generated from different demo builds (regenerate BOTH via "
-        f"scripts/generate_demo_search_embeddings.py): {disagreeing}"
+        "vectors, and NO second document shares their identity, so a collision does not "
+        "explain it — the two artifacts came from different demo builds and the fallback "
+        "would hand these documents an unrelated entity's vector (regenerate BOTH via "
+        f"scripts/generate_demo_search_embeddings.py): {unexplained}"
     )
     # Stated last and on purpose: this is the production invariant the demo
     # depends on — no document may end up with no vector to stamp — and with the
