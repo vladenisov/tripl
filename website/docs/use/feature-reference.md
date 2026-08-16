@@ -998,7 +998,7 @@ Members, Account, and owner-only Runtime); a **Current project** group (Events,
 Project settings, and per-surface settings jumps); a **Projects** switcher; an
 **Event types** jump list; **branch-aware knowledge search** (from 2 characters)
 across events, event types, fields, meta fields, variables, relations, tags,
-metrics, fact tables, scan configurations and alert rules, each with a
+metrics, fact tables, scans and alert rules, each with a
 confidence badge; **Ask AI** (when AI is
 enabled and the query is at least 8 characters, with cited sources); and **Sign
 out**.

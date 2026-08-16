@@ -6,10 +6,21 @@ import type { EventFieldVariableValue } from './events'
  * This is a HAND-WRITTEN copy of the backend's `SearchEntityType` literal, kept
  * in step by hand — `api.gen.ts` carries the generated one, but the app imports
  * this. Adding a value on the backend without adding it here compiles fine and
- * simply loses the new kind at runtime. The one thing that catches the omission
- * is `ENTITY_META` in command-palette.tsx being a `Record<SearchEntityType, …>`,
- * which fails the build for a value present here and missing there — so extend
- * both, in that order.
+ * simply loses the new kind at runtime — nothing on this side notices.
+ *
+ * There are THREE hand-written copies of the list, and only one of them is
+ * guarded:
+ *
+ * - this file, unguarded;
+ * - `ENTITY_META` in command-palette.tsx, which is a `Record<SearchEntityType, …>`
+ *   and so fails the build for a value present HERE and missing there — it
+ *   catches the second half of the edit, never the first;
+ * - `tripl_cli.api.search.ENTITY_TYPES`, which `cli/tests/test_contract.py`
+ *   compares against the OpenAPI enum. That is the only check that fails when
+ *   the BACKEND gains a value and a copy does not.
+ *
+ * So a backend addition is caught by the CLI's contract test, in CI, and not by
+ * anything in this package. Extend all three.
  */
 export type SearchEntityType =
   | 'event'

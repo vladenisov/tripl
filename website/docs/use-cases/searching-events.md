@@ -79,8 +79,8 @@ them precisely and only returns events that actually carry them.
 
 The smart search endpoint takes a natural-language query `q` and returns ranked hits
 across the whole project — not just events, but event types, fields, meta
-fields, variables, relations, tags, metrics, fact tables, scan configurations
-and alert rules. A scan is findable by the columns it is wired to and by the
+fields, variables, relations, tags, metrics, fact tables, scans and alert
+rules. A scan is findable by the columns it is wired to and by the
 warehouse SQL it runs, so "which scan reads `checkout_events`" is a search; an
 alert rule is findable by the wording of its message template. The response is
 `{items, total, semantic_used}`.
