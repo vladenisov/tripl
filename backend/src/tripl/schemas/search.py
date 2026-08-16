@@ -87,6 +87,31 @@ class SearchResult(BaseModel):
         """Remember the semantic leg's cosine, clamped into [0, 1]."""
         self._semantic_cosine = max(0.0, min(1.0, cosine))
 
+    # Whether the lexical leg matched this document BY IDENTITY — its title or
+    # its keywords being the query, rather than merely containing it (tripl-d5u8).
+    #
+    # PRIVATE for the same reason as the cosine above: it exists so
+    # ``finalize_results`` can enforce one dialect-independent rule — only an
+    # identity match may be painted as a certain answer — without adding a field
+    # for API clients to track. Each dialect answers the question its own way,
+    # because their ladders are on different scales: Postgres asks whether the
+    # boost tier reached the 4.0 exact-keywords rung, SQLite whether the tier
+    # score reached its own 7.2 equivalent.
+    #
+    # Defaults to False so a result that never went through a lexical ladder at
+    # all — a semantic-only hit — is not silently treated as an identity match.
+    # Such a hit still reports its cosine, which is its own honest certainty.
+    _identity_match: bool = PrivateAttr(default=False)
+
+    @property
+    def identity_match(self) -> bool:
+        """Whether the lexical leg matched this document's identity, not its text."""
+        return self._identity_match
+
+    def record_identity_match(self, *, identity: bool) -> None:
+        """Remember whether the lexical ladder placed this result on an identity tier."""
+        self._identity_match = identity
+
 
 class SearchResponse(BaseModel):
     items: list[SearchResult]

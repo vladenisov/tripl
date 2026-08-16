@@ -127,8 +127,18 @@ fields under them:
 `confidence` is an **absolute score in `[0, 1]`**, comparable between queries. It is
 the hit's relevance measured against the score a result reaches when it *is* the thing
 you typed — an exact title match — capped at `1.0`. A query that found nothing good
-therefore comes back with low confidence on every item, including the first one; a
-top hit of `1.0` means the search really did find an exact match.
+therefore comes back with low confidence on every item, including the first one.
+
+**`1.0` means the result IS what you typed**, and only that. A hit reaches the top of
+the scale only by matching an entity's *identity* — its name being your query, or its
+keywords being your query exactly. Everything weaker is partial evidence (the query
+appearing as a word inside the name, a stemmed match, a substring somewhere in the
+body) and is reported at **`0.8` or below**, however high its underlying relevance
+score climbs.
+
+That ceiling matters if you are thresholding: two partial matches that rank differently
+can both report `0.8`, because above that line the honest answer is "strong, but not
+the thing you named" for both. Use the **order** to tell them apart, not the number.
 
 It used to be normalized to the top hit of the same response, which made the best
 result `1.0` by construction — a keyboard mash was served as a perfect answer. If you
