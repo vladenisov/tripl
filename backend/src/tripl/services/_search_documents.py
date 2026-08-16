@@ -166,6 +166,33 @@ class BuiltDocument:
         return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+#: Which generation of the document builders produced a stored row (tripl-uji9).
+#:
+#: BUMP THIS whenever a change to this module alters the TEXT a document is built
+#: from — a new field folded into ``body``, a keyword rule, a title format. Do not
+#: bump it for a change that cannot move any document's text (a refactor, a type
+#: annotation, a docstring).
+#:
+#: WHY ``content_hash`` CANNOT ANSWER THIS
+#: ---------------------------------------
+#: ``content_hash`` is a sha256 over the document's own fields, so it detects that
+#: a rebuilt document DIFFERS from the stored one — but only once the rebuild has
+#: happened. It says nothing about whether a branch has been through the current
+#: builders at all, and that is the question the sweep asks.
+#:
+#: Main branches self-heal: the worker reindexes main after every scan and every
+#: metrics collection, so they pick up a builder change within the hour. Working
+#: branches have no such path — they are rebuilt only when somebody edits them.
+#: Measured on production on 2026-08-16, eight days after the keywords fix
+#: shipped: all three main branches were correct, and eight windy-ios working
+#: branches still held 7117 documents built by the previous generation.
+#:
+#: HISTORY
+#: 1 — first stamped generation. Everything written before this column existed is
+#:     0, which is what makes those eight branches visible to the sweep.
+DOCUMENT_BUILDER_VERSION = 1
+
+
 async def build_documents(
     session: AsyncSession,
     project_id: uuid.UUID,

@@ -14,7 +14,7 @@ import logging
 import math
 import uuid
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.config import settings
@@ -27,6 +27,7 @@ from tripl.schemas.search import (
 )
 from tripl.services import app_settings_service
 from tripl.services._search_documents import (
+    DOCUMENT_BUILDER_VERSION,
     BuiltDocument,
     _clean,
     _join,
@@ -119,6 +120,7 @@ def _doc_to_model(
         route_path=doc.route_path,
         archived=doc.archived,
         content_hash=doc.content_hash,
+        builder_version=DOCUMENT_BUILDER_VERSION,
         embedding_status="pending" if ai_config.search_embeddings_enabled else "disabled",
         embedding_model=ai_config.search_embedding_model
         if ai_config.search_embeddings_enabled
@@ -241,6 +243,7 @@ async def _reindex_branch_documents(
                 SearchDocument.entity_type,
                 SearchDocument.entity_id,
                 SearchDocument.content_hash,
+                SearchDocument.builder_version,
                 SearchDocument.embedding_status,
                 SearchDocument.embedding_model,
             ).where(
@@ -274,6 +277,25 @@ async def _reindex_branch_documents(
     for start in range(0, len(delete_ids), _REINDEX_DELETE_CHUNK):
         chunk = delete_ids[start : start + _REINDEX_DELETE_CHUNK]
         await session.execute(delete(SearchDocument).where(SearchDocument.id.in_(chunk)))
+
+    # A KEPT row was written by an older builder generation but its stored text
+    # is byte-identical to what the current builders just produced — that is what
+    # the content_hash comparison above proved. So it is current in substance and
+    # only its stamp is behind; stamping it here is what lets the staleness sweep
+    # converge. Without this a branch whose documents all survive the diff would
+    # come back due on every pass, forever (tripl-uji9).
+    restamp_ids = [
+        row.id
+        for row in existing.values()
+        if row.id in keep_ids and row.builder_version != DOCUMENT_BUILDER_VERSION
+    ]
+    for start in range(0, len(restamp_ids), _REINDEX_DELETE_CHUNK):
+        chunk = restamp_ids[start : start + _REINDEX_DELETE_CHUNK]
+        await session.execute(
+            update(SearchDocument)
+            .where(SearchDocument.id.in_(chunk))
+            .values(builder_version=DOCUMENT_BUILDER_VERSION)
+        )
     if to_insert:
         session.add_all(
             [

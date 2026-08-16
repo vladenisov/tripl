@@ -11,12 +11,17 @@ from sqlalchemy.orm import Session
 
 from tripl.models.search_document import SearchDocument
 from tripl.services import app_settings_service
-from tripl.services._search_documents import EMBED_TEXT_MAX_CHARS, embed_text_for
+from tripl.services._search_documents import (
+    DOCUMENT_BUILDER_VERSION,
+    EMBED_TEXT_MAX_CHARS,
+    embed_text_for,
+)
 from tripl.services.app_settings_service import AiConfig
 from tripl.services.embedding_service import embed_texts
 from tripl.services.search_service import sanitize_embedding
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import _get_sync_session
+from tripl.worker.search_reindex import reindex_branch_from_worker
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +179,58 @@ def embed_search_documents(
         session.rollback()
         logger.exception("Failed to embed search documents")
         raise
+    finally:
+        session.close()
+
+
+# How many (project, branch) pairs one sweep pass rebuilds.
+#
+# Deliberately small. A rebuild reads the whole branch — windy-ios carries eight
+# working branches at 3200-4100 documents each — so an unbounded sweep would turn
+# one builder bump into a stampede against the same database the API is serving
+# from. Two per pass against the schedule below drains a 10-branch instance
+# inside an hour, which is the same order as the delay main already has (it waits
+# for the next scan).
+STALE_REINDEX_BRANCHES_PER_RUN = 2
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="tripl.worker.tasks.search.reindex_stale_search_documents",
+)
+def reindex_stale_search_documents() -> dict[str, int]:
+    """Rebuild branches whose documents predate the current document builders.
+
+    WHY THIS EXISTS (tripl-uji9)
+    ----------------------------
+    A change to how documents are BUILT reaches a main branch on its own: the
+    worker reindexes main after every scan and every metrics collection. Nothing
+    does that for a working branch — it is rebuilt only when somebody edits its
+    content — so a builder change split the corpus into two generations and left
+    it that way.
+
+    That is not hypothetical. Eight days after the keywords fix shipped, measured
+    on production: all three main branches were correct, and eight windy-ios
+    working branches still held 7117 documents built by the previous generation,
+    ranking them by text the fix had already removed.
+
+    WHAT IT COSTS, AND WHAT IT DOES NOT
+    -----------------------------------
+    The rebuild is the ordinary incremental one, so a document whose text is
+    unchanged is KEPT with its vector and its embedding — it only gets its stamp
+    corrected, at no provider cost. Only documents whose text genuinely moved are
+    re-inserted and re-embedded, which is the work the builder change asked for.
+    """
+    session = _get_sync_session()
+    try:
+        pairs = session.execute(
+            select(SearchDocument.project_id, SearchDocument.branch_id)
+            .where(SearchDocument.builder_version < DOCUMENT_BUILDER_VERSION)
+            .distinct()
+            .limit(STALE_REINDEX_BRANCHES_PER_RUN)
+        ).all()
+        for project_id, branch_id in pairs:
+            reindex_branch_from_worker(session, project_id, branch_id)
+        return {"branches_reindexed": len(pairs)}
     finally:
         session.close()
 

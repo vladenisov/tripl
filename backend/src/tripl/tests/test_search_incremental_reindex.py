@@ -18,11 +18,12 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from tripl.config import settings
 from tripl.models.search_document import SearchDocument
 from tripl.services import search_service
+from tripl.services._search_documents import DOCUMENT_BUILDER_VERSION
 from tripl.tests.conftest import TestSessionLocal
 from tripl.tests.test_search import _create_event_type, _create_fact_metric, _create_fact_table
 
@@ -184,3 +185,35 @@ async def test_reindex_reembeds_ready_rows_from_a_different_model(
     assert after[metric_key].id != before[metric_key].id
     assert after[metric_key].embedding_status == "pending"
     assert after[metric_key].embedding is None
+
+
+@pytest.mark.asyncio
+async def test_reindex_stamps_kept_rows_so_the_staleness_sweep_converges(
+    client: AsyncClient,
+) -> None:
+    """A KEPT row gets the current builder stamp, or the sweep never terminates.
+
+    tripl-uji9. ``reindex_stale_search_documents`` picks branches by
+    ``builder_version < DOCUMENT_BUILDER_VERSION``. The rebuild it runs keeps
+    every row whose text is unchanged — which, on a branch that was only ever
+    stale in its STAMP, is all of them. If keeping a row left its old version in
+    place, the branch would come back due on the next pass and on every pass
+    after that, reindexing the same documents every ten minutes forever.
+
+    Nothing about the documents is edited between the downgrade and the reindex,
+    so this fails without the restamp: every row is kept, and every row is still
+    at version 0.
+    """
+    slug = "reindex-stamp"
+    await _setup_project(client, slug)
+
+    async with TestSessionLocal() as session, session.begin():
+        await session.execute(update(SearchDocument).values(builder_version=0))
+
+    await _reindex(slug)
+
+    async with TestSessionLocal() as session:
+        versions = (await session.execute(select(SearchDocument.builder_version))).scalars().all()
+
+    assert versions, "the project indexed no documents, so this proves nothing"
+    assert set(versions) == {DOCUMENT_BUILDER_VERSION}

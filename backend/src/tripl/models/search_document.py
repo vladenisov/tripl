@@ -51,6 +51,10 @@ class SearchDocument(UUIDMixin, TimestampMixin, Base):
     # Runtime Postgres migrations make this vector(1536). SQLite tests use JSON.
     embedding: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64))
+    # Generation of the document builders that produced this row. Rows written
+    # before the column existed are 0, so the staleness sweep sees them as due.
+    # See services/_search_documents.DOCUMENT_BUILDER_VERSION.
+    builder_version: Mapped[int] = mapped_column(default=0, server_default="0", index=True)
     embedding_status: Mapped[str] = mapped_column(
         String(16), default="disabled", server_default="disabled"
     )
