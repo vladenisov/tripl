@@ -18,18 +18,34 @@ logger = logging.getLogger(__name__)
 
 
 def reindex_main_branch_from_worker(session: Session, project_id: uuid.UUID) -> None:
-    bind = session.bind
-    if bind is None or bind.dialect.name != "postgresql":
-        return
+    """Rebuild the project's MAIN branch index, as every scan and collection does.
 
-    project = session.get(Project, project_id)
+    This is the path that makes main self-healing: because it runs after each
+    catalog refresh, a change to how documents are BUILT reaches main within the
+    hour without anybody asking for it. Working branches have no equivalent
+    trigger, which is what :func:`reindex_branch_from_worker` and the staleness
+    sweep in ``worker/tasks/search.py`` exist to cover (tripl-uji9).
+    """
     branch_id = session.scalar(
         select(PlanBranch.id).where(
             PlanBranch.project_id == project_id,
             PlanBranch.kind == BranchKind.main.value,
         )
     )
-    if project is None or branch_id is None:
+    if branch_id is None:
+        return
+    reindex_branch_from_worker(session, project_id, branch_id)
+
+
+def reindex_branch_from_worker(
+    session: Session, project_id: uuid.UUID, branch_id: uuid.UUID
+) -> None:
+    bind = session.bind
+    if bind is None or bind.dialect.name != "postgresql":
+        return
+
+    project = session.get(Project, project_id)
+    if project is None:
         return
 
     slug = project.slug
@@ -62,4 +78,8 @@ def reindex_main_branch_from_worker(session: Session, project_id: uuid.UUID) -> 
     try:
         asyncio.run(_run())
     except Exception:
-        logger.exception("Failed to reindex search documents after worker catalog refresh")
+        logger.exception(
+            "Failed to reindex search documents for project %s branch %s",
+            project_id,
+            branch_id,
+        )

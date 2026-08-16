@@ -326,7 +326,19 @@ whole index, as do a plan-branch merge, a demo reset, and the scan/catalog
 refresh the Celery worker runs. An actively used project needs nothing from you.
 
 Branches nobody writes to — archived plan branches, projects kept for reference
-— keep the old documents indefinitely. Rebuild those explicitly:
+— used to keep the old documents indefinitely. They no longer do when the change
+was to how documents are BUILT: each row carries the generation of the builders
+that wrote it, and the `reindex-stale-search-documents` beat task rebuilds a
+couple of lagging branches every ten minutes until the whole instance is current.
+A ten-branch instance converts inside an hour. Rows whose text did not actually
+change keep their vector and their embedding and only have their stamp
+corrected, so the sweep costs nothing at your embedding provider beyond the
+documents that genuinely moved.
+
+That covers builder changes only. A migration that rewrites stored vectors
+without changing document text — a text-search configuration change, for
+instance — leaves the stamp alone by design, and so does an index you want
+rebuilt for any other reason. Rebuild those explicitly:
 
 ```bash
 # Editor role or above. Once per project AND per plan branch.

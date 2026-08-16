@@ -84,6 +84,16 @@ celery_app.conf.beat_schedule = {
         # adds load against the tracker's REST API.
         "schedule": 300.0,
     },
+    "reindex-stale-search-documents": {
+        "task": "tripl.worker.tasks.search.reindex_stale_search_documents",
+        # Every 10 minutes, and each pass takes only STALE_REINDEX_BRANCHES_PER_RUN
+        # branches. A builder bump is rare and the corpus it has to repair is
+        # bounded by the branch count, so this trades speed for staying out of the
+        # API's way — a 10-branch instance is fully converted inside an hour, the
+        # same order as the delay main already has (it waits for the next scan).
+        # Between bumps the query matches nothing and a pass is one indexed lookup.
+        "schedule": 600.0,
+    },
     "requeue-stranded-search-embeddings": {
         "task": "tripl.worker.tasks.search.requeue_stranded_search_embeddings",
         # Every 15 minutes — embeddings refresh event-driven after each reindex;
