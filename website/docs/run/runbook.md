@@ -333,9 +333,20 @@ Branches nobody writes to — archived plan branches, projects kept for referenc
 # $TRIPL_API_KEY is a write-scoped personal API key (tk_w_…), see Security.
 curl -fsS -X POST \
   -H "Authorization: Bearer $TRIPL_API_KEY" \
-  "http://localhost:8000/api/v1/projects/<slug>/search/reindex?branch_id=<branch_id>"
+  "http://localhost:8000/api/v1/projects/<slug>/search/reindex?branch=<branch_id>"
 # -> {"documents_indexed": N, "embeddings_scheduled": true|false}
 ```
+
+The parameter is `branch`, not `branch_id`. An unrecognised query parameter is
+not an error — it is ignored, and the request rebuilds **main** instead of the
+branch you named, reporting success either way. If you are repairing a specific
+plan branch, check `documents_indexed` against that branch's size before
+believing it.
+
+`embeddings_scheduled` reports whether a refresh task was actually handed to the
+broker, so `false` while `SEARCH_EMBEDDINGS_ENABLED=true` means the enqueue
+failed and the rebuilt rows are sitting at `embedding_status='pending'` with
+nothing coming for them.
 
 This is intentionally **not** done for you by the migration. Rebuilding drops
 and re-inserts the affected rows, which discards their stored embeddings — with

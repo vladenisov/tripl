@@ -9,6 +9,7 @@ split across two private sibling modules:
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 import uuid
@@ -69,8 +70,10 @@ logger = logging.getLogger(__name__)
 
 # Re-export types / helpers that tests and callers may reference directly.
 __all__ = [
+    "CANDIDATE_WINDOW",
     "AiConfig",
     "BuiltDocument",
+    "ReindexOutcome",
     "SearchEntityType",
     "SearchResponse",
     "SearchResult",
@@ -123,13 +126,31 @@ def _doc_to_model(
     )
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class ReindexOutcome:
+    """What a reindex DID, which is not the same as what it was configured to do.
+
+    ``embeddings_scheduled`` used to be answered by the caller re-reading the
+    ``search_embeddings_enabled`` flag, so the API reported a refresh as queued
+    whenever the feature was switched on — including when the broker was down and
+    the enqueue had just been swallowed by the ``except`` in
+    :func:`_queue_embedding_refresh` (tripl-0tt4 item 6). The operator reading
+    that response is deciding whether to go and look at the queue, so it has to
+    mean "a task was handed to the broker", not "a task would have been if
+    everything worked".
+    """
+
+    documents_indexed: int
+    embeddings_scheduled: bool
+
+
 async def reindex_branch(
     session: AsyncSession,
     slug: str,
     branch_id: uuid.UUID | None = None,
     *,
     schedule_embeddings: bool = True,
-) -> int:
+) -> ReindexOutcome:
     project_id = await get_project_id_by_slug(session, slug)
     resolved_branch_id = await resolve_branch_id(session, project_id, branch_id)
     return await reindex_project_branch(
@@ -278,7 +299,7 @@ async def reindex_project_branch(
     branch_id: uuid.UUID,
     slug: str | None = None,
     schedule_embeddings: bool = True,
-) -> int:
+) -> ReindexOutcome:
     count, ai_config = await _reindex_branch_documents(
         session,
         project_id=project_id,
@@ -295,9 +316,10 @@ async def reindex_project_branch(
     ):
         await session.commit()
 
+    scheduled = False
     if schedule_embeddings:
-        _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
-    return count
+        scheduled = _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
+    return ReindexOutcome(documents_indexed=count, embeddings_scheduled=scheduled)
 
 
 async def _demo_fixture_model(
@@ -364,6 +386,36 @@ async def _apply_demo_search_embeddings(
     )
 
 
+#: How many rows each retrieval leg pulls before fusion, no matter what page
+#: size the caller asked for (tripl-0tt4 item 2).
+#:
+#: WHY THE WINDOW MUST NOT TRACK THE PAGE SIZE
+#: -------------------------------------------
+#: :func:`merge_results` SUMS the two legs: a document found lexically AND
+#: semantically keeps ``lexical + cosine * weight``, while a document found by
+#: one leg keeps only that leg's score. So the bonus is not a property of the
+#: document — it is a property of the document having landed inside BOTH
+#: windows. Shrink the window and a document that was #35 semantically silently
+#: stops being paid for it, which moves the TOP of the list, not just its tail.
+#:
+#: The previous rule (``+24`` while ``capped_limit < 50``) was also not
+#: monotonic: ``limit=49`` retrieved 73 candidates and ``limit=50`` retrieved
+#: 50, so asking for MORE results made the engine consider FEWER of them. That
+#: is what produced the reported fault — ``q='экран спота'`` answering with a
+#: different top-1 at ``limit=5`` than at ``limit=50``.
+#:
+#: WHY 100
+#: -------
+#: It is above every window the old rule could produce (its maximum was 73), so
+#: no interactive query retrieves fewer candidates than it does today, and it
+#: equals the page size cap on ``GET /search`` (``Query(le=100)``), so the
+#: largest page the HTTP API can ask for is exactly one window. ``max`` rather
+#: than a plain constant because bulk callers legitimately want more:
+#: :func:`search_event_ids` passes ``limit=10000`` and must keep retrieving
+#: 10000, not 100.
+CANDIDATE_WINDOW = 100
+
+
 async def search_project(
     session: AsyncSession,
     slug: str,
@@ -387,12 +439,7 @@ async def search_project(
     await _ensure_index_exists(session, slug, project_id, resolved_branch_id)
 
     capped_limit = _safe_limit(limit)
-    # Pull a few extra candidates for small interactive queries so the
-    # event-type boost has room to promote events of a matching type into the
-    # final window. Large/typed queries (e.g. bulk id lookups) are left as-is.
-    candidate_limit = capped_limit
-    if entity_types is None and capped_limit < 50:
-        candidate_limit = _safe_limit(capped_limit + 24)
+    candidate_limit = max(capped_limit, CANDIDATE_WINDOW)
 
     if _is_postgres(session):
         project_is_demo = bool(

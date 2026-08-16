@@ -13,6 +13,7 @@ from tripl.models.search_document import SearchDocument
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
 from tripl.schemas.search import SearchResult
+from tripl.services import search_service
 from tripl.services._search_documents import build_documents
 from tripl.services._search_query import (
     _FULL_CONFIDENCE_SCORE,
@@ -24,6 +25,7 @@ from tripl.services._search_query import (
     identifier_form,
 )
 from tripl.services.search_service import (
+    CANDIDATE_WINDOW,
     _finalize_results,
     _sanitize_query,
     _token_boundary_regex,
@@ -51,23 +53,112 @@ def _result(
     )
 
 
-def test_event_type_match_boosts_member_events_above_unrelated_ones() -> None:
-    # A query that resolves to the "Pageviews" event type should lift events of
-    # that type above an event of a different type with a similar base score.
+def test_a_matched_event_type_is_not_buried_under_its_own_events() -> None:
+    """Ranking is the merged score alone — no event-type boost (tripl-0tt4 item 4).
+
+    ``_finalize_results`` used to multiply every event whose ``subtitle`` named an
+    ``event_type`` document in the same candidate set by up to 1.75, while leaving
+    the type document itself unmultiplied. This test used to assert that lift.
+
+    It was asserting a defect. Measured on production at the shipped candidate
+    window, the only queries that ever pulled a type document into the set were
+    the type's own name, and there the multiplier pushed the very document the
+    user had named underneath its own members: ``q='pv'`` served "Pageview" at
+    rank 100 of 100 on windy-web and on windy-ios, rank 1 without the boost.
+
+    The set below is that production shape in miniature. Under the old boost the
+    two Pageviews events banked 3.5 and 3.325 and displaced BOTH the type
+    document (3.0) and the higher-scoring event of another type (2.5); the order
+    asserted here is what the scores actually say.
+    """
     items = [
-        _result(entity_type="event_type", title="Pageviews", score=5.0),
+        _result(entity_type="event_type", title="Pageviews", score=3.0),
         _result(entity_type="event", title="Spot Screen", subtitle="Pageviews", score=2.0),
+        _result(entity_type="event", title="Map Screen", subtitle="Pageviews", score=1.9),
         _result(entity_type="event", title="Order Placed", subtitle="Checkout", score=2.5),
     ]
 
     finalized = _finalize_results(items, limit=10)
 
-    titles = [item.title for item in finalized]
-    assert titles.index("Spot Screen") < titles.index("Order Placed")
+    assert [item.title for item in finalized] == [
+        "Pageviews",
+        "Order Placed",
+        "Spot Screen",
+        "Map Screen",
+    ]
     # tripl-txcz: confidence is a fraction of an absolute reference score, not of
     # the top hit, so the best of a mediocre set is NOT automatically 1.0.
-    assert finalized[0].confidence == pytest.approx(5.0 / _FULL_CONFIDENCE_SCORE, abs=1e-4)
+    assert finalized[0].confidence == pytest.approx(3.0 / _FULL_CONFIDENCE_SCORE, abs=1e-4)
     assert all(0.0 <= item.confidence <= 1.0 for item in finalized)
+
+
+async def test_retrieval_window_does_not_vary_with_the_page_size(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each leg retrieves a fixed window, whatever page size was asked for.
+
+    tripl-0tt4 item 2. ``merge_results`` SUMS the two legs, so a document is paid
+    for a semantic match only if it landed inside BOTH windows. A window that
+    tracked the page size therefore decided which documents got that bonus, and
+    moved the TOP of the list rather than its tail — ``q='экран спота'`` answered
+    with a different top-1 at ``limit=5`` than at ``limit=50``.
+
+    The old rule (``+24`` while under 50) was not even monotonic: 49 retrieved 73
+    candidates and 50 retrieved 50, so asking for MORE results made the engine
+    consider FEWER. Both page sizes are in the table below for that reason.
+
+    This asserts the invariant where it lives — the window handed to the
+    retrieval leg — rather than through a ranking, because on SQLite there is no
+    semantic leg to fuse and the fault could not reproduce end to end.
+    """
+    await client.post("/api/v1/projects", json={"name": "Window", "slug": "search-window"})
+
+    windows: list[int] = []
+
+    async def fake_sqlite_search(_session: object, **kwargs: object) -> list[SearchResult]:
+        windows.append(int(kwargs["limit"]))  # type: ignore[call-overload]
+        return []
+
+    monkeypatch.setattr(search_service, "_sqlite_search", fake_sqlite_search)
+
+    async with TestSessionLocal() as session:
+        page_sizes = (1, 5, 20, 49, 50, 100)
+        for page_size in page_sizes:
+            await search_service.search_project(session, "search-window", "spot", limit=page_size)
+        assert windows == [CANDIDATE_WINDOW] * len(page_sizes)
+
+        # A bulk caller still gets the bigger window it asked for: the fixed
+        # value is a floor, not a ceiling.
+        windows.clear()
+        await search_service.search_event_ids(session, "search-window", "spot")
+        assert windows == [10000]
+
+
+async def test_reindex_reports_whether_the_refresh_was_really_queued(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``embeddings_scheduled`` means "handed to the broker" (tripl-0tt4 item 6).
+
+    It used to be answered by re-reading the ``search_embeddings_enabled`` flag,
+    so the response said a refresh was queued whenever the feature was switched
+    on — including when the enqueue had just raised and been swallowed by the
+    ``except`` in ``_queue_embedding_refresh``. An operator reads this field to
+    decide whether to go and look at the queue.
+
+    The two cases below are indistinguishable under the old code: both would
+    report the config flag, which is ``False`` in this environment.
+    """
+    await client.post("/api/v1/projects", json={"name": "Queue", "slug": "search-queue"})
+
+    monkeypatch.setattr(search_service, "_queue_embedding_refresh", lambda *_a, **_k: True)
+    queued = await client.post("/api/v1/projects/search-queue/search/reindex")
+    assert queued.status_code == 200
+    assert queued.json()["embeddings_scheduled"] is True
+
+    monkeypatch.setattr(search_service, "_queue_embedding_refresh", lambda *_a, **_k: False)
+    broker_down = await client.post("/api/v1/projects/search-queue/search/reindex")
+    assert broker_down.status_code == 200
+    assert broker_down.json()["embeddings_scheduled"] is False
 
 
 def test_finalize_assigns_confidence_without_event_type_match() -> None:
