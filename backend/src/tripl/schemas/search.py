@@ -17,6 +17,11 @@ SearchEntityType = Literal[
     "tag",
     "metric",
     "fact_table",
+    # Project-scoped configuration, indexed exactly the way metrics and fact
+    # tables already are: they carry project_id and no branch_id, so every
+    # branch's index holds a copy (tripl-dfct).
+    "scan_config",
+    "alert_rule",
 ]
 
 

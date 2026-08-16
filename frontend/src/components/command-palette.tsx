@@ -138,6 +138,8 @@ const SEARCH_TYPE_META: Record<
   tag: { heading: 'Tags', icon: Tag },
   metric: { heading: 'Metrics', icon: Gauge },
   fact_table: { heading: 'Fact tables', icon: Table2 },
+  scan_config: { heading: 'Scans', icon: Activity },
+  alert_rule: { heading: 'Alert rules', icon: Bell },
 }
 
 /**

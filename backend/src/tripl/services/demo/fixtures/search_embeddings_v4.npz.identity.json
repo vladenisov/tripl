@@ -1,4 +1,6 @@
 {
+ "alert_rule\u001fSpike & drift watch (demo)\u001f": "feac8d340aa7376aa6a5c9d68198f8166f6f5055b982eaba59d1f4920923dc7a",
+ "alert_rule\u001fWeekly release health (quiet)\u001f": "f764f62b86f30e233180a01c0723c19edae00f3f4338b953cab1aa6809e2f931",
  "event\u001fBuy Button Click\u001fClick": "db0dfd2c58dfc11e4370fafd48cd6669600c98804c4229c4e910db3e61a99a03",
  "event\u001fHome Screen View\u001fScreen View": "00c17859d06363c90567925b63488bb3115e4607054958f7db6e1d15fa6214c4",
  "event\u001fLegacy CTA Click\u001fClick": "8869463b986069ddc4a4c557e1443b186b1e58f7eaa8fe91b7e020006a40cafa",
@@ -38,6 +40,7 @@
  "metric\u001fPurchase conversion\u001fpurchase_conversion": "d2c127094b604b0af07faa47462e94a4b1c2880699ceaf841622fb5459b34107",
  "metric\u001fRevenue (completed)\u001frevenue_completed": "c9a5aa8b9bb440c7b21435a319774c373a36e6a37994870c9e82e9522e98bae0",
  "relation\u001fClick -> Screen View\u001fbelongs_to": "7ffd6a94172650f60bae465d9fd16c9bc3879d208846e40bf51ad440010abc42",
+ "scan_config\u001fDemo scan\u001f1h": "efd9e4f49a332e662bf1181a92dde7edccd3ce76cdaa10c234c76822b969ad3c",
  "tag\u001f#checkout\u001fBuy Button Click": "21e12ab74bdfa69210b32516f7b96272a35c2c68fb87dc4d7109efd918104600",
  "tag\u001f#checkout\u001fLegacy CTA Click": "a3ecccdd91c3cd0cd8fd8d67cea6e604f54c6375090ac16e4b5af6eec68c34b3",
  "tag\u001f#checkout\u001fPaywall View": "9a87a3b8f89d7a1158de63fdb65f7bed2e23c493560def83885edf79d93b32f8",

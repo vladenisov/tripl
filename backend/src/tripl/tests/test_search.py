@@ -4,7 +4,7 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import insert
+from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql.asyncpg import PGDialect_asyncpg
 
 from tripl.models.event import Event
@@ -1071,3 +1071,101 @@ def test_finalize_confidence_prefers_exact_token_value_matches() -> None:
     assert finalized[0].confidence == pytest.approx(6.5 / _FULL_CONFIDENCE_SCORE, abs=1e-4)
     assert finalized[0].confidence < 1.0
     assert finalized[1].confidence < finalized[0].confidence
+
+
+@pytest.mark.asyncio
+async def test_scan_configs_and_alert_rules_are_searchable(client: AsyncClient) -> None:
+    """Project-scoped configuration is indexed like metrics already were (tripl-dfct).
+
+    Neither entity carries a branch_id, so this follows the decision the codebase
+    had already taken for MetricDefinition and FactTable: fold the project's rows
+    into every branch's index rather than inventing a branch-independent scope.
+
+    The alert rule is reached through its DESTINATION — AlertRule has no
+    project_id of its own — so a rule belonging to another project must not leak
+    in. That is what the second project below is for.
+    """
+    from tripl.models.alert_destination import AlertDestination
+    from tripl.models.alert_rule import AlertRule
+    from tripl.models.data_source import DataSource
+    from tripl.models.project import Project
+    from tripl.models.scan_config import ScanConfig
+
+    await client.post("/api/v1/projects", json={"name": "Recall", "slug": "recall"})
+    await client.post("/api/v1/projects", json={"name": "Other", "slug": "recall-other"})
+
+    async with TestSessionLocal() as session, session.begin():
+        project_id = await session.scalar(select(Project.id).where(Project.slug == "recall"))
+        other_id = await session.scalar(select(Project.id).where(Project.slug == "recall-other"))
+        assert project_id is not None and other_id is not None
+        source = DataSource(
+            name="Warehouse for recall",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="u",
+            password_encrypted="",
+        )
+        session.add(source)
+        await session.flush()
+        session.add(
+            ScanConfig(
+                project_id=project_id,
+                data_source_id=source.id,
+                name="Nightly checkout scan",
+                base_query="SELECT * FROM warehouse.checkout_events",
+                time_column="occurred_at",
+                interval="1h",
+            )
+        )
+        destinations = [
+            AlertDestination(
+                project_id=pid,
+                type="slack",
+                name=f"Slack {pid}",
+                enabled=True,
+                webhook_url_encrypted="secret",
+            )
+            for pid in (project_id, other_id)
+        ]
+        session.add_all(destinations)
+        await session.flush()
+        session.add_all(
+            [
+                AlertRule(
+                    destination_id=destinations[0].id,
+                    name="Checkout collapse watch",
+                    message_template="Investigate the funnel immediately",
+                ),
+                AlertRule(
+                    destination_id=destinations[1].id,
+                    name="Checkout rule of another project",
+                ),
+            ]
+        )
+
+    await search_service.reindex_branch(TestSessionLocal(), "recall", schedule_embeddings=False)
+
+    found = await client.get("/api/v1/projects/recall/search?q=checkout&limit=50")
+    assert found.status_code == 200
+    hits = {(item["entity_type"], item["title"]): item for item in found.json()["items"]}
+
+    assert ("scan_config", "Nightly checkout scan") in hits
+    assert ("alert_rule", "Checkout collapse watch") in hits
+    # The other project's rule reaches its project only through its destination;
+    # a missing join would drag it in here.
+    assert ("alert_rule", "Checkout rule of another project") not in hits
+
+    assert hits[("scan_config", "Nightly checkout scan")]["route_path"].startswith(
+        "/p/recall/scans/"
+    )
+    assert hits[("alert_rule", "Checkout collapse watch")]["route_path"] == "/p/recall/alerting"
+
+    # The rule's template is human-written text, so it is searchable on its own.
+    by_template = await client.get("/api/v1/projects/recall/search?q=funnel&limit=50")
+    assert by_template.status_code == 200
+    assert any(
+        item["entity_type"] == "alert_rule" and item["title"] == "Checkout collapse watch"
+        for item in by_template.json()["items"]
+    )
