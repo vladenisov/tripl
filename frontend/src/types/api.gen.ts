@@ -9418,7 +9418,7 @@ export interface components {
              * Entity Type
              * @enum {string}
              */
-            entity_type: "event" | "event_type" | "field" | "meta_field" | "variable" | "relation" | "tag" | "metric" | "fact_table";
+            entity_type: "event" | "event_type" | "field" | "meta_field" | "variable" | "relation" | "tag" | "metric" | "fact_table" | "scan_config" | "alert_rule";
             /** Event Id */
             event_id?: string | null;
             /**
@@ -16738,7 +16738,7 @@ export interface operations {
         parameters: {
             query: {
                 q: string;
-                types?: ("event" | "event_type" | "field" | "meta_field" | "variable" | "relation" | "tag" | "metric" | "fact_table")[] | null;
+                types?: ("event" | "event_type" | "field" | "meta_field" | "variable" | "relation" | "tag" | "metric" | "fact_table" | "scan_config" | "alert_rule")[] | null;
                 include_archived?: boolean;
                 limit?: number;
             };

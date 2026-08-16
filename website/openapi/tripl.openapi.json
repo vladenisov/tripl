@@ -7608,7 +7608,9 @@
                       "relation",
                       "tag",
                       "metric",
-                      "fact_table"
+                      "fact_table",
+                      "scan_config",
+                      "alert_rule"
                     ],
                     "type": "string"
                   }
@@ -29516,7 +29518,9 @@
               "relation",
               "tag",
               "metric",
-              "fact_table"
+              "fact_table",
+              "scan_config",
+              "alert_rule"
             ],
             "title": "Entity Type"
           },

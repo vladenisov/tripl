@@ -17,6 +17,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from tripl.models.alert_destination import AlertDestination
+from tripl.models.alert_rule import AlertRule
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_meta_value import EventMetaValue
@@ -27,6 +29,7 @@ from tripl.models.fact_table import FactTable
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.models.metric_definition import MetricDefinition
+from tripl.models.scan_config import ScanConfig
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
 from tripl.schemas.search import SearchEntityType
@@ -190,7 +193,10 @@ class BuiltDocument:
 #: HISTORY
 #: 1 — first stamped generation. Everything written before this column existed is
 #:     0, which is what makes those eight branches visible to the sweep.
-DOCUMENT_BUILDER_VERSION = 1
+#: 2 — scan configurations and alert rules became searchable (tripl-dfct). Every
+#:     branch gains documents it did not have, which no content_hash comparison
+#:     could have discovered, so this is exactly the case the stamp exists for.
+DOCUMENT_BUILDER_VERSION = 2
 
 
 async def build_documents(
@@ -322,6 +328,33 @@ async def build_documents(
         .scalars()
         .all()
     )
+    # Project-scoped like metrics and fact tables above: no branch_id, so the
+    # same rows are folded into every branch's index (tripl-dfct).
+    scan_configs = list(
+        (
+            await session.execute(
+                select(ScanConfig)
+                .where(ScanConfig.project_id == project_id)
+                .order_by(ScanConfig.name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # An AlertRule has no project_id of its own — it reaches its project through
+    # its destination, so this joins rather than filtering directly.
+    alert_rules = list(
+        (
+            await session.execute(
+                select(AlertRule)
+                .join(AlertDestination, AlertDestination.id == AlertRule.destination_id)
+                .where(AlertDestination.project_id == project_id)
+                .order_by(AlertRule.name)
+            )
+        )
+        .scalars()
+        .all()
+    )
     fact_tables = list(
         (
             await session.execute(
@@ -360,6 +393,13 @@ async def build_documents(
 
     for fact_table in fact_tables:
         documents.append(_fact_table_document(fact_table, slug))
+
+    scan_config_names = {config.id: config.name for config in scan_configs}
+    for scan_config in scan_configs:
+        documents.append(_scan_config_document(scan_config, slug))
+
+    for alert_rule in alert_rules:
+        documents.append(_alert_rule_document(alert_rule, slug, scan_config_names))
 
     return documents
 
@@ -797,6 +837,70 @@ def _relation_document(relation: EventTypeRelation, slug: str) -> BuiltDocument:
             ]
         ),
         route_path=f"/p/{slug}/settings/relations",
+    )
+
+
+def _scan_config_document(scan_config: ScanConfig, slug: str) -> BuiltDocument:
+    """A scan configuration, findable by name and by the columns it is wired to.
+
+    Route is the scan's own page rather than the list, so a hit lands where the
+    configuration can be read (App.tsx registers /p/:slug/scans/:scanId).
+    """
+    return BuiltDocument(
+        entity_type="scan_config",
+        entity_id=scan_config.id,
+        parent_event_id=None,
+        title=scan_config.name,
+        subtitle=_clean(scan_config.interval),
+        description="",
+        body=_join(
+            [
+                scan_config.event_type_column,
+                scan_config.event_name_format,
+                scan_config.time_column,
+                # The warehouse SQL, so "which scan reads table X" is answerable.
+                scan_config.base_query,
+                scan_config.platform_column,
+                scan_config.app_version_column,
+            ]
+        ),
+        keywords=_join([scan_config.name, _spaced_identifiers([scan_config.name])]),
+        route_path=f"/p/{slug}/scans/{scan_config.id}",
+        archived=False,
+    )
+
+
+def _alert_rule_document(
+    alert_rule: AlertRule,
+    slug: str,
+    scan_config_names: dict[uuid.UUID, str],
+) -> BuiltDocument:
+    """An alert rule, findable by name and by the wording of its templates.
+
+    The templates are the part worth indexing beyond the name: they are text a
+    human wrote, so "which rule says 'investigate immediately'" is answerable.
+    The include_* flags are deliberately NOT folded in — they are booleans whose
+    field names would match every rule equally and add no discrimination.
+
+    A disabled rule is still indexed and NOT marked archived: "why am I not
+    getting alerts about X" is exactly when someone searches for it, and marking
+    it archived would hide it from the default search that person runs.
+    """
+    return BuiltDocument(
+        entity_type="alert_rule",
+        entity_id=alert_rule.id,
+        parent_event_id=None,
+        title=alert_rule.name,
+        subtitle=_clean(
+            scan_config_names.get(alert_rule.scan_config_id, "")
+            if alert_rule.scan_config_id is not None
+            else ""
+        ),
+        description="",
+        body=_join([alert_rule.message_template, alert_rule.items_template]),
+        keywords=_join([alert_rule.name, _spaced_identifiers([alert_rule.name])]),
+        route_path=f"/p/{slug}/alerting",
+        archived=False,
     )
 
 

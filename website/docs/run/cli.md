@@ -1917,8 +1917,13 @@ usage: tripl plan search [-h] [--url URL] [--api-key KEY] [--config PATH]
 | `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
 
 The entity kinds are `event`, `event_type`, `field`, `meta_field`, `variable`,
-`relation`, `tag`, `metric` and `fact_table` — the API's own list, pinned to
-`backend/openapi.json` by a contract test.
+`relation`, `tag`, `metric`, `fact_table`, `scan_config` and `alert_rule` — the
+API's own list, pinned to `backend/openapi.json` by a contract test.
+
+The last two are project configuration rather than plan content, and each is
+indexed with the text you would look for it by: a scan carries the columns it is
+wired to and the warehouse SQL it runs, so `--type scan_config` answers "which
+scan reads this table"; an alert rule carries its message and item templates.
 
 ```bash
 tripl plan search 'checkout funnel' --project prod --type event
