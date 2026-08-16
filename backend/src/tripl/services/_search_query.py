@@ -28,6 +28,7 @@ from tripl.schemas.search import (
 )
 from tripl.schemas.text_filters import strip_nul_bytes
 from tripl.services import app_settings_service
+from tripl.services._search_documents import _clean
 from tripl.services.demo.search_embeddings import demo_query_embedding
 from tripl.services.embedding_service import embed_query
 
@@ -82,10 +83,11 @@ _SEMANTIC_MIN_COSINE = 0.35
 # tripl-9t2s widens that: COVERAGE_BONUS adds up to 1.0 to every hit that
 # answered the whole query, so ``${property.card_target}`` for
 # ``q='screen_settings'`` moves 6.2985 -> 7.2985 and crosses the line too. The
-# gap is real, it is tripl-txcz's bound eroding, and it is recorded here rather
-# than papered over — but it is a CONFIDENCE defect with a confidence-shaped fix
-# (raise this constant, or make confidence read the ladder tier rather than the
-# total), not a reason to underpay coverage in the RANKING.
+# gap is real and it is tripl-txcz's bound eroding — but it is a CONFIDENCE
+# defect with a confidence-shaped fix (raise this constant, or make confidence
+# read the ladder tier rather than the total), not a reason to underpay coverage
+# in the RANKING. TRACKED AS tripl-d5u8; it lived here as prose for four PRs
+# without being filed, which is why nobody could schedule it.
 _FULL_CONFIDENCE_SCORE = 7.0
 
 # How much a semantic hit's cosine similarity is worth to the RANKING, i.e. how
@@ -167,37 +169,30 @@ async def postgres_search(
     semantic_used = False
     semantic_results: list[SearchResult] = []
     ai_config = await app_settings_service.get_ai_config(session)
-    if ai_config.search_embeddings_enabled and len(query) >= 3:
-        query_embedding = await asyncio.to_thread(embed_query, query, config=ai_config)
-        if query_embedding:
-            semantic_used = True
-            semantic_results = await postgres_semantic_search(
-                session,
-                project_id=project_id,
-                branch_id=branch_id,
-                embedding=query_embedding,
-                entity_types=entity_types,
-                include_archived=include_archived,
-                limit=limit,
-            )
 
-    # Keyless demo fallback: when the live semantic leg is unavailable
-    # (embeddings disabled, or the embed call failed/returned empty), a demo
-    # project can still run the semantic leg with a canned query vector from
-    # the precomputed fixture. Non-demo projects are unaffected.
-    if not semantic_used and project_is_demo and len(query) >= 3:
-        demo_embedding = demo_query_embedding(query)
-        if demo_embedding:
-            semantic_used = True
-            semantic_results = await postgres_semantic_search(
-                session,
-                project_id=project_id,
-                branch_id=branch_id,
-                embedding=demo_embedding,
-                entity_types=entity_types,
-                include_archived=include_archived,
-                limit=limit,
-            )
+    # Resolve the query vector first, then run the leg once. Two sources, in
+    # priority order: the live embedding provider, and — only when that is
+    # unavailable (embeddings disabled, or the embed call failed / returned
+    # empty) — a canned vector from the demo project's precomputed fixture.
+    # Non-demo projects never reach the second source.
+    embedding: list[float] | None = None
+    if len(query) >= 3:
+        if ai_config.search_embeddings_enabled:
+            embedding = await asyncio.to_thread(embed_query, query, config=ai_config)
+        if not embedding and project_is_demo:
+            embedding = demo_query_embedding(query)
+
+    if embedding:
+        semantic_used = True
+        semantic_results = await postgres_semantic_search(
+            session,
+            project_id=project_id,
+            branch_id=branch_id,
+            embedding=embedding,
+            entity_types=entity_types,
+            include_archived=include_archived,
+            limit=limit,
+        )
 
     merged = merge_results(lexical_results, semantic_results, limit)
     return merged, semantic_used
@@ -493,42 +488,30 @@ async def postgres_lexical_search(
     the same treatment on the DOCUMENT side, the 3.25 tier above; the WHERE and
     ``ts_rank_cd`` consume ``q.tsq`` unchanged.
 
-    WHAT THIS DOES TO RANKING, INCLUDING WHAT IS NOT CERTIFIED
-    ----------------------------------------------------------
-    A document now holds roughly twice the lexeme occurrences, so a raw
-    ``ts_rank_cd`` roughly doubles — but not uniformly, and the difference is
-    where the risk lives.
+    WHAT IT DOES TO RANKING, AND WHERE THE MARGIN IS THIN
+    ------------------------------------------------------
+    A document holds roughly twice the lexeme occurrences, so a raw
+    ``ts_rank_cd`` roughly doubles — but not uniformly.
 
-    * **The tripl-gbxj guarantees survive by construction.** Normalization flag
-      32 is ``rank / (rank + 1)``, so the lexical leg is bounded by 4.0 no matter
-      how large the raw rank grows. ``spot-event-beats-harvested-variables`` and
-      ``screen_spot-exact-title-beats-harvested-variables`` are won by a 5.0
-      exact-title boost against a leg that CANNOT reach 5.0, and doubling the raw
-      rank cannot change that. For ``q='spot'`` and ``q='screen_spot'`` the two
-      legs of the tsquery are identical anyway (``stem('spot') == 'spot'``), so
-      the query is literally unchanged.
-    * **``repetition-outlier-does-not-outrank-the-screen-it-names`` survives with
-      room.** ``q='screen_settings'``: the outlier's raw rank of 18.0 can at most
-      approach 4.0 after normalization (it is 3.79 today), so its total moves
-      from ~6.24 to at most ~6.45 against an event at 8.33 that also gains. A
-      tsvector additionally caps a lexeme at 256 positions, so the 180
-      occurrences of ``screen`` merge to 256 rather than 360 — the outlier gains
-      less than double, not more.
-    * **``spaced-query-finds-underscored-event`` is untouched.** Both legs of
-      ``q='screen spot'`` are the same lexemes; ``token_boundary_regex`` and the
-      3.5/3.0 tiers are literal and see no tsquery at all.
-    * **The plural cases are NOT certified, and this says so instead of
-      asserting.** ``purchase-plural`` / ``spots-plural`` / ``ulov-plural`` are
-      won by 0.25 — the gap between the 3.25 stemmed tier the entity earns and
-      the 3.0 literal body tier the harvested value earns. The harvested value
-      spells the queried form LITERALLY, so after this change it matches BOTH
-      legs of the tsquery while the correctly-named entity still matches only the
-      stem leg. Its lexical leg therefore grows and the entity's does not. On a
-      small raw rank the normalized leg is nearly linear, so a raw 0.1 -> 0.2
-      moves the leg by ~0.30 — more than the 0.25 the case is won by. Whether it
-      actually flips depends on occurrence counts this docstring cannot know.
-      Run the relevance harness; do not read a green suite as a prediction, and
-      do not read this paragraph as one either.
+    * **The tripl-gbxj guarantees hold by construction.** Flag 32 bounds the
+      lexical leg at 4.0 however large the raw rank grows, so the cases won by a
+      5.0 exact-title boost cannot be caught by a leg that cannot reach 5.0. For
+      ``q='spot'`` and ``q='screen_spot'`` the two legs are the same lexemes
+      anyway (``stem('spot') == 'spot'``), so the query is literally unchanged.
+    * **The repetition outlier gains less than double.** A tsvector caps a
+      lexeme at 256 positions, so the 180 occurrences of ``screen`` in
+      ``q='screen_settings'``'s outlier merge to 256 rather than 360.
+    * **The plural cases have the least room of any case here.**
+      ``purchase-plural`` / ``spots-plural`` / ``ulov-plural`` are won by 0.25 —
+      the gap between the 3.25 stemmed tier the entity earns and the 3.0 literal
+      body tier the harvested value earns — and the harvested value spells the
+      queried form LITERALLY, so it matches both legs while the correctly-named
+      entity matches only the stem leg. Re-measure these three first after
+      touching any weight.
+
+    All of it is executed only by ``tests/relevance/``: SQLite has no stemmer, so
+    a green backend suite says nothing about any of it (see
+    :func:`fallback_score`).
 
     A second, smaller semantic change: ``websearch_to_tsquery`` ANDs the terms
     WITHIN each leg, so the result is ``(a1 & b1) | (a2 & b2)`` and not the
@@ -575,14 +558,11 @@ async def postgres_lexical_search(
     justification for the value, the cost argument, and the bound it does NOT
     provide. Three things about it belong here, next to the SQL:
 
-    * **Flag 32 is untouched and still does its job.** The coverage term is not
-      scaled by the rank, so the lexical leg is still bounded at 4.0 and still
-      cannot be inflated by a document repeating a token. What changes is the
-      TOTAL a text-search match can pay — 4.0 becomes 5.0, which now EQUALS the
-      5.0 an exact title earns rather than sitting under it. Do not restate that
-      as "the text legs stay below the exact-title boost": with
-      ``fuzzy_score * 2.0`` in the same sum that was already false, at 6.0 before
-      this change and 7.0 after it.
+    * **Flag 32 is untouched.** The coverage term is not rank-scaled, so the
+      lexical leg is still bounded at 4.0; what moves is the TOTAL a text-search
+      match can pay, 4.0 -> 5.0. See :data:`COVERAGE_BONUS`, "WHAT IT DOES TO THE
+      LEG BOUNDS, WITHOUT THE FALSE INEQUALITY", for why that is deliberately not
+      phrased as an inequality against the exact-title boost.
     * **It is now uniform in the result as well as in the SQL.** It was not,
       when this was written: ``_apply_event_type_boost`` ran after this query and
       was MULTIPLICATIVE, so an event whose type matched banked ``1.75 x`` the
@@ -738,18 +718,14 @@ async def postgres_semantic_search(
     still have had the k nearest rows chosen first and then thrown most of them
     away, returning fewer results than requested for no reason.
 
-    This deliberately does NOT de-weight or disable the semantic leg. Measured,
-    it is what rescues 'пейволл', 'forcast', 'screan_spot' and 'onboarding
-    quiz', none of which the lexical leg can reach; the floor only removes the
-    tail below the point where cosine stops carrying meaning.
+    This deliberately does NOT de-weight or disable the semantic leg: the floor
+    only removes the tail below the point where cosine stops carrying meaning,
+    and the misspellings it rescues are listed on :data:`_SEMANTIC_MIN_COSINE`
+    with the cosines they land at.
 
-    The ``* _SEMANTIC_SCORE_WEIGHT`` this leg's cosine is multiplied by in
-    :func:`merge_results` is likewise untouched — but that number is a RANKING
-    weight and nothing else. Reporting confidence as ``score / 7.0`` would have
-    de-weighted this leg where the user can see it (a perfect cosine served at
-    0.357), which is why :func:`finalize_results` reads a semantic hit's
-    certainty off its cosine instead. The score says where the row goes; the
-    cosine says how sure we are about it.
+    This function does not apply ``_SEMANTIC_SCORE_WEIGHT`` — :func:`merge_results`
+    does, and why that weight is a ranking number rather than a certainty is
+    argued once, on :func:`finalize_results`.
     """
     vector = "[" + ",".join(f"{value:.8f}" for value in embedding) + "]"
     statement = text(
@@ -1310,8 +1286,6 @@ def document_to_result(
 
 
 def snippet(body: str, query: str, *, length: int = 180) -> str:
-    from tripl.services._search_documents import _clean
-
     text_body = _clean(body)
     if not text_body:
         return ""

@@ -12,7 +12,7 @@ import type { EventFieldVariableValue } from './events'
  * guarded:
  *
  * - this file, unguarded;
- * - `ENTITY_META` in command-palette.tsx, which is a `Record<SearchEntityType, …>`
+ * - `SEARCH_TYPE_META` in command-palette.tsx, a `Record<SearchEntityType, …>`
  *   and so fails the build for a value present HERE and missing there — it
  *   catches the second half of the edit, never the first;
  * - `tripl_cli.api.search.ENTITY_TYPES`, which `cli/tests/test_contract.py`
@@ -57,7 +57,14 @@ export interface SearchResult {
   snippet: string
   route_path: string
   score: number
-  /** Relevance normalized to the top result of the response, in [0, 1]. */
+  /**
+   * How certain this result is, in [0, 1] — an ABSOLUTE property of the result,
+   * NOT a fraction of the response's top hit (tripl-txcz). Comparable across two
+   * different searches: a query that matched nothing well comes back low on
+   * every item instead of being 1.0 by construction. See
+   * `schemas/search.py SearchResult.confidence` and
+   * `_search_query.finalize_results` for how it is derived.
+   */
   confidence: number
   highlights: string[]
   semantic_used: boolean
