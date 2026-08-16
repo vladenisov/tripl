@@ -15,11 +15,15 @@ treatment, so they are asserted separately:
 
 They were one function, and ``pytest.mark.xfail`` marks a function, so a marker
 filed against a ranking nuance also excused the document vanishing from the
-results entirely. That is not hypothetical: ``russian-phrase-finds-the-event-it-
-describes`` is xfailed for a scoring gap (tripl-9t2s) while the fault four
+results entirely. That was not hypothetical: ``russian-phrase-finds-the-event-it-
+describes`` was xfailed for a scoring gap (tripl-9t2s) while the fault four
 earlier fixes were aimed at is precisely ``screen_spot`` not being RETRIEVED —
 so the harness was carrying a ranking marker that would have hidden the
-regression it exists to catch.
+regression it exists to catch. That marker is gone: tripl-9t2s shipped
+``_search_query.COVERAGE_BONUS`` and the case passes on its own, which is what
+:func:`test_the_coverage_term_is_what_wins_the_russian_phrase_case` below exists
+to keep honest. The split outlives it — no case carries ``xfail_ordering``
+today, and the next one that does will be excused for its ORDER only.
 
 This is the first test in the repository that executes the production ranking
 SQL. Everything else about search is asserted either against generated SQL
@@ -53,8 +57,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tripl.models.search_document import SearchDocument
 from tripl.schemas.search import SearchResult
 from tripl.services import search_service
-from tripl.services._search_query import _is_postgres
-from tripl.tests.relevance.cases import CASES, RelevanceCase
+from tripl.services._search_query import COVERAGE_BONUS, _is_postgres
+from tripl.tests.relevance.cases import (
+    CASES,
+    EVENT_SCREEN_SPOT,
+    FIELD_SCREEN,
+    RelevanceCase,
+)
 from tripl.tests.relevance.corpus import Corpus
 
 #: Every case queries with the SAME limit, and that limit is >= 50 on purpose.
@@ -140,6 +149,57 @@ async def test_the_harness_executes_the_postgres_ranking_path(
     )
 
 
+async def test_the_coverage_term_is_what_wins_the_russian_phrase_case(
+    relevance_session: AsyncSession,
+    seeded_corpus: Corpus,
+) -> None:
+    """The whole winning margin is bought by ``COVERAGE_BONUS``, and no more.
+
+    ``russian-phrase-finds-the-event-it-describes`` is green now, and a green
+    ordering case is the weakest evidence this harness produces — it says the
+    right document is on top, not WHY. This bounds the margin on both sides so
+    that "green" can only mean "green for the reason tripl-9t2s named":
+
+    * ``> 0`` — the event beats the field document at all;
+    * ``< COVERAGE_BONUS`` — and it does NOT beat it without the bonus. Measured:
+      ``screen_spot`` 1.8294 against ``Экран`` 1.0000, a margin of 0.8294 against
+      a bonus of 1.0. Both documents' pre-bonus scores are what they were before
+      the fix (0.8294 and 1.0000), and only one of them is paid, so the margin is
+      exactly ``COVERAGE_BONUS`` minus the 0.1706 the complete match was losing
+      by.
+
+    THE MUTATION THAT MUST KILL THIS, WHICH IS NOT THE ONE THAT KILLS THE CASE
+    -------------------------------------------------------------------------
+    Join ``event.description`` into the keywords in
+    ``_search_documents._event_document`` and ``screen_spot`` earns the 3.25
+    stemmed tier on its own. The CASE would then be green with the coverage term
+    deleted — the base ranking would win it — and this assertion is what notices:
+    the margin blows past ``COVERAGE_BONUS``. Deleting ``+ coverage_score``
+    instead takes the margin negative and kills both.
+    """
+    items = await _search(relevance_session, seeded_corpus, "экран спота")
+    ranking = _describe(items)
+
+    event = next((item for item in items if item.title == EVENT_SCREEN_SPOT), None)
+    field = next((item for item in items if item.title == FIELD_SCREEN), None)
+    assert event is not None and field is not None, (
+        f"q='экран спота' must return both {EVENT_SCREEN_SPOT!r} and {FIELD_SCREEN!r} "
+        f"for this comparison to mean anything. Got: {ranking}."
+    )
+
+    margin = event.score - field.score
+    assert margin > 0, (
+        f"{EVENT_SCREEN_SPOT!r} ({event.score:.4f}) does not beat {FIELD_SCREEN!r} "
+        f"({field.score:.4f}); the coverage term is not doing its job. Got: {ranking}."
+    )
+    assert margin < COVERAGE_BONUS, (
+        f"{EVENT_SCREEN_SPOT!r} beats {FIELD_SCREEN!r} by {margin:.4f}, which is more "
+        f"than the whole COVERAGE_BONUS of {COVERAGE_BONUS}. The case is green for "
+        f"some OTHER reason, so deleting the coverage term would no longer fail it "
+        f"and tripl-9t2s has lost its guard. Got: {ranking}."
+    )
+
+
 #: Each claim gets its own parametrization, and a case only appears where it
 #: actually asserts something. Filtering here rather than returning early inside
 #: the test bodies matters: a case that silently checked nothing would otherwise
@@ -152,6 +212,16 @@ ORDERING_CASES: tuple[RelevanceCase, ...] = tuple(case for case in CASES if case
 CONFIDENCE_CASES: tuple[RelevanceCase, ...] = tuple(
     case for case in CASES if case.max_top_confidence is not None
 )
+
+#: Which corpus fixture is supposed to supply the match each confidence case is
+#: bounding, so an EMPTY result set points at the right place instead of at
+#: whichever fixture happened to be the only one when the message was written.
+_CONFIDENCE_CASE_FIXTURES: dict[str, str] = {
+    "garbage-query-is-not-a-confident-answer": "see corpus._SESSION_KEYS",
+    "russian-phrase-finds-the-event-it-describes": (
+        "see corpus for the screen_spot event, whose description is 'Показ экрана спота'"
+    ),
+}
 
 
 def test_every_case_makes_at_least_one_assertion() -> None:
@@ -185,13 +255,14 @@ async def test_relevance_case_retrieves_what_it_names(
     ------------------------------------------------------------------------
     Retrieval and ordering used to be asserted by one function, so a marker filed
     against a RANKING nuance also excused the document disappearing from the
-    result set entirely. ``russian-phrase-finds-the-event-it-describes`` is the
-    live instance: it is xfailed because a short almost-exact title outranks a
-    complete match, and under the old arrangement the ``screen_spot`` event could
-    have gone back to being ABSENT — the production fault four fixes were aimed
-    at — with the case still reporting a tidy expected failure. A ranking
+    result set entirely. ``russian-phrase-finds-the-event-it-describes`` was the
+    worked instance: it was xfailed because a short almost-exact title outranked
+    a complete match, and under the old arrangement the ``screen_spot`` event
+    could have gone back to being ABSENT — the production fault four fixes were
+    aimed at — with the case still reporting a tidy expected failure. A ranking
     regression and a retrieval regression are different failures with different
-    causes, and the harness now has to say which one it is looking at.
+    causes, and the harness now has to say which one it is looking at. The marker
+    was deleted when tripl-9t2s landed; the arrangement is what it left behind.
 
     ``must_retrieve`` is asserted here too, with no position claim: it carries the
     cases about the retrieval MECHANISM that have no measured ranking (the
@@ -285,10 +356,16 @@ async def test_relevance_case_does_not_overstate_confidence(
     ranking = _describe(items)
     assert case.max_top_confidence is not None  # guaranteed by the parametrization filter
 
+    # The empty-result guard names the fixture that is supposed to supply the
+    # match, and that name is PER CASE. It used to be hard-coded to
+    # `corpus._SESSION_KEYS`, which is the garbage-query case's fixture and was
+    # the only case here — a second case would have been told to go look at a
+    # corpus entry that has nothing to do with it.
     assert items, (
         f"q={case.query!r} returned nothing, so the confidence claim cannot be "
-        f"observed. The corpus is supposed to contain a weak match for it "
-        f"(see corpus._SESSION_KEYS). Measured {case.measured}."
+        f"observed. The corpus is supposed to contain a match for it "
+        f"({_CONFIDENCE_CASE_FIXTURES.get(case.id, 'see corpus.py')}). "
+        f"Measured {case.measured}."
     )
     assert items[0].confidence <= case.max_top_confidence, (
         f"q={case.query!r} is served at confidence {items[0].confidence} on an "

@@ -169,16 +169,25 @@ creates the `vector` extension. It drops and recreates schema `public` on every
 run, which is why the database name defaults to `tripl_relevance` and never
 `tripl`.
 
-All **ten** cases in `relevance/cases.py` pass, alongside a self-test that proves
-the harness really is on PostgreSQL with the semantic leg off, and
+Every case in `relevance/cases.py` passes, alongside a self-test that proves the
+harness really is on PostgreSQL with the semantic leg off, and
 `relevance/test_semantic_floor.py`, which covers the semantic leg's cosine floor
-and confidence using hand-built vectors (no provider, no API key).
+and confidence using hand-built vectors (no provider, no API key). Read the count
+off the file rather than from here — this sentence has already been wrong once.
 
-`RelevanceCase` carries an `xfail` field and `test_search_relevance.py` turns it
-into `xfail(strict=True)`, so the intended workflow for the **next** measured
-fault is: write the case down with the marker first, fix it second, and delete
-the marker as the proof. **No case uses it today** — the harness and the four
-ranking fixes landed in a single commit, so there was never a marker to delete.
+`RelevanceCase` carries an `xfail_ordering` field and `test_search_relevance.py`
+turns it into `xfail(strict=True)`, so the workflow for a measured fault is:
+write the case down with the marker first, fix it second, delete the marker as
+the proof. **That has now happened once, end to end** —
+`russian-phrase-finds-the-event-it-describes` was written with the marker, and
+tripl-9t2s deleted it by adding the coverage term. Strict is what makes the last
+step honest: an xfail that starts passing FAILS, so a marker cannot outlive the
+fault it describes.
+
+Only ORDERING may ever be xfailed, never retrieval — a ranking nuance must not
+excuse a document vanishing from the results, which is why the two are separate
+tests and only one of them reads the field.
+
 Do not weaken an assertion to make a case pass.
 
 **Which guarantees are PostgreSQL-only.** The rest of the backend suite runs on

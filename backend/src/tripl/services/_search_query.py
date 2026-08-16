@@ -66,12 +66,29 @@ _SEMANTIC_MIN_COSINE = 0.35
 # confidence 1.0. That is the "asdkjhasd at 100%" defect this issue exists to
 # remove, reintroduced on the dialect the entire backend suite runs on.
 #
-# The rule the two dialects now actually share: a result reaches 1.0 only when
-# the document IS what was typed. On Postgres that is the 5.0 exact-title (or
-# 4.0 exact-keywords) boost plus a near-perfect trigram similarity on the same
-# short field; on SQLite it is the two identity tiers, ``title == query`` and
-# ``keywords == query``. Every partial-evidence tier in ``fallback_score`` sits
-# strictly below this constant — see its docstring for the ladder.
+# The rule the two dialects share, and the one Postgres no longer honours: a
+# result should reach 1.0 only when the document IS what was typed. On SQLite
+# that still holds exactly — the only tiers at or above this constant are
+# ``title == query`` and ``keywords == query``, and every partial-evidence tier
+# in ``fallback_score`` sits strictly below it.
+#
+# ON POSTGRES IT IS NOW A STATEMENT ABOUT THE LADDER, NOT ABOUT THE SCORE
+# ------------------------------------------------------------------------
+# The intended reading was 5.0 exact-title (or 4.0 exact-keywords) plus a
+# near-perfect trigram on the same short field. The SCORE has never been only
+# those two terms: ``lexical_score * 4.0`` is in the same sum, so a document with
+# a strong lexical leg and a mid ladder tier could already cross 7.0 without
+# being what was typed (measured on the relevance corpus, BEFORE tripl-9t2s:
+# ``screen_spot`` served at 1.0 for ``q='spot'`` on 7.64, and
+# ``${property.spot_id}`` at 7.61).
+#
+# tripl-9t2s widens that: COVERAGE_BONUS adds up to 1.0 to every hit that
+# answered the whole query, so ``${property.card_target}`` for
+# ``q='screen_settings'`` moves 6.2985 -> 7.2985 and crosses the line too. The
+# gap is real, it is tripl-txcz's bound eroding, and it is recorded here rather
+# than papered over — but it is a CONFIDENCE defect with a confidence-shaped fix
+# (raise this constant, or make confidence read the ladder tier rather than the
+# total), not a reason to underpay coverage in the RANKING.
 _FULL_CONFIDENCE_SCORE = 7.0
 
 # How much a semantic hit's cosine similarity is worth to the RANKING, i.e. how
@@ -212,6 +229,85 @@ TEXT_QUERY_EXPRESSION = """
     websearch_to_tsquery('tripl_search', :query)
     || websearch_to_tsquery('tripl_search_surface', :query)
 """
+
+
+#: What a document is paid for having answered the WHOLE query (tripl-9t2s).
+#:
+#: Public, and a module constant, for the same reason :data:`TEXT_QUERY_EXPRESSION`
+#: is: it is interpolated into shipped SQL and imported by the tests that bound it
+#: from above and below, so those tests assert the value that ships rather than a
+#: copy of it.
+#:
+#: WHY A COVERAGE TERM EXISTS AT ALL
+#: ---------------------------------
+#: ``ts_rank_cd`` pays for cover DENSITY, the ladder below pays for match SHAPE
+#: (where in the document the query appears), and the trigram leg pays for string
+#: OVERLAP. Measured, none of them pays for having answered the whole query, and
+#: the gap is user-visible: for ``q='экран спота'`` the ``Экран`` FIELD document —
+#: whose entire title is ONE of the two words, which matches no tsquery at all and
+#: earns no ladder tier — scored 1.0000 on ``2.0 x similarity 0.5`` alone, while
+#: the ``screen_spot`` event, whose description is literally ``Показ экрана
+#: спота`` and which therefore matched BOTH words, scored 0.8294.
+#:
+#: WHY A BOOLEAN OVER ``@@`` IS THE WHOLE COVERAGE SIGNAL, AND COSTS NOTHING
+#: ------------------------------------------------------------------------
+#: ``websearch_to_tsquery`` ANDs the terms WITHIN each leg, so
+#: :data:`TEXT_QUERY_EXPRESSION` is ``(a1 & b1) | (a2 & b2)`` and
+#: ``d.text_vector @@ q.tsq`` is ALREADY the "matched every term" predicate — it
+#: does not need the query's term count, and it is a per-DOCUMENT test that adds
+#: no per-row work: the identical expression is evaluated in the WHERE below, so
+#: the projection re-reads a predicate this row has already been through.
+#: A genuine matched/total ratio would need ``numnode`` plus one ``@@`` probe per
+#: term against every candidate tsvector, i.e. O(terms) extra probes per row on a
+#: path the command palette fires on every debounced keystroke. The boolean buys
+#: the measured fault for free; the ratio would buy a distinction no measured
+#: query makes at a cost every query pays.
+#:
+#: WHY 1.0, HONESTLY — A BOUND ON THE MEASURED SAMPLE AND NOT A GENERAL ONE
+#: -----------------------------------------------------------------------
+#: * FROM BELOW: it clears the whole score a bare one-word title can earn on the
+#:   MEASURED shape. ``similarity('Экран', 'экран спота')`` is exactly 0.5 (6
+#:   trigrams of 12, all shared), so that document's entire score is
+#:   ``2.0 x 0.5 = 1.0`` with a lexical leg and a boost of 0. Paying a complete
+#:   match 1.0 therefore brings it LEVEL with that document — level, not past it.
+#:   A complete match whose own lexical leg really is ~0 lands on the same
+#:   1.0000 and the outcome falls to ``ORDER BY score DESC, title``, which is a
+#:   tiebreak rather than a guarantee. What wins the MEASURED case is that the
+#:   complete match is not weak: screen_spot carries 0.8294 of its own and
+#:   finishes at 1.8294. So do not read this bullet as "coverage outranks a
+#:   partial title" — read it as "coverage stops a partial title winning for
+#:   free". That is a bound on THIS sample and this constant does not pretend
+#:   otherwise: stopwords are not filtered, so ``q='the spot'`` gives a one-word
+#:   title 5 of 9 trigrams — ``2.0 x 0.556 = 1.11`` — and it would still beat a
+#:   complete match with a weak lexical leg. The term narrows the fault; it does
+#:   not close the class.
+#: * FROM ABOVE: a complete-but-weak match must not be served as a CERTAIN answer.
+#:   Confidence is ``score / _FULL_CONFIDENCE_SCORE`` (7.0), and the harness pins
+#:   the russian-phrase case at ``max_top_confidence=0.5``, which starts biting
+#:   near 2.7. 1.0 leaves that bound with room (1.8294 / 7.0 = 0.261).
+#: * IT IS A CONSTANT, and must stay one. Anything that grew with term frequency,
+#:   cover count or document length would re-open tripl-gbxj through a second
+#:   door — the whole point of normalization flag 32 is that no text-search leg
+#:   scales with how often a document repeats itself.
+#: * IT IS NOT A LADDER TIER. ``CASE`` is first-match-wins and encodes WHERE the
+#:   query appears; coverage encodes HOW MUCH of it was answered. As a tier it
+#:   would REPLACE a document's shape score instead of adding to it, and an
+#:   exact-title match (5.0) would be paid nothing for also being complete.
+#: * The ``ELSE`` branch also absorbs a NULL ``text_vector`` (a document indexed
+#:   before its vector was built): ``NULL @@ tsq`` is NULL, so the CASE falls
+#:   through to 0.0 rather than making the whole score NULL.
+#:
+#: WHAT IT DOES TO THE LEG BOUNDS, WITHOUT THE FALSE INEQUALITY
+#: -----------------------------------------------------------
+#: Flag 32 (``rank/(rank+1)``) bounds the lexical leg at 4.0 and that is unchanged
+#: — the coverage term is not scaled by the rank, so it cannot be inflated by
+#: repetition. What DOES change is the total a text-search match can pay: 4.0
+#: becomes 5.0, which now EQUALS rather than sits below the 5.0 an exact title
+#: earns. It is stated that way deliberately, because the tempting sentence ("the
+#: text-search legs stay strictly below 5.0") is already false in this file with or
+#: without this term: ``fuzzy_score * 2.0`` is in the same sum, so lexical+fuzzy
+#: could reach 6.0 before this change and 7.0 after it.
+COVERAGE_BONUS = 1.0
 
 
 #: The boost ladder, as a constant so a test can assert the SHIPPED expression.
@@ -452,6 +548,66 @@ async def postgres_lexical_search(
     negation in Python to skip the surface leg was rejected — a bare ``-`` scan
     misfires on the hyphenated identifiers this catalog is full of, and a
     heuristic that is wrong on identifiers is worse than a narrower NOT.
+
+    NOTHING PAID FOR ANSWERING MORE OF THE QUERY (tripl-9t2s)
+    ---------------------------------------------------------
+    Three legs, three different things measured, and none of them coverage:
+    ``ts_rank_cd`` pays for cover DENSITY, the ladder pays for match SHAPE, the
+    trigram leg pays for string OVERLAP. So a document holding ONE of two query
+    words, in a title short enough for that word to dominate its trigram set,
+    beat a document that matched both.
+
+    MEASURED ON THIS HARNESS, ``q='экран спота'`` (three documents, whole set)::
+
+        before   Экран 1.0000   screen_spot 0.8294   spot 0.4799
+        after    screen_spot 1.8294   spot 1.4799   Экран 1.0000
+
+    ``Экран`` is the ``view_id`` FIELD document. It holds ``экра``/``экран`` and
+    no Cyrillic ``спот``, so ``d.text_vector @@ q.tsq`` is FALSE, no ladder tier
+    fires (the title is not the query, ``\\mэкран_спота\\M`` misses, the 3.25 tier
+    reads title+keywords and misses too) and its ENTIRE score is the trigram leg:
+    ``similarity('Экран','экран спота')`` is exactly 0.5 — 6 trigrams of 12, all
+    shared — so ``2.0 x 0.5 = 1.0000``, to the digit. ``screen_spot`` is the event
+    the user wants: its description is literally ``Показ экрана спота``, which is
+    in ``body``, so it satisfies both terms of the stem leg and is the only
+    document here that answered the WHOLE query — and its boost is 0 as well,
+    because the 3.25 tier deliberately never reads ``body``. Its whole score was
+    the lexical leg. The complete match lost to the partial one by 0.17.
+
+    :data:`COVERAGE_BONUS` is what closes that, and its docstring carries the
+    justification for the value, the cost argument, and the bound it does NOT
+    provide. Three things about it belong here, next to the SQL:
+
+    * **Flag 32 is untouched and still does its job.** The coverage term is not
+      scaled by the rank, so the lexical leg is still bounded at 4.0 and still
+      cannot be inflated by a document repeating a token. What changes is the
+      TOTAL a text-search match can pay — 4.0 becomes 5.0, which now EQUALS the
+      5.0 an exact title earns rather than sitting under it. Do not restate that
+      as "the text legs stay below the exact-title boost": with
+      ``fuzzy_score * 2.0`` in the same sum that was already false, at 6.0 before
+      this change and 7.0 after it.
+    * **It is uniform in the SQL and NOT uniform in the result.**
+      :func:`_apply_event_type_boost` runs AFTER this query and is
+      MULTIPLICATIVE, so an event whose type matched banks ``1.75 x`` the bonus
+      while a sibling field or variable banks ``1.0 x``. Measured on the harness:
+      ``q='улов'`` moves ``catch_report_created`` by +1.75 and ``Тип улова`` by
+      +1.00. So "it cannot reorder inside the matched class" is FALSE and this
+      docstring will not claim it. What is true is a measurement and not a
+      construction: across all twelve harness cases the non-uniformity always
+      favoured the document the case expects, and no case changed order except
+      the one this issue is about.
+    * **The residue is confidence, not ranking.** Confidence is
+      ``score / _FULL_CONFIDENCE_SCORE``, so every tsquery-matching hit's reported
+      certainty rises by up to 0.143 and some non-identity documents cross 1.0
+      that did not before (measured: ``${property.card_target}`` for
+      ``q='screen_settings'``, 6.2985 -> 7.2985). That erosion is pre-existing
+      rather than introduced — ``screen_spot`` was already served at 1.0 for
+      ``q='spot'`` on 7.64 — but it is wider now, and tripl-txcz's bound is worth
+      re-tightening on its own terms rather than by shrinking this constant.
+      A query that matches NOTHING is unaffected by construction: the term is
+      gated on the same ``@@`` that is in the WHERE, and for ``q='asdkjhasd'`` no
+      document satisfies it, so ``garbage-query-is-not-a-confident-answer`` moves
+      by exactly 0.0000.
     """
     token_regex = token_boundary_regex(query)
     has_token_regex = bool(token_regex)
@@ -489,7 +645,20 @@ async def postgres_lexical_search(
                     similarity(d.keywords, :query),
                     similarity(d.body, :query) * 0.5
                 ) AS fuzzy_score,
-                {BOOST_LADDER_EXPRESSION} AS boost
+                {BOOST_LADDER_EXPRESSION} AS boost,
+                -- COVERAGE, NOT SHAPE (tripl-9t2s). `@@` is the "answered every
+                -- term" predicate, because websearch_to_tsquery ANDs within each
+                -- leg -- so this is what stops a short almost-exact title from
+                -- beating a document that matched the WHOLE query. Additive and
+                -- outside the CASE on purpose: the ladder is first-match-wins and
+                -- says WHERE the query appears, this says HOW MUCH was answered.
+                -- The same predicate is already in the WHERE below, so this row
+                -- has been through it once already. See COVERAGE_BONUS for why
+                -- 1.0, for what that bound rests on, and for the NULL vector.
+                CASE
+                    WHEN d.text_vector @@ q.tsq THEN {COVERAGE_BONUS}
+                    ELSE 0.0
+                END AS coverage_score
             FROM search_documents d
             CROSS JOIN q
             WHERE d.project_id = :project_id
@@ -516,7 +685,12 @@ async def postgres_lexical_search(
             body,
             keywords,
             route_path,
-            ((lexical_score * 4.0) + (fuzzy_score * 2.0) + boost) AS score
+            (
+                (lexical_score * 4.0)
+                + (fuzzy_score * 2.0)
+                + boost
+                + coverage_score
+            ) AS score
         FROM ranked
         ORDER BY score DESC, title ASC
         LIMIT :limit
@@ -731,6 +905,15 @@ def fallback_score(
       x4.0/x2.0 weighting the whole boost ladder is calibrated against does not
       exist here. Two documents that Postgres separates by rank are separated
       here only if they land on different tiers.
+    * **``COVERAGE_BONUS`` (tripl-9t2s), and it needs no analogue.** On Postgres
+      a document is paid a flat 1.0 for satisfying the whole tsquery, which is
+      how a complete match stops losing to a short almost-exact title. This
+      ladder returns ONE tier per document and never sums evidence, so there is
+      nothing here for a coverage term to be added to — and it already prefers
+      coverage in its own crude way, since ``_SQLITE_ALL_TOKENS`` requires every
+      query token to be present. What does NOT hold here is the ORDER that term
+      produces: the ``q='экран спота'`` case is Postgres-only for the same
+      reason the stemming cases are.
 
     The consequence, stated plainly: **the SQLite suite does not cover ranking.**
     A green ``uv run pytest`` says the search endpoint returns the right rows and

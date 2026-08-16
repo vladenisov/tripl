@@ -34,13 +34,15 @@ functions on purpose (tripl-uojz).
 The reason is a hole this table used to have. ``pytest.mark.xfail`` marks a
 FUNCTION, so while one function asserted retrieval and ordering together, an
 ``xfail`` filed against a RANKING nuance also excused the document vanishing from
-the results entirely. ``russian-phrase-finds-the-event-it-describes`` is the live
-example: it is xfailed because a short almost-exact title outranks a complete
-match, and under the old arrangement ``screen_spot`` could have stopped being
-retrieved at all — the fault four fixes were aimed at — with the case still
-reporting a tidy expected failure. The field is therefore named
-``xfail_ordering``, it is read by the ordering test and by nothing else, and
-there is no way to express "this case is allowed not to find the document".
+the results entirely. ``russian-phrase-finds-the-event-it-describes`` was the
+worked example: it was xfailed because a short almost-exact title outranked a
+complete match, and under the old arrangement ``screen_spot`` could have stopped
+being retrieved at all — the fault four fixes were aimed at — with the case still
+reporting a tidy expected failure. That marker is gone (tripl-9t2s shipped the
+coverage term and the case now passes on its own), but the split it motivated
+stays: the field is named ``xfail_ordering``, it is read by the ordering test and
+by nothing else, and there is no way to express "this case is allowed not to find
+the document".
 
 ``must_retrieve`` is the other half: documents that must appear SOMEWHERE in the
 results, with no claim about where. It is for facts about the retrieval
@@ -64,12 +66,15 @@ ranking is right NOW, and it will catch the next regression in it. Their real
 proof was by MUTATION, named on each case: revert the source change, watch that
 case go red.
 
-The mechanism itself is live, on exactly one case.
-``russian-phrase-finds-the-event-it-describes`` carries an ``xfail_ordering`` for
+The mechanism has now been exercised end to end, exactly once.
+``russian-phrase-finds-the-event-it-describes`` carried an ``xfail_ordering`` for
 tripl-9t2s — a fault the four fixes did not address, filed rather than tuned
-away. Deleting that marker is the proof for that issue, in the workflow this
-field exists for. Its RETRIEVAL claim is asserted unconditionally alongside it,
-which is new and is the point of the split above.
+away — and the commit that added ``COVERAGE_BONUS`` to
+``_search_query.postgres_lexical_search`` DELETED that marker. That deletion is
+the proof for that issue, in the workflow this field exists for: the marker was
+``strict=True``, so the fix could not have landed with a stale marker left behind
+either. NO case carries ``xfail_ordering`` today; the field stays for the next
+measured fault.
 
 The rule that is NOT negotiable either way: an assertion is never weakened to
 make a case pass.
@@ -98,8 +103,9 @@ to claim:
 
 WHAT HAS BEEN FIXED
 -------------------
-Four faults were measured. All four are fixed, and every case below passes
-except the one that carries an ``xfail`` (see ``russian-phrase-...``):
+Four faults were measured on production and a fifth was found by this harness.
+All five are fixed, and EVERY case below passes with no ``xfail`` anywhere in the
+table:
 
 * **tripl-gbxj** (unbounded ``ts_rank_cd`` x4.0, harvested values joined into
   variable keywords) — ``spot`` and ``screen_spot`` now rank their own event
@@ -138,6 +144,17 @@ except the one that carries an ``xfail`` (see ``russian-phrase-...``):
   three carriers take the 3.0 body tier, and the claim is asserted on the boost
   column itself by :mod:`tripl.tests.relevance.test_keyword_tier_premise` rather
   than inferred from a total score.
+* **tripl-9t2s** (nothing in the score rewarded matching MORE of the query) —
+  the one fault on this list that no production query reported and that this
+  harness found on its own, by ranking ``q='экран спота'`` and reading the
+  numbers: ``Экран`` 1.0000, ``screen_spot`` 0.8294. ``COVERAGE_BONUS`` in
+  ``_search_query`` pays a flat 1.0 to any document that satisfies the whole
+  tsquery, which the AND-semantics of ``websearch_to_tsquery`` make the same
+  thing as "answered every term". ``russian-phrase-finds-the-event-it-describes``
+  is the case, its ``xfail_ordering`` is what the fix deleted, and the mechanism
+  itself — that a one-word document does NOT satisfy a two-word tsquery — is
+  asserted with no corpus and no ranking by
+  :mod:`tripl.tests.relevance.test_coverage_invariants`.
 
 Two cases (``purchase``, ``улов``) are load-bearing in the opposite direction:
 they are the singular halves of the stemming pairs and they already passed on
@@ -203,15 +220,20 @@ class RelevanceCase:
     that is not returned at all, so a plural case would go green if the wrong
     answer it exists to out-rank silently stopped being indexed.
 
-    ``max_top_confidence`` covers the one case that is about the score rather
-    than the order: confidence used to be normalized to the top hit, so a query
-    that matched nothing was still served as a perfect answer (tripl-txcz).
+    ``max_top_confidence`` is the claim about the SCORE rather than the order,
+    and it is used in two directions. From tripl-txcz: confidence used to be
+    normalized to the top hit, so a query that matched nothing was still served
+    as a perfect answer (``garbage-query-...``). From tripl-9t2s: a bound from
+    ABOVE on a ranking constant — ``russian-phrase-...`` pins its top hit at
+    <= 0.5 so that ``COVERAGE_BONUS`` cannot be enlarged into a blunt instrument
+    without a case going red (it bites near 2.7).
 
     ``xfail_ordering`` is the reason a case's ORDER is EXPECTED to be wrong, or
     ``None``. It excuses nothing else — retrieval and confidence are asserted
     unconditionally, which is what stops a ranking marker from covering a
-    retrieval regression (tripl-uojz; see the module docstring). Exactly one case
-    sets it (``russian-phrase-...``, for tripl-9t2s).
+    retrieval regression (tripl-uojz; see the module docstring). NO case sets it
+    today: the one that did (``russian-phrase-...``, for tripl-9t2s) had it
+    deleted by the fix, which is the workflow this field exists for.
     """
 
     id: str
@@ -378,24 +400,53 @@ CASES: tuple[RelevanceCase, ...] = (
         # surface leg in either direction.
         expect_top=EVENT_SCREEN_SPOT,
         must_not_outrank=(EVENT_SCREEN_HOME, FIELD_SCREEN),
-        # MEASURED on this harness after tripl-gbxj/h9x2/txcz/nh5s landed:
-        # Экран=1.000, screen_spot=0.791, spot=0.433. The event went from ABSENT
-        # in production to rank 1, which is what those four fixes were for — but
-        # the `Экран` FIELD still takes the top slot, and that is a different
-        # fault with a different cause: its whole title is ONE of the query's two
-        # words, while screen_spot matches BOTH of them in its description.
-        # Nothing in the scoring rewards term COVERAGE, so a short almost-exact
-        # title beats a complete match. Tuning a weight to flip this one case
-        # would be fitting to a sample; the fix is a coverage term, and that is
-        # its own change (tripl-9t2s).
+        # THE COVERAGE FAULT, AND THE ARITHMETIC THAT CLOSED IT (tripl-9t2s)
+        # This case carried an `xfail_ordering` and no longer does. Measured on
+        # this harness, whole result set, three documents:
         #
-        # THE MARKER COVERS THE ORDER AND NOTHING ELSE (tripl-uojz)
+        #   before   Экран 1.0000   screen_spot 0.8294   spot 0.4799
+        #   after    screen_spot 1.8294   spot 1.4799   Экран 1.0000
+        #
+        # (The issue records 1.000/0.791/0.433. The two event scores moved when
+        # tripl-0qld took harvested values out of event keywords and shrank their
+        # lexical legs; the fault and the ORDER were identical.)
+        #
+        # `Экран` is a FIELD document whose entire title is ONE of the query's two
+        # words. It holds no Cyrillic `спот`, so it satisfies no tsquery and earns
+        # no ladder tier: its whole score is the trigram leg, and
+        # similarity('Экран','экран спота') is exactly 0.5 — 6 trigrams of 12, all
+        # shared — so 2.0 x 0.5 = 1.0000 to the digit. `screen_spot` is the event
+        # the user wants: its description is literally 'Показ экрана спота', which
+        # lives in `body`, so it answered BOTH words — and its boost is 0 too,
+        # because the 3.25 stemmed tier deliberately never reads `body`. Nothing
+        # in the score paid it for that, so the complete match lost by 0.17.
+        # `COVERAGE_BONUS` pays a flat 1.0 for satisfying the whole tsquery; the
+        # field document gets nothing because it satisfies none of it.
+        #
+        # WHAT EACH FIELD BELOW PINS, AND WHY THREE ARE NEEDED
+        # * `expect_top` + `must_not_outrank` — the ordering claim, and the
+        #   acceptance criterion for tripl-9t2s. MUTATION: delete
+        #   `+ coverage_score` from the outer SELECT in postgres_lexical_search
+        #   and screen_spot falls back to 0.8294 against Экран at 1.0000.
+        # * `must_retrieve=(FIELD_SCREEN,)` — out-ranking `Экран` is only a real
+        #   claim while `Экран` is still RETRIEVED. `must_not_outrank` is
+        #   vacuously satisfied by an absent competitor, so a regression in the
+        #   trigram retrieval leg (raising the `%` threshold, dropping
+        #   `d.title % :query` from the WHERE) would turn the ordering claim green
+        #   for free. This is the assertion that refuses that.
+        # * `max_top_confidence=0.5` — the bound from ABOVE on the constant.
+        #   1.8294 / 7.0 = 0.2613: a complete but WEAK match is not a certain
+        #   answer. MUTATION: set COVERAGE_BONUS = 4.0 and the top hit is served
+        #   at 0.684, so the fix cannot be enlarged into a blunt instrument.
+        #
+        # THE (NOW DELETED) MARKER COVERED THE ORDER AND NOTHING ELSE (tripl-uojz)
         # `screen_spot` going ABSENT from these results — the production fault
-        # itself, returning — is asserted against unconditionally by the
-        # retrieval test, which reads no xfail field. Until that split, this
-        # marker excused both claims at once, so the four fixes could have been
-        # undone and this case would still have reported a tidy expected failure.
-        xfail_ordering="tripl-9t2s: nothing in the score rewards matching MORE of the query",
+        # itself, returning — was asserted against unconditionally by the
+        # retrieval test, which reads no xfail field. Until that split, the marker
+        # excused both claims at once, so the four fixes could have been undone
+        # and this case would still have reported a tidy expected failure.
+        must_retrieve=(FIELD_SCREEN,),
+        max_top_confidence=0.5,
     ),
     RelevanceCase(
         id="purchase-singular",
