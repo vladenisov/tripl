@@ -22,8 +22,10 @@ from tripl.metric_grid import metric_grid_stmt, metric_grids
 from tripl.metric_monitoring import monitored_metric_criteria
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.domain_enums import MetricBreakdownAnomalyKind
+from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
+from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.metric_definition import MetricDefinition
@@ -485,6 +487,77 @@ def _flag_incident_children(
     ]
 
 
+async def _attach_scope_names(
+    session: AsyncSession,
+    signals: list[MetricSignalResponse],
+) -> list[MetricSignalResponse]:
+    """Resolve each signal's display name into the response that carries it.
+
+    Three batched queries for the whole page — never one per signal. Same
+    resolution the alert pipeline does for its candidates
+    (``alerting_service._build_scope_name_map``): event -> ``Event.name``,
+    event_type -> ``EventType.display_name``, metric -> the catalog metric's
+    ``display_name``. ``project_total`` has no lookup (the scope IS the project)
+    and stays NULL, as does any scope whose entity has been deleted — the FKs
+    are ``ondelete=SET NULL``, so a NULL ``event_id`` next to a populated
+    ``scope_ref`` means the event is gone, and ``scope_ref`` is the one thing a
+    client must not print in its place (tripl-y4wt).
+    """
+    event_ids = {
+        signal.event_id
+        for signal in signals
+        if signal.scope_type == SCOPE_EVENT and signal.event_id is not None
+    }
+    event_type_ids = {
+        signal.event_type_id
+        for signal in signals
+        if signal.scope_type == SCOPE_EVENT_TYPE and signal.event_type_id is not None
+    }
+    # ``scope_ref`` is an unconstrained string while MetricDefinition.id is a
+    # UUID, so parse defensively and let anything unparseable resolve to NULL.
+    metric_ids: set[uuid.UUID] = set()
+    for signal in signals:
+        if signal.scope_type != SCOPE_METRIC:
+            continue
+        try:
+            metric_ids.add(uuid.UUID(signal.scope_ref))
+        except ValueError:
+            continue
+
+    event_names: dict[uuid.UUID, str] = {}
+    if event_ids:
+        rows = await session.execute(select(Event.id, Event.name).where(Event.id.in_(event_ids)))
+        event_names = {row_id: name for row_id, name in rows.all()}
+    event_type_names: dict[uuid.UUID, str] = {}
+    if event_type_ids:
+        rows = await session.execute(
+            select(EventType.id, EventType.display_name).where(EventType.id.in_(event_type_ids))
+        )
+        event_type_names = {row_id: name for row_id, name in rows.all()}
+    metric_names: dict[uuid.UUID, str] = {}
+    if metric_ids:
+        rows = await session.execute(
+            select(MetricDefinition.id, MetricDefinition.display_name).where(
+                MetricDefinition.id.in_(metric_ids)
+            )
+        )
+        metric_names = {row_id: name for row_id, name in rows.all()}
+
+    def resolve(signal: MetricSignalResponse) -> str | None:
+        if signal.scope_type == SCOPE_EVENT:
+            return event_names.get(signal.event_id) if signal.event_id else None
+        if signal.scope_type == SCOPE_EVENT_TYPE:
+            return event_type_names.get(signal.event_type_id) if signal.event_type_id else None
+        if signal.scope_type == SCOPE_METRIC:
+            try:
+                return metric_names.get(uuid.UUID(signal.scope_ref))
+            except ValueError:
+                return None
+        return None
+
+    return [signal.model_copy(update={"scope_name": resolve(signal)}) for signal in signals]
+
+
 async def get_active_signals(
     session: AsyncSession,
     slug: str,
@@ -589,6 +662,10 @@ async def get_active_signals(
     # the expanded list keeps them (tagged ``incident_child``) so the
     # AnomaliesPage can show the full breakdown.
     signals = _flag_incident_children(signals) if expanded else _deduplicate_into_incidents(signals)
+
+    # After the collapse, so the name lookups only cover rows that will be
+    # returned, and before the cache write, so a cache hit is labelled too.
+    signals = await _attach_scope_names(session, signals)
 
     signals.sort(key=lambda signal: signal.bucket, reverse=True)
     if cacheable:

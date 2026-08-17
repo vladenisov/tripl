@@ -90,6 +90,8 @@ function renderInbox(
   // drafts and the expanded set above it (tripl-gpfr), so the default here is
   // "nothing picked" and a test that cares supplies its own set.
   const toggleIncidentSelected = vi.fn<(id: string, selected: boolean) => void>()
+  const setIncidentsSelected =
+    vi.fn<(ids: readonly string[], selected: boolean) => void>()
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const utils = render(
     <AuthContext.Provider value={authValue(role)}>
@@ -114,6 +116,7 @@ function renderInbox(
           toggleIncident={vi.fn()}
           selectedIncidents={new Set()}
           toggleIncidentSelected={toggleIncidentSelected}
+          setIncidentsSelected={setIncidentsSelected}
           onAction={onAction}
           pendingGroupId={null}
           errorGroupId={null}
@@ -125,7 +128,7 @@ function renderInbox(
     </QueryClientProvider>
     </AuthContext.Provider>,
   )
-  return { ...utils, onAction, toggleIncidentSelected }
+  return { ...utils, onAction, toggleIncidentSelected, setIncidentsSelected }
 }
 
 /**
@@ -753,6 +756,85 @@ describe('AlertingInbox — incidents can be picked for one decision (tripl-gpfr
 
     fireEvent.click(picked)
     expect(toggleIncidentSelected).toHaveBeenCalledWith('grp-1', false)
+  })
+
+  /*
+   * Building a selection was strictly one click per card: 50 ticks on 16px boxes
+   * to act on one loaded page, against 2 clicks for the same sweep on the events
+   * table, which has both a header select-all and a shift-click range
+   * (tripl-rzkx). Neither control here can reach a row that is not rendered, so
+   * neither is the "select all N matching" `InboxBulkActionBar` refuses.
+   */
+  const SELECT_ALL_SHOWN = 'Select all 2 shown incidents'
+  const threeIncidents = makeInbox({
+    items: [
+      makeGroup(),
+      makeGroup({ correlation_group_id: 'grp-2', scope_ref: 'scope-b', scope_names: [OTHER_TARGET] }),
+      makeGroup({ correlation_group_id: 'grp-3', scope_ref: 'scope-c', scope_names: ['third_event'] }),
+    ],
+    total: 3,
+  })
+
+  it('offers one control that picks every incident on screen, counted in its name', () => {
+    const { setIncidentsSelected } = renderInbox({ inbox: twoIncidents })
+
+    const selectAll = screen.getByRole('checkbox', { name: SELECT_ALL_SHOWN })
+    expect(screen.getByText('Select all 2 shown')).toBeInTheDocument()
+
+    fireEvent.click(selectAll)
+    expect(setIncidentsSelected).toHaveBeenCalledWith(['grp-1', 'grp-2'], true)
+  })
+
+  it('reads mixed while only some of the page is picked', () => {
+    renderInbox({ inbox: twoIncidents, selectedIncidents: new Set(['grp-1']) })
+
+    expect(screen.getByRole('checkbox', { name: SELECT_ALL_SHOWN })).toHaveAttribute(
+      'aria-checked',
+      'mixed',
+    )
+  })
+
+  it('clears the page when everything on it is already picked', () => {
+    // A fully-selected page needs a one-click way back, or the bulk bar's Clear
+    // is the only exit and the header box is a one-way door.
+    const { setIncidentsSelected } = renderInbox({
+      inbox: twoIncidents,
+      selectedIncidents: new Set(['grp-1', 'grp-2']),
+    })
+
+    const selectAll = screen.getByRole('checkbox', { name: SELECT_ALL_SHOWN })
+    expect(selectAll).toBeChecked()
+    fireEvent.click(selectAll)
+    expect(setIncidentsSelected).toHaveBeenCalledWith(['grp-1', 'grp-2'], false)
+  })
+
+  it('extends from the last box touched when shift is held', () => {
+    const { toggleIncidentSelected, setIncidentsSelected } = renderInbox({
+      inbox: threeIncidents,
+    })
+
+    // First click is an ordinary toggle — and the anchor for what follows.
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_TARGET }))
+    expect(toggleIncidentSelected).toHaveBeenCalledWith('grp-1', true)
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select drop · volume on third_event' }), {
+      shiftKey: true,
+    })
+    expect(setIncidentsSelected).toHaveBeenCalledWith(['grp-1', 'grp-2', 'grp-3'], true)
+  })
+
+  it('leaves a shift-click with no anchor as a plain single toggle', () => {
+    // Nothing has been ticked yet, so there is no range to infer — guessing one
+    // would select rows the operator never pointed at.
+    const { toggleIncidentSelected, setIncidentsSelected } = renderInbox({
+      inbox: threeIncidents,
+    })
+
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_OTHER_TARGET }), {
+      shiftKey: true,
+    })
+    expect(toggleIncidentSelected).toHaveBeenCalledWith('grp-2', true)
+    expect(setIncidentsSelected).not.toHaveBeenCalled()
   })
 
   it('gives a viewer no checkbox to build a selection with', () => {

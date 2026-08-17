@@ -298,8 +298,14 @@ export function MonitoringTab({ slug }: { slug: string }) {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Both fields are counted in BUCKETS, and said so nowhere: bare
+                "14" and "7" sat directly above two fields that name their unit
+                and carry a paragraph each, so the page's own pattern pushed the
+                reader toward days. On an hourly scan that reads 14 as fourteen
+                days when it means fourteen hours — an order of magnitude, set by
+                someone trying to quieten a noisy detector (tripl-wb58). */}
             <div className="grid gap-2">
-              <Label htmlFor={baselineWindowId}>Baseline Window</Label>
+              <Label htmlFor={baselineWindowId}>Baseline Window (buckets)</Label>
               <NumberSetting
                 id={baselineWindowId}
                 min={1}
@@ -308,7 +314,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor={minHistoryId}>Min History</Label>
+              <Label htmlFor={minHistoryId}>Min History (buckets)</Label>
               <NumberSetting
                 id={minHistoryId}
                 min={1}
@@ -316,6 +322,17 @@ export function MonitoringTab({ slug }: { slug: string }) {
                 onCommit={v => updateMut.mutate({ min_history_buckets: v })}
               />
             </div>
+            {/* One line for the pair. Deliberately says "the series being
+                scored" and not "the scan": these settings also govern catalog
+                metrics, and a MetricDefinition carries its own interval
+                independent of any scan config — so a daily metric under an
+                hourly scan makes 14 buckets fourteen DAYS. */}
+            <p className="text-xs text-muted-foreground md:col-span-2">
+              A bucket is one collection interval of the series being scored. On an hourly
+              scan, {settings.baseline_window_buckets} buckets of baseline is{' '}
+              {settings.baseline_window_buckets} hours; on a daily catalog metric it is{' '}
+              {settings.baseline_window_buckets} days.
+            </p>
             <div className="grid gap-2">
               <Label htmlFor={sigmaThresholdId}>Sigma Threshold</Label>
               <NumberSetting

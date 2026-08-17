@@ -9,6 +9,7 @@ import {
   bulkMuteConfirmMessage,
   inboxActionSuccessMessage,
   incidentMagnitudeLabel,
+  incidentMagnitudeTitle,
   incidentReasonLabel,
   incidentWorstDeltaLabel,
   isHandledInboxStatus,
@@ -96,6 +97,34 @@ describe('what fired, on the card (tripl-oxkt.4)', () => {
 
   it('writes the magnitude against its baseline', () => {
     expect(incidentMagnitudeLabel(makeGroup())).toContain('expected · -59.2%')
+  })
+
+  it('rounds and groups the counts so a baseline never reads as "88.318"', () => {
+    // `expected_count` is a rolling baseline and arrives as a float. Raw, the
+    // card read "197 vs 88.318 expected", which a reader used to a decimal comma
+    // takes for 88,318 — and every other surface in the product already rounds
+    // (tripl-nj4n).
+    const label = incidentMagnitudeLabel(
+      makeGroup({ actual_count: 197, expected_count: 88.318, percent_delta: 123.1 }),
+    )
+    expect(label).toBe('197 vs 88 expected · 123.1%')
+    expect(label).not.toContain('88.318')
+  })
+
+  it('groups thousands the way the activity rail does', () => {
+    expect(
+      incidentMagnitudeLabel(
+        makeGroup({ actual_count: 42280, expected_count: 33375.6, percent_delta: 26.7 }),
+      ),
+    ).toContain('42,280 vs 33,376 expected')
+  })
+
+  it('keeps the unrounded counts for the tooltip', () => {
+    // Rounding is for reading; reconciling a baseline against the detector needs
+    // the precision, so it moves to the title rather than being dropped.
+    expect(incidentMagnitudeTitle(makeGroup({ actual_count: 197, expected_count: 88.318 }))).toBe(
+      'Unrounded: 197 actual, 88.318 expected',
+    )
   })
 
   it('says a zero baseline in words, never as 0%', () => {

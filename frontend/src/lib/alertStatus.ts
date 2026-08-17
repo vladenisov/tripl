@@ -133,8 +133,24 @@ export function incidentDirectionGlyph(direction: AlertInboxGroup['direction']):
   return direction === 'drop' ? '↓' : '↑'
 }
 
-function formatCount(value: number): string {
-  return value.toLocaleString()
+/**
+ * An occurrence count, rounded and group-separated: `88.318` reads as "88".
+ *
+ * `expected_count` is a rolling baseline, so it arrives as a float. Printing it
+ * raw put "197 vs 88.318 expected" on every inbox card while the activity rail
+ * 400px away said "42,280 actual vs 33,376 expected" — two formats for one kind
+ * of number, and "88.318" is read as 88,318 by anyone used to a decimal comma
+ * (tripl-nj4n). Same expression as AnomaliesPage, OverviewPage, the top bar and
+ * the top-movers/release-regression panels, which is the point: the inbox was
+ * the only surface that did not round.
+ *
+ * Callers that have room for it should keep the unrounded value in a `title`.
+ * Named for the domain rather than `formatCount`, which is already taken by
+ * `ui/chart-format` for the axis-tick abbreviation ("380k") — the opposite
+ * trade-off, and not one an incident row wants.
+ */
+export function formatIncidentCount(value: number): string {
+  return Math.round(value).toLocaleString()
 }
 
 /**
@@ -156,10 +172,25 @@ export function incidentMagnitudeLabel(group: {
   percent_delta: number | null
 }): string {
   const delta = formatPercentDelta(group.percent_delta, group.expected_count)
+  const actual = formatIncidentCount(group.actual_count)
   if (group.expected_count <= 0) {
-    return `${formatCount(group.actual_count)} actual, none expected · ${delta}`
+    return `${actual} actual, none expected · ${delta}`
   }
-  return `${formatCount(group.actual_count)} vs ${formatCount(group.expected_count)} expected · ${delta}`
+  return `${actual} vs ${formatIncidentCount(group.expected_count)} expected · ${delta}`
+}
+
+/**
+ * The unrounded counts behind {@link incidentMagnitudeLabel}, for the tooltip.
+ *
+ * Rounding is right for reading the card at a glance; it is wrong for anyone
+ * reconciling a baseline against the detector, so the precision is moved rather
+ * than dropped.
+ */
+export function incidentMagnitudeTitle(group: {
+  actual_count: number
+  expected_count: number
+}): string {
+  return `Unrounded: ${group.actual_count} actual, ${group.expected_count} expected`
 }
 
 /**

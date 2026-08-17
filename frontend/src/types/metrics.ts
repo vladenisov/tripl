@@ -55,6 +55,13 @@ export interface MonitoringSignal {
   stddev: number
   z_score: number
   direction: 'spike' | 'drop'
+  // Display name of the scope that fired, resolved server-side. Null when it
+  // could not be resolved (the entity was deleted) or when the scope names
+  // itself — `project_total`. Never substitute `scope_ref`: a hex prefix reads
+  // as a name, and the page then disagrees with the activity rail about what
+  // fired (tripl-y4wt). Optional like `scan_config_name`: the server always
+  // sends it, but locally-synthesised signals need not fabricate one.
+  scope_name?: string | null
   // True when this row is a child scope (event_type/event) folded under a
   // co-firing project_total incident. Only the expanded AnomaliesPage fetch
   // sets it; collapsed callers drop children so it is always false there.

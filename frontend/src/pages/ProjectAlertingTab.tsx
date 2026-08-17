@@ -22,6 +22,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useConfirm } from '@/hooks/useConfirm'
 import {
+  ALERT_INBOX_STATUSES,
   bulkInboxActionSuccessMessage,
   bulkMuteConfirmMessage,
   falsePositiveConfirmMessage,
@@ -320,10 +321,34 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     && !deliveries?.items.some(item => item.id === focusedDelivery.id)
     ? focusedDelivery
     : null
-  // The status filter. Changing it changes the query key, which starts a fresh
-  // first page — so resetting the filter resets the offset by construction and
-  // no state can be left pointing into a set that no longer exists.
-  const [inboxStatus, setInboxStatus] = useState<InboxStatusFilter>('')
+  // The status filter, in the URL beside `?section=` and `?scan=` rather than in
+  // component state (tripl-ahg5). An incident card links to its scope's
+  // monitoring page — off this route entirely — so filtering to Open, opening
+  // one to check the metric and pressing Back used to hand back all 93 again;
+  // and the filtered queue could not be bookmarked or pasted to a colleague
+  // while the two facets beside it could. `replace`, like `?scan=`: a filter flip
+  // is not a place Back should stop, unlike `?section=`, which pushes.
+  //
+  // An unknown value degrades to "All" — the same rule `?section=` and `?scan=`
+  // already apply. Changing it changes the query key, which starts a fresh first
+  // page, so resetting the filter resets the offset by construction and no state
+  // can be left pointing into a set that no longer exists.
+  const requestedInboxStatus = searchParams.get('status') ?? ''
+  const inboxStatus: InboxStatusFilter = (ALERT_INBOX_STATUSES as readonly string[]).includes(
+    requestedInboxStatus,
+  )
+    ? (requestedInboxStatus as InboxStatusFilter)
+    : ''
+  const setInboxStatus = (next: InboxStatusFilter) =>
+    setSearchParams(
+      current => {
+        const params = new URLSearchParams(current)
+        if (next) params.set('status', next)
+        else params.delete('status')
+        return params
+      },
+      { replace: true },
+    )
   const inboxKey = ['alertInbox', slug, inboxStatus]
   // The same hook and the same cadence as RoutingRulesPanel, deliberately: the
   // page held open during an incident showed a live CONFIGURATION panel beside a
@@ -621,6 +646,26 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       // duplicates too — this keeps the COUNT the confirmation quotes honest,
       // which the server cannot do for us.
       return current.includes(correlationGroupId) ? current : [...current, correlationGroupId]
+    })
+  // The batch form, for the header "select all N shown" box and the shift-click
+  // range (tripl-rzkx). One state update for the whole batch rather than a
+  // toggle per id: the pruning pass above runs on every render, so fifty
+  // sequential toggles would be fifty renders of a fifty-card list, and the bulk
+  // bar's count would tick upward one incident at a time.
+  //
+  // It cannot widen the selection past what the caller passes, and the caller is
+  // the Inbox section, which only ever passes ids it is currently rendering — so
+  // the "nothing selected that is not on screen" contract above still holds by
+  // construction and did not have to be relaxed for either control.
+  const setIncidentsSelected = (correlationGroupIds: readonly string[], selected: boolean) =>
+    setSelectedIncidentIds(current => {
+      if (!selected) {
+        const dropped = new Set(correlationGroupIds)
+        const kept = current.filter(id => !dropped.has(id))
+        return kept.length === current.length ? current : kept
+      }
+      const added = correlationGroupIds.filter(id => !current.includes(id))
+      return added.length === 0 ? current : [...current, ...added]
     })
   const clearIncidentSelection = () => setSelectedIncidentIds([])
 
@@ -1076,6 +1121,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           toggleIncident={toggleIncident}
           selectedIncidents={new Set(selectedIncidentIdsInView)}
           toggleIncidentSelected={toggleIncidentSelected}
+          setIncidentsSelected={setIncidentsSelected}
           onAction={handleInboxAction}
           pendingGroupId={actingGroupId}
           errorGroupId={failedGroupId}

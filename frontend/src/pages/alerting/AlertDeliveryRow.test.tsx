@@ -631,7 +631,10 @@ describe('AlertDeliveryRow deep link', () => {
 
     expect(await screen.findByText('spot:open:wind:')).toBeInTheDocument()
     expect(screen.getByText('345')).toBeInTheDocument()
-    expect(screen.getByText('715.7')).toBeInTheDocument()
+    // Rounded for reading (tripl-nj4n) — these are occurrence counts, and the
+    // stored float stays reachable in the cell's title.
+    expect(screen.getByText('716')).toBeInTheDocument()
+    expect(screen.getByTitle('715.7')).toBeInTheDocument()
   })
 
   it('stays collapsed when the link names a different delivery', async () => {

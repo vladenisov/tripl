@@ -2,35 +2,25 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation, useParams } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type {
-  EventListResponse,
-  EventType,
-  MetricDefinitionListResponse,
-  MonitoringSignal,
-  ScanConfig,
-} from '@/types'
+import type { MonitoringSignal, ScanConfig } from '@/types'
 import AnomaliesPage from './AnomaliesPage'
 
 vi.mock('@/api/metrics', () => ({
   metricsApi: { getActiveSignals: vi.fn() },
 }))
-vi.mock('@/api/metricsCatalogApi', () => ({
-  metricsCatalogApi: { list: vi.fn() },
-}))
+// Kept mocked although the page no longer imports it: the point of tripl-y4wt is
+// that this catalog download (limit 10_000 — 2641 rows / 1.7s on windy-ios) must
+// never come back as a way to label rows, and the only way to assert an absent
+// request is to hold a spy that stays at zero calls.
 vi.mock('@/api/events', () => ({
   eventsApi: { list: vi.fn() },
-}))
-vi.mock('@/api/eventTypes', () => ({
-  eventTypesApi: { list: vi.fn() },
 }))
 vi.mock('@/api/scans', () => ({
   scansApi: { list: vi.fn() },
 }))
 
 import { metricsApi } from '@/api/metrics'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { eventsApi } from '@/api/events'
-import { eventTypesApi } from '@/api/eventTypes'
 import { scansApi } from '@/api/scans'
 
 function makeSignal(overrides: Partial<MonitoringSignal>): MonitoringSignal {
@@ -49,27 +39,12 @@ function makeSignal(overrides: Partial<MonitoringSignal>): MonitoringSignal {
     stddev: 5,
     z_score: 8,
     direction: 'spike',
+    // Resolved server-side alongside the signal; null means the server could not
+    // name the scope (deleted entity), never "still loading".
+    scope_name: null,
     incident_child: false,
     ...overrides,
   }
-}
-
-// Only `id` + `display_name` feed the id → name map; the cast keeps the mock
-// minimal (mirrors the `as unknown as` style of MetricsPage.test.tsx).
-function makeCatalogResponse(
-  items: Array<{ id: string; display_name: string }>,
-): MetricDefinitionListResponse {
-  return { items, total: items.length } as unknown as MetricDefinitionListResponse
-}
-
-// Only `id` + `display_name` feed the event-type id → name map.
-function makeEventTypes(items: Array<{ id: string; display_name: string }>): EventType[] {
-  return items as unknown as EventType[]
-}
-
-// Only `id` + `name` feed the event id → name map.
-function makeEventList(items: Array<{ id: string; name: string }>): EventListResponse {
-  return { items, total: items.length } as unknown as EventListResponse
 }
 
 // Only `id` + `name` feed the scan id → name map behind the scan facet.
@@ -83,7 +58,7 @@ function MetricDetailProbe() {
   return <div>metric-detail:{metricId}</div>
 }
 
-/** Exposes the live URL so the `?scan=` round trip is assertable. */
+/** Exposes the live URL so the `?scan=` / `?level=` round trips are assertable. */
 function LocationProbe() {
   const location = useLocation()
   return <div>anomalies-location:{location.pathname}{location.search}</div>
@@ -106,12 +81,7 @@ function renderAnomalies(entry = '/p/demo/anomalies') {
 
 beforeEach(() => {
   vi.mocked(metricsApi.getActiveSignals).mockReset()
-  vi.mocked(metricsCatalogApi.list).mockReset()
-  vi.mocked(metricsCatalogApi.list).mockResolvedValue(makeCatalogResponse([]))
-  vi.mocked(eventTypesApi.list).mockReset()
-  vi.mocked(eventTypesApi.list).mockResolvedValue(makeEventTypes([]))
   vi.mocked(eventsApi.list).mockReset()
-  vi.mocked(eventsApi.list).mockResolvedValue(makeEventList([]))
   vi.mocked(scansApi.list).mockReset()
   vi.mocked(scansApi.list).mockResolvedValue(makeScans([]))
 })
@@ -120,18 +90,15 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('AnomaliesPage — metric-scope signals (tripl-nxk2.4)', () => {
-  it('renders a metric signal with its resolved catalog name and links to the metric drilldown', async () => {
+describe('AnomaliesPage — scope names (tripl-nxk2.4, tripl-y4wt)', () => {
+  it('renders a metric signal with the name the server resolved and links to the drilldown', async () => {
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
-      makeSignal({ scope_ref: 'metric-abc' }),
+      makeSignal({ scope_ref: 'metric-abc', scope_name: 'Checkout conversion' }),
     ])
-    vi.mocked(metricsCatalogApi.list).mockResolvedValue(
-      makeCatalogResponse([{ id: 'metric-abc', display_name: 'Checkout conversion' }]),
-    )
 
     renderAnomalies()
 
-    // Label resolves via the catalog map: "Metric · <display name>".
+    // Label reads "Metric · <display name>" straight off the signal.
     const cell = await screen.findByText('Spike on Metric · Checkout conversion')
     const row = cell.closest('[role="row"]') as HTMLElement
     expect(row).not.toBeNull()
@@ -141,19 +108,21 @@ describe('AnomaliesPage — metric-scope signals (tripl-nxk2.4)', () => {
     expect(await screen.findByText('metric-detail:metric-abc')).toBeInTheDocument()
   })
 
-  it('falls back to the short scope ref when the metric id is unknown to the catalog', async () => {
+  it('never labels a row with a bare scope ref when the server could not name it', async () => {
+    // The metric was deleted out from under the anomaly row, so the server sends
+    // scope_name: null. "Drop on Metric 9136d575" reads as a name and is what the
+    // page used to show for every row for the first 4.4s — the whole of tripl-y4wt.
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({ scope_ref: '9136d575-0000-4000-8000-000000000001', direction: 'drop' }),
     ])
-    // Catalog resolves but no longer contains the definition (e.g. deleted).
-    vi.mocked(metricsCatalogApi.list).mockResolvedValue(makeCatalogResponse([]))
 
     renderAnomalies()
 
-    // Fallback label: "Metric <first 8 of ref>" — still linked to the drilldown.
-    const cell = await screen.findByText('Drop on Metric 9136d575')
-    const row = cell.closest('[role="row"]') as HTMLElement
+    const placeholder = await screen.findByRole('img', { name: 'Metric 9136d575' })
+    const row = placeholder.closest('[role="row"]') as HTMLElement
     expect(row).not.toBeNull()
+    expect(row).not.toHaveTextContent('9136d575')
+    // Still a real, navigable row — the missing name costs the label, not the link.
     expect(row).toHaveAttribute('tabindex', '0')
     fireEvent.click(row)
     expect(
@@ -161,40 +130,38 @@ describe('AnomaliesPage — metric-scope signals (tripl-nxk2.4)', () => {
     ).toBeInTheDocument()
   })
 
-  it('resolves event-type and event scope names from their catalogs', async () => {
+  it('names event-type and event scopes from the signal payload', async () => {
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
-      makeSignal({ scope_type: 'event_type', scope_ref: 'et-1' }),
-      makeSignal({ scope_type: 'event', scope_ref: 'ev-1' }),
+      makeSignal({ scope_type: 'event_type', scope_ref: 'et-1', scope_name: 'Signup' }),
+      makeSignal({ scope_type: 'event', scope_ref: 'ev-1', scope_name: 'Checkout tapped' }),
     ])
-    vi.mocked(eventTypesApi.list).mockResolvedValue(
-      makeEventTypes([{ id: 'et-1', display_name: 'Signup' }]),
-    )
-    vi.mocked(eventsApi.list).mockResolvedValue(
-      makeEventList([{ id: 'ev-1', name: 'Checkout tapped' }]),
-    )
 
     renderAnomalies()
 
-    // Names resolve to "Event type · <display name>" / "Event · <name>", not IDs.
     expect(await screen.findByText('Spike on Event type · Signup')).toBeInTheDocument()
     expect(await screen.findByText('Spike on Event · Checkout tapped')).toBeInTheDocument()
   })
 
-  it('falls back to the short scope ref for event / event_type when the id is unknown', async () => {
+  it('does not download the event catalog just to label rows', async () => {
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
-      makeSignal({ scope_type: 'event_type', scope_ref: 'et-12345678' }),
+      makeSignal({ scope_type: 'event', scope_ref: 'ev-1', scope_name: 'Checkout tapped' }),
     ])
-    // No matching event type in the (empty) catalog → short-ref fallback.
 
     renderAnomalies()
 
-    expect(await screen.findByText('Spike on Event type et-12345')).toBeInTheDocument()
+    await screen.findByText('Spike on Event · Checkout tapped')
+    expect(eventsApi.list).not.toHaveBeenCalled()
   })
 
   it('tags incident children folded under a project_total spike, but not the parent', async () => {
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({ scope_type: 'project_total', scope_ref: 'pt-1', incident_child: false }),
-      makeSignal({ scope_type: 'event_type', scope_ref: 'et-12345678', incident_child: true }),
+      makeSignal({
+        scope_type: 'event_type',
+        scope_ref: 'et-12345678',
+        scope_name: 'Signup',
+        incident_child: true,
+      }),
     ])
 
     renderAnomalies()
@@ -204,7 +171,7 @@ describe('AnomaliesPage — metric-scope signals (tripl-nxk2.4)', () => {
       '[role="row"]',
     ) as HTMLElement
     const childRow = screen
-      .getByText('Spike on Event type et-12345')
+      .getByText('Spike on Event type · Signup')
       .closest('[role="row"]') as HTMLElement
     expect(childRow).toHaveTextContent('part of total')
     expect(parentRow).not.toHaveTextContent('part of total')
@@ -217,15 +184,13 @@ describe('AnomaliesPage — severity label (tripl-yfsj.9)', () => {
       makeSignal({
         scope_type: 'event_type',
         scope_ref: 'et-1',
+        scope_name: 'Signup',
         direction: 'drop',
         actual_count: 0,
         expected_count: 80,
         z_score: -20,
       }),
     ])
-    vi.mocked(eventTypesApi.list).mockResolvedValue(
-      makeEventTypes([{ id: 'et-1', display_name: 'Signup' }]),
-    )
 
     renderAnomalies()
 
@@ -240,11 +205,8 @@ describe('AnomaliesPage — severity label (tripl-yfsj.9)', () => {
   it('keeps the numeric z-score for a non-zero signal', async () => {
     // makeSignal() defaults to a spike with z_score 8 and actual_count 120.
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
-      makeSignal({ scope_type: 'event_type', scope_ref: 'et-1' }),
+      makeSignal({ scope_type: 'event_type', scope_ref: 'et-1', scope_name: 'Signup' }),
     ])
-    vi.mocked(eventTypesApi.list).mockResolvedValue(
-      makeEventTypes([{ id: 'et-1', display_name: 'Signup' }]),
-    )
 
     renderAnomalies()
 
@@ -259,16 +221,22 @@ describe('AnomaliesPage — magnitude filter', () => {
   it('hides low-magnitude signals at the default level and reveals them under "All"', async () => {
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
       // relEffect = 220/80 = 2.75 → clears "Significant".
-      makeSignal({ scope_type: 'event_type', scope_ref: 'et-major', actual_count: 300, expected_count: 80 }),
+      makeSignal({
+        scope_type: 'event_type',
+        scope_ref: 'et-major',
+        scope_name: 'Big move',
+        actual_count: 300,
+        expected_count: 80,
+      }),
       // relEffect = 4/80 = 0.05 → below "Significant".
-      makeSignal({ scope_type: 'event_type', scope_ref: 'et-minor', actual_count: 84, expected_count: 80 }),
+      makeSignal({
+        scope_type: 'event_type',
+        scope_ref: 'et-minor',
+        scope_name: 'Tiny wiggle',
+        actual_count: 84,
+        expected_count: 80,
+      }),
     ])
-    vi.mocked(eventTypesApi.list).mockResolvedValue(
-      makeEventTypes([
-        { id: 'et-major', display_name: 'Big move' },
-        { id: 'et-minor', display_name: 'Tiny wiggle' },
-      ]),
-    )
 
     renderAnomalies()
 
@@ -284,7 +252,9 @@ describe('AnomaliesPage — magnitude filter', () => {
   })
 
   it('keeps the magnitude control reachable by its accessible name', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([makeSignal({})])
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({ scope_name: 'Checkout conversion' }),
+    ])
 
     renderAnomalies()
 
@@ -295,7 +265,13 @@ describe('AnomaliesPage — magnitude filter', () => {
   it('shows a lower-the-filter hint (not the empty state) when the level hides everything', async () => {
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
       // relEffect = 2/80 = 0.025 → below the default "Significant".
-      makeSignal({ scope_type: 'event_type', scope_ref: 'et-minor', actual_count: 82, expected_count: 80 }),
+      makeSignal({
+        scope_type: 'event_type',
+        scope_ref: 'et-minor',
+        scope_name: 'Tiny wiggle',
+        actual_count: 82,
+        expected_count: 80,
+      }),
     ])
 
     renderAnomalies()
@@ -311,6 +287,76 @@ describe('AnomaliesPage — magnitude filter', () => {
   })
 })
 
+// The rows on this page are links off the route (each one opens a monitoring
+// detail page), so Back is the primary way out of an investigation. With the
+// level in component state that Back re-hid 162 of windy-ios's 209 signals every
+// single time (tripl-ahg5).
+describe('AnomaliesPage — ?level= facet (tripl-ahg5)', () => {
+  function tinySignal(): MonitoringSignal {
+    // relEffect = 2/80 = 0.025 → visible only at "All".
+    return makeSignal({
+      scope_type: 'event_type',
+      scope_ref: 'et-minor',
+      scope_name: 'Tiny wiggle',
+      actual_count: 82,
+      expected_count: 80,
+    })
+  }
+
+  it('pre-selects the level named by ?level= so a bookmarked view survives', async () => {
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([tinySignal()])
+
+    renderAnomalies('/p/demo/anomalies?level=all')
+
+    // Landed already widened: no click, and the sub-threshold row is on screen.
+    expect(await screen.findByText('Spike on Event type · Tiny wiggle')).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'All' })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('writes the level back to the URL, and clears the parameter on the default', async () => {
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([tinySignal()])
+
+    renderAnomalies()
+
+    fireEvent.click(await screen.findByRole('radio', { name: 'All' }))
+    expect(await screen.findByText('anomalies-location:/p/demo/anomalies?level=all'))
+      .toBeInTheDocument()
+
+    // Back to the default writes no parameter rather than `level=significant`.
+    fireEvent.click(screen.getByRole('radio', { name: 'Significant' }))
+    expect(await screen.findByText('anomalies-location:/p/demo/anomalies')).toBeInTheDocument()
+  })
+
+  it('degrades an unknown ?level= to the default instead of showing nothing', async () => {
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({ scope_type: 'event_type', scope_ref: 'et-1', scope_name: 'Signup' }),
+      tinySignal(),
+    ])
+
+    renderAnomalies('/p/demo/anomalies?level=enormous')
+
+    expect(await screen.findByText('Spike on Event type · Signup')).toBeInTheDocument()
+    expect(screen.queryByText('Spike on Event type · Tiny wiggle')).not.toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Significant' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+  })
+
+  it('keeps ?scan= and ?level= independent of each other', async () => {
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([tinySignal()])
+    vi.mocked(scansApi.list).mockResolvedValue(makeScans([{ id: 'scan-1', name: 'Live' }]))
+
+    renderAnomalies('/p/demo/anomalies?scan=scan-1&level=all')
+
+    expect(await screen.findByText('Spike on Event type · Tiny wiggle')).toBeInTheDocument()
+    // Flipping the level leaves the scan selection in the URL untouched.
+    fireEvent.click(screen.getByRole('radio', { name: 'Significant' }))
+    expect(await screen.findByText('anomalies-location:/p/demo/anomalies?scan=scan-1'))
+      .toBeInTheDocument()
+  })
+})
+
 describe('AnomaliesPage — scan facet', () => {
   // Mirrors the shape of the windy-ios stream: a legacy scan watching most of
   // the catalog contributes the bulk of open event-scope signals purely by
@@ -322,9 +368,15 @@ describe('AnomaliesPage — scan facet', () => {
           scan_config_id: 'scan-legacy',
           scope_type: 'event',
           scope_ref: `legacy-ev-${i}`,
+          scope_name: 'Legacy tap',
         }),
       ),
-      makeSignal({ scan_config_id: 'scan-live', scope_type: 'event', scope_ref: 'live-ev-1' }),
+      makeSignal({
+        scan_config_id: 'scan-live',
+        scope_type: 'event',
+        scope_ref: 'live-ev-1',
+        scope_name: 'Live tap',
+      }),
     ]
   }
 
@@ -336,18 +388,12 @@ describe('AnomaliesPage — scan facet', () => {
   it('narrows the list to one scan, with per-scan counts on the options', async () => {
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
     vi.mocked(scansApi.list).mockResolvedValue(scans)
-    vi.mocked(eventsApi.list).mockResolvedValue(
-      makeEventList([
-        { id: 'legacy-ev-0', name: 'Legacy tap' },
-        { id: 'live-ev-1', name: 'Live tap' },
-      ]),
-    )
 
     renderAnomalies()
 
     // Both streams are visible before the facet is touched.
     expect(await screen.findByText('Spike on Event · Live tap')).toBeInTheDocument()
-    expect(screen.getByText('Spike on Event · Legacy tap')).toBeInTheDocument()
+    expect(screen.getAllByText('Spike on Event · Legacy tap')).toHaveLength(6)
 
     // The option label carries the count, so the size difference is legible
     // before clicking: 6 legacy against 1 live.
@@ -366,7 +412,12 @@ describe('AnomaliesPage — scan facet', () => {
 
   it('omits the facet when every signal comes from the same scan', async () => {
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
-      makeSignal({ scan_config_id: 'scan-legacy', scope_type: 'event', scope_ref: 'legacy-ev-0' }),
+      makeSignal({
+        scan_config_id: 'scan-legacy',
+        scope_type: 'event',
+        scope_ref: 'legacy-ev-0',
+        scope_name: 'Legacy tap',
+      }),
     ])
     vi.mocked(scansApi.list).mockResolvedValue(scans)
 
@@ -389,6 +440,7 @@ describe('AnomaliesPage — scan facet', () => {
         scan_config_id: null,
         scope_type: 'metric',
         scope_ref: 'metric-1',
+        scope_name: 'Checkout conversion',
       }),
     ])
     vi.mocked(scansApi.list).mockResolvedValue(scans)
@@ -424,6 +476,7 @@ describe('AnomaliesPage — scan facet', () => {
         scan_config_id: 'scan-legacy',
         scope_type: 'event',
         scope_ref: 'legacy-ev-0',
+        scope_name: 'Legacy tap',
         actual_count: 300,
         expected_count: 80,
       }),
@@ -432,11 +485,13 @@ describe('AnomaliesPage — scan facet', () => {
         scan_config_id: 'scan-live',
         scope_type: 'event',
         scope_ref: 'live-ev-1',
+        scope_name: 'Live tap',
       }),
       makeSignal({
         scan_config_id: 'scan-live',
         scope_type: 'event',
         scope_ref: 'live-ev-2',
+        scope_name: 'Live tap two',
       }),
     ])
     vi.mocked(scansApi.list).mockResolvedValue(scans)
@@ -467,12 +522,6 @@ describe('AnomaliesPage — scan facet', () => {
   it('pre-selects the scan named by ?scan= and shows only its signals', async () => {
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
     vi.mocked(scansApi.list).mockResolvedValue(scans)
-    vi.mocked(eventsApi.list).mockResolvedValue(
-      makeEventList([
-        { id: 'legacy-ev-0', name: 'Legacy tap' },
-        { id: 'live-ev-1', name: 'Live tap' },
-      ]),
-    )
 
     renderAnomalies('/p/demo/anomalies?scan=scan-live')
 
@@ -496,18 +545,12 @@ describe('AnomaliesPage — scan facet', () => {
     // guard: dropping it on the way to reading the URL would empty the list.
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
     vi.mocked(scansApi.list).mockResolvedValue(scans)
-    vi.mocked(eventsApi.list).mockResolvedValue(
-      makeEventList([
-        { id: 'legacy-ev-0', name: 'Legacy tap' },
-        { id: 'live-ev-1', name: 'Live tap' },
-      ]),
-    )
 
     renderAnomalies('/p/demo/anomalies?scan=does-not-exist')
 
     // The FULL list, both scans — not an empty state, not one scan.
     expect(await screen.findByText('Spike on Event · Live tap')).toBeInTheDocument()
-    expect(screen.getByText('Spike on Event · Legacy tap')).toBeInTheDocument()
+    expect(screen.getAllByText('Spike on Event · Legacy tap')).toHaveLength(6)
     expect(screen.getByRole('radio', { name: 'All scans 7' })).toHaveAttribute(
       'aria-checked',
       'true',
@@ -522,12 +565,14 @@ describe('AnomaliesPage — scan facet', () => {
     // not ask — a full list of a DIFFERENT scan's anomalies, with no control
     // showing that the filter was discarded (tripl-3y7z.2).
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
-      makeSignal({ scan_config_id: 'scan-legacy', scope_type: 'event', scope_ref: 'legacy-ev-0' }),
+      makeSignal({
+        scan_config_id: 'scan-legacy',
+        scope_type: 'event',
+        scope_ref: 'legacy-ev-0',
+        scope_name: 'Legacy tap',
+      }),
     ])
     vi.mocked(scansApi.list).mockResolvedValue(scans)
-    vi.mocked(eventsApi.list).mockResolvedValue(
-      makeEventList([{ id: 'legacy-ev-0', name: 'Legacy tap' }]),
-    )
 
     renderAnomalies('/p/demo/anomalies?scan=scan-live')
 
@@ -551,12 +596,6 @@ describe('AnomaliesPage — scan facet', () => {
   it('writes the facet selection back to ?scan= so the narrowed view is linkable', async () => {
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
     vi.mocked(scansApi.list).mockResolvedValue(scans)
-    vi.mocked(eventsApi.list).mockResolvedValue(
-      makeEventList([
-        { id: 'legacy-ev-0', name: 'Legacy tap' },
-        { id: 'live-ev-1', name: 'Live tap' },
-      ]),
-    )
 
     renderAnomalies()
 

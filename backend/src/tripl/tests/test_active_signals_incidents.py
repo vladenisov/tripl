@@ -190,6 +190,79 @@ async def test_expanded_view_keeps_children_tagged(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_signals_carry_the_resolved_scope_name(client: AsyncClient):
+    """Each signal names its own scope, so a client needs no catalog to label it.
+
+    Without ``scope_name`` the AnomaliesPage had to download the whole event
+    catalog (2641 rows / 1.7s on windy-ios) purely to build an id -> name map,
+    and rendered "Spike on Event d4c684dd" until it landed — a different name for
+    the same incident than the activity rail was showing (tripl-y4wt).
+    """
+    slug = "signal-scope-names"
+    event_type_id, event_id, scan_config_id = await _make_project_with_scan(client, slug)
+
+    bucket = datetime.now(UTC).replace(microsecond=0) - timedelta(hours=1)
+    async with TestSessionLocal() as session:
+        for row in _metric_rows(scan_config_id, event_type_id, event_id, bucket):
+            session.add(row)
+        session.add(_anomaly(scan_config_id, "project_total", scan_config_id, bucket))
+        session.add(
+            _anomaly(
+                scan_config_id, "event_type", event_type_id, bucket, event_type_id=event_type_id
+            )
+        )
+        session.add(
+            _anomaly(
+                scan_config_id,
+                "event",
+                event_id,
+                bucket,
+                event_id=event_id,
+                event_type_id=event_type_id,
+            )
+        )
+        await session.commit()
+
+    resp = await client.get(f"/api/v1/projects/{slug}/anomalies/signals?expanded=true")
+    assert resp.status_code == 200, resp.text
+    by_scope = {signal["scope_type"]: signal for signal in resp.json()}
+
+    assert by_scope["event"]["scope_name"] == "Landing Viewed"
+    assert by_scope["event_type"]["scope_name"] == "Page View"
+    # project_total is named by the project, not by a lookup — there is nothing
+    # to resolve, and the client renders its own "Project total" for it.
+    assert by_scope["project_total"]["scope_name"] is None
+
+
+@pytest.mark.asyncio
+async def test_deleted_scope_reports_no_name_rather_than_its_ref(client: AsyncClient):
+    """An event deleted out from under its anomaly resolves to NULL, not a uuid.
+
+    ``MetricAnomaly.event_id`` is ``ondelete=SET NULL`` while ``scope_ref`` keeps
+    the old uuid, so this is the shape a deleted scope actually leaves behind.
+    Falling back to ``scope_ref`` would put a hex prefix where a name goes, which
+    is the whole defect (tripl-y4wt).
+    """
+    slug = "signal-orphan-scope"
+    event_type_id, event_id, scan_config_id = await _make_project_with_scan(client, slug)
+
+    bucket = datetime.now(UTC).replace(microsecond=0) - timedelta(hours=1)
+    async with TestSessionLocal() as session:
+        for row in _metric_rows(scan_config_id, event_type_id, event_id, bucket):
+            session.add(row)
+        session.add(_anomaly(scan_config_id, "event", event_id, bucket, event_id=None))
+        await session.commit()
+
+    resp = await client.get(f"/api/v1/projects/{slug}/anomalies/signals?expanded=true")
+    assert resp.status_code == 200, resp.text
+    signals = [signal for signal in resp.json() if signal["scope_type"] == "event"]
+
+    assert len(signals) == 1, signals
+    assert signals[0]["scope_ref"] == event_id
+    assert signals[0]["scope_name"] is None
+
+
+@pytest.mark.asyncio
 async def test_children_surface_when_no_parent_project_total(client: AsyncClient):
     """Guard against over-suppression: with no project_total parent flagging the
     same bucket, the event_type and event children each remain a live signal."""

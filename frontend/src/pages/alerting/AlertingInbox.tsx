@@ -13,6 +13,7 @@ import {
   alertInboxStatusTone,
   incidentDirectionGlyph,
   incidentMagnitudeLabel,
+  incidentMagnitudeTitle,
   incidentReasonLabel,
   incidentWorstDeltaLabel,
   isHandledInboxStatus,
@@ -152,6 +153,12 @@ interface AlertingInboxProps {
   // viewer cannot build a selection they would not be allowed to act on.
   selectedIncidents: ReadonlySet<string>
   toggleIncidentSelected: (correlationGroupId: string, selected: boolean) => void
+  // Set several at once, for the header "select all shown" box and the
+  // shift-click range (tripl-rzkx). Separate from the single toggle rather than
+  // folded into it because the page has to add or drop the whole batch in ONE
+  // state update: fifty sequential toggles would each re-run the pruning pass
+  // below them, and the bulk bar would count up one incident at a time.
+  setIncidentsSelected: (correlationGroupIds: readonly string[], selected: boolean) => void
   onAction: (variables: InboxActionVariables) => void
   // The ONE row an action is in flight for. A single shared `isActionPending`
   // disabled all ~80 buttons on the page, so triage was strictly serial and the
@@ -192,6 +199,7 @@ export function AlertingInbox({
   toggleIncident,
   selectedIncidents,
   toggleIncidentSelected,
+  setIncidentsSelected,
   onAction,
   pendingGroupId,
   errorGroupId,
@@ -235,6 +243,56 @@ export function AlertingInbox({
   const openCount = items.filter(group => !isHandledInboxStatus(group.status)).length
   const handledCount = items.length - openCount
 
+  // Every card on screen, in render order: the pinned deep-linked one first (it
+  // sits above the list), then the loaded pages. This is both what "select all
+  // N shown" covers and the axis a shift-click range walks, and it is the ONLY
+  // set either may touch — it is exactly the set `ProjectAlertingTab`'s pruning
+  // contract guarantees, so neither control can leave a selected id off screen.
+  const selectableIds = useMemo(() => {
+    const loaded = (inbox?.items ?? []).map(group => group.correlation_group_id)
+    return pinnedGroup ? [pinnedGroup.correlation_group_id, ...loaded] : loaded
+  }, [inbox, pinnedGroup])
+  const selectedShownCount = selectableIds.filter(id => selectedIncidents.has(id)).length
+  const allShownSelected =
+    selectableIds.length > 0 && selectedShownCount === selectableIds.length
+
+  // The last checkbox the operator touched, as the anchor a shift-click extends
+  // from. A ref and not state: it changes nothing on screen by itself, and
+  // re-rendering fifty cards to remember where the last click was would be a
+  // render per tick of a sweep.
+  const rangeAnchorId = useRef<string | null>(null)
+
+  /**
+   * One card's checkbox, with shift extending the range from the last one
+   * touched — so clearing a page of 50 is two clicks rather than 50 (tripl-rzkx).
+   *
+   * The whole range takes the state the CLICKED box just moved to, which is what
+   * every list with this gesture does: shift-click a ticked box to clear the run,
+   * an unticked one to fill it. Both ends are on screen and both were chosen by
+   * the operator, so this creates no selection they cannot see — the property
+   * `InboxBulkActionBar` refuses "select all N matching" to protect.
+   */
+  const selectIncident = (
+    correlationGroupId: string,
+    selected: boolean,
+    extendRange: boolean,
+  ) => {
+    const anchorIndex = rangeAnchorId.current
+      ? selectableIds.indexOf(rangeAnchorId.current)
+      : -1
+    const clickedIndex = selectableIds.indexOf(correlationGroupId)
+    rangeAnchorId.current = correlationGroupId
+    // No anchor yet, or an anchor whose row has since been pruned: fall back to
+    // the plain single toggle rather than guessing at a range.
+    if (!extendRange || anchorIndex < 0 || clickedIndex < 0 || anchorIndex === clickedIndex) {
+      toggleIncidentSelected(correlationGroupId, selected)
+      return
+    }
+    const start = Math.min(anchorIndex, clickedIndex)
+    const end = Math.max(anchorIndex, clickedIndex)
+    setIncidentsSelected(selectableIds.slice(start, end + 1), selected)
+  }
+
   const windowTruncatedAt = inbox?.window_truncated_at ?? null
   const subtitle = isLoading
     ? 'Loading…'
@@ -254,7 +312,7 @@ export function AlertingInbox({
       isExpanded={expandedIncidents.has(group.correlation_group_id)}
       toggleIncident={toggleIncident}
       isSelected={selectedIncidents.has(group.correlation_group_id)}
-      toggleIncidentSelected={toggleIncidentSelected}
+      onSelectChange={selectIncident}
       onAction={onAction}
       canWrite={canWrite}
       isPending={pendingGroupId === group.correlation_group_id}
@@ -301,7 +359,28 @@ export function AlertingInbox({
         // no control of any kind: 37 of 57 production incidents were reachable
         // by no means at all (tripl-oxkt.1).
         right={
-          <StatusFilterChips value={statusFilter} onChange={onStatusFilterChange} />
+          <div className="flex flex-wrap items-center gap-3">
+            {/* "Select all N shown", not "select all N matching" — the number in
+                the label is the number of cards under it, so what the bulk bar
+                is about to act on is on screen and countable. That is the line
+                `InboxBulkActionBar` draws: what it refuses is a one-click sweep
+                of rows nobody has seen, not a sweep of the page in front of
+                you, which today costs 50 ticks on 16px boxes (tripl-rzkx). */}
+            {canWrite && selectableIds.length > 0 && (
+              <div className="flex items-center gap-1.5">
+                <Checkbox
+                  checked={allShownSelected ? true : selectedShownCount > 0 ? 'indeterminate' : false}
+                  onCheckedChange={checked => setIncidentsSelected(selectableIds, checked === true)}
+                  aria-label={`Select all ${selectableIds.length} shown incidents`}
+                  title="Shift-click two incident checkboxes to select everything between them."
+                />
+                <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+                  Select all {selectableIds.length} shown
+                </span>
+              </div>
+            )}
+            <StatusFilterChips value={statusFilter} onChange={onStatusFilterChange} />
+          </div>
         }
       >
         <div className="space-y-3 p-4">
@@ -456,7 +535,9 @@ interface IncidentCardProps {
   isExpanded: boolean
   toggleIncident: (correlationGroupId: string) => void
   isSelected: boolean
-  toggleIncidentSelected: (correlationGroupId: string, selected: boolean) => void
+  // `extendRange` is the shift key at click time; the section above owns the
+  // list order the range is measured against, so the card only reports it.
+  onSelectChange: (correlationGroupId: string, selected: boolean, extendRange: boolean) => void
   onAction: (variables: InboxActionVariables) => void
   // Read from the auth context ONCE by the section above and threaded down, so
   // fifty cards cannot answer the same question fifty different ways.
@@ -477,7 +558,7 @@ function IncidentCard({
   isExpanded,
   toggleIncident,
   isSelected,
-  toggleIncidentSelected,
+  onSelectChange,
   onAction,
   canWrite,
   isPending,
@@ -517,6 +598,14 @@ function IncidentCard({
     noteFocusPending.current = false
     node.focus()
   }
+
+  // Whether the shift key was down for the click that is about to change the
+  // box. Radix drives `onCheckedChange` from the same click event but hands over
+  // no event, and it composes a passed `onClick` BEFORE its own handler — so
+  // this is set and then read within one gesture. Keyboard activation (Space)
+  // dispatches a click too, with `shiftKey` false, which is the right answer:
+  // shift+Space is not a range gesture anywhere.
+  const rangeExtendPending = useRef(false)
 
   const id = group.correlation_group_id
   const target = scopeSummary(group)
@@ -578,7 +667,15 @@ function IncidentCard({
         <Checkbox
           className="mt-0.5 shrink-0"
           checked={isSelected}
-          onCheckedChange={checked => toggleIncidentSelected(id, checked === true)}
+          onClick={event => {
+            rangeExtendPending.current = event.shiftKey
+          }}
+          onCheckedChange={checked => {
+            const extendRange = rangeExtendPending.current
+            rangeExtendPending.current = false
+            onSelectChange(id, checked === true, extendRange)
+          }}
+          title="Shift-click to select every incident between this one and the last one you ticked."
           // Names the INCIDENT, not just the scope. Direction is part of the
           // correlation key, so one scope firing both ways is two cards — the
           // sibling line below says exactly that — and two checkboxes both
@@ -627,7 +724,10 @@ function IncidentCard({
             group.scope_names.join(', ')
           )}
         </div>
-        <div className="mt-1 text-[11px] text-muted-foreground">
+        <div
+          className="mt-1 text-[11px] text-muted-foreground"
+          title={incidentMagnitudeTitle(group)}
+        >
           {incidentMagnitudeLabel(group)}
           {worstDelta && <> · {worstDelta}</>}
         </div>

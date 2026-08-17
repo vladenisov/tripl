@@ -1,10 +1,6 @@
-import { useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Activity, ArrowDown, ArrowUp, Settings2 } from 'lucide-react'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
-import { eventsApi } from '@/api/events'
-import { eventTypesApi } from '@/api/eventTypes'
 import { scansApi } from '@/api/scans'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
@@ -19,7 +15,6 @@ import {
   type MagnitudeLevel,
   relativeEffect,
 } from '@/lib/signalMagnitude'
-import { useActiveBranchId } from '@/hooks/useBranch'
 import { useExpandedSignals } from '@/hooks/useExpandedSignals'
 import {
   signalScopeLabel as sharedSignalScopeLabel,
@@ -48,13 +43,49 @@ function isLinkableScope(signal: MonitoringSignal): boolean {
   )
 }
 
-function signalScopeLabel(
-  signal: MonitoringSignal,
-  metricNames: NameMap,
-  eventTypeNames: NameMap,
-  eventNames: NameMap,
-): string {
-  return sharedSignalScopeLabel(signal, { metricNames, eventTypeNames, eventNames })
+/**
+ * "<Scope> · <name>" for one signal, or null when the server could not name it.
+ *
+ * The name arrives on the signal itself (`scope_name`), so this page no longer
+ * downloads the whole event catalog — 2641 rows, 1.7s on windy-ios — purely to
+ * build an id → name map, and no row spends the first seconds of the page
+ * labelled "Spike on Event d4c684dd" while that download is in flight
+ * (tripl-y4wt). The shared formatter still owns the spelling; it is handed a
+ * one-entry map because the name now travels with the signal rather than in a
+ * catalog. `project_total` names itself and needs no lookup.
+ */
+function signalScopeLabel(signal: MonitoringSignal): string | null {
+  if (signal.scope_type === 'project_total') return sharedSignalScopeLabel(signal)
+  if (!signal.scope_name) return null
+  const names: NameMap = new Map([[signal.scope_ref, signal.scope_name]])
+  return sharedSignalScopeLabel(signal, {
+    metricNames: names,
+    eventTypeNames: names,
+    eventNames: names,
+  })
+}
+
+/**
+ * Stand-in for a scope the server could not name (its event/metric was deleted
+ * out from under the anomaly row).
+ *
+ * Deliberately not the `scope_ref`: a hex prefix reads as a name, and the same
+ * incident the activity rail calls `spot_auto_change_model` then appears here as
+ * "Event d4c684dd" — two names for one incident, depending on the page
+ * (tripl-y4wt). The ref stays in the accessible name and the tooltip so the row
+ * is still traceable.
+ */
+function UnnamedScope({ signal }: { signal: MonitoringSignal }) {
+  const ref = sharedSignalScopeLabel(signal)
+  return (
+    <span
+      role="img"
+      aria-label={ref}
+      title={ref}
+      className="inline-block h-3 w-32 animate-pulse rounded align-middle"
+      style={{ background: 'var(--border-subtle)' }}
+    />
+  )
 }
 
 /** Single-select segmented control. Shared so both filters stay identical. */
@@ -111,14 +142,20 @@ const facetKey = (scanConfigId: string | null): string => scanConfigId ?? CATALO
 const facetLabel = (id: string, scanNames: NameMap): string =>
   id === CATALOG_METRICS ? 'Catalog metrics' : (scanNames.get(id) ?? `Scan ${id.slice(0, 8)}`)
 
+/** `?level=` → a preset, degrading an absent or unknown value to the default. */
+const toMagnitudeLevel = (value: string | null): MagnitudeLevel =>
+  MAGNITUDE_PRESETS.find((preset) => preset.id === value)?.id ?? DEFAULT_MAGNITUDE_LEVEL
+
 export default function AnomaliesPage() {
   const { slug } = useParams<{ slug: string }>()
-  const branchId = useActiveBranchId()
-  const [level, setLevel] = useState<MagnitudeLevel>(DEFAULT_MAGNITUDE_LEVEL)
-  // The scan facet lives in the URL, not in component state, so a scan can hand
-  // its own anomalies over: the "Signals added" counter on a scan run links to
-  // `?scan=<id>` (tripl-3y7z.2). Same idiom as MetricsCatalog's `?kind=`.
-  // `replace` — a filter flip is not a place the Back button should stop.
+  // Both facets live in the URL, not in component state, so a scan can hand its
+  // own anomalies over — the "Signals added" counter on a scan run links to
+  // `?scan=<id>` (tripl-3y7z.2) — and so opening a signal to investigate it and
+  // pressing Back does not snap the magnitude filter back to Significant,
+  // re-hiding 162 of 209 rows on windy-ios (tripl-ahg5). The rows themselves are
+  // links off this route, so that Back is the page's primary path, not an
+  // incidental one. Same idiom as MetricsCatalog's `?kind=`; `replace` — a
+  // filter flip is not a place the Back button should stop.
   const [searchParams, setSearchParams] = useSearchParams()
   const scanId = searchParams.get('scan') ?? ALL_SCANS
   const setScanId = (next: string) => {
@@ -132,49 +169,28 @@ export default function AnomaliesPage() {
       { replace: true },
     )
   }
+  // Unlike `?scan=`, an unknown `?level=` degrades to the default rather than
+  // being preserved: a magnitude that does not exist names no subset a run could
+  // have produced, so there is nothing to keep faith with.
+  const level = toMagnitudeLevel(searchParams.get('level'))
+  const setLevel = (next: MagnitudeLevel) => {
+    setSearchParams(
+      (previous) => {
+        const params = new URLSearchParams(previous)
+        if (next === DEFAULT_MAGNITUDE_LEVEL) params.delete('level')
+        else params.set('level', next)
+        return params
+      },
+      { replace: true },
+    )
+  }
 
   // expanded: surface every flagged scope — project_total, each event_type and
   // each event — instead of collapsing an incident's fan-out into one total row.
   // Shared key with the top bar and Overview (tripl-jfm3.119).
+  // Each signal carries its own `scope_name`, so no catalog fetch is needed to
+  // label the rows (tripl-y4wt).
   const signalsQuery = useExpandedSignals(slug)
-
-  // Metric-scope signals only carry the definition id; the catalog list
-  // resolves it to a display name. Shares the 'metrics-catalog' key prefix so
-  // catalog mutations invalidate this copy too. Purely additive — a failed or
-  // pending fetch just leaves the short-ref fallback label.
-  const metricsCatalogQuery = useQuery({
-    queryKey: ['metrics-catalog', slug, 'names'],
-    queryFn: () => metricsCatalogApi.list(slug!),
-    enabled: !!slug,
-    staleTime: 60_000,
-  })
-  const metricNames: NameMap = new Map(
-    (metricsCatalogQuery.data?.items ?? []).map((m) => [m.id, m.display_name]),
-  )
-
-  // Same pattern as metrics, for the event-type and event scopes. The
-  // 'eventTypes' key is the app-wide shared cache; the events lookup pulls the
-  // whole catalog (unpaginated is 200, well under the ~thousands of events) so
-  // names resolve for every scope, not just the first page.
-  const eventTypesQuery = useQuery({
-    queryKey: ['eventTypes', slug, branchId],
-    queryFn: () => eventTypesApi.list(slug!, branchId),
-    enabled: !!slug,
-    staleTime: 60_000,
-  })
-  const eventTypeNames: NameMap = new Map(
-    (eventTypesQuery.data ?? []).map((et) => [et.id, et.display_name]),
-  )
-
-  const eventsQuery = useQuery({
-    queryKey: ['events', slug, branchId, 'names'],
-    queryFn: () => eventsApi.list(slug!, { limit: 10_000 }, branchId),
-    enabled: !!slug,
-    staleTime: 60_000,
-  })
-  const eventNames: NameMap = new Map(
-    (eventsQuery.data?.items ?? []).map((e) => [e.id, e.name]),
-  )
 
   // Scan names for the facet below. Shares the app-wide ['scans', slug] key, so
   // no extra request when the user has already opened a scan settings page.
@@ -463,9 +479,6 @@ export default function AnomaliesPage() {
                         key={`${signal.scope_type}:${signal.scope_ref}:${signal.bucket}`}
                         slug={slug}
                         signal={signal}
-                        metricNames={metricNames}
-                        eventTypeNames={eventTypeNames}
-                        eventNames={eventNames}
                       />
                     ))}
                   </div>
@@ -481,17 +494,12 @@ export default function AnomaliesPage() {
 function AnomalyRow({
   slug,
   signal,
-  metricNames,
-  eventTypeNames,
-  eventNames,
 }: {
   slug?: string
   signal: MonitoringSignal
-  metricNames: NameMap
-  eventTypeNames: NameMap
-  eventNames: NameMap
 }) {
   const navigate = useNavigate()
+  const label = signalScopeLabel(signal)
   const isDrop = signal.direction === 'drop'
   const DirIcon = isDrop ? ArrowDown : ArrowUp
   const severityColor = isDrop ? 'var(--warning)' : 'var(--danger)'
@@ -525,7 +533,7 @@ function AnomalyRow({
         <DirIcon className="h-3.5 w-3.5 shrink-0" style={{ color: severityColor }} />
         <span className="truncate text-[12.5px] font-medium" style={{ color: 'var(--fg)' }}>
           {isDrop ? 'Drop' : 'Spike'} on{' '}
-          {signalScopeLabel(signal, metricNames, eventTypeNames, eventNames)}
+          {label ?? <UnnamedScope signal={signal} />}
         </span>
         {signal.incident_child && (
           <span
