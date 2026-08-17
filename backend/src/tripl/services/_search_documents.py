@@ -1,8 +1,11 @@
 """Document building helpers for the search index.
 
-Converts project entities (event types, events, fields, variables, relations,
-tags, metrics, fact tables) into ``BuiltDocument`` instances ready to be
-stored as ``SearchDocument`` rows.
+Converts every project entity kind in ``SearchEntityType``
+(``schemas/search.py``) into ``BuiltDocument`` instances ready to be stored as
+``SearchDocument`` rows — one ``_<kind>_document`` builder per kind.
+
+Stated as a reference rather than a list on purpose: the previous wording named
+eight of the eleven kinds, having gone stale twice as kinds were added.
 """
 
 from __future__ import annotations
@@ -206,83 +209,61 @@ async def build_documents(
     slug: str,
 ) -> list[BuiltDocument]:
     event_types = list(
-        (
-            await session.execute(
-                select(EventType)
-                .where(EventType.project_id == project_id, EventType.branch_id == branch_id)
-                .options(selectinload(EventType.field_definitions))
-            )
+        await session.scalars(
+            select(EventType)
+            .where(EventType.project_id == project_id, EventType.branch_id == branch_id)
+            .options(selectinload(EventType.field_definitions))
         )
-        .scalars()
-        .all()
     )
     event_types_by_id = {event_type.id: event_type for event_type in event_types}
 
     meta_fields = list(
-        (
-            await session.execute(
-                select(MetaFieldDefinition).where(
-                    MetaFieldDefinition.project_id == project_id,
-                    MetaFieldDefinition.branch_id == branch_id,
-                )
+        await session.scalars(
+            select(MetaFieldDefinition).where(
+                MetaFieldDefinition.project_id == project_id,
+                MetaFieldDefinition.branch_id == branch_id,
             )
         )
-        .scalars()
-        .all()
     )
 
     events = list(
-        (
-            await session.execute(
-                select(Event)
-                .where(Event.project_id == project_id, Event.branch_id == branch_id)
-                .options(
-                    selectinload(Event.event_type),
-                    selectinload(Event.field_values).selectinload(EventFieldValue.field_definition),
-                    selectinload(Event.meta_values).selectinload(
-                        EventMetaValue.meta_field_definition
-                    ),
-                    selectinload(Event.tags),
-                )
+        await session.scalars(
+            select(Event)
+            .where(Event.project_id == project_id, Event.branch_id == branch_id)
+            .options(
+                selectinload(Event.event_type),
+                selectinload(Event.field_values).selectinload(EventFieldValue.field_definition),
+                selectinload(Event.meta_values).selectinload(EventMetaValue.meta_field_definition),
+                selectinload(Event.tags),
             )
         )
-        .scalars()
-        .all()
     )
 
     variables = list(
-        (
-            await session.execute(
-                select(Variable).where(
-                    Variable.project_id == project_id,
-                    Variable.branch_id == branch_id,
-                )
+        await session.scalars(
+            select(Variable).where(
+                Variable.project_id == project_id,
+                Variable.branch_id == branch_id,
             )
         )
-        .scalars()
-        .all()
     )
     # Sorted deterministically: the demo embedding fixture keys documents by
     # sha256(embed_text), so text joined from these rows must not depend on
     # dialect-specific row order (SQLite fixture generation vs Postgres
     # runtime) — the query itself has no ORDER BY.
     variable_values = sorted(
-        (
-            await session.execute(
-                select(VariableValue)
-                .where(
-                    VariableValue.project_id == project_id,
-                    VariableValue.branch_id == branch_id,
-                )
-                .options(
-                    selectinload(VariableValue.variable),
-                    selectinload(VariableValue.event),
-                    selectinload(VariableValue.field_definition),
-                )
+        await session.scalars(
+            select(VariableValue)
+            .where(
+                VariableValue.project_id == project_id,
+                VariableValue.branch_id == branch_id,
             )
-        )
-        .scalars()
-        .all(),
+            .options(
+                selectinload(VariableValue.variable),
+                selectinload(VariableValue.event),
+                selectinload(VariableValue.field_definition),
+            )
+        ),
         key=_variable_value_sort_key,
     )
     contexts_by_event_field: dict[tuple[uuid.UUID, uuid.UUID], list[VariableValue]] = {}
@@ -294,75 +275,52 @@ async def build_documents(
         ).append(context)
         contexts_by_variable.setdefault(context.variable_id, []).append(context)
     relations = list(
-        (
-            await session.execute(
-                select(EventTypeRelation)
-                .where(
-                    EventTypeRelation.project_id == project_id,
-                    EventTypeRelation.branch_id == branch_id,
-                )
-                .options(
-                    selectinload(EventTypeRelation.source_event_type),
-                    selectinload(EventTypeRelation.target_event_type),
-                    selectinload(EventTypeRelation.source_field),
-                    selectinload(EventTypeRelation.target_field),
-                )
+        await session.scalars(
+            select(EventTypeRelation)
+            .where(
+                EventTypeRelation.project_id == project_id,
+                EventTypeRelation.branch_id == branch_id,
+            )
+            .options(
+                selectinload(EventTypeRelation.source_event_type),
+                selectinload(EventTypeRelation.target_event_type),
+                selectinload(EventTypeRelation.source_field),
+                selectinload(EventTypeRelation.target_field),
             )
         )
-        .scalars()
-        .all()
     )
 
-    # Metrics and fact tables are GLOBAL, project-scoped entities (not
-    # plan-branched), so they are queried by project_id only; the same
-    # documents are duplicated into each branch's index — consistent with the
-    # per-branch index design. Ordered by name for deterministic output.
+    # Metrics, fact tables, scans and alert rules are GLOBAL, project-scoped
+    # entities (not plan-branched), so they are queried by project_id only; the
+    # same documents are duplicated into each branch's index — consistent with
+    # the per-branch index design (tripl-dfct). Ordered by name for
+    # deterministic output.
     metrics = list(
-        (
-            await session.execute(
-                select(MetricDefinition)
-                .where(MetricDefinition.project_id == project_id)
-                .order_by(MetricDefinition.name)
-            )
+        await session.scalars(
+            select(MetricDefinition)
+            .where(MetricDefinition.project_id == project_id)
+            .order_by(MetricDefinition.name)
         )
-        .scalars()
-        .all()
     )
-    # Project-scoped like metrics and fact tables above: no branch_id, so the
-    # same rows are folded into every branch's index (tripl-dfct).
-    scan_configs = list(
-        (
-            await session.execute(
-                select(ScanConfig)
-                .where(ScanConfig.project_id == project_id)
-                .order_by(ScanConfig.name)
-            )
+    fact_tables = list(
+        await session.scalars(
+            select(FactTable).where(FactTable.project_id == project_id).order_by(FactTable.name)
         )
-        .scalars()
-        .all()
+    )
+    scan_configs = list(
+        await session.scalars(
+            select(ScanConfig).where(ScanConfig.project_id == project_id).order_by(ScanConfig.name)
+        )
     )
     # An AlertRule has no project_id of its own — it reaches its project through
     # its destination, so this joins rather than filtering directly.
     alert_rules = list(
-        (
-            await session.execute(
-                select(AlertRule)
-                .join(AlertDestination, AlertDestination.id == AlertRule.destination_id)
-                .where(AlertDestination.project_id == project_id)
-                .order_by(AlertRule.name)
-            )
+        await session.scalars(
+            select(AlertRule)
+            .join(AlertDestination, AlertDestination.id == AlertRule.destination_id)
+            .where(AlertDestination.project_id == project_id)
+            .order_by(AlertRule.name)
         )
-        .scalars()
-        .all()
-    )
-    fact_tables = list(
-        (
-            await session.execute(
-                select(FactTable).where(FactTable.project_id == project_id).order_by(FactTable.name)
-            )
-        )
-        .scalars()
-        .all()
     )
 
     documents: list[BuiltDocument] = []
@@ -519,10 +477,11 @@ def _event_document(
     ``_variable_document`` stopped joining harvested values into ``keywords``
     for tripl-gbxj; this builder was missed, and it feeds the SAME column that
     two ranking tiers read — the 3.5 literal keyword-token tier and the 3.25
-    stemmed-identity tier, whose docstring in
-    ``_search_query.postgres_lexical_search`` states the premise as "keywords is
-    the curated field". It was not true for events: every ``VariableValue.values``
-    entry a bound variable had harvested reached an EVENT's keywords through
+    stemmed-identity tier. Both rest on ``keywords`` carrying an entity's
+    IDENTITY and no observed value, the premise stated on the 3.25 tier in
+    ``_search_query.postgres_lexical_search``. It was not true for events:
+    every ``VariableValue.values`` entry a bound variable had harvested reached
+    an EVENT's keywords through
     ``_variable_context_text(..., include_values=True)``.
 
     MEASURED ON THE RELEVANCE CORPUS, WHICH IS WHAT MAKES THIS A DEFECT AND NOT A
@@ -539,7 +498,7 @@ def _event_document(
     So ``keywords`` gets ``authored_values`` and the VALUES-FREE context text,
     while ``body`` keeps ``safe_values`` and the full context text unchanged —
     harvested values are real evidence about the event and stay searchable, they
-    are simply not curation.
+    are simply not part of its identity.
 
     WHY ``is_authored`` AND NOT "no values at all"
     ----------------------------------------------
@@ -632,12 +591,15 @@ def _event_document(
                 " ".join(tag_names),
             ]
         ),
-        # Curated text only (tripl-0qld): the event's identity, its type, its
-        # tags, its breakdown columns, the values a person AUTHORED, and the
-        # bindings — but not a single observed value. `safe_values` and the
-        # values-carrying `variable_context_text` above stay in `body`, which is
-        # what the 3.0 body-token tier reads. Read the docstring before putting
-        # either of them back: two tiers rest on this column meaning curation.
+        # IDENTITY text only (tripl-0qld) — deliberately not "curated", see
+        # `_spaced_identifiers` and the 3.25-tier bullet in
+        # `_search_query.postgres_lexical_search` for why that word is wrong
+        # here. The event's name, its type, its tags, its breakdown columns, the
+        # values a person AUTHORED, and the bindings — but not a single observed
+        # value. `safe_values` and the values-carrying `variable_context_text`
+        # above stay in `body`, which is what the 3.0 body-token tier reads.
+        # Read the docstring before putting either of them back: two tiers rest
+        # on this column being identity rather than harvested values.
         keywords=_join(
             [
                 event.name,

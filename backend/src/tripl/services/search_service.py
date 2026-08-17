@@ -1,10 +1,15 @@
-"""Search service — public API.
+"""Search service — public API, and the index write path.
 
-This module is the stable import surface for all callers.  Implementation is
-split across two private sibling modules:
+This module is the stable import surface for all callers, and it OWNS the
+reindex side: the incremental diff (:func:`_reindex_branch_documents`), the
+builder-version stamp, the demo-fixture embedding path, and the ``text_vector``
+/ index DDL. Read-side implementation is delegated to two private siblings:
 
-* ``_search_documents``  — document building / indexing helpers
+* ``_search_documents``  — building a branch's documents, one builder per kind
 * ``_search_query``      — querying, ranking, result shaping
+
+Calling this a pure facade (as this docstring once did) is what let reviewers
+skip the half of the subsystem that actually writes rows.
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ import logging
 import math
 import uuid
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.config import settings
@@ -29,8 +34,6 @@ from tripl.services import app_settings_service
 from tripl.services._search_documents import (
     DOCUMENT_BUILDER_VERSION,
     BuiltDocument,
-    _clean,
-    _join,
 )
 from tripl.services._search_documents import (
     build_documents as _build_documents,
@@ -38,12 +41,8 @@ from tripl.services._search_documents import (
 from tripl.services._search_query import (
     _is_postgres,
     _safe_limit,
-    document_to_result,
     fallback_score,
-    highlights,
     merge_results,
-    row_to_result,
-    snippet,
 )
 from tripl.services._search_query import (
     enrich_event_hits as _enrich_event_hits,
@@ -78,24 +77,18 @@ __all__ = [
     "SearchEntityType",
     "SearchResponse",
     "SearchResult",
-    "_clean",
     "_finalize_results",
-    "_join",
     "_queue_embedding_refresh",
     "_reindex_branch_documents",
     "_sanitize_query",
     "_token_boundary_regex",
-    "document_to_result",
     "fallback_score",
-    "highlights",
     "merge_results",
     "reindex_branch",
     "reindex_project_branch",
-    "row_to_result",
     "sanitize_embedding",
     "search_event_ids",
     "search_project",
-    "snippet",
 ]
 
 
@@ -528,8 +521,6 @@ async def search_event_ids(
 
 
 async def _project_slug(session: AsyncSession, project_id: uuid.UUID) -> str:
-    from tripl.models.project import Project
-
     project = await session.get(Project, project_id)
     if project is None:
         msg = f"Project {project_id} not found"
@@ -677,8 +668,6 @@ async def _refresh_text_vectors(
     ``tests/test_alembic_revisions.py`` compares the two constants directly. The
     duplication is deliberate; the silence about it was the defect.
     """
-    from sqlalchemy import text
-
     # Only freshly inserted rows need vectorizing: rows kept by the
     # incremental reindex have an unchanged searchable text (identical
     # content_hash) and therefore still carry a valid text_vector.

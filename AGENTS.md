@@ -491,12 +491,17 @@ If the task is about branches, revisions, or implementation tracking:
 
 If the task is about search or AI:
 - `backend/src/tripl/api/v1/search.py`, `backend/src/tripl/api/v1/ai.py`
-- `backend/src/tripl/services/search_service.py`,
-  `backend/src/tripl/services/_search_documents.py`
-- `backend/src/tripl/worker/tasks/search.py`
+- `backend/src/tripl/services/search_service.py` (public surface + index writes),
+  `backend/src/tripl/services/_search_documents.py` (document building),
+  `backend/src/tripl/services/_search_query.py` (all ranking SQL and scoring)
+- `backend/src/tripl/worker/tasks/search.py`,
+  `backend/src/tripl/worker/search_reindex.py` (sync-worker bridge)
 - `frontend/src/components/command-palette.tsx`
 - backend tests: `test_search.py`, `test_search_incremental_reindex.py`,
   `test_search_embed_task.py`
+- ranking is NOT covered by the backend suite (SQLite has no stemmer) — it is
+  executed only by `backend/src/tripl/tests/relevance/`, which needs a real
+  PostgreSQL; see CONTRIBUTING.md, "Search relevance harness"
 
 ## Practical Coding Guidance
 
