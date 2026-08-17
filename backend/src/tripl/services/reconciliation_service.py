@@ -111,7 +111,14 @@ async def list_shadow_events(
     not_archived = _not_an_archived_identity(project_id)
 
     query = (
-        select(ShadowEventCandidate, ScanConfig.name, EventType.name)
+        # display_name is what every other surface labels an event type with
+        # (activity_service.py:76, alert_payload.py:58) — projecting the internal
+        # `name` here made Reconciliation the odd one out (tripl-w9od).
+        select(
+            ShadowEventCandidate,
+            ScanConfig.name,
+            func.coalesce(EventType.display_name, EventType.name),
+        )
         .join(ScanConfig, ScanConfig.id == ShadowEventCandidate.scan_config_id)
         .outerjoin(EventType, EventType.id == ShadowEventCandidate.event_type_id)
         .where(ShadowEventCandidate.project_id == project_id, not_archived)
@@ -279,7 +286,7 @@ async def list_dead_events(
 
     rows = (
         await session.execute(
-            select(Event, EventType.name)
+            select(Event, func.coalesce(EventType.display_name, EventType.name))
             .join(EventType, EventType.id == Event.event_type_id)
             .where(
                 Event.project_id == project_id,

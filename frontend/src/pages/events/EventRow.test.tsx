@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 import { DndContext } from '@dnd-kit/core'
 import { SortableContext } from '@dnd-kit/sortable'
 import type {
@@ -100,43 +101,45 @@ function renderRow(
   } = {},
 ) {
   return render(
-    <TooltipProvider>
-      <DndContext>
-        <SortableContext items={[ev.id]}>
-          <table>
-            <tbody>
-              <EventRow
-                ev={ev}
-                eventType={EVENT_TYPE}
-                selected={false}
-                hideType={false}
-                hideStatus={false}
-                hideReviewed={false}
-                hideMonitor={false}
-                hideOwner={false}
-                hideDelta={false}
-                usersById={new Map()}
-                hideTags={false}
-                hideLastSeen={false}
-                fieldColumns={fieldColumns}
-                metaFields={[]}
-                variables={variables}
-                slug="proj-1"
-                expandedFieldId={null}
-                rowSignal={rowSignal}
-                windowTotal={windowData.length}
-                windowData={windowData}
-                metaValueMap={undefined}
-                getFieldValue={getFieldValue}
-                onToggleSelected={() => {}}
-                onToggleExpanded={() => {}}
-                onRowAction={() => {}}
-              />
-            </tbody>
-          </table>
-        </SortableContext>
-      </DndContext>
-    </TooltipProvider>,
+    <MemoryRouter>
+      <TooltipProvider>
+        <DndContext>
+          <SortableContext items={[ev.id]}>
+            <table>
+              <tbody>
+                <EventRow
+                  ev={ev}
+                  eventType={EVENT_TYPE}
+                  selected={false}
+                  hideType={false}
+                  hideStatus={false}
+                  hideReviewed={false}
+                  hideMonitor={false}
+                  hideOwner={false}
+                  hideDelta={false}
+                  usersById={new Map()}
+                  hideTags={false}
+                  hideLastSeen={false}
+                  fieldColumns={fieldColumns}
+                  metaFields={[]}
+                  variables={variables}
+                  slug="proj-1"
+                  expandedFieldId={null}
+                  rowSignal={rowSignal}
+                  windowTotal={windowData.length}
+                  windowData={windowData}
+                  metaValueMap={undefined}
+                  getFieldValue={getFieldValue}
+                  onToggleSelected={() => {}}
+                  onToggleExpanded={() => {}}
+                  onRowAction={() => {}}
+                />
+              </tbody>
+            </table>
+          </SortableContext>
+        </DndContext>
+      </TooltipProvider>
+    </MemoryRouter>,
   )
 }
 
@@ -180,6 +183,26 @@ describe('EventRow Δ · 24h and Signal cells', () => {
     expect(
       screen.getByTitle('No open signal, and no monitor (alert rule) covers this event'),
     ).toBeInTheDocument()
+  })
+})
+
+describe('EventRow name and type cells', () => {
+  // tripl-fa8l: an href is what makes cmd/middle-click, "copy link address" and
+  // the status-bar preview work; an onClick-only <button> offered none of them.
+  it('renders the event name as a link to its monitoring page', () => {
+    renderRow(makeEvent(), windowSeries(10, 20))
+
+    const link = screen.getByRole('link', { name: 'checkout_completed' })
+    expect(link).toHaveAttribute('href', '/p/proj-1/monitoring/event/evt-1')
+  })
+
+  // tripl-w9od: the sidebar and Settings call this type "Page View"; the table
+  // answered with the internal key "pv" and no legend anywhere.
+  it('badges the type with its display name, not its internal key', () => {
+    renderRow(makeEvent(), windowSeries(10, 20))
+
+    expect(screen.getByText('Page View')).toBeInTheDocument()
+    expect(screen.queryByText('pv')).not.toBeInTheDocument()
   })
 })
 

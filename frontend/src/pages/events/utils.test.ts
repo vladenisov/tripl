@@ -3,6 +3,7 @@ import type { EventMetricPoint, MonitoringSignal, Variable } from '@/types'
 import {
   computeWindowDelta,
   deriveRowSignalFromMetrics,
+  formatCompactCount,
   formatRelativeTime,
   mapLatestSignals,
   pickLatestSignal,
@@ -363,6 +364,20 @@ describe('computeWindowDelta', () => {
     const points = windowSeries(4, 8)
     expect(points.every((p) => p.expected_count === null)).toBe(true)
     expect(computeWindowDelta(points)).toBeCloseTo(100)
+  })
+})
+
+describe('formatCompactCount', () => {
+  // The 48h column sits next to "Last seen", which renders "1m ago"/"1h ago".
+  // A lowercase "1m" volume there reads as one minute, not one million.
+  it('keeps the millions suffix uppercase so it cannot be read as a duration', () => {
+    expect(formatCompactCount(4_000_000)).toBe('4M')
+    expect(formatCompactCount(1_200_000)).toBe('1M')
+  })
+
+  it('leaves the Intl casing alone for thousands and bare counts', () => {
+    expect(formatCompactCount(505_000)).toBe('505K')
+    expect(formatCompactCount(12)).toBe('12')
   })
 })
 

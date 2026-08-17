@@ -17,6 +17,7 @@ export function useEventsViewState({
   fieldFilters,
   filterStatuses,
   filterSilentDays,
+  filterReviewed,
   filterTag,
   hiddenColumns,
   metaFields,
@@ -30,6 +31,7 @@ export function useEventsViewState({
   fieldFilters: Record<string, string>
   filterStatuses: EventStatus[]
   filterSilentDays: number | undefined
+  filterReviewed: boolean | undefined
   filterTag: string
   hiddenColumns: Set<string>
   metaFields: MetaFieldDefinition[]
@@ -69,7 +71,11 @@ export function useEventsViewState({
   const hideTags = hiddenColumns.has('tags')
   const hideLastSeen = hiddenColumns.has('last_seen')
   const hideStatus = hiddenColumns.has('status')
-  const hideReviewed = hiddenColumns.has('reviewed')
+  // The review tab is the one screen where the reviewed flag is the point, and
+  // it is hidden by default — so bulk "Mark reviewed" there changed nothing the
+  // operator could see. Force the column on for that tab; the picker still
+  // governs every other tab (tripl-invv).
+  const hideReviewed = hiddenColumns.has('reviewed') && activeTab !== 'review'
   const hideMonitor = hiddenColumns.has('monitor')
   const hideOwner = hiddenColumns.has('owner')
   const hideDelta = hiddenColumns.has('delta')
@@ -90,6 +96,7 @@ export function useEventsViewState({
     visibleMetaFields.length
 
   const hasActiveFilters = filterStatuses.length > 0 || filterTag !== '' || filterSilentDays !== undefined ||
+    filterReviewed !== undefined ||
     Object.values(fieldFilters).some(v => v !== '') ||
     Object.values(metaFilters).some(v => v !== '')
 
@@ -99,6 +106,7 @@ export function useEventsViewState({
       next.delete('status')
       next.delete('tag')
       next.delete('silent_days')
+      next.delete('reviewed')
       Array.from(next.keys()).filter(k => k.startsWith('f.') || k.startsWith('m.')).forEach(k => next.delete(k))
       return next
     }, { replace: true })

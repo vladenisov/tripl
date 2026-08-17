@@ -40,6 +40,11 @@ async def list_events(
     status: Annotated[list[EventStatus] | None, Query()] = None,
     tag: FreeTextFilter | None = None,
     silent_since_days: int | None = Query(None, ge=0, le=3650),
+    # `reviewed` is an axis of its own — an event can be marked reviewed and
+    # still carry status=in_review — and it had no filter at all, so the UI's
+    # "Mark reviewed" wrote a flag nobody could isolate afterwards (tripl-invv).
+    # Omit for "any".
+    reviewed: bool | None = None,
     field_value: FreeTextFilter | None = None,
     meta_value: FreeTextFilter | None = None,
     offset: int = Query(0, ge=0),
@@ -64,6 +69,7 @@ async def list_events(
         silent_since_days=silent_since_days,
         field_value=field_value,
         meta_value=meta_value,
+        reviewed=reviewed,
         branch_id=branch_id,
         order_by=order_by,
     )

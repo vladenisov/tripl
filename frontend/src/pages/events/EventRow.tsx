@@ -1,5 +1,6 @@
 import { Fragment, memo } from 'react'
 import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { Check, GripVertical, Pencil } from 'lucide-react'
@@ -21,6 +22,7 @@ import { Dot } from '@/components/primitives/dot'
 import { EVENT_STATUS_DOT_TONE, EVENT_STATUS_LABELS } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
 import { SIGNAL_LEVEL, rowSignalLevel } from '@/lib/statusLexicon'
+import { getMonitoringPath } from '@/lib/monitoring'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
 import { EventName } from '@/components/event-name'
@@ -29,11 +31,11 @@ import { useDemoScenario } from '@/demo/demoScenarioContext'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { EventDriftBadge } from './EventDriftBadge'
 import { EventWindowMetricsCell } from './EventWindowMetricsCell'
+import { PINNED_EVENT_CELL_STYLE } from './useEventsTableOverflow'
 import { computeWindowDelta, formatRelativeTime, splitTemplateValue } from './utils'
 
 export type RowAction =
   | 'edit'
-  | 'navigate-monitoring'
   | 'move-up'
   | 'move-down'
   | 'set-status-archived'
@@ -195,23 +197,27 @@ export const EventRow = memo(function EventRow({
         />
       </TableCell>
       <TableCell
-        className="border-r font-medium"
-        style={{ borderColor: 'var(--border-subtle)' }}
+        className="tripl-pin-l border-r font-medium"
+        style={{ ...PINNED_EVENT_CELL_STYLE, borderColor: 'var(--border-subtle)' }}
       >
         <div className="inline-flex max-w-full items-center gap-2 align-middle">
           <Dot tone={statusTone} pulse={false} size={6} />
           <Tooltip>
             <TooltipTrigger asChild>
-              <button
-                type="button"
+              {/* A real anchor, not a button: triaging a 2641-event catalog
+                  means opening rows in background tabs, and cmd/ctrl/middle
+                  click, "copy link address" and the status-bar preview all
+                  need an href. react-router's Link leaves modified clicks to
+                  the browser (tripl-fa8l). */}
+              <Link
+                to={getMonitoringPath(slug, { scope_type: 'event', scope_ref: ev.id })}
                 className="mono truncate text-left text-[12.5px] hover:underline underline-offset-4"
-                onClick={() => onRowAction('navigate-monitoring', ev)}
                 // Native title only when there's no description to show in the
                 // richer tooltip — avoids a double (native + Radix) popover.
                 title={ev.description ? undefined : ev.name}
               >
                 <EventName name={ev.name} />
-              </button>
+              </Link>
             </TooltipTrigger>
             {ev.description && (
               <TooltipContent side="bottom" align="start" className="max-w-xs whitespace-normal">
@@ -247,12 +253,21 @@ export const EventRow = memo(function EventRow({
       </TableCell>
       {!hideType && (
         <TableCell>
-          <Chip size="xs">
+          {/* display_name, not `name`: the sidebar, the page heading and
+              Settings all call these types "Pageview"/"Structured Event", and
+              only this chip answered with the internal key ("pv"/"se") — an
+              undocumented two-letter mapping the reader had to learn, with the
+              colour dot unable to help when all types share one colour
+              (tripl-w9od). Truncated with a title so the wider label does not
+              push more columns off-screen. */}
+          <Chip size="xs" title={eventType?.display_name ?? eventType?.name ?? undefined}>
             <span
               className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
               style={{ backgroundColor: eventType?.color }}
             />
-            {eventType?.name ?? ''}
+            <span className="max-w-[14ch] truncate">
+              {eventType?.display_name ?? eventType?.name ?? ''}
+            </span>
           </Chip>
         </TableCell>
       )}

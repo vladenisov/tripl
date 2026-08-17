@@ -42,6 +42,7 @@ import { ColumnFilter, FilterableHead, type ColumnFilterType } from './ColumnFil
 import { eventsEmptyCopy, type EventsEmptyContext } from './emptyState'
 import { EventRow, type RowAction } from './EventRow'
 import { groupEventNames, type EventNameGroup } from './eventNameGroups'
+import { PINNED_EVENT_CELL_STYLE } from './useEventsTableOverflow'
 import { EMPTY_WINDOW_POINTS, ROW_METRICS_LABEL } from './utils'
 import { variablesKey } from '@/lib/queryKeys'
 
@@ -51,6 +52,9 @@ const MAX_VISIBLE_CLUSTERS = 6
 export type EventsTableProps = {
   // Layout
   tableScrollRef: React.RefObject<HTMLDivElement | null>
+  /** Hands the `<table>` to `useEventsTableOverflow` (owned by the page, since
+   *  the toolbar's Columns chip reports the off-screen count it measures). */
+  tableRef: React.RefCallback<HTMLTableElement>
   isTabChartOpen: boolean
   // Drag-and-drop reorder
   dndSensors: SensorDescriptor<SensorOptions>[]
@@ -107,6 +111,7 @@ export type EventsTableProps = {
 
 export function EventsTable({
   tableScrollRef,
+  tableRef,
   isTabChartOpen,
   dndSensors,
   handleDragEnd,
@@ -324,6 +329,7 @@ export function EventsTable({
             }}
           >
             <Table
+              ref={tableRef}
               className="tripl-table"
               aria-label={activeEt ? `${activeEt.display_name} events` : 'Events'}
             >
@@ -337,9 +343,15 @@ export function EventsTable({
                       aria-label="Select all visible events"
                     />
                   </TableHead>
+                  {/* Pinned left with the checkbox: 8 of 17 columns sit
+                      off-screen at 1512px, so without this the reader scrolls
+                      to PAGE/CATEGORY/ACTION with no way to see which event the
+                      row belongs to (tripl-1uls). `data-pinned` also tells the
+                      overflow measurement which column never leaves. */}
                   <TableHead
-                    className="border-r"
-                    style={{ borderColor: 'var(--border)' }}
+                    data-pinned="true"
+                    className="tripl-pin-l border-r"
+                    style={{ ...PINNED_EVENT_CELL_STYLE, borderColor: 'var(--border)' }}
                   >
                     Event
                   </TableHead>

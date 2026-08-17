@@ -227,7 +227,7 @@ describe('EventsPage', () => {
     expect(screen.getByText('48h')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '7d' })).toBeInTheDocument()
     expect(screen.getByText('Hours')).toBeInTheDocument()
-    const metricsButton = await screen.findByRole('button', { name: /Homepage View metrics: 1k events in last 48 hours/ })
+    const metricsButton = await screen.findByRole('button', { name: /Homepage View metrics: 1K events in last 48 hours/ })
     expect(metricsButton).toBeInTheDocument()
     // The row exposes no inline action buttons — Edit/Metrics/Archive/Delete and
     // move/status now live on the event detail page, not on the row.
@@ -245,13 +245,19 @@ describe('EventsPage', () => {
     // and the "Open recent anomaly" affordance are gone.
     expect(container.querySelector('a[href="/p/demo/monitoring/project-total/scan-1"]')).toBeInTheDocument()
     expect(container.querySelector('a[href="/p/demo/monitoring/event-type/type-1"]')).not.toBeInTheDocument()
-    expect(container.querySelector('a[href="/p/demo/monitoring/event/event-1"]')).not.toBeInTheDocument()
+    // tripl-fa8l made the event NAME the row's monitoring anchor, so this href
+    // is expected again — what tripl-dmch.12 removed was the separate SignalLink
+    // arrow, which the "Open recent anomaly" assertion below still guards.
+    expect(screen.getByRole('link', { name: 'Homepage View' })).toHaveAttribute(
+      'href',
+      '/p/demo/monitoring/event/event-1',
+    )
     expect(screen.queryByLabelText('Open recent anomaly')).not.toBeInTheDocument()
 
     fireEvent.mouseOver(metricsButton)
     fireEvent.focus(metricsButton)
     expect((await screen.findAllByText('Last 48 hours')).length).toBeGreaterThan(0)
-    expect(screen.getAllByText('1k events').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('1K events').length).toBeGreaterThan(0)
 
     // The hover action cluster was removed entirely — no move up/down buttons
     // and no per-row status select.

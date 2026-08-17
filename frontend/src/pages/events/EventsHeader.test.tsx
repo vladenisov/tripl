@@ -14,7 +14,7 @@ describe('EventsHeader', () => {
     render(
       <EventsHeader
         total={12}
-        unreviewedCount={0}
+        inReviewCount={0}
         projectTotalSignal={null}
         eventTypeSignals={new Map()}
       />,
@@ -27,7 +27,7 @@ describe('EventsHeader', () => {
     render(
       <EventsHeader
         total={12}
-        unreviewedCount={0}
+        inReviewCount={0}
         projectTotalSignal={null}
         eventTypeSignals={new Map()}
         activeType={PAGE_VIEW}

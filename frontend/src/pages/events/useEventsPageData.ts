@@ -43,8 +43,11 @@ export function useEventsPageData({
     queryFn: () => eventsApi.tags(slug!, branchId),
     enabled: !!slug,
   })
-  const unreviewedDataQuery = useQuery({
-    queryKey: ['events', slug, branchId, 'unreviewedCount'],
+  // Counts events whose STATUS is `in_review`, which is what the header stat
+  // reports. It is NOT the count of unreviewed events — the `reviewed` flag is
+  // an independent axis — and used to be named as if it were (tripl-invv).
+  const inReviewCountQuery = useQuery({
+    queryKey: ['events', slug, branchId, 'inReviewCount'],
     queryFn: () => eventsApi.list(slug!, { status: ['in_review'], limit: 1 }, branchId),
     enabled: !!slug,
   })
@@ -60,7 +63,7 @@ export function useEventsPageData({
       metaFieldsQuery.refetch(),
       variablesQuery.refetch(),
       allTagsQuery.refetch(),
-      unreviewedDataQuery.refetch(),
+      inReviewCountQuery.refetch(),
     ]
     if (openEventId) {
       refetches.push(urlEventQuery.refetch())
@@ -71,7 +74,7 @@ export function useEventsPageData({
     eventTypesQuery,
     metaFieldsQuery,
     openEventId,
-    unreviewedDataQuery,
+    inReviewCountQuery,
     urlEventQuery,
     variablesQuery,
   ])
@@ -81,7 +84,7 @@ export function useEventsPageData({
     metaFields: metaFieldsQuery.data ?? EMPTY_META_FIELDS,
     variables: variablesQuery.data ?? EMPTY_VARIABLES,
     allTags: allTagsQuery.data ?? EMPTY_TAGS,
-    unreviewedCount: unreviewedDataQuery.data?.total ?? 0,
+    inReviewCount: inReviewCountQuery.data?.total ?? 0,
     urlEvent: urlEventQuery.data,
     dataError:
       eventTypesQuery.error ??

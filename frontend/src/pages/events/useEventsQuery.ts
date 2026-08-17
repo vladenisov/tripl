@@ -49,6 +49,8 @@ export type EventsQueryFilters = {
   setFilterTag: (value: string) => void
   filterSilentDays: number | undefined
   setFilterSilentDays: (value: number | undefined) => void
+  filterReviewed: boolean | undefined
+  setFilterReviewed: (value: boolean | undefined) => void
   sort: EventsSortOrder
   setSort: (value: EventsSortOrder) => void
   fieldFilters: Record<string, string>
@@ -156,6 +158,29 @@ export function useEventsQuery({
     [setSearchParams],
   )
 
+  // Reviewed is an axis of its own (an event can be reviewed and still sit in
+  // `in_review` — see the user guide), and it had no filter at all, so "Mark
+  // reviewed" wrote a flag nobody could isolate afterwards (tripl-invv).
+  // Absent param = any; only an explicit true/false is persisted, so the
+  // default request stays byte-identical to today.
+  const filterReviewedRaw = searchParams.get('reviewed')
+  const filterReviewed =
+    filterReviewedRaw === 'true' ? true : filterReviewedRaw === 'false' ? false : undefined
+  const setFilterReviewed = useCallback(
+    (v: boolean | undefined) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev)
+          if (v === undefined) next.delete('reviewed')
+          else next.set('reviewed', String(v))
+          return next
+        },
+        { replace: true },
+      )
+    },
+    [setSearchParams],
+  )
+
   // Sort order lives in the URL under `sort`; only 'volume' is persisted so the
   // default (catalog) request stays byte-identical to today.
   const sort: EventsSortOrder = searchParams.get('sort') === 'volume' ? 'volume' : 'catalog'
@@ -242,6 +267,22 @@ export function useEventsQuery({
     [activeTab, filterStatuses],
   )
 
+  // The server-side filter set, shared by the paginated list query, the
+  // "select all matching" sweep and the CSV export so all three agree on what
+  // "the current view" means.
+  const serverFilters = useMemo(
+    () => ({
+      event_type_id: filterEtId,
+      search: debouncedSearch || undefined,
+      status: queryStatuses,
+      tag: filterTag || undefined,
+      silent_since_days: filterSilentDays,
+      reviewed: filterReviewed,
+      order_by: sort === 'volume' ? ('volume' as const) : undefined,
+    }),
+    [filterEtId, debouncedSearch, queryStatuses, filterTag, filterSilentDays, filterReviewed, sort],
+  )
+
   const eventsQuery = useInfiniteQuery({
     queryKey: [
       'events',
@@ -252,16 +293,12 @@ export function useEventsQuery({
       queryStatuses,
       filterTag,
       filterSilentDays,
+      filterReviewed,
       sort,
     ],
     queryFn: ({ pageParam }) =>
       eventsApi.list(slug!, {
-        event_type_id: filterEtId,
-        search: debouncedSearch || undefined,
-        status: queryStatuses,
-        tag: filterTag || undefined,
-        silent_since_days: filterSilentDays,
-        order_by: sort === 'volume' ? 'volume' : undefined,
+        ...serverFilters,
         offset: pageParam,
         limit: EVENTS_PAGE_SIZE,
       }, branchId),
@@ -289,51 +326,39 @@ export function useEventsQuery({
   )
   const total = eventsData?.total ?? 0
 
-  // Fetch the ids of EVERY event matching the current server filters (not just
-  // the loaded pages), so bulk triage can sweep a whole prefix/tab at once —
-  // e.g. accept or archive all 499 pending-review events in one action. Returns
-  // an empty list when there is nothing to match.
+  // Fetch EVERY event matching the current server filters (not just the loaded
+  // pages), so bulk triage can sweep a whole prefix/tab at once — e.g. accept
+  // or archive all 499 pending-review events — and so CSV export writes the
+  // whole filtered catalog rather than the pages scrolled so far. Returns an
+  // empty list when there is nothing to match.
   //
   // The backend rejects `limit > 10000`, so we can't ask for `limit: total` in
   // one shot on large projects. Page through the match set in cap-sized chunks,
   // deduping by id in case rows shift between requests, and let each response's
   // `total` steer the loop (a short/empty page also ends it).
-  const fetchAllMatchingIds = useCallback(async (): Promise<string[]> => {
+  const fetchAllMatching = useCallback(async (): Promise<EventListItem[]> => {
     if (!slug || total === 0) return []
-    const filters = {
-      event_type_id: filterEtId,
-      search: debouncedSearch || undefined,
-      status: queryStatuses,
-      tag: filterTag || undefined,
-      silent_since_days: filterSilentDays,
-      order_by: sort === 'volume' ? ('volume' as const) : undefined,
-    }
-    const ids = new Set<string>()
+    const byId = new Map<string, EventListItem>()
     let offset = 0
     let expected = total
     while (offset < expected) {
       const page = await eventsApi.list(
         slug,
-        { ...filters, offset, limit: EVENTS_ID_FETCH_PAGE_SIZE },
+        { ...serverFilters, offset, limit: EVENTS_ID_FETCH_PAGE_SIZE },
         branchId,
       )
       expected = page.total
       if (page.items.length === 0) break
-      for (const event of page.items) ids.add(event.id)
+      for (const event of page.items) byId.set(event.id, event)
       offset += page.items.length
     }
-    return [...ids]
-  }, [
-    slug,
-    branchId,
-    filterEtId,
-    debouncedSearch,
-    queryStatuses,
-    filterTag,
-    filterSilentDays,
-    sort,
-    total,
-  ])
+    return [...byId.values()]
+  }, [slug, branchId, serverFilters, total])
+
+  const fetchAllMatchingIds = useCallback(
+    async (): Promise<string[]> => (await fetchAllMatching()).map(event => event.id),
+    [fetchAllMatching],
+  )
 
   return {
     // filters
@@ -345,6 +370,8 @@ export function useEventsQuery({
     setFilterTag,
     filterSilentDays,
     setFilterSilentDays,
+    filterReviewed,
+    setFilterReviewed,
     sort,
     setSort,
     fieldFilters,
@@ -361,6 +388,7 @@ export function useEventsQuery({
     eventsQuery,
     rawEvents,
     total,
+    fetchAllMatching,
     fetchAllMatchingIds,
   }
 }

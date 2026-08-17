@@ -1,4 +1,4 @@
-import { Code2, MoreHorizontal, Plus, Search, Sparkles, X } from 'lucide-react'
+import { Download, MoreHorizontal, Plus, Search, X } from 'lucide-react'
 import type { FieldDefinition, MetaFieldDefinition } from '@/types'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES, type EventStatus } from '@/lib/eventStatus'
 import { Button } from '@/components/ui/button'
@@ -32,6 +32,8 @@ export function EventsToolbar({
   onFilterStatusesChange,
   filterSilentDays,
   onFilterSilentDaysChange,
+  filterReviewed,
+  onFilterReviewedChange,
   sortOrder,
   onSortOrderChange,
   hasActiveFilters,
@@ -47,9 +49,13 @@ export function EventsToolbar({
   onColumnsMenuOpenChange,
   hiddenColumns,
   hideLastSeen,
+  reviewedPinned,
+  offscreenColumnCount,
   fieldColumns,
   metaFields,
   onToggleColumn,
+  onExportCsv,
+  isExporting,
   onNewEvent,
 }: {
   search: string
@@ -59,6 +65,9 @@ export function EventsToolbar({
   onFilterStatusesChange: (value: EventStatus[]) => void
   filterSilentDays: number | undefined
   onFilterSilentDaysChange: (value: number | undefined) => void
+  /** `undefined` = any; true/false isolate reviewed / still-unreviewed rows. */
+  filterReviewed: boolean | undefined
+  onFilterReviewedChange: (value: boolean | undefined) => void
   sortOrder: EventsSortOrder
   onSortOrderChange: (value: EventsSortOrder) => void
   hasActiveFilters: boolean
@@ -74,9 +83,13 @@ export function EventsToolbar({
   onColumnsMenuOpenChange: (open: boolean) => void
   hiddenColumns: Set<string>
   hideLastSeen: boolean
+  reviewedPinned: boolean
+  offscreenColumnCount: number
   fieldColumns: FieldDefinition[]
   metaFields: MetaFieldDefinition[]
   onToggleColumn: (key: string) => void
+  onExportCsv: () => void
+  isExporting: boolean
   onNewEvent: () => void
 }) {
   const singleStatus = filterStatuses.length === 1 ? filterStatuses[0] : undefined
@@ -141,6 +154,27 @@ export function EventsToolbar({
             <SelectItem value="30">Silent &gt; 30d</SelectItem>
           </SelectContent>
         </Select>
+        {/* Reviewed is a separate axis from status (an event can be reviewed
+            and still in_review), and until now it had no readable surface at
+            all: no filter, no counter, and a column hidden by default. Without
+            this control "Mark reviewed" wrote a flag the operator could never
+            see or isolate (tripl-invv). */}
+        <Select
+          value={filterReviewed === undefined ? '__all__' : String(filterReviewed)}
+          onValueChange={value =>
+            onFilterReviewedChange(value === '__all__' ? undefined : value === 'true')
+          }
+        >
+          <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Reviewed filter">
+            <span style={{ color: 'var(--fg-subtle)' }}>Reviewed</span>
+            <SelectValue placeholder="any" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">Any</SelectItem>
+            <SelectItem value="true">Reviewed</SelectItem>
+            <SelectItem value="false">Not reviewed</SelectItem>
+          </SelectContent>
+        </Select>
         <Select
           value={sortOrder}
           onValueChange={value => onSortOrderChange(value as EventsSortOrder)}
@@ -187,14 +221,18 @@ export function EventsToolbar({
             fieldColumns={fieldColumns}
             metaFields={metaFields}
             hiddenColumns={hiddenColumns}
+            offscreenColumnCount={offscreenColumnCount}
+            reviewedPinned={reviewedPinned}
             onToggle={onToggleColumn}
           />
         </div>
 
         <ToolbarDivider />
 
-        {/* Utility — Ask AI (differentiator) + export, collapsed into an
-            overflow menu so the toolbar never needs a horizontal scrollbar */}
+        {/* Utility — export, collapsed into an overflow menu so the toolbar
+            never needs a horizontal scrollbar. The unbuilt "Ask AI" entry is
+            gone rather than badged "soon": a menu whose every entry is
+            unavailable teaches users not to open menus (tripl-evbw). */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="sm" className="h-8 text-xs" aria-label="More actions">
@@ -202,24 +240,15 @@ export function EventsToolbar({
               More
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" sideOffset={6} className="w-[188px]">
+          <DropdownMenuContent align="end" sideOffset={6} className="w-[212px]">
             <DropdownMenuItem
               className="text-[12.5px]"
-              disabled
-              title="Ask AI about these events — coming soon"
+              disabled={isExporting}
+              onSelect={onExportCsv}
+              title="Download every event matching the current filters and sort as CSV"
             >
-              <Sparkles className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--accent)' }} />
-              Ask AI
-              <span className="ml-auto text-[10px]" style={{ color: 'var(--fg-faint)' }}>
-                soon
-              </span>
-            </DropdownMenuItem>
-            <DropdownMenuItem className="text-[12.5px]" disabled title="Export events — coming soon">
-              <Code2 className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
-              Export
-              <span className="ml-auto text-[10px]" style={{ color: 'var(--fg-faint)' }}>
-                soon
-              </span>
+              <Download className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
+              {isExporting ? 'Exporting…' : 'Export CSV'}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

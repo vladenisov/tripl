@@ -20,13 +20,20 @@ const CHART_SIGNALS_HELP =
 
 export function EventsHeader({
   total,
-  unreviewedCount,
+  inReviewCount,
   projectTotalSignal,
   eventTypeSignals,
   activeType = null,
 }: {
   total: number
-  unreviewedCount: number
+  /**
+   * Events whose STATUS is `in_review` — not the count of unreviewed events.
+   * The two are independent axes (an event can be marked reviewed and still be
+   * in_review), and the old `unreviewedCount` name claimed otherwise while the
+   * "Mark reviewed" button next to it moved neither this number nor the queue
+   * (tripl-invv).
+   */
+  inReviewCount: number
   projectTotalSignal: MonitoringSignal | null
   eventTypeSignals: Map<string, MonitoringSignal>
   // When a type tab is active (e.g. /events/pv) the heading reflects it
@@ -79,10 +86,10 @@ export function EventsHeader({
         </div>
         <MiniStatDivider />
         <MiniStat
-          label="Review"
-          value={String(unreviewedCount)}
-          delta={unreviewedCount > 0 ? 'pending' : undefined}
-          tone={unreviewedCount > 0 ? 'warning' : 'success'}
+          label="In review"
+          value={String(inReviewCount)}
+          delta={inReviewCount > 0 ? 'pending' : undefined}
+          tone={inReviewCount > 0 ? 'warning' : 'success'}
         />
       </div>
     </div>

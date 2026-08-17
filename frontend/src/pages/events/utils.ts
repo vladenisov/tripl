@@ -54,8 +54,19 @@ const compactCountFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 0,
 })
 
-export function formatCompactCount(value: number) {
-  return compactCountFormatter.format(value).toLowerCase()
+/**
+ * Compact volume label for the 48h column — "505K", "4M".
+ *
+ * Case is load-bearing here and must NOT be lowercased: the neighbouring
+ * "Last seen" cell renders relative durations ("1m ago", "1h ago") in a
+ * similarly sized tabular-figure cell, so a lowercase "1m" volume under a
+ * header that reads only "48h" invited a six-order-of-magnitude misread
+ * (tripl-klfb). Uppercase M also matches every other count formatter in the
+ * app (lib/metricFormat.ts, components/ui/chart-format.ts), including the
+ * chart directly above this table.
+ */
+export function formatCompactCount(value: number): string {
+  return compactCountFormatter.format(value)
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000

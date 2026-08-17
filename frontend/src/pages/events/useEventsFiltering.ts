@@ -16,6 +16,85 @@ function normalizeFieldValue(value: string): string {
 }
 
 /**
+ * A row's value for a field column, resolved straight off the row.
+ *
+ * The table renders through a memoized per-row map (below); CSV export walks
+ * rows that were never rendered and has no such map, so the lookup rules live
+ * here in one place.
+ */
+export function resolveFieldValue(
+  ev: EventListItem,
+  col: FieldDefinition,
+  fieldDefsById: Map<string, FieldDefinition>,
+): string {
+  for (const fv of ev.field_values) {
+    if (fv.field_definition_id === col.id) return normalizeFieldValue(fv.value)
+  }
+  // Fallback for when the row's field_values reference a different
+  // FieldDefinition row (e.g., another event-type with the same `name`).
+  for (const fv of ev.field_values) {
+    const def = fieldDefsById.get(fv.field_definition_id)
+    if (def && def.name === col.name) return normalizeFieldValue(fv.value)
+  }
+  return ''
+}
+
+/** A row's value for a meta column, resolved straight off the row. */
+export function resolveMetaValue(ev: EventListItem, mf: MetaFieldDefinition): string {
+  for (const mv of ev.meta_values) {
+    if (mv.meta_field_definition_id === mf.id) return mv.value
+  }
+  return ''
+}
+
+export type ColumnFilterContext = {
+  fieldColumns: FieldDefinition[]
+  metaFields: MetaFieldDefinition[]
+  fieldFilters: Record<string, string>
+  metaFilters: Record<string, string>
+  getFieldValue: (ev: EventListItem, col: FieldDefinition) => string
+  getMetaValue: (ev: EventListItem, mf: MetaFieldDefinition) => string
+}
+
+/**
+ * Narrow rows by the per-column (field/meta) filters.
+ *
+ * Takes value accessors so the table can keep its memoized map lookups on the
+ * hot render path while CSV export resolves values directly off freshly fetched
+ * rows — one rule set, two callers. Returns the input array UNCHANGED when no
+ * column filter is set: callers compare identity to tell whether the server
+ * `total` still describes the list (useEventsTableVirtualization).
+ */
+export function filterEventsByColumns(
+  rows: EventListItem[],
+  ctx: ColumnFilterContext,
+): EventListItem[] {
+  const active =
+    Object.values(ctx.fieldFilters).some(v => v !== '') ||
+    Object.values(ctx.metaFilters).some(v => v !== '')
+  if (!active) return rows
+  return rows.filter(ev => eventMatchesColumnFilters(ev, ctx))
+}
+
+function eventMatchesColumnFilters(ev: EventListItem, ctx: ColumnFilterContext): boolean {
+  for (const col of ctx.fieldColumns) {
+    const wanted = ctx.fieldFilters[col.name]
+    if (!wanted) continue
+    const val = ctx.getFieldValue(ev, col)
+    const exact = col.field_type === 'enum' || col.field_type === 'boolean'
+    if (exact ? val !== wanted : !val.toLowerCase().includes(wanted.toLowerCase())) return false
+  }
+  for (const mf of ctx.metaFields) {
+    const wanted = ctx.metaFilters[mf.name]
+    if (!wanted) continue
+    const val = ctx.getMetaValue(ev, mf)
+    const exact = mf.field_type === 'enum' || mf.field_type === 'boolean'
+    if (exact ? val !== wanted : !val.toLowerCase().includes(wanted.toLowerCase())) return false
+  }
+  return true
+}
+
+/**
  * Derived data the events table renders on top of `rawEvents`: per-event
  * field/meta value lookups, the column set, enum options, and the final
  * client-filtered list. Pulled out of EventsPage so the page file stops
@@ -109,51 +188,35 @@ export function useEventsFiltering({
   }, [rawEvents])
 
   const getFieldValue = useCallback((ev: EventListItem, col: FieldDefinition) => {
-    const fvMap = fieldValuesByEvent.get(ev.id)
-    if (fvMap) {
-      const direct = fvMap.get(col.id)
-      if (direct !== undefined) return normalizeFieldValue(direct)
-    }
-    // Fallback for when the row's field_values reference a different
-    // FieldDefinition row (e.g., another event-type with the same `name`).
-    for (const fv of ev.field_values) {
-      const def = allFieldDefs.get(fv.field_definition_id)
-      if (def && def.name === col.name) return normalizeFieldValue(fv.value)
-    }
-    return ''
+    const direct = fieldValuesByEvent.get(ev.id)?.get(col.id)
+    if (direct !== undefined) return normalizeFieldValue(direct)
+    return resolveFieldValue(ev, col, allFieldDefs)
   }, [allFieldDefs, fieldValuesByEvent])
+
+  const getMetaValue = useCallback(
+    (ev: EventListItem, mf: MetaFieldDefinition) => metaValuesByEvent.get(ev.id)?.get(mf.id) ?? '',
+    [metaValuesByEvent],
+  )
 
   // Client-side filtering by field values and meta values
   const events = useMemo(() => {
-    const hasFieldFilter = Object.values(debouncedFieldFilters).some(v => v !== '')
-    const hasMetaFilter = Object.values(debouncedMetaFilters).some(v => v !== '')
-    if (!hasFieldFilter && !hasMetaFilter) return rawEvents
-
-    return rawEvents.filter(ev => {
-      for (const col of fieldColumns) {
-        const fv = debouncedFieldFilters[col.name]
-        if (!fv) continue
-        const val = getFieldValue(ev, col)
-        if (col.field_type === 'enum' || col.field_type === 'boolean') {
-          if (val !== fv) return false
-        } else {
-          if (!val.toLowerCase().includes(fv.toLowerCase())) return false
-        }
-      }
-      const mvMap = metaValuesByEvent.get(ev.id)
-      for (const mf of metaFields) {
-        const mv = debouncedMetaFilters[mf.name]
-        if (!mv) continue
-        const val = mvMap?.get(mf.id) ?? ''
-        if (mf.field_type === 'enum' || mf.field_type === 'boolean') {
-          if (val !== mv) return false
-        } else {
-          if (!val.toLowerCase().includes(mv.toLowerCase())) return false
-        }
-      }
-      return true
+    return filterEventsByColumns(rawEvents, {
+      fieldColumns,
+      metaFields,
+      fieldFilters: debouncedFieldFilters,
+      metaFilters: debouncedMetaFilters,
+      getFieldValue,
+      getMetaValue,
     })
-  }, [rawEvents, debouncedFieldFilters, debouncedMetaFilters, fieldColumns, metaFields, getFieldValue, metaValuesByEvent])
+  }, [
+    rawEvents,
+    debouncedFieldFilters,
+    debouncedMetaFilters,
+    fieldColumns,
+    metaFields,
+    getFieldValue,
+    getMetaValue,
+  ])
 
   return {
     fieldColumns,
@@ -163,6 +226,7 @@ export function useEventsFiltering({
     fieldValuesByEvent,
     metaValuesByEvent,
     getFieldValue,
+    getMetaValue,
     events,
   }
 }
