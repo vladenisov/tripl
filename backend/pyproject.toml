@@ -27,7 +27,7 @@ dependencies = [
     "alembic>=1.19.1",
     "pydantic-settings>=2.15.0",
     "celery>=5.6.3",
-    "clickhouse-connect>=1.6.0",
+    "clickhouse-connect>=1.7.1",
     "cryptography>=49.0.0",
     "psycopg[binary]>=3.3.4",
     "google-cloud-bigquery>=3.43.0",
@@ -38,7 +38,7 @@ dependencies = [
     "brotli-asgi>=1.6",
     "prometheus-client>=0.26.0",
     "email-validator>=2.3.0",
-    "numpy>=2.5.1",
+    "numpy>=2.5.2",
 ]
 
 [project.optional-dependencies]
@@ -47,7 +47,7 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
     "aiosqlite>=0.22.1",
-    "ruff>=0.16.2",
+    "ruff>=0.16.3",
     "mypy>=2.3.0",
 ]
 
