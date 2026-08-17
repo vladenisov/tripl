@@ -124,6 +124,31 @@ describe('MonitoringTab — catalog metric detection (tripl-jfm3.108)', () => {
   })
 })
 
+describe('MonitoringTab — history fields carry their unit (tripl-wb58)', () => {
+  // "Baseline Window 14" sat directly above two fields that name their unit and
+  // explain themselves, so the page's own pattern read the bare number as days
+  // when it means buckets — an order of magnitude on an hourly scan.
+  it('names buckets in both labels rather than leaving the number bare', async () => {
+    mockSettingsFetch({ baseline_window_buckets: 14, min_history_buckets: 7 })
+    renderTab()
+
+    expect(await screen.findByLabelText('Baseline Window (buckets)')).toHaveValue(14)
+    expect(screen.getByLabelText('Min History (buckets)')).toHaveValue(7)
+  })
+
+  it('says what a bucket is, in the interval of the series and not of the scan', async () => {
+    // These settings govern catalog metrics too, and a MetricDefinition carries
+    // its own interval — so "one collection interval of the scan" would be wrong
+    // for a daily metric under an hourly scan.
+    mockSettingsFetch({ baseline_window_buckets: 14 })
+    renderTab()
+
+    const note = await screen.findByText(/A bucket is one collection interval of the series/i)
+    expect(note).toHaveTextContent('14 buckets of baseline is 14 hours')
+    expect(note).toHaveTextContent('daily catalog metric it is 14 days')
+  })
+})
+
 describe('MonitoringTab — settling allowance vs open signal window (tripl-l429.15)', () => {
   // A settling allowance that reaches the open signal window blanks the
   // Anomalies page, the sidebar badge and the Overview stat while alerts keep
