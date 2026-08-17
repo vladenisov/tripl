@@ -7,11 +7,12 @@ import {
   type ReactNode,
 } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query'
 import { Command } from 'cmdk'
 import {
   Activity,
   Bell,
+  BookOpen,
   Database,
   FileText,
   Folder,
@@ -42,6 +43,7 @@ import {
   useCommandPalette,
 } from '@/components/command-palette-context'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
+import { buildNavGroups } from '@/lib/navigation'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useAiStatus } from '@/hooks/useAiStatus'
 import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue'
@@ -282,6 +284,13 @@ function visibleStaticGroups(query: string, groups: PaletteGroup[]): PaletteGrou
  */
 type KnowledgeState = 'off' | 'searching' | 'error' | 'empty' | 'results'
 
+/**
+ * How far the previous query's rows are dimmed while the next search runs. Far
+ * enough to read as "not the answer yet", not so far that they stop being
+ * legible — they are still the rows Enter will act on (tripl-2x5d).
+ */
+const STALE_RESULT_OPACITY = 0.55
+
 function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
   const { open, setOpen } = useCommandPalette()
   const navigate = useNavigate()
@@ -328,6 +337,13 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
       searchApi.search(searchSlug!, { q: debouncedQuery, limit: 12 }),
     enabled: open && !!searchSlug && debouncedQuery.length >= 2,
     staleTime: 30_000,
+    // The key carries the DEBOUNCED text, so every 200ms boundary mints a new
+    // key whose `data` starts undefined. Without a placeholder the rows already
+    // on screen were thrown away mid-word and the list fell back to a single
+    // "Searching." line for the length of the round trip — measured at >2.2s,
+    // which is long enough that a reader concludes nothing matched and hits
+    // Escape (tripl-2x5d). Same treatment as the audit table's paging query.
+    placeholderData: keepPreviousData,
   })
   const searchResults = useMemo(() => searchQuery.data?.items ?? [], [searchQuery.data])
   const searchGroups = useMemo(() => groupSearchResults(searchResults), [searchResults])
@@ -385,29 +401,52 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
     onSelect: () => goTo(path),
   })
 
+  const isOwner = auth.user?.role === 'owner'
+
+  // Workspace destinations, at the canonical paths and under the sidebar's and
+  // settings rail's own labels. Three of these pointed at retired URLs that only
+  // redirect, and the first was labelled "Overview" while pointing at the
+  // WORKSPACE dashboard — so the obvious query for a project's live page
+  // navigated out of the project entirely (tripl-m6cv).
   const navigateRows: PaletteRow[] = [
-    navRow('/', 'Overview', LayoutDashboard),
+    navRow('/workspace', 'All projects', LayoutDashboard),
     navRow('/settings/data-sources', 'Data sources', Database),
-    navRow('/settings/users', 'Members', SlidersHorizontal),
-    navRow('/settings/account', 'Account', SlidersHorizontal),
-    ...(auth.user?.role === 'owner'
-      ? [navRow('/settings/runtime', 'Runtime', SlidersHorizontal)]
-      : []),
+    navRow('/settings/members', 'Members', SlidersHorizontal),
+    navRow('/settings/profile', 'Profile', SlidersHorizontal),
+    ...(isOwner ? [navRow('/settings/instance/runtime', 'Runtime', SlidersHorizontal)] : []),
   ]
 
-  const currentProjectRows: PaletteRow[] = activeProject
+  // Built from the sidebar's own nav model rather than restated here. The
+  // hand-written subset this replaces had drifted: 8 destinations (Live
+  // activity, Metrics, Anomalies, Plan branches, Reconciliation, Coverage, Audit
+  // log, Concepts) had no row at all, so typing "anomalies" matched nothing and
+  // fell through to knowledge search, and three surviving rows carried names the
+  // sidebar had retired (tripl-m6cv). `ownerOnly` is filtered exactly as
+  // app-sidebar.tsx does — offering a non-owner the Audit log row would walk
+  // them into the 403 the sidebar is careful not to show them.
+  const projectNavGroups: PaletteGroup[] = activeProject
+    ? buildNavGroups(activeProject.slug, activeProject.summary).map(group => ({
+        heading: `${group.label} — ${activeProject.name}`,
+        rows: group.items
+          .filter(item => !item.ownerOnly || isOwner)
+          .map(item => navRow(item.href, item.label, item.icon)),
+      }))
+    : []
+
+  // The project destinations that exist outside the nav model: two the sidebar
+  // renders inline (Project settings below the groups, Concepts in its footer)
+  // and one that is nobody's sidebar entry — the detection settings, which the
+  // Anomalies item claims by match. Named as the page names itself; "Monitoring
+  // settings" was a third name for it.
+  const projectExtraRows: PaletteRow[] = activeProject
     ? [
-        navRow(`/p/${activeProject.slug}/events`, 'Events', Folder),
         navRow(`/p/${activeProject.slug}/settings`, 'Project settings', Settings),
-        navRow(`/p/${activeProject.slug}/settings/event-types`, 'Event type settings', Layers),
-        navRow(`/p/${activeProject.slug}/settings/meta-fields`, 'Meta field settings', List),
-        navRow(`/p/${activeProject.slug}/settings/relations`, 'Relation settings', Link2),
-        navRow(`/p/${activeProject.slug}/settings/variables`, 'Variable settings', Variable),
-        navRow(`/p/${activeProject.slug}/settings/monitoring`, 'Monitoring settings', Activity),
-        navRow(`/p/${activeProject.slug}/settings/alerting`, 'Alerting settings', Bell),
-        // Not "Scan settings": scans are an operational surface with their own
-        // top-level route, not a settings tab.
-        navRow(`/p/${activeProject.slug}/scans`, 'Scans', Search),
+        navRow(`/p/${activeProject.slug}/concepts`, 'Concepts', BookOpen),
+        navRow(
+          `/p/${activeProject.slug}/settings/monitoring`,
+          'Detection settings',
+          SlidersHorizontal,
+        ),
       ]
     : []
 
@@ -450,8 +489,11 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
   // part of the design.
   const menuGroups = visibleStaticGroups(query, [
     { heading: 'Navigate', rows: navigateRows },
+    // Plan / Observe / Govern, in the sidebar's order and under the sidebar's
+    // headings, so the palette reads as the same map of the product.
+    ...projectNavGroups,
     ...(activeProject
-      ? [{ heading: `Current — ${activeProject.name}`, rows: currentProjectRows }]
+      ? [{ heading: `More — ${activeProject.name}`, rows: projectExtraRows }]
       : []),
     { heading: 'Projects', rows: projectRows },
     ...(activeProject
@@ -618,16 +660,7 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
                     branches — so nobody had seen a spinner or a "no knowledge
                     matches" line in the palette. With the filter off cmdk never
                     hides a group, and they render for the first time. */}
-                {knowledgeState === 'searching' ? (
-                  <Group heading="Searching knowledge…">
-                    <div
-                      className="px-3.5 py-2 text-[11.5px]"
-                      style={{ color: 'var(--fg-subtle)' }}
-                    >
-                      Searching.
-                    </div>
-                  </Group>
-                ) : knowledgeState === 'error' ? (
+                {knowledgeState === 'error' ? (
                   // Says the request failed, and never "nothing found". An empty
                   // `items` array is what a failed request and an empty knowledge
                   // base used to have in common (`data?.items ?? []`), so the
@@ -649,6 +682,19 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
                       No knowledge matches.
                     </div>
                   </Group>
+                ) : searchGroups.length === 0 ? (
+                  // Only reachable while searching with nothing fetched yet —
+                  // the first query of a palette session. Once there are rows,
+                  // the branch below keeps them and says so, rather than
+                  // emptying the dialog for the length of the round trip.
+                  <Group heading="Searching knowledge…">
+                    <div
+                      className="px-3.5 py-2 text-[11.5px]"
+                      style={{ color: 'var(--fg-subtle)' }}
+                    >
+                      Searching.
+                    </div>
+                  </Group>
                 ) : (
                   // Rendered exactly as received: no `.filter`, no `.sort` and no
                   // `matchesQuery` within each entity-type bucket — these rows
@@ -656,33 +702,55 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
                   // second-guessing that here is the defect this commit removes
                   // (tripl-k6gt). What bucketing costs ACROSS buckets is spelled
                   // out on `groupSearchResults`.
-                  searchGroups.map(([entityType, results]) => {
-                    const meta = SEARCH_TYPE_META[entityType]
-                    return (
-                      <Group key={entityType} heading={meta.heading}>
-                        {results.map(result => {
-                          const eventType =
-                            result.entity_type === 'event'
-                              ? eventTypes.find(item => item.display_name === result.subtitle)
-                              : undefined
-                          return (
-                            <Item
-                              key={result.id}
-                              value={paletteValue.search(result.id)}
-                              onSelect={() => goTo(result.route_path)}
-                              icon={meta.icon}
-                              iconColor={eventType?.color}
-                              label={result.title}
-                              hint={result.subtitle || undefined}
-                              description={result.description || result.snippet || undefined}
-                              confidence={result.confidence}
-                              semantic={result.semantic_used}
-                            />
-                          )
-                        })}
-                      </Group>
-                    )
-                  })
+                  //
+                  // While the next search is in flight these are the PREVIOUS
+                  // query's rows (`placeholderData` above), dimmed under an
+                  // in-flight line: the list narrows instead of blinking empty,
+                  // and cmdk keeps its selection. They stay selectable on
+                  // purpose — Enter goes to what the reader can see (tripl-2x5d).
+                  <div
+                    aria-busy={knowledgeState === 'searching'}
+                    style={
+                      knowledgeState === 'searching' ? { opacity: STALE_RESULT_OPACITY } : undefined
+                    }
+                  >
+                    {searchGroups.map(([entityType, results]) => {
+                      const meta = SEARCH_TYPE_META[entityType]
+                      return (
+                        <Group key={entityType} heading={meta.heading}>
+                          {results.map(result => {
+                            const eventType =
+                              result.entity_type === 'event'
+                                ? eventTypes.find(item => item.display_name === result.subtitle)
+                                : undefined
+                            return (
+                              <Item
+                                key={result.id}
+                                value={paletteValue.search(result.id)}
+                                onSelect={() => goTo(result.route_path)}
+                                icon={meta.icon}
+                                iconColor={eventType?.color}
+                                label={result.title}
+                                hint={result.subtitle || undefined}
+                                description={result.description || result.snippet || undefined}
+                                confidence={result.confidence}
+                                semantic={result.semantic_used}
+                              />
+                            )
+                          })}
+                        </Group>
+                      )
+                    })}
+                    {knowledgeState === 'searching' && (
+                      <div
+                        className="flex items-center gap-2 px-3.5 py-2 text-[11.5px]"
+                        style={{ color: 'var(--fg-subtle)' }}
+                      >
+                        <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                        Updating results…
+                      </div>
+                    )}
+                  </div>
                 )}
               </>
             )}

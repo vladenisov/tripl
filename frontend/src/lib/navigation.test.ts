@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProjectSummary } from '@/types'
+import { resolveTitleFromPath } from '@/hooks/useDocumentTitle'
 import {
   buildNavGroups,
   getAlertingPath,
@@ -52,6 +53,7 @@ describe('buildNavGroups', () => {
       'event-types': '/p/demo/settings/event-types',
       schema: '/p/demo/settings/meta-fields',
       branches: '/p/demo/settings/branches',
+      history: '/p/demo/settings/history',
       metrics: '/p/demo/metrics',
       anomalies: '/p/demo/anomalies',
       alerting: '/p/demo/settings/alerting',
@@ -157,6 +159,25 @@ describe('buildNavGroups', () => {
     expect(alerting.tone).toBe(anomalies.tone)
   })
 
+  it('gives Plan history a home next to the branches it snapshots (tripl-ebib)', () => {
+    // The page was fully built and carried real revisions, but no nav item
+    // matched it: zero inbound links across the whole product, nothing
+    // highlighted in the sidebar while you stood on it, and the only way in was
+    // typing the URL. It belongs beside Plan branches — a snapshot is what a
+    // branch merge leaves behind.
+    const plan = buildNavGroups('demo', undefined).find((g) => g.label === 'Plan')!
+    const ids = plan.items.map((i) => i.id)
+    expect(ids).toContain('history')
+    expect(ids.indexOf('history')).toBe(ids.indexOf('branches') + 1)
+    const history = plan.items.find((i) => i.id === 'history')!
+    expect(history.match('/p/demo/settings/history')).toBe(true)
+    expect(history.match('/p/demo/settings/history/rev-9')).toBe(true)
+    // Its sibling must not swallow it, or the sidebar would highlight branches.
+    expect(plan.items.find((i) => i.id === 'branches')!.match('/p/demo/settings/history')).toBe(
+      false,
+    )
+  })
+
   it('surfaces Variables and Relations as Plan nav items (M6)', () => {
     const items = buildNavGroups('demo', undefined)
       .filter((g) => g.label === 'Plan')
@@ -258,10 +279,10 @@ describe('resolveNavLocation', () => {
     ['/p/demo/settings/event-types', 'Plan', 'Event types'],
     ['/p/demo/settings/meta-fields', 'Plan', 'Schema & fields'],
     ['/p/demo/settings/branches', 'Plan', 'Plan branches'],
+    ['/p/demo/settings/history', 'Plan', 'Plan history'],
     // A rule's fired history is an Alerting surface; the detection settings are
     // an Anomalies one. Both used to read "Monitors" (tripl-89ps).
     ['/p/demo/monitors/rule-1', 'Observe', 'Alerting'],
-    ['/p/demo/settings/monitoring', 'Observe', 'Anomalies'],
     ['/p/demo/metrics', 'Observe', 'Metrics'],
     ['/p/demo/anomalies', 'Observe', 'Anomalies'],
     ['/p/demo/settings/alerting', 'Observe', 'Alerting'],
@@ -272,6 +293,36 @@ describe('resolveNavLocation', () => {
     ['/p/demo/settings/audit', 'Govern', 'Audit log'],
   ])('maps %s to %s › %s', (path, area, label) => {
     expect(resolveNavLocation('demo', path)).toEqual({ area, label })
+  })
+
+  it('names the sub-surface a nav item owns but is not (tripl-34tw)', () => {
+    // The detection settings stay ON Anomalies — that mapping is deliberate
+    // (tripl-89ps) and the sidebar highlights Anomalies here. What was missing is
+    // the leaf: the crumb terminal read "Anomalies" in bold over a page headed
+    // "Detection settings", so arriving from the Anomalies page's own link
+    // showed no evidence you had navigated.
+    expect(resolveNavLocation('demo', '/p/demo/settings/monitoring')).toEqual({
+      area: 'Observe',
+      label: 'Anomalies',
+      leaf: 'Detection settings',
+    })
+  })
+
+  it('names the leaf with the string the browser tab uses (tripl-34tw)', () => {
+    // Three surfaces name this one page — crumb, tab title and the page's own
+    // H2 — and the defect was that all three disagreed. Pin the two this repo
+    // can check against each other.
+    const location = resolveNavLocation('demo', '/p/demo/settings/monitoring')!
+    expect(location.leaf).toBe(resolveTitleFromPath('/p/demo/settings/monitoring').label)
+  })
+
+  it('leaves a nav item that IS the page without a leaf', () => {
+    // A leaf on every non-exact match would put "Detail" or an event-type tab
+    // name in the trail on routes that legitimately inherit their surface's
+    // name, so only genuinely self-named sub-surfaces get one.
+    for (const path of ['/p/demo/anomalies', '/p/demo/events/checkout', '/p/demo/scans/scan-1']) {
+      expect(resolveNavLocation('demo', path)).not.toHaveProperty('leaf')
+    }
   })
 
   it('returns null for routes outside the grouped nav (e.g. general settings)', () => {

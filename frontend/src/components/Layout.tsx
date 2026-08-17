@@ -133,7 +133,12 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
   // using the same model the sidebar renders from.
   const navLocation = slug ? resolveNavLocation(slug, pathname) : null
   if (navLocation) {
-    return { crumbs: withProject(navLocation.area), title: navLocation.label }
+    // A sub-surface names itself: the nav item it matched is its parent, not the
+    // page. Without the leaf, Detection settings presented itself as Anomalies
+    // (tripl-34tw). `leaf` is absent everywhere else, so nothing else moves.
+    return navLocation.leaf
+      ? { crumbs: withProject(navLocation.area, navLocation.label), title: navLocation.leaf }
+      : { crumbs: withProject(navLocation.area), title: navLocation.label }
   }
 
   if (pathname.endsWith('/concepts')) {
