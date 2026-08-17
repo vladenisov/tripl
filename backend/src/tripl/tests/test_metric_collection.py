@@ -39,7 +39,7 @@ from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.worker.analyzers.metric_composition import evaluate_composition
 from tripl.worker.tasks._errors import ScanError
-from tripl.worker.tasks.metrics import metric_collect
+from tripl.worker.tasks.metrics import _fact_conditions, metric_collect
 from tripl.worker.tasks.metrics import schedule as metrics_schedule
 
 
@@ -1525,9 +1525,9 @@ def _filter_operand(
     *,
     row_filters: tuple[str, ...] = (),
     filter_sql: str | None = None,
-    conditions: tuple[metric_collect._FactCondition, ...] = (),
-) -> metric_collect._FactOperand:
-    return metric_collect._FactOperand(
+    conditions: tuple[_fact_conditions._FactCondition, ...] = (),
+) -> _fact_conditions._FactOperand:
+    return _fact_conditions._FactOperand(
         fact_table_id=uuid.uuid4(),
         aggregation=MetricAggregation.count,
         measure_column=None,
@@ -1547,7 +1547,7 @@ _CH = SqlDialect.clickhouse
 def test_combined_filter_empty_is_none() -> None:
     fact_table = _filter_fact_table()
     assert (
-        metric_collect._resolve_combined_filter(
+        _fact_conditions._resolve_combined_filter(
             fact_table, dialect=_CH, row_filters=(), filter_sql=None
         )
         is None
@@ -1556,7 +1556,7 @@ def test_combined_filter_empty_is_none() -> None:
 
 def test_combined_filter_single_named_is_parenthesised() -> None:
     fact_table = _filter_fact_table()
-    combined = metric_collect._resolve_combined_filter(
+    combined = _fact_conditions._resolve_combined_filter(
         fact_table, dialect=_CH, row_filters=("positive",), filter_sql=None
     )
     assert combined == "(amount > 0)"
@@ -1564,7 +1564,7 @@ def test_combined_filter_single_named_is_parenthesised() -> None:
 
 def test_combined_filter_multiple_named_are_anded() -> None:
     fact_table = _filter_fact_table()
-    combined = metric_collect._resolve_combined_filter(
+    combined = _fact_conditions._resolve_combined_filter(
         fact_table, dialect=_CH, row_filters=("positive", "big"), filter_sql=None
     )
     assert combined == "(amount > 0) AND (amount > 100)"
@@ -1572,7 +1572,7 @@ def test_combined_filter_multiple_named_are_anded() -> None:
 
 def test_combined_filter_free_text_only() -> None:
     fact_table = _filter_fact_table()
-    combined = metric_collect._resolve_combined_filter(
+    combined = _fact_conditions._resolve_combined_filter(
         fact_table, dialect=_CH, row_filters=(), filter_sql="status = 'paid'"
     )
     assert combined == "(status = 'paid')"
@@ -1582,7 +1582,7 @@ def test_combined_filter_free_text_only() -> None:
 def test_free_text_filters_stay_verbatim_on_every_dialect(dialect: SqlDialect) -> None:
     """Free-text SQL is the user's own dialect-specific text: never rewritten."""
     fact_table = _filter_fact_table()
-    combined = metric_collect._resolve_combined_filter(
+    combined = _fact_conditions._resolve_combined_filter(
         fact_table,
         dialect=dialect,
         row_filters=("positive",),
@@ -1593,7 +1593,7 @@ def test_free_text_filters_stay_verbatim_on_every_dialect(dialect: SqlDialect) -
 
 def test_combined_filter_named_and_free_text_are_anded() -> None:
     fact_table = _filter_fact_table()
-    combined = metric_collect._resolve_combined_filter(
+    combined = _fact_conditions._resolve_combined_filter(
         fact_table, dialect=_CH, row_filters=("positive",), filter_sql="status = 'paid'"
     )
     assert combined == "(amount > 0) AND (status = 'paid')"
@@ -1601,12 +1601,12 @@ def test_combined_filter_named_and_free_text_are_anded() -> None:
 
 def test_combined_filter_condition_only() -> None:
     fact_table = _filter_fact_table()
-    combined = metric_collect._resolve_combined_filter(
+    combined = _fact_conditions._resolve_combined_filter(
         fact_table,
         dialect=_CH,
         row_filters=(),
         filter_sql=None,
-        conditions=(metric_collect._FactCondition("amount", "gt", "3"),),
+        conditions=(_fact_conditions._FactCondition("amount", "gt", "3"),),
     )
     assert combined == "(`amount` > 3)"
 
@@ -1614,12 +1614,12 @@ def test_combined_filter_condition_only() -> None:
 def test_numeric_looking_string_stays_quoted_for_string_column() -> None:
     """Persisted string-column values must not be retyped just because they look numeric."""
     fact_table = _filter_fact_table()
-    combined = metric_collect._resolve_combined_filter(
+    combined = _fact_conditions._resolve_combined_filter(
         fact_table,
         dialect=_CH,
         row_filters=(),
         filter_sql=None,
-        conditions=(metric_collect._FactCondition("user_id", "eq", "001"),),
+        conditions=(_fact_conditions._FactCondition("user_id", "eq", "001"),),
     )
     assert combined == "(`user_id` = '001')"
 
@@ -1628,12 +1628,12 @@ def test_invalid_numeric_literal_is_rejected_for_number_column() -> None:
     """Old string configs get type-directed validation from fact-table metadata."""
     fact_table = _filter_fact_table()
     with pytest.raises(ScanError, match="numeric column 'amount' requires a numeric value"):
-        metric_collect._resolve_combined_filter(
+        _fact_conditions._resolve_combined_filter(
             fact_table,
             dialect=_CH,
             row_filters=(),
             filter_sql=None,
-            conditions=(metric_collect._FactCondition("amount", "gt", "many"),),
+            conditions=(_fact_conditions._FactCondition("amount", "gt", "many"),),
         )
 
 
@@ -1652,12 +1652,12 @@ def test_condition_quotes_reserved_identifier_per_dialect(
     dialect: SqlDialect, expected: str
 ) -> None:
     fact_table = _filter_fact_table()
-    combined = metric_collect._resolve_combined_filter(
+    combined = _fact_conditions._resolve_combined_filter(
         fact_table,
         dialect=dialect,
         row_filters=(),
         filter_sql=None,
-        conditions=(metric_collect._FactCondition("order", "eq", "o1"),),
+        conditions=(_fact_conditions._FactCondition("order", "eq", "o1"),),
     )
     assert combined == expected
 
@@ -1676,12 +1676,12 @@ def test_condition_quotes_reserved_identifier_per_dialect(
 )
 def test_condition_escapes_string_values_per_dialect(dialect: SqlDialect, expected: str) -> None:
     fact_table = _filter_fact_table()
-    combined = metric_collect._resolve_combined_filter(
+    combined = _fact_conditions._resolve_combined_filter(
         fact_table,
         dialect=dialect,
         row_filters=(),
         filter_sql=None,
-        conditions=(metric_collect._FactCondition("user_id", "eq", "u' OR 1=1 --"),),
+        conditions=(_fact_conditions._FactCondition("user_id", "eq", "u' OR 1=1 --"),),
     )
     assert combined == expected
 
@@ -1690,12 +1690,12 @@ def test_condition_escapes_string_values_per_dialect(dialect: SqlDialect, expect
 def test_condition_value_cannot_break_out_of_its_string(dialect: SqlDialect) -> None:
     """Whatever the escape, a value only ever adds PAIRED quotes."""
     fact_table = _filter_fact_table()
-    combined = metric_collect._resolve_combined_filter(
+    combined = _fact_conditions._resolve_combined_filter(
         fact_table,
         dialect=dialect,
         row_filters=(),
         filter_sql=None,
-        conditions=(metric_collect._FactCondition("user_id", "eq", "x' OR TRUE OR 'y"),),
+        conditions=(_fact_conditions._FactCondition("user_id", "eq", "x' OR TRUE OR 'y"),),
     )
     assert combined is not None
     # The compiled fragment is one comparison against one literal: the injected
@@ -1723,12 +1723,12 @@ def test_condition_on_time_column_emits_typed_utc_literal(
     dialect: SqlDialect, expected: str
 ) -> None:
     fact_table = _filter_fact_table()
-    combined = metric_collect._resolve_combined_filter(
+    combined = _fact_conditions._resolve_combined_filter(
         fact_table,
         dialect=dialect,
         row_filters=(),
         filter_sql=None,
-        conditions=(metric_collect._FactCondition("ts", "gt", "2026-01-01 00:00:00"),),
+        conditions=(_fact_conditions._FactCondition("ts", "gt", "2026-01-01 00:00:00"),),
     )
     assert combined == expected
 
@@ -1736,13 +1736,13 @@ def test_condition_on_time_column_emits_typed_utc_literal(
 def test_condition_on_non_time_column_keeps_plain_literal() -> None:
     """A timestamp-shaped value in a NON-time column is still a plain string."""
     fact_table = _filter_fact_table()
-    combined = metric_collect._resolve_combined_filter(
+    combined = _fact_conditions._resolve_combined_filter(
         fact_table,
         dialect=SqlDialect.bigquery,
         row_filters=(),
         filter_sql=None,
         # `user_id` is not in the introspected columns at all -> unknown type.
-        conditions=(metric_collect._FactCondition("user_id", "eq", "2026-01-01"),),
+        conditions=(_fact_conditions._FactCondition("user_id", "eq", "2026-01-01"),),
     )
     assert combined == "(`user_id` = '2026-01-01')"
 
@@ -1766,24 +1766,24 @@ def test_combined_filter_condition_operators_compile(
     operator: str, value: object | None, expected: str
 ) -> None:
     fact_table = _filter_fact_table()
-    combined = metric_collect._resolve_combined_filter(
+    combined = _fact_conditions._resolve_combined_filter(
         fact_table,
         dialect=_CH,
         row_filters=(),
         filter_sql=None,
-        conditions=(metric_collect._FactCondition("user_id", operator, value),),
+        conditions=(_fact_conditions._FactCondition("user_id", operator, value),),
     )
     assert combined == f"({expected})"
 
 
 def test_combined_filter_named_free_text_and_condition_are_anded() -> None:
     fact_table = _filter_fact_table()
-    combined = metric_collect._resolve_combined_filter(
+    combined = _fact_conditions._resolve_combined_filter(
         fact_table,
         dialect=_CH,
         row_filters=("positive",),
         filter_sql="status = 'paid'",
-        conditions=(metric_collect._FactCondition("amount", "lte", "100"),),
+        conditions=(_fact_conditions._FactCondition("amount", "lte", "100"),),
     )
     assert combined == "(amount > 0) AND (status = 'paid') AND (`amount` <= 100)"
 
@@ -1791,7 +1791,7 @@ def test_combined_filter_named_free_text_and_condition_are_anded() -> None:
 def test_combined_filter_unknown_name_raises() -> None:
     fact_table = _filter_fact_table()
     with pytest.raises(ScanError):
-        metric_collect._resolve_combined_filter(
+        _fact_conditions._resolve_combined_filter(
             fact_table, dialect=_CH, row_filters=("ghost",), filter_sql=None
         )
 
@@ -1801,9 +1801,9 @@ def test_per_metric_query_wraps_with_combined_filter() -> None:
     operand = _filter_operand(
         row_filters=("positive", "big"),
         filter_sql="status = 'paid'",
-        conditions=(metric_collect._FactCondition("amount", "lte", "100"),),
+        conditions=(_fact_conditions._FactCondition("amount", "lte", "100"),),
     )
-    query = metric_collect._resolve_fact_operand_query(fact_table, operand, dialect=_CH)
+    query = _fact_conditions._resolve_fact_operand_query(fact_table, operand, dialect=_CH)
     assert query == (
         "SELECT * FROM (SELECT ts, amount FROM orders) AS _filtered "
         "WHERE (amount > 0) AND (amount > 100) AND (status = 'paid') AND (`amount` <= 100)"
@@ -1814,7 +1814,7 @@ def test_per_metric_query_unfiltered_returns_source() -> None:
     fact_table = _filter_fact_table()
     operand = _filter_operand()
     assert (
-        metric_collect._resolve_fact_operand_query(fact_table, operand, dialect=_CH)
+        _fact_conditions._resolve_fact_operand_query(fact_table, operand, dialect=_CH)
         == fact_table.sql
     )
 
@@ -1826,13 +1826,13 @@ def test_per_metric_and_batch_filter_are_value_identical(dialect: SqlDialect) ->
     operand = _filter_operand(
         row_filters=("positive", "big"),
         filter_sql="status = 'paid'",
-        conditions=(metric_collect._FactCondition("amount", "lte", "100"),),
+        conditions=(_fact_conditions._FactCondition("amount", "lte", "100"),),
     )
 
-    batch_filter = metric_collect._resolve_fact_operand_filter(
+    batch_filter = _fact_conditions._resolve_fact_operand_filter(
         operand, fact_table=fact_table, dialect=dialect
     )
-    per_metric_query = metric_collect._resolve_fact_operand_query(
+    per_metric_query = _fact_conditions._resolve_fact_operand_query(
         fact_table, operand, dialect=dialect
     )
 
@@ -1842,14 +1842,14 @@ def test_per_metric_and_batch_filter_are_value_identical(dialect: SqlDialect) ->
 
 
 def test_effective_filter_names_folds_legacy_row_filter() -> None:
-    assert metric_collect._effective_filter_names({"row_filter": "positive"}) == ("positive",)
+    assert _fact_conditions._effective_filter_names({"row_filter": "positive"}) == ("positive",)
 
 
 def test_effective_filter_names_merges_list_and_legacy() -> None:
     config = {"row_filters": ["positive"], "row_filter": "big"}
-    assert metric_collect._effective_filter_names(config) == ("positive", "big")
+    assert _fact_conditions._effective_filter_names(config) == ("positive", "big")
 
 
 def test_effective_filter_names_dedups_legacy_already_present() -> None:
     config = {"row_filters": ["positive"], "row_filter": "positive"}
-    assert metric_collect._effective_filter_names(config) == ("positive",)
+    assert _fact_conditions._effective_filter_names(config) == ("positive",)

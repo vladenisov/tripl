@@ -459,7 +459,7 @@ async def preview_fact_operand(
     # Imported lazily so the Celery worker stack stays out of module import (same
     # reason ``preview_sql_metric`` defers its import of the collector helpers).
     from tripl.worker.tasks._errors import ScanError
-    from tripl.worker.tasks.metrics.metric_collect import (
+    from tripl.worker.tasks.metrics._fact_conditions import (
         _fact_operand_measure,
         _operand_from_config,
         _resolve_fact_operand_query,
@@ -546,12 +546,14 @@ async def get_saved_fact_metric_sql(
         get_metric_definition,
     )
     from tripl.worker.tasks._errors import ScanError
+    from tripl.worker.tasks.metrics._fact_conditions import (
+        _operand_from_config,
+        _resolve_batch_operand,
+    )
     from tripl.worker.tasks.metrics.generation import _iter_window_chunks
     from tripl.worker.tasks.metrics.metric_collect import (
         METRIC_QUERY_ROW_LIMIT,
         _batch_chunk_interval_code,
-        _operand_from_config,
-        _resolve_batch_operand,
         _SpecRegistry,
         compute_manual_collect_window,
     )

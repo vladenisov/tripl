@@ -19,7 +19,7 @@ from tripl.services.metric_preview_service import (
     _ensure_generated_sql_query_capacity,
     _ensure_saved_fact_filter_input_budget,
 )
-from tripl.worker.tasks.metrics.metric_collect import _resolve_condition_fragment
+from tripl.worker.tasks.metrics._fact_conditions import _resolve_condition_fragment
 
 
 @pytest.mark.parametrize(
