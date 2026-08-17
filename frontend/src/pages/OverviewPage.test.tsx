@@ -48,12 +48,15 @@ interface MockOpts {
   kpiSeries?: number[]
   eventNameRequests?: string[]
   topEvents?: Array<{ event_id: string; name: string; total_count: number }>
+  /** Never settles the volume request, so the card stays in its pending state. */
+  holdVolume?: boolean
 }
 
 function mockFetch(opts?: MockOpts) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input)
     if (url.includes('/metrics/total')) {
+      if (opts?.holdVolume) return new Promise<Response>(() => {})
       return jsonResponse({
         scope: 'project_total',
         scan_config_id: 'scan-1',
@@ -183,6 +186,55 @@ describe('OverviewPage', () => {
     ).toBeInTheDocument()
     // latest bucket count = 25
     expect(await screen.findByText('25')).toBeInTheDocument()
+  })
+
+  it('bounds the volume request to a 7-day window (tripl-jfjt)', async () => {
+    // The call passed no params at all, so the endpoint summed the scan's whole
+    // metric history — and the panel was still fetching 2.2s after the KPI strip,
+    // Top events, Active signals and Recent activity had all rendered.
+    const fetchSpy = mockFetch()
+    renderOverview()
+
+    expect(await screen.findByText('Volume · Snowplow Pageviews (iOS)')).toBeInTheDocument()
+
+    const totalUrl = fetchSpy.mock.calls
+      .map(([input]) => String(input))
+      .find((url) => url.includes('/metrics/total'))
+    expect(totalUrl).toBeDefined()
+    const params = new URL(totalUrl!, 'http://localhost').searchParams
+    const from = Date.parse(params.get('from') ?? '')
+    const to = Date.parse(params.get('to') ?? '')
+    expect(Number.isNaN(from)).toBe(false)
+    expect(Number.isNaN(to)).toBe(false)
+    expect(to - from).toBe(7 * 24 * 60 * 60 * 1000)
+  })
+
+  it('reserves the volume card with a skeleton while it loads (tripl-jfjt)', async () => {
+    // On all three production projects the whole rest of the page was rendered
+    // while this card read a bare "Loading…" in an empty box — pending, but
+    // reading as broken, and growing a subtitle line when the series landed.
+    mockFetch({ holdVolume: true })
+    renderOverview()
+
+    // The rest of the page has settled...
+    expect(await screen.findByText('No active monitoring signals.')).toBeInTheDocument()
+    expect(await screen.findByText('No recent activity.')).toBeInTheDocument()
+
+    // ...while the volume card holds its shape instead of a bare string.
+    const volumeCard = (await screen.findByText('Volume')).closest('section')
+    expect(volumeCard).not.toBeNull()
+    expect(
+      (volumeCard as HTMLElement).querySelectorAll('[data-slot="skeleton"]').length,
+    ).toBeGreaterThan(0)
+    expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+    // ...and never claims emptiness before the answer arrives.
+    expect(screen.queryByText('No volume data yet.')).not.toBeInTheDocument()
+    // The skeleton blocks are aria-hidden, so the pending state is still spoken.
+    expect(screen.getByText('Loading volume…')).toBeInTheDocument()
+    // The header keeps its second line rather than growing one on arrival.
+    expect(
+      screen.getByText('One scan — not the project’s combined volume across all scans.'),
+    ).toBeInTheDocument()
   })
 
   it('falls back to a bare "Volume" title when no scan is resolved', async () => {

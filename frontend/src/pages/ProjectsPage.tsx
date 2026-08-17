@@ -120,14 +120,6 @@ export default function MainPage() {
   const projectsWithSignals = projects.filter(
     (project) => project.summary.monitoring_signal_count > 0,
   ).length
-  const projectsNeedingReview = projects.filter(
-    (project) => project.summary.review_pending_event_count > 0,
-  ).length
-  // Deep-link the workspace Review-queue number to the first project that
-  // actually has a pending queue, so the stat is a shortcut into triage.
-  const firstReviewProject = projects.find(
-    (project) => project.summary.review_pending_event_count > 0,
-  )
   const projectsWithLatestScanJob = projects.filter(
     (project) => project.summary.latest_scan_job != null,
   ).length
@@ -360,9 +352,11 @@ export default function MainPage() {
               <MiniStat
                 label="Coverage"
                 value={coverageDisplay}
+                // The fraction carries its unit: "2993/5291" beside a percentage
+                // left the reader guessing what was being counted (tripl-14eh).
                 delta={
                   portfolio.activeEventCount > 0
-                    ? `${portfolio.implementedEventCount}/${portfolio.activeEventCount}`
+                    ? `${portfolio.implementedEventCount}/${portfolio.activeEventCount} events`
                     : undefined
                 }
                 // The fraction is a plain "implemented of active" readout, not a
@@ -376,10 +370,22 @@ export default function MainPage() {
                 tone={dataSourcesQuery.isError ? 'danger' : 'neutral'}
               />
               <MiniStatDivider />
+              {/* "Automation 8 · 3 covered" was the only tile on the landing page
+                  that never said what it counted, and the page subtitle above it
+                  ("scan and alerting coverage") invited reading the 8 as scans +
+                  alert rules — it is scans alone (tripl-14eh). */}
               <MiniStat
-                label="Automation"
+                label="Scans"
                 value={String(portfolio.scanCount)}
-                delta={portfolio.scanCount > 0 ? `${projectsWithScans} covered` : undefined}
+                delta={
+                  portfolio.scanCount > 0
+                    ? `in ${projectsWithScans} of ${pluralize(
+                        portfolio.projectCount,
+                        '1 project',
+                        `${portfolio.projectCount} projects`,
+                      )}`
+                    : undefined
+                }
               />
             </div>
 
@@ -390,22 +396,19 @@ export default function MainPage() {
             <div className="h-px w-full lg:hidden" style={{ background: 'var(--border)' }} />
 
             <div className="flex flex-1 flex-wrap items-stretch gap-2">
+              {/* The number is a workspace total, but every review queue lives in
+                  one project and there is no workspace-wide queue to open. It used
+                  to link to whichever project was edited last — "2292 events across
+                  3 projects" opening the 796 of them in one — so it names where the
+                  events are instead, and each project card's own pending-review chip
+                  is the link into that project's queue (tripl-a1d1). */}
               <AttentionStat
                 icon={BellRing}
                 label="Review queue"
                 value={String(portfolio.reviewPendingEventCount)}
                 unit={pluralize(portfolio.reviewPendingEventCount, 'event', 'events')}
-                hint={
-                  portfolio.reviewPendingEventCount > 0
-                    ? `across ${pluralize(projectsNeedingReview, '1 project', `${projectsNeedingReview} projects`)}`
-                    : 'No pending event reviews'
-                }
+                hint={reviewQueueHint(projects)}
                 tone={portfolio.reviewPendingEventCount > 0 ? 'warning' : 'success'}
-                to={
-                  firstReviewProject
-                    ? `/p/${firstReviewProject.slug}/events/review`
-                    : undefined
-                }
               />
               <AttentionStat
                 icon={AlertTriangle}
@@ -495,6 +498,32 @@ function ProjectsPageSkeleton() {
 
 type StatTone = 'success' | 'warning' | 'danger' | 'info' | 'neutral'
 
+/** How many projects the Review-queue hint names before it summarises the rest. */
+const REVIEW_HINT_PROJECT_LIMIT = 3
+
+/**
+ * Where the workspace review backlog actually sits, biggest queue first.
+ *
+ * "across 3 projects" told the operator nothing about which project holds the
+ * 1441 of the 2292 events, and the tile's single link opened a different one
+ * (tripl-a1d1).
+ */
+function reviewQueueHint(projects: Project[]): string {
+  const pending = projects
+    .filter((project) => project.summary.review_pending_event_count > 0)
+    .sort(
+      (left, right) =>
+        right.summary.review_pending_event_count - left.summary.review_pending_event_count,
+    )
+  if (pending.length === 0) return 'No pending event reviews'
+  const named = pending
+    .slice(0, REVIEW_HINT_PROJECT_LIMIT)
+    .map((project) => `${project.summary.review_pending_event_count} in ${project.name}`)
+    .join(' · ')
+  const remaining = pending.length - REVIEW_HINT_PROJECT_LIMIT
+  return remaining > 0 ? `${named} · +${remaining} more` : named
+}
+
 /**
  * An action-needed stat: an attention-worthy card that pops with a tone-soft
  * background and tone-colored border when it actually needs work, and stays
@@ -510,7 +539,6 @@ function AttentionStat({
   hint,
   tone = 'neutral',
   pulse = false,
-  to,
 }: {
   icon: ElementType
   label: string
@@ -519,7 +547,6 @@ function AttentionStat({
   hint: string
   tone?: StatTone
   pulse?: boolean
-  to?: string
 }) {
   const toneColor =
     tone === 'success'
@@ -561,20 +588,9 @@ function AttentionStat({
           {pulse && needsAttention && (
             <Dot tone={tone === 'warning' ? 'warning' : 'danger'} size={6} pulse />
           )}
-          {to ? (
-            <Link
-              to={to}
-              aria-label={`${label}: ${value}${unit ? ` ${unit}` : ''}`}
-              className="mono tnum rounded-sm text-[20px] font-medium leading-[1.1] tracking-[-0.01em] hover:underline"
-              style={{ color: 'inherit' }}
-            >
-              {value}
-            </Link>
-          ) : (
-            <span className="mono tnum text-[20px] font-medium leading-[1.1] tracking-[-0.01em]">
-              {value}
-            </span>
-          )}
+          <span className="mono tnum text-[20px] font-medium leading-[1.1] tracking-[-0.01em]">
+            {value}
+          </span>
           {unit ? (
             <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
               {unit}
@@ -700,11 +716,29 @@ function ProjectCard({
           <Chip tone="neutral" size="xs">
             {project.summary.active_event_count > 0 ? `${coverageDisplay} implemented` : 'No active events'}
           </Chip>
-          <Chip tone={attention === 'review' ? 'warning' : 'neutral'} size="xs">
-            {needsReview
-              ? `${project.summary.review_pending_event_count} pending review`
-              : 'Review queue clear'}
-          </Chip>
+          {/* The workspace tile above was the only anchor into a review queue
+              anywhere, and it opened one arbitrary project's. Each card already
+              knows its own slug, so its count is the link — unambiguous, one per
+              queue, and cmd-clickable (tripl-a1d1). */}
+          {needsReview ? (
+            <Link
+              to={`/p/${project.slug}/events/review`}
+              aria-label={`Review queue for ${project.name}: ${pluralize(
+                project.summary.review_pending_event_count,
+                '1 pending event',
+                `${project.summary.review_pending_event_count} pending events`,
+              )}`}
+              className="rounded-full no-underline"
+            >
+              <Chip tone={attention === 'review' ? 'warning' : 'neutral'} size="xs">
+                {project.summary.review_pending_event_count} pending review
+              </Chip>
+            </Link>
+          ) : (
+            <Chip tone="neutral" size="xs">
+              Review queue clear
+            </Chip>
+          )}
           <Chip tone="neutral" size="xs">
             {project.summary.scan_count > 0
               ? pluralize(

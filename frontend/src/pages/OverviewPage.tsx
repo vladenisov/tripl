@@ -26,6 +26,7 @@ import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { PageHead, Panel } from '@/components/settings/kit'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useTheme } from '@/components/theme-provider'
 import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
 import { coverageTone, dataSourceHealthLexeme, type StatusLexeme } from '@/lib/statusLexicon'
@@ -35,6 +36,7 @@ import { selectSignificantSignals } from '@/lib/signalMagnitude'
 import { friendlyScanError } from '@/lib/scanError'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useExpandedSignals } from '@/hooks/useExpandedSignals'
+import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
 import {
   signalScopeLabel as sharedSignalScopeLabel,
   type NameMap,
@@ -59,6 +61,13 @@ const ACTIVITY_LIMIT = 8
 // A successful source connection test older than this is shown as "stale" rather
 // than a confident "healthy" — an old green check is misleading (issue M1).
 const SOURCE_HEALTH_STALE_MS = 24 * 60 * 60 * 1000
+// The volume card asked for the scan's ENTIRE metric history — the endpoint's
+// from/to simply were never passed — so it was still fetching 2.2 s after every
+// other panel on the page had rendered (tripl-jfjt). Seven days matches the
+// documented default window for project-total charts.
+const VOLUME_WINDOW_DAYS = 7
+const VOLUME_WINDOW_MS = VOLUME_WINDOW_DAYS * 24 * 60 * 60 * 1000
+const VOLUME_SUBTITLE = 'One scan — not the project’s combined volume across all scans.'
 
 export default function OverviewPage() {
   const { slug } = useParams<{ slug: string }>()
@@ -73,12 +82,19 @@ export default function OverviewPage() {
     queryFn: () => projectsApi.get(slug!),
     enabled: !!slug,
   })
+  // A live bound rather than a mount-time snapshot, so a long-open tab keeps
+  // asking for the current 7 days (tripl-jfm3.114).
+  const volumeRange = useLiveTimeRange(VOLUME_WINDOW_MS)
   // The project query is the single authority on whether the slug exists. Gate
   // every project-scoped widget query on its success so they never fan out
   // 404s against a nonexistent project (issue .9).
   const volumeQuery = useQuery({
-    queryKey: ['overview', 'volume', slug],
-    queryFn: () => metricsApi.getProjectTotalMetrics(slug!),
+    // The window length is in the key but its moving bounds are NOT: every
+    // refetch reads the live range, while keying on `to` would mint a fresh
+    // cache entry — and drop the card back to its skeleton — every five
+    // minutes. Same split as MonitoringDetailPage's metricsQuery.
+    queryKey: ['overview', 'volume', slug, VOLUME_WINDOW_DAYS],
+    queryFn: () => metricsApi.getProjectTotalMetrics(slug!, volumeRange),
     enabled: !!slug && projectQuery.isSuccess,
     staleTime: 60_000,
   })
@@ -211,6 +227,10 @@ export default function OverviewPage() {
   // events a legacy/backfill scan also collected), so it names that scan instead
   // of claiming to be the project total (tripl-jfm3.20).
   const volumeScanName = volumeQuery.data?.scan_config_name ?? null
+  // `isPending`, not `isLoading`: while the query waits on the projectQuery gate
+  // it is pending but NOT fetching, so an `isLoading` check let the card claim
+  // "No volume data yet." before it had even asked (tripl-jfjt).
+  const isVolumePending = volumeQuery.isPending && !projectQuery.isError
 
   // A nonexistent slug is a 404 on the project query itself: replace the whole
   // widget grid with the app's full-page not-found (issue .9). Non-404 project
@@ -336,11 +356,9 @@ export default function OverviewPage() {
           above a "Top events" row 12× larger. */}
       <Panel
         title={volumeScanName ? `Volume · ${volumeScanName}` : 'Volume'}
-        subtitle={
-          volumeScanName
-            ? 'One scan — not the project’s combined volume across all scans.'
-            : undefined
-        }
+        // Held through the pending state as well, so the header keeps its second
+        // line instead of growing one when the series lands (tripl-jfjt).
+        subtitle={volumeScanName || isVolumePending ? VOLUME_SUBTITLE : undefined}
       >
         <div className="p-4">
         {volumeQuery.isError && (
@@ -354,9 +372,10 @@ export default function OverviewPage() {
             compact
           />
         )}
-        {!volumeQuery.isError && volumePoints.length === 0 && (
+        {!volumeQuery.isError && isVolumePending && <VolumeSkeleton />}
+        {!volumeQuery.isError && !isVolumePending && volumePoints.length === 0 && (
           <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
-            {volumeQuery.isLoading ? 'Loading…' : 'No volume data yet.'}
+            No volume data yet.
           </div>
         )}
         {volumePoints.length > 0 && (
@@ -549,6 +568,31 @@ export default function OverviewPage() {
   )
 }
 
+
+/**
+ * The loaded card's shape, held while the series is in flight.
+ *
+ * The panel is the first content under the KPI strip, and it sat on a bare
+ * "Loading…" in an empty box for 2.2 s after the KPI numbers, the 14d sparkline,
+ * Top events, Active signals and Recent activity had all rendered — pending, but
+ * reading as broken. The blocks match the loaded layout (figure + caption beside
+ * a 320×48 chart) so the card reserves its height (tripl-jfjt).
+ */
+function VolumeSkeleton() {
+  return (
+    <div className="flex items-end gap-4">
+      <div className="flex flex-col gap-1">
+        <Skeleton className="h-7 w-24" />
+        <Skeleton className="h-3 w-32" />
+      </div>
+      <Skeleton className="h-12 w-[320px] max-w-full" />
+      {/* Skeleton is aria-hidden, so the pending state still needs to be said. */}
+      <span role="status" className="sr-only">
+        Loading volume…
+      </span>
+    </div>
+  )
+}
 
 // Text alternative for the volume sparkline (issue M8): the SVG itself is
 // aria-hidden, so the surrounding role="img" needs an accessible summary. Names

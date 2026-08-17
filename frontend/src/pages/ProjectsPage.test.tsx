@@ -170,7 +170,12 @@ describe('ProjectsPage', () => {
     expect(screen.getAllByText('Projects')).toHaveLength(1)
     expect(screen.getAllByText('Coverage')).toHaveLength(1)
     expect(screen.getByText('Data sources')).toBeInTheDocument()
-    expect(screen.getByText('Automation')).toBeInTheDocument()
+    // tripl-14eh: the tile says what it counts. "Automation 8 · 3 covered" named
+    // neither the unit nor the denominator.
+    expect(screen.getByText('Scans')).toBeInTheDocument()
+    expect(screen.queryByText('Automation')).not.toBeInTheDocument()
+    expect(screen.getByText('in 1 of 1 project')).toBeInTheDocument()
+    expect(screen.queryByText('1 covered')).not.toBeInTheDocument()
     // UX-10: action-needed metrics each appear once, distinct from STATE metrics.
     expect(screen.getByText('Review queue')).toBeInTheDocument()
     // Settled vocabulary: an execution is a "run" on every web-UI surface, and
@@ -303,7 +308,10 @@ describe('ProjectsPage', () => {
     // (per-scan latest run), not just the single newest run (tripl-7l83.3).
     // The UI noun is "scan", never "scan config" (tripl-3y7z).
     expect(screen.getByText('1 scan failing across 1 project')).toBeInTheDocument()
-    expect(screen.getByText('across 1 project')).toBeInTheDocument()
+    // tripl-a1d1: the review hint names the project holding the queue instead of
+    // counting projects it does not open.
+    expect(screen.getByText('1 in Beta')).toBeInTheDocument()
+    expect(screen.queryByText('across 1 project')).not.toBeInTheDocument()
     expect(screen.getByText('1 scan configured')).toBeInTheDocument()
     expect(screen.getByText('1 open signal')).toBeInTheDocument()
     // UX-10: the monitoring-signal metric lives once now, as an action-needed
@@ -527,22 +535,112 @@ describe('ProjectsPage', () => {
     expect(await screen.findByText('Beta')).toBeInTheDocument()
     const coverageStat = screen.getByText('Coverage').closest('dl')
     expect(coverageStat).not.toBeNull()
-    // The Coverage MiniStat delta ("implemented/active") must read as neutral —
-    // not danger/red — so a healthy 99% coverage never implies a problem.
-    const fraction = within(coverageStat as HTMLElement).getByText('320/323')
+    // The Coverage MiniStat delta ("implemented/active events") must read as
+    // neutral — not danger/red — so a healthy 99% coverage never implies a
+    // problem. The unit is part of the delta since tripl-14eh.
+    const fraction = within(coverageStat as HTMLElement).getByText('320/323 events')
     expect(fraction).toHaveStyle({ color: 'var(--fg-subtle)' })
     expect(fraction).not.toHaveStyle({ color: 'var(--danger)' })
   })
 
-  it('links the review-queue number into the first pending project (tripl-7l83.17)', async () => {
+  it('links the pending-review count into that project, not the workspace total (tripl-a1d1)', async () => {
     mockSingleProject()
 
     renderProjectsPage('owner')
 
     expect(await screen.findByText('Beta')).toBeInTheDocument()
-    // The Review-queue count deep-links into the project's review triage view.
-    const reviewLink = screen.getByRole('link', { name: /review queue: 1 event/i })
+    // The workspace total is a readout: there is no workspace-wide review queue
+    // to open, so the tile no longer opens one project's while naming them all.
+    expect(
+      screen.queryByRole('link', { name: /review queue: 1 event/i }),
+    ).not.toBeInTheDocument()
+    // The card's own count carries the link, and says whose queue it opens.
+    const reviewLink = screen.getByRole('link', {
+      name: 'Review queue for Beta: 1 pending event',
+    })
     expect(reviewLink).toHaveAttribute('href', '/p/beta/events/review')
+    expect(reviewLink).toHaveTextContent('1 pending review')
+  })
+
+  function mockPendingReviewProjects() {
+    const project = (
+      name: string,
+      slug: string,
+      reviewPending: number,
+      updatedAt: string,
+    ) => ({
+      id: slug,
+      name,
+      slug,
+      description: '',
+      created_at: '2026-04-01T09:00:00Z',
+      updated_at: updatedAt,
+      summary: {
+        event_type_count: 2,
+        event_count: 10,
+        active_event_count: 10,
+        implemented_event_count: 10,
+        review_pending_event_count: reviewPending,
+        archived_event_count: 0,
+        variable_count: 0,
+        scan_count: 1,
+        alert_destination_count: 0,
+        alert_rule_count: 0,
+        monitoring_signal_count: 0,
+        failing_scan_config_count: 0,
+        latest_scan_job: null,
+        latest_signal: null,
+      },
+    })
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(
+          jsonResponse([
+            // The SMALLER queue is the most recently updated project, which is
+            // exactly what the old single link followed.
+            project('Windy Web', 'windy-web', 1441, '2026-04-01T09:00:00Z'),
+            project('Windy Android', 'windy-android', 55, '2026-06-10T09:00:00Z'),
+          ]),
+        )
+      }
+      if (url.endsWith('/api/v1/data-sources')) return Promise.resolve(jsonResponse([]))
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+  }
+
+  it('names where the review backlog is and links each queue to its project (tripl-a1d1)', async () => {
+    mockPendingReviewProjects()
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Windy Web')).toBeInTheDocument()
+
+    // The tile still totals the workspace...
+    const reviewTile = screen.getByText('Review queue').closest('dl')
+    expect(reviewTile).not.toBeNull()
+    expect(reviewTile).toHaveTextContent('1496')
+    // ...and now says where those events actually are, biggest queue first,
+    // instead of the bare "across 2 projects" that opened only one of them.
+    expect(screen.getByText('1441 in Windy Web · 55 in Windy Android')).toBeInTheDocument()
+    expect(screen.queryByText('across 2 projects')).not.toBeInTheDocument()
+
+    // Each card links to ITS OWN queue. The old tile link followed the most
+    // recently updated project (Windy Android, 55) and left the other 1441
+    // unreachable from anywhere on the page.
+    expect(
+      screen.getByRole('link', { name: 'Review queue for Windy Web: 1441 pending events' }),
+    ).toHaveAttribute('href', '/p/windy-web/events/review')
+    expect(
+      screen.getByRole('link', { name: 'Review queue for Windy Android: 55 pending events' }),
+    ).toHaveAttribute('href', '/p/windy-android/events/review')
   })
 
   it('shows an error instead of the empty state when the backend is unavailable', async () => {
@@ -694,7 +792,7 @@ describe('ProjectsPage', () => {
     // The all-zero stat band is hidden until the first project exists.
     expect(screen.queryByText('Coverage')).not.toBeInTheDocument()
     expect(screen.queryByText('Review queue')).not.toBeInTheDocument()
-    expect(screen.queryByText('Automation')).not.toBeInTheDocument()
+    expect(screen.queryByText('Scans')).not.toBeInTheDocument()
     // The old bare EmptyState copy is retired in favour of the hero.
     expect(screen.queryByText('No projects yet')).not.toBeInTheDocument()
   })
