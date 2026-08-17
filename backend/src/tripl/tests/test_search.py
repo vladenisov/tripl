@@ -17,8 +17,10 @@ from tripl.services import search_service
 from tripl.services._search_documents import build_documents
 from tripl.services._search_query import (
     _FULL_CONFIDENCE_SCORE,
+    _PARTIAL_CONFIDENCE_CEILING,
     _SEMANTIC_SCORE_WEIGHT,
     _SQLITE_ALL_TOKENS,
+    _SQLITE_EXACT_KEYWORDS,
     _SQLITE_EXACT_TITLE,
     _SQLITE_KEYWORD_TOKEN,
     _SQLITE_TITLE_PREFIX,
@@ -42,7 +44,15 @@ def _result(
     score: float,
     subtitle: str = "",
 ) -> SearchResult:
-    return SearchResult(
+    """A SQLite-path result: scores here are ``fallback_score`` tier values.
+
+    It records the identity flag the same way ``document_to_result`` does, and
+    that is not cosmetic (tripl-d5u8): ``finalize_results`` caps a non-identity
+    match below the certainty line, so a helper that skipped the flag would drag
+    a legitimate exact-title 1.0 down to the partial ceiling and the tests would
+    be measuring the helper rather than the code.
+    """
+    result = SearchResult(
         id=uuid.uuid4(),
         entity_type=entity_type,  # type: ignore[arg-type]
         entity_id=uuid.uuid4(),
@@ -51,6 +61,8 @@ def _result(
         route_path="/",
         score=score,
     )
+    result.record_identity_match(identity=score >= _SQLITE_EXACT_KEYWORDS)
+    return result
 
 
 def test_a_matched_event_type_is_not_buried_under_its_own_events() -> None:
@@ -1064,13 +1076,28 @@ def test_finalize_confidence_prefers_exact_token_value_matches() -> None:
 
     finalized = _finalize_results(items, limit=10)
 
-    assert finalized[0].title == "spot:choose:models"
-    # tripl-txcz: 6.5 is a strong hit but it is not an exact-title match, so it
-    # is served as a strong hit — nothing under the full-confidence score is
-    # dressed up as certain just because it came first.
-    assert finalized[0].confidence == pytest.approx(6.5 / _FULL_CONFIDENCE_SCORE, abs=1e-4)
-    assert finalized[0].confidence < 1.0
-    assert finalized[1].confidence < finalized[0].confidence
+    # RANKING is what this test is about, and it is untouched by tripl-d5u8:
+    # the cap is applied after the sort, to the badge and never to the position.
+    assert [item.title for item in finalized] == [
+        "spot:choose:models",
+        "map_model_selected_ecmwf",
+        "ecmwf_model_popup_shown",
+    ]
+
+    # CONFIDENCE COMPRESSES AT THE TOP FOR PARTIAL MATCHES, DELIBERATELY
+    # (tripl-d5u8). None of these three is an identity match — the strongest is
+    # 6.5, below the 7.2 `keywords == query` tier — so all three clip to the
+    # partial ceiling and report the SAME number despite ranking differently
+    # (6.5/7.0 = 0.93, 5.9/7.0 = 0.84 and 5.6/7.0 = 0.80 all become 0.80).
+    #
+    # That is the intended trade and the reason clipping was chosen over scaling
+    # the whole partial range into [0, ceiling]: the badge answers "is this what
+    # you meant", and above this line the honest answer is "strong, but not
+    # certain" for all of them. Scaling would have preserved the ordering in the
+    # badge at the cost of deflating every partial match users already see.
+    # The ORDER still separates them; the certainty does not claim to.
+    assert {item.confidence for item in finalized} == {_PARTIAL_CONFIDENCE_CEILING}
+    assert all(item.confidence < 1.0 for item in finalized)
 
 
 @pytest.mark.asyncio

@@ -96,7 +96,7 @@ retired ones, pass `status=archived`.
 | Query param | Meaning |
 |-------------|---------|
 | `q` | Natural-language phrase (1–500 chars) |
-| `types` | Restrict to entity kinds (repeatable): `event`, `event_type`, `field`, `meta_field`, `variable`, `relation`, `tag`, `metric`, `fact_table` |
+| `types` | Restrict to entity kinds (repeatable): `event`, `event_type`, `field`, `meta_field`, `variable`, `relation`, `tag`, `metric`, `fact_table`, `scan_config`, `alert_rule` |
 | `include_archived` | Include archived entities (default `false`) |
 | `limit` | Max results (default `20`, max `100`) |
 
@@ -105,6 +105,12 @@ between queries — a weak query returns low confidence on every item, first one
 included; a hit found by meaning rather than by keyword reports that leg's cosine
 similarity, so one cutoff works for both) and `semantic_used` reports whether
 embeddings were used.
+
+If your agent branches on confidence, know the shape of the scale: `1.0` is reserved
+for a hit whose **identity** is the query (its name, or its keywords, being exactly
+what you searched for). Keyword hits that merely contain the query are capped at
+`0.8` no matter how strong they are, so `>= 0.9` is a reliable test for "this is the
+entity I named" and a poor test for "this is relevant".
 Event hits also include `event_id`, `name`, `implemented`, and
 `variable_values`. Use search for feature phrases, not exact keys — see
 [Searching events](./searching-events.md).

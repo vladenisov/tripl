@@ -99,6 +99,44 @@ _FULL_CONFIDENCE_SCORE = 7.0
 # two legs on one scale and reports certainty on another; see both docstrings.
 _SEMANTIC_SCORE_WEIGHT = 2.5
 
+# The lowest boost-ladder tier that counts as "this document IS what was typed"
+# (tripl-d5u8). The ladder's top two rungs are equality tests — 5.0 for
+# ``lower(title) = lower(query)`` and 4.0 for ``lower(keywords) = lower(query)``
+# — and every rung below them (3.5 word-boundary, 3.25 stemmed, 3.0 body token
+# or title prefix, 2.25/1.5 substring) says only that the query APPEARS
+# somewhere, which is partial evidence.
+_IDENTITY_BOOST_MIN = 4.0
+
+# What a result that did NOT match by identity may be reported at, at most
+# (tripl-d5u8).
+#
+# WHY CONFIDENCE COULD NOT BE READ OFF THE SCORE ALONE
+# ----------------------------------------------------
+# ``_FULL_CONFIDENCE_SCORE`` was derived as 5.0 exact-title + 2.0 perfect
+# trigram, but it is divided into a sum that also carries ``lexical_score * 4.0``
+# and, since tripl-9t2s, ``COVERAGE_BONUS``. Neither was in the derivation, so
+# documents that are not the thing named reached 1.0 anyway — measured on the
+# relevance corpus: ``screen_spot`` at 7.64 for ``q='spot'``,
+# ``${property.spot_id}`` at 7.61, and ``${property.card_target}`` crossing at
+# 7.2985 for ``q='screen_settings'``. Raising the constant would have been a
+# guess that the next term added to the sum invalidates again; asking the LADDER
+# instead is stable, because the ladder is the only term that answers the actual
+# question.
+#
+# WHY 0.80, AND WHY IT IS NOT A NEW NUMBER
+# -----------------------------------------
+# It is what the SQLite fallback has always produced for its strongest partial
+# tier: ``_SQLITE_TITLE_PREFIX / _FULL_CONFIDENCE_SCORE`` is ``5.6 / 7.0``,
+# exactly 0.80. That dialect already enforces this rule by construction — only
+# ``title == query`` (8.0) and ``keywords == query`` (7.2) sit at or above the
+# certainty line — so this ceiling does not change SQLite at all. It ports the
+# guarantee to Postgres, which is the "make the two dialects agree" half of
+# tripl-txcz that was never actually true on the dialect users search on.
+#
+# RANKING IS UNTOUCHED. This is applied in :func:`finalize_results` AFTER the
+# sort, to the number painted on a result and never to its position.
+_PARTIAL_CONFIDENCE_CEILING = 0.80
+
 
 def sanitize_query(query: str) -> str:
     """Trim the incoming query and drop codepoints no backend can carry.
@@ -662,6 +700,11 @@ async def postgres_lexical_search(
             body,
             keywords,
             route_path,
+            -- Projected as well as summed (tripl-d5u8): the ladder tier is the
+            -- only term in this sum that says WHETHER the document is the thing
+            -- named, and confidence needs that separately from the total. See
+            -- :data:`_IDENTITY_BOOST_MIN`.
+            boost,
             (
                 (lexical_score * 4.0)
                 + (fuzzy_score * 2.0)
@@ -1135,6 +1178,8 @@ def finalize_results(items: list[SearchResult], limit: int) -> list[SearchResult
     trimmed = ranked[:limit]
     for item in trimmed:
         score_confidence = min(1.0, max(0.0, item.score) / _FULL_CONFIDENCE_SCORE)
+        if not item.identity_match:
+            score_confidence = min(score_confidence, _PARTIAL_CONFIDENCE_CEILING)
         semantic_confidence = item.semantic_cosine or 0.0
         item.confidence = round(max(score_confidence, semantic_confidence), 4)
     return trimmed
@@ -1244,7 +1289,14 @@ def row_to_result(row: object, query: str, *, semantic_used: bool) -> SearchResu
     mapping = cast(Mapping[str, object], row)
     score_raw = mapping["score"]
     score = float(str(score_raw)) if score_raw is not None else 0.0
-    return SearchResult(
+    # Shared by both Postgres legs, and only the LEXICAL one projects a ladder
+    # tier — the semantic SELECT has no `boost` column because it never runs the
+    # ladder. Absent therefore means "no identity evidence", which is the honest
+    # reading for a vector-only hit; its certainty comes from its cosine instead
+    # (tripl-d5u8).
+    boost_raw = mapping.get("boost")
+    boost = float(str(boost_raw)) if boost_raw is not None else 0.0
+    result = SearchResult(
         id=uuid.UUID(str(mapping["id"])),
         entity_type=cast(SearchEntityType, str(mapping["entity_type"])),
         entity_id=uuid.UUID(str(mapping["entity_id"])),
@@ -1260,6 +1312,8 @@ def row_to_result(row: object, query: str, *, semantic_used: bool) -> SearchResu
         highlights=highlights(str(mapping["title"]), str(mapping["body"] or ""), query),
         semantic_used=semantic_used,
     )
+    result.record_identity_match(identity=boost >= _IDENTITY_BOOST_MIN)
+    return result
 
 
 def document_to_result(
@@ -1269,7 +1323,7 @@ def document_to_result(
     *,
     semantic_used: bool,
 ) -> SearchResult:
-    return SearchResult(
+    result = SearchResult(
         id=document.id,
         entity_type=cast(SearchEntityType, document.entity_type),
         entity_id=document.entity_id,
@@ -1283,6 +1337,14 @@ def document_to_result(
         highlights=highlights(document.title, document.body, query),
         semantic_used=semantic_used,
     )
+    # On this dialect the tier IS the score (``fallback_score`` returns one tier
+    # value per document and never sums evidence), so the identity question is
+    # answered by comparing against the lower of the two equality tiers. The
+    # ceiling this feeds is already what SQLite produces unaided — see
+    # :data:`_PARTIAL_CONFIDENCE_CEILING` — so nothing here changes; recording it
+    # is what lets ONE rule in ``finalize_results`` cover both dialects.
+    result.record_identity_match(identity=score >= _SQLITE_EXACT_KEYWORDS)
+    return result
 
 
 def snippet(body: str, query: str, *, length: int = 180) -> str:
