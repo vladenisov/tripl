@@ -426,6 +426,41 @@ async def list_alert_inbox(
     )
 
 
+# ``audit_log.target_name`` is String(255), and a wide incident's joined scope
+# list can exceed it.
+_AUDIT_TARGET_NAME_MAX = 255
+
+
+def _incident_audit_name(
+    group: AlertInboxGroupResponse | None, correlation_group_id: uuid.UUID
+) -> str:
+    """What the audit log calls the incident an ``alert_inbox.*`` row is about.
+
+    Both routes used to record ``str(correlation_group_id)``, which made the
+    project Audit log a wall of hex — 28 of 31 captured rows on the one project
+    with real inbox history — while every other action on the same page named its
+    target. Neither affordance on the row rescued it: the title attribute reveals
+    the FULL UUID, and expanding shows only the action body (tripl-ckun).
+
+    Named off the SAME fields the incident card renders — the newest item's
+    ``scope_type`` and the group's ``scope_names``, joined the way
+    AlertingInbox.tsx joins them — so the trail reads like the thing the operator
+    clicked, including the builder's cap of 8 names. ``target_id`` keeps the
+    UUID, so lookups are unaffected.
+
+    ``group`` is ``None`` when the batch acted on an incident whose deliveries
+    were deleted before the response was rebuilt (see
+    ``AlertInboxBulkActionResponse.groups``); that row falls back to the id
+    rather than losing its target.
+    """
+    if group is None or not group.scope_names:
+        return str(correlation_group_id)
+    label = f"{group.scope_type} · {', '.join(group.scope_names)}"
+    if len(label) <= _AUDIT_TARGET_NAME_MAX:
+        return label
+    return f"{label[: _AUDIT_TARGET_NAME_MAX - 1]}…"
+
+
 # Registered BEFORE the /{correlation_group_id} routes below, and it must STAY
 # there. "bulk-actions" is a literal segment competing with a path parameter that
 # FastAPI coerces to a UUID, so whichever route is registered first wins the
@@ -471,6 +506,8 @@ async def apply_alert_inbox_bulk_action(
     # click" question answerable from any single row.
     acted_group_ids = alerting_service.dedupe_correlation_group_ids(data.correlation_group_ids)
     action_payload = data.model_dump(exclude={"correlation_group_ids"})
+    # Matched by id, not by position: ``groups`` can be shorter than the batch.
+    rebuilt_groups = {group.correlation_group_id: group for group in result.groups}
     for group_id in acted_group_ids:
         await audit_service.record(
             session,
@@ -478,7 +515,7 @@ async def apply_alert_inbox_bulk_action(
             action=f"alert_inbox.{data.action}",
             target_type="alert_correlation_group",
             target_id=group_id,
-            target_name=str(group_id),
+            target_name=_incident_audit_name(rebuilt_groups.get(group_id), group_id),
             project_slug=slug,
             payload={
                 **action_payload,
@@ -532,7 +569,7 @@ async def apply_alert_inbox_action(
         action=f"alert_inbox.{data.action}",
         target_type="alert_correlation_group",
         target_id=correlation_group_id,
-        target_name=str(correlation_group_id),
+        target_name=_incident_audit_name(result.group, correlation_group_id),
         project_slug=slug,
         payload=data.model_dump(),
     )

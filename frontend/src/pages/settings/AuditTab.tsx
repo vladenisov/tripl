@@ -8,7 +8,9 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Skeleton } from '@/components/ui/skeleton'
 import { formatTimestamp } from '@/lib/datetime'
+import { countOf } from '@/lib/plural'
 
 const ACTION_TONE: Record<string, string> = {
   create: 'bg-success-soft text-success',
@@ -158,9 +160,15 @@ const ACTION_GROUPS: { label: string; actions: string[] }[] = [
   },
 ]
 
-// Backend caps page size at 200; tighten the filter to narrow results when
-// you hit this ceiling.
-const PAGE_SIZE = 200
+// One page of audit entries. It used to be 200 — the endpoint's own ceiling —
+// and the page sent no offset, so the most recent 200 rows were the ONLY rows a
+// reader could reach: past that the card said "narrow the filter to drill into
+// older actions", which means guessing an action type or a date range to audit
+// anything older (tripl-5ydt). `offset` was already carried end to end by
+// api/audit.ts, api/v1/audit.py and audit_service.list_entries; only the buttons
+// were missing. 50 matches the sibling delivery log (ProjectAlertingTab.tsx),
+// which got the same treatment in tripl-oxkt.12.
+const PAGE_SIZE = 50
 
 function actionTone(action: string) {
   const verb = action.split('.').pop() ?? ''
@@ -192,6 +200,11 @@ export function AuditTab({ slug }: { slug: string }) {
   const [emailApplied, setEmailApplied] = useState('')
   const [sinceDate, setSinceDate] = useState('')
   const [untilDate, setUntilDate] = useState('')
+  // Where the page window starts. Every filter write resets it — the offset is
+  // an index INTO the filtered set, so narrowing while parked on page 4 lands
+  // the reader on a blank page of a list that has rows, which reads as "nothing
+  // matches". Same reasoning as AlertAuditPanel.tsx.
+  const [offset, setOffset] = useState(0)
 
   const queryParams = useMemo(
     () => ({
@@ -201,8 +214,9 @@ export function AuditTab({ slug }: { slug: string }) {
       since: toIsoOrUndef(sinceDate, false),
       until: toIsoOrUndef(untilDate, true),
       limit: PAGE_SIZE,
+      offset,
     }),
-    [slug, action, emailApplied, sinceDate, untilDate],
+    [slug, action, emailApplied, sinceDate, untilDate, offset],
   )
 
   const listQuery = useQuery({
@@ -214,7 +228,10 @@ export function AuditTab({ slug }: { slug: string }) {
 
   const items = listQuery.data?.items ?? []
   const total = listQuery.data?.total ?? 0
-  const truncated = total > items.length
+  const rangeStart = offset + 1
+  const rangeEnd = offset + items.length
+  const hasNewer = offset > 0
+  const hasOlder = rangeEnd < total
 
   const toggle = (id: string) => {
     setExpanded((prev) => {
@@ -232,10 +249,29 @@ export function AuditTab({ slug }: { slug: string }) {
     setEmailApplied('')
     setSinceDate('')
     setUntilDate('')
+    setOffset(0)
   }
 
   const applyEmail = () => {
     setEmailApplied(emailInput.trim())
+    setOffset(0)
+  }
+
+  // Every filter write goes through one of these so none can forget the offset
+  // reset; see the `offset` state above for what forgetting looks like.
+  const applyAction = (next: string) => {
+    setAction(next)
+    setOffset(0)
+  }
+
+  const applySince = (next: string) => {
+    setSinceDate(next)
+    setOffset(0)
+  }
+
+  const applyUntil = (next: string) => {
+    setUntilDate(next)
+    setOffset(0)
   }
 
   return (
@@ -259,7 +295,7 @@ export function AuditTab({ slug }: { slug: string }) {
               <select
                 id="audit-action"
                 value={action}
-                onChange={(e) => setAction(e.target.value)}
+                onChange={(e) => applyAction(e.target.value)}
                 className="flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
               >
                 <option value="">All actions</option>
@@ -300,7 +336,7 @@ export function AuditTab({ slug }: { slug: string }) {
                 id="audit-since"
                 type="date"
                 value={sinceDate}
-                onChange={(e) => setSinceDate(e.target.value)}
+                onChange={(e) => applySince(e.target.value)}
                 className="h-8 text-xs"
               />
             </div>
@@ -312,7 +348,7 @@ export function AuditTab({ slug }: { slug: string }) {
                 id="audit-until"
                 type="date"
                 value={untilDate}
-                onChange={(e) => setUntilDate(e.target.value)}
+                onChange={(e) => applyUntil(e.target.value)}
                 className="h-8 text-xs"
               />
             </div>
@@ -334,7 +370,20 @@ export function AuditTab({ slug }: { slug: string }) {
       <Card>
         <CardContent className="p-0">
           {listQuery.isLoading ? (
-            <div className="p-4 text-sm text-muted-foreground">Loading…</div>
+            // Rows, not a bare "Loading…" line: the header and the whole filter
+            // card render immediately, so the only thing pending is this card,
+            // and a one-line placeholder made a card that is about to be a list
+            // look like a card that is empty (tripl-5ydt).
+            <div className="divide-y" aria-busy="true" aria-label="Loading audit entries">
+              {Array.from({ length: 6 }, (_, i) => (
+                <div key={i} className="flex items-center gap-2 px-3 py-2.5">
+                  <Skeleton className="h-3 w-36 shrink-0" />
+                  <Skeleton className="h-3 w-28 shrink-0" />
+                  <Skeleton className="h-3 w-40" />
+                  <Skeleton className="ml-auto h-3 w-32 shrink-0" />
+                </div>
+              ))}
+            </div>
           ) : items.length === 0 ? (
             <div className="p-4 text-sm text-muted-foreground">
               {filtersActive
@@ -386,11 +435,40 @@ export function AuditTab({ slug }: { slug: string }) {
         </CardContent>
       </Card>
 
-      {items.length > 0 && truncated && (
-        <p className="text-xs text-muted-foreground">
-          Showing the most recent {items.length} of {total} entries — narrow
-          the filter to drill into older actions.
-        </p>
+      {items.length > 0 && (hasNewer || hasOlder) && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {/* This line used to end "narrow the filter to drill into older
+              actions" — the only way past row 200 was to guess an action type
+              or a date range, on the surface the user guide points at for
+              tracking down a wrong edit or merge (tripl-5ydt). */}
+          <p className="text-xs text-muted-foreground">
+            {hasNewer
+              ? `Showing ${rangeStart}–${rangeEnd} of ${countOf(total, 'entry', 'entries')}.`
+              : `Showing the most recent ${items.length} of ${countOf(total, 'entry', 'entries')} — use Older to reach the rest, or narrow the filter.`}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              disabled={!hasNewer}
+              onClick={() => setOffset((current) => Math.max(0, current - PAGE_SIZE))}
+            >
+              Newer
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              disabled={!hasOlder}
+              onClick={() => setOffset((current) => current + PAGE_SIZE)}
+            >
+              Older
+            </Button>
+          </div>
+        </div>
       )}
     </div>
   )

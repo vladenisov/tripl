@@ -1,14 +1,23 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-// The audit list endpoint is stubbed so the tab renders its filter card without
-// firing a real request; the From/To hint text is static and present regardless.
+import type { AuditEntry, AuditListResponse } from '@/types'
+
+// The audit list endpoint is stubbed so the tab renders without firing a real
+// request; each test decides what the page it asks for contains.
+const { listMock } = vi.hoisted(() => ({ listMock: vi.fn() }))
+
 vi.mock('@/api/audit', () => ({
-  auditApi: { list: vi.fn(async () => ({ items: [], total: 0 })) },
+  auditApi: { list: listMock },
 }))
 
 import { AuditTab } from './AuditTab'
+
+beforeEach(() => {
+  listMock.mockReset()
+  listMock.mockResolvedValue({ items: [], total: 0 })
+})
 
 function renderTab() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -17,6 +26,24 @@ function renderTab() {
       <AuditTab slug="demo" />
     </QueryClientProvider>,
   )
+}
+
+/** One page of `size` rows out of `total` — what any page but the last looks like. */
+function auditPage(size: number, total: number): AuditListResponse {
+  const items: AuditEntry[] = Array.from({ length: size }, (_, index) => ({
+    id: `entry-${index}`,
+    created_at: '2026-08-17T10:00:00Z',
+    user_id: null,
+    user_email: 'alice@example.com',
+    project_id: null,
+    project_slug: 'demo',
+    action: 'event_type.update',
+    target_type: 'event_type',
+    target_id: null,
+    target_name: `checkout_started_${index}`,
+    payload: {},
+  }))
+  return { items, total }
 }
 
 /** Every action the Action <select> offers, in DOM order (minus "All actions"). */
@@ -96,5 +123,97 @@ describe('AuditTab — date filters (tripl-jfm3.37)', () => {
     // labelled From/To.
     expect(screen.getByLabelText('From')).toHaveAttribute('type', 'date')
     expect(screen.getByLabelText('To')).toHaveAttribute('type', 'date')
+  })
+})
+
+describe('AuditTab — paging (tripl-5ydt)', () => {
+  it('asks for one 50-row page and offers a step past it', async () => {
+    listMock.mockResolvedValue(auditPage(50, 254))
+    renderTab()
+
+    // The page used to request the endpoint's own 200 ceiling and send no
+    // offset, so those 200 rows were the only rows reachable at all.
+    await waitFor(() =>
+      expect(listMock).toHaveBeenCalledWith(expect.objectContaining({ limit: 50, offset: 0 })),
+    )
+    expect(await screen.findByRole('button', { name: 'Older' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Newer' })).toBeDisabled()
+    // The dead end it replaced: the only route to row 201 was guessing an
+    // action type or a date range.
+    expect(screen.queryByText(/narrow the filter to drill into older actions/)).toBeNull()
+  })
+
+  it('steps Older and Newer by exactly one page', async () => {
+    listMock.mockResolvedValue(auditPage(50, 254))
+    renderTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Older' }))
+
+    await waitFor(() =>
+      expect(listMock).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 50 })),
+    )
+    expect(await screen.findByText('Showing 51–100 of 254 entries.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Newer' }))
+
+    expect(
+      await screen.findByText(/Showing the most recent 50 of 254 entries/),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Newer' })).toBeDisabled()
+  })
+
+  it('returns to the newest page whenever a filter is written', async () => {
+    listMock.mockResolvedValue(auditPage(50, 254))
+    renderTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Older' }))
+    await waitFor(() =>
+      expect(listMock).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 50 })),
+    )
+
+    // The offset indexes INTO the filtered set, so narrowing 254 entries to a
+    // handful while parked on page 2 would land on a blank page of a list that
+    // has rows — which reads as "nothing matches".
+    fireEvent.change(screen.getByLabelText('Action'), {
+      target: { value: 'alert_inbox.mute' },
+    })
+
+    await waitFor(() =>
+      expect(listMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({ action: 'alert_inbox.mute', offset: 0 }),
+      ),
+    )
+  })
+
+  it('hides the pager when one page holds everything', async () => {
+    listMock.mockResolvedValue(auditPage(3, 3))
+    renderTab()
+
+    await screen.findByText('checkout_started_0')
+    expect(screen.queryByRole('button', { name: 'Older' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Newer' })).toBeNull()
+  })
+})
+
+describe('AuditTab — pending list card (tripl-5ydt)', () => {
+  it('holds the shape of the list instead of a bare "Loading…" line', async () => {
+    let release: (value: AuditListResponse) => void = () => {}
+    listMock.mockReturnValue(
+      new Promise<AuditListResponse>((resolve) => {
+        release = resolve
+      }),
+    )
+    renderTab()
+
+    // The header and the whole filter card render immediately; only this card
+    // is pending, and a one-line placeholder made it look empty rather than
+    // about to be a list.
+    expect(screen.getByLabelText('Loading audit entries')).toBeInTheDocument()
+    expect(screen.queryByText('Loading…')).toBeNull()
+
+    release(auditPage(1, 1))
+    await waitFor(() =>
+      expect(screen.queryByLabelText('Loading audit entries')).not.toBeInTheDocument(),
+    )
   })
 })
