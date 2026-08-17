@@ -4,8 +4,13 @@ import { serviceSettingsApi } from '@/api/serviceSettings'
 import type { ServiceSettings } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Field, SCard, TextArea, TextInput, ToggleRow } from '@/components/settings/kit'
-import { ResetRow, SourceBadge, StatusBadge } from './ServiceSettingsPrimitives'
-import type { EditableSettings, SecretDrafts, SectionKey } from './serviceSettingsHelpers'
+import { SourceBadge, StatusBadge } from './ServiceSettingsPrimitives'
+import type {
+  EditableSettings,
+  SecretDrafts,
+  SecretField,
+  SectionKey,
+} from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
 
 export function AiSection({
@@ -14,8 +19,7 @@ export function AiSection({
   secretDrafts,
   setField,
   setSecretDrafts,
-  onReset,
-  resetting,
+  saving,
   onClearSecret,
 }: {
   form: EditableSettings
@@ -23,9 +27,8 @@ export function AiSection({
   secretDrafts: SecretDrafts
   setField: (section: SectionKey, field: string, value: string | number | boolean) => void
   setSecretDrafts: (updater: (current: SecretDrafts) => SecretDrafts) => void
-  onReset: () => void
-  resetting: boolean
-  onClearSecret: (section: 'ai' | 'email', field: string) => void
+  saving: boolean
+  onClearSecret: (section: 'ai' | 'email', field: SecretField) => void
 }) {
   const aiTestMut = useMutation({
     mutationFn: () => serviceSettingsApi.testAi(),
@@ -33,7 +36,7 @@ export function AiSection({
 
   return (
     <>
-      <SCard title="Provider" footer={<ResetRow onReset={onReset} resetting={resetting} />}>
+      <SCard title="Provider">
         <ToggleRow
           label="AI enabled"
           labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'ai_enabled')} />}
@@ -81,7 +84,7 @@ export function AiSection({
               variant="outline"
               size="sm"
               onClick={() => onClearSecret('ai', 'ai_api_key')}
-              disabled={resetting}
+              disabled={saving}
             >
               Clear
             </Button>
@@ -230,7 +233,7 @@ export function AiSection({
               variant="outline"
               size="sm"
               onClick={() => onClearSecret('ai', 'search_embedding_api_key')}
-              disabled={resetting}
+              disabled={saving}
             >
               Clear
             </Button>

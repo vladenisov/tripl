@@ -11,6 +11,19 @@ import type {
 
 export type SectionKey = 'runtime' | 'ai' | 'email' | 'security' | 'storage' | 'observability'
 
+/** Section names as the rail and the page header spell them. */
+export const SECTION_LABELS: Record<SectionKey, string> = {
+  runtime: 'Runtime',
+  ai: 'AI',
+  email: 'Email',
+  security: 'Security & access',
+  storage: 'Storage',
+  observability: 'Observability',
+}
+
+/** The three secrets that are stored encrypted and never read back. */
+export type SecretField = 'ai_api_key' | 'search_embedding_api_key' | 'smtp_password'
+
 export type EditableSettings = {
   runtime: RuntimeSettings
   ai: AiServiceSettings
@@ -178,4 +191,76 @@ export function resetPayload(section: SectionKey): ServiceSettingsUpdate {
   return {
     [section]: Object.fromEntries(RESET_FIELDS[section].map(field => [field, null])),
   } as ServiceSettingsUpdate
+}
+
+/**
+ * When a saved override starts being obeyed, per section. Mirrors
+ * STARTUP_APPLIED_FIELDS in backend/src/tripl/services/app_settings_service.py:
+ * runtime/email/ai are read through build_*_config at request/task time, while
+ * security/storage/observability are read once at startup — with
+ * registration_mode the one security field applied live. The UI used to promise
+ * the exact opposite (a redeploy note on Runtime, which needs none, and silence
+ * on Storage and Observability, which do) — tripl-tezn.
+ */
+const APPLY_NOTES: Record<SectionKey, string> = {
+  runtime: 'Saved overrides apply to the very next request or scan task — no restart needed.',
+  email: 'Saved overrides apply to the next message tripl sends — no restart needed.',
+  ai: 'Saved overrides apply to the next AI call — no restart needed.',
+  security:
+    'Saved overrides apply after the next restart of the API, except Self-service registration, which applies to the very next signup attempt.',
+  storage:
+    'Saved overrides apply after the next restart of the API and workers — until then photos keep landing on the backend that is running now.',
+  observability: 'Saved overrides apply after the next restart of the API and workers.',
+}
+
+export function applyNote(section: SectionKey): string {
+  return `${APPLY_NOTES[section]} Unset fields fall back to environment variables.`
+}
+
+/** The highest-consequence fields each section reset nulls, named in the confirm. */
+const RESET_STAKES: Record<SectionKey, string> = {
+  runtime: 'including the app base URL used in invitation links and the ingest endpoint',
+  ai: 'including both stored API keys and all three system prompts',
+  email: 'including the stored SMTP password',
+  security:
+    'including Self-service registration — which applies live, so this can reopen public signup — plus the CORS origins, the CSP and the rate limits',
+  storage: 'including the photo storage backend, its GCS bucket and its credentials path',
+  observability: 'including the log level and the OTLP endpoint',
+}
+
+export type ConfirmCopy = { title: string; message: string; confirmLabel: string }
+
+export function resetConfirm(section: SectionKey): ConfirmCopy {
+  const label = SECTION_LABELS[section]
+  return {
+    title: `Reset ${label} to defaults`,
+    message: `Clear all ${RESET_FIELDS[section].length} ${label} overrides on this instance — ${RESET_STAKES[section]} — so every one of them falls back to its environment variable. This is saved immediately and cannot be undone.`,
+    confirmLabel: 'Reset section',
+  }
+}
+
+const SECRET_STAKES: Record<SecretField, { name: string; consequence: string }> = {
+  ai_api_key: {
+    name: 'AI API key',
+    consequence: 'Anomaly explanations, schema suggestions and the assistant start failing at once.',
+  },
+  search_embedding_api_key: {
+    name: 'embedding API key',
+    consequence: 'Semantic search stops embedding and answering at once.',
+  },
+  smtp_password: {
+    name: 'SMTP password',
+    consequence: 'Invitations, alerts and digests stop being delivered at once.',
+  },
+}
+
+export function clearSecretConfirm(field: SecretField): ConfirmCopy {
+  const { name, consequence } = SECRET_STAKES[field]
+  return {
+    title: `Delete the stored ${name}`,
+    // The field beside this button waits for "Save changes"; the button does
+    // not — it writes straight through to the server (tripl-ifiy).
+    message: `The stored ${name} is deleted on the server as soon as you confirm — this does not wait for Save changes, and it cannot be undone. ${consequence}`,
+    confirmLabel: 'Delete',
+  }
 }

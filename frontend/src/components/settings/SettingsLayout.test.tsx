@@ -1,8 +1,10 @@
+import { useEffect } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import { SettingsLayout } from './SettingsLayout'
 import { WORKSPACE_GROUPS } from './nav'
+import { useUnsavedChanges } from './unsaved-changes'
 
 // Mock the auth context so the layout renders as an owner (Instance group is
 // owner-only) without pulling in the real provider/network.
@@ -27,7 +29,7 @@ vi.mock('@/components/auth-context', () => ({
 function renderSettings(activePath: string) {
   return render(
     <MemoryRouter>
-      <SettingsLayout activePath={activePath} onNavigate={vi.fn()} backHref="/">
+      <SettingsLayout activePath={activePath} backHref="/">
         <div>content</div>
       </SettingsLayout>
     </MemoryRouter>,
@@ -44,7 +46,7 @@ describe('SettingsLayout signposting', () => {
   it('offers a labelled "Back to project" cross-link to the in-app surface', () => {
     render(
       <MemoryRouter>
-        <SettingsLayout activePath="members" onNavigate={vi.fn()} backHref="/p/demo/events">
+        <SettingsLayout activePath="members" backHref="/p/demo/events">
           <div>content</div>
         </SettingsLayout>
       </MemoryRouter>,
@@ -64,13 +66,13 @@ describe('SettingsLayout signposting', () => {
 })
 
 describe('SettingsLayout nav accessibility', () => {
-  it('gives the icon-led AI instance nav button an accessible name', () => {
+  it('gives the icon-led AI instance nav link an accessible name', () => {
     renderSettings('instance/ai')
 
-    expect(screen.getByRole('button', { name: 'AI' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'AI' })).toBeInTheDocument()
   })
 
-  it('every Instance settings nav button has an accessible name', () => {
+  it('every Instance settings nav entry is a real link with an accessible name', () => {
     renderSettings('instance/runtime')
 
     const instance = WORKSPACE_GROUPS.find((group) => group.label === 'Instance')
@@ -78,8 +80,20 @@ describe('SettingsLayout nav accessibility', () => {
 
     for (const item of instance!.items) {
       expect(item.label.trim().length).toBeGreaterThan(0)
-      expect(screen.getByRole('button', { name: item.label })).toBeInTheDocument()
+      // As <button>s none of these could be cmd-clicked into a new tab,
+      // middle-clicked, hovered for a URL or copied (tripl-wd66).
+      expect(screen.getByRole('link', { name: item.label })).toHaveAttribute(
+        'href',
+        `/settings/${item.path}`,
+      )
     }
+  })
+
+  it('marks the active rail entry as the current page', () => {
+    renderSettings('instance/storage')
+
+    expect(screen.getByRole('link', { name: 'Storage' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: 'AI' })).not.toHaveAttribute('aria-current')
   })
 })
 
@@ -117,20 +131,69 @@ describe('SettingsLayout responsive rail', () => {
   })
 
   it('closes the rail after picking a section so the content is visible', () => {
-    const onNavigate = vi.fn()
-    const { container } = render(
+    const { container } = renderSettings('members')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings navigation' }))
+    fireEvent.click(screen.getByRole('link', { name: 'Profile' }))
+
+    expect(rail(container).className).toContain('-translate-x-full')
+  })
+})
+
+describe('SettingsLayout unsaved-changes guard', () => {
+  const DRAFT_MESSAGE = 'Instance settings you edited here have not been saved.'
+
+  /** Stands in for ServiceSettingsPage: a draft only the instance group keeps. */
+  function InstanceDraft() {
+    const { registerUnsaved } = useUnsavedChanges()
+    useEffect(() => {
+      registerUnsaved({
+        keptBy: (path) => path.startsWith('instance/'),
+        message: DRAFT_MESSAGE,
+      })
+    }, [registerUnsaved])
+    return <div>draft</div>
+  }
+
+  function renderWithDraft() {
+    return render(
       <MemoryRouter>
-        <SettingsLayout activePath="members" onNavigate={onNavigate} backHref="/">
-          <div>content</div>
+        <SettingsLayout activePath="instance/ai" backHref="/p/demo/events">
+          <InstanceDraft />
         </SettingsLayout>
       </MemoryRouter>,
     )
+  }
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open settings navigation' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Profile' }))
+  it('warns before a rail link navigates the draft out of existence', async () => {
+    renderWithDraft()
 
-    expect(onNavigate).toHaveBeenCalledWith('profile')
-    expect(rail(container).className).toContain('-translate-x-full')
+    fireEvent.click(screen.getByRole('link', { name: 'Profile' }))
+
+    expect(await screen.findByRole('alertdialog')).toHaveTextContent(
+      'Leave with unsaved changes?',
+    )
+    expect(screen.getByRole('alertdialog')).toHaveTextContent(DRAFT_MESSAGE)
+  })
+
+  it('warns before "Back to project" leaves the settings area', async () => {
+    renderWithDraft()
+
+    fireEvent.click(screen.getByRole('link', { name: /Back to project/i }))
+
+    expect(await screen.findByRole('alertdialog')).toHaveTextContent(
+      'Leave with unsaved changes?',
+    )
+  })
+
+  it('stays silent when the destination keeps the draft', () => {
+    // AI → Email keeps ServiceSettingsPage mounted, so a prompt here would be
+    // a false alarm on every section switch (tripl-l8v2).
+    renderWithDraft()
+
+    fireEvent.click(screen.getByRole('link', { name: 'Email' }))
+
+    expect(screen.queryByRole('alertdialog')).toBeNull()
   })
 })
 

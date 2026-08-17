@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { LogOut, RefreshCw } from 'lucide-react'
 import { Chip } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
@@ -20,45 +19,46 @@ const SESSIONS: SessionRow[] = [
 ]
 
 /**
- * Account · Security. Password change, two-factor authentication and active
- * session management are not yet backed by API endpoints, so the controls here
- * are presentation-only (disabled / local) and clearly framed as such, rather
- * than wiring fabricated requests.
+ * Account · Security. Signed-in password change, two-factor authentication and
+ * active session management are not yet backed by API endpoints, so the
+ * controls here are presentation-only (disabled) and clearly framed as such,
+ * rather than wiring fabricated requests.
  */
 export default function SecuritySection() {
-  const [current, setCurrent] = useState('')
-  const [next, setNext] = useState('')
-  const [twoFactor, setTwoFactor] = useState(false)
-
   return (
     <div>
       <SHeader title="Security" description="Protect your account and review where it's signed in." />
 
+      {/* The two inputs and the button used to be live: the button enabled as
+          soon as both fields were non-empty and then did nothing at all — no
+          request, no error, no toast — so people walked away believing their
+          password had rotated (tripl-2o74). There is no authenticated
+          change-password endpoint, but the reset flow does exist and works, so
+          the card points at that instead of pretending. */}
       <SCard
         title="Password"
-        description="Changing your password signs out other sessions."
+        description="Changing your password in-app isn't wired up yet. Sign out and use “Forgot your password?” on the sign-in screen to get a reset link by email."
         footer={
           <>
             <span className="flex-1" />
-            <Button size="sm" disabled={!current || !next}>
+            <Button size="sm" disabled>
               Update password
             </Button>
           </>
         }
       >
         <Field label="Current password">
-          <TextInput value={current} onChange={setCurrent} type="password" placeholder="••••••••••" />
+          <TextInput value="" type="password" disabled />
         </Field>
-        <Field
-          label="New password"
-          hint={PASSWORD_POLICY_HINT}
-          last
-        >
-          <TextInput value={next} onChange={setNext} type="password" placeholder="••••••••••" />
+        <Field label="New password" hint={PASSWORD_POLICY_HINT} last>
+          <TextInput value="" type="password" disabled />
         </Field>
       </SCard>
 
-      <SCard title="Two-factor authentication">
+      <SCard
+        title="Two-factor authentication"
+        description="Not available yet on this instance."
+      >
         <div className="flex items-center gap-[18px] px-[18px] py-[14px]" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
           <div className="min-w-0 flex-1">
             <div className="text-[13px] font-medium">Authenticator app</div>
@@ -66,7 +66,7 @@ export default function SecuritySection() {
               Require a time-based code at sign-in. Strongly recommended for owners.
             </div>
           </div>
-          <Toggle value={twoFactor} onChange={setTwoFactor} disabled />
+          <Toggle value={false} disabled aria-label="Authenticator app" />
         </div>
         <div className="flex items-center gap-[18px] px-[18px] py-[14px]">
           <div className="min-w-0 flex-1">

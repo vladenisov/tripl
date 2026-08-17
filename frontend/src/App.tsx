@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { projectsApi } from './api/projects'
 import { AuthProvider } from './components/auth-provider'
 import { useAuth } from './components/auth-context'
+import { CommandPaletteProvider } from './components/command-palette'
 import { ErrorState } from './components/error-state'
 import Layout from './components/Layout'
 import { ThemeProvider } from './components/theme-provider'
@@ -264,9 +265,15 @@ function SettingsIndexRedirect() {
 function Takeover({ section }: { section: string }) {
   return (
     <RequireAuth>
-      <Suspense fallback={<SessionFallback />}>
-        <SettingsArea section={section} />
-      </Suspense>
+      {/* The settings takeover renders outside Layout, which is where the
+          palette provider lives — so Ctrl+K, the app's advertised way to get
+          anywhere, died on all 14 /settings/* routes (tripl-wd66). The provider
+          carries its own dialog and key listener, so wrapping here is enough. */}
+      <CommandPaletteProvider>
+        <Suspense fallback={<SessionFallback />}>
+          <SettingsArea section={section} />
+        </Suspense>
+      </CommandPaletteProvider>
     </RequireAuth>
   )
 }

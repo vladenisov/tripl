@@ -5,9 +5,14 @@ import type { ServiceSettingsSectionKey } from '@/pages/serviceSettingsTabs'
 const ServiceSettingsSection = lazy(() => import('@/pages/ServiceSettingsPage'))
 
 const META: Record<ServiceSettingsSectionKey, { title: string; description: string }> = {
+  // No "takes effect on the next deploy" line here any more: all three runtime
+  // fields are read fresh at request/task time, so this page was the one page
+  // carrying a redeploy warning that it did not need, while Storage and
+  // Observability — which really are startup-applied — carried none
+  // (tripl-tezn). Each section now states its own timing from applyNote().
   runtime: {
     title: 'Runtime',
-    description: 'Core server configuration for this tripl instance. Overrides take effect on the next deploy.',
+    description: 'Core server configuration for this tripl instance.',
   },
   email: { title: 'Email', description: 'SMTP transport for invitations, alerts and digests.' },
   ai: {

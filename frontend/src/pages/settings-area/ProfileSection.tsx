@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { Upload } from 'lucide-react'
 import { useAuth } from '@/components/auth-context'
 import { Chip } from '@/components/primitives/chip'
@@ -31,23 +30,20 @@ function initialsFrom(value: string): string {
 }
 
 /**
- * Account · Profile. Email and role read from the real authenticated user; the
- * remaining preference and notification controls are presentation-only (no
- * backend endpoint yet) and operate on local state so the UI is complete
- * without inventing API calls.
+ * Account · Profile. Email and role read from the real authenticated user.
+ *
+ * The preference and notification controls have no backend and nothing reads
+ * them, so they are rendered disabled and labelled as unavailable rather than
+ * accepting input. They used to be six live useState controls under a card
+ * that promised "saved on this device": a user set Date format to ISO, came
+ * back, and it was gone (tripl-z9ot). "Weekly digest" was the worst of them —
+ * the digest is a real Celery beat job fanned out per project alert
+ * destination, so a per-person switch could never have gated it.
  */
 export default function ProfileSection() {
   const { user } = useAuth()
   const initials = initialsFrom(user?.name ?? user?.email ?? '')
   const roleLabel = ROLE_OPTIONS.find((r) => r.value === user?.role)?.label ?? user?.role ?? '—'
-
-  // Local-only preference + notification state (not yet wired to a backend).
-  const [timezone, setTimezone] = useState('Europe/Berlin')
-  const [dateFormat, setDateFormat] = useState('rel')
-  const [weekStart, setWeekStart] = useState('mon')
-  const [incidentAlerts, setIncidentAlerts] = useState(true)
-  const [reviewRequests, setReviewRequests] = useState(true)
-  const [weeklyDigest, setWeeklyDigest] = useState(false)
 
   return (
     <div>
@@ -71,7 +67,7 @@ export default function ProfileSection() {
             </Button>
           </div>
         </Field>
-        <Field label="Full name">
+        <Field label="Full name" hint="Set when the account was created; editing it isn't available yet.">
           <TextInput value={user?.name ?? ''} disabled />
         </Field>
         <Field label="Email" hint="Used for sign-in and notifications.">
@@ -84,36 +80,42 @@ export default function ProfileSection() {
         </Field>
       </SCard>
 
-      <SCard title="Preferences" description="Display preferences (saved on this device).">
+      <SCard
+        title="Preferences"
+        description="Not available yet — tripl shows relative timestamps in your browser's timezone for everyone."
+      >
         <Field label="Timezone">
-          <Select value={timezone} onChange={setTimezone} options={TIMEZONES} />
+          <Select value="Europe/Berlin" options={TIMEZONES} disabled />
         </Field>
         <Field label="Date format">
-          <Select value={dateFormat} onChange={setDateFormat} options={DATE_FORMATS} />
+          <Select value="rel" options={DATE_FORMATS} disabled />
         </Field>
         <Field label="Start of week" last>
-          <Select value={weekStart} onChange={setWeekStart} options={WEEK_START} />
+          <Select value="mon" options={WEEK_START} disabled />
         </Field>
       </SCard>
 
-      <SCard title="Notifications" description="How tripl reaches you when something needs attention.">
+      <SCard
+        title="Notifications"
+        description="Not available yet — tripl has no per-person delivery settings. Alerts and digests are addressed to a project's destinations under Alerting."
+      >
         <ToggleRow
           label="Incident alerts"
           hint="Spikes, drops and firing monitors on events you own."
-          value={incidentAlerts}
-          onChange={setIncidentAlerts}
+          value={false}
+          disabled
         />
         <ToggleRow
           label="Review requests"
           hint="When you're asked to approve a plan change."
-          value={reviewRequests}
-          onChange={setReviewRequests}
+          value={false}
+          disabled
         />
         <ToggleRow
           label="Weekly digest"
-          hint="A Monday summary of plan health and coverage."
-          value={weeklyDigest}
-          onChange={setWeeklyDigest}
+          hint="Delivered per project alert destination, not per person, so this switch could not stop it."
+          value={false}
+          disabled
           last
         />
       </SCard>

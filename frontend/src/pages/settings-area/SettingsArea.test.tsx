@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -89,16 +89,34 @@ describe('SettingsArea project binding', () => {
 
     renderArea('project/general')
 
-    expect(await screen.findByText('No project selected.')).toBeInTheDocument()
-    // Never silently offers to edit whichever project happened to sort first.
-    await waitFor(() => {
-      expect(screen.queryByText('Windy Android')).not.toBeInTheDocument()
-    })
+    expect(await screen.findByRole('heading', { name: 'Pick a project' })).toBeInTheDocument()
+    // Never silently binds to whichever project happened to sort first: the
+    // projects are offered as choices, not applied.
+    expect(screen.getByRole('button', { name: /Windy Android/ })).toBeInTheDocument()
     // "Back to project" falls back to the workspace, not to /p/windy-android.
     expect(screen.getByRole('link', { name: /Back to project/i })).toHaveAttribute(
       'href',
       '/workspace',
     )
+  })
+
+  it('binds the project the user picks from the empty state (tripl-kr4u)', async () => {
+    vi.spyOn(projectsApi, 'list').mockResolvedValue(projects)
+
+    // Plan rules is the project-scoped section with no data fetching of its own.
+    renderArea('project/plan-rules')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Windy iOS/ }))
+
+    expect(await screen.findByRole('heading', { name: 'Plan rules' })).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: /Back to project/i })).toHaveAttribute(
+        'href',
+        '/p/windy-ios/events',
+      )
+    })
+    // Persisted the same way the sidebar persists it, so a reload keeps it.
+    expect(window.localStorage.getItem(LAST_SLUG_STORAGE_KEY)).toBe('windy-ios')
   })
 
   it('binds to the last project the user actually visited', async () => {
@@ -124,7 +142,7 @@ describe('SettingsArea project binding', () => {
 
     renderArea('project/general')
 
-    expect(await screen.findByText('No project selected.')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Pick a project' })).toBeInTheDocument()
   })
 
   it('still renders workspace sections with no project bound', async () => {
@@ -133,6 +151,6 @@ describe('SettingsArea project binding', () => {
     renderArea('api-keys')
 
     expect(await screen.findByText('All keys')).toBeInTheDocument()
-    expect(screen.queryByText('No project selected.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Pick a project' })).not.toBeInTheDocument()
   })
 })

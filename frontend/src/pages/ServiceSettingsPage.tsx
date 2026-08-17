@@ -1,12 +1,14 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Save } from 'lucide-react'
 
 import { serviceSettingsApi } from '@/api/serviceSettings'
 import type { ServiceSettingsSectionKey } from './serviceSettingsTabs'
 import { useAuth } from '@/components/auth-context'
+import { useUnsavedChanges } from '@/components/settings/unsaved-changes'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { useConfirm } from '@/hooks/useConfirm'
 import { getErrorMessage } from '@/lib/utils'
 import type { ServiceSettings, ServiceSettingsUpdate } from '@/types'
 
@@ -15,18 +17,26 @@ import { EmailSection } from './settings-service/EmailSection'
 import { ObservabilitySection } from './settings-service/ObservabilitySection'
 import { RuntimeSection } from './settings-service/RuntimeSection'
 import { SecuritySection } from './settings-service/SecuritySection'
+import { ResetSectionCard } from './settings-service/ServiceSettingsPrimitives'
 import { StorageSection } from './settings-service/StorageSection'
 import { SystemCard } from './settings-service/SystemCard'
 import {
   type EditableSettings,
   type SecretDrafts,
+  type SecretField,
   type SectionKey,
   EMPTY_SECRET_DRAFTS,
+  applyNote,
   buildUpdate,
+  clearSecretConfirm,
   editableFromSettings,
   hasUpdate,
+  resetConfirm,
   resetPayload,
 } from './settings-service/serviceSettingsHelpers'
+
+const UNSAVED_MESSAGE =
+  'Instance settings you edited here have not been saved. Leaving this page drops them — anything typed into a prompt or a field is gone.'
 
 export default function ServiceSettingsSection({
   section,
@@ -35,6 +45,8 @@ export default function ServiceSettingsSection({
 }) {
   const { user } = useAuth()
   const qc = useQueryClient()
+  const { confirm, dialog } = useConfirm()
+  const { registerUnsaved } = useUnsavedChanges()
   const [form, setForm] = useState<EditableSettings | null>(null)
   const [secretDrafts, setSecretDrafts] = useState<SecretDrafts>(EMPTY_SECRET_DRAFTS)
   const [hydratedSettings, setHydratedSettings] = useState<ServiceSettings | null>(null)
@@ -67,6 +79,16 @@ export default function ServiceSettingsSection({
   )
   const dirty = hasUpdate(update)
 
+  // buildUpdate spans every section, and switching between two instance
+  // sections keeps this component mounted, so only leaving the instance group
+  // actually loses the draft (tripl-l8v2).
+  useEffect(() => {
+    registerUnsaved(
+      dirty ? { keptBy: path => path.startsWith('instance/'), message: UNSAVED_MESSAGE } : null,
+    )
+    return () => registerUnsaved(null)
+  }, [dirty, registerUnsaved])
+
   const setField = (section: SectionKey, field: string, value: string | number | boolean) => {
     setForm(current => {
       if (!current) return current
@@ -80,12 +102,24 @@ export default function ServiceSettingsSection({
     })
   }
 
-  const resetSection = (section: SectionKey) => {
-    saveMut.mutate(resetPayload(section))
+  // Both of these write straight through to the server — no Save step, no undo
+  // (the backend pops the override permanently), and on Security a reset can
+  // reopen public signup. They are gated the way every other destructive action
+  // in the app is (tripl-ifiy).
+  const resetSection = async (target: SectionKey) => {
+    const ok = await confirm({ ...resetConfirm(target), variant: 'danger' })
+    if (ok) saveMut.mutate(resetPayload(target))
   }
 
-  const clearSecret = (section: 'ai' | 'email', field: string) => {
-    saveMut.mutate({ [section]: { [field]: null } } as ServiceSettingsUpdate)
+  const clearSecret = async (group: 'ai' | 'email', field: SecretField) => {
+    const ok = await confirm({ ...clearSecretConfirm(field), variant: 'danger' })
+    if (ok) saveMut.mutate({ [group]: { [field]: null } } as ServiceSettingsUpdate)
+  }
+
+  const discard = () => {
+    if (!settingsQuery.data) return
+    setForm(editableFromSettings(settingsQuery.data))
+    setSecretDrafts(EMPTY_SECRET_DRAFTS)
   }
 
   if (user?.role !== 'owner') {
@@ -119,16 +153,32 @@ export default function ServiceSettingsSection({
 
   return (
     <div className="min-w-0 space-y-5">
+      {dialog}
       {section !== 'system' && (
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-sm text-muted-foreground">
-            Runtime overrides for the tripl instance. Unset fields fall back to environment
-            variables.
+        <div
+          // The only Save control used to be a non-sticky first child of the
+          // scrolling pane, so the AI page's three prompt textareas — the
+          // fields most likely to be edited — were all edited with it
+          // off-screen (tripl-l8v2). `top-[52px]` clears the phone-only header
+          // in SettingsLayout; from `md` up that header is gone.
+          className="sticky top-[52px] z-10 flex flex-wrap items-center justify-between gap-3 py-3 md:top-0"
+          style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border-subtle)' }}
+        >
+          <p className="min-w-0 flex-1 basis-64 text-sm text-muted-foreground">
+            {applyNote(section)}
           </p>
           <div className="flex shrink-0 items-center gap-2">
             {saveMut.isError && (
               <span className="text-xs text-destructive">{getErrorMessage(saveMut.error)}</span>
             )}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={discard}
+              disabled={!dirty || saveMut.isPending}
+            >
+              Discard
+            </Button>
             <Button
               type="button"
               onClick={() => saveMut.mutate(update)}
@@ -142,13 +192,7 @@ export default function ServiceSettingsSection({
       )}
 
       {section === 'runtime' && (
-        <RuntimeSection
-          form={form}
-          settings={settings}
-          setField={setField}
-          onReset={() => resetSection('runtime')}
-          resetting={saveMut.isPending}
-        />
+        <RuntimeSection form={form} settings={settings} setField={setField} />
       )}
 
       {section === 'email' && (
@@ -158,9 +202,8 @@ export default function ServiceSettingsSection({
           secretDrafts={secretDrafts}
           setField={setField}
           setSecretDrafts={setSecretDrafts}
-          onReset={() => resetSection('email')}
-          resetting={saveMut.isPending}
-          onClearSecret={clearSecret}
+          saving={saveMut.isPending}
+          onClearSecret={(group, field) => void clearSecret(group, field)}
         />
       )}
 
@@ -171,43 +214,32 @@ export default function ServiceSettingsSection({
           secretDrafts={secretDrafts}
           setField={setField}
           setSecretDrafts={setSecretDrafts}
-          onReset={() => resetSection('ai')}
-          resetting={saveMut.isPending}
-          onClearSecret={clearSecret}
+          saving={saveMut.isPending}
+          onClearSecret={(group, field) => void clearSecret(group, field)}
         />
       )}
 
       {section === 'security' && (
-        <SecuritySection
-          form={form}
-          settings={settings}
-          setField={setField}
-          onReset={() => resetSection('security')}
-          resetting={saveMut.isPending}
-        />
+        <SecuritySection form={form} settings={settings} setField={setField} />
       )}
 
       {section === 'storage' && (
-        <StorageSection
-          form={form}
-          settings={settings}
-          setField={setField}
-          onReset={() => resetSection('storage')}
-          resetting={saveMut.isPending}
-        />
+        <StorageSection form={form} settings={settings} setField={setField} />
       )}
 
       {section === 'observability' && (
-        <ObservabilitySection
-          form={form}
-          settings={settings}
-          setField={setField}
-          onReset={() => resetSection('observability')}
-          resetting={saveMut.isPending}
-        />
+        <ObservabilitySection form={form} settings={settings} setField={setField} />
       )}
 
       {section === 'system' && <SystemCard system={settings.system} />}
+
+      {section !== 'system' && (
+        <ResetSectionCard
+          section={section}
+          onReset={() => void resetSection(section)}
+          resetting={saveMut.isPending}
+        />
+      )}
     </div>
   )
 }

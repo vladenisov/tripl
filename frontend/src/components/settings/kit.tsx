@@ -4,6 +4,7 @@ import {
   useId,
 } from 'react'
 import { ChevronDown } from 'lucide-react'
+import { FieldControlIdContext, useFieldControlId } from '@/components/settings/field-control-id'
 import { INPUT_BASE } from '@/components/settings/input-style'
 
 /**
@@ -121,6 +122,7 @@ export function SCard({
 }
 
 // ───────── Field row ─────────
+
 export function Field({
   label,
   labelRight,
@@ -169,7 +171,11 @@ export function Field({
           </div>
         )}
       </div>
-      <div className="min-w-0 flex-1">{children}</div>
+      <div className="min-w-0 flex-1">
+        <FieldControlIdContext.Provider value={effectiveFor}>
+          {children}
+        </FieldControlIdContext.Provider>
+      </div>
     </div>
   )
 }
@@ -309,9 +315,10 @@ export function TextInput({
   'aria-label'?: string
   'aria-required'?: boolean
 }) {
+  const controlId = useFieldControlId(id)
   const input = (
     <input
-      id={id}
+      id={controlId}
       type={type}
       value={value}
       placeholder={placeholder}
@@ -381,8 +388,9 @@ export function TextArea({
   id?: string
   'aria-required'?: boolean
 }) {
+  const controlId = useFieldControlId(id)
   const props: TextareaHTMLAttributes<HTMLTextAreaElement> = {
-    id,
+    id: controlId,
     rows,
     value,
     placeholder,
@@ -430,10 +438,11 @@ export function Select({
   'aria-required'?: boolean
   'aria-label'?: string
 }) {
+  const controlId = useFieldControlId(id)
   return (
     <div className="relative" style={{ maxWidth: 280 }}>
       <select
-        id={id}
+        id={controlId}
         value={value}
         disabled={disabled}
         aria-required={ariaRequired}
@@ -490,8 +499,13 @@ export function RadioCards({
   /** Accessible name for the radio group (required for WCAG 4.1.2). */
   groupLabel?: string
 }) {
+  // Adopt the enclosing Field's id too, so its <label htmlFor> resolves to a
+  // real element instead of dangling (tripl-5gdg). `groupLabel` still supplies
+  // the accessible name — a <label> cannot name a non-labelable element.
+  const groupId = useFieldControlId()
   return (
     <div
+      id={groupId}
       role="radiogroup"
       aria-label={groupLabel}
       className="grid gap-2"

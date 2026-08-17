@@ -1,6 +1,6 @@
 import type { ServiceSettings } from '@/types'
 import { Field, SCard, Select, TextArea, TextInput, ToggleRow } from '@/components/settings/kit'
-import { ResetRow, SourceBadge } from './ServiceSettingsPrimitives'
+import { SourceBadge } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
 
@@ -13,14 +13,10 @@ export function SecuritySection({
   form,
   settings,
   setField,
-  onReset,
-  resetting,
 }: {
   form: EditableSettings
   settings: ServiceSettings
   setField: (section: SectionKey, field: string, value: string | number | boolean) => void
-  onReset: () => void
-  resetting: boolean
 }) {
   const registrationOpen = form.security.registration_mode === 'open'
 
@@ -50,7 +46,7 @@ export function SecuritySection({
         </Field>
       </SCard>
 
-      <SCard title="Sessions" footer={<ResetRow onReset={onReset} resetting={resetting} />}>
+      <SCard title="Sessions">
         <Field
           label="Session cookie"
           labelRight={<SourceBadge source={sourceFor(settings, 'security', 'session_cookie_name')} />}
