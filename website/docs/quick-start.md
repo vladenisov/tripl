@@ -116,7 +116,11 @@ unavailable is in **[The demo workspace](./use/demo-workspace.md)**.
 
 :::tip Done exploring?
 If the demo answered your questions, you already know the product. The rest of
-this guide repeats the same loop against **your** data.
+this guide repeats the same loop against **your** data. The demo says the same
+thing where you finish: completing the last coached chapter offers **Create a
+real project**, and the same link sits in the expanded welcome panel. Both go to
+the dashboard, where **New project** starts an empty one to connect your own
+warehouse.
 :::
 
 ## Step 4 — Connect your warehouse
@@ -290,7 +294,7 @@ that, not that something is broken.
 :::
 
 If detection is too twitchy or too quiet, tune the thresholds in the project's
-monitoring settings — [How anomaly detection works](./use/anomaly-detection.md)
+**Detection settings** — [How anomaly detection works](./use/anomaly-detection.md)
 explains what each knob does.
 
 ## Step 7 — Define your own metrics

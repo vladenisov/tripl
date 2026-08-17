@@ -256,11 +256,22 @@ full workflow.
 As events get built and verified, move them through their statuses — **Draft**,
 **In Review**, **Ready for Dev**, **Implemented**, **Live** — and **Deprecate**
 or **Archive** the ones you retire. Reviewing is tracked separately: mark an
-event **reviewed** once you've checked it, independent of its status. On the
+event **reviewed** once you've checked it, independent of its status. The two
+axes really are independent — an event can be marked reviewed and still sit in
+**In Review** — which is why the header's **In review** stat counts events whose
+*status* is `in_review`, and not the events nobody has reviewed yet. On the
 Events page you can select several rows at once and use the bulk action bar to
 **set status**, **mark reviewed**, **assign an owner**, or **delete** in one go.
-Saved views, column toggles, and filters (by status, tag, silent days, or field
-value) help you work through a large catalog.
+Saved views, column toggles, and filters (by status, tag, silent days, reviewed
+state, or field value) help you work through a large catalog.
+
+The toolbar's **Reviewed** filter takes **Any**, **Reviewed** or **Not
+reviewed** and lives in the page URL — `?reviewed=true` or `?reviewed=false`,
+with **Any** writing no parameter — so "what still needs checking" can be
+bookmarked or sent to a colleague. The **Reviewed** column is off by default in
+the column picker, but it is forced visible on the **Review** tab
+(`/events/review`), where the flag is the point of the screen and a bulk **mark
+reviewed** would otherwise change nothing you could see.
 
 ---
 
@@ -360,7 +371,9 @@ If something lands on main that shouldn't have:
 
 - **A wrong edit or merge** — open the **Audit log** (under Govern) to see
   exactly who changed what and when, then make a follow-up branch that sets the
-  values back and merge it through review. Each event also has its own
+  values back and merge it through review. An action older than the first page
+  is still reachable: page back with **Older** (or narrow the filter first).
+  Each event also has its own
   field-level change history on its detail page, which helps you work out what
   the correct values were.
 - **A deleted event** — re-create its definition by hand (description, fields,
@@ -437,7 +450,7 @@ then run a scan; its volume will then split into a series per value of that
 column.
 
 If the defaults are too sensitive or too quiet for a given event, tune what
-counts as "abnormal" in the project's monitoring settings.
+counts as "abnormal" in the project's **Detection settings**.
 
 ---
 
@@ -534,8 +547,10 @@ Replaying the rule against recent data is the quickest way to confirm whether it
 - **Reconciliation** — run this regularly. It's your gap checklist:
   documented-but-dead events to retire, and live-but-undocumented events to add
   to the plan.
-- **Audit log** — every meaningful change, filterable by who, what, and when.
-  This is also your first stop when recovering from a mistaken change.
+- **Audit log** — every meaningful change, filterable by who, what, and when,
+  and paged with **Newer** / **Older** so the list is not limited to the most
+  recent entries. This is also your first stop when recovering from a mistaken
+  change.
 - **Roles** — in workspace settings, invite teammates as **viewer** (read-only),
   **editor** (can change the plan, scans, and alerts), or **owner** (full
   control, including people and data sources). Owner is also the only role that

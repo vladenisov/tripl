@@ -55,11 +55,25 @@ The catalog is a table of plan **events**, split into one tab per **event type**
 (plus an "all" view). Each row shows the event name, status, tags, recent volume,
 its latest anomaly **signal** state, and a **schema-drift badge** when the event
 type has open drift. Controls include free-text search, status and tag filters, a
-"silent since N days" filter, per-column field-value and meta-value filters,
+"silent since N days" filter, a **Reviewed** filter (Any / Reviewed / Not
+reviewed, carried in the URL as `?reviewed=true|false`), per-column field-value
+and meta-value filters,
 saved views, column visibility, bulk actions, and a per-tab aggregate metrics
 chart. The review queue can sort **Busiest first**, collapse similar-name
 clusters for group selection, and expand the selection from loaded rows to
 **Select all N** matching events before a bulk status/owner/review/delete action.
+The **Reviewed** column is hidden by default in the column picker but is forced
+visible on the review tab (`/events/review`).
+
+A **More** menu on the toolbar holds **Export CSV**. It exports the whole
+filtered view rather than the rows scrolled into view so far: the active filters
+and sort go to the server, the matching events are paged down from it, and the
+file is written with the columns the column picker currently shows. **Signal**,
+**Δ · 24h** and **48h** are deliberately left out — those cells come from a
+metrics request issued only for the rows on screen, so they do not exist for the
+rest of the filtered set, and exporting them blank would read as "no volume"
+rather than "not fetched". The menu carried an **Ask AI** entry that was never
+built; it has been removed rather than shown as permanently unavailable.
 
 ### Event detail & editing
 
@@ -338,9 +352,10 @@ through the browser.
 
 ### Plan history & revisions
 
-**Where:** the project **History** surface (route `/p/<slug>/settings/history`).
-Named plan revisions (snapshots): create a revision, list them, and diff any two.
-Distinct from per-event history and the workspace audit log.
+**Where:** Plan › **Plan history** in the sidebar (route
+`/p/<slug>/settings/history`). Named plan revisions (snapshots): create a
+revision, list them, and diff any two. Distinct from per-event history and the
+workspace audit log.
 
 ---
 
@@ -508,7 +523,7 @@ constantly flagged — see [How anomaly detection works](./anomaly-detection.md)
 
 A signal is emitted when the latest bucket for a scope deviates from its
 baseline. Signals appear on the overview, as catalog row badges, in the activity
-feed, and on the monitoring detail. Tuning lives at the project **Monitoring
+feed, and on the monitoring detail. Tuning lives at the project **Detection
 settings** (route `/p/<slug>/settings/monitoring`): toggle anomaly detection,
 choose the scopes to watch (project total / event types / events / metrics), and set the
 baseline window (buckets), minimum history (buckets), sigma threshold, minimum
@@ -523,7 +538,7 @@ marking an alert a **false positive** has permanently tightened, each showing th
 scan, the sigma threshold and minimum expected count now in force for that scope
 alone, and how many false positives produced them. **Remove** puts a scope back
 on the project settings; the project settings themselves are never changed by
-that feedback. Monitoring settings only decide what gets **flagged** —
+that feedback. Detection settings only decide what gets **flagged** —
 they never notify anyone by themselves. Notification delivery is a separate,
 fully available layer: route the resulting signals to Slack, Telegram, a webhook,
 email, Jira, or Linear under **Observe › Alerting** (see
@@ -554,10 +569,15 @@ option, so a large legacy scan cannot bury a smaller live one purely by watching
 more events; catalog metrics are project-wide rather than scan-bound and get
 their own option. Both filters narrow the list already in memory — no extra
 request — and the counts on the scan options are taken from the whole stream, so
-raising the magnitude cannot make the option you are standing on disappear. The
-scan filter is **deep-linkable**: `?scan=<scan_config_id>` opens the page already
+raising the magnitude cannot make the option you are standing on disappear.
+**Both are in the page URL.** The magnitude filter is
+`?level=<all|significant|major>`, and the default (**Significant**) writes no
+parameter; a level the page does not recognise degrades to that default. The
+scan filter is `?scan=<scan_config_id>`: it opens the page already
 narrowed to that scan, and picking an option writes the parameter back (choosing
-**All scans** removes it), so a narrowed view can be shared or bookmarked. This
+**All scans** removes it), so a narrowed view can be shared or bookmarked, and
+opening a signal to investigate it and pressing Back returns the filters you
+were using rather than resetting them. This
 is where a scan run's **Signals added** counter links to. A scan with nothing
 open right now keeps its selection and says *No open anomalies from &lt;scan&gt;* —
 a signal closes once the metric comes back to normal, so an older run's link
@@ -568,7 +588,7 @@ scan's anomalies in for the one you asked for. The
 sidebar and top-bar badge, the Overview **Open signals** stat, and this page all
 report the **same** number — open signals across every scope that clear the
 Significant threshold — so the badge agrees with the list rather than reading
-lower. Sensitivity is tuned in **Monitoring settings** (see
+lower. Sensitivity is tuned in **Detection settings** (see
 [How anomaly detection works](./anomaly-detection.md)).
 
 ### Chart annotations
@@ -993,9 +1013,13 @@ details.
 ### Command palette (⌘K)
 
 Open with ⌘K / Ctrl+K (suppressed while you are typing in an input, textarea, or
-contenteditable). It offers: **Navigate** commands (Overview, Data sources,
-Members, Account, and owner-only Runtime); a **Current project** group (Events,
-Project settings, and per-surface settings jumps); a **Projects** switcher; an
+contenteditable). It offers: **Navigate** commands (All projects, Data sources,
+Members, Profile, and owner-only Runtime); the current project's own
+destinations, built from the sidebar's nav model so every sidebar destination
+has a row, grouped under the sidebar's **Plan** / **Observe** / **Govern**
+headings and filtered by role exactly as the sidebar filters them, plus a
+**More** group for the three that are not sidebar entries (Project settings,
+Concepts, Detection settings); a **Projects** switcher; an
 **Event types** jump list; **branch-aware knowledge search** (from 2 characters)
 across events, event types, fields, meta fields, variables, relations, tags,
 metrics, fact tables, scans and alert rules, each with a
@@ -1005,11 +1029,12 @@ out**.
 
 The two halves of the list narrow differently, and on purpose.
 
-The **menu rows** — Navigate, Current project, Projects, Event types, Sign out —
+The **menu rows** — Navigate, the project's own groups, Projects, Event types,
+Sign out —
 are matched on a plain substring of what you have typed, against both the label
 and the grey hint beside it (a route, a project slug, an event type's raw name).
 So a project is findable by its slug as well as its name, but the match is
-literal: `monitoring` finds *Monitoring settings* and `monset` does not. A group
+literal: `detection` finds *Detection settings* and `detset` does not. A group
 whose rows have all been narrowed away takes its heading with it.
 
 The **knowledge results** are ranked by the search service and are shown in
@@ -1020,8 +1045,13 @@ in-browser match would have pushed down or dropped. One consequence
 of keeping each type together: a result can sit above a slightly stronger one of
 a *different* type, when the weaker one's type opened higher up the list.
 
-While a search is running the list shows a **Searching knowledge…** group; if it
-comes back with nothing you get **No knowledge matches** under the query you
+While the **first** search of a palette session is running the list shows a
+**Searching knowledge…** group. After that there are already rows on screen, and
+they stay there: the previous query's results remain visible and selectable,
+dimmed under an **Updating results…** line, until the new ones arrive — so the
+list narrows instead of blinking empty, and Enter always goes to something the
+reader can see. If a search comes back with nothing you get **No knowledge
+matches** under the query you
 typed; and if the request fails you are told the search *failed*, which is not
 the same statement as "there is nothing there". When a query matches no menu row
 and is too short to search on (one character), the list simply reads **No

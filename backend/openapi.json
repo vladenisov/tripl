@@ -11803,6 +11803,17 @@
             ],
             "title": "Scan Config Id"
           },
+          "scope_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Name"
+          },
           "scope_ref": {
             "title": "Scope Ref",
             "type": "string"
@@ -24671,6 +24682,22 @@
                 }
               ],
               "title": "Silent Since Days"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reviewed",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reviewed"
             }
           },
           {

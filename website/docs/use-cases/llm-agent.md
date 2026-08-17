@@ -83,6 +83,7 @@ All string filters match as a case-insensitive substring. Combine them freely:
 | `event_type_id` | Events of one event type |
 | `status` | One or more lifecycle states (repeatable). Values: `draft`, `in_review`, `ready_for_dev`, `implemented`, `live`, `deprecated`, `archived` — any other value is a `422` |
 | `silent_since_days` | Events with no observed traffic for at least N days |
+| `reviewed` | `true` for events marked reviewed, `false` for those not yet reviewed. Omit for either. Independent of `status` — an event can be reviewed and still be `in_review` |
 | `offset`, `limit` | Pagination (`limit` defaults to `200`, max `10000`) |
 
 :::note

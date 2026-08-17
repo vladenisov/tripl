@@ -166,8 +166,11 @@ Active-session management.
 :::danger Account-security controls are not functional yet
 The password-change form, 2FA toggle, recovery codes, and the "Sign out all" /
 active-sessions list are **presentation-only placeholders** — there are no
-backend endpoints behind them in the current release. The only real
-authentication flows are **register**, **login**, and **logout**. To invalidate
+backend endpoints behind them in the current release. The real authentication
+flows are **register**, **login**, **logout**, and the **password reset** pair
+(`/auth/password-reset/request` and `/auth/password-reset/confirm`) reached from
+the sign-in screen's **Forgot your password?** link — that link, not this form,
+is how a password is actually changed today. To invalidate
 a user's sessions today, change their role (which deletes their sessions) or
 have them log out. Sessions also expire automatically after the configured TTL
 (`session_ttl_hours`, default **168 hours / 7 days**).
@@ -277,7 +280,7 @@ blank to keep the existing value, type a new value to replace it, or use
 
 #### When changes take effect
 
-Sections apply at one of two times:
+Sections apply at one of two times, and each section says which above its fields:
 
 **Use-time (no restart).** The **Runtime** (query limits, app base URL),
 **Email**, and **AI** sections are resolved override → env value on each call, so
@@ -291,9 +294,18 @@ once at process start — the middleware stack (CORS, security headers, the
 session cookie), the auth rate limiters, the photo storage backend, logging, and
 the metrics route. At startup the saved overrides are **applied onto the running
 configuration** before any of those are built, so they take effect on the **next
-restart/redeploy** — exactly what the UI's "overrides take effect on the next
-deploy" note means. You no longer need to also set the matching environment
+restart/redeploy**. You no longer need to also set the matching environment
 variable; the env var is just the default the override replaces.
+
+Each section in the UI states its own answer rather than leaving you to work it
+out: Runtime, Email and AI say a saved override applies to the very next
+request or scan task, the next message tripl sends, and the next AI call
+respectively — no restart needed. Security & access, Storage and Observability
+say a saved override applies after the next restart (of the API, and of the
+workers too for Storage and Observability), with Security & access naming
+**Self-service registration** as the one field of its own that applies to the
+very next signup attempt. Every note also repeats that unset fields fall back to
+environment variables.
 
 :::note A running process won't pick these up live
 Because these sections are read once at boot, editing them does **not** change a

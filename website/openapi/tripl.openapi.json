@@ -4425,6 +4425,22 @@
             }
           },
           {
+            "name": "reviewed",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reviewed"
+            }
+          },
+          {
             "name": "field_value",
             "in": "query",
             "required": false,
@@ -24595,6 +24611,17 @@
           },
           "direction": {
             "$ref": "#/components/schemas/AnomalyDirection"
+          },
+          "scope_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Name"
           },
           "incident_child": {
             "type": "boolean",

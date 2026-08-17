@@ -731,6 +731,19 @@ place, so it is not a second thing to learn. The bar offers
 same **1h / 24h / 7d / indefinitely** durations a single incident offers.
 Applying one needs the **editor** role, like every other action in the Inbox.
 
+**Two ways to build a selection faster than one tick at a time.** The Inbox
+panel header carries a **Select all N shown** checkbox, where N is the number of
+cards rendered underneath it — never the project's total, so what the bar is
+about to act on is on screen and countable. It shows a half-tick when only some
+of those cards are selected, and clearing it deselects the same set. Separately,
+**shift-clicking** an incident's checkbox extends the selection from the last
+checkbox you touched to the one you just clicked, and the whole run takes the
+state that clicked box moved to: shift-click a ticked box to clear a run,
+an unticked one to fill it. Both ends of a range are on screen and both were
+chosen by hand, so neither control can put an incident you have not seen into
+the selection — which is the same line the bar draws by refusing "select all N
+matching".
+
 These are not new levers, which is why the table above has no bulk row: a bulk
 acknowledge is an acknowledge, holding exactly as long and stamping exactly what
 it stamps, done to twenty incidents instead of one. Read that table for *which*
@@ -850,6 +863,16 @@ with the **status** filter — `?status=open` / `acknowledged` / `resolved` /
 silent empty page — and not by scrolling. A mute that has run out counts as
 `open` again and rejoins the top run on its own; an indefinite mute never runs
 out, so it stays under `?status=muted` until you reopen it.
+
+**The filter is in the page URL as well.** Picking a status writes
+`?status=<open|acknowledged|muted|resolved|false_positive>` onto
+`/p/<slug>/settings/alerting`, beside `?section=` and `?scan=`. So a filtered
+queue can be bookmarked or pasted to a colleague, and opening an incident to
+check the scope that fired — a page off this route entirely — and pressing Back
+returns the queue you were working rather than all of them again. Clearing the
+filter removes the parameter; unlike the API, a value the page does not
+recognise degrades quietly to **All**, the same rule `?section=` and `?scan=`
+already follow.
 
 The Inbox lists the last **30 days**, but an alert's link is not bound by that
 window: `GET /api/v1/projects/{slug}/alert-inbox/{correlation_group_id}` resolves

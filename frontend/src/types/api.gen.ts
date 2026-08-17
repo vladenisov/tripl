@@ -7528,6 +7528,8 @@ export interface components {
             incident_child: boolean;
             /** Scan Config Id */
             scan_config_id?: string | null;
+            /** Scope Name */
+            scope_name?: string | null;
             /** Scope Ref */
             scope_ref: string;
             scope_type: components["schemas"]["MetricScopeType"];
@@ -13615,6 +13617,7 @@ export interface operations {
                 status?: components["schemas"]["EventStatus"][] | null;
                 tag?: string | null;
                 silent_since_days?: number | null;
+                reviewed?: boolean | null;
                 field_value?: string | null;
                 meta_value?: string | null;
                 offset?: number;
