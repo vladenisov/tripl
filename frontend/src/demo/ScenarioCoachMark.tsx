@@ -140,10 +140,17 @@ export function ScenarioCoachMark({
             })
           : children}
         {ringed && anchorEl && <CoachBeacon anchor={anchorEl} />}
+        {/* text-left because a position:fixed card still INHERITS text-align
+            from the cell it is declared in, and row actions live in a
+            `text-right` <td> — which rendered the card ragged-left and pushed
+            "Hide hints" under the tweaks FAB. bottom-[68px] clears that FAB
+            (fixed bottom-5, h-9 → top edge at 56px) rather than fighting it on
+            z-index, which would also put the coach over modal dialogs
+            (tripl-gr0x). */}
         <div
           role="note"
           data-coach-docked="true"
-          className="fixed bottom-4 right-4 z-50 w-64 rounded-lg border p-3 shadow-lg motion-reduce:animate-none"
+          className="fixed bottom-[68px] right-4 z-50 w-64 rounded-lg border p-3 text-left shadow-lg motion-reduce:animate-none"
           style={{ background: 'var(--bg-elevated)', borderColor: 'var(--accent)' }}
         >
           {card}

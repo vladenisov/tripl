@@ -6,12 +6,16 @@
  * version and runtime freshness, and exposes Reset / Delete — both confirmed,
  * both scoped to the demo endpoints, both offered only to the demo's creator or
  * a workspace owner. On delete it returns to the Projects list.
+ *
+ * It also owns the one way back into the guided onboarding (tripl-imco): being
+ * mounted on every demo surface, it is the only place that can undo the welcome
+ * panel's single unconfirmed dismissal.
  */
 
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { ChevronDown, RotateCcw, Trash2 } from 'lucide-react'
+import { ChevronDown, Compass, RotateCcw, Trash2 } from 'lucide-react'
 import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
 import { Chip } from '@/components/primitives/chip'
@@ -28,10 +32,13 @@ import { useConfirm } from '@/hooks/useConfirm'
 import { formatRelativeTime } from '@/lib/datetime'
 import { getErrorMessage } from '@/lib/utils'
 import type { Project } from '@/types'
+import { ProductTour } from './ProductTour'
 import { ProvisioningPhaseList } from './ProvisioningPhaseList'
 import { DemoDataBadge } from './capabilityBadges'
+import { useDemoScenarioActions } from './demoScenarioContext'
 import { DEMO_PROVISION_ESTIMATE } from './provisioningPhases'
 import { useEstimatedPhase } from './useEstimatedPhase'
+import { setWelcomeDismissed } from './welcomeDismissal'
 
 /**
  * Reset is a single blocking ~10 s POST that re-seeds the whole recipe in one
@@ -72,7 +79,9 @@ export function DemoBanner({ project }: { project: Project }) {
   const navigate = useNavigate()
   const { setBranchId } = useBranchContext()
   const { confirm, dialog } = useConfirm()
+  const { resetScenario } = useDemoScenarioActions()
   const [limitsOpen, setLimitsOpen] = useState(false)
+  const [tourOpen, setTourOpen] = useState(false)
 
   const canManage =
     user?.role === 'owner' ||
@@ -93,6 +102,11 @@ export function DemoBanner({ project }: { project: Project }) {
       // Every cached row describes a deleted entity now — drop them outright
       // rather than merely marking them stale.
       queryClient.removeQueries()
+      // The guidance is data too (tripl-imco): a re-seeded demo that came back
+      // with every chapter still marked completed and the welcome panel still
+      // dismissed was a fresh dataset with no way left into the coaching.
+      resetScenario()
+      setWelcomeDismissed(project.slug, false)
     },
   })
 
@@ -174,6 +188,26 @@ export function DemoBanner({ project }: { project: Project }) {
           />
         </button>
 
+        {/* The only way back into the guided onboarding (tripl-imco). Dismissing
+            the welcome panel — one unconfirmed X directly under this banner —
+            used to remove the tour and the chapter picker for good; nothing in
+            the app cleared `tripl-demo-welcome-dismissed:`, so the documented
+            "restart it whenever you like from the welcome panel" needed
+            devtools. Offered to everyone: restoring guidance is not managing
+            the demo. */}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            setWelcomeDismissed(project.slug, false)
+            setTourOpen(true)
+          }}
+        >
+          <Compass className="h-3.5 w-3.5" />
+          Tour &amp; chapters
+        </Button>
+
         {canManage && (
           <div className="flex items-center gap-1.5">
             <Button type="button" variant="outline" size="sm" onClick={() => void handleReset()} disabled={busy}>
@@ -214,6 +248,11 @@ export function DemoBanner({ project }: { project: Project }) {
           ))}
         </ul>
       )}
+
+      {/* Mounted only while open so it reads its persisted step position fresh:
+          the Overview hosts a second ProductTour, and a permanently-mounted one
+          here would keep whatever index it captured at first render. */}
+      {tourOpen && <ProductTour slug={project.slug} open onOpenChange={setTourOpen} />}
     </div>
   )
 }

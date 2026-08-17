@@ -9,6 +9,8 @@ import { DemoScenarioProvider } from './DemoScenarioProvider'
 import { DemoScenarioStrip } from './DemoScenarioStrip'
 import { ScenarioCoachMark } from './ScenarioCoachMark'
 import {
+  CHAPTER_IDS,
+  CHAPTER_STEP_IDS,
   CHAPTER_TITLES,
   SCENARIO_HINT_COPY,
   readScenarioState,
@@ -49,6 +51,15 @@ function scanJob(status: ScanJob['status']): ScanJob {
 
 function metricDefinition(status: string | null): MetricDefinitionDetailResponse {
   return { id: 'm-1', last_collection_status: status } as MetricDefinitionDetailResponse
+}
+
+/** Every chapter walked, so `nextChapter` resolves to null — the end of the demo. */
+function everyChapterCompleted(): ScenarioState {
+  const chapters: ScenarioState['chapters'] = {}
+  for (const id of CHAPTER_IDS) {
+    chapters[id] = { status: 'completed', step: CHAPTER_STEP_IDS[id][0] }
+  }
+  return { v: 3, activeChapter: CHAPTER_IDS[CHAPTER_IDS.length - 1], chapters }
 }
 
 const scanArtifact = () => ({ scanConfigId: 'sc-1', scanJobId: 'job-1', startedAt: Date.now() })
@@ -196,6 +207,21 @@ describe('DemoScenarioStrip — dismissal and completion', () => {
     expect(readScenarioState(SLUG).chapters['live-loop']?.status).toBe('completed')
     expect(readScenarioState(SLUG).activeChapter).toBeNull()
   })
+
+  it('ends the last chapter by pointing out of the demo, not at a dead stop (tripl-1mzh)', () => {
+    // The demo is the accented default CTA on an empty workspace, so this is the
+    // moment of highest intent — and it offered only Restart and Dismiss, with
+    // nothing anywhere in the demo naming the real product.
+    renderStrip(everyChapterCompleted())
+
+    expect(screen.getByText(/That was the last one/)).toBeInTheDocument()
+    // The dashboard, where "New project — start empty and connect your own
+    // warehouse" lives; not a demo-scoped link to the global connection page.
+    expect(cta(/Create a real project/)).toHaveAttribute('href', '/workspace')
+    expect(screen.queryByRole('link', { name: /^Next: / })).toBeNull()
+    // Restarting the walk is still there beside it.
+    expect(screen.getByRole('button', { name: /Restart chapter/ })).toBeInTheDocument()
+  })
 })
 
 describe('DemoScenarioStrip — when the coached control is nowhere on screen', () => {
@@ -295,6 +321,22 @@ describe('DemoScenarioStrip — when the coached control is nowhere on screen', 
     })
 
     expect(missingLine()).toBeNull()
+  })
+
+  it('Show hints puts the marks back without restarting the chapter (tripl-gr0x)', () => {
+    // "Hide hints" is the coach card's only control, and it used to be a
+    // one-way door: nothing turned the marks back on short of a reload.
+    renderStripWithMark(SCANS_ROUTE)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide hints' }))
+    expect(screen.queryByRole('button', { name: 'Hide hints' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show hints' }))
+
+    expect(screen.getByRole('button', { name: 'Hide hints' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Show hints' })).toBeNull()
+    // Un-muting is not a restart: the chapter is still exactly where it was.
+    expect(readScenarioState(SLUG).chapters['live-loop']?.step).toBe('live-loop/run-scan')
   })
 })
 

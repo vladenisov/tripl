@@ -6,12 +6,13 @@
  * what the context already decided: the chapter, the step, the deep link,
  * whether a watch is in flight, and why live-loop went backwards. When a
  * chapter lands it offers the next one in order, beside Restart and a
- * per-chapter Dismiss.
+ * per-chapter Dismiss — and when there is no next one, the way out of the demo
+ * into a real project.
  */
 
 import { useEffect, useState, type CSSProperties } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { ArrowRight, RotateCcw, X } from 'lucide-react'
+import { ArrowRight, Eye, Plus, RotateCcw, X } from 'lucide-react'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { Button } from '@/components/ui/button'
@@ -79,6 +80,9 @@ interface ActiveStripProps {
   isWatching: boolean
   /** The user is on the step's surface but no coach mark is mounted there. */
   targetMissing: boolean
+  /** On-surface callouts are silenced — offer the way back. */
+  hintsMuted: boolean
+  onShowHints: () => void
   onDismiss: () => void
 }
 
@@ -90,6 +94,8 @@ function ActiveStrip({
   hint,
   isWatching,
   targetMissing,
+  hintsMuted,
+  onShowHints,
   onDismiss,
 }: ActiveStripProps) {
   return (
@@ -125,6 +131,21 @@ function ActiveStrip({
               <ArrowRight className="h-3 w-3" />
             </Link>
           </Button>
+          {/* "Hide hints" is the coach card's only control and it used to be a
+              one-way door: nothing turned the marks back on for the rest of the
+              chapter (tripl-gr0x). */}
+          {hintsMuted && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              onClick={onShowHints}
+              style={{ color: 'var(--fg-subtle)' }}
+            >
+              <Eye className="h-3 w-3" />
+              Show hints
+            </Button>
+          )}
           <Button
             type="button"
             variant="ghost"
@@ -179,17 +200,29 @@ function CompletedStrip({
           <span className="font-normal" style={{ color: 'var(--fg-muted)' }}>
             {nextChapter
               ? 'Keep going — the next chapter picks up from here.'
-              : 'That was the last one — you have walked the whole product.'}
+              : 'That was the last one — you have walked the whole product. Point it at your own warehouse next.'}
           </span>
         </p>
         <div className="ml-auto flex items-center gap-1.5">
-          {nextChapter && (
+          {nextChapter ? (
             <Button asChild size="xs">
               {/* Starting on click, before the Link navigates, so the user lands
                   on the new chapter's surface with its first step already live. */}
               <Link to={nextChapter.to} onClick={() => onStartNext(nextChapter.id)}>
                 Next: {nextChapter.title}
                 <ArrowRight className="h-3 w-3" />
+              </Link>
+            </Button>
+          ) : (
+            /* The moment of highest intent used to end in Restart + Dismiss, with
+               nothing in the whole demo pointing at the real product (tripl-1mzh).
+               The dashboard, not Data sources: creating the project comes first,
+               and a demo-scoped link straight to the global connection page was
+               deliberately removed by tripl-q7i1.7. */
+            <Button asChild size="xs">
+              <Link to="/workspace">
+                <Plus className="h-3 w-3" />
+                Create a real project
               </Link>
             </Button>
           )}
@@ -227,7 +260,7 @@ function CompletedStrip({
 export function DemoScenarioStrip() {
   const { active, state, activeChapter, step, steps, nextChapter, isWatching, hintsMuted } =
     useDemoScenario()
-  const { startChapter, restartChapter, dismissChapter } = useDemoScenarioActions()
+  const { startChapter, restartChapter, dismissChapter, unmuteHints } = useDemoScenarioActions()
   const { present } = useCoachPresence()
   const location = useLocation()
 
@@ -255,6 +288,8 @@ export function DemoScenarioStrip() {
         hint={state.chapters[activeChapter]?.hint}
         isWatching={isWatching}
         targetMissing={showTargetMissing}
+        hintsMuted={hintsMuted}
+        onShowHints={unmuteHints}
         onDismiss={() => dismissChapter(activeChapter)}
       />
     )

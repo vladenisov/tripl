@@ -11,7 +11,7 @@
 
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
@@ -20,8 +20,15 @@ import type { MetricDefinitionDetailResponse, Project, ScanJob } from '@/types'
 import { DemoScenarioProvider } from './DemoScenarioProvider'
 import { DemoWelcomePanel } from './DemoWelcomePanel'
 import { ProductTour } from './ProductTour'
-import { CHAPTER_IDS, CHAPTER_TITLES, readScenarioState, writeScenarioState } from './scenarioModel'
+import {
+  CHAPTER_BLURBS,
+  CHAPTER_IDS,
+  CHAPTER_TITLES,
+  readScenarioState,
+  writeScenarioState,
+} from './scenarioModel'
 import { chapterState, liveLoopState } from './scenarioTestState'
+import { setWelcomeDismissed } from './welcomeDismissal'
 
 const SLUG = 'acme'
 
@@ -88,6 +95,11 @@ const picker = () => screen.getAllByRole('list', { name: 'Scenario chapters' })[
 const chapterRow = (title: string) =>
   within(picker()).getByRole('button', { name: new RegExp(title) })
 
+/** The welcome panel opens collapsed (tripl-wnzi) — one click reveals the rest. */
+function expandWelcome(): void {
+  fireEvent.click(screen.getByRole('button', { name: /Show me around/ }))
+}
+
 beforeEach(() => {
   vi.spyOn(scansApi, 'getJob').mockResolvedValue(scanJob())
   vi.spyOn(metricsCatalogApi, 'get').mockResolvedValue({
@@ -101,9 +113,54 @@ afterEach(() => {
   window.localStorage.clear()
 })
 
+describe('DemoWelcomePanel — how much of the Overview it occupies', () => {
+  it('opens collapsed, and one click brings the chapters back (tripl-wnzi)', () => {
+    renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
+
+    // Expanded, this panel stacked under the demo banner and the coach strip
+    // and pushed the Overview's own "Live activity" heading ~770px down — at
+    // 1512x950 the first thing a new user saw of the product was nothing.
+    expect(screen.queryByRole('list', { name: 'Scenario chapters' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Take the tour/ })).toBeNull()
+    // The panel still says what it is, so the expander is not a mystery.
+    expect(screen.getByRole('heading', { name: /Welcome to your demo workspace/ })).toBeInTheDocument()
+
+    expandWelcome()
+
+    expect(picker()).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Take the tour/ })).toBeInTheDocument()
+  })
+
+  it('comes back when the dismissal is cleared elsewhere (tripl-imco)', () => {
+    renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss demo welcome' }))
+    expect(screen.queryByRole('heading', { name: /Welcome to your demo workspace/ })).toBeNull()
+
+    // The restore control lives in the demo banner — a different subtree — so
+    // the panel has to notice the cleared flag without being remounted.
+    act(() => {
+      setWelcomeDismissed(SLUG, false)
+    })
+
+    expect(screen.getByRole('heading', { name: /Welcome to your demo workspace/ })).toBeInTheDocument()
+  })
+
+  it('points at the real product, not only at more demo (tripl-1mzh)', () => {
+    renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
+    expandWelcome()
+
+    expect(screen.getByRole('link', { name: /Create a real project/ })).toHaveAttribute(
+      'href',
+      '/workspace',
+    )
+  })
+})
+
 describe('DemoWelcomePanel — the chapter picker', () => {
   it('lists every chapter in order', () => {
     renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
+    expandWelcome()
 
     expect(picker()).toHaveClass('min-w-0')
     const rows = within(picker()).getAllByRole('button')
@@ -116,13 +173,25 @@ describe('DemoWelcomePanel — the chapter picker', () => {
   it('shows each chapter’s status', () => {
     writeScenarioState(SLUG, liveLoopState('live-loop/see-chart', { status: 'completed' }))
     renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
+    expandWelcome()
 
     expect(chapterRow(CHAPTER_TITLES['live-loop'])).toHaveTextContent('Completed')
     expect(chapterRow(CHAPTER_TITLES['edit-event'])).toHaveTextContent('Not started')
   })
 
+  it('explains what a chapter teaches before the click commits (tripl-vgm9)', () => {
+    renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
+    expandWelcome()
+
+    // Picking is not a preview — it starts the chapter, navigates away, and
+    // reassigns the active chapter the strip may be mid-way through. The
+    // compact rows are bare titles, so the blurb rides along as a tooltip.
+    expect(chapterRow(CHAPTER_TITLES.explore)).toHaveAttribute('title', CHAPTER_BLURBS.explore)
+  })
+
   it('starts a chapter and lands the user on its first surface', () => {
     renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
+    expandWelcome()
 
     fireEvent.click(chapterRow(CHAPTER_TITLES.variables))
 
@@ -134,6 +203,7 @@ describe('DemoWelcomePanel — the chapter picker', () => {
   it('resumes a dismissed chapter where it left off', () => {
     writeScenarioState(SLUG, chapterState('branches', 'branches/review-diff', 'dismissed'))
     renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
+    expandWelcome()
 
     fireEvent.click(chapterRow(CHAPTER_TITLES.branches))
 
@@ -148,6 +218,7 @@ describe('DemoWelcomePanel — the chapter picker', () => {
       <DemoWelcomePanel project={demoProject()} />,
       demoProject({ is_demo: false }),
     )
+    expandWelcome()
 
     expect(screen.queryByRole('list', { name: 'Scenario chapters' })).toBeNull()
     // The tour is still the way in.

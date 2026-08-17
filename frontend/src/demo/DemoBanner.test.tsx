@@ -7,6 +7,11 @@ import { BranchProvider } from '@/components/branch-context'
 import { projectsApi } from '@/api/projects'
 import type { Project } from '@/types'
 import { DemoBanner } from './DemoBanner'
+import { DemoScenarioProvider } from './DemoScenarioProvider'
+import { readScenarioState, writeScenarioState } from './scenarioModel'
+import { liveLoopState } from './scenarioTestState'
+
+const WELCOME_DISMISS_KEY = 'tripl-demo-welcome-dismissed:demo-1'
 
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
@@ -79,16 +84,19 @@ function renderBanner(options: {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
-  // Wrapped in a real BranchProvider, as the banner is in the app Layout — the
-  // reset path has to be able to clear the persisted branch selection.
+  // Wrapped in a real BranchProvider and a real DemoScenarioProvider, as the
+  // banner is in the app Layout inside both — the reset path has to be able to
+  // clear the persisted branch selection AND the chapter progress.
   return render(
     <QueryClientProvider client={queryClient}>
       <AuthContext.Provider value={auth}>
         <MemoryRouter initialEntries={[initialPath]}>
-          <BranchProvider slug={project.slug}>
-            <DemoBanner project={project} />
-            <LocationProbe />
-          </BranchProvider>
+          <DemoScenarioProvider project={project} pollIntervalMs={10_000}>
+            <BranchProvider slug={project.slug}>
+              <DemoBanner project={project} />
+              <LocationProbe />
+            </BranchProvider>
+          </DemoScenarioProvider>
         </MemoryRouter>
       </AuthContext.Provider>
     </QueryClientProvider>,
@@ -186,5 +194,45 @@ describe('DemoBanner', () => {
 
     expect(screen.getByRole('button', { name: /^reset$/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^delete$/i })).toBeInTheDocument()
+  })
+})
+
+describe('DemoBanner — the way back into the guided onboarding (tripl-imco)', () => {
+  it('restores the dismissed welcome panel and opens the tour', async () => {
+    // Dismissing the welcome panel is one unconfirmed X directly under this
+    // banner, and it used to remove the tour and the chapter picker for good:
+    // nothing in the app ever cleared this key.
+    window.localStorage.setItem(WELCOME_DISMISS_KEY, '1')
+    renderBanner()
+
+    fireEvent.click(screen.getByRole('button', { name: /Tour & chapters/i }))
+
+    expect(window.localStorage.getItem(WELCOME_DISMISS_KEY)).toBeNull()
+    expect(await screen.findByRole('dialog', { name: /Product tour/i })).toBeInTheDocument()
+  })
+
+  it('offers the way back to a viewer, who has no Reset to fall back on', () => {
+    renderBanner({ auth: authValue({ id: 'someone-else', role: 'viewer' }) })
+
+    expect(screen.getByRole('button', { name: /Tour & chapters/i })).toBeInTheDocument()
+  })
+
+  it('a re-seed clears the dismissal and the chapter progress with the data', async () => {
+    // A reset that left every chapter "completed" and the panel dismissed gave
+    // back a fresh dataset with no guidance and no way into any.
+    window.localStorage.setItem(WELCOME_DISMISS_KEY, '1')
+    writeScenarioState('demo-1', liveLoopState('live-loop/see-chart', { status: 'completed' }))
+    const resetSpy = vi.spyOn(projectsApi, 'resetDemo').mockResolvedValue(makeProject())
+
+    renderBanner()
+    fireEvent.click(screen.getByRole('button', { name: /^reset$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /reset demo/i }))
+
+    await waitFor(() => expect(resetSpy).toHaveBeenCalledWith('demo-1'))
+    await waitFor(() => expect(window.localStorage.getItem(WELCOME_DISMISS_KEY)).toBeNull())
+    expect(readScenarioState('demo-1').chapters['live-loop']).toEqual({
+      status: 'active',
+      step: 'live-loop/run-scan',
+    })
   })
 })
