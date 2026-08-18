@@ -386,8 +386,12 @@ function FactOperandEditor({
           />
         </MField>
       )}
+      {/* A filter list plus two buttons, so there is no one control the label
+          names — and with no filters yet (the default) the generated id
+          addressed nothing at all. `false` names the row as a group instead. */}
       <MField
         label="Filters"
+        htmlFor={false}
         last
         stacked
         hint="Optional. Add named filters, structured conditions, or SQL fragments; all are combined with AND."
@@ -1175,7 +1179,10 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               </MField>
               <MField
                 label="Internal name"
-                htmlFor={isNew ? 'metric-name' : undefined}
+                // After creation this row holds the name as text, not a control:
+                // `false` names it as a group, where `undefined` left the label
+                // pointing at a generated id nothing in the row carries.
+                htmlFor={isNew ? 'metric-name' : false}
                 required={isNew}
                 hint={isNew ? 'Stable identifier used in queries.' : "Can't be changed after creation."}
                 error={isNew ? fieldErrors['metric-name'] : undefined}
@@ -1488,11 +1495,17 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               no data source, so hide these dimension inputs for that kind. */}
           {kind !== 'event_composition' && (
             <>
-              <MField label="Breakdown columns" hint="Warehouse columns to roll up by. Tick the columns to break this metric down by.">
+              {/* A grid of individually-labelled checkboxes: nothing a <label> can
+                  point at, so the row names the group. The picker's own
+                  aria-label went with it — it would name the same group twice. */}
+              <MField
+                label="Breakdown columns"
+                htmlFor={false}
+                hint="Warehouse columns to roll up by. Tick the columns to break this metric down by."
+              >
                 <div className="max-w-[420px]">
                   <ColumnCheckboxPicker
                     id="metric-breakdowns"
-                    aria-label="Breakdown columns"
                     columns={breakdownColumnChoices}
                     value={breakdownColumns}
                     onChange={setBreakdownColumns}

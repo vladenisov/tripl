@@ -500,3 +500,30 @@ describe('ScanFormSections — the mode choice', () => {
     )
   })
 })
+
+describe('ScanFormSections — field labelling', () => {
+  // This form's Field takes an explicit `id` and every call site repeats it on
+  // the control it renders — a shadcn Input or a raw <select>, none of which
+  // adopt anything on their own. Nothing checks the two still agree, so a
+  // renamed control id leaves the label naming nothing (tripl-5gdg).
+  //
+  // Only labels that carry a `for` are checked: the rows holding the SQL editor
+  // and the Load preview button pass no id, so they render a caption with no
+  // association at all, which Field cannot yet express as a named group.
+  it('associates every field label with the control it names', async () => {
+    setupFetch([eventType])
+    renderCreatePage()
+
+    await screen.findByText('New scan')
+    fireEvent.click(screen.getByRole('button', { name: /Event names and grouping/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Limits/ }))
+
+    const labels = Array.from(document.querySelectorAll<HTMLLabelElement>('label[for]'))
+    expect(labels.length).toBeGreaterThan(1)
+    for (const label of labels) {
+      const name = label.textContent ?? ''
+      expect(name.trim().length).toBeGreaterThan(0)
+      expect(screen.getByLabelText(name)).toBe(label.control)
+    }
+  })
+})

@@ -104,6 +104,37 @@ const FACT_TABLE_DETAIL = {
   row_filters: [{ name: 'completed', sql: 'status = $1' }],
 }
 
+const EDIT_METRIC = {
+  id: 'metric-1',
+  project_id: 'p-1',
+  kind: 'sql',
+  name: 'order_count',
+  display_name: 'Order count',
+  description: 'Orders per hour',
+  status: 'active',
+  unit: null,
+  color: '#6366f1',
+  anomaly_detection_enabled: true,
+  breakdown_columns: [],
+  app_version_column: null,
+  platform_column: null,
+  data_source_id: 'ds-1',
+  interval: '1h',
+  replay_chunk_interval: '1h',
+  aggregation: 'count',
+  composition: null,
+  numerator_event_id: null,
+  denominator_event_id: null,
+  reviewed: false,
+  order: 0,
+  config: {
+    metric_sql: 'SELECT bucket, count(*) AS value FROM events GROUP BY 1',
+    time_column: 'bucket',
+  },
+  created_at: '2026-06-01T00:00:00Z',
+  updated_at: '2026-06-20T00:00:00Z',
+} as unknown as MetricDefinitionDetailResponse
+
 let queryClient: QueryClient
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -237,43 +268,14 @@ describe('MetricForm validation', () => {
     ).toBe('my_metric')
   })
 
-  const EDIT_METRIC = {
-    id: 'metric-1',
-    project_id: 'p-1',
-    kind: 'sql',
-    name: 'order_count',
-    display_name: 'Order count',
-    description: 'Orders per hour',
-    status: 'active',
-    unit: null,
-    color: '#6366f1',
-    anomaly_detection_enabled: true,
-    breakdown_columns: [],
-    app_version_column: null,
-    platform_column: null,
-    data_source_id: 'ds-1',
-    interval: '1h',
-    replay_chunk_interval: '1h',
-    aggregation: 'count',
-    composition: null,
-    numerator_event_id: null,
-    denominator_event_id: null,
-    reviewed: false,
-    order: 0,
-    config: {
-      metric_sql: 'SELECT bucket, count(*) AS value FROM events GROUP BY 1',
-      time_column: 'bucket',
-    },
-    created_at: '2026-06-01T00:00:00Z',
-    updated_at: '2026-06-20T00:00:00Z',
-  } as unknown as MetricDefinitionDetailResponse
-
   it('keeps the internal name read-only and renders editable kind/config in edit mode', () => {
     renderForm(EDIT_METRIC)
 
     expect(screen.getByRole('heading', { name: 'Edit metric' })).toBeInTheDocument()
-    // Internal name is shown as text, not an editable input.
-    expect(screen.queryByLabelText('Internal name', { exact: false })).toBeNull()
+    // Internal name is shown as text, not an editable input. Queried by role
+    // because the row itself is now named "Internal name" — it holds no control,
+    // so it is a labelled group rather than a <label> pointing at nothing.
+    expect(screen.queryByRole('textbox', { name: /Internal name/ })).toBeNull()
     expect(document.getElementById('metric-name')).toBeNull()
     expect(screen.getByText('order_count')).toBeInTheDocument()
     // The kind-specific config is editable after creation.
@@ -1133,5 +1135,62 @@ describe('MetricForm starter SQL follows the selected warehouse', () => {
 
     pickSource('ds-bq')
     expect(sqlEditor().value).toContain("TIMESTAMP_TRUNC(created_at, HOUR, 'UTC')")
+  })
+})
+
+describe('MetricForm field labels', () => {
+  // tripl-5gdg reached this form too: the settings kit's Field generates an id
+  // and points its <label htmlFor> at it, but only the kit's own controls claim
+  // that id. A row wrapping anything else — the read-only name, the checkbox
+  // grid, the filter editor — was left with a label addressing an element that
+  // did not exist, so clicking it focused nothing.
+  const danglingLabels = (): string[] =>
+    Array.from(document.querySelectorAll<HTMLLabelElement>('label[for]'))
+      .filter(label => document.getElementById(label.htmlFor) === null)
+      .map(label => label.textContent ?? '')
+
+  it('gives every field on the SQL create form a label that resolves', () => {
+    renderForm()
+
+    expect(danglingLabels()).toEqual([])
+    for (const field of [
+      'Display name',
+      'Internal name',
+      'Description',
+      'Unit',
+      'Color',
+      'Status',
+      'Data source',
+      'Collection interval',
+      'Time column',
+      'Value column',
+      'App version column',
+      'Platform column',
+    ]) {
+      expect(screen.getByLabelText(field)).toBeInTheDocument()
+    }
+  })
+
+  it('names the read-only internal name row as a group instead of dangling its label', () => {
+    renderForm(EDIT_METRIC)
+
+    expect(danglingLabels()).toEqual([])
+    expect(screen.getByRole('group', { name: 'Internal name' })).toBeInTheDocument()
+  })
+
+  // The filter row holds a list and two buttons, the breakdown row a grid of
+  // individually-labelled checkboxes: neither has one control a <label> can
+  // name, and on a fresh fact metric the filter list is empty, so the id the
+  // row's first control would otherwise claim was on nothing at all.
+  it('names the filter and breakdown rows as groups on a fact metric', async () => {
+    renderForm()
+    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    await waitFor(() =>
+      expect(document.querySelector('#metric-fact-table option[value="ft-1"]')).not.toBeNull(),
+    )
+
+    expect(danglingLabels()).toEqual([])
+    expect(screen.getByRole('group', { name: 'Filters' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Breakdown columns' })).toBeInTheDocument()
   })
 })
