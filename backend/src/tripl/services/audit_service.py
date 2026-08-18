@@ -11,7 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tripl.models.audit_log import AuditLog
 from tripl.models.project import Project
 from tripl.models.user import User
-from tripl.schemas.audit import AuditEntryResponse, AuditListResponse
+from tripl.schemas.audit import (
+    AuditEntryDetailResponse,
+    AuditEntryResponse,
+    AuditListResponse,
+)
 
 # Fields that must never make it into the audit payload — credentials, hashes,
 # anything you would not want to read back from the audit UI in cleartext.
@@ -167,3 +171,13 @@ async def list_entries(
         items=[AuditEntryResponse.model_validate(r) for r in rows],
         total=total,
     )
+
+
+async def get_entry(session: AsyncSession, entry_id: uuid.UUID) -> AuditEntryDetailResponse | None:
+    """One entry with the payload the list rows deliberately leave out.
+
+    ``None`` for an id that is not in the log, so the router can answer 404
+    rather than an empty body (tripl-5ydt).
+    """
+    row = await session.get(AuditLog, entry_id)
+    return AuditEntryDetailResponse.model_validate(row) if row is not None else None

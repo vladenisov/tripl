@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { formatTimestamp } from '@/lib/datetime'
 import { countOf } from '@/lib/plural'
+import { getErrorMessage } from '@/lib/utils'
 
 const ACTION_TONE: Record<string, string> = {
   create: 'bg-success-soft text-success',
@@ -191,6 +192,55 @@ function toIsoOrUndef(localDateTime: string, endOfDay = false): string | undefin
   const iso = `${localDateTime}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}`
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString()
+}
+
+/**
+ * The payload of one entry, fetched when its row is expanded.
+ *
+ * The list response carries no payload at all: a page is 50 rows and only the
+ * rows a reader opens ever render one, so every other row's payload was
+ * serialised, sent and parsed to be shown nowhere. On the one project with real
+ * audit history this tab had the slowest first content of the 75 routes in the
+ * 2026-08-17 walk — one sample per route, so the wasted bytes are the fact and
+ * the timing is the hint (tripl-5ydt).
+ *
+ * An entry recorded without a payload — a bulk inbox mute files `{}` — still
+ * renders nothing here, so an expanded row looks exactly as it did.
+ */
+function AuditPayload({ entryId }: { entryId: string }) {
+  const detailQuery = useQuery({
+    queryKey: ['auditEntry', entryId],
+    queryFn: () => auditApi.get(entryId),
+    // An audit entry is frozen history: `audit_service` only ever inserts one,
+    // so re-expanding a row has nothing to re-read.
+    staleTime: Infinity,
+  })
+
+  if (detailQuery.isPending) {
+    // The row is already open, so silence here reads as "this entry has no
+    // payload" — which is a different fact, and one of the two answers this
+    // request is about to give.
+    return (
+      <div className="mt-2 ml-5" aria-busy="true" aria-label="Loading payload">
+        <Skeleton className="h-8 w-full max-w-sm" />
+      </div>
+    )
+  }
+  if (detailQuery.isError) {
+    return (
+      <p className="mt-2 ml-5 text-[11px] text-danger">
+        Could not load this entry's payload: {getErrorMessage(detailQuery.error)}
+      </p>
+    )
+  }
+
+  const { payload } = detailQuery.data
+  if (Object.keys(payload).length === 0) return null
+  return (
+    <pre className="mt-2 ml-5 overflow-auto rounded-md border bg-muted/30 px-2 py-1.5 font-mono text-[10px]">
+{JSON.stringify(payload, null, 2)}
+    </pre>
+  )
 }
 
 export function AuditTab({ slug }: { slug: string }) {
@@ -437,11 +487,7 @@ export function AuditTab({ slug }: { slug: string }) {
                         {entry.user_email}
                       </span>
                     </button>
-                    {isOpen && Object.keys(entry.payload).length > 0 && (
-                      <pre className="mt-2 ml-5 overflow-auto rounded-md border bg-muted/30 px-2 py-1.5 font-mono text-[10px]">
-{JSON.stringify(entry.payload, null, 2)}
-                      </pre>
-                    )}
+                    {isOpen && <AuditPayload entryId={entry.id} />}
                   </li>
                 )
               })}

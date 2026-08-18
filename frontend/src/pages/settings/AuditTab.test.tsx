@@ -2,14 +2,15 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { AuditEntry, AuditListResponse } from '@/types'
+import type { AuditEntry, AuditEntryDetail, AuditListResponse } from '@/types'
 
-// The audit list endpoint is stubbed so the tab renders without firing a real
-// request; each test decides what the page it asks for contains.
-const { listMock } = vi.hoisted(() => ({ listMock: vi.fn() }))
+// The audit endpoints are stubbed so the tab renders without firing a real
+// request; each test decides what the page it asks for contains, and what the
+// one-entry payload read behind an expanded row answers.
+const { listMock, getMock } = vi.hoisted(() => ({ listMock: vi.fn(), getMock: vi.fn() }))
 
 vi.mock('@/api/audit', () => ({
-  auditApi: { list: listMock },
+  auditApi: { list: listMock, get: getMock },
 }))
 
 import { AuditTab } from './AuditTab'
@@ -17,6 +18,7 @@ import { AuditTab } from './AuditTab'
 beforeEach(() => {
   listMock.mockReset()
   listMock.mockResolvedValue({ items: [], total: 0 })
+  getMock.mockReset()
 })
 
 function renderTab() {
@@ -28,9 +30,9 @@ function renderTab() {
   )
 }
 
-/** One page of `size` rows out of `total` — what any page but the last looks like. */
-function auditPage(size: number, total: number): AuditListResponse {
-  const items: AuditEntry[] = Array.from({ length: size }, (_, index) => ({
+/** One list row. Carries no payload — the list response does not have one. */
+function auditRow(index: number): AuditEntry {
+  return {
     id: `entry-${index}`,
     created_at: '2026-08-17T10:00:00Z',
     user_id: null,
@@ -41,9 +43,17 @@ function auditPage(size: number, total: number): AuditListResponse {
     target_type: 'event_type',
     target_id: null,
     target_name: `checkout_started_${index}`,
-    payload: {},
-  }))
-  return { items, total }
+  }
+}
+
+/** One page of `size` rows out of `total` — what any page but the last looks like. */
+function auditPage(size: number, total: number): AuditListResponse {
+  return { items: Array.from({ length: size }, (_, index) => auditRow(index)), total }
+}
+
+/** What `GET /audit/{id}` answers for row `index`: the same row, plus its payload. */
+function auditDetail(index: number, payload: Record<string, unknown>): AuditEntryDetail {
+  return { ...auditRow(index), payload }
 }
 
 /** Every action the Action <select> offers, in DOM order (minus "All actions"). */
@@ -252,5 +262,38 @@ describe('AuditTab — pending list card (tripl-5ydt)', () => {
     await waitFor(() =>
       expect(screen.queryByLabelText('Loading audit entries')).not.toBeInTheDocument(),
     )
+  })
+})
+
+describe('AuditTab — payload on expand (tripl-5ydt)', () => {
+  it('reads a payload only for the row the reader expanded', async () => {
+    listMock.mockResolvedValue(auditPage(3, 3))
+    getMock.mockResolvedValue(auditDetail(1, { sensitivity: 'pii' }))
+    renderTab()
+
+    // The list used to carry a payload for every row while the tab rendered one
+    // only for expanded rows: a page of JSON blobs on the wire to display none.
+    await screen.findByText('checkout_started_1')
+    expect(getMock).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByText('checkout_started_1'))
+
+    expect(await screen.findByText(/"sensitivity": "pii"/)).toBeInTheDocument()
+    expect(getMock).toHaveBeenCalledTimes(1)
+    expect(getMock).toHaveBeenCalledWith('entry-1')
+  })
+
+  it('leaves a row whose payload is empty looking exactly as it did', async () => {
+    listMock.mockResolvedValue(auditPage(1, 1))
+    // A bulk inbox mute files one row per incident with `{}`, and expanding one
+    // showed the header line and nothing else.
+    getMock.mockResolvedValue(auditDetail(0, {}))
+    const { container } = renderTab()
+
+    fireEvent.click(await screen.findByText('checkout_started_0'))
+
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith('entry-0'))
+    await waitFor(() => expect(screen.queryByLabelText('Loading payload')).toBeNull())
+    expect(container.querySelector('pre')).toBeNull()
   })
 })

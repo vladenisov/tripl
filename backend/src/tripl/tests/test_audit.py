@@ -73,9 +73,16 @@ async def test_audit_records_field_lifecycle(client: AsyncClient) -> None:
     assert {"field.create", "field.update", "field.delete"} <= actions
     # User email is denormalized for retention after user deletion.
     assert all(entry["user_email"] == "test@example.com" for entry in body["items"])
-    # Update payload captures only the fields the client actually changed.
+    # A list row carries NO payload. The tab renders one only for the row a
+    # reader expanded, so a page of blobs crossed the wire to be displayed
+    # nowhere (tripl-5ydt).
     update_entry = next(e for e in body["items"] if e["action"] == "field.update")
-    assert update_entry["payload"] == {"sensitivity": "pii"}
+    assert "payload" not in update_entry
+
+    # The detail route still reports exactly the fields the client changed.
+    detail = await client.get(f"/api/v1/audit/{update_entry['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["payload"] == {"sensitivity": "pii"}
 
 
 @pytest.mark.asyncio
@@ -98,7 +105,9 @@ async def test_audit_redacts_data_source_password(client: AsyncClient) -> None:
     assert audit.status_code == 200
     items = audit.json()["items"]
     assert len(items) == 1
-    payload = items[0]["payload"]
+    detail = await client.get(f"/api/v1/audit/{items[0]['id']}")
+    assert detail.status_code == 200
+    payload = detail.json()["payload"]
     assert payload["password"] == "***"
     assert payload["host"] == "localhost"
 
@@ -220,3 +229,40 @@ async def test_audit_paging_is_total_when_a_batch_shares_one_timestamp() -> None
     # Every row reachable from exactly one page: nothing repeated, nothing lost.
     assert sorted(seen) == sorted(ids)
     assert seen == sorted(ids, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_audit_detail_is_owner_only(client: AsyncClient) -> None:
+    """The payload moved to its own route, and the gate had to move with it.
+
+    The feed is owner-only because entries carry the warehouse connection
+    details a direct read blanks for non-owners, and the ``base_query`` SQL
+    authoring a scan is owner-only to protect (test_rbac.py's
+    ``test_audit_log_is_owner_only``). Those fields now leave the API through
+    THIS route only, so an ungated get-one would reopen exactly that back door.
+    """
+    await _setup_project(client, "audit-gate")
+    listed = await client.get("/api/v1/audit?project_slug=audit-gate")
+    entry_id = listed.json()["items"][0]["id"]
+
+    # The conftest client registered first and is therefore the owner; the next
+    # registration defaults to editor.
+    await client.post("/api/v1/auth/logout")
+    register = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "audit-editor@example.com",
+            "password": "Password123!",
+            "name": "Audit Editor",
+        },
+    )
+    assert register.status_code == 201, register.text
+
+    denied = await client.get(f"/api/v1/audit/{entry_id}")
+    assert denied.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_audit_detail_reports_an_unknown_id_as_missing(client: AsyncClient) -> None:
+    resp = await client.get(f"/api/v1/audit/{uuid.uuid4()}")
+    assert resp.status_code == 404

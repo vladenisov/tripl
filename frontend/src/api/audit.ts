@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { AuditListResponse } from '../types'
+import type { AuditEntryDetail, AuditListResponse } from '../types'
 
 export const auditApi = {
   list: (params?: {
@@ -24,4 +24,8 @@ export const auditApi = {
     const qs = sp.toString()
     return api.get<AuditListResponse>(`/audit${qs ? `?${qs}` : ''}`)
   },
+
+  // The payload of one entry. List rows carry no payload at all, so this is the
+  // only way to read one — see `AuditEntry` in types/branches.ts (tripl-5ydt).
+  get: (entryId: string) => api.get<AuditEntryDetail>(`/audit/${entryId}`),
 }

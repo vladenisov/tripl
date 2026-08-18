@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 import uuid
+from dataclasses import replace
 
 import pytest
 from httpx import AsyncClient
@@ -13,7 +16,7 @@ from tripl.models.search_document import SearchDocument
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
 from tripl.schemas.search import SearchResult
-from tripl.services import search_service
+from tripl.services import _search_query, app_settings_service, search_service
 from tripl.services._search_documents import build_documents
 from tripl.services._search_query import (
     _FULL_CONFIDENCE_SCORE,
@@ -26,6 +29,7 @@ from tripl.services._search_query import (
     _SQLITE_TITLE_PREFIX,
     identifier_form,
 )
+from tripl.services.app_settings_service import AiConfig, env_ai_config
 from tripl.services.search_service import (
     CANDIDATE_WINDOW,
     _finalize_results,
@@ -144,6 +148,116 @@ async def test_retrieval_window_does_not_vary_with_the_page_size(
         windows.clear()
         await search_service.search_event_ids(session, "search-window", "spot")
         assert windows == [10000]
+
+
+async def test_index_maintenance_runs_once_per_branch_not_once_per_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The read path checks the index once per process, not once per keystroke.
+
+    tripl-2x5d. The palette issues a request per debounce boundary, and every one
+    of them probed for "does this branch have any document". On the branch that
+    indexes to ZERO documents — a project whose catalog is still empty — the
+    probe answers None forever, so the old read path answered it by running a
+    full reindex (build, diff, delete, insert, COMMIT) from a GET, every time.
+
+    The session below is the one that fault needs: it reports an empty index on
+    every probe, so a per-request check keeps rebuilding and a memoized one does
+    not.
+    """
+    rebuilt: list[uuid.UUID] = []
+
+    async def fake_reindex(_session: object, *, branch_id: uuid.UUID, **_kwargs: object) -> None:
+        rebuilt.append(branch_id)
+
+    class _EmptyIndexSession:
+        """Answers the existence probe the way a never-indexed branch does."""
+
+        def __init__(self) -> None:
+            self.probes = 0
+
+        async def scalar(self, *_args: object, **_kwargs: object) -> uuid.UUID | None:
+            self.probes += 1
+            return None
+
+    monkeypatch.setattr(search_service, "reindex_project_branch", fake_reindex)
+    session = _EmptyIndexSession()
+    project_id, branch_id, other_branch_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+
+    for _ in range(3):
+        await search_service._ensure_index_exists(session, "palette", project_id, branch_id)
+
+    assert session.probes == 1, "the existence probe is a per-process cost, not a per-search one"
+    assert rebuilt == [branch_id], "an empty branch was rebuilt on every search"
+
+    # The memo is per branch: a branch this process has not searched yet is still
+    # checked and still built.
+    await search_service._ensure_index_exists(session, "palette", project_id, other_branch_id)
+    assert session.probes == 2
+    assert rebuilt == [branch_id, other_branch_id]
+
+
+#: How long the lexical leg below waits for the embedding call to start before
+#: calling the two serialized. Generous on purpose: the assertion is about
+#: ORDER, and a slow machine must not turn it into a flake.
+_EMBED_START_TIMEOUT_SECONDS = 5.0
+_EMBED_START_POLL_SECONDS = 0.005
+
+
+async def test_the_query_embedding_is_fetched_while_the_lexical_leg_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A semantic search costs one round trip, not two in a row (tripl-2x5d).
+
+    ``embed_query`` is a blocking provider POST handed to a thread and the
+    lexical leg is SQL on the session; neither needs the other's result. Awaiting
+    them in sequence made the palette's read path — measured at over 2.2s — pay
+    for both end to end.
+
+    Nothing here measures a duration. The fake lexical leg refuses to finish
+    until the embedding call has started, which cannot happen at all unless the
+    two are in flight together.
+    """
+    embed_started = threading.Event()
+
+    async def fake_lexical(_session: object, **_kwargs: object) -> list[SearchResult]:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _EMBED_START_TIMEOUT_SECONDS
+        while not embed_started.is_set():
+            if loop.time() > deadline:
+                pytest.fail("the embedding call had not started while the lexical leg was running")
+            await asyncio.sleep(_EMBED_START_POLL_SECONDS)
+        return []
+
+    def fake_embed(_query: str, *, config: AiConfig) -> list[float]:
+        embed_started.set()
+        return [0.5]
+
+    async def fake_semantic(_session: object, **_kwargs: object) -> list[SearchResult]:
+        return []
+
+    enabled = replace(env_ai_config(), search_embeddings_enabled=True)
+
+    async def fake_ai_config(_session: object) -> AiConfig:
+        return enabled
+
+    monkeypatch.setattr(_search_query, "postgres_lexical_search", fake_lexical)
+    monkeypatch.setattr(_search_query, "postgres_semantic_search", fake_semantic)
+    monkeypatch.setattr(_search_query, "embed_query", fake_embed)
+    monkeypatch.setattr(app_settings_service, "get_ai_config", fake_ai_config)
+
+    async with TestSessionLocal() as session:
+        _, semantic_used = await _search_query.postgres_search(
+            session,
+            project_id=uuid.uuid4(),
+            branch_id=uuid.uuid4(),
+            query="session",
+            entity_types=None,
+            include_archived=False,
+            limit=10,
+        )
+
+    assert semantic_used is True
 
 
 async def test_reindex_reports_whether_the_refresh_was_really_queued(
