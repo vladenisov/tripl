@@ -140,9 +140,11 @@ export function incidentDirectionGlyph(direction: AlertInboxGroup['direction']):
  * raw put "197 vs 88.318 expected" on every inbox card while the activity rail
  * 400px away said "42,280 actual vs 33,376 expected" — two formats for one kind
  * of number, and "88.318" is read as 88,318 by anyone used to a decimal comma
- * (tripl-nj4n). The sibling surfaces (AnomaliesPage, OverviewPage, the top bar,
- * the projects list, the replay dialog) round the BASELINE only and print
- * `actual_count` raw; the inbox rounded neither, which is what this fixes.
+ * (tripl-nj4n). The inbox card rounded neither, which is what this first fixed;
+ * the sibling surfaces (AnomaliesPage, OverviewPage, the top bar, the projects
+ * list, the replay dialog) each reached for `Math.round` on the baseline, and
+ * all five now come through here so one incident cannot be spelled two ways
+ * depending on which page is showing it.
  *
  * Rounding is value-aware, because not every magnitude here is a count of
  * events. `metric` is a first-class alert scope and its values are genuinely

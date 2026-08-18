@@ -39,6 +39,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
+import { formatIncidentCount } from '@/lib/alertStatus'
 import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/metricFormat'
 import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, defaultGranularityForRange, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
@@ -1034,7 +1035,9 @@ export default function MonitoringDetailPage() {
                   <p className="text-sm font-medium">
                     {metricIsPercent
                       ? formatMetricValue(latestSignal.expected_count, metricUnit)
-                      : Math.round(latestSignal.expected_count).toLocaleString()}
+                      : // Value-aware: a non-percent metric can still carry a
+                        // sub-unit baseline, which plain rounding wrote as "0".
+                        formatIncidentCount(latestSignal.expected_count)}
                   </p>
                 </div>
                 <div>

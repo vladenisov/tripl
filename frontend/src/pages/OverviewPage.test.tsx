@@ -40,9 +40,6 @@ const PROJECT = {
 interface MockOpts {
   activity?: unknown[]
   signals?: unknown[]
-  catalog?: Array<{ id: string; display_name: string }>
-  eventTypes?: Array<{ id: string; display_name: string }>
-  events?: Array<{ id: string; name: string }>
   sources?: unknown[]
   scanConfigName?: string | null
   /** `null` models a project with no scan config at all — the bare empty series. */
@@ -50,7 +47,6 @@ interface MockOpts {
   /** `[]` models a scan whose buckets all predate the card's 7-day window. */
   volumeData?: Array<{ bucket: string; count: number; expected_count: number | null }>
   kpiSeries?: number[]
-  eventNameRequests?: string[]
   topEvents?: Array<{ event_id: string; name: string; total_count: number }>
   /** Never settles the volume request, so the card stays in its pending state. */
   holdVolume?: boolean
@@ -82,35 +78,9 @@ function mockFetch(opts?: MockOpts) {
       return jsonResponse({ days: series.length, new_events: series })
     }
     if (url.includes('/overview/top-events')) return jsonResponse(opts?.topEvents ?? [])
-    // Metrics catalog list (issue .17): resolves metric-scope signal names.
-    if (url.endsWith('/metrics') || url.includes('/metrics?')) {
-      const items = opts?.catalog ?? []
-      return jsonResponse({ items, total: items.length })
-    }
-    // Event-type / event name lookups (issue tripl-yfsj.16): resolve the
-    // event-scope signal labels that dominate the expanded signal set. The
-    // leading slash in the '/events' matcher is load-bearing — without it this
-    // would also swallow '/overview/top-events?…' and '/event-types'.
-    if (url.includes('/event-types')) return jsonResponse(opts?.eventTypes ?? [])
-    // Per-signal event lookup: the panel resolves only the ids it renders
-    // rather than downloading the whole catalog (tripl-jfm3.25).
-    const singleEvent = /\/events\/([^/?]+)/.exec(url)
-    if (singleEvent) {
-      const id = singleEvent[1]!
-      opts?.eventNameRequests?.push(id)
-      const match = (opts?.events ?? []).find((e) => e.id === id)
-      if (!match) {
-        return new Response(JSON.stringify({ detail: 'Event not found' }), {
-          status: 404,
-          headers: { 'Content-Type': 'application/json' },
-        })
-      }
-      return jsonResponse(match)
-    }
-    if (url.includes('/events?') || url.endsWith('/events')) {
-      const items = opts?.events ?? []
-      return jsonResponse({ items, total: items.length })
-    }
+    // No branch for the metrics catalog, the event-type list or the per-id event
+    // lookup: every signal carries its own `scope_name`, so those three requests
+    // are gone and any survivor lands on the throw below (tripl-y4wt).
     if (url.includes('/anomalies/signals')) return jsonResponse(opts?.signals ?? [])
     if (url.includes('/activity/projects/')) return jsonResponse(opts?.activity ?? [])
     if (url.includes('/data-sources')) return jsonResponse(opts?.sources ?? [])
@@ -403,14 +373,14 @@ describe('OverviewPage', () => {
     expect(screen.queryByRole('heading', { name: 'Live activity' })).not.toBeInTheDocument()
   })
 
-  it('labels a metric-scope signal with its catalog display name (issue .17)', async () => {
+  it('labels a metric-scope signal with the name the server resolved (issue .17)', async () => {
     mockFetch({
-      catalog: [{ id: 'metric-abc', display_name: 'Checkout conversion' }],
       signals: [
         {
           scan_config_id: 'scan-1',
           scope_type: 'metric',
           scope_ref: 'metric-abc',
+          scope_name: 'Checkout conversion',
           state: 'latest_scan',
           event_id: null,
           event_type_id: null,
@@ -425,21 +395,20 @@ describe('OverviewPage', () => {
     })
     renderOverview()
 
-    // Resolves via the catalog map to "Metric · <display name>" — never the raw
-    // "Event <uuid8>" fallback the old copy produced.
+    // "Metric · <display name>" — never the raw "Event <uuid8>" the old copy
+    // produced for every scope it did not handle.
     expect(await screen.findByText('Drop on Metric · Checkout conversion')).toBeInTheDocument()
     expect(screen.queryByText(/Event metric-a/)).not.toBeInTheDocument()
   })
 
   it('labels event- and event-type-scope signals with their names, not a raw UUID (tripl-yfsj.16)', async () => {
     mockFetch({
-      events: [{ id: 'd78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd', name: 'map:open:spot' }],
-      eventTypes: [{ id: '5f2b91aa-0d13-4c7e-9a26-1d8e3b7f42c1', display_name: 'Map' }],
       signals: [
         {
           scan_config_id: 'scan-1',
           scope_type: 'event',
           scope_ref: 'd78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd',
+          scope_name: 'map:open:spot',
           state: 'latest_scan',
           event_id: 'd78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd',
           event_type_id: null,
@@ -454,6 +423,7 @@ describe('OverviewPage', () => {
           scan_config_id: 'scan-1',
           scope_type: 'event_type',
           scope_ref: '5f2b91aa-0d13-4c7e-9a26-1d8e3b7f42c1',
+          scope_name: 'Map',
           state: 'latest_scan',
           event_id: null,
           event_type_id: '5f2b91aa-0d13-4c7e-9a26-1d8e3b7f42c1',
@@ -476,39 +446,35 @@ describe('OverviewPage', () => {
     expect(screen.queryByText(/Event type 5f2b91aa/)).not.toBeInTheDocument()
   })
 
-  it('resolves signal event names one by one, never by listing the catalog (tripl-jfm3.25)', async () => {
-    // The panel used to fire GET /events?limit=10000 — 2,413 rows / 2.7 MB / ~3 s
-    // of tags, field values and meta values — purely to label six rows, leaving
-    // raw uuid stubs on the default landing route until it landed.
-    const eventNameRequests: string[] = []
+  it('asks for no name catalog at all, because the names ride on the signals (tripl-y4wt)', async () => {
+    // The panel fired one GET per rendered event id, plus the event-type list and
+    // the metrics catalog, and showed uuid stubs on the default landing route
+    // until they landed. It had already dropped a GET /events?limit=10000 (2,413
+    // rows / 2.7 MB / ~3 s) for the per-id fan-out (tripl-jfm3.25); this removes
+    // the fan-out too.
     const fetchSpy = mockFetch({
-      eventNameRequests,
-      events: [{ id: 'd78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd', name: 'map:open:spot' }],
-      signals: [
-        makeEventSignal('d78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd'),
-      ],
+      signals: [makeEventSignal('d78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd')],
     })
     renderOverview()
 
     expect(await screen.findByText('Spike on Event · map:open:spot')).toBeInTheDocument()
-    expect(eventNameRequests).toEqual(['d78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd'])
-    const listCalls = fetchSpy.mock.calls
+    const nameCalls = fetchSpy.mock.calls
       .map(([input]) => String(input))
-      .filter((url) => url.includes('limit=10000'))
-    expect(listCalls).toEqual([])
+      .filter((url) => /\/events(\/|\?|$)|\/event-types|\/metrics(\?|$)/.test(url))
+    expect(nameCalls).toEqual([])
   })
 
-  it('still renders the signals panel when a name lookup resolves nothing (tripl-yfsj.16)', async () => {
-    // Name maps are additive: an empty/unresolvable lookup — the same state the
-    // panel is in before the lists land — must degrade to the short-ref label
-    // rather than blanking or blocking the row.
+  it('says an unnameable scope is gone instead of printing its ref (tripl-y4wt)', async () => {
+    // scope_name null is terminal — the event was deleted out from under the
+    // row, the FKs being ondelete=SET NULL — so the row says so in words and the
+    // ref stays in the tooltip, where it cannot be misread as a name.
     mockFetch({
-      events: [],
       signals: [
         {
           scan_config_id: 'scan-1',
           scope_type: 'event',
           scope_ref: 'd78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd',
+          scope_name: null,
           state: 'latest_scan',
           event_id: 'd78ddc27-4b1e-4a0c-9f77-2c9f0f2a51bd',
           event_type_id: null,
@@ -523,17 +489,47 @@ describe('OverviewPage', () => {
     })
     renderOverview()
 
-    expect(await screen.findByText('Spike on Event d78ddc27')).toBeInTheDocument()
+    const row = await screen.findByText('Spike on deleted event')
+    expect(row).toHaveAttribute('title', 'Spike on Event d78ddc27')
+    expect(screen.queryByText(/d78ddc27/)).not.toBeInTheDocument()
   })
 
-  it('labels a drop-to-zero signal as "dropped to zero", not the clamped z-score (tripl-yfsj.9)', async () => {
+  it('keeps a sub-unit baseline instead of rounding it away (tripl-nj4n)', async () => {
+    // A `%` catalog metric stores a fraction (0.08 == 8%) and `metric` is a
+    // first-class scope here, so Math.round put "1.2 vs 0" on the row while the
+    // severity beside it was computed from 0.4.
     mockFetch({
-      catalog: [{ id: 'metric-abc', display_name: 'Checkout conversion' }],
       signals: [
         {
           scan_config_id: 'scan-1',
           scope_type: 'metric',
           scope_ref: 'metric-abc',
+          scope_name: 'Checkout conversion',
+          state: 'latest_scan',
+          event_id: null,
+          event_type_id: null,
+          bucket: '2026-07-01T00:00:00Z',
+          actual_count: 1.2,
+          expected_count: 0.4,
+          stddev: 0.1,
+          z_score: 6,
+          direction: 'spike',
+        },
+      ],
+    })
+    renderOverview()
+
+    expect(await screen.findByText('1.2 vs 0.4')).toBeInTheDocument()
+  })
+
+  it('labels a drop-to-zero signal as "dropped to zero", not the clamped z-score (tripl-yfsj.9)', async () => {
+    mockFetch({
+      signals: [
+        {
+          scan_config_id: 'scan-1',
+          scope_type: 'metric',
+          scope_ref: 'metric-abc',
+          scope_name: 'Checkout conversion',
           state: 'latest_scan',
           event_id: null,
           event_type_id: null,
@@ -577,6 +573,7 @@ function makeEventSignal(scopeRef: string) {
     scan_config_id: 'scan-1',
     scope_type: 'event',
     scope_ref: scopeRef,
+    scope_name: 'map:open:spot',
     state: 'latest_scan',
     event_id: scopeRef,
     event_type_id: null,

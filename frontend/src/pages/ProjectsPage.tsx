@@ -36,6 +36,7 @@ import { DemoProvisioningDialog } from '@/demo/DemoProvisioningDialog'
 import { demoGenerationWarning, ownedDemoCount } from '@/demo/demoGenerationGuard'
 import { useDemoProvisioning } from '@/demo/useDemoProvisioning'
 import { useConfirm } from '@/hooks/useConfirm'
+import { formatIncidentCount } from '@/lib/alertStatus'
 import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
 import { formatDate, formatDateTime } from '@/lib/datetime'
 import { getMonitoringPath } from '@/lib/monitoring'
@@ -977,7 +978,7 @@ function LatestSignalSummary({
         <p className="text-[12px] font-medium">{signal.scope_name}</p>
         <p className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
           {signal.actual_count.toLocaleString()} actual vs{' '}
-          {Math.round(signal.expected_count).toLocaleString()} expected
+          {formatIncidentCount(signal.expected_count)} expected
         </p>
         <p className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
           {formatDateTime(signal.bucket)} via {signal.scan_name}

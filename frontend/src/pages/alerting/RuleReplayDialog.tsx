@@ -23,6 +23,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import type { AlertMessageFormat, AlertRule, AlertRuleSimulateResponse } from '@/types'
 import { getErrorMessage } from '@/lib/utils'
+import { formatIncidentCount } from '@/lib/alertStatus'
 import { formatDateTime } from '@/lib/datetime'
 import { formatPercentDelta } from '@/lib/percentDelta'
 import { formatCooldown } from './constants'
@@ -450,9 +451,16 @@ export function RuleReplayDialog({
                                 {firing.direction}
                               </Badge>
                             </td>
-                            <td className="px-3 py-1.5 text-right tnum">{firing.actual_count}</td>
+                            {/* Both columns through the same formatter: rounding
+                                only the baseline would leave "5780" beside
+                                "3,529" in one row, and a `%` catalog metric
+                                stores a fraction, so Math.round prints its
+                                whole replay as "0 vs 0". */}
+                            <td className="px-3 py-1.5 text-right tnum">
+                              {formatIncidentCount(firing.actual_count)}
+                            </td>
                             <td className="px-3 py-1.5 text-right tnum text-muted-foreground">
-                              {Math.round(firing.expected_count)}
+                              {formatIncidentCount(firing.expected_count)}
                             </td>
                             <td className="px-3 py-1.5 text-right tnum">
                               {formatPercentDelta(firing.percent_delta, firing.expected_count)}

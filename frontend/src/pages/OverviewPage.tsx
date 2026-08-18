@@ -1,5 +1,5 @@
 import { Link, useParams } from 'react-router-dom'
-import { useQueries, useQuery } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import {
   AlertTriangle,
   Bell,
@@ -11,10 +11,7 @@ import {
 import { activityApi } from '@/api/activity'
 import { ApiError } from '@/api/client'
 import { dataSourcesApi } from '@/api/dataSources'
-import { eventsApi } from '@/api/events'
-import { eventTypesApi } from '@/api/eventTypes'
 import { metricsApi } from '@/api/metrics'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { projectsApi } from '@/api/projects'
 import NotFoundPage from '@/pages/NotFoundPage'
 import { ErrorState } from '@/components/error-state'
@@ -28,18 +25,19 @@ import { Sparkline } from '@/components/primitives/sparkline'
 import { PageHead, Panel } from '@/components/settings/kit'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useTheme } from '@/components/theme-provider'
+import { formatIncidentCount } from '@/lib/alertStatus'
 import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
 import { coverageTone, dataSourceHealthLexeme, type StatusLexeme } from '@/lib/statusLexicon'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
 import { selectSignificantSignals } from '@/lib/signalMagnitude'
 import { friendlyScanError } from '@/lib/scanError'
-import { useActiveBranchId } from '@/hooks/useBranch'
 import { useExpandedSignals } from '@/hooks/useExpandedSignals'
 import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
 import {
-  signalScopeLabel as sharedSignalScopeLabel,
-  type NameMap,
+  signalScopeLabel,
+  signalScopeRefLabel,
+  unnamedScopeLabel,
 } from '@/lib/signalScope'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type {
@@ -71,7 +69,6 @@ const VOLUME_SUBTITLE = 'One scan — not the project’s combined volume across
 
 export default function OverviewPage() {
   const { slug } = useParams<{ slug: string }>()
-  const branchId = useActiveBranchId()
   const { chartStyle } = useTheme()
   // Adaptive fallback cadence: the live stream refreshes signals/activity via the
   // invalidation map, so poll only while the stream is unavailable.
@@ -122,28 +119,6 @@ export default function OverviewPage() {
     staleTime: 30_000,
     refetchInterval,
   })
-  // Metric-scope signals carry only the definition id; the catalog list resolves
-  // it to a display name for the signals rail (issue .17). Shares the
-  // 'metrics-catalog' key prefix so catalog mutations invalidate this copy too.
-  // Purely additive — a failed/pending fetch just leaves the short-ref fallback.
-  const metricsCatalogQuery = useQuery({
-    queryKey: ['metrics-catalog', slug, 'names'],
-    queryFn: () => metricsCatalogApi.list(slug!),
-    enabled: !!slug && projectQuery.isSuccess,
-    staleTime: 60_000,
-  })
-  // Same pattern for the event-type scope, which dominates the expanded signal
-  // set (issue tripl-yfsj.16). Key, branch argument and staleTime match
-  // AnomaliesPage's exactly so the two pages share one cache entry instead of
-  // each fetching the catalog. Deliberately no `refetchInterval`: names are
-  // near-static and must not inherit the signals poll. Event-scope names are
-  // resolved per signal further down rather than by listing the catalog.
-  const eventTypesQuery = useQuery({
-    queryKey: ['eventTypes', slug, branchId],
-    queryFn: () => eventTypesApi.list(slug!, branchId),
-    enabled: !!slug && projectQuery.isSuccess,
-    staleTime: 60_000,
-  })
   const sourcesQuery = useQuery({
     queryKey: dataSourcesKey(),
     queryFn: dataSourcesApi.list,
@@ -161,43 +136,6 @@ export default function OverviewPage() {
   // the capped panel previews the top anomalies.
   const signals = selectSignificantSignals(signalsQuery.data)
   const activity = activityQuery.data ?? []
-  // Only the first SIGNAL_LIMIT rows are rendered, so only their event ids need
-  // a name. Fetching them one by one replaces a `GET /events?limit=10000` that
-  // shipped the whole 2,413-row catalog (2.7 MB / ~3 s) purely to label six rows,
-  // leaving raw uuid stubs on the landing route until it landed (tripl-jfm3.25).
-  // The key matches EventsPage's single-event key so the two share one cache
-  // entry.
-  const eventSignalRefs = [
-    ...new Set(
-      signals
-        .slice(0, SIGNAL_LIMIT)
-        .filter((s) => s.scope_type === 'event')
-        .map((s) => s.scope_ref),
-    ),
-  ]
-  const eventNameEntries = useQueries({
-    queries: eventSignalRefs.map((eventId) => ({
-      queryKey: ['event', slug, branchId, eventId],
-      queryFn: () => eventsApi.get(slug!, eventId, branchId),
-      enabled: !!slug && projectQuery.isSuccess,
-      staleTime: 60_000,
-    })),
-    combine: (results) =>
-      results.flatMap((result) =>
-        result.data ? ([[result.data.id, result.data.name]] as [string, string][]) : [],
-      ),
-  })
-  // Resolve metric-scope signals to their catalog display name (issue .17), and
-  // event-type / event scopes to theirs (issue tripl-yfsj.16). Every map is
-  // additive: an empty one only costs the short-ref fallback label, so the panel
-  // still renders the moment signals arrive.
-  const metricNames: NameMap = new Map(
-    (metricsCatalogQuery.data?.items ?? []).map((m) => [m.id, m.display_name]),
-  )
-  const eventTypeNames: NameMap = new Map(
-    (eventTypesQuery.data ?? []).map((et) => [et.id, et.display_name]),
-  )
-  const eventNames: NameMap = new Map(eventNameEntries)
   // Scope the Source-health rail to this project: workspace-global sources
   // (project_id == null) plus sources owned by the current project. Without this
   // a demo project's project-scoped synthetic source leaks into unrelated
@@ -529,9 +467,6 @@ export default function OverviewPage() {
                 key={`${signal.scope_type}:${signal.scope_ref}`}
                 slug={slug}
                 signal={signal}
-                metricNames={metricNames}
-                eventTypeNames={eventTypeNames}
-                eventNames={eventNames}
               />
             ))}
           </div>
@@ -652,37 +587,22 @@ function newEventsTrendLabel(counts: number[]): string {
   return `New events added per day over the last 14 days. Latest ${latest.toLocaleString()}, range ${min.toLocaleString()} to ${max.toLocaleString()}.`
 }
 
-/** Entity id → display name, for labelling metric / event-type / event signals. */
-
-// Thin adapter over the shared label (issues .17, tripl-yfsj.16, tripl-jfm3.120):
-// every named scope carries only its id, so an anomaly must read
-// "<Scope> · <name>" instead of a raw "Event <uuid8>".
-function signalScopeLabel(
-  signal: MonitoringSignal,
-  metricNames: NameMap,
-  eventTypeNames: NameMap,
-  eventNames: NameMap,
-): string {
-  return sharedSignalScopeLabel(signal, { metricNames, eventTypeNames, eventNames })
-}
-
 function SignalRow({
   slug,
   signal,
-  metricNames,
-  eventTypeNames,
-  eventNames,
 }: {
   slug: string
   signal: MonitoringSignal
-  metricNames: NameMap
-  eventTypeNames: NameMap
-  eventNames: NameMap
 }) {
+  const verb = signal.direction === 'drop' ? 'Drop' : 'Spike'
+  const scopeLabel = signalScopeLabel(signal)
   // Full text drives both the visible label and its hover tooltip so a long
   // scope name (e.g. page_value_question_page_value_…) stays readable when the
-  // row ellipsizes.
-  const signalSummary = `${signal.direction === 'drop' ? 'Drop' : 'Spike'} on ${signalScopeLabel(signal, metricNames, eventTypeNames, eventNames)}`
+  // row ellipsizes. When the server could not name the scope the tooltip is
+  // where its ref goes — visible, that hex prefix reads as a name and puts a
+  // second name on an incident the activity rail already named (tripl-y4wt).
+  const signalSummary = `${verb} on ${scopeLabel ?? unnamedScopeLabel(signal)}`
+  const signalTitle = `${verb} on ${scopeLabel ?? signalScopeRefLabel(signal)}`
   return (
     <Link
       to={getMonitoringPath(slug, signal)}
@@ -690,11 +610,11 @@ function SignalRow({
       style={{ color: 'inherit' }}
     >
       <Dot tone={signal.direction === 'drop' ? 'warning' : 'danger'} pulse size={7} />
-      <span className="flex-1 truncate text-[12px] font-medium" title={signalSummary}>
+      <span className="flex-1 truncate text-[12px] font-medium" title={signalTitle}>
         {signalSummary}
       </span>
       <span className="mono shrink-0 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-        {signal.actual_count.toLocaleString()} vs {Math.round(signal.expected_count).toLocaleString()}
+        {signal.actual_count.toLocaleString()} vs {formatIncidentCount(signal.expected_count)}
       </span>
       <span
         className="mono w-[52px] shrink-0 text-right text-[11px]"

@@ -7,6 +7,7 @@ import { ErrorState } from '@/components/error-state'
 import { PageHead, Panel } from '@/components/settings/kit'
 import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
+import { formatIncidentCount } from '@/lib/alertStatus'
 import { formatRelativeTime } from '@/lib/datetime'
 import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
 import {
@@ -17,8 +18,9 @@ import {
 } from '@/lib/signalMagnitude'
 import { useExpandedSignals } from '@/hooks/useExpandedSignals'
 import {
-  signalScopeLabel as sharedSignalScopeLabel,
-  type NameMap,
+  signalScopeLabel,
+  signalScopeRefLabel,
+  unnamedScopeLabel,
 } from '@/lib/signalScope'
 import type { MonitoringSignal } from '@/types'
 
@@ -44,45 +46,6 @@ function isLinkableScope(signal: MonitoringSignal): boolean {
 }
 
 /**
- * "<Scope> · <name>" for one signal, or null when the server could not name it.
- *
- * The name arrives on the signal itself (`scope_name`), so this page no longer
- * downloads the whole event catalog — 2641 rows, 1.7s on windy-ios — purely to
- * build an id → name map, and no row spends the first seconds of the page
- * labelled "Spike on Event d4c684dd" while that download is in flight
- * (tripl-y4wt). The shared formatter still owns the spelling; it is handed a
- * one-entry map because the name now travels with the signal rather than in a
- * catalog. `project_total` names itself and needs no lookup.
- */
-function signalScopeLabel(signal: MonitoringSignal): string | null {
-  if (signal.scope_type === 'project_total') return sharedSignalScopeLabel(signal)
-  if (!signal.scope_name) return null
-  const names: NameMap = new Map([[signal.scope_ref, signal.scope_name]])
-  return sharedSignalScopeLabel(signal, {
-    metricNames: names,
-    eventTypeNames: names,
-    eventNames: names,
-  })
-}
-
-/**
- * What an unnameable scope is called, in words.
- *
- * Only these three kinds are ever looked up — `_attach_scope_names` resolves
- * event → `Event.name`, event_type → `EventType.display_name`, metric → the
- * catalog `display_name`, and the FKs are `ondelete=SET NULL`, so a null name
- * beside a populated `scope_ref` means the entity is gone. Every other kind
- * (schema, distribution, release regression, value drift) has no entity behind
- * it and is never named at all, so it gets the neutral word rather than a
- * "deleted" that would not be true.
- */
-const UNRESOLVED_SCOPE_NOUN: Partial<Record<MonitoringSignal['scope_type'], string>> = {
-  event: 'deleted event',
-  event_type: 'deleted event type',
-  metric: 'deleted metric',
-}
-
-/**
  * Stand-in for a scope the server could not name (its event/metric was deleted
  * out from under the anomaly row).
  *
@@ -102,7 +65,7 @@ const UNRESOLVED_SCOPE_NOUN: Partial<Record<MonitoringSignal['scope_type'], stri
  * stand-in wording.
  */
 function UnnamedScope({ signal }: { signal: MonitoringSignal }) {
-  const ref = sharedSignalScopeLabel(signal)
+  const ref = signalScopeRefLabel(signal)
   return (
     <span
       role="img"
@@ -111,7 +74,7 @@ function UnnamedScope({ signal }: { signal: MonitoringSignal }) {
       className="italic"
       style={{ color: 'var(--fg-faint)' }}
     >
-      {UNRESOLVED_SCOPE_NOUN[signal.scope_type] ?? 'unnamed scope'}
+      {unnamedScopeLabel(signal)}
     </span>
   )
 }
@@ -159,6 +122,9 @@ function SegmentedFilter<T extends string>({
   )
 }
 
+/** Scan id → scan name, for the facet below. Unrelated to scope naming. */
+type ScanNames = ReadonlyMap<string, string>
+
 const ALL_SCANS = 'all'
 // Catalog-metric signals belong to no scan: MetricDefinition series are
 // project-global, so their scan_config_id is NULL. They still need a home in a
@@ -167,7 +133,7 @@ const ALL_SCANS = 'all'
 // call .slice on it and white-screen the whole page.
 const CATALOG_METRICS = 'catalog-metrics'
 const facetKey = (scanConfigId: string | null): string => scanConfigId ?? CATALOG_METRICS
-const facetLabel = (id: string, scanNames: NameMap): string =>
+const facetLabel = (id: string, scanNames: ScanNames): string =>
   id === CATALOG_METRICS ? 'Catalog metrics' : (scanNames.get(id) ?? `Scan ${id.slice(0, 8)}`)
 
 /** `?level=` → a preset, degrading an absent or unknown value to the default. */
@@ -228,7 +194,7 @@ export default function AnomaliesPage() {
     enabled: !!slug,
     staleTime: 60_000,
   })
-  const scanNames: NameMap = new Map(
+  const scanNames: ScanNames = new Map(
     (scansQuery.data ?? []).map((s) => [s.id, s.name]),
   )
 
@@ -574,7 +540,7 @@ function AnomalyRow({
         )}
       </span>
       <span role="cell" className="mono truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-        {signal.actual_count.toLocaleString()} vs {Math.round(signal.expected_count).toLocaleString()}
+        {signal.actual_count.toLocaleString()} vs {formatIncidentCount(signal.expected_count)}
       </span>
       <span role="cell" className="mono text-right text-[11px]" style={{ color: severityColor }}>
         {formatSignalSeverity(signal)}

@@ -240,6 +240,28 @@ describe('AnomaliesPage — severity label (tripl-yfsj.9)', () => {
   })
 })
 
+describe('AnomaliesPage — counts (tripl-nj4n)', () => {
+  it('keeps a sub-unit baseline instead of rounding it to zero', async () => {
+    // `metric` is a first-class scope here and a `%` catalog metric STORES a
+    // fraction (0.08 == 8%), so Math.round wrote "1.2 vs 0" on a row whose
+    // severity was computed from 0.4. Below 1 the decimals are the number.
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({
+        scope_name: 'Checkout conversion',
+        actual_count: 1.2,
+        expected_count: 0.4,
+      }),
+    ])
+
+    renderAnomalies()
+
+    const row = (await screen.findByText('Spike on Metric · Checkout conversion')).closest(
+      '[role="row"]',
+    ) as HTMLElement
+    expect(row).toHaveTextContent('1.2 vs 0.4')
+  })
+})
+
 describe('AnomaliesPage — magnitude filter', () => {
   it('hides low-magnitude signals at the default level and reveals them under "All"', async () => {
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
