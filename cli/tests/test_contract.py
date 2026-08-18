@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import inspect
 import json
 import re
 from pathlib import Path
@@ -111,6 +112,14 @@ PATH_LITERAL = re.compile(r'f?"(/(?:projects|auth|data-sources)[^"]*)"')
 # `tripl events list` dropped a non-dict row where the MCP's `list_events` kept
 # it, reading the very same response.
 SHARED_RESPONSE_KEYS = frozenset({"items", "total", "semantic_used", "field_definitions"})
+
+# Query parameters GET /projects/{slug}/events declares that
+# ``tripl_cli.api.events.list_events`` does not accept, so neither surface that
+# shares it can send them. Both predate the shared layer - `field_value` came
+# with PR #78 and `order_by` with PR #29 - and each is a filter the CLI and
+# tripl-mcp simply cannot reach today. This is a record of that gap, not
+# permission to widen it: deleting a name is how mirroring one gets proven.
+EVENTS_LIST_UNMIRRORED = frozenset({"field_value", "order_by"})
 
 # Where those keys are read, package-relative. `model.py` holds the envelope
 # readers (re-exported through `tripl_cli.api`, see below) and the two `api`
@@ -549,6 +558,36 @@ def test_the_declared_query_bounds_are_the_ones_the_routes_enforce(
         if actual != declared:
             wrong.append(f"{path}?{parameter} {key}: tripl_cli says {declared}, API says {actual}")
     assert not wrong, "the CLI's query bounds are not the route's:\n  " + "\n  ".join(wrong)
+
+
+def test_the_events_list_builder_takes_every_filter_the_route_declares(
+    openapi_paths: dict[str, Any],
+) -> None:
+    """A filter the route offers and the builder cannot spell reaches no client.
+
+    ``reviewed`` shipped to the route and to the frontend and to neither of the
+    two distributions that share this builder, so the UI's "Mark reviewed" wrote
+    a flag no shell and no agent could isolate afterwards. The builder's own
+    comment already said it mirrors the route's Query constraints - that was a
+    habit, and a habit does not fail CI. One direction only: ``branch`` is a
+    dependency rather than a declared parameter and is deliberately absent from
+    the document (see test_branch_is_resolved_by_name_and_sent_as_an_id).
+    """
+    from tripl_cli.api import events
+
+    operation = openapi_paths[f"{API_PREFIX}{events.LIST}"]["get"]
+    declared = {
+        parameter["name"]
+        for parameter in operation.get("parameters", [])
+        if parameter.get("in") == "query"
+    }
+    assert declared, "read no query parameters at all - the walk is broken, not the builder"
+    accepted = set(inspect.signature(events.list_events).parameters)
+    missing = sorted(declared - accepted - EVENTS_LIST_UNMIRRORED)
+    assert not missing, (
+        "GET /events declares query parameters tripl_cli.api.events.list_events cannot send, "
+        f"so neither the CLI nor tripl-mcp can filter on them: {missing}"
+    )
 
 
 def test_the_declared_enums_are_the_openapi_ones(openapi: dict[str, Any]) -> None:

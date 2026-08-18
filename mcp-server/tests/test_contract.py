@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import inspect
 import json
 import re
 from pathlib import Path
@@ -83,6 +84,34 @@ def test_tool_endpoints_are_the_shared_templates() -> None:
         if path not in ALL_TEMPLATES
     ]
     assert not unknown, f"TOOL_ENDPOINTS carries paths tripl_cli.api does not declare: {unknown}"
+
+
+def test_list_events_exposes_every_filter_the_shared_builder_accepts() -> None:
+    """A filter the builder can send and the tool cannot name is unreachable here.
+
+    ``reviewed`` reached the route and the frontend and neither of the clients
+    that share ``tripl_cli.api`` - and this tool already puts ``reviewed`` in
+    every trimmed row it returns, so an agent could see the flag on each event
+    and had no way to ask for one half of them. The CLI's own contract suite
+    holds the builder to the route; this closes the second half of that chain.
+    """
+    from tripl_cli.api import events as builder
+
+    from tripl_mcp.tools import events as tool
+
+    # ``ctx`` is FastMCP's, ``slug`` is positional on both, and ``branch_id`` is
+    # this surface's spelling of the builder's ``branch`` - the one rename, and
+    # the reason this compares names rather than signatures.
+    accepted = set(inspect.signature(builder.list_events).parameters) - {"slug"}
+    exposed = {
+        "branch" if name == "branch_id" else name
+        for name in inspect.signature(tool.list_events).parameters
+    } - {"slug", "ctx"}
+    missing = sorted(accepted - exposed)
+    assert not missing, (
+        "tripl_cli.api.events.list_events can send filters list_events does not expose, "
+        f"so no agent can reach them: {missing}"
+    )
 
 
 def test_no_rest_path_literal_lives_in_tripl_mcp() -> None:

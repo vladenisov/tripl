@@ -120,6 +120,31 @@ def _register_list(
             f"0..{events_api.SILENT_SINCE_DAYS_MAX}"
         ),
     )
+    # Two flags rather than one taking a value: the axis is tri-state and its
+    # third state is "leave the parameter off", which `--reviewed BOOL` could
+    # only spell as a magic word. Mutually exclusive so giving both is exit 2
+    # rather than a silent last-one-wins, and `default=None` on both is what
+    # keeps `reviewed=` off the wire when neither was given.
+    review = parser.add_mutually_exclusive_group()
+    review.add_argument(
+        "--reviewed",
+        dest="reviewed",
+        action="store_const",
+        const=True,
+        default=None,
+        help="keep only events already marked reviewed",
+    )
+    review.add_argument(
+        "--unreviewed",
+        dest="reviewed",
+        action="store_const",
+        const=False,
+        default=None,
+        help=(
+            "keep only events not yet marked reviewed (an axis of its own: an "
+            "event can be marked reviewed and still sit at --status in_review)"
+        ),
+    )
     parser.add_argument(
         "--offset",
         dest="offset",
@@ -191,6 +216,7 @@ def run_list(args: argparse.Namespace, config: Config) -> int:
                     meta_value=args.meta_value,
                     event_type_id=args.event_type_id,
                     silent_since_days=args.silent_since_days,
+                    reviewed=args.reviewed,
                     offset=offset,
                     limit=limit,
                     branch=branch.id,

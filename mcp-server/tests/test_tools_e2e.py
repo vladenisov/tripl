@@ -172,6 +172,35 @@ async def test_list_events_reads_the_page_through_the_shared_layer(
 
 
 @respx.mock
+async def test_list_events_sends_reviewed_only_when_the_agent_asks(
+    stdio_runtime: Runtime,
+) -> None:
+    """The filter has three states and one of them is an absent parameter.
+
+    ``reviewed`` is in EVENT_LIST_FIELDS, so an agent could already SEE the flag
+    on every row and had no way to filter on it. The false case is the one worth
+    a request of its own: "show me what nobody has reviewed" is the question the
+    tool exists for, and it is the value a truthiness filter anywhere between
+    here and httpx would quietly drop.
+    """
+    route = respx.get(f"{API_BASE}/projects/demo/events").mock(
+        return_value=httpx.Response(200, json={"items": [], "total": 0})
+    )
+
+    is_error, _ = await call_tool("list_events", {"slug": "demo"})
+    assert not is_error
+    assert "reviewed" not in route.calls.last.request.url.params
+
+    is_error, _ = await call_tool("list_events", {"slug": "demo", "reviewed": False})
+    assert not is_error
+    assert route.calls.last.request.url.params["reviewed"] == "false"
+
+    is_error, _ = await call_tool("list_events", {"slug": "demo", "reviewed": True})
+    assert not is_error
+    assert route.calls.last.request.url.params["reviewed"] == "true"
+
+
+@respx.mock
 async def test_write_tool_update_event_end_to_end(stdio_runtime: Runtime) -> None:
     # Arrange
     respx.get(f"{API_BASE}/projects/demo/branches/b-42").mock(

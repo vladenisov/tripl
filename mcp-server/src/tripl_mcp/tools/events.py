@@ -27,6 +27,7 @@ async def list_events(
     meta_value: str | None = None,
     event_type_id: str | None = None,
     silent_since_days: int | None = None,
+    reviewed: bool | None = None,
     offset: int | None = None,
     limit: int | None = None,
     branch_id: str | None = None,
@@ -42,6 +43,7 @@ async def list_events(
             meta_value=meta_value,
             event_type_id=event_type_id,
             silent_since_days=silent_since_days,
+            reviewed=reviewed,
             offset=offset,
             limit=limit,
             branch=branch_id,
@@ -120,7 +122,10 @@ def register(mcp: FastMCP) -> None:
             "List catalog events with structured filters (substring 'search' over "
             "name/description, repeatable lifecycle 'status' values draft/in_review/"
             "ready_for_dev/implemented/live/deprecated/archived, exact 'tag', "
-            "'meta_value' e.g. a ticket key, 'event_type_id', 'silent_since_days'). "
+            "'meta_value' e.g. a ticket key, 'event_type_id', 'silent_since_days', "
+            "'reviewed' true/false). 'reviewed' is an axis of its own, not a "
+            "spelling of 'status' - an event can be reviewed and still sit at "
+            "in_review - and omitting it means either. "
             "Returns trimmed items + total; follow up with get_event for full detail. "
             "Requires a tk_r_ or tk_w_ key."
         ),
