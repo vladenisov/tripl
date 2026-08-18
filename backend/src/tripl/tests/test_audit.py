@@ -1,7 +1,12 @@
+import uuid
+from datetime import UTC, datetime
+
 import pytest
 from httpx import AsyncClient
 
+from tripl.models.audit_log import AuditLog
 from tripl.services import audit_service
+from tripl.tests.conftest import TestSessionLocal
 
 
 def test_redact_masks_alerting_destination_secrets() -> None:
@@ -169,3 +174,49 @@ async def test_audit_covers_meta_field_variable_revision(client: AsyncClient) ->
         "variable.create",
         "plan_revision.create",
     } <= actions
+
+
+@pytest.mark.asyncio
+async def test_audit_paging_is_total_when_a_batch_shares_one_timestamp() -> None:
+    """One bulk action writes many rows under a single ``created_at``.
+
+    ``created_at`` is ``server_default=now()`` — ``transaction_timestamp()`` on
+    Postgres — so the inbox bulk route, which files one row per incident with
+    ``commit=False`` and commits once, stamps up to 200 rows identically. Ordering
+    on ``created_at`` alone leaves that tie group unordered, and each LIMIT/OFFSET
+    page is its own top-N sort with a different bound: rows could come back on two
+    pages and others on none. The ids here are fixed and ascending so descending-id
+    order is the reverse of insertion order — the assertion below fails on
+    insertion order, which is what an untied sort returns.
+    """
+    stamp = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
+    ids = [uuid.UUID(int=n) for n in range(1, 7)]
+
+    async with TestSessionLocal() as session:
+        for n, entry_id in enumerate(ids):
+            session.add(
+                AuditLog(
+                    id=entry_id,
+                    created_at=stamp,
+                    user_email="bulk@example.com",
+                    project_slug="audit-paging",
+                    action="alert_inbox.mute",
+                    target_type="alert_incident",
+                    target_name=f"incident-{n}",
+                    payload={},
+                )
+            )
+        await session.commit()
+
+        pages = [
+            await audit_service.list_entries(
+                session, project_slug="audit-paging", limit=2, offset=offset
+            )
+            for offset in (0, 2, 4)
+        ]
+
+    assert [page.total for page in pages] == [6, 6, 6]
+    seen = [entry.id for page in pages for entry in page.items]
+    # Every row reachable from exactly one page: nothing repeated, nothing lost.
+    assert sorted(seen) == sorted(ids)
+    assert seen == sorted(ids, reverse=True)

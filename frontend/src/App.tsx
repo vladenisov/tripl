@@ -4,7 +4,6 @@ import { useQuery } from '@tanstack/react-query'
 import { projectsApi } from './api/projects'
 import { AuthProvider } from './components/auth-provider'
 import { useAuth } from './components/auth-context'
-import { CommandPaletteProvider } from './components/command-palette'
 import { ErrorState } from './components/error-state'
 import Layout from './components/Layout'
 import { ThemeProvider } from './components/theme-provider'
@@ -261,19 +260,22 @@ function SettingsIndexRedirect() {
   return <Navigate to={`/settings/${target}`} replace />
 }
 
-/** Auth-gated mount of the full-takeover Settings area for a given section. */
+/**
+ * Auth-gated mount of the full-takeover Settings area for a given section.
+ *
+ * Ctrl+K here is served by the settings shell's own palette, not by the app's
+ * `CommandPaletteProvider`: that one scopes itself with `useParams().slug`, no
+ * /settings/* route declares one, and its fallback is `projects[0]` — so
+ * wrapping the takeover in it searched a project the area was not bound to
+ * while offering none of that project's destinations. See
+ * components/settings/settings-palette.tsx.
+ */
 function Takeover({ section }: { section: string }) {
   return (
     <RequireAuth>
-      {/* The settings takeover renders outside Layout, which is where the
-          palette provider lives — so Ctrl+K, the app's advertised way to get
-          anywhere, died on all 14 /settings/* routes (tripl-wd66). The provider
-          carries its own dialog and key listener, so wrapping here is enough. */}
-      <CommandPaletteProvider>
-        <Suspense fallback={<SessionFallback />}>
-          <SettingsArea section={section} />
-        </Suspense>
-      </CommandPaletteProvider>
+      <Suspense fallback={<SessionFallback />}>
+        <SettingsArea section={section} />
+      </Suspense>
     </RequireAuth>
   )
 }

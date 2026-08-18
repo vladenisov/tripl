@@ -4,7 +4,11 @@ import {
   useId,
 } from 'react'
 import { ChevronDown } from 'lucide-react'
-import { FieldControlIdContext, useFieldControlId } from '@/components/settings/field-control-id'
+import {
+  FieldControlIdContext,
+  createFieldControlIdSlot,
+  useFieldControlId,
+} from '@/components/settings/field-control-id'
 import { INPUT_BASE } from '@/components/settings/input-style'
 
 /**
@@ -139,12 +143,24 @@ export function Field({
   children: ReactNode
   stacked?: boolean
   last?: boolean
-  htmlFor?: string
+  /**
+   * The control this row's label names. `false` for a row that holds no
+   * labelable control at all — an avatar with two buttons, a role chip — where
+   * a generated `htmlFor` can only dangle.
+   */
+  htmlFor?: string | false
 }) {
   const generatedId = useId()
-  const effectiveFor = htmlFor ?? generatedId
+  const controlId = htmlFor === false ? null : (htmlFor ?? generatedId)
+  // Fresh per render so the id follows the row's current first control; the
+  // slot itself refuses to hand it to a second one (see field-control-id.ts).
+  const slot = controlId === null ? null : createFieldControlIdSlot(controlId)
   return (
     <div
+      // A row with no control is named as a group instead, so the two buttons
+      // or the chip inside it are still announced under "Avatar" / "Role".
+      role={controlId === null ? 'group' : undefined}
+      aria-labelledby={controlId === null ? generatedId : undefined}
       // Side-by-side label + control only from `sm` up. The 232px label gutter
       // plus its 24px gap left a phone's control column ~100px wide, so the
       // Name/Slug inputs measured 22px and ran off-screen (tripl-jfm3.40).
@@ -160,9 +176,15 @@ export function Field({
         style={stacked ? { marginBottom: 9 } : undefined}
       >
         <div className="flex items-center gap-2">
-          <label htmlFor={effectiveFor} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-            {label}
-          </label>
+          {controlId === null ? (
+            <span id={generatedId} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+              {label}
+            </span>
+          ) : (
+            <label htmlFor={controlId} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+              {label}
+            </label>
+          )}
           {labelRight}
         </div>
         {hint && (
@@ -172,9 +194,11 @@ export function Field({
         )}
       </div>
       <div className="min-w-0 flex-1">
-        <FieldControlIdContext.Provider value={effectiveFor}>
-          {children}
-        </FieldControlIdContext.Provider>
+        {slot ? (
+          <FieldControlIdContext.Provider value={slot}>{children}</FieldControlIdContext.Provider>
+        ) : (
+          children
+        )}
       </div>
     </div>
   )

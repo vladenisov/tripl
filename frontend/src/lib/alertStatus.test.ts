@@ -111,6 +111,38 @@ describe('what fired, on the card (tripl-oxkt.4)', () => {
     expect(label).not.toContain('88.318')
   })
 
+  it('keeps a sub-unit metric value instead of collapsing it to "0 vs 0"', () => {
+    // `metric` is a first-class alert scope and a `%` catalog metric STORES a
+    // fraction (0.08 == 8%) — these columns were migrated integer → float for
+    // exactly that (f9a0b1c2d3e4). Rounded, a purchase-conversion drop read
+    // "0 vs 0 expected · -66.7%": a card contradicting both its own delta and
+    // the "actual=4%, expected=12%" message the operator is holding.
+    expect(
+      incidentMagnitudeLabel(
+        makeGroup({
+          scope_type: 'metric',
+          scope_types: ['metric'],
+          actual_count: 0.04,
+          expected_count: 0.12,
+          percent_delta: -66.7,
+        }),
+      ),
+    ).toBe('0.04 vs 0.12 expected · -66.7%')
+    // A ratio metric has no ×100 to rescue it, and `toLocaleString()` alone caps
+    // at three FRACTION digits — which would round it to "0" a second way.
+    expect(
+      incidentMagnitudeLabel(
+        makeGroup({
+          scope_type: 'metric',
+          scope_types: ['metric'],
+          actual_count: 0.000123,
+          expected_count: 0.0009,
+          percent_delta: -86.3,
+        }),
+      ),
+    ).toBe('0.000123 vs 0.0009 expected · -86.3%')
+  })
+
   it('groups thousands the way the activity rail does', () => {
     expect(
       incidentMagnitudeLabel(

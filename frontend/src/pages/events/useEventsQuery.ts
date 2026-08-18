@@ -336,6 +336,12 @@ export function useEventsQuery({
   // one shot on large projects. Page through the match set in cap-sized chunks,
   // deduping by id in case rows shift between requests, and let each response's
   // `total` steer the loop (a short/empty page also ends it).
+  //
+  // The entry condition reads the LOADED `total`, which is 0 before the first
+  // page resolves and — under `placeholderData: prev` — still the previous
+  // filters' count while a change is in flight. Callers must gate on the query
+  // having settled (see EventsPage's `canExportCsv`) rather than read the empty
+  // result of those windows as "nothing matched".
   const fetchAllMatching = useCallback(async (): Promise<EventListItem[]> => {
     if (!slug || total === 0) return []
     const byId = new Map<string, EventListItem>()

@@ -227,6 +227,11 @@ export default function OverviewPage() {
   // events a legacy/backfill scan also collected), so it names that scan instead
   // of claiming to be the project total (tripl-jfm3.20).
   const volumeScanName = volumeQuery.data?.scan_config_name ?? null
+  // Present exactly when a scan config was resolved, which is what separates
+  // "this scan collected nothing in the window" from "nothing collects at all"
+  // — the backend returns a bare empty series with no scan id in the second
+  // case (metrics_service.get_project_total_metrics).
+  const volumeScanConfigId = volumeQuery.data?.scan_config_id ?? null
   // `isPending`, not `isLoading`: while the query waits on the projectQuery gate
   // it is pending but NOT fetching, so an `isLoading` check let the card claim
   // "No volume data yet." before it had even asked (tripl-jfjt).
@@ -355,7 +360,14 @@ export default function OverviewPage() {
           tripl-jfm3.20, where it plotted 2.4 % of windy-ios's volume directly
           above a "Top events" row 12× larger. */}
       <Panel
-        title={volumeScanName ? `Volume · ${volumeScanName}` : 'Volume'}
+        // The window is in the title because the card is capped at it and says
+        // so nowhere else — the caption reads "latest bucket · N buckets" and
+        // the sibling panel below already names its own ("Top events · 48h").
+        title={
+          volumeScanName
+            ? `Volume · ${volumeScanName} · ${VOLUME_WINDOW_DAYS}d`
+            : `Volume · ${VOLUME_WINDOW_DAYS}d`
+        }
         // Held through the pending state as well, so the header keeps its second
         // line instead of growing one when the series lands (tripl-jfjt).
         subtitle={volumeScanName || isVolumePending ? VOLUME_SUBTITLE : undefined}
@@ -374,8 +386,28 @@ export default function OverviewPage() {
         )}
         {!volumeQuery.isError && isVolumePending && <VolumeSkeleton />}
         {!volumeQuery.isError && !isVolumePending && volumePoints.length === 0 && (
+          // Two different facts, and the card used to report only the second.
+          // A scan whose last bucket predates the window has months of history
+          // and nothing here — that is a scan that stopped, the state the
+          // failing-scan chip above exists to surface, not an empty project.
+          // The drilldown carries a range selector, so it can show the rest.
           <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
-            No volume data yet.
+            {volumeScanConfigId ? (
+              <>
+                No volume in the last {VOLUME_WINDOW_DAYS} days.{' '}
+                <Link
+                  to={getMonitoringPath(slug!, {
+                    scope_type: 'project_total',
+                    scope_ref: volumeScanConfigId,
+                  })}
+                  style={{ color: 'var(--accent)' }}
+                >
+                  See this scan’s full history
+                </Link>
+              </>
+            ) : (
+              'No volume data yet.'
+            )}
           </div>
         )}
         {volumePoints.length > 0 && (

@@ -249,9 +249,17 @@ export function AlertingInbox({
   // set either may touch — it is exactly the set `ProjectAlertingTab`'s pruning
   // contract guarantees, so neither control can leave a selected id off screen.
   const selectableIds = useMemo(() => {
+    // Empty in the loading and error branches, because the body renders zero
+    // cards in both. The error one is the reachable case: the inbox polls on an
+    // interval, and TanStack v5 sets status 'error' on a failed background
+    // refetch while KEEPING `data` — so `inbox` still holds the loaded pages
+    // under a panel that shows only "Could not load". Derived from `inbox`
+    // alone, the header offered "Select all 50 shown" over an empty panel, and
+    // one click built a selection of fifty incidents nobody could see.
+    if (isLoading || isError) return []
     const loaded = (inbox?.items ?? []).map(group => group.correlation_group_id)
     return pinnedGroup ? [pinnedGroup.correlation_group_id, ...loaded] : loaded
-  }, [inbox, pinnedGroup])
+  }, [inbox, pinnedGroup, isLoading, isError])
   const selectedShownCount = selectableIds.filter(id => selectedIncidents.has(id)).length
   const allShownSelected =
     selectableIds.length > 0 && selectedShownCount === selectableIds.length

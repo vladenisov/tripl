@@ -143,10 +143,20 @@ async def list_entries(
         base = base.where(AuditLog.created_at < until)
         count_base = count_base.where(AuditLog.created_at < until)
 
+    # `created_at` alone is NOT a total order here. It is `server_default=now()`,
+    # i.e. Postgres `transaction_timestamp()`, so every row a batch writes shares
+    # one byte-identical value — the inbox bulk route (`record(..., commit=False)`
+    # in a loop) files up to 200 of them per click. LIMIT/OFFSET runs each page as
+    # its own top-N sort with a different bound, so ties are free to come out in a
+    # different order per page: paging through a tie group repeated some rows and
+    # made others unreachable. The primary key is unique, so appending it makes
+    # the order total and every page a slice of one sequence (tripl-5ydt).
     rows = (
         (
             await session.execute(
-                base.order_by(desc(AuditLog.created_at)).limit(limit).offset(offset)
+                base.order_by(desc(AuditLog.created_at), desc(AuditLog.id))
+                .limit(limit)
+                .offset(offset)
             )
         )
         .scalars()

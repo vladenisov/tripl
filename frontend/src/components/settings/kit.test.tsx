@@ -86,6 +86,38 @@ describe('Field label association', () => {
     expect(screen.getByLabelText('AI API key')).toHaveAttribute('type', 'password')
   })
 
+  it('gives the row id to one control only when a Field wraps several', () => {
+    // The metric form's "Filters" row wraps a filter editor that renders two
+    // Selects and a TextInput per condition. Handing all three the Field's id
+    // put duplicate ids on focusable elements and left the label resolving to
+    // whichever happened to come first in the DOM.
+    const { container } = render(
+      <Field label="Filters" stacked last>
+        <Select value="a" onChange={() => {}} options={['a']} aria-label="Column" />
+        <Select value="=" onChange={() => {}} options={['=']} aria-label="Operator" />
+        <TextInput value="" onChange={() => {}} aria-label="Value" />
+      </Field>,
+    )
+
+    const target = (container.querySelector('label') as HTMLLabelElement).htmlFor
+    const ids = Array.from(container.querySelectorAll('[id]')).map((el) => el.id)
+    expect(ids.filter((id) => id === target)).toHaveLength(1)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('names a row that holds no control as a group instead of dangling its label', () => {
+    // "Avatar" (two buttons), "Role" (a chip) and "Connection" (a test button)
+    // have nothing a <label> can point at, so they opt out and name a group.
+    const { container } = render(
+      <Field label="Role" htmlFor={false} last>
+        <span>Owner</span>
+      </Field>,
+    )
+
+    expect(container.querySelector('label')).toBeNull()
+    expect(screen.getByRole('group', { name: 'Role' })).toBeInTheDocument()
+  })
+
   it('leaves an explicitly passed id alone', () => {
     render(
       <Field label="Self-service registration" htmlFor="security-registration-mode">

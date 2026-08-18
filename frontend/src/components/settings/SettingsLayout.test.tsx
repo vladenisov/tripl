@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import { SettingsLayout } from './SettingsLayout'
@@ -184,6 +184,40 @@ describe('SettingsLayout unsaved-changes guard', () => {
     expect(await screen.findByRole('alertdialog')).toHaveTextContent(
       'Leave with unsaved changes?',
     )
+  })
+
+  it('warns before the command palette navigates the draft out of existence', async () => {
+    renderWithDraft()
+
+    // Ctrl+K is live on every settings route, so it is a way out of the
+    // takeover like any other and has to meet the same guard.
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
+    const palette = await screen.findByRole('dialog')
+    fireEvent.click(within(palette).getByText('Profile'))
+
+    expect(await screen.findByRole('alertdialog')).toHaveTextContent(
+      'Leave with unsaved changes?',
+    )
+    expect(screen.getByRole('alertdialog')).toHaveTextContent(DRAFT_MESSAGE)
+  })
+
+  it('stays silent when a palette destination keeps the draft', async () => {
+    renderWithDraft()
+
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
+    const palette = await screen.findByRole('dialog')
+    fireEvent.click(within(palette).getByText('Email'))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+
+  it('warns before Sign out drops the draft', async () => {
+    renderWithDraft()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
+
+    expect(await screen.findByRole('alertdialog')).toHaveTextContent(DRAFT_MESSAGE)
   })
 
   it('stays silent when the destination keeps the draft', () => {

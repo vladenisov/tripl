@@ -484,9 +484,12 @@ export function AlertDeliveryRow({
                             {/* All three are declared `float` on
                                 AlertDeliveryItemResponse, so interpolating them
                                 raw printed full JS precision — "88.318" for a
-                                count of events (tripl-nj4n). Rounded through the
-                                shared helper, unrounded in the title for anyone
-                                reconciling against the detector. */}
+                                count of events (tripl-nj4n). The shared helper
+                                rounds by value, not unconditionally: the
+                                `scope_type` two cells left can be `metric`, and
+                                those columns are float precisely so a sub-unit
+                                measurement survives. Unrounded in the title for
+                                anyone reconciling against the detector. */}
                             <TableCell className="text-xs" title={String(item.actual_count)}>
                               {formatIncidentCount(item.actual_count)}
                             </TableCell>

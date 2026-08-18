@@ -9,9 +9,17 @@ const PIN_LEFT_VAR = '--tripl-events-pin-left'
 /** `none`, or the shadow the pinned cluster casts once content scrolls under it. */
 const PIN_SHADOW_VAR = '--tripl-events-pin-shadow'
 
-/** Reorder handle (34px) + checkbox (40px) — the natural widths of the two
- *  utility columns left of EVENT, used until the real measurement lands. */
-const PIN_LEFT_FALLBACK_PX = 74
+/** The left-sticky class from index.css. Every cell carrying it sticks at
+ *  `left: 0`, so the cells left of EVENT that carry it are exactly the ones
+ *  EVENT has to clear once the table scrolls. */
+const PIN_CLASS = 'tripl-pin-l'
+
+/** Checkbox width (40px) — the only cell stuck left of EVENT — used until the
+ *  real measurement lands. NOT the EVENT column's natural offset (handle 34px +
+ *  checkbox 40px): the reorder handle is not sticky, so it scrolls out from
+ *  under EVENT and a 74px pin would leave a 34px hole in the cluster with
+ *  un-pinned header labels and row text scrolling through it. */
+const PIN_LEFT_FALLBACK_PX = 40
 
 // Tinted from --fg rather than a fixed black so the edge reads in both themes.
 const PIN_SHADOW = '8px 0 10px -8px color-mix(in srgb, var(--fg) 30%, transparent)'
@@ -21,12 +29,12 @@ const PIN_SHADOW = '8px 0 10px -8px color-mix(in srgb, var(--fg) 30%, transparen
  *
  * `.tripl-pin-l` (index.css) already supplies `position: sticky` plus the
  * opaque default/hover/selected backgrounds a sticky cell needs; what it cannot
- * supply is this column's `left`, because that depends on the two utility
- * columns' rendered widths. Its `left: 0` and tight 2px/8px gutters belong to
- * the checkbox column, so both are overridden here.
+ * supply is this column's `left`, because that depends on the rendered width of
+ * the sticky checkbox column it butts against. Its `left: 0` and tight 2px/8px
+ * gutters belong to the checkbox column, so both are overridden here.
  *
  * The EVENT *header* cell must also carry `data-pinned="true"` — that is what
- * the measurement below reads the offset from, and what keeps a column that
+ * the measurement below locates the column by, and what keeps a column that
  * never leaves out of the off-screen count.
  */
 export const PINNED_EVENT_CELL_STYLE: CSSProperties = {
@@ -34,6 +42,38 @@ export const PINNED_EVENT_CELL_STYLE: CSSProperties = {
   boxShadow: `var(${PIN_SHADOW_VAR}, none)`,
   paddingLeft: 10,
   paddingRight: 10,
+}
+
+/**
+ * Where the pinned EVENT column comes to rest, and where the pinned cluster
+ * ends, both in the scroller's viewport space.
+ *
+ * `pinLeft` is the width of the cells that stay put in front of EVENT — the
+ * `PIN_CLASS` ones, which index.css sticks at `left: 0` — NOT EVENT's own
+ * `offsetLeft`. The reorder handle sits in that natural offset but is not
+ * sticky, so it scrolls away; pinning EVENT behind it left the band between the
+ * stuck checkbox and EVENT showing whatever un-pinned column happened to be
+ * under it.
+ */
+export function measurePinnedGeometry(
+  headerCells: readonly HTMLTableCellElement[],
+  scrollLeft: number,
+): { pinLeft: number; pinnedRight: number } {
+  const pinnedIndex = headerCells.findIndex(cell => cell.dataset.pinned === 'true')
+  if (pinnedIndex === -1) return { pinLeft: 0, pinnedRight: 0 }
+
+  let pinLeft = 0
+  for (let i = 0; i < pinnedIndex; i += 1) {
+    if (headerCells[i].classList.contains(PIN_CLASS)) pinLeft += headerCells[i].offsetWidth
+  }
+
+  // The cluster stops moving once it is stuck, so its right edge is measured
+  // from whichever is further right: EVENT's scrolled x, or its stuck x.
+  const pinned = headerCells[pinnedIndex]
+  return {
+    pinLeft,
+    pinnedRight: Math.max(pinLeft, pinned.offsetLeft - scrollLeft) + pinned.offsetWidth,
+  }
 }
 
 function measureOverflow(table: HTMLTableElement): number {
@@ -44,13 +84,15 @@ function measureOverflow(table: HTMLTableElement): number {
   const { scrollLeft, clientWidth } = scroller
   table.style.setProperty(PIN_SHADOW_VAR, scrollLeft > 0 ? PIN_SHADOW : 'none')
 
-  const pinned = Array.from(headerCells).find(cell => cell.dataset.pinned === 'true')
-  if (pinned) table.style.setProperty(PIN_LEFT_VAR, `${pinned.offsetLeft}px`)
-  // Everything left of this x is covered by the pinned cluster, not readable.
-  const pinnedRight = pinned ? pinned.offsetLeft + pinned.offsetWidth : 0
+  const cells = Array.from(headerCells)
+  // Everything left of `pinnedRight` is covered by the pinned cluster, not readable.
+  const { pinLeft, pinnedRight } = measurePinnedGeometry(cells, scrollLeft)
+  // A zero measurement means the table has no layout yet (hidden pane, first
+  // paint) — keep the CSS fallback rather than slamming EVENT against the edge.
+  if (pinLeft > 0) table.style.setProperty(PIN_LEFT_VAR, `${pinLeft}px`)
 
   let offscreen = 0
-  for (const cell of headerCells) {
+  for (const cell of cells) {
     // Only headed data columns count. The reorder handle and the select-all
     // checkbox carry no label, and the pinned EVENT column never leaves.
     if (cell.dataset.pinned === 'true' || !cell.textContent?.trim()) continue

@@ -151,8 +151,17 @@ export function resolveTitleFromPath(pathname: string): { label: string; slug?: 
     // owner-operator who has several of them open at once (tripl-xl9r).
     const sectionPath = parts.slice(1).join('/')
     if (!sectionPath) return { label: 'Settings' }
+    // Longest rail prefix wins, then the section parent. A route can be deeper
+    // than the rail entry it belongs to — `/settings/data-sources/<id>` is the
+    // one in App.tsx, and it is where opening a data-source row lands — and
+    // exact-matching the full path alone titled that tab the generic "Settings"
+    // instead of inheriting "Data sources" from the entry above it.
     const label =
-      SETTINGS_RAIL_LABELS[sectionPath] ?? SETTINGS_PARENT_LABELS[parts[1]] ?? 'Settings'
+      SETTINGS_RAIL_LABELS[sectionPath] ??
+      SETTINGS_RAIL_LABELS[parts.slice(1, 3).join('/')] ??
+      SETTINGS_RAIL_LABELS[parts[1]] ??
+      SETTINGS_PARENT_LABELS[parts[1]] ??
+      'Settings'
     return { label }
   }
   if (parts[0] === 'p' && parts[1]) {

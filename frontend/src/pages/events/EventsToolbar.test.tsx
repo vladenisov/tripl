@@ -37,6 +37,7 @@ function renderToolbar(overrides: Partial<React.ComponentProps<typeof EventsTool
       metaFields={[]}
       onToggleColumn={() => {}}
       onExportCsv={onExportCsv}
+      canExport
       isExporting={false}
       onNewEvent={() => {}}
       {...overrides}
@@ -76,5 +77,19 @@ describe('EventsToolbar More menu (tripl-evbw)', () => {
 
     fireEvent.click(exportItem)
     expect(onExportCsv).toHaveBeenCalledTimes(1)
+  })
+
+  it('withholds the export until the loaded view matches the current filters', async () => {
+    // The export sweeps from the loaded page's `total`, so offering it against a
+    // not-yet-loaded (or stale placeholder) page downloads a header-only file.
+    const { onExportCsv } = renderToolbar({ canExport: false })
+
+    fireEvent.keyDown(screen.getByRole('button', { name: 'More actions' }), { key: 'Enter' })
+
+    const exportItem = await screen.findByRole('menuitem', { name: /Export CSV/ })
+    expect(exportItem).toHaveAttribute('aria-disabled', 'true')
+
+    fireEvent.click(exportItem)
+    expect(onExportCsv).not.toHaveBeenCalled()
   })
 })

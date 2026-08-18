@@ -3,11 +3,13 @@ import { Link, useNavigate } from 'react-router-dom'
 import { ChevronLeft, LogOut, Menu } from 'lucide-react'
 import { useAuth } from '@/components/auth-context'
 import { useConfirm } from '@/hooks/useConfirm'
+import { SETTINGS_CONTENT_ID } from './landmarks'
 import { visibleGroupsAll } from './nav'
+import { SettingsCommandPalette } from './settings-palette'
 import { UnsavedChangesProvider, type UnsavedWork } from './unsaved-changes'
+import type { Project } from '@/types'
 
 const RAIL_TITLE_ID = 'settings-rail-title'
-const SETTINGS_CONTENT_ID = 'settings-content'
 
 /**
  * Full-viewport takeover shell for the Settings area (Linear/Vercel pattern).
@@ -24,6 +26,7 @@ export function SettingsLayout({
   activePath,
   backHref,
   projectName,
+  projects = [],
   children,
 }: {
   /** Current section path (e.g. 'project/general'). */
@@ -32,6 +35,9 @@ export function SettingsLayout({
   backHref: string
   /** Active project name, used to personalize the Project group sub-label. */
   projectName?: string
+  /** Workspace projects, offered as palette destinations. Already fetched by
+   *  SettingsArea, so the palette never issues a query of its own. */
+  projects?: readonly Project[]
   children: ReactNode
 }) {
   const auth = useAuth()
@@ -66,6 +72,35 @@ export function SettingsLayout({
   const unsavedChanges = useMemo(() => ({ registerUnsaved }), [registerUnsaved])
 
   /**
+   * The draft that leaving for `settingsPath` would discard — null for a
+   * destination that keeps it, or when there is none. `null` as the path means
+   * leaving the settings area entirely, which no draft survives.
+   *
+   * The predicate lives here alone so that every way out of the takeover asks
+   * the same question: the rail, the palette and Sign out all used to answer it
+   * separately, and two of them answered "no" unconditionally (tripl-l8v2).
+   */
+  const draftAtRisk = (settingsPath: string | null): UnsavedWork | null => {
+    if (!unsaved) return null
+    if (settingsPath !== null && unsaved.keptBy(settingsPath)) return null
+    return unsaved
+  }
+
+  /** Resolves true when leaving is safe, or once the user has accepted the loss. */
+  const confirmLeave = async (settingsPath: string | null): Promise<boolean> => {
+    const work = draftAtRisk(settingsPath)
+    if (!work) return true
+    const leave = await confirm({
+      title: 'Leave with unsaved changes?',
+      message: work.message,
+      confirmLabel: 'Leave',
+      variant: 'danger',
+    })
+    if (leave) setUnsaved(null)
+    return leave
+  }
+
+  /**
    * Intercept a rail link only when following it would discard unsaved work.
    * Modified clicks (new tab / new window) are left to the browser — the whole
    * point of rendering real anchors here was to make those work (tripl-wd66).
@@ -78,25 +113,45 @@ export function SettingsLayout({
     closeRail()
     if (event.defaultPrevented || event.button !== 0) return
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
-    if (!unsaved) return
-    if (settingsPath !== null && unsaved.keptBy(settingsPath)) return
+    if (!draftAtRisk(settingsPath)) return
 
     event.preventDefault()
-    void confirm({
-      title: 'Leave with unsaved changes?',
-      message: unsaved.message,
-      confirmLabel: 'Leave',
-      variant: 'danger',
-    }).then((leave) => {
-      if (!leave) return
-      setUnsaved(null)
-      navigate(href)
+    void confirmLeave(settingsPath).then((leave) => {
+      if (leave) navigate(href)
+    })
+  }
+
+  /** The palette's way out: no anchor to intercept, same predicate. */
+  const leaveTo = (href: string, settingsPath: string | null) => {
+    closeRail()
+    void confirmLeave(settingsPath).then((leave) => {
+      if (leave) navigate(href)
+    })
+  }
+
+  /** Signing out unmounts the section too, so it is a leave like any other. */
+  const signOut = () => {
+    void confirmLeave(null).then((leave) => {
+      if (leave) void auth.logout().then(() => navigate('/auth'))
     })
   }
 
   return (
     <div className="relative flex h-screen overflow-hidden" style={{ background: 'var(--bg)' }}>
       {dialog}
+      {/* Ctrl+K. The takeover mounts outside Layout, so the app palette's
+          provider never reached these 14 routes (tripl-wd66) — and mounting it
+          here would have bound it to `projects[0]`, since no /settings/* route
+          carries a :slug. This one is scoped to what the area actually knows,
+          and leaves through the same guard the rail uses. */}
+      <SettingsCommandPalette
+        activePath={activePath}
+        backHref={backHref}
+        isOwner={isOwner}
+        projects={projects}
+        onLeave={leaveTo}
+        onSignOut={signOut}
+      />
       {/* Same bypass block as the app shell — the settings rail is a ~20-stop
           repeated block on every settings page. */}
       <a href={`#${SETTINGS_CONTENT_ID}`} className="skip-link">
@@ -225,9 +280,7 @@ export function SettingsLayout({
             title={auth.isLoggingOut ? 'Signing out…' : 'Sign out'}
             aria-label="Sign out"
             disabled={auth.isLoggingOut}
-            onClick={() => {
-              void auth.logout().then(() => navigate('/auth'))
-            }}
+            onClick={signOut}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors disabled:opacity-50"
             style={{ color: 'var(--fg-subtle)' }}
             onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--fg)')}

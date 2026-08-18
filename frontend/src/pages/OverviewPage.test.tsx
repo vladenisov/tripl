@@ -45,6 +45,10 @@ interface MockOpts {
   events?: Array<{ id: string; name: string }>
   sources?: unknown[]
   scanConfigName?: string | null
+  /** `null` models a project with no scan config at all — the bare empty series. */
+  scanConfigId?: string | null
+  /** `[]` models a scan whose buckets all predate the card's 7-day window. */
+  volumeData?: Array<{ bucket: string; count: number; expected_count: number | null }>
   kpiSeries?: number[]
   eventNameRequests?: string[]
   topEvents?: Array<{ event_id: string; name: string; total_count: number }>
@@ -59,14 +63,14 @@ function mockFetch(opts?: MockOpts) {
       if (opts?.holdVolume) return new Promise<Response>(() => {})
       return jsonResponse({
         scope: 'project_total',
-        scan_config_id: 'scan-1',
+        scan_config_id: opts?.scanConfigId === undefined ? 'scan-1' : opts.scanConfigId,
         // The card charts ONE scan config and names it (tripl-jfm3.20).
         scan_config_name: opts?.scanConfigName ?? 'Snowplow Pageviews (iOS)',
         event_id: null,
         event_type_id: null,
         interval: 'hour',
         latest_signal: null,
-        data: [
+        data: opts?.volumeData ?? [
           { bucket: 'b1', count: 10, expected_count: null },
           { bucket: 'b2', count: 25, expected_count: null },
         ],
@@ -178,7 +182,7 @@ describe('OverviewPage', () => {
     renderOverview()
 
     expect(
-      await screen.findByText('Volume · Snowplow Pageviews (iOS)'),
+      await screen.findByText('Volume · Snowplow Pageviews (iOS) · 7d'),
     ).toBeInTheDocument()
     expect(screen.queryByText('Volume · project total')).not.toBeInTheDocument()
     expect(
@@ -195,7 +199,7 @@ describe('OverviewPage', () => {
     const fetchSpy = mockFetch()
     renderOverview()
 
-    expect(await screen.findByText('Volume · Snowplow Pageviews (iOS)')).toBeInTheDocument()
+    expect(await screen.findByText('Volume · Snowplow Pageviews (iOS) · 7d')).toBeInTheDocument()
 
     const totalUrl = fetchSpy.mock.calls
       .map(([input]) => String(input))
@@ -221,7 +225,7 @@ describe('OverviewPage', () => {
     expect(await screen.findByText('No recent activity.')).toBeInTheDocument()
 
     // ...while the volume card holds its shape instead of a bare string.
-    const volumeCard = (await screen.findByText('Volume')).closest('section')
+    const volumeCard = (await screen.findByText('Volume · 7d')).closest('section')
     expect(volumeCard).not.toBeNull()
     expect(
       (volumeCard as HTMLElement).querySelectorAll('[data-slot="skeleton"]').length,
@@ -237,12 +241,38 @@ describe('OverviewPage', () => {
     ).toBeInTheDocument()
   })
 
-  it('falls back to a bare "Volume" title when no scan is resolved', async () => {
+  it('falls back to an unnamed volume title when no scan is resolved', async () => {
     mockFetch({ scanConfigName: null })
     renderOverview()
 
-    expect(await screen.findByText('Volume')).toBeInTheDocument()
+    expect(await screen.findByText('Volume · 7d')).toBeInTheDocument()
     expect(screen.queryByText('Volume · project total')).not.toBeInTheDocument()
+  })
+
+  it('names the window on the volume card, and blames the window when it is empty', async () => {
+    // The card is capped at 7 days but said so nowhere, so a scan that stopped
+    // more than a week ago — the state the failing-scan chip exists to surface —
+    // rendered "No volume data yet." over a project with months of buckets.
+    mockFetch({ volumeData: [] })
+    renderOverview()
+
+    expect(await screen.findByText(/No volume in the last 7 days\./)).toBeInTheDocument()
+    expect(screen.queryByText('No volume data yet.')).not.toBeInTheDocument()
+    // The drilldown carries a range selector, so it can show what the window hides.
+    expect(screen.getByRole('link', { name: /See this scan’s full history/ })).toHaveAttribute(
+      'href',
+      '/p/demo/monitoring/project-total/scan-1',
+    )
+  })
+
+  it('still says "yet" when the project has no scan config at all', async () => {
+    // The one case where nothing has ever been collected: the endpoint returns a
+    // bare empty series with no scan id, so no window can be blamed.
+    mockFetch({ volumeData: [], scanConfigId: null, scanConfigName: null })
+    renderOverview()
+
+    expect(await screen.findByText('No volume data yet.')).toBeInTheDocument()
+    expect(screen.queryByText(/No volume in the last 7 days/)).not.toBeInTheDocument()
   })
 
   it('says the top-events panel spans every scan (tripl-jfm3.20)', async () => {

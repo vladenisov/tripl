@@ -130,6 +130,29 @@ describe('AnomaliesPage — scope names (tripl-nxk2.4, tripl-y4wt)', () => {
     ).toBeInTheDocument()
   })
 
+  it('says an unnameable scope is gone, instead of shimmering at the operator forever', async () => {
+    // scope_name null is terminal — the entity was deleted, never "still
+    // loading". `animate-pulse` is this app's Skeleton and OverviewPage uses the
+    // identical h-3 w-32 bar to mean "fetching", while the table here is already
+    // gated on isLoading — so the shimmer made a permanent state read as a
+    // pending one, and the operator waits and refreshes on a row that will never
+    // change.
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({ direction: 'drop' }),
+      makeSignal({ scope_type: 'event', scope_ref: 'ev-9', event_id: null }),
+    ])
+
+    renderAnomalies()
+
+    const metricScope = await screen.findByRole('img', { name: 'Metric 9136d575' })
+    expect(metricScope.className).not.toContain('animate-pulse')
+    // Readable at a glance and selectable, not hover-only.
+    expect(metricScope).toHaveTextContent('deleted metric')
+    expect(await screen.findByRole('img', { name: 'Event ev-9' })).toHaveTextContent(
+      'deleted event',
+    )
+  })
+
   it('names event-type and event scopes from the signal payload', async () => {
     vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({ scope_type: 'event_type', scope_ref: 'et-1', scope_name: 'Signup' }),

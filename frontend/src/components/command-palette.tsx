@@ -291,6 +291,19 @@ type KnowledgeState = 'off' | 'searching' | 'error' | 'empty' | 'results'
  */
 const STALE_RESULT_OPACITY = 0.55
 
+/**
+ * Is `next` the search that produced `held`, one keystroke on?
+ *
+ * Either direction, because both typing and backspacing refine: "check" holds
+ * while "checko" is in flight, and "checkout" holds while "checkou" is. An empty
+ * `held` means this palette session has never had rows, so there is nothing it
+ * is entitled to keep.
+ */
+function isSearchRefinement(held: string, next: string): boolean {
+  if (!held) return false
+  return held.startsWith(next) || next.startsWith(held)
+}
+
 function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
   const { open, setOpen } = useCommandPalette()
   const navigate = useNavigate()
@@ -345,7 +358,34 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
     // Escape (tripl-2x5d). Same treatment as the audit table's paging query.
     placeholderData: keepPreviousData,
   })
-  const searchResults = useMemo(() => searchQuery.data?.items ?? [], [searchQuery.data])
+  // Which query the rows on screen answer, or '' when this session has none.
+  // React Query's observer keeps its last defined data for its own lifetime, and
+  // that is the PAGE's lifetime here: CommandPaletteProvider mounts the palette
+  // permanently and only the Dialog unmounts. So `placeholderData` above hands
+  // the same rows back to every later query, including a session that has typed
+  // something unrelated — the previous search's results, dimmed under "Updating
+  // results…" and still the rows Enter acts on, above an input reading nothing
+  // like them.
+  const [heldQuery, setHeldQuery] = useState('')
+  // Dropping below the two-character floor abandons the search, whichever way it
+  // happened — clearing the input, Esc, or running a command. Adjusted during
+  // render rather than in an effect: an effect would leave one painted frame in
+  // which stale rows are still presented as answering the new input.
+  const settledQuery =
+    query.trim().length < 2
+      ? ''
+      : searchQuery.isSuccess && !searchQuery.isPlaceholderData
+        ? debouncedQuery
+        : heldQuery
+  if (settledQuery !== heldQuery) setHeldQuery(settledQuery)
+
+  const searchResults = useMemo(
+    () =>
+      !searchQuery.isPlaceholderData || isSearchRefinement(heldQuery, debouncedQuery)
+        ? searchQuery.data?.items ?? []
+        : [],
+    [searchQuery.data, searchQuery.isPlaceholderData, heldQuery, debouncedQuery],
+  )
   const searchGroups = useMemo(() => groupSearchResults(searchResults), [searchResults])
 
   const aiEnabled = useAiStatus(searchSlug)
@@ -683,10 +723,11 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
                     </div>
                   </Group>
                 ) : searchGroups.length === 0 ? (
-                  // Only reachable while searching with nothing fetched yet —
-                  // the first query of a palette session. Once there are rows,
-                  // the branch below keeps them and says so, rather than
-                  // emptying the dialog for the length of the round trip.
+                  // Only reachable while searching with nothing this session may
+                  // keep — its first query, or the first after the input was
+                  // cleared. Once there are rows, the branch below keeps them
+                  // and says so, rather than emptying the dialog for the length
+                  // of the round trip.
                   <Group heading="Searching knowledge…">
                     <div
                       className="px-3.5 py-2 text-[11.5px]"

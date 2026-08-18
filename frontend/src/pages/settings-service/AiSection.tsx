@@ -90,7 +90,8 @@ export function AiSection({
             </Button>
           </div>
         </Field>
-        <Field label="Connection" last>
+        {/* A test button and its status line, not a control to be named. */}
+        <Field label="Connection" last htmlFor={false}>
           <div className="flex items-center gap-2">
             <Button
               type="button"

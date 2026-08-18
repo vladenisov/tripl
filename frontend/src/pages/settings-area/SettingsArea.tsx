@@ -91,9 +91,21 @@ export default function SettingsArea({ section }: { section: string }) {
   const backHref = slug ? `/p/${slug}/events` : '/workspace'
 
   return (
-    <SettingsLayout activePath={section} backHref={backHref} projectName={projectName}>
+    <SettingsLayout
+      activePath={section}
+      backHref={backHref}
+      projectName={projectName}
+      projects={projects}
+    >
       <Suspense fallback={<SectionFallback />}>
-        {renderSection({ section, slug, isOwner, projects, onPickProject: pickProject })}
+        {renderSection({
+          section,
+          slug,
+          isOwner,
+          projects,
+          projectsStatus: projectsQuery.status,
+          onPickProject: pickProject,
+        })}
       </Suspense>
     </SettingsLayout>
   )
@@ -104,12 +116,14 @@ function renderSection({
   slug,
   isOwner,
   projects,
+  projectsStatus,
   onPickProject,
 }: {
   section: string
   slug: string | undefined
   isOwner: boolean
   projects: Project[]
+  projectsStatus: 'pending' | 'error' | 'success'
   onPickProject: (slug: string) => void
 }) {
   if (section === 'members') return <MembersSection />
@@ -122,7 +136,11 @@ function renderSection({
     return <InstanceSection section={section.slice('instance/'.length)} />
   }
   // Everything below is project-scoped. Never guess which project that is.
-  if (!slug) return <NoProjectSelected projects={projects} onPick={onPickProject} />
+  if (!slug) {
+    return (
+      <NoProjectSelected projects={projects} status={projectsStatus} onPick={onPickProject} />
+    )
+  }
   if (section === 'project/plan-rules') return <PlanRulesSection />
   return <ProjectGeneralSection slug={slug} />
 }
@@ -135,11 +153,33 @@ function renderSection({
  */
 function NoProjectSelected({
   projects,
+  status,
   onPick,
 }: {
   projects: Project[]
+  status: 'pending' | 'error' | 'success'
   onPick: (slug: string) => void
 }) {
+  // "There is no project on this workspace yet" is a claim about the server's
+  // answer, so it may not be made before the answer arrives. Nothing warms the
+  // ['projects'] cache on a /settings/* route — these routes mount outside
+  // Layout — so on a cold load every owner of five projects was told they had
+  // none for the length of the GET, and offered "Create one in the workspace".
+  if (status === 'pending') return <SectionFallback />
+
+  if (status === 'error') {
+    return (
+      <SCard
+        title="No project selected"
+        description="The project list could not be loaded, so these settings have nothing to bind to."
+      >
+        <p className="m-0 px-[18px] py-[15px] text-[13px]" style={{ color: 'var(--fg-subtle)' }}>
+          Reload the page to try again.
+        </p>
+      </SCard>
+    )
+  }
+
   if (projects.length === 0) {
     return (
       <SCard

@@ -146,6 +146,21 @@ describe('DemoWelcomePanel — how much of the Overview it occupies', () => {
     expect(screen.getByRole('heading', { name: /Welcome to your demo workspace/ })).toBeInTheDocument()
   })
 
+  it('opens the tour at the step stored since the panel mounted', () => {
+    renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
+
+    // The banner hosts a second ProductTour on this same page. Stepping that one
+    // forward writes the position, and nothing remounts the panel — so a tour
+    // held mounted here would still be on the index it captured at first render
+    // and its first Next would write that back over the stored step.
+    window.localStorage.setItem('tripl-tour:acme', '3')
+
+    expandWelcome()
+    fireEvent.click(screen.getByRole('button', { name: /Take the tour/ }))
+
+    expect(screen.getByText(/^Step 4 of/)).toBeInTheDocument()
+  })
+
   it('points at the real product, not only at more demo (tripl-1mzh)', () => {
     renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
     expandWelcome()

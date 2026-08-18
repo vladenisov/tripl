@@ -185,6 +185,43 @@ describe('AuditTab — paging (tripl-5ydt)', () => {
     )
   })
 
+  it('says the next page is loading and refuses a second step until it lands', async () => {
+    listMock.mockResolvedValue(auditPage(50, 254))
+    renderTab()
+
+    const older = await screen.findByRole('button', { name: 'Older' })
+    let releasePage2: (value: AuditListResponse) => void = () => {}
+    listMock.mockReturnValueOnce(
+      new Promise<AuditListResponse>((resolve) => {
+        releasePage2 = resolve
+      }),
+    )
+
+    fireEvent.click(older)
+    await waitFor(() =>
+      expect(listMock).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 50 })),
+    )
+
+    // keepPreviousData holds page 1 on screen for the whole round trip, so the
+    // caption has to keep describing page 1: it used to read "Showing 51–100"
+    // above rows 1–50, i.e. name rows the list was not showing.
+    expect(screen.getByText(/Showing the most recent 50 of 254 entries/)).toBeInTheDocument()
+    expect(screen.getByText('Updating…')).toBeInTheDocument()
+
+    // Nothing on screen changed, so the obvious reaction is to click again. That
+    // moved the key to offset 100 and the offset-50 response was dropped
+    // unrendered — rows 51–100 unreachable, with no sign a page was skipped.
+    expect(screen.getByRole('button', { name: 'Older' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Newer' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Older' }))
+    expect(listMock).not.toHaveBeenCalledWith(expect.objectContaining({ offset: 100 }))
+
+    releasePage2(auditPage(50, 254))
+
+    expect(await screen.findByText('Showing 51–100 of 254 entries.')).toBeInTheDocument()
+    expect(screen.queryByText('Updating…')).toBeNull()
+  })
+
   it('hides the pager when one page holds everything', async () => {
     listMock.mockResolvedValue(auditPage(3, 3))
     renderTab()

@@ -169,6 +169,76 @@ describe('Instance settings destructive actions', () => {
   })
 })
 
+describe('Instance settings write-through vs the unsaved draft', () => {
+  /**
+   * `form` spans all six sections and switching between two instance sections
+   * keeps this component mounted, so the draft the leave-guard protects
+   * (tripl-l8v2) is exactly what Reset and Clear used to overwrite: both adopted
+   * the whole settings response, and the response cannot contain an edit that
+   * was never sent.
+   */
+  function renderInstanceSettings(section: 'ai' | 'email') {
+    vi.spyOn(serviceSettingsApi, 'get').mockResolvedValue(SETTINGS)
+    const update = vi.spyOn(serviceSettingsApi, 'update').mockResolvedValue(SETTINGS)
+    update.mockClear()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const tree = (current: 'ai' | 'email') => (
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={ownerAuthValue()}>
+          <ServiceSettingsSection section={current} />
+        </AuthContext.Provider>
+      </QueryClientProvider>
+    )
+    const view = render(tree(section))
+    return { update, showSection: (next: 'ai' | 'email') => view.rerender(tree(next)) }
+  }
+
+  const PROMPT = 'You answer in German.'
+
+  it('keeps an unsaved prompt when another section is reset', async () => {
+    const { update, showSection } = renderInstanceSettings('ai')
+
+    fireEvent.change(await screen.findByLabelText('Ask prompt'), { target: { value: PROMPT } })
+    // AI → Email keeps this component mounted, which is why the draft is still
+    // alive when the Email reset writes through.
+    showSection('email')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Reset to defaults/ }))
+    const dialog = await screen.findByRole('alertdialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Reset section' }))
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
+
+    showSection('ai')
+    expect(await screen.findByLabelText('Ask prompt')).toHaveValue(PROMPT)
+  })
+
+  it('keeps an unsaved prompt when a stored secret is cleared', async () => {
+    const { update } = renderInstanceSettings('ai')
+
+    fireEvent.change(await screen.findByLabelText('Ask prompt'), { target: { value: PROMPT } })
+
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Clear' }))[0]!)
+    const dialog = await screen.findByRole('alertdialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith({ ai: { ai_api_key: null } }))
+
+    expect(screen.getByLabelText('Ask prompt')).toHaveValue(PROMPT)
+  })
+
+  it('names the unsaved edits a reset of this section does drop', async () => {
+    renderInstanceSettings('ai')
+
+    fireEvent.change(await screen.findByLabelText('Ask prompt'), { target: { value: PROMPT } })
+    fireEvent.click(await screen.findByRole('button', { name: /Reset to defaults/ }))
+
+    // The confirm enumerates every other consequence; it may not stay silent
+    // about the one the user can see on screen.
+    expect(await screen.findByRole('alertdialog')).toHaveTextContent(
+      /Changes you made in AI but have not saved are dropped as well/,
+    )
+  })
+})
+
 describe('Instance settings save row', () => {
   it('states when this section’s overrides start being obeyed', async () => {
     renderSection('storage')

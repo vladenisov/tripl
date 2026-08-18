@@ -228,9 +228,24 @@ export function AuditTab({ slug }: { slug: string }) {
 
   const items = listQuery.data?.items ?? []
   const total = listQuery.data?.total ?? 0
-  const rangeStart = offset + 1
-  const rangeEnd = offset + items.length
-  const hasNewer = offset > 0
+  // `placeholderData` holds the previous page on screen for the whole round
+  // trip, so `offset` — which advances the instant Older is clicked — describes
+  // rows that are not there yet. Every count below is read off the offset the
+  // VISIBLE rows came from instead, or the caption asserted "Showing 51–100"
+  // above rows 1–50 and `hasOlder` kept the button live for a second click that
+  // jumped straight to 100, discarding the page in flight.
+  const [settledOffset, setSettledOffset] = useState(0)
+  const isPaging = listQuery.isPlaceholderData
+  // Adjusted during render, not in an effect: this follows the query the way
+  // React documents following a prop, and an effect would paint one frame with
+  // the fresh rows still described by the previous offset.
+  if (listQuery.isSuccess && !listQuery.isPlaceholderData && settledOffset !== offset) {
+    setSettledOffset(offset)
+  }
+
+  const rangeStart = settledOffset + 1
+  const rangeEnd = settledOffset + items.length
+  const hasNewer = settledOffset > 0
   const hasOlder = rangeEnd < total
 
   const toggle = (id: string) => {
@@ -391,7 +406,7 @@ export function AuditTab({ slug }: { slug: string }) {
                 : 'No audit entries yet. Future schema or data-source changes will show up here.'}
             </div>
           ) : (
-            <ul className="divide-y">
+            <ul className="divide-y" aria-busy={isPaging}>
               {items.map((entry) => {
                 const isOpen = expanded.has(entry.id)
                 return (
@@ -447,12 +462,18 @@ export function AuditTab({ slug }: { slug: string }) {
               : `Showing the most recent ${items.length} of ${countOf(total, 'entry', 'entries')} — use Older to reach the rest, or narrow the filter.`}
           </p>
           <div className="flex items-center gap-2">
+            {/* The rows do not change while a page is in flight, so without a
+                word here the click looks like it did nothing. Both buttons are
+                held shut for the same window: a second click moved the query key
+                again and the page in flight was dropped unrendered — 0 → 50 →
+                100, with rows 51–100 never shown and nothing saying so. */}
+            {isPaging && <span className="text-xs text-muted-foreground">Updating…</span>}
             <Button
               type="button"
               variant="outline"
               size="sm"
               className="h-7 px-2 text-xs"
-              disabled={!hasNewer}
+              disabled={!hasNewer || isPaging}
               onClick={() => setOffset((current) => Math.max(0, current - PAGE_SIZE))}
             >
               Newer
@@ -462,7 +483,7 @@ export function AuditTab({ slug }: { slug: string }) {
               variant="outline"
               size="sm"
               className="h-7 px-2 text-xs"
-              disabled={!hasOlder}
+              disabled={!hasOlder || isPaging}
               onClick={() => setOffset((current) => current + PAGE_SIZE)}
             >
               Older

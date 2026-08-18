@@ -26,9 +26,12 @@ import {
   type SecretField,
   type SectionKey,
   EMPTY_SECRET_DRAFTS,
+  adoptSection,
+  adoptSectionKeepingEdits,
   applyNote,
   buildUpdate,
   clearSecretConfirm,
+  clearSectionSecrets,
   editableFromSettings,
   hasUpdate,
   resetConfirm,
@@ -37,6 +40,26 @@ import {
 
 const UNSAVED_MESSAGE =
   'Instance settings you edited here have not been saved. Leaving this page drops them — anything typed into a prompt or a field is gone.'
+
+/**
+ * What one PATCH to the settings endpoint is doing.
+ *
+ * All three send the same request and get the same whole-settings response, but
+ * they may not adopt it the same way: Save is the user handing over the entire
+ * form, while Reset and Clear write through a single section (tripl-ifiy) and
+ * must leave the other five sections' unsaved edits standing. Naming the write
+ * is what lets `onSuccess` tell them apart.
+ */
+type SettingsWrite =
+  | { kind: 'save'; update: ServiceSettingsUpdate }
+  | { kind: 'reset'; section: SectionKey }
+  | { kind: 'clear-secret'; group: 'ai' | 'email'; field: SecretField }
+
+function payloadFor(write: SettingsWrite): ServiceSettingsUpdate {
+  if (write.kind === 'save') return write.update
+  if (write.kind === 'reset') return resetPayload(write.section)
+  return { [write.group]: { [write.field]: null } } as ServiceSettingsUpdate
+}
 
 export default function ServiceSettingsSection({
   section,
@@ -64,12 +87,25 @@ export default function ServiceSettingsSection({
   }
 
   const saveMut = useMutation({
-    mutationFn: (data: ServiceSettingsUpdate) => serviceSettingsApi.update(data),
-    onSuccess: data => {
+    mutationFn: (write: SettingsWrite) => serviceSettingsApi.update(payloadFor(write)),
+    onSuccess: (data, write) => {
       qc.setQueryData(['serviceSettings'], data)
       setHydratedSettings(data)
-      setForm(editableFromSettings(data))
-      setSecretDrafts(EMPTY_SECRET_DRAFTS)
+      if (write.kind === 'save') {
+        setForm(editableFromSettings(data))
+        setSecretDrafts(EMPTY_SECRET_DRAFTS)
+        return
+      }
+      // A write-through settles only what it wrote. `form` spans all six
+      // sections, so replacing it here threw away an unsaved prompt or field in
+      // a section this action never touched (tripl-l8v2).
+      if (write.kind === 'reset') {
+        setForm(current => (current ? adoptSection(current, data, write.section) : current))
+        setSecretDrafts(current => clearSectionSecrets(current, write.section))
+        return
+      }
+      setForm(current => (current ? adoptSectionKeepingEdits(current, data, write.group) : current))
+      setSecretDrafts(current => ({ ...current, [write.field]: '' }))
     },
   })
 
@@ -107,13 +143,15 @@ export default function ServiceSettingsSection({
   // reopen public signup. They are gated the way every other destructive action
   // in the app is (tripl-ifiy).
   const resetSection = async (target: SectionKey) => {
-    const ok = await confirm({ ...resetConfirm(target), variant: 'danger' })
-    if (ok) saveMut.mutate(resetPayload(target))
+    const sectionDraft = Object.keys(update[target] ?? {}).length > 0
+    const ok = await confirm({ ...resetConfirm(target, sectionDraft), variant: 'danger' })
+    if (ok) saveMut.mutate({ kind: 'reset', section: target })
   }
 
   const clearSecret = async (group: 'ai' | 'email', field: SecretField) => {
-    const ok = await confirm({ ...clearSecretConfirm(field), variant: 'danger' })
-    if (ok) saveMut.mutate({ [group]: { [field]: null } } as ServiceSettingsUpdate)
+    const fieldDraft = secretDrafts[field].trim().length > 0
+    const ok = await confirm({ ...clearSecretConfirm(field, fieldDraft), variant: 'danger' })
+    if (ok) saveMut.mutate({ kind: 'clear-secret', group, field })
   }
 
   const discard = () => {
@@ -181,7 +219,7 @@ export default function ServiceSettingsSection({
             </Button>
             <Button
               type="button"
-              onClick={() => saveMut.mutate(update)}
+              onClick={() => saveMut.mutate({ kind: 'save', update })}
               disabled={!dirty || saveMut.isPending}
             >
               <Save className="h-3.5 w-3.5" />

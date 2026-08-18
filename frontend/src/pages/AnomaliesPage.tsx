@@ -66,6 +66,23 @@ function signalScopeLabel(signal: MonitoringSignal): string | null {
 }
 
 /**
+ * What an unnameable scope is called, in words.
+ *
+ * Only these three kinds are ever looked up — `_attach_scope_names` resolves
+ * event → `Event.name`, event_type → `EventType.display_name`, metric → the
+ * catalog `display_name`, and the FKs are `ondelete=SET NULL`, so a null name
+ * beside a populated `scope_ref` means the entity is gone. Every other kind
+ * (schema, distribution, release regression, value drift) has no entity behind
+ * it and is never named at all, so it gets the neutral word rather than a
+ * "deleted" that would not be true.
+ */
+const UNRESOLVED_SCOPE_NOUN: Partial<Record<MonitoringSignal['scope_type'], string>> = {
+  event: 'deleted event',
+  event_type: 'deleted event type',
+  metric: 'deleted metric',
+}
+
+/**
  * Stand-in for a scope the server could not name (its event/metric was deleted
  * out from under the anomaly row).
  *
@@ -74,6 +91,15 @@ function signalScopeLabel(signal: MonitoringSignal): string | null {
  * "Event d4c684dd" — two names for one incident, depending on the page
  * (tripl-y4wt). The ref stays in the accessible name and the tooltip so the row
  * is still traceable.
+ *
+ * Words and not a shimmer bar. `animate-pulse` is this app's Skeleton
+ * (`components/ui/skeleton.tsx`), and OverviewPage uses the identical `h-3 w-32`
+ * one to mean "fetching" — while the table here is already gated on
+ * `signalsQuery.isLoading` and a rendered row's name is server-resolved. So the
+ * pulse could only ever mean "will never resolve" and read as "still arriving":
+ * the operator waits and refreshes on a terminal state. `role="img"` stays so
+ * the ref remains the accessible name rather than being replaced by the
+ * stand-in wording.
  */
 function UnnamedScope({ signal }: { signal: MonitoringSignal }) {
   const ref = sharedSignalScopeLabel(signal)
@@ -82,9 +108,11 @@ function UnnamedScope({ signal }: { signal: MonitoringSignal }) {
       role="img"
       aria-label={ref}
       title={ref}
-      className="inline-block h-3 w-32 animate-pulse rounded align-middle"
-      style={{ background: 'var(--border-subtle)' }}
-    />
+      className="italic"
+      style={{ color: 'var(--fg-faint)' }}
+    >
+      {UNRESOLVED_SCOPE_NOUN[signal.scope_type] ?? 'unnamed scope'}
+    </span>
   )
 }
 

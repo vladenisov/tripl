@@ -1027,7 +1027,16 @@ confidence badge; **Ask AI** (when AI is
 enabled and the query is at least 8 characters, with cited sources); and **Sign
 out**.
 
-The two halves of the list narrow differently, and on purpose.
+Inside the Settings takeover (`/settings/*`) ⌘K opens a **different, narrower
+palette**. Those routes carry no project in scope, so this one offers only what
+it can honestly reach: every settings section the rail lists (filtered by role
+the same way), the projects by name, the way back out, and Sign out. There is no
+knowledge search and no project-scoped destination — the takeover does not know
+which project you came from well enough to search it. Leaving through any of its
+rows goes through the same unsaved-changes guard as the rail links, so a draft is
+never dropped silently, and Esc hands focus back to whatever opened it.
+
+The two halves of the app-wide palette's list narrow differently, and on purpose.
 
 The **menu rows** — Navigate, the project's own groups, Projects, Event types,
 Sign out —

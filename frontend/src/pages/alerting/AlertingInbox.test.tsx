@@ -785,6 +785,20 @@ describe('AlertingInbox — incidents can be picked for one decision (tripl-gpfr
     expect(setIncidentsSelected).toHaveBeenCalledWith(['grp-1', 'grp-2'], true)
   })
 
+  it('withdraws the control when the panel shows an error instead of cards', () => {
+    // The reachable case is a failed background refetch, not a cold failure:
+    // the inbox polls, and TanStack v5 sets status 'error' while KEEPING the
+    // last `data`. The body then renders only the error paragraph while `inbox`
+    // still holds the loaded page — so a header control derived from `inbox`
+    // read "Select all 2 shown" over an empty panel, and one click built a
+    // selection the bulk bar would then act on sight-unseen.
+    renderInbox({ inbox: twoIncidents, isError: true, loadError: new Error('boom') })
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/Could not load the inbox/)
+    expect(screen.queryByRole('checkbox', { name: SELECT_ALL_SHOWN })).toBeNull()
+    expect(screen.queryByText(/Select all \d+ shown/)).toBeNull()
+  })
+
   it('reads mixed while only some of the page is picked', () => {
     renderInbox({ inbox: twoIncidents, selectedIncidents: new Set(['grp-1']) })
 

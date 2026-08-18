@@ -2,12 +2,14 @@ import { useCallback, useMemo, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Plus } from 'lucide-react'
+import { toast } from 'sonner'
 import { usersApi } from '@/api/users'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/error-state'
 import type { EventStatus } from '@/lib/eventStatus'
+import { getErrorMessage } from '@/lib/utils'
 
 import { BulkActionBar } from './events/BulkActionBar'
 import { EventsHeader } from './events/EventsHeader'
@@ -265,6 +267,11 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     try {
       const ids = await fetchAllMatchingIds()
       if (ids.length) selectAll(ids)
+    } catch (error) {
+      // The sweep is a bare awaited request — no query cache, no mutation, so
+      // nothing else reports it and the button would just stop spinning with
+      // the selection unchanged.
+      toast.error(`Could not select all matching events — ${getErrorMessage(error)}`)
     } finally {
       setIsSelectingAll(false)
     }
@@ -281,8 +288,14 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
   // paging helper "select all matching" uses; the per-column field/meta filters
   // are client-side, so they are re-applied to the fetched rows here.
   const [isExporting, setIsExporting] = useState(false)
+  // The sweep only knows there is anything to fetch from the loaded `total`,
+  // which is 0 during the cold load and — under `placeholderData: prev` — still
+  // the *previous* filters' count while a filter change is in flight. Exporting
+  // in either window wrote a header-only file that reads exactly like "nothing
+  // matched", so the action waits for a page that belongs to these filters.
+  const canExportCsv = eventsQuery.isSuccess && !eventsQuery.isPlaceholderData
   const handleExportCsv = useCallback(() => {
-    if (!slug || isExporting) return
+    if (!slug || isExporting || !canExportCsv) return
     void (async () => {
       setIsExporting(true)
       try {
@@ -296,6 +309,12 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
           getFieldValue: (event, col) => resolveFieldValue(event, col, allFieldDefs),
           getMetaValue: resolveMetaValue,
         })
+        // Never hand back a header-only file: an empty CSV is indistinguishable
+        // from a broken export, so say which of the two this is.
+        if (rows.length === 0) {
+          toast.info('No events match the current filters — nothing to export.')
+          return
+        }
         const columns = buildEventsCsvColumns({
           activeTypeName: activeEt?.name ?? null,
           eventTypesById,
@@ -310,6 +329,11 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
           hideOwner,
         })
         downloadCsv(eventsCsvFilename(slug, activeTab), toCsv(columns, rows))
+      } catch (error) {
+        // Same hole as the id sweep: an ApiError here reaches no query cache and
+        // no error boundary, so without this the item flips back to "Export CSV"
+        // with no file and no message — read as "nothing matched".
+        toast.error(`Could not export CSV — ${getErrorMessage(error)}`)
       } finally {
         setIsExporting(false)
       }
@@ -318,6 +342,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     activeEt,
     activeTab,
     allFieldDefs,
+    canExportCsv,
     debouncedFieldFilters,
     debouncedMetaFilters,
     eventTypesById,
@@ -450,6 +475,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
               metaFields={metaFields}
               onToggleColumn={toggleColumn}
               onExportCsv={handleExportCsv}
+              canExport={canExportCsv}
               isExporting={isExporting}
               onNewEvent={openNewEvent}
             />

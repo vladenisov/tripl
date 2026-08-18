@@ -50,7 +50,8 @@ export default function ProfileSection() {
       <SHeader title="Profile" description="Your personal details across every project you belong to." />
 
       <SCard title="Your details">
-        <Field label="Avatar" hint="PNG or JPG, at least 256×256.">
+        {/* Two buttons and an initials bubble — nothing a <label> can name. */}
+        <Field label="Avatar" hint="PNG or JPG, at least 256×256." htmlFor={false}>
           <div className="flex items-center gap-3">
             <span
               className="flex h-12 w-12 items-center justify-center rounded-full text-base font-semibold text-white"
@@ -73,7 +74,7 @@ export default function ProfileSection() {
         <Field label="Email" hint="Used for sign-in and notifications.">
           <TextInput value={user?.email ?? ''} mono disabled />
         </Field>
-        <Field label="Role" hint="Set by a workspace owner." last>
+        <Field label="Role" hint="Set by a workspace owner." last htmlFor={false}>
           <Chip tone="accent" size="md">
             {roleLabel}
           </Chip>

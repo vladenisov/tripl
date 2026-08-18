@@ -208,6 +208,19 @@ describe('resolveTitleFromPath', () => {
     expect(resolveTitleFromPath('/settings/security')).toEqual({ label: 'Security' })
   })
 
+  it('keeps the rail label on a route deeper than its rail entry', () => {
+    // Opening a data source from the list navigates to /settings/data-sources/<id>,
+    // which the rail lists only one segment shorter. Matching the full section
+    // path alone dropped it to the generic "Settings".
+    expect(
+      resolveTitleFromPath('/settings/data-sources/0f8fad5b-d9cb-469f-a165-70867728950e'),
+    ).toEqual({ label: 'Data sources' })
+    // The same inheritance one level down from a two-segment rail entry.
+    expect(resolveTitleFromPath('/settings/instance/runtime/anything')).toEqual({
+      label: 'Runtime',
+    })
+  })
+
   it('falls back to the section parent for a path the settings rail does not list', () => {
     // Bare parents and the retired top-level sections that only redirect into a
     // child still have to name a tab rather than reading "Settings" or flashing

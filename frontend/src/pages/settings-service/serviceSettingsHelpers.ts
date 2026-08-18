@@ -124,6 +124,61 @@ export function editableFromSettings(settings: ServiceSettings): EditableSetting
   }
 }
 
+/**
+ * Refresh ONE section from the server's stored settings, leaving every other
+ * section's in-progress edits alone.
+ *
+ * Reset and Clear write straight through and get the whole settings object
+ * back; adopting it wholesale replaced a `form` that spans all six sections, so
+ * clearing the AI key also discarded an unsaved Storage edit or a rewritten
+ * prompt — the very draft the leave-guard warns about (tripl-l8v2).
+ */
+export function adoptSection(
+  form: EditableSettings,
+  settings: ServiceSettings,
+  section: SectionKey,
+): EditableSettings {
+  return {
+    ...form,
+    [section]: { ...settings[section] },
+  } as EditableSettings
+}
+
+/**
+ * Same, but keeping every field the user can edit as it stands on screen.
+ *
+ * Clearing a stored secret flips server-owned state inside the section it
+ * touches (`ai_api_key_configured`), so the response has to be adopted — but
+ * the prompt being written in the field below it is the user's, not the
+ * server's, and reverting it is the loss the leave-guard warns about.
+ */
+export function adoptSectionKeepingEdits(
+  form: EditableSettings,
+  settings: ServiceSettings,
+  section: SectionKey,
+): EditableSettings {
+  const merged = { ...settings[section] } as unknown as Record<string, string | number | boolean>
+  const edited = form[section] as unknown as Record<string, string | number | boolean>
+  for (const field of COMPARE_FIELDS[section]) {
+    merged[field] = edited[field]
+  }
+  return { ...form, [section]: merged } as EditableSettings
+}
+
+/**
+ * Blank the secret drafts belonging to `section`, leaving the other sections'
+ * alone. A section reset nulls its stored secrets server-side (they are in
+ * RESET_FIELDS), so a replacement typed into one of those boxes is part of what
+ * the user just asked to clear — while a password typed on Email is not.
+ */
+export function clearSectionSecrets(drafts: SecretDrafts, section: SectionKey): SecretDrafts {
+  const next: SecretDrafts = { ...drafts }
+  for (const field of RESET_FIELDS[section]) {
+    if (field in next) next[field as SecretField] = ''
+  }
+  return next
+}
+
 export function sourceFor(
   settings: ServiceSettings | undefined,
   section: SectionKey,
@@ -230,11 +285,17 @@ const RESET_STAKES: Record<SectionKey, string> = {
 
 export type ConfirmCopy = { title: string; message: string; confirmLabel: string }
 
-export function resetConfirm(section: SectionKey): ConfirmCopy {
+export function resetConfirm(section: SectionKey, hasSectionDraft = false): ConfirmCopy {
   const label = SECTION_LABELS[section]
+  // A reset re-reads this section from the server, so an edit made here and not
+  // yet saved goes with it. The dialog enumerates every other consequence; it
+  // may not stay silent about the one the user can see on screen.
+  const draftStake = hasSectionDraft
+    ? ` Changes you made in ${label} but have not saved are dropped as well.`
+    : ''
   return {
     title: `Reset ${label} to defaults`,
-    message: `Clear all ${RESET_FIELDS[section].length} ${label} overrides on this instance — ${RESET_STAKES[section]} — so every one of them falls back to its environment variable. This is saved immediately and cannot be undone.`,
+    message: `Clear all ${RESET_FIELDS[section].length} ${label} overrides on this instance — ${RESET_STAKES[section]} — so every one of them falls back to its environment variable. This is saved immediately and cannot be undone.${draftStake}`,
     confirmLabel: 'Reset section',
   }
 }
@@ -254,13 +315,16 @@ const SECRET_STAKES: Record<SecretField, { name: string; consequence: string }> 
   },
 }
 
-export function clearSecretConfirm(field: SecretField): ConfirmCopy {
+export function clearSecretConfirm(field: SecretField, hasFieldDraft = false): ConfirmCopy {
   const { name, consequence } = SECRET_STAKES[field]
+  const draftStake = hasFieldDraft
+    ? ' The replacement you typed into this field and have not saved is cleared too.'
+    : ''
   return {
     title: `Delete the stored ${name}`,
     // The field beside this button waits for "Save changes"; the button does
     // not — it writes straight through to the server (tripl-ifiy).
-    message: `The stored ${name} is deleted on the server as soon as you confirm — this does not wait for Save changes, and it cannot be undone. ${consequence}`,
+    message: `The stored ${name} is deleted on the server as soon as you confirm — this does not wait for Save changes, and it cannot be undone. ${consequence}${draftStake}`,
     confirmLabel: 'Delete',
   }
 }

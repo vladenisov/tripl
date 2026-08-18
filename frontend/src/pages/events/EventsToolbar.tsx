@@ -55,6 +55,7 @@ export function EventsToolbar({
   metaFields,
   onToggleColumn,
   onExportCsv,
+  canExport,
   isExporting,
   onNewEvent,
 }: {
@@ -89,6 +90,10 @@ export function EventsToolbar({
   metaFields: MetaFieldDefinition[]
   onToggleColumn: (key: string) => void
   onExportCsv: () => void
+  /** False while the loaded page does not belong to the current filters — the
+   *  export sweeps from that page's count, so firing it early writes an empty
+   *  file that reads like "nothing matched". */
+  canExport: boolean
   isExporting: boolean
   onNewEvent: () => void
 }) {
@@ -243,9 +248,13 @@ export function EventsToolbar({
           <DropdownMenuContent align="end" sideOffset={6} className="w-[212px]">
             <DropdownMenuItem
               className="text-[12.5px]"
-              disabled={isExporting}
+              disabled={isExporting || !canExport}
               onSelect={onExportCsv}
-              title="Download every event matching the current filters and sort as CSV"
+              title={
+                canExport
+                  ? 'Download every event matching the current filters and sort as CSV'
+                  : 'Available once the current view has finished loading'
+              }
             >
               <Download className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
               {isExporting ? 'Exporting…' : 'Export CSV'}

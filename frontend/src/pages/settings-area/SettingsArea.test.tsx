@@ -145,6 +145,50 @@ describe('SettingsArea project binding', () => {
     expect(await screen.findByRole('heading', { name: 'Pick a project' })).toBeInTheDocument()
   })
 
+  it('does not claim the workspace is empty while the project list is loading', async () => {
+    let resolveList: (value: Project[]) => void = () => {}
+    vi.spyOn(projectsApi, 'list').mockReturnValue(
+      new Promise<Project[]>((resolve) => {
+        resolveList = resolve
+      }),
+    )
+    window.localStorage.setItem(LAST_SLUG_STORAGE_KEY, 'windy-ios')
+
+    renderArea('project/general')
+
+    // Nothing warms the ['projects'] cache on a /settings/* route — these mount
+    // outside Layout — so this is the first thing a cold load shows, including
+    // to a user with two projects and a valid last-visited slug.
+    expect(screen.queryByText(/no project on this workspace yet/i)).toBeNull()
+    expect(screen.queryByRole('link', { name: /Create one in the workspace/i })).toBeNull()
+
+    resolveList(projects)
+
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: /Back to project/i })).toHaveAttribute(
+        'href',
+        '/p/windy-ios/events',
+      )
+    })
+  })
+
+  it('names an empty workspace only once the list has actually resolved', async () => {
+    vi.spyOn(projectsApi, 'list').mockResolvedValue([])
+
+    renderArea('project/general')
+
+    expect(await screen.findByText(/no project on this workspace yet/i)).toBeInTheDocument()
+  })
+
+  it('says the project list failed rather than that there are no projects', async () => {
+    vi.spyOn(projectsApi, 'list').mockRejectedValue(new Error('boom'))
+
+    renderArea('project/general')
+
+    expect(await screen.findByText(/could not be loaded/i)).toBeInTheDocument()
+    expect(screen.queryByText(/no project on this workspace yet/i)).toBeNull()
+  })
+
   it('still renders workspace sections with no project bound', async () => {
     vi.spyOn(projectsApi, 'list').mockResolvedValue(projects)
 

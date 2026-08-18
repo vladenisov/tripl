@@ -143,7 +143,13 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
         </>
       )}
 
-      <ProductTour slug={project.slug} open={tourOpen} onOpenChange={setTourOpen} />
+      {/* Mounted only while open, for the same reason DemoBanner's copy is: the
+          tour reads its persisted step once, in a useState initializer, and this
+          panel and the banner are both on the Overview. Held mounted, this
+          instance kept the index it captured at first render, so "Take the tour"
+          after stepping the banner's copy forward reopened at step 1 and its
+          first Next wrote that back over the saved position. */}
+      {tourOpen && <ProductTour slug={project.slug} open onOpenChange={setTourOpen} />}
     </section>
   )
 }

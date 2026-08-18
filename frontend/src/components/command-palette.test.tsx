@@ -786,6 +786,48 @@ describe('CommandPalette ranking and filtering (tripl-k6gt)', () => {
     expect(screen.queryByText('Searching.')).toBeNull()
   })
 
+  it('does not hand the previous search’s rows to an unrelated one (tripl-2x5d)', async () => {
+    // The palette is mounted for the life of the page — only the dialog unmounts
+    // — so React Query's observer keeps the last rows it saw forever. Without a
+    // record of which query they answer, "checkout"'s results came back under
+    // "Updating results…" for every later search, dimmed but selectable: Enter
+    // navigated to a checkout result while the input read something else.
+    let searches = 0
+    mockPalette({ id: 'project-1', name: 'Demo', slug: 'demo' }, async () => {
+      searches += 1
+      if (searches > 1) return new Promise<Response>(() => {})
+      return mockJsonResponse({
+        items: [
+          searchDocument({
+            id: 'doc-session',
+            entityType: 'event',
+            title: 'Session Started',
+            subtitle: 'Session',
+            score: 9,
+          }),
+        ],
+        total: 1,
+        semantic_used: false,
+      })
+    })
+
+    renderHarness('/p/demo/events')
+
+    fireEvent.click(screen.getByTestId('open-palette'))
+    const input = await screen.findByPlaceholderText(/Search projects/i)
+    fireEvent.change(input, { target: { value: 'session' } })
+    expect(await screen.findByText('Session Started')).toBeInTheDocument()
+
+    // Clearing the input abandons that search; what follows is a new one.
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.change(input, { target: { value: 'zzzqqq' } })
+
+    await waitFor(() => expect(searches).toBe(2))
+    expect(screen.queryByText('Session Started')).toBeNull()
+    expect(screen.queryByText('Updating results…')).toBeNull()
+    expect(screen.getByText('Searching.')).toBeInTheDocument()
+  })
+
   it('shows "No matches." when a query below the search floor matches nothing', async () => {
     mockPalette({ id: 'project-1', name: 'Demo', slug: 'demo' }, emptySearch)
 
