@@ -528,12 +528,57 @@ async def _project_slug(session: AsyncSession, project_id: uuid.UUID) -> str:
     return project.slug
 
 
+#: Branches whose read-path index check this process has already answered.
+#:
+#: An entry can never become a WRONG answer: ids are ``uuid4`` and a deleted
+#: project or branch never comes back, so a stale key costs two uuids of memory
+#: and nothing else.
+_CHECKED_BRANCH_INDEXES: set[tuple[uuid.UUID, uuid.UUID]] = set()
+
+
 async def _ensure_index_exists(
     session: AsyncSession,
     slug: str,
     project_id: uuid.UUID,
     branch_id: uuid.UUID,
 ) -> None:
+    """Build the branch's index once — the first time this process searches it.
+
+    WHY THE ANSWER IS KEPT FOR THE PROCESS LIFETIME (tripl-2x5d)
+    ------------------------------------------------------------
+    The probe answers one question — has this branch ever been indexed — and the
+    only thing a "no" can trigger is one build. Both are dead weight afterwards,
+    and the command palette is not a once-a-page caller: it issues a request per
+    debounce boundary, so every keystroke that crossed one paid for this round
+    trip before any searching started.
+
+    The case that actually hurt is the branch that indexes to ZERO documents (a
+    project whose catalog is still empty). Its probe answers ``None`` forever, so
+    without the memo EVERY search re-ran a full :func:`reindex_project_branch`
+    from a GET: build every document, diff it against the table, delete, insert,
+    and COMMIT.
+
+    WHAT THE MEMO GIVES UP
+    ----------------------
+    The read path stops papering over the one gap in the write path. Catalog
+    content reindexes inside its own transaction (events, event types, fields,
+    meta fields, relations, variables, metrics, fact tables, drift), a merge
+    refreshes main, and a scan reindexes main from the worker — but a
+    ``scan_config`` and an ``alert_rule`` document are written by services that
+    do not, so they have always waited for the next reindex trigger. That wait
+    used to end early on a branch whose index was EMPTY, because the probe
+    rebuilt it from scratch every time. It no longer does: an empty branch now
+    waits for the same trigger a populated one does.
+
+    The first search of a never-indexed branch still WAITS for the build. Moving
+    that off the request needs a task that reindexes one named branch;
+    ``worker/tasks/search.py`` has only the whole-instance staleness sweep, and
+    that sweep selects on ``builder_version``, so it cannot see a branch that has
+    no rows at all.
+    """
+    memo_key = (project_id, branch_id)
+    if memo_key in _CHECKED_BRANCH_INDEXES:
+        return
     exists = await session.scalar(
         select(SearchDocument.id)
         .where(SearchDocument.project_id == project_id, SearchDocument.branch_id == branch_id)
@@ -547,6 +592,7 @@ async def _ensure_index_exists(
             slug=slug,
             schedule_embeddings=False,
         )
+    _CHECKED_BRANCH_INDEXES.add(memo_key)
 
 
 #: The stored-vector expression: the STEMMED lexemes of a document, plus its

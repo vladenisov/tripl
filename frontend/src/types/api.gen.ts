@@ -55,6 +55,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/audit/{entry_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Audit Entry */
+        get: operations["get_audit_entry_api_v1_audit__entry_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/invitations/{token}": {
         parameters: {
             query?: never;
@@ -4505,8 +4522,16 @@ export interface components {
             /** Versions */
             versions: components["schemas"]["AppVersionInfo"][];
         };
-        /** AuditEntryResponse */
-        AuditEntryResponse: {
+        /**
+         * AuditEntryDetailResponse
+         * @description One entry WITH the request payload that produced it.
+         *
+         *     ``payload`` is the half of an audit entry that carries warehouse hosts and
+         *     ``base_query`` SQL, which is why the whole router is owner-only — see the
+         *     gate write-up in api/v1/audit.py. Secrets are already masked at write time
+         *     by ``audit_service._redact``.
+         */
+        AuditEntryDetailResponse: {
             /** Action */
             action: string;
             /**
@@ -4523,6 +4548,45 @@ export interface components {
             payload: {
                 [key: string]: unknown;
             };
+            /** Project Id */
+            project_id: string | null;
+            /** Project Slug */
+            project_slug: string;
+            /** Target Id */
+            target_id: string | null;
+            /** Target Name */
+            target_name: string;
+            /** Target Type */
+            target_type: string;
+            /** User Email */
+            user_email: string;
+            /** User Id */
+            user_id: string | null;
+        };
+        /**
+         * AuditEntryResponse
+         * @description One row of the audit list — everything the row itself renders.
+         *
+         *     Deliberately WITHOUT ``payload``. The tab renders a payload only for the
+         *     rows the reader expanded (AuditTab.tsx), so shipping one per row sent a page
+         *     of JSON blobs across the wire to be displayed nowhere: on the only project
+         *     with real audit history, ``/p/*\/settings/audit`` had the slowest first
+         *     content of the 75 routes in the 2026-08-17 walk. The payload now travels one
+         *     row at a time, as ``AuditEntryDetailResponse`` (tripl-5ydt).
+         */
+        AuditEntryResponse: {
+            /** Action */
+            action: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
             /** Project Id */
             project_id: string | null;
             /** Project Slug */
@@ -10405,6 +10469,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuditListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_audit_entry_api_v1_audit__entry_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditEntryDetailResponse"];
                 };
             };
             /** @description Validation Error */

@@ -3659,7 +3659,8 @@
         "title": "AppVersionSeriesResponse",
         "type": "object"
       },
-      "AuditEntryResponse": {
+      "AuditEntryDetailResponse": {
+        "description": "One entry WITH the request payload that produced it.\n\n``payload`` is the half of an audit entry that carries warehouse hosts and\n``base_query`` SQL, which is why the whole router is owner-only \u2014 see the\ngate write-up in api/v1/audit.py. Secrets are already masked at write time\nby ``audit_service._redact``.",
         "properties": {
           "action": {
             "title": "Action",
@@ -3745,6 +3746,91 @@
           "target_id",
           "target_name",
           "payload"
+        ],
+        "title": "AuditEntryDetailResponse",
+        "type": "object"
+      },
+      "AuditEntryResponse": {
+        "description": "One row of the audit list \u2014 everything the row itself renders.\n\nDeliberately WITHOUT ``payload``. The tab renders a payload only for the\nrows the reader expanded (AuditTab.tsx), so shipping one per row sent a page\nof JSON blobs across the wire to be displayed nowhere: on the only project\nwith real audit history, ``/p/*/settings/audit`` had the slowest first\ncontent of the 75 routes in the 2026-08-17 walk. The payload now travels one\nrow at a time, as ``AuditEntryDetailResponse`` (tripl-5ydt).",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "project_slug": {
+            "title": "Project Slug",
+            "type": "string"
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Id"
+          },
+          "target_name": {
+            "title": "Target Name",
+            "type": "string"
+          },
+          "target_type": {
+            "title": "Target Type",
+            "type": "string"
+          },
+          "user_email": {
+            "title": "User Email",
+            "type": "string"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "user_id",
+          "user_email",
+          "project_id",
+          "project_slug",
+          "action",
+          "target_type",
+          "target_id",
+          "target_name"
         ],
         "title": "AuditEntryResponse",
         "type": "object"
@@ -19308,6 +19394,49 @@
           }
         },
         "summary": "List Audit",
+        "tags": [
+          "audit"
+        ]
+      }
+    },
+    "/api/v1/audit/{entry_id}": {
+      "get": {
+        "operationId": "get_audit_entry_api_v1_audit__entry_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entry_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Entry Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditEntryDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Audit Entry",
         "tags": [
           "audit"
         ]

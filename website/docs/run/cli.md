@@ -1537,6 +1537,7 @@ usage: tripl events list [-h] [--url URL] [--api-key KEY] [--config PATH]
                          [--project SLUG] [--branch REF] [--search TEXT]
                          [--status STATUS] [--tag TAG] [--meta-value TEXT]
                          [--event-type ID] [--silent-since-days N]
+                         [--reviewed | --unreviewed]
                          [--offset N] [--limit N] [--json]
                          [--timeout SECONDS]
 ```
@@ -1551,6 +1552,7 @@ usage: tripl events list [-h] [--url URL] [--api-key KEY] [--config PATH]
 | `--meta-value TEXT` | Exact match on any meta value — a ticket key, typically. |
 | `--event-type ID` | Only events of this event type id, from `tripl plan types`. |
 | `--silent-since-days N` | Only events the warehouse has not carried for N days, `0`–`3650`. |
+| `--reviewed` / `--unreviewed` | Only events already marked reviewed, or only those not. Mutually exclusive; omitting both asks for either. Reviewing is a separate axis from lifecycle status, so `--reviewed` and `--status in_review` can both match the same event. |
 | `--offset N` | Skip N events, to read the next page. Default `0`. |
 | `--limit N` | How many events to ask for, `1`–`10000`, default `200`. |
 | `--json` | One JSON document on stdout, every human line on stderr. |

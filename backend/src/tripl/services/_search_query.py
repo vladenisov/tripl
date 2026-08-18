@@ -195,7 +195,18 @@ async def postgres_search(
     limit: int,
     project_is_demo: bool = False,
 ) -> tuple[list[SearchResult], bool]:
-    lexical_results = await postgres_lexical_search(
+    semantic_used = False
+    semantic_results: list[SearchResult] = []
+    ai_config = await app_settings_service.get_ai_config(session)
+
+    # Resolve the query vector, then run the leg once. Two sources, in priority
+    # order: the live embedding provider, and — only when that is unavailable
+    # (embeddings disabled, or the embed call failed / returned empty) — a canned
+    # vector from the demo project's precomputed fixture. Non-demo projects never
+    # reach the second source.
+    embedding: list[float] | None = None
+    is_semantic_eligible = len(query) >= 3
+    lexical = postgres_lexical_search(
         session,
         project_id=project_id,
         branch_id=branch_id,
@@ -204,21 +215,23 @@ async def postgres_search(
         include_archived=include_archived,
         limit=limit,
     )
-    semantic_used = False
-    semantic_results: list[SearchResult] = []
-    ai_config = await app_settings_service.get_ai_config(session)
-
-    # Resolve the query vector first, then run the leg once. Two sources, in
-    # priority order: the live embedding provider, and — only when that is
-    # unavailable (embeddings disabled, or the embed call failed / returned
-    # empty) — a canned vector from the demo project's precomputed fixture.
-    # Non-demo projects never reach the second source.
-    embedding: list[float] | None = None
-    if len(query) >= 3:
-        if ai_config.search_embeddings_enabled:
-            embedding = await asyncio.to_thread(embed_query, query, config=ai_config)
-        if not embedding and project_is_demo:
-            embedding = demo_query_embedding(query)
+    # The provider round trip overlaps the lexical query rather than queueing
+    # behind it (tripl-2x5d). ``embed_query`` is a blocking HTTP POST handed to a
+    # thread and the lexical leg is SQL on this session; the thread touches
+    # neither the session nor the lexical rows, so awaiting them in sequence made
+    # every semantic search cost the SUM of two round trips on a read path
+    # measured at over 2.2s. Both legs still receive exactly the inputs they
+    # received before and ``merge_results`` is handed the same two lists, so this
+    # moves WHEN the vector is fetched and nothing about the ranking.
+    if is_semantic_eligible and ai_config.search_embeddings_enabled:
+        lexical_results, embedding = await asyncio.gather(
+            lexical,
+            asyncio.to_thread(embed_query, query, config=ai_config),
+        )
+    else:
+        lexical_results = await lexical
+    if is_semantic_eligible and not embedding and project_is_demo:
+        embedding = demo_query_embedding(query)
 
     if embedding:
         semantic_used = True
