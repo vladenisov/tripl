@@ -78,6 +78,7 @@ __all__ = [
     "SearchResponse",
     "SearchResult",
     "_finalize_results",
+    "_queue_branch_reindex",
     "_queue_embedding_refresh",
     "_reindex_branch_documents",
     "_sanitize_query",
@@ -451,7 +452,7 @@ async def search_project(
 
     project_id = await get_project_id_by_slug(session, slug)
     resolved_branch_id = await resolve_branch_id(session, project_id, branch_id)
-    await _ensure_index_exists(session, slug, project_id, resolved_branch_id)
+    await _ensure_index_exists(session, project_id, resolved_branch_id)
 
     capped_limit = _safe_limit(limit)
     candidate_limit = max(capped_limit, CANDIDATE_WINDOW)
@@ -536,18 +537,39 @@ async def _project_slug(session: AsyncSession, project_id: uuid.UUID) -> str:
 _CHECKED_BRANCH_INDEXES: set[tuple[uuid.UUID, uuid.UUID]] = set()
 
 
+def _queue_branch_reindex(project_id: uuid.UUID, branch_id: uuid.UUID) -> bool:
+    """Hand one branch's rebuild to the worker; ``False`` if the broker refused.
+
+    Same shape as :func:`_queue_embedding_refresh`: a search GET must not 500
+    because the broker is down, so the failure is logged and reported back, never
+    raised at the caller.
+    """
+    try:
+        from tripl.worker.celery_app import celery_app
+
+        celery_app.send_task(
+            "tripl.worker.tasks.search.reindex_search_branch",
+            args=[str(project_id), str(branch_id)],
+        )
+    except Exception:
+        logger.exception(
+            "Failed to queue search reindex for project %s branch %s", project_id, branch_id
+        )
+        return False
+    return True
+
+
 async def _ensure_index_exists(
     session: AsyncSession,
-    slug: str,
     project_id: uuid.UUID,
     branch_id: uuid.UUID,
 ) -> None:
-    """Build the branch's index once — the first time this process searches it.
+    """Ask for the branch's index once — the first time this process searches it.
 
     WHY THE ANSWER IS KEPT FOR THE PROCESS LIFETIME (tripl-2x5d)
     ------------------------------------------------------------
     The probe answers one question — has this branch ever been indexed — and the
-    only thing a "no" can trigger is one build. Both are dead weight afterwards,
+    only thing a "no" can trigger is one rebuild. Both are dead weight afterwards,
     and the command palette is not a once-a-page caller: it issues a request per
     debounce boundary, so every keystroke that crossed one paid for this round
     trip before any searching started.
@@ -558,23 +580,24 @@ async def _ensure_index_exists(
     from a GET: build every document, diff it against the table, delete, insert,
     and COMMIT.
 
-    WHAT THE MEMO GIVES UP
-    ----------------------
-    The read path stops papering over the one gap in the write path. Catalog
-    content reindexes inside its own transaction (events, event types, fields,
-    meta fields, relations, variables, metrics, fact tables, drift), a merge
-    refreshes main, and a scan reindexes main from the worker — but a
-    ``scan_config`` and an ``alert_rule`` document are written by services that
-    do not, so they have always waited for the next reindex trigger. That wait
-    used to end early on a branch whose index was EMPTY, because the probe
-    rebuilt it from scratch every time. It no longer does: an empty branch now
-    waits for the same trigger a populated one does.
+    WHY THE BUILD IS ENQUEUED RATHER THAN RUN HERE (tripl-zbv0)
+    -----------------------------------------------------------
+    The memo bounded that cost to once per branch; the first search still paid it
+    in full, inside a GET, with the user waiting. It is handed to
+    ``tripl.worker.tasks.search.reindex_search_branch`` instead, which makes the
+    price explicit rather than hidden: the FIRST search of a never-indexed branch
+    answers with an empty list and the branch is searchable from the next one.
+    Nothing else could enqueue it — the staleness sweep in
+    ``worker/tasks/search.py`` selects on ``builder_version``, so it cannot see a
+    branch that has no rows at all.
 
-    The first search of a never-indexed branch still WAITS for the build. Moving
-    that off the request needs a task that reindexes one named branch;
-    ``worker/tasks/search.py`` has only the whole-instance staleness sweep, and
-    that sweep selects on ``builder_version``, so it cannot see a branch that has
-    no rows at all.
+    The memo is recorded whether or not the enqueue succeeded, so a broker outage
+    costs one wasted attempt per branch instead of one per search. A branch left
+    unindexed that way is picked up by the same triggers every other branch
+    relies on: a CRUD mutation, the post-scan reindex of main, or an explicit
+    ``POST /search/reindex``. Those triggers now cover every document kind — the
+    ``scan_config``/``alert_rule`` gap this docstring used to describe was closed
+    by tripl-ugrm.
     """
     memo_key = (project_id, branch_id)
     if memo_key in _CHECKED_BRANCH_INDEXES:
@@ -584,14 +607,13 @@ async def _ensure_index_exists(
         .where(SearchDocument.project_id == project_id, SearchDocument.branch_id == branch_id)
         .limit(1)
     )
-    if exists is None:
-        await reindex_project_branch(
-            session,
-            project_id=project_id,
-            branch_id=branch_id,
-            slug=slug,
-            schedule_embeddings=False,
-        )
+    # The dialect check is not a test accommodation: ``reindex_branch_from_worker``
+    # returns immediately on any non-postgresql bind, so publishing the message
+    # from one would hand the broker work no worker can do. Production is
+    # PostgreSQL (see ``config.Settings.database_url``); a SQLite bind keeps the
+    # index it gets from mutations and merges, and gets no lazy first build.
+    if exists is None and _is_postgres(session):
+        _queue_branch_reindex(project_id, branch_id)
     _CHECKED_BRANCH_INDEXES.add(memo_key)
 
 

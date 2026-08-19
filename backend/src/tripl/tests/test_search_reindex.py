@@ -10,6 +10,9 @@ builds its own short-lived NullPool engine and disposes it inside the same loop.
 the production path is exercised here with a fake postgresql-dialect session and
 patched async deps — no real database or event-loop reuse needed. The function
 is synchronous (it owns the ``asyncio.run`` call), so these tests are sync too.
+
+The single-branch Celery entry point into the same bridge
+(``tasks.search.reindex_search_branch``, tripl-zbv0) is covered at the bottom.
 """
 
 import uuid
@@ -18,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 from sqlalchemy.pool import NullPool
 
 from tripl.worker import search_reindex
+from tripl.worker.tasks import search as search_tasks
 
 
 class _FakeAsyncSession:
@@ -92,3 +96,27 @@ def test_non_postgresql_bind_short_circuits_without_touching_async(monkeypatch) 
     assert created == [], "no async engine should be built for non-postgresql binds"
     assert reindex.await_count == 0
     session.get.assert_not_called()
+
+
+def test_reindex_search_branch_task_parses_its_ids_and_closes_its_session(monkeypatch) -> None:
+    """The read path enqueues this with STRING ids, as Celery's JSON payload requires.
+
+    ``reindex_branch_from_worker`` compares and queries on ``uuid.UUID`` values —
+    handing it the raw strings selects nothing and silently reindexes an empty
+    branch, which looks exactly like success.
+    """
+    session = MagicMock()
+    monkeypatch.setattr(search_tasks, "_get_sync_session", lambda: session)
+    reindexed: list[tuple[object, object, object]] = []
+    monkeypatch.setattr(
+        search_tasks,
+        "reindex_branch_from_worker",
+        lambda db, project_id, branch_id: reindexed.append((db, project_id, branch_id)),
+    )
+    project_id, branch_id = uuid.uuid4(), uuid.uuid4()
+
+    result = search_tasks.reindex_search_branch(str(project_id), str(branch_id))
+
+    assert result == {"branches_reindexed": 1}
+    assert reindexed == [(session, project_id, branch_id)]
+    session.close.assert_called_once()

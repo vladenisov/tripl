@@ -4,6 +4,7 @@ import asyncio
 import threading
 import uuid
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 from httpx import AsyncClient
@@ -164,37 +165,58 @@ async def test_index_maintenance_runs_once_per_branch_not_once_per_search(
     The session below is the one that fault needs: it reports an empty index on
     every probe, so a per-request check keeps rebuilding and a memoized one does
     not.
-    """
-    rebuilt: list[uuid.UUID] = []
 
-    async def fake_reindex(_session: object, *, branch_id: uuid.UUID, **_kwargs: object) -> None:
-        rebuilt.append(branch_id)
+    What is counted here is now the ENQUEUE, not an inline build: the rebuild
+    moved to ``tripl.worker.tasks.search.reindex_search_branch`` (tripl-zbv0).
+    The once-per-branch contract is the same either way.
+    """
+    queued: list[uuid.UUID] = []
+    queue_succeeds = True
+
+    def fake_queue(_project_id: uuid.UUID, branch_id: uuid.UUID) -> bool:
+        queued.append(branch_id)
+        return queue_succeeds
 
     class _EmptyIndexSession:
-        """Answers the existence probe the way a never-indexed branch does."""
+        """Answers the existence probe the way a never-indexed branch does.
+
+        The postgresql bind matters: the read path does not queue a rebuild a
+        non-postgresql worker would refuse to run.
+        """
 
         def __init__(self) -> None:
             self.probes = 0
+            self.bind = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
 
         async def scalar(self, *_args: object, **_kwargs: object) -> uuid.UUID | None:
             self.probes += 1
             return None
 
-    monkeypatch.setattr(search_service, "reindex_project_branch", fake_reindex)
+    monkeypatch.setattr(search_service, "_queue_branch_reindex", fake_queue)
     session = _EmptyIndexSession()
     project_id, branch_id, other_branch_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 
     for _ in range(3):
-        await search_service._ensure_index_exists(session, "palette", project_id, branch_id)
+        await search_service._ensure_index_exists(session, project_id, branch_id)
 
     assert session.probes == 1, "the existence probe is a per-process cost, not a per-search one"
-    assert rebuilt == [branch_id], "an empty branch was rebuilt on every search"
+    assert queued == [branch_id], "an empty branch asked for a rebuild on every search"
 
     # The memo is per branch: a branch this process has not searched yet is still
-    # checked and still built.
-    await search_service._ensure_index_exists(session, "palette", project_id, other_branch_id)
+    # checked and still queued.
+    await search_service._ensure_index_exists(session, project_id, other_branch_id)
     assert session.probes == 2
-    assert rebuilt == [branch_id, other_branch_id]
+    assert queued == [branch_id, other_branch_id]
+
+    # A broker outage must not turn the check back into a per-search cost: the
+    # memo is recorded on the attempt, not on its outcome. The branch is left to
+    # the triggers every other branch relies on (CRUD, post-scan, manual).
+    queue_succeeds = False
+    broker_down_branch = uuid.uuid4()
+    for _ in range(3):
+        await search_service._ensure_index_exists(session, project_id, broker_down_branch)
+    assert session.probes == 3
+    assert queued.count(broker_down_branch) == 1
 
 
 #: How long the lexical leg below waits for the embedding call to start before
@@ -1096,11 +1118,14 @@ async def test_metric_and_fact_table_creation_indexes_them_for_search(
     await client.post("/api/v1/projects", json={"name": "Catalog", "slug": "search-catalog"})
     await _create_event_type(client, "search-catalog", name="pv", display_name="Page View")
     # Seed the index BEFORE the catalog entities exist, so the hits below can
-    # only come from the CRUD-triggered reindex (not from the lazy index build
-    # a first search performs on an empty index).
-    seeded = await client.get("/api/v1/projects/search-catalog/search?q=Page")
-    assert seeded.status_code == 200
-    assert seeded.json()["items"]
+    # only come from the CRUD-triggered reindex. This used to be a GET, which
+    # worked only because the read path built an empty branch's index for it —
+    # the side effect tripl-zbv0 removed. Reindexing explicitly states the setup
+    # the assertions actually need instead of leaning on a read path's side
+    # effect; nothing below is weakened.
+    await search_service.reindex_branch(
+        TestSessionLocal(), "search-catalog", schedule_embeddings=False
+    )
 
     fact_table = await _create_fact_table(client, "search-catalog")
     metric = await _create_fact_metric(
@@ -1310,3 +1335,190 @@ async def test_scan_configs_and_alert_rules_are_searchable(client: AsyncClient) 
         item["entity_type"] == "alert_rule" and item["title"] == "Checkout collapse watch"
         for item in by_template.json()["items"]
     )
+
+
+async def _search_titles(client: AsyncClient, slug: str, query: str, entity_type: str) -> list[str]:
+    resp = await client.get(f"/api/v1/projects/{slug}/search?q={query}&limit=50")
+    assert resp.status_code == 200, resp.text
+    return [item["title"] for item in resp.json()["items"] if item["entity_type"] == entity_type]
+
+
+@pytest.mark.asyncio
+async def test_a_scan_config_is_searchable_the_moment_its_service_saves_it(
+    client: AsyncClient,
+) -> None:
+    """No hand reindex anywhere below — the mutation is the trigger (tripl-ugrm).
+
+    The recall test above has to call ``reindex_branch`` itself, and that hand
+    reindex was the only thing making it pass: ``scan_config`` was one of two
+    document kinds whose service never refreshed the index, so a scan the user
+    had just saved stayed unfindable in the palette until an unrelated trigger
+    fired. Everything here goes through the HTTP surface a user goes through.
+    """
+    await client.post("/api/v1/projects", json={"name": "Fresh", "slug": "fresh-scan"})
+    source = await client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Fresh warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "default",
+        },
+    )
+    assert source.status_code == 201, source.text
+
+    created = await client.post(
+        "/api/v1/projects/fresh-scan/scans",
+        json={
+            "data_source_id": source.json()["id"],
+            "name": "Zebrascan nightly",
+            "base_query": "SELECT * FROM warehouse.checkout_events",
+        },
+    )
+    assert created.status_code == 201, created.text
+    scan_id = created.json()["id"]
+
+    assert await _search_titles(client, "fresh-scan", "zebrascan", "scan_config") == [
+        "Zebrascan nightly"
+    ]
+
+    renamed = await client.patch(
+        f"/api/v1/projects/fresh-scan/scans/{scan_id}",
+        json={"name": "Quaggascan nightly"},
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert await _search_titles(client, "fresh-scan", "quaggascan", "scan_config") == [
+        "Quaggascan nightly"
+    ]
+    assert await _search_titles(client, "fresh-scan", "zebrascan", "scan_config") == []
+
+    deleted = await client.delete(f"/api/v1/projects/fresh-scan/scans/{scan_id}")
+    assert deleted.status_code == 204, deleted.text
+    assert await _search_titles(client, "fresh-scan", "quaggascan", "scan_config") == []
+
+
+@pytest.mark.asyncio
+async def test_an_alert_rule_is_searchable_the_moment_its_service_saves_it(
+    client: AsyncClient,
+) -> None:
+    """The other half of tripl-ugrm: alert rules had the same missing trigger.
+
+    A rule is reached through its destination rather than a branch, so the
+    refresh has to happen in the destination/rule CRUD module — the branch-scoped
+    services never touch it.
+    """
+    await client.post("/api/v1/projects", json={"name": "Fresh", "slug": "fresh-rule"})
+    destination = await client.post(
+        "/api/v1/projects/fresh-rule/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Main Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T000/B000/XXX",
+        },
+    )
+    assert destination.status_code == 201, destination.text
+    destination_id = destination.json()["id"]
+
+    created = await client.post(
+        f"/api/v1/projects/fresh-rule/alert-destinations/{destination_id}/rules",
+        json={"name": "Zebrarule collapse watch"},
+    )
+    assert created.status_code == 201, created.text
+    rule_id = created.json()["id"]
+
+    assert await _search_titles(client, "fresh-rule", "zebrarule", "alert_rule") == [
+        "Zebrarule collapse watch"
+    ]
+
+    renamed = await client.patch(
+        f"/api/v1/projects/fresh-rule/alert-destinations/{destination_id}/rules/{rule_id}",
+        json={"name": "Quaggarule collapse watch"},
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert await _search_titles(client, "fresh-rule", "quaggarule", "alert_rule") == [
+        "Quaggarule collapse watch"
+    ]
+
+    deleted = await client.delete(
+        f"/api/v1/projects/fresh-rule/alert-destinations/{destination_id}/rules/{rule_id}"
+    )
+    assert deleted.status_code == 204, deleted.text
+    assert await _search_titles(client, "fresh-rule", "quaggarule", "alert_rule") == []
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_destination_takes_its_rules_out_of_the_index(
+    client: AsyncClient,
+) -> None:
+    """``AlertDestination.rules`` cascades, so the delete removes documents too.
+
+    The rule CRUD paths are the obvious half of tripl-ugrm; this is the half that
+    deletes rules without ever calling ``delete_rule``.
+    """
+    await client.post("/api/v1/projects", json={"name": "Fresh", "slug": "fresh-dest"})
+    destination = await client.post(
+        "/api/v1/projects/fresh-dest/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Main Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T000/B000/XXX",
+        },
+    )
+    assert destination.status_code == 201, destination.text
+    destination_id = destination.json()["id"]
+
+    created = await client.post(
+        f"/api/v1/projects/fresh-dest/alert-destinations/{destination_id}/rules",
+        json={"name": "Okapirule collapse watch"},
+    )
+    assert created.status_code == 201, created.text
+    assert await _search_titles(client, "fresh-dest", "okapirule", "alert_rule") == [
+        "Okapirule collapse watch"
+    ]
+
+    deleted = await client.delete(
+        f"/api/v1/projects/fresh-dest/alert-destinations/{destination_id}"
+    )
+    assert deleted.status_code == 204, deleted.text
+    assert await _search_titles(client, "fresh-dest", "okapirule", "alert_rule") == []
+
+
+def test_the_read_path_enqueues_the_task_name_the_worker_registers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``send_task`` routes by NAME, so a typo there is a silently dead feature.
+
+    Publishing an unregistered name raises nothing: the message is accepted, no
+    worker ever claims it, and the only symptom is a branch that stays unindexed
+    while every log line looks healthy. Asserting against the task's own ``name``
+    ties the two ends of the wire together (tripl-zbv0).
+    """
+    from tripl.worker import celery_app as celery_module
+    from tripl.worker.tasks import search as search_tasks
+
+    sent: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        celery_module.celery_app,
+        "send_task",
+        lambda name, args: sent.append((name, args)),
+    )
+    project_id, branch_id = uuid.uuid4(), uuid.uuid4()
+
+    assert search_service._queue_branch_reindex(project_id, branch_id) is True
+    assert sent == [(search_tasks.reindex_search_branch.name, [str(project_id), str(branch_id)])]
+
+
+def test_a_broker_failure_is_reported_not_raised(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A search GET must answer even when the broker is gone."""
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("celery broker gone")
+
+    from tripl.worker import celery_app as celery_module
+
+    monkeypatch.setattr(celery_module.celery_app, "send_task", boom)
+
+    assert search_service._queue_branch_reindex(uuid.uuid4(), uuid.uuid4()) is False
