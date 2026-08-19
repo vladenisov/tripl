@@ -201,6 +201,40 @@ async def test_list_events_sends_reviewed_only_when_the_agent_asks(
 
 
 @respx.mock
+async def test_list_events_sends_field_value_and_order_by_only_when_asked(
+    stdio_runtime: Runtime,
+) -> None:
+    """The two filters the route declared and no client could reach.
+
+    ``field_value`` (PR #78) and ``order_by`` (PR #29) both predate the shared
+    builder and were left out of it, so an agent could neither ask "which events
+    carry this value" - it can already SEE field values through get_event - nor
+    rank a large catalog by traffic, only page through the authored order
+    (tripl-nhj0).
+
+    ``order_by`` is checked absent as well as present: the route owns the
+    default, and a tool that always spelled ``catalog`` would pin today's answer
+    for every agent, the same rule get_scan_status follows for ``limit``.
+    """
+    route = respx.get(f"{API_BASE}/projects/demo/events").mock(
+        return_value=httpx.Response(200, json={"items": [], "total": 0})
+    )
+
+    is_error, _ = await call_tool("list_events", {"slug": "demo"})
+    assert not is_error
+    assert "field_value" not in route.calls.last.request.url.params
+    assert "order_by" not in route.calls.last.request.url.params
+
+    is_error, _ = await call_tool(
+        "list_events", {"slug": "demo", "field_value": "checkout", "order_by": "volume"}
+    )
+    assert not is_error
+    params = route.calls.last.request.url.params
+    assert params["field_value"] == "checkout"
+    assert params["order_by"] == "volume"
+
+
+@respx.mock
 async def test_write_tool_update_event_end_to_end(stdio_runtime: Runtime) -> None:
     # Arrange
     respx.get(f"{API_BASE}/projects/demo/branches/b-42").mock(

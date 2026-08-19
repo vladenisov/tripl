@@ -38,6 +38,19 @@ STATUSES: tuple[str, ...] = (
     "archived",
 )
 
+# The route's `order_by` Literal, verbatim. "catalog" is the authored order the
+# plan is read in; "volume" ranks busiest-first by each event's summed
+# EventMetric count over the last 24h. Spelled here rather than in the argparse
+# `choices=` for the same reason STATUSES is, and pinned to backend/openapi.json
+# by cli/tests/test_contract.py.
+ORDER_BY: tuple[str, ...] = ("catalog", "volume")
+
+# What omitting `order_by` gets you. Held only so the help text can name it:
+# unlike `limit`, this parameter is left OFF the wire when unasked-for, so a
+# route that changed its mind about the default would be followed rather than
+# overridden. Pinned to the document alongside the bounds below.
+ORDER_BY_DEFAULT = "catalog"
+
 # The route's own bounds: `limit` is Query(ge=1, le=10000) with a server default
 # of 200, `silent_since_days` is Query(ge=0, le=3650). Reproduced here so a bad
 # value costs no request, and pinned to the OpenAPI document by the contract
@@ -53,6 +66,12 @@ def list_events(
     search: str | None = None,
     status: list[str] | None = None,
     tag: str | None = None,
+    # Substring and case-insensitive, over every field VALUE on the event
+    # (`EventFieldValue.value ILIKE %...%`) - the same shape `meta_value` has,
+    # on the other half of an event's content. It shipped with the route in
+    # PR #78 and was never mirrored here, so no shell and no agent could ask
+    # "which events carry this value" (tripl-nhj0).
+    field_value: str | None = None,
     meta_value: str | None = None,
     event_type_id: str | None = None,
     silent_since_days: int | None = None,
@@ -63,6 +82,10 @@ def list_events(
     reviewed: bool | None = None,
     offset: int | None = None,
     limit: int | None = None,
+    # One of ORDER_BY, or None to take the route's own default (ORDER_BY_DEFAULT
+    # says which). Not a bool and not free text: the route declares a Literal, so
+    # any third value is a 422 the caller pays a request to learn.
+    order_by: str | None = None,
     branch: str | None = None,
 ) -> ApiRequest:
     """Paged: answers ``{items, total}``."""
@@ -73,12 +96,14 @@ def list_events(
             "search": search,
             "status": status,
             "tag": tag,
+            "field_value": field_value,
             "meta_value": meta_value,
             "event_type_id": event_type_id,
             "silent_since_days": silent_since_days,
             "reviewed": reviewed,
             "offset": offset,
             "limit": limit,
+            "order_by": order_by,
             "branch": branch,
         },
     )

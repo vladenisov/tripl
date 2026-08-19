@@ -24,12 +24,14 @@ async def list_events(
     search: str | None = None,
     status: list[str] | None = None,
     tag: str | None = None,
+    field_value: str | None = None,
     meta_value: str | None = None,
     event_type_id: str | None = None,
     silent_since_days: int | None = None,
     reviewed: bool | None = None,
     offset: int | None = None,
     limit: int | None = None,
+    order_by: str | None = None,
     branch_id: str | None = None,
 ) -> dict[str, Any]:
     client = client_for(ctx)
@@ -40,12 +42,14 @@ async def list_events(
             search=search,
             status=status,
             tag=tag,
+            field_value=field_value,
             meta_value=meta_value,
             event_type_id=event_type_id,
             silent_since_days=silent_since_days,
             reviewed=reviewed,
             offset=offset,
             limit=limit,
+            order_by=order_by,
             branch=branch_id,
         ),
     )
@@ -122,10 +126,14 @@ def register(mcp: FastMCP) -> None:
             "List catalog events with structured filters (substring 'search' over "
             "name/description, repeatable lifecycle 'status' values draft/in_review/"
             "ready_for_dev/implemented/live/deprecated/archived, exact 'tag', "
-            "'meta_value' e.g. a ticket key, 'event_type_id', 'silent_since_days', "
+            "substring 'field_value' e.g. a screen name, substring 'meta_value' "
+            "e.g. a ticket key, 'event_type_id', 'silent_since_days', "
             "'reviewed' true/false). 'reviewed' is an axis of its own, not a "
             "spelling of 'status' - an event can be reviewed and still sit at "
             "in_review - and omitting it means either. "
+            "'order_by' is 'catalog' (the authored order, and what omitting it "
+            "gets) or 'volume' (busiest-first by ingested volume over the last "
+            "24h) - use 'volume' to triage a large catalog by traffic. "
             "Returns trimmed items + total; follow up with get_event for full detail. "
             "Requires a tk_r_ or tk_w_ key."
         ),

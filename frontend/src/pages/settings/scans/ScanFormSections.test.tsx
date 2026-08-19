@@ -508,8 +508,8 @@ describe('ScanFormSections — field labelling', () => {
   // renamed control id leaves the label naming nothing (tripl-5gdg).
   //
   // Only labels that carry a `for` are checked: the rows holding the SQL editor
-  // and the Load preview button pass no id, so they render a caption with no
-  // association at all, which Field cannot yet express as a named group.
+  // and the Load preview button hold nothing a <label> can point at, so they opt
+  // out with `id={false}` and are named as groups instead — see the next test.
   it('associates every field label with the control it names', async () => {
     setupFetch([eventType])
     renderCreatePage()
@@ -525,5 +525,24 @@ describe('ScanFormSections — field labelling', () => {
       expect(name.trim().length).toBeGreaterThan(0)
       expect(screen.getByLabelText(name)).toBe(label.control)
     }
+  })
+
+  // Field rendered <label htmlFor={id}> unconditionally, so the two rows that
+  // pass no control id shipped a caption naming nothing: the SQL editor is a
+  // CodeMirror contenteditable that names itself with ariaLabel, and Preview is
+  // a button with no control beside it. `id={false}` exposes the caption as a
+  // group name instead (tripl-otlv), the same hatch components/settings/kit.tsx
+  // already had.
+  it('names the rows that hold no labelable control as groups, not dangling labels', async () => {
+    setupFetch()
+    const { container } = renderCreatePage()
+
+    await screen.findByText('New scan')
+
+    expect(screen.getByRole('group', { name: 'Base query' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Preview' })).toBeInTheDocument()
+    const captions = Array.from(container.querySelectorAll('label'), el => el.textContent)
+    expect(captions).not.toContain('Base query')
+    expect(captions).not.toContain('Preview')
   })
 })

@@ -180,6 +180,57 @@ def test_reviewed_is_tri_state_and_is_absent_unless_asked_for(
     assert "not allowed with argument" in capsys.readouterr().err
 
 
+def test_field_value_is_absent_unless_asked_for(
+    tripl_api: FakeInstance, configured_env: None
+) -> None:
+    """The other half of an event's content, filterable at last.
+
+    ``--meta-value`` reached the wire from the first release and ``--field-value``
+    did not, though the route has declared both since PR #78 and compares them
+    the same way (a case-insensitive substring) - so "which events carry this
+    screen name" was a question only the web app could ask (tripl-nhj0).
+
+    Absence is asserted first for the same reason every filter here is: a
+    parameter that appears without being asked for narrows an UNFILTERED listing,
+    and an operator reading a short table has no way to tell that from a small
+    catalog.
+    """
+    route = tripl_api.events("prod", [make_event(last_seen_at=_SEEN)])
+    assert main(["events", "list", "--project", "prod"]) == 0
+    assert "field_value" not in route.calls.last.request.url.params
+
+    assert main(["events", "list", "--project", "prod", "--field-value", "checkout"]) == 0
+    assert route.calls.last.request.url.params["field_value"] == "checkout"
+
+
+def test_order_by_is_absent_unless_asked_for_and_refuses_an_unknown_value(
+    tripl_api: FakeInstance, configured_env: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Omission is how the route's own default is asked for.
+
+    Unlike ``--limit``, this flag has no client-side default: the route declares
+    ``catalog`` and spelling that out here would pin today's answer, so an
+    unasked-for ordering must leave the parameter off the wire entirely. The
+    unknown value costs no request for the same reason every other bad flag
+    does - the route declares a Literal, so ``--order-by newest`` would buy a
+    422 to learn what argparse already knows.
+    """
+    route = tripl_api.events("prod", [make_event(last_seen_at=_SEEN)])
+    assert main(["events", "list", "--project", "prod"]) == 0
+    assert "order_by" not in route.calls.last.request.url.params
+
+    assert main(["events", "list", "--project", "prod", "--order-by", "volume"]) == 0
+    assert route.calls.last.request.url.params["order_by"] == "volume"
+
+    calls_before = route.call_count
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as exit_info:
+        main(["events", "list", "--project", "prod", "--order-by", "newest"])
+    assert exit_info.value.code == 2
+    assert route.call_count == calls_before
+    assert "invalid choice" in capsys.readouterr().err
+
+
 def test_an_out_of_range_limit_costs_no_request(
     tripl_api: FakeInstance, configured_env: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
