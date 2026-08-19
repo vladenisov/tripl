@@ -8,10 +8,11 @@
  * (tripl-jfm3.89). A shared module makes "the counts agree" the default rather
  * than something four call sites have to remember.
  *
- * Mirrors the backend gate in
- * ``services/metrics_insights_service.SIGNIFICANT_MIN_REL_EFFECT`` /
- * ``relative_effect`` — the sidebar's ``monitoring_signal_count`` is computed
- * there, so the two must stay identical.
+ * The magnitude itself is no longer mirrored: the backend ships
+ * ``relative_effect`` on each signal and this module reads it, so the sidebar's
+ * ``monitoring_signal_count`` and this gate cannot disagree by construction.
+ * Only the THRESHOLD is still duplicated, in
+ * ``services/metrics_insights_service.SIGNIFICANT_MIN_REL_EFFECT``.
  */
 import type { MonitoringSignal } from '@/types'
 
@@ -23,6 +24,19 @@ import type { MonitoringSignal } from '@/types'
  * large one on a busy scope.
  */
 export function relativeEffect(signal: MonitoringSignal): number {
+  // The server computes this now and ships it on the signal. It is the only
+  // side that knows whether a catalog metric's series is count-shaped, and a
+  // fractional one must NOT have its denominator floored at 1 — a ratio
+  // expected at 0.12 and observed at 0.04 scored 0.08 here and never cleared
+  // the bar below, so metric anomalies were invisible at the default level
+  // (tripl-yf8c). Recomputing locally is also what let this formula drift from
+  // the backend's twice before (tripl-yfsj.1, tripl-jfm3.89).
+  //
+  // The fallback stays for payloads that carry no value — it is the old
+  // count-shaped estimate, correct for every scope except a fractional metric.
+  if (signal.relative_effect !== null && signal.relative_effect !== undefined) {
+    return signal.relative_effect
+  }
   return Math.abs(signal.actual_count - signal.expected_count) / Math.max(signal.expected_count, 1)
 }
 

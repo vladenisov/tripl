@@ -55,6 +55,13 @@ export interface MonitoringSignal {
   stddev: number
   z_score: number
   direction: 'spike' | 'drop'
+  // How big this signal is relative to what was expected — what the Significant
+  // gate and the sidebar badge both read. Computed server-side because only it
+  // knows whether a catalog metric's series is count-shaped, which decides
+  // whether the denominator is floored at 1 (tripl-yf8c). Null on a payload
+  // that did not compute it; `relativeEffect` falls back to the count-shaped
+  // estimate there rather than treating the signal as having no magnitude.
+  relative_effect?: number | null
   // Display name of the scope that fired, resolved server-side. Null when it
   // could not be resolved (the entity was deleted) or when the scope names
   // itself — `project_total`. Never substitute `scope_ref`: a hex prefix reads

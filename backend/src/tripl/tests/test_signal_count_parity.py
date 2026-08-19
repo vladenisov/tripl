@@ -927,3 +927,39 @@ async def test_a_metric_that_left_active_is_closed_on_every_surface(
         "list": False,
         "drilldown": False,
     }
+
+
+def test_relative_effect_floors_a_count_but_not_a_fractional_series() -> None:
+    """The floor protects counts and is a category error on a ratio (tripl-yf8c).
+
+    A count expected below 1 means essentially no traffic, so dividing by it
+    would let a dead scope outrank a real move — the floor stays. A conversion
+    ratio expected at 0.12 and observed at 0.04 is a two-thirds collapse; the
+    same floor scored it 0.08, below the 0.5 bar, so it never reached the
+    default Anomalies view, the bell or the sidebar badge.
+    """
+    from tripl.services.metrics_insights_service import (
+        SIGNIFICANT_MIN_REL_EFFECT,
+        is_significant_signal,
+        relative_effect,
+    )
+
+    # Count: floored, and deliberately so.
+    assert relative_effect(2.0, 0.5) == pytest.approx(1.5)
+    assert relative_effect(150.0, 100.0) == pytest.approx(0.5)
+
+    # Fractional: divided by its real baseline.
+    assert relative_effect(0.04, 0.12, count_shaped=False) == pytest.approx(2 / 3)
+    assert relative_effect(0.04, 0.12) == pytest.approx(0.08)
+
+    # ...which is exactly the difference between invisible and significant.
+    assert not is_significant_signal(0.04, 0.12)
+    assert is_significant_signal(0.04, 0.12, count_shaped=False)
+    assert SIGNIFICANT_MIN_REL_EFFECT == 0.5
+
+
+def test_relative_effect_states_a_zero_baseline_rather_than_dividing_by_it() -> None:
+    from tripl.services.metrics_insights_service import relative_effect
+
+    assert relative_effect(0.0, 0.0, count_shaped=False) == 0.0
+    assert relative_effect(0.5, 0.0, count_shaped=False) == float("inf")
