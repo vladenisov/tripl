@@ -1190,3 +1190,39 @@ async def test_a_shell_abandoned_mid_seed_never_locks_out_the_creator(
             await session.scalars(select(Project.slug).where(Project.slug.like("demo-stalled%")))
         ).all()
     assert list(left) == []
+
+
+@pytest.mark.asyncio
+async def test_every_seeded_scan_config_survives_a_patch_of_itself(client: AsyncClient) -> None:
+    """The seeder must not write what the write path refuses to accept.
+
+    It inserts through the ORM, so it never meets ``check_scalar_columns_unreserved``.
+    It used to put ``platform`` in both ``metric_breakdown_columns`` and
+    ``distribution_drift_fields`` while ``platform_column`` designated the same
+    column, which that check forbids — so the demo shipped a scan config the API
+    would not save, and renaming the demo scan returned a 422 naming fields the
+    user had never touched (tripl-4rr4).
+
+    A no-op PATCH is the cheapest general guard: it re-validates the stored row
+    against the rules a user's own edit meets, so any future drift between the
+    seeder and the write path fails here rather than in front of an evaluator.
+    """
+    demo = await client.post("/api/v1/projects/demo")
+    assert demo.status_code == 201
+    slug = demo.json()["slug"]
+
+    scans = await client.get(f"/api/v1/projects/{slug}/scans")
+    assert scans.status_code == 200
+    configs = scans.json()
+    assert configs, "the demo is expected to seed at least one scan config"
+
+    for config in configs:
+        # Send the name it already has: nothing changes, but everything is checked.
+        resp = await client.patch(
+            f"/api/v1/projects/{slug}/scans/{config['id']}",
+            json={"name": config["name"]},
+        )
+        assert resp.status_code == 200, (
+            f"the seeded scan config {config['name']!r} cannot be saved by the API "
+            f"that owns it: {resp.json()}"
+        )
