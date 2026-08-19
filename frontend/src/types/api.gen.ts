@@ -7590,6 +7590,8 @@ export interface components {
              * @default false
              */
             incident_child: boolean;
+            /** Relative Effect */
+            relative_effect?: number | null;
             /** Scan Config Id */
             scan_config_id?: string | null;
             /** Scope Name */

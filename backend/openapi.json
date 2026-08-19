@@ -11877,6 +11877,17 @@
             "title": "Incident Child",
             "type": "boolean"
           },
+          "relative_effect": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relative Effect"
+          },
           "scan_config_id": {
             "anyOf": [
               {

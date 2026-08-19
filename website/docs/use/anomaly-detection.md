@@ -365,6 +365,18 @@ event catalog to build an id → name map. **Do not fall back to `scope_ref` whe
 `scope_name` is null** — `scope_ref` is a routing key, and a hex prefix printed
 where a name belongs reads as a name (*"Spike on Event d4c684dd"*).
 
+Signals from those endpoints also carry **`relative_effect`**: how big the
+signal is relative to what was expected, and the value both the Anomalies page's
+"Significant" magnitude filter and the sidebar badge gate on (at `0.5`). It is
+computed server-side because only the server knows whether a catalog metric's
+series is count-shaped, which decides whether the denominator is floored at 1:
+for a count it is `|actual − expected| / max(expected, 1)`, so a scope with
+essentially no traffic cannot outrank a real move on a busy one; for a
+fractional metric series that floor would be a category error, so it is
+`|actual − expected| / expected`. `null` means the path that produced the signal
+did not compute it — fall back to your own count-shaped estimate rather than
+treating the signal as having no magnitude.
+
 ### Alert rules are an additional gate
 
 Detection deciding a bucket is anomalous is **not** the same as you getting notified. Each alert rule applies its **own** set of gates on top of detection before anything is delivered:

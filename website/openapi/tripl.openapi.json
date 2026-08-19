@@ -24741,6 +24741,17 @@
           "direction": {
             "$ref": "#/components/schemas/AnomalyDirection"
           },
+          "relative_effect": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relative Effect"
+          },
           "scope_name": {
             "anyOf": [
               {

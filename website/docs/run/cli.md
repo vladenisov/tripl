@@ -1535,10 +1535,11 @@ Until then: edit in the tripl app, or through the
 ```
 usage: tripl events list [-h] [--url URL] [--api-key KEY] [--config PATH]
                          [--project SLUG] [--branch REF] [--search TEXT]
-                         [--status STATUS] [--tag TAG] [--meta-value TEXT]
-                         [--event-type ID] [--silent-since-days N]
+                         [--status STATUS] [--tag TAG] [--field-value TEXT]
+                         [--meta-value TEXT] [--event-type ID]
+                         [--silent-since-days N]
                          [--reviewed | --unreviewed]
-                         [--offset N] [--limit N] [--json]
+                         [--offset N] [--limit N] [--order-by ORDER] [--json]
                          [--timeout SECONDS]
 ```
 
@@ -1549,12 +1550,14 @@ usage: tripl events list [-h] [--url URL] [--api-key KEY] [--config PATH]
 | `--search TEXT` | Substring match over name and description. |
 | `--status STATUS` | Lifecycle state. Repeatable, and the API keeps an event matching **any** of them. |
 | `--tag TAG` | Exact tag match. |
-| `--meta-value TEXT` | Exact match on any meta value — a ticket key, typically. |
+| `--field-value TEXT` | Substring match on any field value — a screen name, typically. Case-insensitive. |
+| `--meta-value TEXT` | Substring match on any meta value — a ticket key, typically. Case-insensitive, so `--meta-value TRIPL-4` also keeps `TRIPL-412`. |
 | `--event-type ID` | Only events of this event type id, from `tripl plan types`. |
 | `--silent-since-days N` | Only events the warehouse has not carried for N days, `0`–`3650`. |
 | `--reviewed` / `--unreviewed` | Only events already marked reviewed, or only those not. Mutually exclusive; omitting both asks for either. Reviewing is a separate axis from lifecycle status, so `--reviewed` and `--status in_review` can both match the same event. |
 | `--offset N` | Skip N events, to read the next page. Default `0`. |
 | `--limit N` | How many events to ask for, `1`–`10000`, default `200`. |
+| `--order-by ORDER` | Order the page: `catalog`, the authored catalog order, or `volume`, busiest-first by ingested volume over the last 24h. Unlike `--limit` this flag has **no** client-side default — omitting it leaves the parameter off the wire so the API's own default (`catalog`) applies. |
 | `--json` | One JSON document on stdout, every human line on stderr. |
 | `--timeout SECONDS` | Per-request timeout, default `10.0`, range 0.1–600. |
 
