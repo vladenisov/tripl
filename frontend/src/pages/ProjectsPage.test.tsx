@@ -156,7 +156,11 @@ describe('ProjectsPage', () => {
     expect(screen.getByText('Latest scan')).toBeInTheDocument()
     expect(screen.getByText('Production scan')).toBeInTheDocument()
     expect(screen.getByText('Latest scan signal')).toBeInTheDocument()
-    expect(screen.getByText('Page View')).toBeInTheDocument()
+    // tripl-h5um: the scope is named inside the sentence the bell and the
+    // Anomalies list use, so it cannot be read as a readout of its own. The
+    // direction is in that sentence and NOT also on a chip beside it.
+    expect(screen.getByText('Spike on Page View')).toBeInTheDocument()
+    expect(screen.queryByText('spike')).not.toBeInTheDocument()
     // H1: the dashboard recent-signal count never speaks of "active".
     expect(screen.getByText('2 recent')).toBeInTheDocument()
     expect(screen.queryByText('2 active')).not.toBeInTheDocument()
@@ -434,9 +438,251 @@ describe('ProjectsPage', () => {
     expect(await screen.findByText('Gamma')).toBeInTheDocument()
     expect(screen.getByText('Hourly scan')).toBeInTheDocument()
     // The Latest scan panel reports a real last result, not just a status.
-    const rowsLine = screen.getByText(/rows scanned/)
+    const rowsLine = screen.getByText(/warehouse rows read/)
     expect(rowsLine).toBeInTheDocument()
     expect(rowsLine.textContent?.replace(/[^0-9]/g, '')).toBe('12345')
+    // tripl-h5um: the line says which population it counts. Beside a Monitoring
+    // tile printing an event count for one bucket, a bare "12,345 rows scanned"
+    // read as the same figure disagreeing with itself.
+    expect(rowsLine).toHaveAttribute(
+      'title',
+      'Warehouse rows this run read from the data source. Not an event count.',
+    )
+  })
+
+  it('suppresses a zero scan delta instead of announcing it in the success colour (tripl-h5um)', async () => {
+    // The demo runtime's own ticks report events_created: 0 — a completed run
+    // that changed nothing. The events chip used to render whenever the counter
+    // was present, so it printed a green "+0 events" while its zero siblings
+    // (signals, alerts) were correctly silent.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([
+          {
+            id: 'proj-zero',
+            name: 'Zeta',
+            slug: 'zeta',
+            description: 'A completed run that created nothing.',
+            created_at: '2026-06-01T09:00:00Z',
+            updated_at: '2026-06-10T09:00:00Z',
+            summary: {
+              event_type_count: 2,
+              event_count: 10,
+              active_event_count: 10,
+              implemented_event_count: 10,
+              review_pending_event_count: 0,
+              archived_event_count: 0,
+              variable_count: 2,
+              scan_count: 1,
+              alert_destination_count: 0,
+              alert_rule_count: 0,
+              monitoring_signal_count: 0,
+              failing_scan_config_count: 0,
+              latest_scan_job: {
+                id: 'job-zero',
+                scan_config_id: 'scan-zero',
+                scan_name: 'Nightly scan',
+                status: 'completed',
+                started_at: '2026-06-10T08:00:00Z',
+                completed_at: '2026-06-10T08:02:00Z',
+                result_summary: {
+                  events_created: 0,
+                  signals_added: 0,
+                  alerts_queued: 0,
+                  scan_rows_processed: 8261,
+                  scan_truncated: false,
+                },
+                error_message: null,
+                created_at: '2026-06-10T08:02:00Z',
+              },
+              latest_signal: null,
+            },
+          },
+        ]))
+      }
+
+      if (url.endsWith('/api/v1/data-sources')) {
+        return Promise.resolve(jsonResponse([]))
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Zeta')).toBeInTheDocument()
+    expect(screen.getByText('Nightly scan')).toBeInTheDocument()
+    expect(screen.getByText(/warehouse rows read/)).toBeInTheDocument()
+    expect(screen.queryByText('+0 events')).not.toBeInTheDocument()
+    expect(screen.queryByText('+0 signals')).not.toBeInTheDocument()
+    expect(screen.queryByText('+0 alerts')).not.toBeInTheDocument()
+  })
+
+  it('agrees with the scan detail page about how many rows a run read (tripl-h5um)', async () => {
+    // A run that reports BOTH counters: settings/scans/scanUtils.ts prefers
+    // query_rows_scanned, so this card must too — otherwise one run shows 900
+    // here and 12,345 on its own scan page.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([
+          {
+            id: 'proj-both',
+            name: 'Eta',
+            slug: 'eta',
+            description: 'A combined run reporting both row counters.',
+            created_at: '2026-06-01T09:00:00Z',
+            updated_at: '2026-06-10T09:00:00Z',
+            summary: {
+              event_type_count: 2,
+              event_count: 10,
+              active_event_count: 10,
+              implemented_event_count: 10,
+              review_pending_event_count: 0,
+              archived_event_count: 0,
+              variable_count: 2,
+              scan_count: 1,
+              alert_destination_count: 0,
+              alert_rule_count: 0,
+              monitoring_signal_count: 0,
+              failing_scan_config_count: 0,
+              latest_scan_job: {
+                id: 'job-both',
+                scan_config_id: 'scan-both',
+                scan_name: 'Combined scan',
+                status: 'completed',
+                started_at: '2026-06-10T08:00:00Z',
+                completed_at: '2026-06-10T08:02:00Z',
+                result_summary: {
+                  scan_rows_processed: 900,
+                  query_rows_scanned: 12345,
+                  scan_truncated: false,
+                },
+                error_message: null,
+                created_at: '2026-06-10T08:02:00Z',
+              },
+              latest_signal: null,
+            },
+          },
+        ]))
+      }
+
+      if (url.endsWith('/api/v1/data-sources')) {
+        return Promise.resolve(jsonResponse([]))
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Eta')).toBeInTheDocument()
+    const rowsLine = screen.getByText(/warehouse rows read/)
+    expect(rowsLine.textContent?.replace(/[^0-9]/g, '')).toBe('12345')
+  })
+
+  it('says what the monitoring tile counts and when (tripl-h5um)', async () => {
+    // The two tiles inside one project card print 8,261 and 13,373 for the same
+    // scan name at the same clock time. They are a warehouse row count and an
+    // event count for one bucket; unlabelled they read as a disagreement.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([
+          {
+            id: 'proj-total',
+            name: 'Theta',
+            slug: 'theta',
+            description: 'A project-total spike beside its scan run.',
+            created_at: '2026-06-01T09:00:00Z',
+            updated_at: '2026-06-10T09:00:00Z',
+            summary: {
+              event_type_count: 2,
+              event_count: 10,
+              active_event_count: 10,
+              implemented_event_count: 10,
+              review_pending_event_count: 0,
+              archived_event_count: 0,
+              variable_count: 2,
+              scan_count: 1,
+              alert_destination_count: 0,
+              alert_rule_count: 0,
+              monitoring_signal_count: 3,
+              failing_scan_config_count: 0,
+              latest_scan_job: {
+                id: 'job-total',
+                scan_config_id: 'scan-total',
+                scan_name: 'zebrascan28366',
+                status: 'completed',
+                started_at: '2026-06-10T08:00:00Z',
+                completed_at: '2026-06-10T09:00:00Z',
+                result_summary: {
+                  events_created: 0,
+                  scan_rows_processed: 8261,
+                  scan_truncated: false,
+                },
+                error_message: null,
+                created_at: '2026-06-10T09:00:00Z',
+              },
+              latest_signal: {
+                scan_config_id: 'scan-total',
+                scan_name: 'zebrascan28366',
+                scope_type: 'project_total',
+                scope_ref: 'proj-total',
+                scope_name: 'Project total',
+                state: 'latest_scan',
+                bucket: '2026-06-10T09:00:00Z',
+                actual_count: 13373,
+                expected_count: 8392,
+                z_score: 11.9,
+                direction: 'spike',
+              },
+            },
+          },
+        ]))
+      }
+
+      if (url.endsWith('/api/v1/data-sources')) {
+        return Promise.resolve(jsonResponse([]))
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Theta')).toBeInTheDocument()
+    // "Project total" is the name of the series that fired, not a total of the
+    // project — the verb in front of it is what says so.
+    expect(screen.getByText('Spike on Project total')).toBeInTheDocument()
+    const countsLine = screen.getByText(/actual vs/)
+    expect(countsLine).toHaveAttribute(
+      'title',
+      'What the detector measured in this one bucket, against the baseline it expected. Not a row count.',
+    )
+    // The scan tile's timestamp is a completion; this one is a bucket. Both read
+    // 9:00 AM on the demo stand, so each says which it is.
+    expect(screen.getByText(/^Bucket .* · via zebrascan28366$/)).toBeInTheDocument()
+    expect(screen.getByText(/^Completed /)).toBeInTheDocument()
   })
 
   it('surfaces a failing scan even when the newest run overall succeeded (tripl-7l83.3)', async () => {

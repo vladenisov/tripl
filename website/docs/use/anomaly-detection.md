@@ -47,7 +47,7 @@ On low-volume series the phase baseline also applies a **Poisson (√N) spread f
 
 ### The rolling baseline — fallback for new or sparse series
 
-When a series is too young to have three full seasonal cycles (a brand-new scan, or a very sparse event), the detector falls back to a **seasonality-blind rolling baseline**: the plain **mean** and **standard deviation** of the most recent window of buckets (the window length is the `baseline_window_buckets` setting, **Baseline Window (buckets)** in the UI). This baseline knows nothing about hour-of-week, so it is less precise on cyclic data — but it lets monitoring produce *something* on day one instead of staying silent. The rolling baseline also refuses to fire until it has seen at least `min_history_buckets` real buckets in its window (**Min History (buckets)** in the UI).
+When a series is too young to have three full seasonal cycles (a brand-new scan, or a very sparse event), the detector falls back to a **seasonality-blind rolling baseline**: the plain **mean** and **standard deviation** of the most recent window of buckets (the window length is the `baseline_window_buckets` setting, **Baseline window (buckets)** in the UI). This baseline knows nothing about hour-of-week, so it is less precise on cyclic data — but it lets monitoring produce *something* on day one instead of staying silent. The rolling baseline also refuses to fire until it has seen at least `min_history_buckets` real buckets in its window (**Min history (buckets)** in the UI).
 
 Both are counted in **buckets**, not hours, and the settings page says so under them: *a bucket is one collection interval of the series being scored*. So 14 buckets of baseline is 14 hours on an hourly scan and 14 days on a daily catalog metric.
 
@@ -146,8 +146,8 @@ These live in the project's **Detection settings** (route `/p/<slug>/settings/mo
 | `detect_event_types` | `true` | Watch each event type's volume. |
 | `detect_events` | `true` | Watch each individual event's volume. |
 | `detect_metrics` | `true` | Watch each active metric (the metrics catalog). |
-| `baseline_window_buckets` | `14` | How many recent buckets the rolling fallback baseline averages over. Labelled **Baseline Window (buckets)** in the UI. |
-| `min_history_buckets` | `7` | Minimum buckets the rolling fallback needs before it will fire. Labelled **Min History (buckets)** in the UI. |
+| `baseline_window_buckets` | `14` | How many recent buckets the rolling fallback baseline averages over. Labelled **Baseline window (buckets)** in the UI. |
+| `min_history_buckets` | `7` | Minimum buckets the rolling fallback needs before it will fire. Labelled **Min history (buckets)** in the UI. |
 | `sigma_threshold` | `4.0` | How many normal wobbles of deviation are required to flag a bucket. |
 | `min_expected_count` | `50` | Minimum expected volume before a bucket is eligible to be flagged. |
 | `recent_signal_window_hours` | `24` | How long a flagged bucket keeps counting as an **open signal**. Must stay above the settling allowance below. |

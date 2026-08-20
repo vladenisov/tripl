@@ -30,6 +30,7 @@ import {
   type Ref,
   type RefCallback,
 } from 'react'
+import { MAIN_CONTENT_ID } from '@/components/landmarks'
 import { Popover, PopoverAnchor, PopoverArrow, PopoverContent } from '@/components/ui/popover'
 import { CoachBeacon } from './CoachBeacon'
 import { useCoachPresence, useDemoScenario, useDemoScenarioActions } from './demoScenarioContext'
@@ -118,6 +119,16 @@ export function ScenarioCoachMark({
   // Such marks keep the ring on the control and dock the card clear of the grid.
   const docked = visible && anchorEl?.closest('table') != null
 
+  // Radix flips and shifts only to avoid the VIEWPORT edge, so on the 1512px
+  // shell a card anchored near the right of the content column keeps going and
+  // lands on the activity rail (its left border sits at x≈1208), cutting the
+  // rail's rows mid-glyph. Bound the card to the scroll container the anchor
+  // lives in: the rail and the sidebar are SIBLINGS of that container, never
+  // inside it, so a card can now only shift within the page it is coaching.
+  // No landmark (tests, a portalled anchor) falls back to the viewport, which
+  // is what every mark had before.
+  const boundary: Element | Element[] = anchorEl?.closest(`#${MAIN_CONTENT_ID}`) ?? []
+
   if (!visible) return <>{children}</>
 
   const position = steps.findIndex((candidate) => candidate.id === activeStep.id) + 1
@@ -144,8 +155,9 @@ export function ScenarioCoachMark({
             from the cell it is declared in, and row actions live in a
             `text-right` <td> — which rendered the card ragged-left and pushed
             "Hide hints" under the tweaks FAB. bottom-[68px] clears that FAB
-            (fixed bottom-5, h-9 → top edge at 56px) rather than fighting it on
-            z-index, which would also put the coach over modal dialogs
+            (now fixed bottom-1, h-8 → top edge at 36px; tripl-tvqk tucked it
+            down into the activity rail's footer strip) rather than fighting it
+            on z-index, which would also put the coach over modal dialogs
             (tripl-gr0x). */}
         <div
           role="note"
@@ -184,6 +196,10 @@ export function ScenarioCoachMark({
         side={side ?? coach?.side ?? 'bottom'}
         align={align ?? coach?.align ?? 'center'}
         sideOffset={8}
+        collisionBoundary={boundary}
+        // Enough that a shifted card reads as sitting beside the rail rather
+        // than welded to its border.
+        collisionPadding={8}
         // The action stays focused; the hint must not pull the caret out of the
         // control it is describing, nor scope focus to itself.
         onOpenAutoFocus={(event) => event.preventDefault()}

@@ -4,20 +4,6 @@ import { Button } from '@/components/ui/button'
 import { Field, SCard, SHeader, TextInput, Toggle } from '@/components/settings/kit'
 import { PASSWORD_POLICY_HINT } from '@/lib/passwordPolicy'
 
-type SessionRow = {
-  device: string
-  loc: string
-  ip: string
-  last: string
-  current?: boolean
-}
-
-// Presentation-only session list — there is no per-session backend yet, so this
-// mirrors the mockup with representative rows rather than inventing an endpoint.
-const SESSIONS: SessionRow[] = [
-  { device: 'This browser', loc: 'Current location', ip: '—', last: 'Active now', current: true },
-]
-
 /**
  * Account · Security. Signed-in password change, two-factor authentication and
  * active session management are not yet backed by API endpoints, so the
@@ -37,7 +23,7 @@ export default function SecuritySection() {
           the card points at that instead of pretending. */}
       <SCard
         title="Password"
-        description="Changing your password in-app isn't wired up yet. Sign out and use “Forgot your password?” on the sign-in screen to get a reset link by email."
+        description="You can't change your password here yet. Sign out, then use “Forgot your password?” on the sign-in screen to get a reset link by email."
         footer={
           <>
             <span className="flex-1" />
@@ -55,15 +41,19 @@ export default function SecuritySection() {
         </Field>
       </SCard>
 
+      {/* The row hint used to read "Strongly recommended for owners." directly
+          under "Not available yet": the card urged an action beside a switch
+          nobody can move (tripl-91j6). It now describes what the control would
+          do and leaves the recommending to a release that can honour it. */}
       <SCard
         title="Two-factor authentication"
-        description="Not available yet on this instance."
+        description="Not available yet on this instance — neither control below can be turned on."
       >
         <div className="flex items-center gap-[18px] px-[18px] py-[14px]" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
           <div className="min-w-0 flex-1">
             <div className="text-[13px] font-medium">Authenticator app</div>
             <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
-              Require a time-based code at sign-in. Strongly recommended for owners.
+              A time-based code at sign-in, on top of the password.
             </div>
           </div>
           <Toggle value={false} disabled aria-label="Authenticator app" />
@@ -82,44 +72,44 @@ export default function SecuritySection() {
         </div>
       </SCard>
 
+      {/* This used to iterate a one-element SESSIONS constant whose row read
+          "Current location · —": a label where a value belongs and an em dash
+          for an IP, printed under "review where it's signed in" as if it were a
+          device audit (tripl-91j6). tripl keeps no per-device record, so the
+          card states only what it can know — that you are reading it in this
+          browser — and the footer no longer promises to keep this device
+          beside a button offering to sign out of all of them. */}
       <SCard
         title="Active sessions"
+        description="Only this browser can be listed — tripl keeps no per-device record, so there is nothing else here to audit or revoke."
         footer={
           <>
             <span className="flex-1 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-              Signing out everywhere keeps this device.
+              Signing out other devices would leave this one signed in.
             </span>
             <Button variant="outline" size="sm" disabled>
               <LogOut className="h-3 w-3" />
-              Sign out all
+              Sign out other devices
             </Button>
           </>
         }
       >
-        {SESSIONS.map((s, i) => (
-          <div
-            key={s.device}
-            className="flex items-center gap-3 px-[18px] py-[13px]"
-            style={{ borderBottom: i === SESSIONS.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}
-          >
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-[7px] text-[13px] font-medium">
-                {s.device}
-                {s.current && (
-                  <Chip tone="success" size="xs">
-                    This device
-                  </Chip>
-                )}
-              </div>
-              <div className="mt-px text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-                {s.loc} · <span className="mono">{s.ip}</span>
-              </div>
+        <div className="flex items-center gap-3 px-[18px] py-[13px]">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-[7px] text-[13px] font-medium">
+              This browser
+              <Chip tone="success" size="xs">
+                This device
+              </Chip>
             </div>
-            <span className="text-[11.5px]" style={{ color: 'var(--fg-faint)' }}>
-              {s.last}
-            </span>
+            <div className="mt-px text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+              The session you are reading this in.
+            </div>
           </div>
-        ))}
+          <span className="text-[11.5px]" style={{ color: 'var(--fg-faint)' }}>
+            Active now
+          </span>
+        </div>
       </SCard>
     </div>
   )

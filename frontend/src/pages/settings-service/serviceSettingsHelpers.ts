@@ -187,6 +187,37 @@ export function sourceFor(
   return settings?.sources[`${section}.${field}`] ?? 'env'
 }
 
+/**
+ * How many of this section's fields are actually overridden on this instance —
+ * counted exactly the way the row badges count it, so the two can never
+ * disagree in the same viewport.
+ */
+export function overrideCount(
+  settings: ServiceSettings | undefined,
+  section: SectionKey,
+): number {
+  return RESET_FIELDS[section].filter(
+    field => sourceFor(settings, section, field) === 'override',
+  ).length
+}
+
+/**
+ * What a section reset would actually clear.
+ *
+ * This used to interpolate `RESET_FIELDS[section].length` — the number of
+ * RESETTABLE fields, not overridden ones — so a fresh instance whose every row
+ * was badged "Env" was told in red that it had 6 Email overrides to clear, next
+ * to a live button that would have done nothing (tripl-5qp9).
+ */
+export function resetCardDescription(section: SectionKey, overrides: number): string {
+  const label = SECTION_LABELS[section]
+  if (overrides === 0) {
+    return `Nothing to clear: every ${label} field on this instance is badged "Env", so it already comes from an environment variable.`
+  }
+  const noun = overrides === 1 ? 'override' : 'overrides'
+  return `Clears the ${overrides} ${label} ${noun} on this instance at once — every field badged "Override" above falls back to its environment variable.`
+}
+
 export function buildSectionDiff(
   section: SectionKey,
   fields: readonly string[],
@@ -295,7 +326,10 @@ export function resetConfirm(section: SectionKey, hasSectionDraft = false): Conf
     : ''
   return {
     title: `Reset ${label} to defaults`,
-    message: `Clear all ${RESET_FIELDS[section].length} ${label} overrides on this instance — ${RESET_STAKES[section]} — so every one of them falls back to its environment variable. This is saved immediately and cannot be undone.${draftStake}`,
+    // "settings", not "overrides": the number is the size of the PATCH — every
+    // field this write nulls — and only some of them are overridden right now.
+    // The card that opens this dialog counts the real overrides (tripl-5qp9).
+    message: `Clear all ${RESET_FIELDS[section].length} ${label} settings on this instance — ${RESET_STAKES[section]} — so every one of them falls back to its environment variable. This is saved immediately and cannot be undone.${draftStake}`,
     confirmLabel: 'Reset section',
   }
 }

@@ -261,8 +261,20 @@ export function ScanDetail({
           <div className="mb-1.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
             Base query <span style={{ color: 'var(--fg-faint)' }}>· used as subquery</span>
           </div>
+          {/* Wrap the query; do not scroll it sideways. The demo's own base
+              query is one 130-character line — `SELECT …, app_version FROM
+              events`, built on a single line by demo/builders/warehouse.py —
+              and at 1512px this box is ~872px wide, so `overflow-x-auto` cut it
+              flush after "app_version" with no ellipsis, no fade and no
+              scrollbar track. The panel whose whole job is to say what the scan
+              reads was showing a SELECT with no FROM clause and no cue that
+              anything was missing (tripl-2hmn). `whitespace-pre-wrap` keeps the
+              author's own newlines, `break-words` catches an identifier longer
+              than the box, and the height cap scrolls vertically instead —
+              same treatment the alert payload `<pre>`s already use, and a
+              vertical scrollbar is one a reader can actually see. */}
           <pre
-            className="mono m-0 overflow-x-auto rounded-lg border p-3 text-xs"
+            className="mono m-0 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border p-3 text-xs"
             style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)', color: 'var(--fg)' }}
           >{scanConfig.base_query}</pre>
         </div>

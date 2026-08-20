@@ -34,6 +34,7 @@ import {
   clearSectionSecrets,
   editableFromSettings,
   hasUpdate,
+  overrideCount,
   resetConfirm,
   resetPayload,
 } from './settings-service/serviceSettingsHelpers'
@@ -274,6 +275,7 @@ export default function ServiceSettingsSection({
       {section !== 'system' && (
         <ResetSectionCard
           section={section}
+          overrides={overrideCount(settings, section)}
           onReset={() => void resetSection(section)}
           resetting={saveMut.isPending}
         />

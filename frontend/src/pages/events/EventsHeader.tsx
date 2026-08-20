@@ -18,6 +18,45 @@ import type { EventType, MonitoringSignal } from '@/types'
 const CHART_SIGNALS_HELP =
   'Open signals on the series charted here — the project total and event types, after incident rollup. The sidebar Anomalies count is a different measure: every open signal in the project above the Significant threshold. The two can differ in either direction.'
 
+// The one stat in this row that does NOT follow the tab, filters or search: it
+// is a separate project-wide query (useEventsPageData `inReviewCount`), while
+// "Total" beside it is the filtered list count. Unlabelled, the row read as one
+// sentence — the archived tab showed "TOTAL 1 · IN REVIEW 6 pending" over a
+// single archived row, and status is single-valued, so 6 of 1 events could not
+// be awaiting review (tripl-4oqs). Same remedy as the coverage bar's "not
+// implemented" (tripl-jfm3.29): name the bucket so two adjacent numbers stop
+// reading as one.
+const IN_REVIEW_HELP =
+  'Events whose status is In Review across the whole project on this branch. It ignores the tab, filters and search, so it can be larger than the Total beside it — that one counts only what the current tab and filters match.'
+
+/**
+ * The `(i)` affordance beside a stat whose scope is not self-evident. A Radix
+ * tooltip rather than a bare `title`, so the note opens on keyboard focus as
+ * well as hover; the icon stays aria-hidden because the trigger's label already
+ * carries the sentence. The provider is local because the header renders
+ * outside EventsTable's, and Radix throws without one in scope.
+ */
+function StatHelp({ help }: { help: string }) {
+  return (
+    <TooltipProvider delayDuration={0}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="inline-flex shrink-0 self-end rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+            aria-label={help}
+          >
+            <Info className="h-3 w-3" style={{ color: 'var(--fg-faint)' }} aria-hidden />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" align="end" className="max-w-xs whitespace-normal">
+          {help}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
 export function EventsHeader({
   total,
   inReviewCount,
@@ -51,7 +90,10 @@ export function EventsHeader({
         </h1>
         <span className="mono text-[13px]" style={{ color: 'var(--fg-subtle)' }}>{total}</span>
       </div>
-      <div className="flex items-center gap-4">
+      {/* Wraps rather than overflows: the scoped "In review · project" caption
+          is the widest label in the row, and on a phone-width viewport the
+          three stats no longer fit the line the heading leaves them. */}
+      <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
         <MiniStat label="Total" value={String(total)} />
         <MiniStatDivider />
         <div className="inline-flex items-center gap-1">
@@ -62,35 +104,18 @@ export function EventsHeader({
             tone={hasLiveSignal ? 'danger' : 'success'}
             pulse={hasLiveSignal}
           />
-          {/* Radix tooltip rather than a bare `title`, so the note opens on
-              keyboard focus as well as hover. The icon stays aria-hidden — the
-              trigger's label already carries the sentence. The provider is local
-              because the header renders outside EventsTable's, and Radix throws
-              without one in scope. */}
-          <TooltipProvider delayDuration={0}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  className="inline-flex shrink-0 self-end rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-                  aria-label={CHART_SIGNALS_HELP}
-                >
-                  <Info className="h-3 w-3" style={{ color: 'var(--fg-faint)' }} aria-hidden />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" align="end" className="max-w-xs whitespace-normal">
-                {CHART_SIGNALS_HELP}
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+          <StatHelp help={CHART_SIGNALS_HELP} />
         </div>
         <MiniStatDivider />
-        <MiniStat
-          label="In review"
-          value={String(inReviewCount)}
-          delta={inReviewCount > 0 ? 'pending' : undefined}
-          tone={inReviewCount > 0 ? 'warning' : 'success'}
-        />
+        <div className="inline-flex items-center gap-1">
+          <MiniStat
+            label="In review · project"
+            value={String(inReviewCount)}
+            delta={inReviewCount > 0 ? 'pending' : undefined}
+            tone={inReviewCount > 0 ? 'warning' : 'success'}
+          />
+          <StatHelp help={IN_REVIEW_HELP} />
+        </div>
       </div>
     </div>
   )

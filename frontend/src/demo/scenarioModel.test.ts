@@ -76,6 +76,19 @@ describe('scenario chapter browser contracts', () => {
     expect(seeChart?.coach).toEqual({ side: 'top', align: 'start', emphasis: 'ring' })
   })
 
+  it('opens the run-scan coach away from the header note it would otherwise cover', () => {
+    // The scan header's Run now is right-aligned with the causal note — "metric
+    // points … are collected on that schedule, not by Run now" — running 620px
+    // out to its left. `align: 'end'` opened the card back across that note and
+    // cut it mid-word, hiding the one clause that qualifies the button the card
+    // is pointing at (tripl-pbzs).
+    const runScan = buildChapterSteps(SLUG, 'live-loop', initialScenarioState()).find(
+      step => step.id === 'live-loop/run-scan',
+    )
+
+    expect(runScan?.coach).toEqual({ side: 'bottom', align: 'start', emphasis: 'ring' })
+  })
+
   it.each([
     ['variables', 'variables/see-drift', { side: 'bottom', align: 'end', emphasis: 'ring' }],
     ['branches', 'branches/review-diff', { side: 'bottom', align: 'start', emphasis: 'ring' }],

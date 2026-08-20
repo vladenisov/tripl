@@ -556,7 +556,15 @@ export function buildChapterSteps(
           instruction: 'Run a scan to pull fresh volume from the demo warehouse.',
           to: scans,
           ctaLabel: 'Open Scans',
-          coach: { side: 'bottom', align: 'end', emphasis: 'ring' },
+          // Read only by the scan header (ScanConfigDetailView), where Run now is
+          // right-aligned and the header's own causal note runs 620px out to its
+          // left. `align: 'end'` opened the card back across that note and cut it
+          // mid-word, hiding the one clause that qualifies this very button:
+          // metric points are collected on the schedule, "not by Run now"
+          // (tripl-pbzs). `align: 'start'` grows the card into the header's empty
+          // right gutter instead. The scan LIST uses the same step from inside a
+          // <td>, where the card docks and this placement is ignored.
+          coach: { side: 'bottom', align: 'start', emphasis: 'ring' },
         },
         {
           id: 'live-loop/watch-scan',

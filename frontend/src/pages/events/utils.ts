@@ -72,18 +72,49 @@ export function formatCompactCount(value: number): string {
 const DAY_MS = 24 * 60 * 60 * 1000
 
 /**
+ * Width of the collection grid, read off the series instead of assumed. The
+ * window-metrics endpoint returns stored EventMetric rows only — no zero fill —
+ * so the smallest gap between consecutive buckets is the scan interval whenever
+ * any two adjacent buckets survived. A gap-riddled series only inflates it,
+ * which loosens the coverage check below rather than tightening it.
+ */
+function inferBucketMs(points: EventMetricPoint[]): number {
+  let smallest = Number.POSITIVE_INFINITY
+  for (let i = 1; i < points.length; i += 1) {
+    const gap = Date.parse(points[i].bucket) - Date.parse(points[i - 1].bucket)
+    if (gap > 0 && gap < smallest) smallest = gap
+  }
+  return Number.isFinite(smallest) ? smallest : 0
+}
+
+/**
  * 24h volume delta for a catalog row: percent change of the most recent 24h of
  * volume versus the prior 24h, read off the same window-metric series the event
  * detail page uses. Mirrors MonitoringDetailPage.computeEventStats so the list's
  * "Δ · 24h" column and the detail page agree (the previous implementation keyed
  * off per-bucket anomaly `expected_count`, which is null on non-anomaly buckets,
  * so nearly every row rendered "—"). Summing raw points equals summing an hourly
- * aggregation, so no pre-bucketing is needed. Returns null when there is no prior
- * 24h volume to compare against.
+ * aggregation, so no pre-bucketing is needed.
+ *
+ * Returns null unless the series actually reaches back two full 24h windows
+ * from its newest bucket. The fetch window is 48h anchored on NOW
+ * (ROW_METRICS_RANGE_HOURS) while the comparison anchors on the newest bucket
+ * that carries data, so a collection that lags clips the "prior" slot to
+ * whatever still fits inside the window: on a stand whose newest bucket sat
+ * ~22h behind now, every one of 13 rows divided 24h of volume by ~1.25h of it
+ * and landed between +1673% and +1907% — a column that could not be sorted,
+ * compared, or acted on, beside rows reading "last seen: never" (tripl-7vnw).
+ * "No prior 24h window to compare against" is the honest answer there, and it
+ * is already what the cell renders for null.
  */
 export function computeWindowDelta(points: EventMetricPoint[]): number | null {
-  if (points.length === 0) return null
-  const latest = Date.parse(points[points.length - 1]?.bucket ?? '') || Date.now()
+  if (points.length < 2) return null
+  const latest = Date.parse(points[points.length - 1].bucket)
+  const earliest = Date.parse(points[0].bucket)
+  if (!Number.isFinite(latest) || !Number.isFinite(earliest)) return null
+  // One bucket of slack: a fully covered 48h window puts its first and last
+  // hourly bucket 47h apart, and a daily grid fits exactly two buckets in it.
+  if (latest - earliest < 2 * DAY_MS - inferBucketMs(points)) return null
   let recent = 0
   let prior = 0
   for (const point of points) {

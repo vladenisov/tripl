@@ -665,6 +665,42 @@ describe('MetricsPage', () => {
       expect(anomaliesFilter).toHaveAttribute('aria-pressed', 'false')
     })
 
+    // A content assertion, not a styling one: the tile counts catalog metrics
+    // carrying a latest-scan signal, while the sidebar badge counts every
+    // significant open signal in the project. Captioned "Anomalies" the tile
+    // read as the project-wide number and contradicted the nav in the same
+    // viewport (tripl-vsw2).
+    it('captions the anomaly stat with its metric-catalog scope, not the bare word', async () => {
+      mockList(firingAndQuiet())
+
+      renderMetrics()
+
+      await screen.findByText('Firing metric')
+      expect(screen.getByText('Metrics with anomalies')).toBeInTheDocument()
+      expect(screen.queryByText('Anomalies')).not.toBeInTheDocument()
+    })
+
+    // The name is the only cell a reader cannot reconstruct from the rest of the
+    // row, and a wide kind chip can clip it (tripl-862w).
+    it('titles the metric name with its full display name so a clipped name survives', async () => {
+      mockList({
+        items: [
+          makeItem({
+            id: 'm-1',
+            name: 'purchase_conversion',
+            display_name: 'Purchase conversion',
+            kind: 'event_composition',
+          }),
+        ],
+        total: 1,
+      })
+
+      renderMetrics()
+
+      const link = await screen.findByRole('link', { name: 'Purchase conversion' })
+      expect(link).toHaveAttribute('title', 'Purchase conversion')
+    })
+
     it('labels the Trend column header with the real sparkline point count', async () => {
       mockList({ items: [makeItem({ id: 'm-1', spark: [1, 2, 3, 4, 5, 6, 7, 8] })], total: 1 })
 

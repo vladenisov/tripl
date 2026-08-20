@@ -7,6 +7,20 @@ import type { ServiceSettings } from '@/types'
 import ServiceSettingsSection from './ServiceSettingsPage'
 import { RESET_FIELDS } from './settings-service/serviceSettingsHelpers'
 
+/**
+ * One override per section, so the reset card is live in the tests that click
+ * it. A section with nothing overridden has nothing to reset, and its button is
+ * disabled on purpose (tripl-5qp9) — see the reset-card describe below.
+ */
+const OVERRIDDEN_SOURCES: ServiceSettings['sources'] = {
+  'runtime.app_base_url': 'override',
+  'security.registration_mode': 'override',
+  'storage.photo_max_size_mb': 'override',
+  'observability.log_level': 'override',
+  'email.smtp_host': 'override',
+  'ai.ai_model': 'override',
+}
+
 function ownerAuthValue(): AuthContextValue {
   return {
     user: {
@@ -94,11 +108,14 @@ const SETTINGS = {
     openai_api_key_configured: false,
   },
   overridden_fields: [],
-  sources: {},
+  sources: OVERRIDDEN_SOURCES,
 } as ServiceSettings
 
-function renderSection(section: 'ai' | 'security' | 'storage') {
-  vi.spyOn(serviceSettingsApi, 'get').mockResolvedValue(SETTINGS)
+function renderSection(
+  section: 'ai' | 'security' | 'storage' | 'email',
+  sources: ServiceSettings['sources'] = OVERRIDDEN_SOURCES,
+) {
+  vi.spyOn(serviceSettingsApi, 'get').mockResolvedValue({ ...SETTINGS, sources })
   // spyOn hands back the SAME spy for a property already spied, so without this
   // the call history accumulates across tests and "not.toHaveBeenCalled" reads
   // the previous test's reset.
@@ -236,6 +253,37 @@ describe('Instance settings write-through vs the unsaved draft', () => {
     expect(await screen.findByRole('alertdialog')).toHaveTextContent(
       /Changes you made in AI but have not saved are dropped as well/,
     )
+  })
+})
+
+describe('Instance settings reset card', () => {
+  /**
+   * The card interpolated RESET_FIELDS[section].length — how many fields a reset
+   * is ABLE to null — and called them overrides. On a fresh instance, where
+   * every row above it carries the outline "Env" badge, it therefore claimed in
+   * red that there were 6 Email overrides to clear, next to a live button whose
+   * PATCH would have changed nothing (tripl-5qp9).
+   */
+  it('counts the overrides that exist, not the fields it could reset', async () => {
+    renderSection('email', { 'email.smtp_host': 'override', 'email.smtp_port': 'override' })
+
+    expect(await screen.findByText(/Clears the 2 Email overrides/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Reset to defaults/ })).toBeEnabled()
+  })
+
+  it('agrees with the badges when a single field is overridden', async () => {
+    renderSection('email', { 'email.smtp_host': 'override' })
+
+    expect(await screen.findByText(/Clears the 1 Email override on this instance/)).toBeInTheDocument()
+  })
+
+  it('offers no reset at all when nothing in the section is overridden', async () => {
+    renderSection('email', {})
+
+    expect(await screen.findByText(/Nothing to clear/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Reset to defaults/ })).toBeDisabled()
+    // The "applies immediately" warning belongs to an action that can happen.
+    expect(screen.queryByText(/does not wait for Save changes/)).toBeNull()
   })
 })
 

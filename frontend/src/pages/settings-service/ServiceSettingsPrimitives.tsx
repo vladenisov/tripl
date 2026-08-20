@@ -3,7 +3,7 @@ import type { SettingSource } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { SCard } from '@/components/settings/kit'
-import { RESET_FIELDS, SECTION_LABELS, type SectionKey } from './serviceSettingsHelpers'
+import { SECTION_LABELS, resetCardDescription, type SectionKey } from './serviceSettingsHelpers'
 
 /**
  * Small shared bits for the Instance (service) settings sections. The card
@@ -48,31 +48,51 @@ export function StatusBadge({ active, label }: { active: boolean; label: string 
  * reverted all 13 security overrides, including Registration in the card above
  * it and the CSP and rate limits in the cards below (tripl-ifiy). The count and
  * the danger tone here state the blast radius the position used to hide.
+ *
+ * `overrides` is what makes that count honest: it is the number of fields the
+ * badges above are calling "Override" right now, not the number of fields a
+ * reset is able to null.
  */
 export function ResetSectionCard({
   section,
+  overrides,
   onReset,
   resetting,
 }: {
   section: SectionKey
+  /** Fields in this section currently badged "Override" (see overrideCount). */
+  overrides: number
   onReset: () => void
   resetting: boolean
 }) {
   const label = SECTION_LABELS[section]
+  const nothingToClear = overrides === 0
   return (
     <SCard
-      tone="danger"
+      // Danger tone only when there is something to destroy. On a fresh
+      // instance this card sat red, with a live button, at the bottom of all six
+      // pages to offer a no-op — which teaches people to ignore the one colour
+      // the UI keeps for real consequences (tripl-5qp9).
+      tone={nothingToClear ? undefined : 'danger'}
       title={`Reset ${label} to defaults`}
-      description={`Clears all ${RESET_FIELDS[section].length} ${label} overrides at once — every field in every card above falls back to its environment variable.`}
+      description={resetCardDescription(section, overrides)}
       footer={
         <>
-          <Button type="button" variant="outline" size="sm" onClick={onReset} disabled={resetting}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onReset}
+            disabled={resetting || nothingToClear}
+          >
             <RotateCcw className="h-3.5 w-3.5" />
             Reset to defaults
           </Button>
-          <span className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-            Applies immediately — it does not wait for Save changes.
-          </span>
+          {!nothingToClear && (
+            <span className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+              Applies immediately — it does not wait for Save changes.
+            </span>
+          )}
         </>
       }
     />

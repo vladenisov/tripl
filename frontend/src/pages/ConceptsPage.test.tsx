@@ -55,6 +55,17 @@ describe('ConceptsPage', () => {
     }
   })
 
+  it('ships finished copy — no markdown left in any definition (tripl-aqru)', () => {
+    const { container } = renderConcepts()
+
+    // TermRow renders `definition` as a bare text node with no markdown parsing
+    // anywhere in the path, so a backtick in the AREAS constant reaches the
+    // rendered page as a grave accent. The Events entry shipped
+    // "such as `payment_failed`" that way, on the one page whose job is to be
+    // the authority on the product's vocabulary.
+    expect(container.textContent).not.toContain('`')
+  })
+
   it('does not claim a monitor raises signals (tripl-jfm3.39)', () => {
     renderConcepts()
 

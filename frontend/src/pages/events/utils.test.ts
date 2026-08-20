@@ -365,6 +365,45 @@ describe('computeWindowDelta', () => {
     expect(points.every((p) => p.expected_count === null)).toBe(true)
     expect(computeWindowDelta(points)).toBeCloseTo(100)
   })
+
+  it('refuses to divide by a prior window the series only partly covers (tripl-7vnw)', () => {
+    // Collection lagging ~23h behind the 48h fetch window: the series still ends
+    // at its own newest bucket, so anchoring there left "prior" holding the ~1h
+    // that survived inside the window while "recent" held a full 24h. Every row
+    // on the demo catalog came out between +1673% and +1907% that way — beside
+    // rows whose Last seen read "never".
+    const latest = Date.parse('2026-06-10T23:00:00Z')
+    const lagged: EventMetricPoint[] = []
+    for (let hoursAgo = 24; hoursAgo >= 0; hoursAgo -= 1) {
+      lagged.push(
+        metricPoint({
+          bucket: new Date(latest - hoursAgo * HOUR_MS).toISOString(),
+          count: 200,
+        }),
+      )
+    }
+
+    // The naive anchor would report (24 * 200 - 1 * 200) / (1 * 200) = +2300%.
+    expect(computeWindowDelta(lagged)).toBeNull()
+  })
+
+  it('still compares two buckets on a daily collection grid', () => {
+    // The coverage check reads the grid off the series, so a scan whose interval
+    // puts exactly two buckets in the 48h window keeps its delta.
+    const latest = Date.parse('2026-06-10T00:00:00Z')
+    const daily = [
+      metricPoint({ bucket: new Date(latest - 24 * HOUR_MS).toISOString(), count: 100 }),
+      metricPoint({ bucket: new Date(latest).toISOString(), count: 150 }),
+    ]
+
+    expect(computeWindowDelta(daily)).toBeCloseTo(50)
+  })
+
+  it('returns null for a single bucket, which has no prior window at all', () => {
+    const lone = [metricPoint({ bucket: '2026-06-10T23:00:00Z', count: 900 })]
+
+    expect(computeWindowDelta(lone)).toBeNull()
+  })
 })
 
 describe('formatCompactCount', () => {

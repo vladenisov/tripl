@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { INPUT_BASE } from '@/components/settings/input-style'
+import { INPUT_BASE, INPUT_DISABLED } from '@/components/settings/input-style'
 
 /**
  * Column-name input backed by data-source schema suggestions. Free typing is
@@ -110,7 +110,13 @@ export function ColumnSuggestInput({
         aria-label={ariaLabel}
         autoComplete="off"
         className="mono"
-        style={{ ...INPUT_BASE, ...(disabled ? { opacity: 0.6, cursor: 'not-allowed' } : {}) }}
+        // The disabled cue comes from the shared primitive, not from a local
+        // knock-down. This box used to dim itself with `opacity: 0.6`, the same
+        // treatment that on the dark theme left a dead field 3/255 of fill and
+        // 7/255 of border away from a live one — indistinguishable in a
+        // screenshot (tripl-91j6). INPUT_DISABLED is a shape change (no well,
+        // dashed border) precisely so it does not depend on that delta.
+        style={{ ...INPUT_BASE, ...(disabled ? INPUT_DISABLED : {}) }}
         value={value}
         placeholder={placeholder}
         disabled={disabled}

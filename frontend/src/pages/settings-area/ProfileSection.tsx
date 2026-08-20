@@ -5,7 +5,6 @@ import { Button } from '@/components/ui/button'
 import { Field, SCard, Select, SHeader, TextInput, ToggleRow } from '@/components/settings/kit'
 import { ROLE_OPTIONS } from '@/types'
 
-const TIMEZONES = ['Europe/Berlin', 'UTC', 'America/New_York', 'America/Los_Angeles', 'Asia/Tokyo']
 const DATE_FORMATS = [
   { value: 'rel', label: 'Relative (2h ago)' },
   { value: 'iso', label: 'ISO (2026-06-15)' },
@@ -15,6 +14,17 @@ const WEEK_START = [
   { value: 'mon', label: 'Monday' },
   { value: 'sun', label: 'Sunday' },
 ]
+
+/**
+ * The Preferences card promises timestamps in *your browser's* timezone, so the
+ * control under that sentence has to show the same thing. It used to render a
+ * hardcoded "Europe/Berlin" from a five-city list, which a reader in Tokyo
+ * could only read as their account being set wrong — two adjacent lines giving
+ * two answers to "what timezone are my timestamps in" (tripl-hmlx).
+ */
+function browserTimezone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+}
 
 function initialsFrom(value: string): string {
   const trimmed = value.trim()
@@ -44,6 +54,7 @@ export default function ProfileSection() {
   const { user } = useAuth()
   const initials = initialsFrom(user?.name ?? user?.email ?? '')
   const roleLabel = ROLE_OPTIONS.find((r) => r.value === user?.role)?.label ?? user?.role ?? '—'
+  const timezone = browserTimezone()
 
   return (
     <div>
@@ -85,8 +96,8 @@ export default function ProfileSection() {
         title="Preferences"
         description="Not available yet — tripl shows relative timestamps in your browser's timezone for everyone."
       >
-        <Field label="Timezone">
-          <Select value="Europe/Berlin" options={TIMEZONES} disabled />
+        <Field label="Timezone" hint="Read from this browser, not stored on the account.">
+          <Select value={timezone} options={[timezone]} disabled />
         </Field>
         <Field label="Date format">
           <Select value="rel" options={DATE_FORMATS} disabled />

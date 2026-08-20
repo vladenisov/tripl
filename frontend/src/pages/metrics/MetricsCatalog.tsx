@@ -66,8 +66,14 @@ import {
   type SqlMetricCreate,
 } from '@/types'
 
+// The metric name gets the widest flexible track on purpose. Its cell packs a
+// dot, a truncating name and a nowrap kind chip, so the widest chip ("Event
+// composition", ~109px) left only ~125px for a name needing ~127px at 1.3fr —
+// "Purchase conversion" clipped to save two characters while Latest held
+// "10.95 %" (~55px of glyphs) in ~200px (tripl-862w). 2fr:1fr moves ~50px to the
+// name; Latest still fits its widest realistic value ("1,234,567 sessions").
 const METRIC_GRID =
-  'grid grid-cols-[18px_20px_minmax(0,1.3fr)_minmax(0,1fr)_104px_84px_84px_28px] items-center gap-3 px-4'
+  'grid grid-cols-[18px_20px_minmax(0,2fr)_minmax(0,1fr)_104px_84px_84px_28px] items-center gap-3 px-4'
 
 const STATUS_TONE: Record<MetricStatus, ChipTone> = {
   draft: 'neutral',
@@ -145,11 +151,15 @@ function StatFilter({
   active,
   onToggle,
   label,
+  title,
   children,
 }: {
   active: boolean
   onToggle: () => void
   label: string
+  /** Hover text spelling out what the stat counts, where the caption alone can
+   *  be read as a wider number than it is (tripl-vsw2). */
+  title?: string
   children: ReactNode
 }) {
   return (
@@ -158,6 +168,7 @@ function StatFilter({
       tabIndex={0}
       aria-pressed={active}
       aria-label={label}
+      title={title}
       onClick={onToggle}
       onKeyDown={event => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -529,9 +540,17 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
             active={signalFilter === 'anomalies'}
             onToggle={() => toggleSignalFilter('anomalies')}
             label="Filter by active anomalies"
+            title="Catalog metrics whose latest scan still carries an anomaly signal. The Anomalies page counts open signals across every scope, so its total can be higher."
           >
             <MiniStat
-              label="Anomalies"
+              // Scoped label, not the bare word "Anomalies": this counts CATALOG
+              // METRICS whose latest scan still carries a signal, while the
+              // sidebar's "Anomalies" badge is every significant open signal
+              // across every scope (event, event type, project total). A project
+              // whose anomalies all sit outside the metric catalog therefore
+              // renders 0 here beside a red 3 in the nav ~300px away, and a
+              // reader stops trusting both numbers (tripl-vsw2).
+              label="Metrics with anomalies"
               value={
                 <span style={{ color: anomalyCount > 0 ? 'var(--danger)' : undefined }}>
                   {data ? anomalyCount.toLocaleString() : '—'}
@@ -869,6 +888,11 @@ function MetricRow({
             <Link
               to={href}
               onClick={event => event.stopPropagation()}
+              // A wide kind chip can still clip a long name, and the name is the
+              // one cell a reader cannot reconstruct from the rest of the row —
+              // so it carries its own tooltip, as the Latest cell below already
+              // does (tripl-862w).
+              title={metric.display_name}
               className="truncate text-[12.5px] font-medium no-underline hover:underline"
               style={{ color: 'var(--fg)' }}
             >
@@ -876,7 +900,9 @@ function MetricRow({
             </Link>
           </ScenarioCoachMark>
         ) : (
-          <span className="truncate text-[12.5px] font-medium">{metric.display_name}</span>
+          <span className="truncate text-[12.5px] font-medium" title={metric.display_name}>
+            {metric.display_name}
+          </span>
         )}
         <Chip tone="neutral" size="xs">
           {METRIC_KIND_LABEL[metric.kind]}

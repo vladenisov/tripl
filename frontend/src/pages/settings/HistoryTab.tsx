@@ -101,7 +101,11 @@ export function HistoryTab({ slug }: { slug: string }) {
         </Button>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+      {/* 2:3, not 1:2. A revision's identity is its summary — product-generated
+          ones read "Base snapshot for branch '<name>'" (~300px) — and at 1fr the
+          list card was ~250px, clipping the branch name mid-word while the diff
+          card next to it held one empty-state sentence in ~590px (tripl-lzge). */}
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <Card>
           <CardContent className="p-0">
             {listQuery.isLoading ? (
@@ -184,6 +188,13 @@ function RevisionRow({
   selected: boolean
   onSelect: () => void
 }) {
+  const metaLine = [
+    formatDateTime(rev.created_at),
+    `${rev.entity_counts.event_types} types`,
+    `${rev.entity_counts.fields} fields`,
+    `${rev.entity_counts.events} events`,
+  ].join(' · ')
+
   return (
     <li>
       <button
@@ -195,14 +206,18 @@ function RevisionRow({
       >
         <GitBranch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-xs font-medium">
+          {/* A summary can still outrun the card, and it is the only thing on
+              screen naming the branch — so it carries its own tooltip. */}
+          <div className="truncate text-xs font-medium" title={rev.summary || undefined}>
             {rev.summary || <span className="text-muted-foreground">(no summary)</span>}
           </div>
-          <div className="text-[10px] text-muted-foreground tnum">
-            {formatDateTime(rev.created_at)}
-            {' · '}
-            {rev.entity_counts.event_types} types · {rev.entity_counts.fields} fields ·{' '}
-            {rev.entity_counts.events} events
+          {/* One `truncate` line rather than a wrapping one: as flowing text the
+              metadata broke mid-list and left a dangling "·" as the last glyph
+              of a line, which reads as a formatting fault (tripl-lzge). At
+              ~10px the whole string is ~280px and fits; the ellipsis is the
+              fallback, and `title` keeps it readable either way. */}
+          <div className="truncate text-[10px] text-muted-foreground tnum" title={metaLine}>
+            {metaLine}
           </div>
         </div>
         {selected && <ChevronRight className="mt-1 h-3 w-3 text-muted-foreground" />}

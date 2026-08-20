@@ -3,6 +3,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   DEFAULT_MAX_BILLED_BYTES_LABEL,
+  FIELD_COL_CLASS,
   HELP_CLASS,
   SELECT_CLASS,
   SSL_MODE_OPTIONS,
@@ -35,7 +36,7 @@ export function ConnectionSettingsFields({
     return (
       <>
         <div className="grid grid-cols-2 gap-3">
-          <div className="grid gap-2">
+          <div className={FIELD_COL_CLASS}>
             <Label htmlFor={`${idPrefix}-location`}>Location</Label>
             <Input
               id={`${idPrefix}-location`}
@@ -48,7 +49,7 @@ export function ConnectionSettingsFields({
               a query started in the wrong location fails.
             </p>
           </div>
-          <div className="grid gap-2">
+          <div className={FIELD_COL_CLASS}>
             <Label htmlFor={`${idPrefix}-max-billed-bytes`}>Max billed bytes</Label>
             <Input
               id={`${idPrefix}-max-billed-bytes`}
@@ -65,7 +66,7 @@ export function ConnectionSettingsFields({
             </p>
           </div>
         </div>
-        <div className="grid gap-2">
+        <div className={FIELD_COL_CLASS}>
           <Label htmlFor={`${idPrefix}-dataset-allowlist`}>Dataset allowlist</Label>
           <Input
             id={`${idPrefix}-dataset-allowlist`}
@@ -86,7 +87,7 @@ export function ConnectionSettingsFields({
     return (
       <>
         <div className="grid grid-cols-2 gap-3">
-          <div className="grid gap-2">
+          <div className={FIELD_COL_CLASS}>
             <Label htmlFor={`${idPrefix}-sslmode`}>SSL mode</Label>
             <select
               id={`${idPrefix}-sslmode`}
@@ -105,7 +106,7 @@ export function ConnectionSettingsFields({
               against a man-in-the-middle; it needs a CA certificate below.
             </p>
           </div>
-          <div className="grid gap-2">
+          <div className={FIELD_COL_CLASS}>
             <Label htmlFor={`${idPrefix}-search-path`}>Search path</Label>
             <Input
               id={`${idPrefix}-search-path`}
@@ -119,7 +120,7 @@ export function ConnectionSettingsFields({
             </p>
           </div>
         </div>
-        <div className="grid gap-2">
+        <div className={FIELD_COL_CLASS}>
           <Label htmlFor={`${idPrefix}-sslrootcert`}>CA certificate</Label>
           <textarea
             id={`${idPrefix}-sslrootcert`}
@@ -133,7 +134,7 @@ export function ConnectionSettingsFields({
             PEM content (not a path on the server). Required by `verify-ca` and `verify-full`.
           </p>
         </div>
-        <div className="grid gap-2">
+        <div className={FIELD_COL_CLASS}>
           <Label htmlFor={`${idPrefix}-sslcert`}>Client certificate</Label>
           <textarea
             id={`${idPrefix}-sslcert`}
@@ -145,7 +146,7 @@ export function ConnectionSettingsFields({
           />
           <p className={HELP_CLASS}>PEM content. Only needed for certificate (mTLS) auth.</p>
         </div>
-        <div className="grid gap-2">
+        <div className={FIELD_COL_CLASS}>
           <Label htmlFor={`${idPrefix}-sslkey`}>Client private key</Label>
           <textarea
             id={`${idPrefix}-sslkey`}

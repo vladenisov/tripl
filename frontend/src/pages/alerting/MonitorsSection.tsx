@@ -47,11 +47,41 @@ export interface RuleWithDestination extends AlertRule {
   destination_name: string
 }
 
-// Wide by construction: five facts and five controls per rule. Below this it
-// scrolls horizontally rather than crushing the condition into two characters —
-// the same treatment the standalone page used at 680px, before it absorbed the
-// controls that used to sit on the destination card.
-const RULE_GRID = 'grid grid-cols-[1.3fr_1.4fr_0.9fr_88px_88px_auto] items-center gap-3 px-4'
+// Wide by construction: five facts and five controls per rule. Below the
+// minimum it scrolls horizontally rather than crushing the condition into two
+// characters — the same treatment the standalone page used at 680px, before it
+// absorbed the controls that used to sit on the destination card.
+//
+// The minimum used to be 980px, which is WIDER than the ~900px this panel gets
+// beside the activity rail at 1512px, so the table was clipped at the width the
+// app actually renders it: the "Actions" header and two of the five controls
+// (Edit, Delete) sat past the right edge, and every text column was sized for a
+// table that never fitted. See RULE_TABLE_MIN_WIDTH below.
+//
+// The action track carries a FLOOR rather than being plain `auto`, because the
+// header row and each rule row are separate grids that only look like one
+// table: `auto` is measured per grid, so the header sized that column to its
+// "Actions" label (~50px) while a row sized it to five controls, and each
+// header label landed up to 130px right of the column it names. The floor is
+// what a row needs — 188px = a 36px Switch + four 32px icon buttons + four 6px
+// `gap-1.5` gutters (52px when a viewer keeps Replay alone) — so both grids
+// resolve the same tracks at rest. It stays `minmax`, not fixed, for the one
+// state that legitimately needs more: MuteControl reveals its duration presets
+// inline, and a fixed track would squash the controls instead of growing.
+//
+// Every column string is written out in full: Tailwind scans source for literal
+// class names, so an interpolated `grid-cols-[…]` would never be built.
+const RULE_GRID_BASE = 'grid items-center gap-3 px-4'
+const RULE_GRID_COLS
+  = 'grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1fr)_64px_64px_minmax(188px,auto)]'
+const RULE_GRID_COLS_READ_ONLY
+  = 'grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1fr)_64px_64px_minmax(52px,auto)]'
+const RULE_TABLE_MIN_WIDTH = 'min-w-[820px]'
+
+/** The one grid definition the header row and every rule row must share. */
+function ruleGridClass(canWrite: boolean): string {
+  return `${RULE_GRID_BASE} ${canWrite ? RULE_GRID_COLS : RULE_GRID_COLS_READ_ONLY}`
+}
 
 interface MonitorsSectionProps {
   slug: string
@@ -233,6 +263,12 @@ export function MonitorsSection({
 
   const ruleMutation = editingRule ? updateRuleMut : createRuleMut
   const hasDestinations = destinations.length > 0
+  // Through the shared count helper, like the sibling audit panel. This was
+  // `${rules.length} routing` — a count with its noun missing, which reads as an
+  // unfinished template sitting directly on top of a table of numbers.
+  const rulesSubtitle = rules.length > 0
+    ? countOf(rules.length, 'routing rule', 'routing rules')
+    : undefined
 
   return (
     <>
@@ -280,7 +316,7 @@ export function MonitorsSection({
 
       <Panel
         title="Rules"
-        subtitle={rules.length > 0 ? `${rules.length} routing` : undefined}
+        subtitle={rulesSubtitle}
         right={
           canWrite && hasDestinations && rules.length > 0 ? (
             // Exactly one coach mark, and only where a demo can act on it: the
@@ -328,11 +364,11 @@ export function MonitorsSection({
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <div role="table" aria-label="Alert rules" className="min-w-[980px]">
+            <div role="table" aria-label="Alert rules" className={RULE_TABLE_MIN_WIDTH}>
               <div role="rowgroup">
                 <div
                   role="row"
-                  className={`${RULE_GRID} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
+                  className={`${ruleGridClass(canWrite)} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
                   style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
                 >
                   <span role="columnheader">Rule</span>
@@ -464,11 +500,17 @@ function RuleRow({
     <>
     <div
       role="row"
-      className={`${RULE_GRID} border-b py-2.5 last:border-0`}
+      className={`${ruleGridClass(canWrite)} border-b py-2.5 last:border-0`}
       style={{ borderColor: 'var(--border-subtle)' }}
     >
+      {/* Nothing in this table ellipsizes any more. Every text cell carried
+          `truncate`, and at the width this panel actually gets, a two-row table
+          cut five separate strings at once — including CONDITION, which is the
+          whole payload of the row: two different rules both ended at "spike ▲ ·
+          drop ▼ · ≥100% · co…" and so read as duplicates of each other.
+          Wrapping costs a row a line; an ellipsis costs the fact. */}
       <span role="cell" className="flex min-w-0 flex-col gap-1">
-        <span className="flex min-w-0 items-center gap-1.5">
+        <span className="flex min-w-0 flex-wrap items-center gap-1.5">
           {/* Expands the settings this list does not have room for. `Settings`
               names what opens, not the widget — a bare chevron says nothing
               about what is behind it. */}
@@ -489,7 +531,7 @@ function RuleRow({
               neither this row nor its expansion can carry. */}
           <Link
             to={`/p/${slug}/monitors/${rule.id}`}
-            className="truncate text-[12.5px] font-medium no-underline hover:underline"
+            className="min-w-0 break-words text-[12.5px] font-medium no-underline hover:underline"
             style={{ color: 'var(--fg)' }}
           >
             {rule.name}
@@ -539,7 +581,7 @@ function RuleRow({
         {/* Delivery health. `Never delivered` is a different fact from `last
             sent 3h ago`, and it followed the rule off the destination card
             rather than being dropped in the move (tripl-oxkt.17). */}
-        <span className="truncate pl-6 text-[10px]" style={{ color: 'var(--fg-faint)' }}>
+        <span className="break-words pl-6 text-[10px]" style={{ color: 'var(--fg-faint)' }}>
           {rule.total_deliveries === 0 ? (
             'Never delivered'
           ) : (
@@ -554,15 +596,18 @@ function RuleRow({
           )}
         </span>
       </span>
-      <span role="cell" className="mono truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+      <span role="cell" className="mono break-words text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
         {condition}
       </span>
       <span role="cell" className="flex min-w-0 flex-col gap-0.5">
+        {/* `self-start`, or the flex column stretches the pill to the whole
+            column and a one-word chip renders as a wide empty box that reads
+            like an input. */}
         {state && (
-          <Chip tone="neutral" size="xs">{state.destination_type}</Chip>
+          <Chip tone="neutral" size="xs" className="self-start">{state.destination_type}</Chip>
         )}
         <span
-          className="truncate text-[10px]"
+          className="break-words text-[10px]"
           style={{ color: 'var(--fg-faint)' }}
           title={`Routes to the "${rule.destination_name}" destination`}
         >

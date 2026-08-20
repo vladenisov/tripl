@@ -270,10 +270,30 @@ export default function MonitoringDetailPage() {
   // Catalog-metric drilldowns belong to the Metrics surface, so their back
   // affordance returns to the metrics list rather than the events list.
   const goToMetrics = () => navigate(`/p/${slug}/metrics`)
+  // Same history-first pop as goBack, with the Anomalies list as the cold-start
+  // fallback — see backAffordance below for why these scopes belong there.
+  const goToAnomalies = () => {
+    if (location.key !== 'default') navigate(-1)
+    else navigate(`/p/${slug}/anomalies`)
+  }
   // The legacy `/events/detail/:eventId` route carries no `:scope`; default to
   // the event scope when an eventId is present so the page never crashes on an
   // undefined scope (it now redirects to the canonical URL, but stay defensive).
   const scope = resolveDetailScope(scopeParam, eventId)
+  // One page, THREE surfaces — the same three-way split navigation.ts makes for
+  // these exact routes: `/monitoring/event/` is an Events drilldown,
+  // `/monitoring/metric/` a Metrics one, and everything left under
+  // `/monitoring/` (event-type, project-total) belongs to Anomalies, which is
+  // also what the breadcrumb above this button already reads. The label was a
+  // two-way branch on `metric`, so the only navigation affordance above the fold
+  // on a project-total or event-type page offered "Back to events" — a
+  // destination the reader had not come from (tripl-lkox).
+  const backAffordance: { label: string; onClick: () => void }
+    = scope === 'metric'
+      ? { label: 'Back to metrics', onClick: goToMetrics }
+      : scope === 'event'
+        ? { label: 'Back to events', onClick: goBack }
+        : { label: 'Back to anomalies', onClick: goToAnomalies }
   const [rangeDays, setRangeDays] = useState(scope === 'metric' ? 30 : 7)
   // null = "no manual pick yet": the effective granularity then follows the
   // scope's default (interval-aware for catalog metrics, range-aware otherwise).
@@ -880,10 +900,10 @@ export default function MonitoringDetailPage() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={scope === 'metric' ? goToMetrics : goBack}
+              onClick={backAffordance.onClick}
             >
               <ArrowLeft className="mr-2 h-4 w-4" />
-              {scope === 'metric' ? 'Back to metrics' : 'Back to events'}
+              {backAffordance.label}
             </Button>
             {scope === 'metric' && (
               <div className="flex items-center gap-2">
@@ -2008,6 +2028,7 @@ function EventDetailHero({
         <EventSignalMiniChart
           data={metrics?.data ?? []}
           interval={metrics?.interval ?? null}
+          signal={signal}
           tone={signalTone}
         />
       )}
@@ -2225,21 +2246,32 @@ function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: '
 }
 
 /**
- * Compact volume-vs-baseline chart rendered beside {@link EventSignalBanner} so
- * the anomaly the banner describes is visible in context, without the extra
- * click into the Metrics tab. Reuses the already-fetched series and the same
- * {@link MetricsChart}: its expected band comes from each point's
- * expected_count/stddev, and the flagged bucket shows as an anomaly dot. Native
- * granularity keeps the flagged point un-aggregated, so its dot never merges
- * into a neighbouring bucket.
+ * Compact volume chart rendered beside {@link EventSignalBanner} so the anomaly
+ * the banner describes is visible in context, without the extra click into the
+ * Metrics tab. Reuses the already-fetched series and the same
+ * {@link MetricsChart}; native granularity keeps the flagged point
+ * un-aggregated, so its anomaly dot never merges into a neighbouring bucket.
+ *
+ * It is titled "Volume", not "Volume vs. baseline". MetricsChart does draw a
+ * dashed expectation and a sigma band from each point's expected_count/stddev,
+ * but the backend fills those two fields ONLY on buckets it flagged
+ * (metrics_service._build_metric_points): the expected series has a single
+ * non-null point, and a `connectNulls={false} dot={false}` Line through one
+ * point paints nothing. So the panel promised the comparison that justifies the
+ * alert and then showed one bare series — the reader had to take "+198% vs.
+ * baseline" on faith from the chart they were handed to check it with. The one
+ * baseline that does exist is the flagged bucket's, so it is named in words
+ * beside the title instead of implied by a line that is not there (tripl-v2lm).
  */
 function EventSignalMiniChart({
   data,
   interval,
+  signal,
   tone,
 }: {
   data: EventMetricPoint[]
   interval: string | null
+  signal: MonitoringSignal
   tone: 'danger' | 'warning'
 }) {
   if (data.length === 0) return null
@@ -2250,8 +2282,15 @@ function EventSignalMiniChart({
       className="rounded-[10px] border px-[14px] pb-[6px] pt-[10px]"
       style={SURFACE_STYLE}
     >
-      <div className="mb-[6px] text-[11px] font-medium" style={{ color: 'var(--fg-subtle)' }}>
-        Volume vs. baseline
+      <div className="mb-[6px] flex items-baseline justify-between gap-3 text-[11px]">
+        <span className="font-medium" style={{ color: 'var(--fg-subtle)' }}>Volume</span>
+        {/* Same `expected > 0` gate the banner uses, so the two cannot disagree
+            about whether this signal had a baseline at all. */}
+        <span style={{ color: 'var(--fg-faint)' }}>
+          {signal.expected_count > 0
+            ? `baseline ${formatNum(Math.round(signal.expected_count))} at the flagged bucket`
+            : `${NO_BASELINE_LABEL} at the flagged bucket`}
+        </span>
       </div>
       <MetricsChart
         data={data}

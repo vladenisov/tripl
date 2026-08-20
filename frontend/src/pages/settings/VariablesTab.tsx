@@ -738,9 +738,15 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                       onChange={e => setSelectedIds(e.target.checked ? new Set(matchingVariables.map(v => v.id)) : new Set())}
                     />
                   </TableHead>
-                  <TableHead>Variable</TableHead>
-                  <TableHead>Events</TableHead>
-                  <TableHead>Description</TableHead>
+                  {/* Width hints, not fixed widths: `table-layout: auto` left
+                      Description ~110px, so a 45-character sentence ran five
+                      lines while the values columns — whose chips wrap for free —
+                      held the slack (tripl-bb8m). Variable is pinned too, because
+                      its pills no longer wrap and would otherwise be squeezed
+                      out. Doc/Observed values share whatever is left. */}
+                  <TableHead className="w-[24%]">Variable</TableHead>
+                  <TableHead className="w-[13%]">Events</TableHead>
+                  <TableHead className="w-[20%]">Description</TableHead>
                   <TableHead>Documented values</TableHead>
                   <TableHead>Observed values</TableHead>
                   <TableHead className="w-24"></TableHead>

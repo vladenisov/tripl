@@ -103,7 +103,7 @@ export function RuleEditorDialog({
                 />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="rule-cooldown">Cooldown Minutes</Label>
+                <Label htmlFor="rule-cooldown">Cooldown minutes</Label>
                 <Input
                   id="rule-cooldown"
                   type="number"
@@ -264,9 +264,19 @@ export function RuleEditorDialog({
               </p>
             </div>
 
+            {/* Sentence case, like every other label in this app — here, and on
+                the Cooldown minutes field above. `min_expected_count` is the
+                same setting Detection settings labels "Min expected count"
+                (settings/MonitoringTab.tsx) and the monitor and replay surfaces
+                label "Min expected" (MonitorsSection, RuleReplayDialog); this
+                dialog was the last place still spelling it in Title Case, so
+                one dial was named two ways depending on which surface you
+                reached it from. Its two neighbours are re-cased with it: three
+                fields in one row, two of them Title Case, would read as two
+                forms glued together. */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div className="grid gap-2">
-                <Label htmlFor="rule-min-pct">Min Percent Delta</Label>
+                <Label htmlFor="rule-min-pct">Min percent delta</Label>
                 <Input
                   id="rule-min-pct"
                   type="number"
@@ -277,7 +287,7 @@ export function RuleEditorDialog({
                 />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="rule-min-abs">Min Absolute Delta</Label>
+                <Label htmlFor="rule-min-abs">Min absolute delta</Label>
                 <Input
                   id="rule-min-abs"
                   type="number"
@@ -288,7 +298,7 @@ export function RuleEditorDialog({
                 />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="rule-min-expected">Min Expected Count</Label>
+                <Label htmlFor="rule-min-expected">Min expected count</Label>
                 <Input
                   id="rule-min-expected"
                   type="number"

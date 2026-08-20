@@ -183,7 +183,13 @@ export function AiSection({
           value={form.ai.search_embeddings_enabled}
           onChange={value => setField('ai', 'search_embeddings_enabled', value)}
         />
-        <Field label="Embedding dimensions">
+        {/* The one inert control on this page. It carried `disabled` and nothing
+            else — no badge, no hint — so it read as an editable number sitting
+            in a row of editable numbers. Say why it cannot move. */}
+        <Field
+          label="Embedding dimensions"
+          hint="Env-only (SEARCH_EMBEDDING_DIMENSIONS). The vectors already in the index were written at this width, and similarity across two widths is meaningless — changing it is a re-embed and a deploy, not a setting."
+        >
           <TextInput
             value={String(form.ai.search_embedding_dimensions)}
             disabled

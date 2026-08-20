@@ -86,6 +86,24 @@ describe('FactTablesList', () => {
     expect(within(row).getByText('created_at')).toBeInTheDocument()
   })
 
+  it('titles the list panel for what it lists, not for the tab next to it', async () => {
+    mockList({ items: [makeItem({})], total: 1 })
+
+    renderList()
+
+    const table = await screen.findByRole('table', { name: 'Fact tables' })
+    const panel = table.closest('section') as HTMLElement
+    expect(panel).not.toBeNull()
+    const header = panel.querySelector('header') as HTMLElement
+    expect(header).not.toBeNull()
+    // The header used to read "Catalog / 1 total": the same hardcoded title as
+    // the panel on the Catalog tab, plus a count already shown by the stat
+    // strip directly above it (tripl-p4kr). It names this surface and nothing
+    // else now.
+    expect(header.textContent).toBe('Fact tables')
+    expect(screen.queryByText('Catalog')).toBeNull()
+  })
+
   it('links each row to its edit route under Metrics', async () => {
     mockList({ items: [makeItem({ id: 'abc-123', display_name: 'Sessions' })], total: 1 })
 

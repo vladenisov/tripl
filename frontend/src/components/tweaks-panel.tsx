@@ -50,7 +50,20 @@ function TweaksPanel({
         type="button"
         onClick={() => onOpenChange(true)}
         aria-label="Open tweaks panel"
-        className="fixed bottom-5 right-5 z-50 flex h-9 w-9 items-center justify-center rounded-full border shadow-md transition-colors hover:bg-[var(--surface-hover)]"
+        // Same affordance the accent swatches below already use: the sliders
+        // glyph is the only thing on screen naming this control, and nothing
+        // sits beside it to say what it opens.
+        title="Tweaks"
+        // Tucked into the activity rail's footer strip — `border-t px-3 py-2.5
+        // text-[11px]` in activity-panel.tsx, 36px tall and the only band at the
+        // bottom right that is chrome rather than scrolling feed. At the old
+        // `bottom-5` + `h-9` the disc reached 56px up, permanently on top of the
+        // rail's last row: "Event implemented: Purchase Completed" rendered as
+        // "…Purchase Comp▮d" on every page, and that row can never be scrolled
+        // out from under a fixed control (tripl-tvqk). 32px at a 4px inset tops
+        // out at 36px, level with the strip's own border; the strip's label
+        // ("last 7 days · N items") is left-aligned, so the corner is free.
+        className="fixed bottom-1 right-3 z-50 flex h-8 w-8 items-center justify-center rounded-full border shadow-md transition-colors hover:bg-[var(--surface-hover)]"
         style={{
           background: 'var(--bg-elevated)',
           borderColor: 'var(--border-strong)',
@@ -72,7 +85,10 @@ function TweaksPanel({
 
   return (
     <div
-      className="fixed bottom-5 right-5 z-50 w-[280px] overflow-hidden rounded-xl border shadow-lg"
+      // The open panel may rest off the edge where the button cannot: it is
+      // user-invoked and dismissible, so covering the rail for as long as it is
+      // open is a choice the reader just made.
+      className="fixed bottom-3 right-3 z-50 w-[280px] overflow-hidden rounded-xl border shadow-lg"
       style={{
         background: 'var(--bg-elevated)',
         borderColor: 'var(--border-strong)',

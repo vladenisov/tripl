@@ -4,20 +4,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { invitationsApi, type Invitation, type InvitationCreated } from '@/api/invitations'
 import { usersApi } from '@/api/users'
 import { useAuth } from '@/components/auth-context'
+import { Select } from '@/components/settings/kit'
 import { ROLE_OPTIONS, type Role, type UserListItem } from '@/types'
 import { formatIsoDate } from '@/lib/datetime'
 import { getErrorMessage } from '@/lib/utils'
 
 function roleChip(role: Role) {
   return ROLE_OPTIONS.find((r) => r.value === role)?.chip ?? 'bg-muted text-muted-foreground'
-}
-
-// Deterministic avatar hue from a stable key so each member reads distinctly,
-// matching the mockup's hued member avatars.
-function avatarHue(key: string): number {
-  let h = 0
-  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) % 360
-  return h
 }
 
 function initialsOf(u: UserListItem): string {
@@ -103,23 +96,24 @@ function InviteMemberCard() {
             style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}
           />
         </div>
-        <div>
+        {/* The kit's Select, not a bare one. A native <select> keeps the
+            platform's own widget: Chrome paints it with the UA's light
+            background whatever `background` we hand it, so this was a pale box
+            with a black chevron sitting beside a dark custom email input — the
+            only unthemed control on the page (tripl-h3bb). The kit turns
+            `appearance` off, sets the foreground colour and draws its own
+            chevron, which is why every other select in the settings area looks
+            like it belongs. */}
+        <div className="w-32">
           <label className="mb-1 block text-[11px]" htmlFor="invite-role">
             Role
           </label>
-          <select
+          <Select
             id="invite-role"
             value={role}
-            onChange={(e) => setRole(e.target.value as Role)}
-            className="h-8 rounded-md border px-2 text-xs"
-            style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}
-          >
-            {ROLE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
+            onChange={(next) => setRole(next as Role)}
+            options={ROLE_OPTIONS}
+          />
         </div>
         <button
           type="submit"
@@ -226,11 +220,17 @@ export default function UsersPage() {
 
   return (
     <div className="space-y-5">
-      <p className="text-sm" style={{ color: 'var(--fg-subtle)' }}>
-        {isOwner
-          ? 'Manage roles for everyone with access to this tripl instance.'
-          : 'Roster of users with access to this tripl instance. Only owners can change roles.'}
-      </p>
+      {/* The section header above this (MembersSection) already says who is in
+          the list. This used to restate it in a second vocabulary — "workspace"
+          there, "instance" here — so two subtitles stacked directly on top of
+          each other and a reader had to work out whether they named two
+          different scopes (tripl-h3bb). All that is left is the one fact the
+          header does not carry, and only for the people it applies to. */}
+      {!isOwner && (
+        <p className="text-sm" style={{ color: 'var(--fg-subtle)' }}>
+          Only owners can change roles.
+        </p>
+      )}
 
       {isOwner && <InviteMemberCard />}
 
@@ -253,9 +253,15 @@ export default function UsersPage() {
               className="flex items-center gap-3 border-b px-4 py-2.5 last:border-0"
               style={{ borderColor: 'var(--border-subtle)' }}
             >
+              {/* One avatar colour, the same token the shell and the settings
+                  sidebar use. The hue used to be hashed from the user id, so
+                  the person reading this page saw their own initials in pink
+                  here and in blue in the sidebar footer 30px away — one account
+                  rendered as two (tripl-h3bb). A hue carries no meaning worth
+                  that. */}
               <div
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white"
-                style={{ background: `oklch(0.62 0.13 ${avatarHue(u.id || u.email)})` }}
+                style={{ background: 'var(--avatar-bg)' }}
               >
                 {initialsOf(u)}
               </div>
@@ -270,28 +276,26 @@ export default function UsersPage() {
                   {u.email}
                 </div>
               </div>
+              {/* The bare "2026-08-19" was a date with no question attached —
+                  joined? invited? last seen? — in a table that has no column
+                  headers to answer it (tripl-h3bb). The format stays ISO: this
+                  roster is read by whoever administers the instance, from
+                  wherever they are, and formatIsoDate is the locale-proof one. */}
               <span
-                className="mono hidden w-28 shrink-0 text-right text-[11px] sm:block"
+                className="hidden w-36 shrink-0 text-right text-[11px] sm:block"
                 style={{ color: 'var(--fg-faint)' }}
               >
-                {formatIsoDate(u.created_at)}
+                Joined <span className="mono">{formatIsoDate(u.created_at)}</span>
               </span>
               <div className="w-32 shrink-0 text-right">
                 {isOwner && u.id !== currentUser?.id ? (
-                  <select
+                  <Select
                     value={u.role}
                     aria-label={`Role for ${u.name ?? u.email}`}
-                    onChange={(e) => updateMut.mutate({ userId: u.id, role: e.target.value as Role })}
+                    onChange={(next) => updateMut.mutate({ userId: u.id, role: next as Role })}
                     disabled={updateMut.isPending}
-                    className="h-7 w-full rounded-md border px-2 text-xs"
-                    style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}
-                  >
-                    {ROLE_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
+                    options={ROLE_OPTIONS}
+                  />
                 ) : (
                   <span
                     className={`inline-flex items-center rounded px-2 py-0.5 text-[10px] font-medium ${roleChip(u.role)}`}

@@ -40,7 +40,7 @@ import { formatIncidentCount } from '@/lib/alertStatus'
 import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
 import { formatDate, formatDateTime } from '@/lib/datetime'
 import { getMonitoringPath } from '@/lib/monitoring'
-import { pluralize } from '@/lib/plural'
+import { countOf, pluralize } from '@/lib/plural'
 import { friendlyScanError } from '@/lib/scanError'
 import type {
   Project,
@@ -339,12 +339,20 @@ export default function MainPage() {
 
       {!projectsQuery.isLoading && !projectsQuery.isError && projects.length > 0 && (
         <>
-          {/* One consolidated stat row: calm STATE metrics on the left, then a
-              divider, then attention-worthy ACTION-NEEDED cards on the right.
+          {/* One consolidated panel, two tiers: calm STATE metrics on top, a
+              divider, then the attention-worthy ACTION-NEEDED cards under them.
               Projects/Coverage live here exactly once — no duplicated tiers,
-              and no metric is shown twice on the page (UX-10). */}
+              and no metric is shown twice on the page (UX-10).
+
+              The tiers used to sit side by side, which left the three action
+              cards ~365px of a 904px panel at 1512px — under the 170px min each
+              one asks for, so they wrapped 2+1 and the orphaned Signals card
+              stretched to double width to carry the shortest sentence on the
+              strip. Stacked, all three get a real third of the panel and the
+              calm row stops being centred in a 200px-tall box with ~160px of
+              void around it (tripl-oqig). */}
           <div
-            className="flex flex-col gap-4 rounded-lg border p-3 lg:flex-row lg:items-center"
+            className="flex flex-col gap-3 rounded-lg border p-3"
             style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border)' }}
           >
             <div className="flex flex-wrap items-center gap-x-5 gap-y-3 px-1">
@@ -390,13 +398,12 @@ export default function MainPage() {
               />
             </div>
 
-            <div
-              className="hidden self-stretch lg:block"
-              style={{ width: 1, background: 'var(--border)' }}
-            />
-            <div className="h-px w-full lg:hidden" style={{ background: 'var(--border)' }} />
+            <div className="h-px w-full" style={{ background: 'var(--border)' }} />
 
-            <div className="flex flex-1 flex-wrap items-stretch gap-2">
+            {/* A fixed three-column grid, not wrapping flex: these three always
+                mean "one row of the same kind of thing", and equal columns are
+                what stops the last one reading as a different class of card. */}
+            <div className="grid items-stretch gap-2 sm:grid-cols-3">
               {/* The number is a workspace total, but every review queue lives in
                   one project and there is no workspace-wide queue to open. It used
                   to link to whichever project was edited last — "2292 events across
@@ -529,7 +536,7 @@ function reviewQueueHint(projects: Project[]): string {
  * An action-needed stat: an attention-worthy card that pops with a tone-soft
  * background and tone-colored border when it actually needs work, and stays
  * calm/muted once cleared. Reuses the same tone-soft attention system as the
- * project cards so actionable items read as clickable next to the calm STATE
+ * project cards so actionable items read as clickable under the calm STATE
  * MiniStats (UX-10).
  */
 function AttentionStat({
@@ -572,7 +579,9 @@ function AttentionStat({
   const needsAttention = tone === 'warning' || tone === 'danger' || tone === 'info'
   return (
     <div
-      className="flex min-w-[170px] flex-1 items-start gap-2.5 rounded-lg border px-3 py-2.5"
+      // `min-w-0` and no flex basis: the grid column decides the width now, and
+      // a min-width here is what used to push the third card onto its own row.
+      className="flex min-w-0 items-start gap-2.5 rounded-lg border px-3 py-2.5"
       style={{
         background: needsAttention ? toneSoft : 'var(--bg-elevated)',
         borderColor: needsAttention ? toneColor : 'var(--border)',
@@ -890,9 +899,20 @@ function LatestScanJobSummary({
   }
 
   const scanError = job.error_message ? friendlyScanError(job.error_message) : null
-  const rowsScanned =
-    job.result_summary?.scan_rows_processed ?? job.result_summary?.query_rows_scanned ?? null
+  // Precedence MUST match `jobRowsScanned` (settings/scans/scanUtils.ts), which
+  // the scan detail page's "Rows read · last run" card reads: a run that reports
+  // both counters would otherwise show one number here and a different one on
+  // the scan page for the same run.
+  const rowsRead =
+    job.result_summary?.query_rows_scanned ?? job.result_summary?.scan_rows_processed ?? null
   const rowsTruncated = job.result_summary?.scan_truncated === true
+  // Zero deltas are suppressed, all three alike. A green "+0 events" announced
+  // in the success colour that nothing happened, while its zero siblings were
+  // correctly silent — the card then read as a positive result at a glance
+  // (tripl-h5um).
+  const eventsCreated = job.result_summary?.events_created ?? 0
+  const signalsAdded = job.result_summary?.signals_added ?? 0
+  const alertsQueued = job.result_summary?.alerts_queued ?? 0
 
   return (
     <div className="space-y-2">
@@ -902,10 +922,19 @@ function LatestScanJobSummary({
       </div>
       <div className="space-y-0.5 text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
         <p>{describeScanJobTiming(job)}</p>
-        {rowsScanned != null && (
-          <p className="mono tnum">
-            {rowsScanned.toLocaleString()}
-            {rowsTruncated ? '+' : ''} rows scanned
+        {/* What this number counts, spelled out: warehouse rows this run read
+            from the data source. The Monitoring tile beside it prints the value
+            of one metric bucket, so "8,261" next to "13,373" under the same scan
+            name and the same timestamp read as two surfaces disagreeing about
+            one figure rather than two unrelated quantities (tripl-h5um).
+            "Rows read" is also what the scan detail page's card is called. */}
+        {rowsRead != null && (
+          <p
+            className="mono tnum"
+            title="Warehouse rows this run read from the data source. Not an event count."
+          >
+            {rowsRead.toLocaleString()}
+            {rowsTruncated ? '+' : ''} warehouse rows read
           </p>
         )}
         {scanError && (
@@ -922,21 +951,21 @@ function LatestScanJobSummary({
           </div>
         )}
       </div>
-      {job.result_summary && (
+      {(eventsCreated > 0 || signalsAdded > 0 || alertsQueued > 0) && (
         <div className="flex flex-wrap gap-1.5">
-          {job.result_summary.events_created != null && (
+          {eventsCreated > 0 && (
             <Chip size="xs" tone="success">
-              +{job.result_summary.events_created} events
+              +{countOf(eventsCreated, 'event', 'events')}
             </Chip>
           )}
-          {job.result_summary.signals_added != null && job.result_summary.signals_added > 0 && (
+          {signalsAdded > 0 && (
             <Chip size="xs" tone="danger">
-              +{job.result_summary.signals_added} signals
+              +{countOf(signalsAdded, 'signal', 'signals')}
             </Chip>
           )}
-          {job.result_summary.alerts_queued != null && job.result_summary.alerts_queued > 0 && (
+          {alertsQueued > 0 && (
             <Chip size="xs" tone="warning">
-              +{job.result_summary.alerts_queued} alerts
+              +{countOf(alertsQueued, 'alert', 'alerts')}
             </Chip>
           )}
         </div>
@@ -969,19 +998,37 @@ function LatestSignalSummary({
         <Chip tone={signal.state === 'recent' ? 'warning' : 'danger'} size="xs">
           {signal.state === 'recent' ? 'Recent signal' : 'Latest scan signal'}
         </Chip>
-        <Chip tone={signal.direction === 'drop' ? 'warning' : 'danger'} size="xs">
-          {signal.direction}
-        </Chip>
         <Chip size="xs">{signalCount} recent</Chip>
       </div>
       <div className="space-y-0.5">
-        <p className="text-[12px] font-medium">{signal.scope_name}</p>
-        <p className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+        {/* "Spike on <scope>" is the sentence the bell and the Anomalies list
+            already use, and it is what stops the scope name being read as a
+            readout: bare "Project total" sat directly beside a scan tile and
+            announced itself as a project-wide total rather than the name of the
+            series that fired (tripl-h5um). The direction rode a chip here as
+            well — the same fact, printed twice — so the chip is gone. */}
+        <p className="text-[12px] font-medium">
+          {signal.direction === 'drop' ? 'Drop' : 'Spike'} on {signal.scope_name}
+        </p>
+        {/* The value that series carried in ONE bucket, against the baseline the
+            detector expected — not the run's row count. The scan tile beside it
+            reports warehouse rows read, and the two were printing 8,261 and
+            13,373 under the same scan name with nothing saying they count
+            different things (tripl-h5um). */}
+        <p
+          className="mono text-[11px]"
+          style={{ color: 'var(--fg-subtle)' }}
+          title="What the detector measured in this one bucket, against the baseline it expected. Not a row count."
+        >
           {signal.actual_count.toLocaleString()} actual vs{' '}
           {formatIncidentCount(signal.expected_count)} expected
         </p>
+        {/* "Bucket" names the timestamp. Unlabelled it looked like the scan
+            tile's "Completed <time>" — the demo stand shows both as 9:00 AM,
+            which is exactly how one bucket and one run finish reading as one
+            event described twice. */}
         <p className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
-          {formatDateTime(signal.bucket)} via {signal.scan_name}
+          Bucket {formatDateTime(signal.bucket)} · via {signal.scan_name}
         </p>
       </div>
       <Button asChild variant="outline" size="sm">

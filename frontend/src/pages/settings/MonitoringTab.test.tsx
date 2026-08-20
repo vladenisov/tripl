@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -132,8 +132,8 @@ describe('MonitoringTab — history fields carry their unit (tripl-wb58)', () =>
     mockSettingsFetch({ baseline_window_buckets: 14, min_history_buckets: 7 })
     renderTab()
 
-    expect(await screen.findByLabelText('Baseline Window (buckets)')).toHaveValue(14)
-    expect(screen.getByLabelText('Min History (buckets)')).toHaveValue(7)
+    expect(await screen.findByLabelText('Baseline window (buckets)')).toHaveValue(14)
+    expect(screen.getByLabelText('Min history (buckets)')).toHaveValue(7)
   })
 
   it('says what a bucket is, in the interval of the series and not of the scan', async () => {
@@ -146,6 +146,54 @@ describe('MonitoringTab — history fields carry their unit (tripl-wb58)', () =>
     const note = await screen.findByText(/A bucket is one collection interval of the series/i)
     expect(note).toHaveTextContent('14 buckets of baseline is 14 hours')
     expect(note).toHaveTextContent('daily catalog metric it is 14 days')
+  })
+})
+
+describe('MonitoringTab — the form explains itself (tripl-jj0h / tripl-pdyc)', () => {
+  it('groups the scope checkboxes under a heading that says what checking one does', async () => {
+    // Four bare checked boxes in a row decide what gets scored at all — the most
+    // consequential control on the page — and the only rationale lived in a
+    // source comment.
+    mockSettingsFetch()
+    renderTab()
+
+    const legend = await screen.findByText('Score these scopes')
+    expect(legend.tagName).toBe('LEGEND')
+    const group = legend.closest('fieldset')
+    expect(group).not.toBeNull()
+    // The heading has to govern the boxes, not merely sit above them.
+    expect(within(group!).getByLabelText('Project total')).toBeChecked()
+    expect(within(group!).getByLabelText('Metrics')).toBeChecked()
+    expect(screen.getByText(/Detection scores only the scopes checked here/i)).toBeInTheDocument()
+  })
+
+  it('explains the two settings that decide whether anything is flagged', async () => {
+    // Sigma threshold and min expected count carried no help text at all, while
+    // the least consequential field on the page carried a seven-line paragraph.
+    mockSettingsFetch({ min_expected_count: 100 })
+    renderTab()
+
+    expect(
+      await screen.findByText(/counted in standard deviations of that baseline/i),
+    ).toBeInTheDocument()
+    const floor = screen.getByText(/A floor on the baseline, not on the bucket/i)
+    expect(floor).toHaveTextContent('expects fewer than 100 is skipped')
+  })
+
+  it('labels every field in sentence case, not four in Title Case and two not', async () => {
+    mockSettingsFetch()
+    renderTab()
+
+    await screen.findByLabelText('Baseline window (buckets)')
+    for (const label of [
+      'Min history (buckets)',
+      'Sigma threshold',
+      'Min expected count',
+      'Open signal window (hours)',
+      'Ingestion settling (minutes)',
+    ]) {
+      expect(screen.getByLabelText(label)).toBeInTheDocument()
+    }
   })
 })
 

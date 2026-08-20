@@ -101,12 +101,17 @@ export function FactTablesList({ slug }: { slug?: string }) {
             />
           </div>
         ) : (
-          <Panel
-            title="Catalog"
-            subtitle={
-              data ? `${(data.total ?? factTables.length).toLocaleString()} total` : undefined
-            }
-          >
+          /* "Fact tables", not "Catalog". This panel carried the same
+             hardcoded title as the panel on the *other* tab
+             (metrics/MetricsCatalog.tsx), so on the Fact tables tab the only
+             panel on the page was named after the tab you are not on — its
+             header sat 154px below the unselected "Catalog" tab, at the same
+             spot the Catalog tab's own panel header occupies, so a reader
+             glancing at it to work out where they are got the wrong answer
+             (tripl-p4kr). The count subtitle went with it: it read the very
+             same `data.total ?? factTables.length` as the "Fact tables" stat
+             60px above, which stated one number twice in adjacent chrome. */
+          <Panel title="Fact tables">
             {factTablesQuery.isLoading ? (
               <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
                 Loading…

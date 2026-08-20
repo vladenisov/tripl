@@ -42,6 +42,20 @@ describe('Account · Profile unbuilt controls', () => {
     }
   })
 
+  /**
+   * The card says timestamps follow "your browser's timezone for everyone" and
+   * the control 58px below it read a hardcoded "Europe/Berlin": two adjacent
+   * lines answering "what timezone are my timestamps in" differently, with the
+   * wrong one rendered as this account's stored setting (tripl-hmlx).
+   */
+  it('shows the browser timezone the card promises, not a hardcoded city', () => {
+    render(<ProfileSection />)
+
+    expect(screen.getByLabelText('Timezone')).toHaveValue(
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    )
+  })
+
   it('drops the "saved on this device" promise nothing kept', () => {
     render(<ProfileSection />)
 
