@@ -101,11 +101,26 @@ export function FactTablesList({ slug }: { slug?: string }) {
             />
           </div>
         ) : (
+          /* "Fact tables", not "Catalog". This panel carried the same
+             hardcoded title as the panel on the *other* tab
+             (metrics/MetricsCatalog.tsx), so on the Fact tables tab the only
+             panel on the page was named after the tab you are not on — its
+             header sat 154px below the unselected "Catalog" tab, at the same
+             spot the Catalog tab's own panel header occupies, so a reader
+             glancing at it to work out where they are got the wrong answer
+             (tripl-p4kr).
+
+             Renaming it took the "N total" subtitle with it, on the grounds
+             that the stat strip 60px above already states the same number.
+             True — and equally true of the Catalog tab, which keeps
+             "Catalog / 4 total" under a "METRICS 4" stat. Dropping it here
+             only made the two tabs of one page disagree about whether a list
+             panel is captioned, so the two panel headers no longer lined up
+             (tripl-9jzt). Same expression as MetricsCatalog.tsx:603 so the
+             sibling headers stay one shape. */
           <Panel
-            title="Catalog"
-            subtitle={
-              data ? `${(data.total ?? factTables.length).toLocaleString()} total` : undefined
-            }
+            title="Fact tables"
+            subtitle={data ? `${(data.total ?? factTables.length).toLocaleString()} total` : undefined}
           >
             {factTablesQuery.isLoading ? (
               <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>

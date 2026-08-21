@@ -325,6 +325,17 @@ meta field, variable, relation, metric or fact table rebuilds that branch's
 whole index, as do a plan-branch merge, a demo reset, and the scan/catalog
 refresh the Celery worker runs. An actively used project needs nothing from you.
 
+A branch that has never been indexed **at all** — a plan branch just created, or
+a project nobody has searched yet — is picked up by the read path rather than by
+a write: the first search of it enqueues
+`tripl.worker.tasks.search.reindex_search_branch` and answers with what is
+stored, which for that branch is nothing. An empty first search followed by a
+populated second one is expected, not a fault; the search does not block while
+the rebuild runs. Reach for the manual rebuild below only if it stays empty,
+which means the enqueue never reached a worker — check the broker and the
+`celery-worker` logs — because the read path remembers that it asked and will
+not ask again for the life of that API process.
+
 Branches nobody writes to — archived plan branches, projects kept for reference
 — used to keep the old documents indefinitely. They no longer do when the change
 was to how documents are BUILT: each row carries the generation of the builders

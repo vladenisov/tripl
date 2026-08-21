@@ -854,9 +854,13 @@ async def test_merge_refreshes_main_search_index(client: AsyncClient) -> None:
     """Merging refreshes main's search index immediately — merged content is
     searchable without waiting for the next scan cycle or CRUD edit."""
     await _seed_plan(client, "merge-search")
-    # Seed main's index BEFORE the merge: the search endpoint lazily rebuilds
-    # an EMPTY index, so only a pre-seeded one proves the post-merge refresh.
-    seeded = await client.get("/api/v1/projects/merge-search/search", params={"q": "purchase"})
+    # Seed main's index BEFORE the merge, so only a post-merge refresh can put
+    # the token below into it. This used to be a search GET, which seeded the
+    # index only because the read path built an empty branch's index for it —
+    # the side effect tripl-zbv0 removed. Asking for the reindex outright says
+    # what the setup needs instead of relying on a read path's side effect;
+    # nothing the test asserts about the merge changed.
+    seeded = await client.post("/api/v1/projects/merge-search/search/reindex")
     assert seeded.status_code == 200
 
     branch_id = await _create_branch(client, "merge-search")

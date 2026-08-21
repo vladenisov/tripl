@@ -12,19 +12,27 @@ export function ColumnsMenu({
   fieldColumns,
   metaFields,
   hiddenColumns,
+  offscreenColumnCount = 0,
+  reviewedPinned = false,
   onToggle,
 }: {
   open: boolean
   onOpenChange: (v: boolean) => void
   tagsHidden: boolean
   lastSeenHidden: boolean
+  /** The review tab forces the Reviewed column on, so its toggle is inert there. */
+  reviewedPinned?: boolean
   fieldColumns: FieldDefinition[]
   metaFields: MetaFieldDefinition[]
   hiddenColumns: Set<string>
+  /** Columns scrolled outside the table's horizontal viewport right now. */
+  offscreenColumnCount?: number
   onToggle: (key: string) => void
 }) {
   const statusHidden = hiddenColumns.has('status')
-  const reviewedHidden = hiddenColumns.has('reviewed')
+  // Not merely a toggle state: on the review tab the column is forced on, so it
+  // is neither hidden nor counted as hidden.
+  const reviewedHidden = hiddenColumns.has('reviewed') && !reviewedPinned
   const monitorHidden = hiddenColumns.has('monitor')
   const ownerHidden = hiddenColumns.has('owner')
   const deltaHidden = hiddenColumns.has('delta')
@@ -38,18 +46,28 @@ export function ColumnsMenu({
     (lastSeenHidden ? 1 : 0) +
     fieldColumns.filter((f) => hiddenColumns.has(`f:${f.id}`)).length +
     metaFields.filter((mf) => hiddenColumns.has(`m:${mf.id}`)).length
+  // Toggled-off is only half the story: at 1512px the table is ~1665px wide in
+  // a ~902px pane, so 8 further columns are merely scrolled out of sight. The
+  // chip used to say "3 hidden" while 11 of 17 were unreadable, and it is the
+  // only signal that the table continues to the right (tripl-u1ib).
+  const badge = [
+    totalHidden > 0 ? `${totalHidden} hidden` : null,
+    offscreenColumnCount > 0 ? `${offscreenColumnCount} off-screen` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ')
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <Button variant="outline" size="sm" className="h-8 text-xs">
           <LayoutGrid className="h-3 w-3" />
           Columns
-          {totalHidden > 0 && (
+          {badge && (
             <span
               className="ml-1 text-[10.5px]"
               style={{ color: 'var(--fg-subtle)' }}
             >
-              {totalHidden} hidden
+              {badge}
             </span>
           )}
         </Button>
@@ -69,7 +87,7 @@ export function ColumnsMenu({
         />
         <ColumnToggle
           label="Reviewed"
-          pinned={false}
+          pinned={reviewedPinned}
           checked={!reviewedHidden}
           onChange={() => onToggle('reviewed')}
         />
@@ -147,7 +165,8 @@ export function ColumnsMenu({
           className="border-t px-2 pb-1 pt-2 text-[10px]"
           style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
         >
-          Event, Type, {ROW_METRICS_LABEL}, Actions are pinned
+          Event stays pinned to the left edge while you scroll. Type and{' '}
+          {ROW_METRICS_LABEL} cannot be hidden.
         </div>
       </PopoverContent>
     </Popover>

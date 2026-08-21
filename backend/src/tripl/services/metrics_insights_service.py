@@ -22,8 +22,10 @@ from tripl.metric_grid import metric_grid_stmt, metric_grids
 from tripl.metric_monitoring import monitored_metric_criteria
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.domain_enums import MetricBreakdownAnomalyKind
+from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
+from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.metric_definition import MetricDefinition
@@ -56,6 +58,7 @@ from tripl.services.monitoring_utils import (
     latest_bucket_by_scan,
     scan_interval_to_timedelta,
 )
+from tripl.worker.analyzers.metric_value_kind import is_count_shaped
 
 
 async def _get_latest_anomaly_rows_multi(
@@ -289,18 +292,39 @@ async def _get_active_metric_signals(
 SIGNIFICANT_MIN_REL_EFFECT = 0.5
 
 
-def relative_effect(actual: float, expected: float) -> float:
-    """|actual - expected| / max(expected, 1) — mirrors AnomaliesPage.relativeEffect.
+def relative_effect(actual: float, expected: float, *, count_shaped: bool = True) -> float:
+    """How big a signal is, relative to what was expected.
 
-    Preferred over the z-score for the magnitude gate because it does not blow up
-    on low-volume series.
+    For a COUNT the denominator is floored at 1: dividing by a sub-unit
+    expectation would let a scope with essentially no traffic outrank a real
+    move on a busy one, which is why the floor is there and why it stays.
+
+    A fractional series is not a count, and the floor is a category error on it.
+    A conversion ratio expected at 0.12 and observed at 0.04 is a two-thirds
+    collapse; divided by 1 it scores 0.08 and never clears the 0.5 gate, so the
+    metric anomalies the detector deliberately admits (``detect.py`` drops the
+    zero-fill and min-expected gates for fractional metrics) were invisible at
+    the default magnitude level (tripl-yf8c). Shape is decided the one way the
+    codebase already decides it, ``metric_value_kind.is_count_shaped``.
+
+    Measured when this was written: of 191 open signals on production, all were
+    event scope and none were affected — the fault was latent, waiting for the
+    first percent-unit metric to move.
     """
-    return abs(actual - expected) / max(expected, 1.0)
+    if count_shaped:
+        return abs(actual - expected) / max(expected, 1.0)
+    if expected == 0:
+        # No baseline to be relative to. Anything non-zero is unbounded change;
+        # nothing from nothing is no change.
+        return float("inf") if actual != 0 else 0.0
+    return abs(actual - expected) / abs(expected)
 
 
-def is_significant_signal(actual: float, expected: float) -> bool:
+def is_significant_signal(actual: float, expected: float, *, count_shaped: bool = True) -> bool:
     """Whether a signal clears the shared "Significant" magnitude threshold."""
-    return relative_effect(actual, expected) >= SIGNIFICANT_MIN_REL_EFFECT
+    return (
+        relative_effect(actual, expected, count_shaped=count_shaped) >= SIGNIFICANT_MIN_REL_EFFECT
+    )
 
 
 async def _count_active_metric_signals_by_project(
@@ -354,6 +378,19 @@ async def _count_active_metric_signals_by_project(
         ).all()
     }
 
+    # This counter sees ONLY metric scopes, which is the population where the
+    # magnitude floor is a category error — a ratio expected at 0.12 is not a
+    # count (tripl-yf8c). One batched lookup, same rule the detector uses.
+    fractional_refs = {
+        str(metric.id)
+        for metric in (
+            await session.execute(
+                select(MetricDefinition).where(MetricDefinition.id.in_(metric_ids))
+            )
+        ).scalars()
+        if not is_count_shaped(metric)
+    }
+
     latest_anomalies: dict[str, MetricAnomaly] = {}
     for anomaly in (
         await session.execute(
@@ -386,7 +423,11 @@ async def _count_active_metric_signals_by_project(
         if (
             state is not None
             and project_id is not None
-            and is_significant_signal(anomaly.actual_count, anomaly.expected_count)
+            and is_significant_signal(
+                anomaly.actual_count,
+                anomaly.expected_count,
+                count_shaped=scope_ref not in fractional_refs,
+            )
         ):
             counts[project_id] += 1
     return dict(counts)
@@ -481,6 +522,104 @@ def _flag_incident_children(
         signal.model_copy(update={"incident_child": True})
         if is_incident_child(signal, parent_keys)
         else signal
+        for signal in signals
+    ]
+
+
+async def _attach_derived_fields(
+    session: AsyncSession,
+    signals: list[MetricSignalResponse],
+) -> list[MetricSignalResponse]:
+    """Resolve each signal's display name into the response that carries it.
+
+    Three batched queries for the whole page — never one per signal. Same
+    resolution the alert pipeline does for its candidates
+    (``alerting_service._build_scope_name_map``): event -> ``Event.name``,
+    event_type -> ``EventType.display_name``, metric -> the catalog metric's
+    ``display_name``. ``project_total`` has no lookup (the scope IS the project)
+    and stays NULL, as does any scope whose entity has been deleted — the FKs
+    are ``ondelete=SET NULL``, so a NULL ``event_id`` next to a populated
+    ``scope_ref`` means the event is gone, and ``scope_ref`` is the one thing a
+    client must not print in its place (tripl-y4wt).
+    """
+    event_ids = {
+        signal.event_id
+        for signal in signals
+        if signal.scope_type == SCOPE_EVENT and signal.event_id is not None
+    }
+    event_type_ids = {
+        signal.event_type_id
+        for signal in signals
+        if signal.scope_type == SCOPE_EVENT_TYPE and signal.event_type_id is not None
+    }
+    # ``scope_ref`` is an unconstrained string while MetricDefinition.id is a
+    # UUID, so parse defensively and let anything unparseable resolve to NULL.
+    metric_ids: set[uuid.UUID] = set()
+    for signal in signals:
+        if signal.scope_type != SCOPE_METRIC:
+            continue
+        try:
+            metric_ids.add(uuid.UUID(signal.scope_ref))
+        except ValueError:
+            continue
+
+    event_names: dict[uuid.UUID, str] = {}
+    if event_ids:
+        rows = await session.execute(select(Event.id, Event.name).where(Event.id.in_(event_ids)))
+        event_names = {row_id: name for row_id, name in rows.all()}
+    event_type_names: dict[uuid.UUID, str] = {}
+    if event_type_ids:
+        rows = await session.execute(
+            select(EventType.id, EventType.display_name).where(EventType.id.in_(event_type_ids))
+        )
+        event_type_names = {row_id: name for row_id, name in rows.all()}
+    metric_names: dict[uuid.UUID, str] = {}
+    # Shape, not just name: the magnitude below divides a fractional series by
+    # its real baseline and a count by a floored one (tripl-yf8c).
+    fractional_metric_ids: set[uuid.UUID] = set()
+    if metric_ids:
+        metrics = (
+            await session.execute(
+                select(MetricDefinition).where(MetricDefinition.id.in_(metric_ids))
+            )
+        ).scalars()
+        for metric in metrics:
+            metric_names[metric.id] = metric.display_name
+            if not is_count_shaped(metric):
+                fractional_metric_ids.add(metric.id)
+
+    def resolve(signal: MetricSignalResponse) -> str | None:
+        if signal.scope_type == SCOPE_EVENT:
+            return event_names.get(signal.event_id) if signal.event_id else None
+        if signal.scope_type == SCOPE_EVENT_TYPE:
+            return event_type_names.get(signal.event_type_id) if signal.event_type_id else None
+        if signal.scope_type == SCOPE_METRIC:
+            try:
+                return metric_names.get(uuid.UUID(signal.scope_ref))
+            except ValueError:
+                return None
+        return None
+
+    def count_shaped(signal: MetricSignalResponse) -> bool:
+        """Only a catalog metric can be fractional; every other scope is a count."""
+        if signal.scope_type != SCOPE_METRIC:
+            return True
+        try:
+            return uuid.UUID(signal.scope_ref) not in fractional_metric_ids
+        except ValueError:
+            return True
+
+    return [
+        signal.model_copy(
+            update={
+                "scope_name": resolve(signal),
+                "relative_effect": relative_effect(
+                    signal.actual_count,
+                    signal.expected_count,
+                    count_shaped=count_shaped(signal),
+                ),
+            }
+        )
         for signal in signals
     ]
 
@@ -589,6 +728,10 @@ async def get_active_signals(
     # the expanded list keeps them (tagged ``incident_child``) so the
     # AnomaliesPage can show the full breakdown.
     signals = _flag_incident_children(signals) if expanded else _deduplicate_into_incidents(signals)
+
+    # After the collapse, so the name lookups only cover rows that will be
+    # returned, and before the cache write, so a cache hit is labelled too.
+    signals = await _attach_derived_fields(session, signals)
 
     signals.sort(key=lambda signal: signal.bucket, reverse=True)
     if cacheable:

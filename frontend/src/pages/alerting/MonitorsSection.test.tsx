@@ -456,6 +456,25 @@ describe('MonitorsSection rule editor', () => {
   })
 })
 
+describe('MonitorsSection panel subtitle (tripl-6r8c)', () => {
+  it('counts the rules with the noun attached, not a bare "2 routing"', async () => {
+    // The subtitle was `${rules.length} routing` — a count whose noun never got
+    // written — sitting directly above a table of numbers, where an unfinished
+    // template is exactly the thing a reader cannot un-see.
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection({ rules: [makeRule(), makeRule({ id: 'rule-2', name: 'Weekly health' })] })
+
+    expect(await screen.findByText('2 routing rules')).toBeInTheDocument()
+  })
+
+  it('agrees with a single rule', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection()
+
+    expect(await screen.findByText('1 routing rule')).toBeInTheDocument()
+  })
+})
+
 describe('MonitorsSection empty states', () => {
   it('sends a project with no channels to Destinations, not to a rule form', async () => {
     vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(

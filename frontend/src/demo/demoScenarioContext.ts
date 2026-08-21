@@ -75,6 +75,13 @@ export interface DemoScenarioActions {
   /** Put one chapter away; the rest keep their progress. */
   dismissChapter: (chapter: ChapterId) => void
   muteHints: () => void
+  /** Undo a mute without restarting the chapter — muting is not a one-way door
+   *  for the rest of the session (tripl-gr0x). */
+  unmuteHints: () => void
+  /** Drop every chapter's progress. A re-seeded demo is a fresh demo, so the
+   *  banner's Reset must not leave the coaching claiming completed chapters
+   *  against data that no longer exists (tripl-imco). */
+  resetScenario: () => void
 }
 
 const INERT_SLUG = ''
@@ -101,6 +108,8 @@ export const INERT_ACTIONS: DemoScenarioActions = {
   restartChapter: () => {},
   dismissChapter: () => {},
   muteHints: () => {},
+  unmuteHints: () => {},
+  resetScenario: () => {},
 }
 
 /**

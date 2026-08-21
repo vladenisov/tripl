@@ -4,8 +4,13 @@ import { serviceSettingsApi } from '@/api/serviceSettings'
 import type { ServiceSettings } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Field, SCard, TextArea, TextInput, ToggleRow } from '@/components/settings/kit'
-import { ResetRow, SourceBadge, StatusBadge } from './ServiceSettingsPrimitives'
-import type { EditableSettings, SecretDrafts, SectionKey } from './serviceSettingsHelpers'
+import { SourceBadge, StatusBadge } from './ServiceSettingsPrimitives'
+import type {
+  EditableSettings,
+  SecretDrafts,
+  SecretField,
+  SectionKey,
+} from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
 
 export function AiSection({
@@ -14,8 +19,7 @@ export function AiSection({
   secretDrafts,
   setField,
   setSecretDrafts,
-  onReset,
-  resetting,
+  saving,
   onClearSecret,
 }: {
   form: EditableSettings
@@ -23,9 +27,8 @@ export function AiSection({
   secretDrafts: SecretDrafts
   setField: (section: SectionKey, field: string, value: string | number | boolean) => void
   setSecretDrafts: (updater: (current: SecretDrafts) => SecretDrafts) => void
-  onReset: () => void
-  resetting: boolean
-  onClearSecret: (section: 'ai' | 'email', field: string) => void
+  saving: boolean
+  onClearSecret: (section: 'ai' | 'email', field: SecretField) => void
 }) {
   const aiTestMut = useMutation({
     mutationFn: () => serviceSettingsApi.testAi(),
@@ -33,7 +36,7 @@ export function AiSection({
 
   return (
     <>
-      <SCard title="Provider" footer={<ResetRow onReset={onReset} resetting={resetting} />}>
+      <SCard title="Provider">
         <ToggleRow
           label="AI enabled"
           labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'ai_enabled')} />}
@@ -81,13 +84,14 @@ export function AiSection({
               variant="outline"
               size="sm"
               onClick={() => onClearSecret('ai', 'ai_api_key')}
-              disabled={resetting}
+              disabled={saving}
             >
               Clear
             </Button>
           </div>
         </Field>
-        <Field label="Connection" last>
+        {/* A test button and its status line, not a control to be named. */}
+        <Field label="Connection" last htmlFor={false}>
           <div className="flex items-center gap-2">
             <Button
               type="button"
@@ -179,7 +183,13 @@ export function AiSection({
           value={form.ai.search_embeddings_enabled}
           onChange={value => setField('ai', 'search_embeddings_enabled', value)}
         />
-        <Field label="Embedding dimensions">
+        {/* The one inert control on this page. It carried `disabled` and nothing
+            else — no badge, no hint — so it read as an editable number sitting
+            in a row of editable numbers. Say why it cannot move. */}
+        <Field
+          label="Embedding dimensions"
+          hint="Env-only (SEARCH_EMBEDDING_DIMENSIONS). The vectors already in the index were written at this width, and similarity across two widths is meaningless — changing it is a re-embed and a deploy, not a setting."
+        >
           <TextInput
             value={String(form.ai.search_embedding_dimensions)}
             disabled
@@ -230,7 +240,7 @@ export function AiSection({
               variant="outline"
               size="sm"
               onClick={() => onClearSecret('ai', 'search_embedding_api_key')}
-              disabled={resetting}
+              disabled={saving}
             >
               Clear
             </Button>

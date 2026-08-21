@@ -120,6 +120,12 @@ interface InboxBulkActionBarProps {
  *    {@link MAX_BULK_INBOX_ACTION_GROUPS} anyway. Selecting is deliberately
  *    per-incident, i.e. deliberately deliberate.
  *
+ *    The Inbox header's "Select all N shown" and its shift-click range
+ *    (tripl-rzkx) are not that control and do not reopen this: N is the number
+ *    of cards under the box, every one of them is on screen, and the count on
+ *    this bar therefore still describes something the operator can look at. What
+ *    is refused above is a sweep of rows nobody has seen.
+ *
  * Renders nothing at zero selection — a fixed bar over an untouched list is
  * chrome charging rent on the queue it sits on top of.
  */

@@ -39,16 +39,45 @@ vi.mock('@/components/tweaks-panel', () => ({
   TweaksPanelProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }))
 
+// The demo chrome, stood in for by the controls that matter to the bypass block:
+// the real components need mutations, a tour dialog and scenario polling, none of
+// which decides where in the DOM the shell puts them.
+vi.mock('@/demo/DemoBanner', () => ({
+  DemoBanner: () => (
+    <div>
+      <button type="button">What’s simulated</button>
+      <button type="button">Delete</button>
+    </div>
+  ),
+}))
+
+vi.mock('@/demo/DemoScenarioStrip', () => ({
+  DemoScenarioStrip: () => <button type="button">Dismiss</button>,
+}))
+
+vi.mock('@/demo/DemoScenarioProvider', () => ({
+  DemoScenarioProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+}))
+
+interface RenderLayoutOptions {
+  /** Turns on the shell's demo chrome (banner + coach strip). */
+  isDemo?: boolean
+  /** Route element, when the test needs the page to own a control. */
+  page?: ReactNode
+}
+
 function renderLayout(
   path: string,
   routePath = '/p/:slug/monitoring/:scope/:id',
   pageLabel = 'Monitoring detail',
+  options: RenderLayoutOptions = {},
 ) {
   vi.mocked(projectsApi.list).mockResolvedValue([
     {
       id: 'project-1',
       name: 'Demo',
       slug: 'demo',
+      is_demo: options.isDemo ?? false,
       description: '',
       app_version_keep_releases: 5,
       created_at: '2026-01-01T00:00:00Z',
@@ -80,15 +109,16 @@ function renderLayout(
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+  const page = options.page ?? <div>{pageLabel}</div>
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route path={routePath} element={<Layout />}>
-            <Route index element={<div>{pageLabel}</div>} />
+            <Route index element={page} />
             {/* A splat `routePath` consumes the trailing segments, so the index
                 child never matches — give those cases a child that does. */}
-            <Route path="*" element={<div>{pageLabel}</div>} />
+            <Route path="*" element={page} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -157,6 +187,35 @@ describe('Layout bypass block', () => {
     const target = container.querySelector('#main-content')
     expect(target).not.toBeNull()
     expect(target).toHaveAttribute('tabindex', '-1')
+  })
+
+  it('lands past the demo chrome, not on it (tripl-rinm)', async () => {
+    const { container } = renderLayout('/p/demo/events', '/p/:slug/events', 'Events body', {
+      isDemo: true,
+      page: (
+        <div>
+          <p>Events body</p>
+          <button type="button">New event</button>
+        </div>
+      ),
+    })
+    await screen.findByText('Events body')
+
+    const target = container.querySelector('#main-content')
+    if (!target) throw new Error('the skip link has no target to land on')
+
+    // The demo banner and the coach strip are shell furniture: they belong on
+    // the page, but INSIDE the skip target they made the user Tab through the
+    // demo's own controls — the DESTRUCTIVE Delete among them — before reaching
+    // the page they had asked to be taken to.
+    const deleteButton = screen.getByRole('button', { name: 'Delete' })
+    const dismissButton = screen.getByRole('button', { name: 'Dismiss' })
+    expect(target.contains(deleteButton)).toBe(false)
+    expect(target.contains(dismissButton)).toBe(false)
+
+    // So the first stop after the jump is the page's own first control.
+    const insideTarget = target.querySelectorAll('a[href], button, input, [tabindex]')
+    expect(insideTarget[0]).toBe(screen.getByRole('button', { name: 'New event' }))
   })
 })
 

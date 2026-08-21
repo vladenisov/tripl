@@ -15,7 +15,7 @@ import { getErrorMessage } from '@/lib/utils'
  * A numeric detection setting that saves when you finish, not as you type.
  *
  * These inputs used to fire the mutation from `onChange`, so typing "168" into
- * Baseline Window persisted 1, then 16, then 168 — and each intermediate value
+ * Baseline window persisted 1, then 16, then 168 — and each intermediate value
  * was a live detection setting that a collection running in that window would
  * read. The field is also briefly empty whenever someone selects-all and
  * retypes, and `Number('')` is `0`, which is *valid* for `min_expected_count`
@@ -265,41 +265,75 @@ export function MonitoringTab({ slug }: { slug: string }) {
           {/* Four scopes, not three: catalog metrics have always been detected
               (detect_metrics defaults to on) but had no control here, so the
               only way to stop scoring them was to disable detection entirely
-              (tripl-jfm3.108). */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-            <label className="flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={settings.detect_project_total}
-                onCheckedChange={checked => updateMut.mutate({ detect_project_total: !!checked })}
-              />
-              Project total
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={settings.detect_event_types}
-                onCheckedChange={checked => updateMut.mutate({ detect_event_types: !!checked })}
-              />
-              Event types
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={settings.detect_events}
-                onCheckedChange={checked => updateMut.mutate({ detect_events: !!checked })}
-              />
-              Events
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={settings.detect_metrics}
-                onCheckedChange={checked => updateMut.mutate({ detect_metrics: !!checked })}
-              />
-              Metrics
-            </label>
-          </div>
+              (tripl-jfm3.108).
+
+              The heading and the sentence under it are the whole reason this is
+              a fieldset: four bare checked boxes in a row decide WHAT GETS
+              SCORED AT ALL — the most consequential control on the page — and
+              nothing on screen said so. The rationale existed only in this
+              comment, which no operator reads. `min-w-0` undoes the UA default
+              `min-inline-size: min-content` on fieldset, which Tailwind's
+              preflight does not reset and which would stop the four-column grid
+              inside from ever shrinking. */}
+          <fieldset className="min-w-0">
+            <legend className="text-sm font-medium">Score these scopes</legend>
+            <p className="text-xs text-muted-foreground mt-1 mb-3">
+              Detection scores only the scopes checked here. Unchecking one stops new signals
+              being raised for it; signals already raised stay on the Anomalies page.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox
+                  checked={settings.detect_project_total}
+                  onCheckedChange={checked => updateMut.mutate({ detect_project_total: !!checked })}
+                />
+                Project total
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox
+                  checked={settings.detect_event_types}
+                  onCheckedChange={checked => updateMut.mutate({ detect_event_types: !!checked })}
+                />
+                Event types
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox
+                  checked={settings.detect_events}
+                  onCheckedChange={checked => updateMut.mutate({ detect_events: !!checked })}
+                />
+                Events
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox
+                  checked={settings.detect_metrics}
+                  onCheckedChange={checked => updateMut.mutate({ detect_metrics: !!checked })}
+                />
+                Metrics
+              </label>
+            </div>
+          </fieldset>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor={baselineWindowId}>Baseline Window</Label>
+            {/* Two rules hold for all six fields below.
+                (1) Sentence case, like every other label in this app: four of
+                    the six were Title Case and two were not, which made one card
+                    read as two forms glued together (tripl-jj0h).
+                (2) `content-start` on every cell. Without it a cell inherits the
+                    grid default (align-content: stretch), is stretched to its
+                    taller sibling, and pads the gaps between its own label,
+                    input and help text — which put two side-by-side inputs in
+                    the bottom row 11px out of line (labels 5px) purely because
+                    one help paragraph ran longer than the other.
+
+                Both fields in this first row are counted in BUCKETS, and said so
+                nowhere: bare "14" and "7" sat directly above two fields that name
+                their unit and carry a paragraph each, so the page's own pattern
+                pushed the reader toward days. On an hourly scan that reads 14 as
+                fourteen days when it means fourteen hours — an order of
+                magnitude, set by someone trying to quieten a noisy detector
+                (tripl-wb58). */}
+            <div className="grid content-start gap-2">
+              <Label htmlFor={baselineWindowId}>Baseline window (buckets)</Label>
               <NumberSetting
                 id={baselineWindowId}
                 min={1}
@@ -307,8 +341,8 @@ export function MonitoringTab({ slug }: { slug: string }) {
                 onCommit={v => updateMut.mutate({ baseline_window_buckets: v })}
               />
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor={minHistoryId}>Min History</Label>
+            <div className="grid content-start gap-2">
+              <Label htmlFor={minHistoryId}>Min history (buckets)</Label>
               <NumberSetting
                 id={minHistoryId}
                 min={1}
@@ -316,8 +350,26 @@ export function MonitoringTab({ slug }: { slug: string }) {
                 onCommit={v => updateMut.mutate({ min_history_buckets: v })}
               />
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor={sigmaThresholdId}>Sigma Threshold</Label>
+            {/* One line for the pair. Deliberately says "the series being
+                scored" and not "the scan": these settings also govern catalog
+                metrics, and a MetricDefinition carries its own interval
+                independent of any scan config — so a daily metric under an
+                hourly scan makes 14 buckets fourteen DAYS. */}
+            <p className="text-xs text-muted-foreground md:col-span-2">
+              A bucket is one collection interval of the series being scored. On an hourly
+              scan, {settings.baseline_window_buckets} buckets of baseline is{' '}
+              {settings.baseline_window_buckets} hours; on a daily catalog metric it is{' '}
+              {settings.baseline_window_buckets} days.
+            </p>
+            {/* These two were the only fields on the page with no explanation at
+                all, and they are the two that decide whether anything is flagged
+                — the sigma threshold is both the most consequential and the most
+                opaque control here (tripl-pdyc). Both describe what the detector
+                actually does: `_rolling_anomaly_at` skips a bucket whose baseline
+                expects fewer than min_expected_count, then flags it only when
+                |z| reaches the sigma threshold. */}
+            <div className="grid content-start gap-2">
+              <Label htmlFor={sigmaThresholdId}>Sigma threshold</Label>
               <NumberSetting
                 id={sigmaThresholdId}
                 min={0.1}
@@ -325,17 +377,27 @@ export function MonitoringTab({ slug }: { slug: string }) {
                 value={settings.sigma_threshold}
                 onCommit={v => updateMut.mutate({ sigma_threshold: v })}
               />
+              <p className="text-xs text-muted-foreground">
+                How far a bucket has to sit from its baseline before it is flagged, counted in
+                standard deviations of that baseline. Raise it for a quieter detector; lower it
+                to catch smaller moves, at the cost of more signals.
+              </p>
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor={minExpectedCountId}>Min Expected Count</Label>
+            <div className="grid content-start gap-2">
+              <Label htmlFor={minExpectedCountId}>Min expected count</Label>
               <NumberSetting
                 id={minExpectedCountId}
                 min={0}
                 value={settings.min_expected_count}
                 onCommit={v => updateMut.mutate({ min_expected_count: v })}
               />
+              <p className="text-xs text-muted-foreground">
+                A floor on the baseline, not on the bucket: any bucket whose baseline expects
+                fewer than {settings.min_expected_count} is skipped, so a quiet series cannot
+                raise a spike off a handful of events. 0 scores every bucket.
+              </p>
             </div>
-            <div className="grid gap-2">
+            <div className="grid content-start gap-2">
               <Label htmlFor={recentSignalWindowId}>Open signal window (hours)</Label>
               <NumberSetting
                 id={recentSignalWindowId}
@@ -352,7 +414,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
                 outlast the allowance would close every signal before it could be scored.
               </p>
             </div>
-            <div className="grid gap-2">
+            <div className="grid content-start gap-2">
               <Label htmlFor={settlingMinutesId}>Ingestion settling (minutes)</Label>
               <NumberSetting
                 id={settlingMinutesId}
@@ -361,14 +423,18 @@ export function MonitoringTab({ slug }: { slug: string }) {
                 value={settings.anomaly_ingestion_settling_minutes}
                 onCommit={v => updateMut.mutate({ anomaly_ingestion_settling_minutes: v })}
               />
+              {/* Tightened from seven rendered lines. Every fact the operator
+                  needs to set the number is kept — both bounds and why they
+                  exist — because these are what stand between them and the
+                  backend's 422; what went is the second telling of it. */}
               <p className="text-xs text-muted-foreground">
                 How long a warehouse keeps delivering rows for a bucket after that bucket
-                closes. The newest buckets are still collected and charted, but raise no
-                signal until the allowance has passed — so a half-delivered bucket is not
-                read as a drop. Between 0 (score immediately) and {settlingCeilingMinutes}{' '}
-                minutes here — the ceiling is one minute under the open signal window beside
-                it ({settings.recent_signal_window_hours}h), and never above 1440 (24 hours).
-                It is also the detection latency it buys.
+                closes. Those buckets are still collected and charted but raise no signal
+                until the allowance passes, so a half-delivered bucket is not read as a
+                drop — and the allowance is the detection latency you pay for that. Between
+                0 (score immediately) and {settlingCeilingMinutes} minutes: the ceiling is
+                one minute under the open signal window beside it{' '}
+                ({settings.recent_signal_window_hours}h), and never above 1440 (24 hours).
               </p>
             </div>
           </div>

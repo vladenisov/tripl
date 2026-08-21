@@ -52,8 +52,16 @@ const AREAS: readonly Area[] = [
     terms: [
       {
         term: 'Events',
+        // No backticks: TermRow prints `definition` as a bare text node, so the
+        // grave accents that once wrapped the example rendered as literal
+        // characters on the finished reference page (tripl-aqru). The example
+        // itself is the one the New event form models in its name placeholder
+        // ("e.g. checkout:completed", EventForm.tsx) and the shape scan rules
+        // generate from an `event_name_format` — the glossary used to teach a
+        // third convention, leaving a first-time user with no idea which the
+        // product expects.
         definition:
-          'A single tracked action in your plan, such as `payment_failed`. Events are the atomic unit you instrument, observe, and govern.',
+          'A single tracked action in your plan — checkout:completed, for example. Events are the atomic unit you instrument, observe, and govern.',
         path: '/events',
       },
       {

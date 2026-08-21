@@ -7,6 +7,8 @@ type ListParams = {
   status?: string[]
   tag?: string
   silent_since_days?: number
+  /** Isolate reviewed / still-unreviewed events. Omit for "any". */
+  reviewed?: boolean
   order_by?: 'catalog' | 'volume'
   offset?: number
   limit?: number
@@ -22,6 +24,7 @@ export const eventsApi = {
     }
     if (params?.tag) sp.set('tag', params.tag)
     if (params?.silent_since_days !== undefined) sp.set('silent_since_days', String(params.silent_since_days))
+    if (params?.reviewed !== undefined) sp.set('reviewed', String(params.reviewed))
     if (params?.order_by) sp.set('order_by', params.order_by)
     if (params?.offset !== undefined) sp.set('offset', String(params.offset))
     if (params?.limit !== undefined) sp.set('limit', String(params.limit))

@@ -155,7 +155,7 @@ treat them as safe to auto-approve.
 | Tool | Arguments | Backed by |
 |------|-----------|-----------|
 | `search_plan` | `slug, q, types?, limit?, branch_id?` | `GET /projects/{slug}/search` |
-| `list_events` | `slug, search?, status?, tag?, meta_value?, event_type_id?, silent_since_days?, offset?, limit?, branch_id?` | `GET /projects/{slug}/events` |
+| `list_events` | `slug, search?, status?, tag?, field_value?, meta_value?, event_type_id?, silent_since_days?, reviewed?, offset?, limit?, order_by?, branch_id?` | `GET /projects/{slug}/events` |
 | `get_event` | `slug, event_id, branch_id?` | `GET /projects/{slug}/events/{event_id}` |
 | `list_event_types` | `slug` | `GET /projects/{slug}/event-types` |
 | `get_event_type_fields` | `slug, event_type_id` | Event type + its field definitions, merged |

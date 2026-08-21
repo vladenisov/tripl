@@ -260,7 +260,16 @@ function SettingsIndexRedirect() {
   return <Navigate to={`/settings/${target}`} replace />
 }
 
-/** Auth-gated mount of the full-takeover Settings area for a given section. */
+/**
+ * Auth-gated mount of the full-takeover Settings area for a given section.
+ *
+ * Ctrl+K here is served by the settings shell's own palette, not by the app's
+ * `CommandPaletteProvider`: that one scopes itself with `useParams().slug`, no
+ * /settings/* route declares one, and its fallback is `projects[0]` — so
+ * wrapping the takeover in it searched a project the area was not bound to
+ * while offering none of that project's destinations. See
+ * components/settings/settings-palette.tsx.
+ */
 function Takeover({ section }: { section: string }) {
   return (
     <RequireAuth>

@@ -230,6 +230,7 @@ async def list_events(
     silent_since_days: int | None = None,
     field_value: str | None = None,
     meta_value: str | None = None,
+    reviewed: bool | None = None,
     branch_id: uuid.UUID | None = None,
     order_by: str = "catalog",
 ) -> tuple[list[Event], int]:
@@ -296,6 +297,12 @@ async def list_events(
         )
         query = query.where(Event.id.in_(mv_filter))
         count_query = count_query.where(Event.id.in_(mv_filter))
+    if reviewed is not None:
+        # Independent of `status`: this narrows by the review FLAG, so
+        # ?status=in_review&reviewed=false answers "what is still unreviewed in
+        # the queue" — the question the review tab could not ask (tripl-invv).
+        query = query.where(Event.reviewed.is_(reviewed))
+        count_query = count_query.where(Event.reviewed.is_(reviewed))
     if silent_since_days is not None and silent_since_days >= 0:
         cutoff = datetime.now(UTC) - timedelta(days=silent_since_days)
         silent_clause = or_(Event.last_seen_at.is_(None), Event.last_seen_at < cutoff)

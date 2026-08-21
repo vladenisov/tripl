@@ -84,16 +84,14 @@ function settingsFixture(
 }
 
 function renderSection(settings: ServiceSettings, setField = vi.fn()) {
-  render(
+  const view = render(
     <SecuritySection
       form={editableFromSettings(settings)}
       settings={settings}
       setField={setField}
-      onReset={vi.fn()}
-      resetting={false}
     />,
   )
-  return setField
+  return { setField, ...view }
 }
 
 describe('Instance Security & access — registration', () => {
@@ -143,7 +141,7 @@ describe('Instance Security & access — registration', () => {
   })
 
   it('routes a change through setField so it lands in the PATCH payload', () => {
-    const setField = renderSection(settingsFixture())
+    const { setField } = renderSection(settingsFixture())
 
     fireEvent.change(screen.getByLabelText('Self-service registration'), {
       target: { value: 'disabled' },
@@ -156,5 +154,54 @@ describe('Instance Security & access — registration', () => {
     // Without this the control renders but never reaches PATCH /api/v1/settings.
     expect(RESET_FIELDS.security).toContain('registration_mode')
     expect(COMPARE_FIELDS.security).toContain('registration_mode')
+  })
+})
+
+describe('Instance Security & access — registration copy fits its controls', () => {
+  it('keeps the option labels short enough for the kit Select to render whole', () => {
+    // A native <select> with `appearance-none` hard-clips its own value: the old
+    // label, "Open — anyone who can reach this instance can sign up", rendered
+    // as "Open — anyone who can reach this insta" sliced against the chevron,
+    // with no ellipsis and ~380px of the row empty beside it (tripl-p1c6). The
+    // one setting deciding who may create an account here was the one value on
+    // the page you could not read. ~40 characters is what fits at 12.5px inside
+    // the kit's 280px Select once its 30px chevron padding is taken out.
+    renderSection(settingsFixture())
+
+    for (const option of screen.getAllByRole('option')) {
+      expect((option.textContent ?? '').length).toBeLessThanOrEqual(40)
+    }
+  })
+
+  it('leaves the signup-timing caveat to the page note instead of restating it', () => {
+    renderSection(settingsFixture())
+
+    // applyNote('security') already names the exception two lines above this
+    // card. The description used to repeat it in a second vocabulary — "no
+    // redeploy" against the note's "no restart" — so one caveat was stated
+    // twice within 200px in two different words (tripl-p1c6).
+    expect(
+      screen.getByText('Who is allowed to create an account on this instance.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/redeploy/i)).toBeNull()
+  })
+})
+
+describe('Instance Security & access — field labelling', () => {
+  it('associates every visible field label with its control', () => {
+    // The whole-section guard for tripl-5gdg: Field generated an id for its
+    // <label htmlFor> but never applied it to the control, so 6 of 13 inputs on
+    // this page were announced with no name. Only the registration Select
+    // passed an explicit htmlFor, which is why this page scored best.
+    const { container } = renderSection(settingsFixture())
+
+    const labels = Array.from(container.querySelectorAll('label'))
+    expect(labels.length).toBeGreaterThan(1)
+
+    for (const label of labels) {
+      const name = label.textContent ?? ''
+      expect(name.trim().length).toBeGreaterThan(0)
+      expect(screen.getByLabelText(name)).toBe(label.control)
+    }
   })
 })

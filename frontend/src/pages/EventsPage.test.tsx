@@ -14,6 +14,12 @@ vi.mock('recharts', async () => {
   }
 })
 
+vi.mock('sonner', () => ({
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
+}))
+
+import { toast } from 'sonner'
+
 /**
  * Assert an accessible control is absent — searching the whole DOM, not just the
  * accessibility tree.
@@ -227,7 +233,7 @@ describe('EventsPage', () => {
     expect(screen.getByText('48h')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '7d' })).toBeInTheDocument()
     expect(screen.getByText('Hours')).toBeInTheDocument()
-    const metricsButton = await screen.findByRole('button', { name: /Homepage View metrics: 1k events in last 48 hours/ })
+    const metricsButton = await screen.findByRole('button', { name: /Homepage View metrics: 1K events in last 48 hours/ })
     expect(metricsButton).toBeInTheDocument()
     // The row exposes no inline action buttons — Edit/Metrics/Archive/Delete and
     // move/status now live on the event detail page, not on the row.
@@ -245,13 +251,19 @@ describe('EventsPage', () => {
     // and the "Open recent anomaly" affordance are gone.
     expect(container.querySelector('a[href="/p/demo/monitoring/project-total/scan-1"]')).toBeInTheDocument()
     expect(container.querySelector('a[href="/p/demo/monitoring/event-type/type-1"]')).not.toBeInTheDocument()
-    expect(container.querySelector('a[href="/p/demo/monitoring/event/event-1"]')).not.toBeInTheDocument()
+    // tripl-fa8l made the event NAME the row's monitoring anchor, so this href
+    // is expected again — what tripl-dmch.12 removed was the separate SignalLink
+    // arrow, which the "Open recent anomaly" assertion below still guards.
+    expect(screen.getByRole('link', { name: 'Homepage View' })).toHaveAttribute(
+      'href',
+      '/p/demo/monitoring/event/event-1',
+    )
     expect(screen.queryByLabelText('Open recent anomaly')).not.toBeInTheDocument()
 
     fireEvent.mouseOver(metricsButton)
     fireEvent.focus(metricsButton)
     expect((await screen.findAllByText('Last 48 hours')).length).toBeGreaterThan(0)
-    expect(screen.getAllByText('1k events').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('1K events').length).toBeGreaterThan(0)
 
     // The hover action cluster was removed entirely — no move up/down buttons
     // and no per-row status select.
@@ -713,5 +725,119 @@ describe('EventsPage', () => {
     expect(screen.queryByText('All Events Dynamics')).not.toBeInTheDocument()
     expect(screen.queryByText('No recent volume to chart')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Show chart|Hide chart/ })).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * Fetch mock for the export tests. Everything the page loads answers at once;
+ * only the events LIST is steerable — `listGate` holds it open (the cold-load
+ * window, where `total` is still 0) and `failExportSweep` fails the
+ * `limit=10000` request the export pages the whole match set with.
+ *
+ * The sweep branch must be tested BEFORE the in-review count branch: the sweep
+ * URL carries `status=in_review` too, and `limit=10000` contains `limit=1`.
+ */
+function mockExportFetch({
+  listGate,
+  failExportSweep = false,
+}: { listGate?: Promise<void>; failExportSweep?: boolean } = {}) {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = String(input)
+
+    if (url.endsWith('/api/v1/projects/demo/event-types')) {
+      return mockJsonResponse([
+        {
+          id: 'type-1',
+          project_id: 'project-1',
+          name: 'page',
+          display_name: 'Page',
+          description: '',
+          color: '#0ea5e9',
+          order: 0,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          field_definitions: [],
+        },
+      ])
+    }
+    if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
+    if (url.includes('/api/v1/projects/demo/variables')) return mockJsonResponse({ items: [], total: 0 })
+    if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
+    if (url.endsWith('/api/v1/projects/demo/events/window-metrics') && init?.method === 'POST') {
+      return mockJsonResponse([])
+    }
+    if (url.includes('/api/v1/projects/demo/events-metrics')) {
+      return mockJsonResponse({
+        scope: 'events_total',
+        scan_config_id: null,
+        event_id: null,
+        event_type_id: null,
+        interval: '1h',
+        latest_signal: null,
+        data: [],
+      })
+    }
+    if (url.includes('/api/v1/projects/demo/anomalies/signals')) return mockJsonResponse([])
+    if (url.includes('/api/v1/projects/demo/events') && url.includes('limit=10000')) {
+      if (failExportSweep) return new Response('boom', { status: 500 })
+      return mockJsonResponse({ items: [makeEvent()], total: 1 })
+    }
+    if (url.includes('/api/v1/projects/demo/events') && url.includes('status=in_review') && url.includes('limit=1')) {
+      return mockJsonResponse({ items: [], total: 0 })
+    }
+    if (url.includes('/api/v1/projects/demo/events')) {
+      if (listGate) await listGate
+      return mockJsonResponse({ items: [makeEvent()], total: 1 })
+    }
+
+    throw new Error(`Unhandled fetch: ${url}`)
+  })
+}
+
+async function openExportItem() {
+  // Radix opens the menu from pointer/keyboard events jsdom does not synthesise
+  // from a bare click — keyboard is the reliable path here.
+  fireEvent.keyDown(await screen.findByRole('button', { name: 'More actions' }), { key: 'Enter' })
+  return screen.findByRole('menuitem', { name: /Export CSV/ })
+}
+
+describe('EventsPage CSV export', () => {
+  it('withholds the export until the loaded page belongs to the current filters', async () => {
+    let releaseList = () => {}
+    const listGate = new Promise<void>((resolve) => {
+      releaseList = resolve
+    })
+    mockExportFetch({ listGate })
+
+    renderEventsPage()
+
+    // Cold load: `total` is 0 and the sweep short-circuits on it, so exporting
+    // here downloaded a header-only file indistinguishable from "nothing matched".
+    expect(await openExportItem()).toHaveAttribute('aria-disabled', 'true')
+
+    releaseList()
+
+    await waitFor(() =>
+      expect(screen.getByRole('menuitem', { name: /Export CSV/ })).not.toHaveAttribute(
+        'aria-disabled',
+        'true',
+      ),
+    )
+  })
+
+  it('reports a failed export instead of leaving the menu item to flip back silently', async () => {
+    vi.mocked(toast.error).mockClear()
+    mockExportFetch({ failExportSweep: true })
+
+    renderEventsPage()
+
+    expect(await screen.findByText('Homepage View')).toBeInTheDocument()
+    fireEvent.click(await openExportItem())
+
+    // The sweep is a bare awaited request: no query cache, no error boundary, so
+    // without the catch the only trace was an unhandled rejection in the console.
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Could not export CSV')),
+    )
   })
 })

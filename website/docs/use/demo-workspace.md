@@ -146,8 +146,13 @@ The demo offers two guides, and they do different jobs.
   Progress is remembered per project (in your browser), so reloading mid-scan
   resumes the watch.
 
-  Dismiss it at any point — including after finishing — and restart it whenever you
-  like from the welcome panel.
+  Dismiss it at any point — including after finishing. The welcome panel that
+  carries the tour and the chapter picker opens **collapsed**, as a single row
+  with a **Show me around** expander, so the Overview leads with the product
+  rather than with onboarding; expanding it is not remembered between visits.
+  Dismissing the panel outright (the **✕**) hides it for that project, and the
+  demo bar's **Tour &amp; chapters** button — present on every demo surface, for
+  everyone — brings it back and reopens the tour.
 
 ## Lifecycle
 

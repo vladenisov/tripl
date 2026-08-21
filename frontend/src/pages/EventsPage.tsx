@@ -2,18 +2,26 @@ import { useCallback, useMemo, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Plus } from 'lucide-react'
+import { toast } from 'sonner'
 import { usersApi } from '@/api/users'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/error-state'
 import type { EventStatus } from '@/lib/eventStatus'
+import { getErrorMessage } from '@/lib/utils'
 
 import { BulkActionBar } from './events/BulkActionBar'
 import { EventsHeader } from './events/EventsHeader'
 import { EventsTable } from './events/EventsTable'
 import { EventsToolbar } from './events/EventsToolbar'
 import { TabMetricsCard } from './events/TabMetricsCard'
+import {
+  buildEventsCsvColumns,
+  downloadCsv,
+  eventsCsvFilename,
+  toCsv,
+} from './events/eventsCsv'
 import { useColumnVisibility } from './events/useColumnVisibility'
 import { useEventsBulkDelete } from './events/useEventsBulkDelete'
 import { useEventsDndSensors } from './events/useEventsDndSensors'
@@ -21,11 +29,17 @@ import { useEventMutations } from './events/useEventMutations'
 import { useEventRowActions } from './events/useEventRowActions'
 import { useEventsPageData } from './events/useEventsPageData'
 import { useEventRowMetrics } from './events/useEventRowMetrics'
-import { useEventsFiltering } from './events/useEventsFiltering'
+import {
+  filterEventsByColumns,
+  resolveFieldValue,
+  resolveMetaValue,
+  useEventsFiltering,
+} from './events/useEventsFiltering'
 import { useEventsQuery } from './events/useEventsQuery'
 import { useEventsRouteState } from './events/useEventsRouteState'
 import { useEventsSelection } from './events/useEventsSelection'
 import { useEventsSignals } from './events/useEventsSignals'
+import { useEventsTableOverflow } from './events/useEventsTableOverflow'
 import { useEventsTableVirtualization } from './events/useEventsTableVirtualization'
 import { useEventsViewState } from './events/useEventsViewState'
 import { useSavedViews } from './events/useSavedViews'
@@ -42,7 +56,6 @@ interface EventsPageProps {
 export default function EventsPage({ lockType, embedded = false }: EventsPageProps = {}) {
   const {
     activeTab,
-    navigate,
     openEvent,
     openEventId,
     openNewEvent,
@@ -74,7 +87,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     eventTypes,
     metaFields,
     allTags,
-    unreviewedCount,
+    inReviewCount,
     dataError,
     refetchPageData,
   } = useEventsPageData({ slug, openEventId, branchId })
@@ -88,6 +101,8 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     setFilterTag,
     filterSilentDays,
     setFilterSilentDays,
+    filterReviewed,
+    setFilterReviewed,
     sort,
     setSort,
     fieldFilters,
@@ -103,6 +118,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     eventsQuery,
     rawEvents,
     total,
+    fetchAllMatching,
     fetchAllMatchingIds,
   } = useEventsQuery({ slug, activeTab, eventTypes, branchId })
 
@@ -118,6 +134,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
 
   const {
     fieldColumns,
+    allFieldDefs,
     eventTypesById,
     fieldEnumOptions,
     metaValuesByEvent,
@@ -157,6 +174,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     fieldFilters,
     filterStatuses,
     filterSilentDays,
+    filterReviewed,
     filterTag,
     hiddenColumns,
     metaFields,
@@ -167,6 +185,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
   const {
     selectedEventIds,
     selectedCount,
+    selectedVisibleEventIds,
     allVisibleSelected,
     someVisibleSelected,
     selectedSet,
@@ -186,6 +205,11 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
   const { bulkDeleteMut, bulkUpdateMut } = mutations
 
   const dndSensors = useEventsDndSensors()
+
+  // Lives on the page, not in EventsTable: the off-screen column count it
+  // measures is reported by the toolbar's Columns chip, which renders above the
+  // table (tripl-u1ib).
+  const { tableRef, offscreenColumnCount } = useEventsTableOverflow()
 
   const {
     tableScrollRef,
@@ -208,8 +232,6 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
   }, [])
 
   const { handleDragEnd, onRowAction } = useEventRowActions({
-    slug,
-    navigate,
     openEvent,
     mutations,
     confirm,
@@ -218,7 +240,8 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
   })
 
   const handleBulkDelete = useEventsBulkDelete({
-    selectedVisibleEventIds: selectedEventIds,
+    selectedEventIds,
+    selectedVisibleEventIds,
     bulkDeleteMut,
     confirm,
   })
@@ -244,6 +267,11 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     try {
       const ids = await fetchAllMatchingIds()
       if (ids.length) selectAll(ids)
+    } catch (error) {
+      // The sweep is a bare awaited request — no query cache, no mutation, so
+      // nothing else reports it and the button would just stop spinning with
+      // the selection unchanged.
+      toast.error(`Could not select all matching events — ${getErrorMessage(error)}`)
     } finally {
       setIsSelectingAll(false)
     }
@@ -253,6 +281,85 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     if (!selectedEventIds.length) return
     bulkUpdateMut.mutate({ eventIds: selectedEventIds, owner_id: userId })
   }, [bulkUpdateMut, selectedEventIds])
+
+  // CSV of the WHOLE filtered view, not just the pages scrolled so far: the
+  // catalog runs to thousands of events and the only previous way out of it was
+  // a "soon" badge (tripl-evbw). Server filters + sort come from the same
+  // paging helper "select all matching" uses; the per-column field/meta filters
+  // are client-side, so they are re-applied to the fetched rows here.
+  const [isExporting, setIsExporting] = useState(false)
+  // The sweep only knows there is anything to fetch from the loaded `total`,
+  // which is 0 during the cold load and — under `placeholderData: prev` — still
+  // the *previous* filters' count while a filter change is in flight. Exporting
+  // in either window wrote a header-only file that reads exactly like "nothing
+  // matched", so the action waits for a page that belongs to these filters.
+  const canExportCsv = eventsQuery.isSuccess && !eventsQuery.isPlaceholderData
+  const handleExportCsv = useCallback(() => {
+    if (!slug || isExporting || !canExportCsv) return
+    void (async () => {
+      setIsExporting(true)
+      try {
+        // The full column sets, not the visible ones: hiding a column in the
+        // picker does not clear its filter, and the table still narrows by it.
+        const rows = filterEventsByColumns(await fetchAllMatching(), {
+          fieldColumns,
+          metaFields,
+          fieldFilters: debouncedFieldFilters,
+          metaFilters: debouncedMetaFilters,
+          getFieldValue: (event, col) => resolveFieldValue(event, col, allFieldDefs),
+          getMetaValue: resolveMetaValue,
+        })
+        // Never hand back a header-only file: an empty CSV is indistinguishable
+        // from a broken export, so say which of the two this is.
+        if (rows.length === 0) {
+          toast.info('No events match the current filters — nothing to export.')
+          return
+        }
+        const columns = buildEventsCsvColumns({
+          activeTypeName: activeEt?.name ?? null,
+          eventTypesById,
+          usersById,
+          fieldDefsById: allFieldDefs,
+          fieldColumns: visibleFieldColumns,
+          metaFields: visibleMetaFields,
+          hideStatus,
+          hideReviewed,
+          hideTags,
+          hideLastSeen,
+          hideOwner,
+        })
+        downloadCsv(eventsCsvFilename(slug, activeTab), toCsv(columns, rows))
+      } catch (error) {
+        // Same hole as the id sweep: an ApiError here reaches no query cache and
+        // no error boundary, so without this the item flips back to "Export CSV"
+        // with no file and no message — read as "nothing matched".
+        toast.error(`Could not export CSV — ${getErrorMessage(error)}`)
+      } finally {
+        setIsExporting(false)
+      }
+    })()
+  }, [
+    activeEt,
+    activeTab,
+    allFieldDefs,
+    canExportCsv,
+    debouncedFieldFilters,
+    debouncedMetaFilters,
+    eventTypesById,
+    fetchAllMatching,
+    fieldColumns,
+    metaFields,
+    hideLastSeen,
+    hideOwner,
+    hideReviewed,
+    hideStatus,
+    hideTags,
+    isExporting,
+    slug,
+    usersById,
+    visibleFieldColumns,
+    visibleMetaFields,
+  ])
 
   const { eventWindowMetricsByEvent, eventRowSignals } = useEventRowMetrics({
     slug,
@@ -308,7 +415,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
       {!embedded && (
         <EventsHeader
           total={total}
-          unreviewedCount={unreviewedCount}
+          inReviewCount={inReviewCount}
           projectTotalSignal={projectTotalSignal}
           eventTypeSignals={eventTypeSignals}
           activeType={activeEt}
@@ -345,6 +452,8 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
               onFilterStatusesChange={setFilterStatuses}
               filterSilentDays={filterSilentDays}
               onFilterSilentDaysChange={setFilterSilentDays}
+              filterReviewed={filterReviewed}
+              onFilterReviewedChange={setFilterReviewed}
               sortOrder={sort}
               onSortOrderChange={setSort}
               hasActiveFilters={hasActiveFilters}
@@ -360,15 +469,21 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
               onColumnsMenuOpenChange={setColMenuOpen}
               hiddenColumns={hiddenColumns}
               hideLastSeen={hideLastSeen}
+              reviewedPinned={activeTab === 'review'}
+              offscreenColumnCount={offscreenColumnCount}
               fieldColumns={fieldColumns}
               metaFields={metaFields}
               onToggleColumn={toggleColumn}
+              onExportCsv={handleExportCsv}
+              canExport={canExportCsv}
+              isExporting={isExporting}
               onNewEvent={openNewEvent}
             />
           )}
 
           <BulkActionBar
             selectedCount={selectedCount}
+            selectedVisibleCount={selectedVisibleEventIds.length}
             matchingTotal={total}
             onSelectAllMatching={handleSelectAllMatching}
             isSelectingAll={isSelectingAll}
@@ -405,6 +520,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
           >
             <EventsTable
               tableScrollRef={tableScrollRef}
+              tableRef={tableRef}
               isTabChartOpen={isTabChartOpen}
               dndSensors={dndSensors}
               handleDragEnd={handleDragEnd}

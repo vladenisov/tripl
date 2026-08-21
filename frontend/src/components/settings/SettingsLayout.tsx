@@ -1,11 +1,15 @@
-import { useCallback, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ChevronLeft, LogOut, Menu } from 'lucide-react'
 import { useAuth } from '@/components/auth-context'
+import { useConfirm } from '@/hooks/useConfirm'
+import { SETTINGS_CONTENT_ID } from './landmarks'
 import { visibleGroupsAll } from './nav'
+import { SettingsCommandPalette } from './settings-palette'
+import { UnsavedChangesProvider, type UnsavedWork } from './unsaved-changes'
+import type { Project } from '@/types'
 
 const RAIL_TITLE_ID = 'settings-rail-title'
-const SETTINGS_CONTENT_ID = 'settings-content'
 
 /**
  * Full-viewport takeover shell for the Settings area (Linear/Vercel pattern).
@@ -20,23 +24,25 @@ const SETTINGS_CONTENT_ID = 'settings-content'
  */
 export function SettingsLayout({
   activePath,
-  onNavigate,
   backHref,
   projectName,
+  projects = [],
   children,
 }: {
   /** Current section path (e.g. 'project/general'). */
   activePath: string
-  /** Navigate to a section path. */
-  onNavigate: (path: string) => void
   /** Where "Back to tripl" returns to. */
   backHref: string
   /** Active project name, used to personalize the Project group sub-label. */
   projectName?: string
+  /** Workspace projects, offered as palette destinations. Already fetched by
+   *  SettingsArea, so the palette never issues a query of its own. */
+  projects?: readonly Project[]
   children: ReactNode
 }) {
   const auth = useAuth()
   const navigate = useNavigate()
+  const { confirm, dialog } = useConfirm()
   const isOwner = auth.user?.role === 'owner'
 
   // Personalize group sub-labels with live identity, matching the mockup
@@ -58,16 +64,94 @@ export function SettingsLayout({
   // pin the rail to static flow regardless of this flag.
   const [railOpen, setRailOpen] = useState(false)
   const closeRail = useCallback(() => setRailOpen(false), [])
-  const navigateAndCloseRail = useCallback(
-    (path: string) => {
-      setRailOpen(false)
-      onNavigate(path)
-    },
-    [onNavigate],
-  )
+
+  // Draft held by the section currently rendered in the content column, so the
+  // rail can warn before it navigates that draft out of existence (tripl-l8v2).
+  const [unsaved, setUnsaved] = useState<UnsavedWork | null>(null)
+  const registerUnsaved = useCallback((work: UnsavedWork | null) => setUnsaved(work), [])
+  const unsavedChanges = useMemo(() => ({ registerUnsaved }), [registerUnsaved])
+
+  /**
+   * The draft that leaving for `settingsPath` would discard — null for a
+   * destination that keeps it, or when there is none. `null` as the path means
+   * leaving the settings area entirely, which no draft survives.
+   *
+   * The predicate lives here alone so that every way out of the takeover asks
+   * the same question: the rail, the palette and Sign out all used to answer it
+   * separately, and two of them answered "no" unconditionally (tripl-l8v2).
+   */
+  const draftAtRisk = (settingsPath: string | null): UnsavedWork | null => {
+    if (!unsaved) return null
+    if (settingsPath !== null && unsaved.keptBy(settingsPath)) return null
+    return unsaved
+  }
+
+  /** Resolves true when leaving is safe, or once the user has accepted the loss. */
+  const confirmLeave = async (settingsPath: string | null): Promise<boolean> => {
+    const work = draftAtRisk(settingsPath)
+    if (!work) return true
+    const leave = await confirm({
+      title: 'Leave with unsaved changes?',
+      message: work.message,
+      confirmLabel: 'Leave',
+      variant: 'danger',
+    })
+    if (leave) setUnsaved(null)
+    return leave
+  }
+
+  /**
+   * Intercept a rail link only when following it would discard unsaved work.
+   * Modified clicks (new tab / new window) are left to the browser — the whole
+   * point of rendering real anchors here was to make those work (tripl-wd66).
+   */
+  const guardLeave = (
+    event: MouseEvent<HTMLAnchorElement>,
+    href: string,
+    settingsPath: string | null,
+  ) => {
+    closeRail()
+    if (event.defaultPrevented || event.button !== 0) return
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    if (!draftAtRisk(settingsPath)) return
+
+    event.preventDefault()
+    void confirmLeave(settingsPath).then((leave) => {
+      if (leave) navigate(href)
+    })
+  }
+
+  /** The palette's way out: no anchor to intercept, same predicate. */
+  const leaveTo = (href: string, settingsPath: string | null) => {
+    closeRail()
+    void confirmLeave(settingsPath).then((leave) => {
+      if (leave) navigate(href)
+    })
+  }
+
+  /** Signing out unmounts the section too, so it is a leave like any other. */
+  const signOut = () => {
+    void confirmLeave(null).then((leave) => {
+      if (leave) void auth.logout().then(() => navigate('/auth'))
+    })
+  }
 
   return (
     <div className="relative flex h-screen overflow-hidden" style={{ background: 'var(--bg)' }}>
+      {dialog}
+      {/* Ctrl+K. The takeover mounts outside Layout, so the app palette's
+          provider never reached these 14 routes (tripl-wd66) — and mounting it
+          here would have bound it to `projects[0]`, since no /settings/* route
+          carries a :slug. This one is scoped to what the area actually knows,
+          and leaves through the same guard the rail uses. */}
+      <SettingsCommandPalette
+        activePath={activePath}
+        backHref={backHref}
+        isOwner={isOwner}
+        projects={projects}
+        onLeave={leaveTo}
+        onSignOut={signOut}
+      />
       {/* Same bypass block as the app shell — the settings rail is a ~20-stop
           repeated block on every settings page. */}
       <a href={`#${SETTINGS_CONTENT_ID}`} className="skip-link">
@@ -84,6 +168,7 @@ export function SettingsLayout({
         <div className="px-4 pb-2.5 pt-3.5">
           <Link
             to={backHref}
+            onClick={(event) => guardLeave(event, backHref, null)}
             className="-ml-1 inline-flex items-center gap-[7px] rounded-md px-2 py-1 pr-2 text-[12.5px] no-underline transition-colors"
             style={{ color: 'var(--fg-muted)' }}
             onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--fg)')}
@@ -128,14 +213,18 @@ export function SettingsLayout({
                 {group.items.map((item) => {
                   const active = item.path === activePath
                   const Icon = item.icon
+                  const href = `/settings/${item.path}`
                   return (
-                    <button
+                    // A real anchor, not a button: as buttons none of these 14
+                    // destinations could be cmd-clicked into a new tab,
+                    // middle-clicked, hovered for a URL or copied (tripl-wd66).
+                    <Link
                       key={item.id}
-                      type="button"
+                      to={href}
                       aria-current={active ? 'page' : undefined}
                       aria-label={item.label}
-                      onClick={() => navigateAndCloseRail(item.path)}
-                      className="flex items-center gap-2 rounded-md px-[9px] py-[7px] text-left text-[12.5px] font-medium transition-colors"
+                      onClick={(event) => guardLeave(event, href, item.path)}
+                      className="flex items-center gap-2 rounded-md px-[9px] py-[7px] text-left text-[12.5px] font-medium no-underline transition-colors"
                       style={{
                         // Match the app shell: the main sidebar marks the active
                         // nav item with --surface-hover, so this takeover shell
@@ -156,7 +245,7 @@ export function SettingsLayout({
                         style={{ color: active ? 'var(--accent)' : 'var(--fg-subtle)' }}
                       />
                       <span className="flex-1">{item.label}</span>
-                    </button>
+                    </Link>
                   )
                 })}
               </div>
@@ -191,9 +280,7 @@ export function SettingsLayout({
             title={auth.isLoggingOut ? 'Signing out…' : 'Sign out'}
             aria-label="Sign out"
             disabled={auth.isLoggingOut}
-            onClick={() => {
-              void auth.logout().then(() => navigate('/auth'))
-            }}
+            onClick={signOut}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors disabled:opacity-50"
             style={{ color: 'var(--fg-subtle)' }}
             onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--fg)')}
@@ -221,9 +308,12 @@ export function SettingsLayout({
         className="min-w-0 flex-1 overflow-y-auto focus:outline-none"
       >
         {/* Phone-only header: the only way back to the rail once it is
-            off-canvas. Hidden from md up, where the rail is always visible. */}
+            off-canvas. Hidden from md up, where the rail is always visible.
+            Pinned to 52px so a section can park its own sticky bar directly
+            below it instead of underneath it (ServiceSettingsPage's Save row
+            uses `top-[52px] md:top-0`). */}
         <div
-          className="sticky top-0 z-20 flex items-center gap-2 px-4 py-2.5 md:hidden"
+          className="sticky top-0 z-20 flex h-[52px] items-center gap-2 px-4 md:hidden"
           style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}
         >
           <button
@@ -239,7 +329,7 @@ export function SettingsLayout({
           <span className="text-[13px] font-semibold">Settings</span>
         </div>
         <div className="mx-auto max-w-[768px] px-4 pb-24 pt-6 sm:px-6 md:px-10 md:pt-10">
-          {children}
+          <UnsavedChangesProvider value={unsavedChanges}>{children}</UnsavedChangesProvider>
         </div>
       </main>
     </div>

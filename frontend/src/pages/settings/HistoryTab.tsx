@@ -101,7 +101,11 @@ export function HistoryTab({ slug }: { slug: string }) {
         </Button>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+      {/* 2:3, not 1:2. A revision's identity is its summary — product-generated
+          ones read "Base snapshot for branch '<name>'" (~300px) — and at 1fr the
+          list card was ~250px, clipping the branch name mid-word while the diff
+          card next to it held one empty-state sentence in ~590px (tripl-lzge). */}
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <Card>
           <CardContent className="p-0">
             {listQuery.isLoading ? (
@@ -184,6 +188,13 @@ function RevisionRow({
   selected: boolean
   onSelect: () => void
 }) {
+  const metaLine = [
+    formatDateTime(rev.created_at),
+    `${rev.entity_counts.event_types} types`,
+    `${rev.entity_counts.fields} fields`,
+    `${rev.entity_counts.events} events`,
+  ].join(' · ')
+
   return (
     <li>
       <button
@@ -195,14 +206,29 @@ function RevisionRow({
       >
         <GitBranch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-xs font-medium">
+          {/* Wraps instead of truncating. Widening the card to 2fr was not
+              enough on its own: at 1512px the row is ~355px and the
+              product-generated summary "Base snapshot for branch '<name>'"
+              still overran it, so one `truncate` line clipped to "Base snapshot
+              for branch 'feature/checkout-f…" — losing the branch name, which
+              is the only identity the row carries and the only thing on the
+              page that names it (tripl-lzge). Two lines hold roughly 90
+              characters; `break-words` keeps an unbroken branch name inside the
+              card, and the tooltip stays as the fallback for a summary longer
+              than that. */}
+          <div
+            className="line-clamp-2 break-words text-xs font-medium"
+            title={rev.summary || undefined}
+          >
             {rev.summary || <span className="text-muted-foreground">(no summary)</span>}
           </div>
-          <div className="text-[10px] text-muted-foreground tnum">
-            {formatDateTime(rev.created_at)}
-            {' · '}
-            {rev.entity_counts.event_types} types · {rev.entity_counts.fields} fields ·{' '}
-            {rev.entity_counts.events} events
+          {/* One `truncate` line rather than a wrapping one: as flowing text the
+              metadata broke mid-list and left a dangling "·" as the last glyph
+              of a line, which reads as a formatting fault (tripl-lzge). At
+              ~10px the whole string is ~280px and fits; the ellipsis is the
+              fallback, and `title` keeps it readable either way. */}
+          <div className="truncate text-[10px] text-muted-foreground tnum" title={metaLine}>
+            {metaLine}
           </div>
         </div>
         {selected && <ChevronRight className="mt-1 h-3 w-3 text-muted-foreground" />}

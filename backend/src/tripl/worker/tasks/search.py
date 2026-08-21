@@ -235,6 +235,30 @@ def reindex_stale_search_documents() -> dict[str, int]:
         session.close()
 
 
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="tripl.worker.tasks.search.reindex_search_branch",
+)
+def reindex_search_branch(project_id: str, branch_id: str) -> dict[str, int]:
+    """Rebuild ONE named branch's index, off the request path (tripl-zbv0).
+
+    This is what the search read path enqueues the first time this process
+    searches a branch that has never been indexed (see
+    ``search_service._ensure_index_exists``); before it existed the read path had
+    nothing to hand the work to and built the index inline, inside a GET.
+
+    The sweep above cannot stand in for it: it selects on ``builder_version``, so
+    it only ever sees branches that already have rows, and a never-indexed branch
+    has none. Nothing here is scheduled by beat — one enqueue per branch, from
+    the reader that noticed.
+    """
+    session = _get_sync_session()
+    try:
+        reindex_branch_from_worker(session, uuid.UUID(project_id), uuid.UUID(branch_id))
+        return {"branches_reindexed": 1}
+    finally:
+        session.close()
+
+
 # Docs stuck in `pending` longer than this are stranded: the follow-up queue
 # message was lost (broker/worker down at enqueue time) or the batch retries
 # were exhausted. The beat chaser below re-queues one embed task per branch.

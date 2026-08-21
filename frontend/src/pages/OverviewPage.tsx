@@ -1,5 +1,5 @@
 import { Link, useParams } from 'react-router-dom'
-import { useQueries, useQuery } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import {
   AlertTriangle,
   Bell,
@@ -11,10 +11,7 @@ import {
 import { activityApi } from '@/api/activity'
 import { ApiError } from '@/api/client'
 import { dataSourcesApi } from '@/api/dataSources'
-import { eventsApi } from '@/api/events'
-import { eventTypesApi } from '@/api/eventTypes'
 import { metricsApi } from '@/api/metrics'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { projectsApi } from '@/api/projects'
 import NotFoundPage from '@/pages/NotFoundPage'
 import { ErrorState } from '@/components/error-state'
@@ -26,18 +23,21 @@ import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { PageHead, Panel } from '@/components/settings/kit'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useTheme } from '@/components/theme-provider'
+import { formatIncidentCount } from '@/lib/alertStatus'
 import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
 import { coverageTone, dataSourceHealthLexeme, type StatusLexeme } from '@/lib/statusLexicon'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
 import { selectSignificantSignals } from '@/lib/signalMagnitude'
 import { friendlyScanError } from '@/lib/scanError'
-import { useActiveBranchId } from '@/hooks/useBranch'
 import { useExpandedSignals } from '@/hooks/useExpandedSignals'
+import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
 import {
-  signalScopeLabel as sharedSignalScopeLabel,
-  type NameMap,
+  signalScopeLabel,
+  signalScopeRefLabel,
+  unnamedScopeLabel,
 } from '@/lib/signalScope'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type {
@@ -59,10 +59,16 @@ const ACTIVITY_LIMIT = 8
 // A successful source connection test older than this is shown as "stale" rather
 // than a confident "healthy" — an old green check is misleading (issue M1).
 const SOURCE_HEALTH_STALE_MS = 24 * 60 * 60 * 1000
+// The volume card asked for the scan's ENTIRE metric history — the endpoint's
+// from/to simply were never passed — so it was still fetching 2.2 s after every
+// other panel on the page had rendered (tripl-jfjt). Seven days matches the
+// documented default window for project-total charts.
+const VOLUME_WINDOW_DAYS = 7
+const VOLUME_WINDOW_MS = VOLUME_WINDOW_DAYS * 24 * 60 * 60 * 1000
+const VOLUME_SUBTITLE = 'One scan — not the project’s combined volume across all scans.'
 
 export default function OverviewPage() {
   const { slug } = useParams<{ slug: string }>()
-  const branchId = useActiveBranchId()
   const { chartStyle } = useTheme()
   // Adaptive fallback cadence: the live stream refreshes signals/activity via the
   // invalidation map, so poll only while the stream is unavailable.
@@ -73,12 +79,19 @@ export default function OverviewPage() {
     queryFn: () => projectsApi.get(slug!),
     enabled: !!slug,
   })
+  // A live bound rather than a mount-time snapshot, so a long-open tab keeps
+  // asking for the current 7 days (tripl-jfm3.114).
+  const volumeRange = useLiveTimeRange(VOLUME_WINDOW_MS)
   // The project query is the single authority on whether the slug exists. Gate
   // every project-scoped widget query on its success so they never fan out
   // 404s against a nonexistent project (issue .9).
   const volumeQuery = useQuery({
-    queryKey: ['overview', 'volume', slug],
-    queryFn: () => metricsApi.getProjectTotalMetrics(slug!),
+    // The window length is in the key but its moving bounds are NOT: every
+    // refetch reads the live range, while keying on `to` would mint a fresh
+    // cache entry — and drop the card back to its skeleton — every five
+    // minutes. Same split as MonitoringDetailPage's metricsQuery.
+    queryKey: ['overview', 'volume', slug, VOLUME_WINDOW_DAYS],
+    queryFn: () => metricsApi.getProjectTotalMetrics(slug!, volumeRange),
     enabled: !!slug && projectQuery.isSuccess,
     staleTime: 60_000,
   })
@@ -106,28 +119,6 @@ export default function OverviewPage() {
     staleTime: 30_000,
     refetchInterval,
   })
-  // Metric-scope signals carry only the definition id; the catalog list resolves
-  // it to a display name for the signals rail (issue .17). Shares the
-  // 'metrics-catalog' key prefix so catalog mutations invalidate this copy too.
-  // Purely additive — a failed/pending fetch just leaves the short-ref fallback.
-  const metricsCatalogQuery = useQuery({
-    queryKey: ['metrics-catalog', slug, 'names'],
-    queryFn: () => metricsCatalogApi.list(slug!),
-    enabled: !!slug && projectQuery.isSuccess,
-    staleTime: 60_000,
-  })
-  // Same pattern for the event-type scope, which dominates the expanded signal
-  // set (issue tripl-yfsj.16). Key, branch argument and staleTime match
-  // AnomaliesPage's exactly so the two pages share one cache entry instead of
-  // each fetching the catalog. Deliberately no `refetchInterval`: names are
-  // near-static and must not inherit the signals poll. Event-scope names are
-  // resolved per signal further down rather than by listing the catalog.
-  const eventTypesQuery = useQuery({
-    queryKey: ['eventTypes', slug, branchId],
-    queryFn: () => eventTypesApi.list(slug!, branchId),
-    enabled: !!slug && projectQuery.isSuccess,
-    staleTime: 60_000,
-  })
   const sourcesQuery = useQuery({
     queryKey: dataSourcesKey(),
     queryFn: dataSourcesApi.list,
@@ -145,43 +136,6 @@ export default function OverviewPage() {
   // the capped panel previews the top anomalies.
   const signals = selectSignificantSignals(signalsQuery.data)
   const activity = activityQuery.data ?? []
-  // Only the first SIGNAL_LIMIT rows are rendered, so only their event ids need
-  // a name. Fetching them one by one replaces a `GET /events?limit=10000` that
-  // shipped the whole 2,413-row catalog (2.7 MB / ~3 s) purely to label six rows,
-  // leaving raw uuid stubs on the landing route until it landed (tripl-jfm3.25).
-  // The key matches EventsPage's single-event key so the two share one cache
-  // entry.
-  const eventSignalRefs = [
-    ...new Set(
-      signals
-        .slice(0, SIGNAL_LIMIT)
-        .filter((s) => s.scope_type === 'event')
-        .map((s) => s.scope_ref),
-    ),
-  ]
-  const eventNameEntries = useQueries({
-    queries: eventSignalRefs.map((eventId) => ({
-      queryKey: ['event', slug, branchId, eventId],
-      queryFn: () => eventsApi.get(slug!, eventId, branchId),
-      enabled: !!slug && projectQuery.isSuccess,
-      staleTime: 60_000,
-    })),
-    combine: (results) =>
-      results.flatMap((result) =>
-        result.data ? ([[result.data.id, result.data.name]] as [string, string][]) : [],
-      ),
-  })
-  // Resolve metric-scope signals to their catalog display name (issue .17), and
-  // event-type / event scopes to theirs (issue tripl-yfsj.16). Every map is
-  // additive: an empty one only costs the short-ref fallback label, so the panel
-  // still renders the moment signals arrive.
-  const metricNames: NameMap = new Map(
-    (metricsCatalogQuery.data?.items ?? []).map((m) => [m.id, m.display_name]),
-  )
-  const eventTypeNames: NameMap = new Map(
-    (eventTypesQuery.data ?? []).map((et) => [et.id, et.display_name]),
-  )
-  const eventNames: NameMap = new Map(eventNameEntries)
   // Scope the Source-health rail to this project: workspace-global sources
   // (project_id == null) plus sources owned by the current project. Without this
   // a demo project's project-scoped synthetic source leaks into unrelated
@@ -211,6 +165,15 @@ export default function OverviewPage() {
   // events a legacy/backfill scan also collected), so it names that scan instead
   // of claiming to be the project total (tripl-jfm3.20).
   const volumeScanName = volumeQuery.data?.scan_config_name ?? null
+  // Present exactly when a scan config was resolved, which is what separates
+  // "this scan collected nothing in the window" from "nothing collects at all"
+  // — the backend returns a bare empty series with no scan id in the second
+  // case (metrics_service.get_project_total_metrics).
+  const volumeScanConfigId = volumeQuery.data?.scan_config_id ?? null
+  // `isPending`, not `isLoading`: while the query waits on the projectQuery gate
+  // it is pending but NOT fetching, so an `isLoading` check let the card claim
+  // "No volume data yet." before it had even asked (tripl-jfjt).
+  const isVolumePending = volumeQuery.isPending && !projectQuery.isError
 
   // A nonexistent slug is a 404 on the project query itself: replace the whole
   // widget grid with the app's full-page not-found (issue .9). Non-404 project
@@ -335,12 +298,17 @@ export default function OverviewPage() {
           tripl-jfm3.20, where it plotted 2.4 % of windy-ios's volume directly
           above a "Top events" row 12× larger. */}
       <Panel
-        title={volumeScanName ? `Volume · ${volumeScanName}` : 'Volume'}
-        subtitle={
+        // The window is in the title because the card is capped at it and says
+        // so nowhere else — the caption reads "latest bucket · N buckets" and
+        // the sibling panel below already names its own ("Top events · 48h").
+        title={
           volumeScanName
-            ? 'One scan — not the project’s combined volume across all scans.'
-            : undefined
+            ? `Volume · ${volumeScanName} · ${VOLUME_WINDOW_DAYS}d`
+            : `Volume · ${VOLUME_WINDOW_DAYS}d`
         }
+        // Held through the pending state as well, so the header keeps its second
+        // line instead of growing one when the series lands (tripl-jfjt).
+        subtitle={volumeScanName || isVolumePending ? VOLUME_SUBTITLE : undefined}
       >
         <div className="p-4">
         {volumeQuery.isError && (
@@ -354,9 +322,30 @@ export default function OverviewPage() {
             compact
           />
         )}
-        {!volumeQuery.isError && volumePoints.length === 0 && (
+        {!volumeQuery.isError && isVolumePending && <VolumeSkeleton />}
+        {!volumeQuery.isError && !isVolumePending && volumePoints.length === 0 && (
+          // Two different facts, and the card used to report only the second.
+          // A scan whose last bucket predates the window has months of history
+          // and nothing here — that is a scan that stopped, the state the
+          // failing-scan chip above exists to surface, not an empty project.
+          // The drilldown carries a range selector, so it can show the rest.
           <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
-            {volumeQuery.isLoading ? 'Loading…' : 'No volume data yet.'}
+            {volumeScanConfigId ? (
+              <>
+                No volume in the last {VOLUME_WINDOW_DAYS} days.{' '}
+                <Link
+                  to={getMonitoringPath(slug!, {
+                    scope_type: 'project_total',
+                    scope_ref: volumeScanConfigId,
+                  })}
+                  style={{ color: 'var(--accent)' }}
+                >
+                  See this scan’s full history
+                </Link>
+              </>
+            ) : (
+              'No volume data yet.'
+            )}
           </div>
         )}
         {volumePoints.length > 0 && (
@@ -478,9 +467,6 @@ export default function OverviewPage() {
                 key={`${signal.scope_type}:${signal.scope_ref}`}
                 slug={slug}
                 signal={signal}
-                metricNames={metricNames}
-                eventTypeNames={eventTypeNames}
-                eventNames={eventNames}
               />
             ))}
           </div>
@@ -550,6 +536,31 @@ export default function OverviewPage() {
 }
 
 
+/**
+ * The loaded card's shape, held while the series is in flight.
+ *
+ * The panel is the first content under the KPI strip, and it sat on a bare
+ * "Loading…" in an empty box for 2.2 s after the KPI numbers, the 14d sparkline,
+ * Top events, Active signals and Recent activity had all rendered — pending, but
+ * reading as broken. The blocks match the loaded layout (figure + caption beside
+ * a 320×48 chart) so the card reserves its height (tripl-jfjt).
+ */
+function VolumeSkeleton() {
+  return (
+    <div className="flex items-end gap-4">
+      <div className="flex flex-col gap-1">
+        <Skeleton className="h-7 w-24" />
+        <Skeleton className="h-3 w-32" />
+      </div>
+      <Skeleton className="h-12 w-[320px] max-w-full" />
+      {/* Skeleton is aria-hidden, so the pending state still needs to be said. */}
+      <span role="status" className="sr-only">
+        Loading volume…
+      </span>
+    </div>
+  )
+}
+
 // Text alternative for the volume sparkline (issue M8): the SVG itself is
 // aria-hidden, so the surrounding role="img" needs an accessible summary. Names
 // the scan the series is scoped to rather than calling it the project
@@ -576,37 +587,22 @@ function newEventsTrendLabel(counts: number[]): string {
   return `New events added per day over the last 14 days. Latest ${latest.toLocaleString()}, range ${min.toLocaleString()} to ${max.toLocaleString()}.`
 }
 
-/** Entity id → display name, for labelling metric / event-type / event signals. */
-
-// Thin adapter over the shared label (issues .17, tripl-yfsj.16, tripl-jfm3.120):
-// every named scope carries only its id, so an anomaly must read
-// "<Scope> · <name>" instead of a raw "Event <uuid8>".
-function signalScopeLabel(
-  signal: MonitoringSignal,
-  metricNames: NameMap,
-  eventTypeNames: NameMap,
-  eventNames: NameMap,
-): string {
-  return sharedSignalScopeLabel(signal, { metricNames, eventTypeNames, eventNames })
-}
-
 function SignalRow({
   slug,
   signal,
-  metricNames,
-  eventTypeNames,
-  eventNames,
 }: {
   slug: string
   signal: MonitoringSignal
-  metricNames: NameMap
-  eventTypeNames: NameMap
-  eventNames: NameMap
 }) {
+  const verb = signal.direction === 'drop' ? 'Drop' : 'Spike'
+  const scopeLabel = signalScopeLabel(signal)
   // Full text drives both the visible label and its hover tooltip so a long
   // scope name (e.g. page_value_question_page_value_…) stays readable when the
-  // row ellipsizes.
-  const signalSummary = `${signal.direction === 'drop' ? 'Drop' : 'Spike'} on ${signalScopeLabel(signal, metricNames, eventTypeNames, eventNames)}`
+  // row ellipsizes. When the server could not name the scope the tooltip is
+  // where its ref goes — visible, that hex prefix reads as a name and puts a
+  // second name on an incident the activity rail already named (tripl-y4wt).
+  const signalSummary = `${verb} on ${scopeLabel ?? unnamedScopeLabel(signal)}`
+  const signalTitle = `${verb} on ${scopeLabel ?? signalScopeRefLabel(signal)}`
   return (
     <Link
       to={getMonitoringPath(slug, signal)}
@@ -614,11 +610,11 @@ function SignalRow({
       style={{ color: 'inherit' }}
     >
       <Dot tone={signal.direction === 'drop' ? 'warning' : 'danger'} pulse size={7} />
-      <span className="flex-1 truncate text-[12px] font-medium" title={signalSummary}>
+      <span className="flex-1 truncate text-[12px] font-medium" title={signalTitle}>
         {signalSummary}
       </span>
       <span className="mono shrink-0 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-        {signal.actual_count.toLocaleString()} vs {Math.round(signal.expected_count).toLocaleString()}
+        {signal.actual_count.toLocaleString()} vs {formatIncidentCount(signal.expected_count)}
       </span>
       <span
         className="mono w-[52px] shrink-0 text-right text-[11px]"

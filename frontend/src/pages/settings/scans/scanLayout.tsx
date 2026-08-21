@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useId, type ReactNode } from 'react'
 import { Database } from 'lucide-react'
 import type { DbType } from '@/types'
 import { cn } from '@/lib/utils'
@@ -199,19 +199,39 @@ export function Field({
 }: {
   label: string
   hint?: string
-  id?: string
+  /**
+   * The id of the control this row's label names. `false` for a row whose
+   * content is not a labelable element — the Base query row holds a CodeMirror
+   * contenteditable that carries its own `ariaLabel`, the Preview row holds no
+   * control at all — where a `<label htmlFor>` can only dangle. Same escape
+   * hatch as the settings kit's Field (components/settings/kit.tsx).
+   */
+  id?: string | false
   children: ReactNode
   last?: boolean
 }) {
+  const generatedId = useId()
+  // `false` names the row as a group instead, so what it does hold is still
+  // announced under "Base query" / "Preview" rather than under nothing.
+  const captionId = id === false ? generatedId : undefined
+  const controlId = id === false ? undefined : id
   return (
     <div
+      role={captionId ? 'group' : undefined}
+      aria-labelledby={captionId}
       className={cn('flex items-start gap-6 px-[18px] py-4', !last && 'border-b')}
       style={{ borderColor: 'var(--border-subtle)' }}
     >
       <div className="w-[232px] shrink-0 pt-1.5">
-        <label htmlFor={id} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-          {label}
-        </label>
+        {captionId ? (
+          <span id={captionId} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+            {label}
+          </span>
+        ) : (
+          <label htmlFor={controlId} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+            {label}
+          </label>
+        )}
         {hint && (
           <div className="mt-1 text-xs leading-snug" style={{ color: 'var(--fg-subtle)' }}>
             {hint}

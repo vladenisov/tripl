@@ -5,6 +5,7 @@ import {
   Braces,
   GitBranch,
   GitCompare,
+  History,
   LineChart,
   Link2,
   ScrollText,
@@ -128,6 +129,20 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           icon: GitBranch,
           href: `${base}/settings/branches`,
           match: (p) => p.startsWith(`${base}/settings/branches`),
+        },
+        {
+          id: 'history',
+          label: 'Plan history',
+          icon: History,
+          href: `${base}/settings/history`,
+          // The immutable snapshot trail of the merges made on Plan branches
+          // directly above. It is the one settings tab the IA redesign never
+          // gave a sidebar home, so deleting the old tab strip left a fully
+          // built page — 13 revisions and a "Snapshot now" action on the
+          // production project — with zero inbound links anywhere in the
+          // product and no nav item to highlight while you stood on it
+          // (tripl-ebib).
+          match: (p) => p.startsWith(`${base}/settings/history`),
         },
       ],
     },
@@ -254,19 +269,45 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
 }
 
 /**
+ * Sub-surfaces a nav item MATCHES but does not NAME, keyed by the path suffix
+ * under `/p/:slug`.
+ *
+ * `/settings/monitoring` is the detection settings, and detection is what
+ * Anomalies owns, so the Anomalies item claims the path (see its match above)
+ * and the sidebar highlights Anomalies while you stand on it. That is right, and
+ * it left the breadcrumb terminal reading "Anomalies" in bold over a page headed
+ * "Detection settings": both wayfinding controls named a different page than the
+ * one displayed, so arriving from the Anomalies page's own link produced no
+ * on-screen confirmation you had navigated at all (tripl-34tw).
+ *
+ * Deliberately tiny. A leaf is only correct where the sub-surface has a name of
+ * its own; tabs, detail ids and editors legitimately inherit their surface's
+ * name and must stay out, or every event-type tab would rewrite the trail.
+ */
+const NAV_SUBSURFACE_LEAVES: Record<string, string> = {
+  '/settings/monitoring': 'Detection settings',
+}
+
+/**
  * Resolve which nav area (group) and item a project-scoped pathname belongs to,
  * for breadcrumbs like "project › Plan › Events". Returns null when no grouped
  * nav item matches (e.g. project general settings, overview).
+ *
+ * `leaf` is set only when the matched item does not name the page you are on:
+ * render it as the you-are-here terminal with `label` as a crumb above it
+ * ("project › Observe › Anomalies › Detection settings"), so the trail keeps
+ * naming the surface that owns the route AND the page in front of the reader.
  */
 export function resolveNavLocation(
   slug: string,
   pathname: string,
-): { area: string; label: string } | null {
+): { area: string; label: string; leaf?: string } | null {
+  const base = `/p/${slug}`
   for (const group of buildNavGroups(slug, undefined)) {
     for (const item of group.items) {
-      if (item.match(pathname)) {
-        return { area: group.label, label: item.label }
-      }
+      if (!item.match(pathname)) continue
+      const leaf = NAV_SUBSURFACE_LEAVES[pathname.slice(base.length)]
+      return { area: group.label, label: item.label, ...(leaf ? { leaf } : {}) }
     }
   }
   return null

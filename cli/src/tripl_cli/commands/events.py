@@ -99,10 +99,20 @@ def _register_list(
     )
     parser.add_argument("--tag", dest="tag", metavar="TAG", help="exact tag match")
     parser.add_argument(
+        "--field-value",
+        dest="field_value",
+        metavar="TEXT",
+        help="substring match on any field value, e.g. a screen name (case-insensitive)",
+    )
+    parser.add_argument(
         "--meta-value",
         dest="meta_value",
         metavar="TEXT",
-        help="exact match on any meta value, e.g. a ticket key",
+        # "substring", not "exact": the route compares with ILIKE '%value%', so
+        # `--meta-value TRIPL-4` also keeps TRIPL-412. This line claimed "exact
+        # match" until tripl-nhj0 put the sibling --field-value next to it and
+        # the two would have described one ILIKE two different ways.
+        help="substring match on any meta value, e.g. a ticket key (case-insensitive)",
     )
     parser.add_argument(
         "--event-type",
@@ -118,6 +128,31 @@ def _register_list(
         help=(
             "keep only events the warehouse has not carried for this many days, "
             f"0..{events_api.SILENT_SINCE_DAYS_MAX}"
+        ),
+    )
+    # Two flags rather than one taking a value: the axis is tri-state and its
+    # third state is "leave the parameter off", which `--reviewed BOOL` could
+    # only spell as a magic word. Mutually exclusive so giving both is exit 2
+    # rather than a silent last-one-wins, and `default=None` on both is what
+    # keeps `reviewed=` off the wire when neither was given.
+    review = parser.add_mutually_exclusive_group()
+    review.add_argument(
+        "--reviewed",
+        dest="reviewed",
+        action="store_const",
+        const=True,
+        default=None,
+        help="keep only events already marked reviewed",
+    )
+    review.add_argument(
+        "--unreviewed",
+        dest="reviewed",
+        action="store_const",
+        const=False,
+        default=None,
+        help=(
+            "keep only events not yet marked reviewed (an axis of its own: an "
+            "event can be marked reviewed and still sit at --status in_review)"
         ),
     )
     parser.add_argument(
@@ -137,6 +172,21 @@ def _register_list(
         help=(
             f"how many events to ask for, 1..{events_api.LIMIT_MAX} "
             f"(default: {events_api.LIMIT_DEFAULT})"
+        ),
+    )
+    # No `default=`, unlike --limit: omitting the flag leaves `order_by` off the
+    # wire so the route applies its own default, which is what keeps this CLI
+    # following the route rather than pinning today's answer. `choices=` costs
+    # the request a Literal mismatch would otherwise spend on a 422.
+    parser.add_argument(
+        "--order-by",
+        dest="order_by",
+        metavar="ORDER",
+        choices=events_api.ORDER_BY,
+        help=(
+            f"order the page by {'|'.join(events_api.ORDER_BY)} "
+            f"(default: {events_api.ORDER_BY_DEFAULT}, the authored catalog order; "
+            "volume ranks busiest-first by ingested volume over the last 24h)"
         ),
     )
     add_json(parser)
@@ -188,11 +238,14 @@ def run_list(args: argparse.Namespace, config: Config) -> int:
                     search=args.search,
                     status=list(args.status) if args.status else None,
                     tag=args.tag,
+                    field_value=args.field_value,
                     meta_value=args.meta_value,
                     event_type_id=args.event_type_id,
                     silent_since_days=args.silent_since_days,
+                    reviewed=args.reviewed,
                     offset=offset,
                     limit=limit,
+                    order_by=args.order_by,
                     branch=branch.id,
                 )
             )

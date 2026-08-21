@@ -11,7 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tripl.models.audit_log import AuditLog
 from tripl.models.project import Project
 from tripl.models.user import User
-from tripl.schemas.audit import AuditEntryResponse, AuditListResponse
+from tripl.schemas.audit import (
+    AuditEntryDetailResponse,
+    AuditEntryResponse,
+    AuditListResponse,
+)
 
 # Fields that must never make it into the audit payload — credentials, hashes,
 # anything you would not want to read back from the audit UI in cleartext.
@@ -143,10 +147,20 @@ async def list_entries(
         base = base.where(AuditLog.created_at < until)
         count_base = count_base.where(AuditLog.created_at < until)
 
+    # `created_at` alone is NOT a total order here. It is `server_default=now()`,
+    # i.e. Postgres `transaction_timestamp()`, so every row a batch writes shares
+    # one byte-identical value — the inbox bulk route (`record(..., commit=False)`
+    # in a loop) files up to 200 of them per click. LIMIT/OFFSET runs each page as
+    # its own top-N sort with a different bound, so ties are free to come out in a
+    # different order per page: paging through a tie group repeated some rows and
+    # made others unreachable. The primary key is unique, so appending it makes
+    # the order total and every page a slice of one sequence (tripl-5ydt).
     rows = (
         (
             await session.execute(
-                base.order_by(desc(AuditLog.created_at)).limit(limit).offset(offset)
+                base.order_by(desc(AuditLog.created_at), desc(AuditLog.id))
+                .limit(limit)
+                .offset(offset)
             )
         )
         .scalars()
@@ -157,3 +171,13 @@ async def list_entries(
         items=[AuditEntryResponse.model_validate(r) for r in rows],
         total=total,
     )
+
+
+async def get_entry(session: AsyncSession, entry_id: uuid.UUID) -> AuditEntryDetailResponse | None:
+    """One entry with the payload the list rows deliberately leave out.
+
+    ``None`` for an id that is not in the log, so the router can answer 404
+    rather than an empty body (tripl-5ydt).
+    """
+    row = await session.get(AuditLog, entry_id)
+    return AuditEntryDetailResponse.model_validate(row) if row is not None else None

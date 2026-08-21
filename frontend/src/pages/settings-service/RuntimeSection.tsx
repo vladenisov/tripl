@@ -1,6 +1,6 @@
 import type { ServiceSettings } from '@/types'
 import { Field, SCard, TextInput } from '@/components/settings/kit'
-import { ResetRow, SourceBadge } from './ServiceSettingsPrimitives'
+import { SourceBadge } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
 
@@ -8,18 +8,14 @@ export function RuntimeSection({
   form,
   settings,
   setField,
-  onReset,
-  resetting,
 }: {
   form: EditableSettings
   settings: ServiceSettings
   setField: (section: SectionKey, field: string, value: string | number | boolean) => void
-  onReset: () => void
-  resetting: boolean
 }) {
   return (
     <>
-      <SCard title="Server" footer={<ResetRow onReset={onReset} resetting={resetting} />}>
+      <SCard title="Server">
         <Field
           label="App base URL"
           hint="Used in emails, webhooks and the ingest endpoint."

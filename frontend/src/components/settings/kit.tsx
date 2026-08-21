@@ -4,7 +4,12 @@ import {
   useId,
 } from 'react'
 import { ChevronDown } from 'lucide-react'
-import { INPUT_BASE } from '@/components/settings/input-style'
+import {
+  FieldControlIdContext,
+  createFieldControlIdSlot,
+  useFieldControlId,
+} from '@/components/settings/field-control-id'
+import { INPUT_BASE, INPUT_DISABLED } from '@/components/settings/input-style'
 
 /**
  * Settings control kit — the shared form primitives for the full-takeover
@@ -121,6 +126,7 @@ export function SCard({
 }
 
 // ───────── Field row ─────────
+
 export function Field({
   label,
   labelRight,
@@ -137,12 +143,24 @@ export function Field({
   children: ReactNode
   stacked?: boolean
   last?: boolean
-  htmlFor?: string
+  /**
+   * The control this row's label names. `false` for a row that holds no
+   * labelable control at all — an avatar with two buttons, a role chip — where
+   * a generated `htmlFor` can only dangle.
+   */
+  htmlFor?: string | false
 }) {
   const generatedId = useId()
-  const effectiveFor = htmlFor ?? generatedId
+  const controlId = htmlFor === false ? null : (htmlFor ?? generatedId)
+  // Fresh per render so the id follows the row's current first control; the
+  // slot itself refuses to hand it to a second one (see field-control-id.ts).
+  const slot = controlId === null ? null : createFieldControlIdSlot(controlId)
   return (
     <div
+      // A row with no control is named as a group instead, so the two buttons
+      // or the chip inside it are still announced under "Avatar" / "Role".
+      role={controlId === null ? 'group' : undefined}
+      aria-labelledby={controlId === null ? generatedId : undefined}
       // Side-by-side label + control only from `sm` up. The 232px label gutter
       // plus its 24px gap left a phone's control column ~100px wide, so the
       // Name/Slug inputs measured 22px and ran off-screen (tripl-jfm3.40).
@@ -158,9 +176,15 @@ export function Field({
         style={stacked ? { marginBottom: 9 } : undefined}
       >
         <div className="flex items-center gap-2">
-          <label htmlFor={effectiveFor} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-            {label}
-          </label>
+          {controlId === null ? (
+            <span id={generatedId} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+              {label}
+            </span>
+          ) : (
+            <label htmlFor={controlId} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+              {label}
+            </label>
+          )}
           {labelRight}
         </div>
         {hint && (
@@ -169,7 +193,13 @@ export function Field({
           </div>
         )}
       </div>
-      <div className="min-w-0 flex-1">{children}</div>
+      <div className="min-w-0 flex-1">
+        {slot ? (
+          <FieldControlIdContext.Provider value={slot}>{children}</FieldControlIdContext.Provider>
+        ) : (
+          children
+        )}
+      </div>
     </div>
   )
 }
@@ -309,9 +339,10 @@ export function TextInput({
   'aria-label'?: string
   'aria-required'?: boolean
 }) {
+  const controlId = useFieldControlId(id)
   const input = (
     <input
-      id={id}
+      id={controlId}
       type={type}
       value={value}
       placeholder={placeholder}
@@ -322,37 +353,58 @@ export function TextInput({
       className={mono ? 'mono' : undefined}
       style={{
         ...INPUT_BASE,
+        // Before the affix branches, not after: INPUT_DISABLED rewrites the
+        // whole `border` shorthand and would put back the edge they remove.
+        ...(disabled ? INPUT_DISABLED : {}),
         ...(prefix
           ? { borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: 'none' }
           : {}),
         ...(suffix
           ? { borderTopRightRadius: 0, borderBottomRightRadius: 0, borderRight: 'none' }
           : {}),
-        ...(disabled ? { opacity: 0.6, cursor: 'not-allowed' } : {}),
       }}
     />
   )
   if (!prefix && !suffix) return input
   return (
     <div className="flex items-stretch">
-      {prefix && <Affix side="left">{prefix}</Affix>}
+      {prefix && (
+        <Affix side="left" disabled={disabled}>
+          {prefix}
+        </Affix>
+      )}
       {input}
-      {suffix && <Affix side="right">{suffix}</Affix>}
+      {suffix && (
+        <Affix side="right" disabled={disabled}>
+          {suffix}
+        </Affix>
+      )}
     </div>
   )
 }
 
-function Affix({ side, children }: { side: 'left' | 'right'; children: ReactNode }) {
+function Affix({
+  side,
+  children,
+  disabled,
+}: {
+  side: 'left' | 'right'
+  children: ReactNode
+  disabled?: boolean
+}) {
+  // The affix is glued to the input, so it has to take the same treatment:
+  // a live chip welded to a dashed dead box reads as neither.
+  const edge = disabled ? '1px dashed var(--border-strong)' : '1px solid var(--border)'
   return (
     <span
       className="mono flex items-center text-[12.5px]"
       style={{
         padding: '0 10px',
         color: 'var(--fg-subtle)',
-        background: 'var(--bg-sunken)',
-        border: '1px solid var(--border)',
-        borderLeft: side === 'left' ? '1px solid var(--border)' : 'none',
-        borderRight: side === 'right' ? '1px solid var(--border)' : 'none',
+        background: disabled ? 'transparent' : 'var(--bg-sunken)',
+        border: edge,
+        borderLeft: side === 'left' ? edge : 'none',
+        borderRight: side === 'right' ? edge : 'none',
         borderRadius: side === 'left' ? '7px 0 0 7px' : '0 7px 7px 0',
       }}
     >
@@ -381,8 +433,9 @@ export function TextArea({
   id?: string
   'aria-required'?: boolean
 }) {
+  const controlId = useFieldControlId(id)
   const props: TextareaHTMLAttributes<HTMLTextAreaElement> = {
-    id,
+    id: controlId,
     rows,
     value,
     placeholder,
@@ -404,7 +457,7 @@ export function TextArea({
         padding: '8px 10px',
         lineHeight: 1.5,
         resize: 'vertical',
-        ...(disabled ? { opacity: 0.6, cursor: 'not-allowed' } : {}),
+        ...(disabled ? INPUT_DISABLED : {}),
       }}
     />
   )
@@ -430,10 +483,11 @@ export function Select({
   'aria-required'?: boolean
   'aria-label'?: string
 }) {
+  const controlId = useFieldControlId(id)
   return (
     <div className="relative" style={{ maxWidth: 280 }}>
       <select
-        id={id}
+        id={controlId}
         value={value}
         disabled={disabled}
         aria-required={ariaRequired}
@@ -443,7 +497,7 @@ export function Select({
         style={{
           ...INPUT_BASE,
           paddingRight: 30,
-          ...(disabled ? { opacity: 0.6, cursor: 'not-allowed' } : {}),
+          ...(disabled ? INPUT_DISABLED : {}),
         }}
       >
         {options.map((o) =>
@@ -458,9 +512,11 @@ export function Select({
           ),
         )}
       </select>
+      {/* A disabled select still shows a chevron, so it gets dimmed to the
+          border scale — at hint brightness it kept promising a menu. */}
       <ChevronDown
         className="pointer-events-none absolute right-[11px] top-1/2 h-[13px] w-[13px] -translate-y-1/2"
-        style={{ color: 'var(--fg-subtle)' }}
+        style={{ color: disabled ? 'var(--border-strong)' : 'var(--fg-subtle)' }}
       />
     </div>
   )
@@ -490,12 +546,26 @@ export function RadioCards({
   /** Accessible name for the radio group (required for WCAG 4.1.2). */
   groupLabel?: string
 }) {
+  // Adopt the enclosing Field's id too, so its <label htmlFor> resolves to a
+  // real element instead of dangling (tripl-5gdg). `groupLabel` still supplies
+  // the accessible name — a <label> cannot name a non-labelable element.
+  const groupId = useFieldControlId()
   return (
     <div
+      id={groupId}
       role="radiogroup"
       aria-label={groupLabel}
       className="grid gap-2"
-      style={{ gridTemplateColumns: `repeat(${columns}, 1fr)` }}
+      // `repeat(N, 1fr)` reads like N equal tracks but is not: 1fr is
+      // minmax(auto, 1fr), and that `auto` floor is the item's min-content
+      // width. On Plan rules the three Case style cards each kept their longest
+      // unbreakable token ("order_completed", "orderCompleted", "Completed") and
+      // came out 145 / 141 / 111px inside a 393px control column — 413px of
+      // tracks, so the row spilled 19px past the panel padding every other
+      // control respects and the third card's right border landed outside the
+      // panel entirely (tripl-8fa6). A zero floor makes N siblings render at
+      // exactly 1/N and keeps the row inside its column.
+      style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
     >
       {options.map((o) => {
         const active = value === o.value
@@ -507,40 +577,51 @@ export function RadioCards({
             aria-checked={active}
             disabled={disabled}
             onClick={() => onChange?.(o.value)}
-            className="flex items-start gap-2.5 rounded-[9px] px-[13px] py-[11px] text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+            className="flex flex-col gap-0.5 rounded-[9px] px-[13px] py-[11px] text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60"
             style={{
               border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
               background: active ? 'var(--accent-soft)' : 'var(--bg)',
             }}
           >
-            <span
-              className="mt-px flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-full"
-              style={{ border: `1.5px solid ${active ? 'var(--accent)' : 'var(--border-strong)'}` }}
-            >
-              {active && (
-                <span
-                  className="h-[7px] w-[7px] rounded-full"
-                  style={{ background: 'var(--accent)' }}
-                />
-              )}
-            </span>
-            <span className="min-w-0">
+            <span className="flex items-start gap-2.5">
               <span
-                className="flex items-center gap-1.5 text-[12.5px] font-semibold"
+                className="mt-px flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-full"
+                style={{
+                  border: `1.5px solid ${active ? 'var(--accent)' : 'var(--border-strong)'}`,
+                }}
+              >
+                {active && (
+                  <span
+                    className="h-[7px] w-[7px] rounded-full"
+                    style={{ background: 'var(--accent)' }}
+                  />
+                )}
+              </span>
+              <span
+                className="flex min-w-0 items-center gap-1.5 text-[12.5px] font-semibold"
                 style={{ color: 'var(--fg)' }}
               >
                 {o.icon}
                 {o.label}
               </span>
-              {o.description && (
-                <span
-                  className="mt-0.5 block text-[11.5px] leading-[1.4]"
-                  style={{ color: 'var(--fg-subtle)' }}
-                >
-                  {o.description}
-                </span>
-              )}
             </span>
+            {o.description && (
+              // Full card width rather than indented under the label. Equal
+              // tracks alone do not make the row readable: at 3 columns in that
+              // same 393px column each card is 125px, and the 25px radio gutter
+              // took a third of the ~73px left for text — with the examples
+              // measuring 87-90px, every card wrapped its example (and
+              // "Title Case" wrapped its label too). Given the card's whole
+              // ~98px inner width, all three labels and examples fit on one line
+              // each, which is also what stops the row growing 48px of dead
+              // space under the two that did not wrap.
+              <span
+                className="block text-[11.5px] leading-[1.4]"
+                style={{ color: 'var(--fg-subtle)' }}
+              >
+                {o.description}
+              </span>
+            )}
           </button>
         )
       })}

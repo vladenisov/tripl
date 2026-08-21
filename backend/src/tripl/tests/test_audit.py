@@ -1,7 +1,12 @@
+import uuid
+from datetime import UTC, datetime
+
 import pytest
 from httpx import AsyncClient
 
+from tripl.models.audit_log import AuditLog
 from tripl.services import audit_service
+from tripl.tests.conftest import TestSessionLocal
 
 
 def test_redact_masks_alerting_destination_secrets() -> None:
@@ -68,9 +73,16 @@ async def test_audit_records_field_lifecycle(client: AsyncClient) -> None:
     assert {"field.create", "field.update", "field.delete"} <= actions
     # User email is denormalized for retention after user deletion.
     assert all(entry["user_email"] == "test@example.com" for entry in body["items"])
-    # Update payload captures only the fields the client actually changed.
+    # A list row carries NO payload. The tab renders one only for the row a
+    # reader expanded, so a page of blobs crossed the wire to be displayed
+    # nowhere (tripl-5ydt).
     update_entry = next(e for e in body["items"] if e["action"] == "field.update")
-    assert update_entry["payload"] == {"sensitivity": "pii"}
+    assert "payload" not in update_entry
+
+    # The detail route still reports exactly the fields the client changed.
+    detail = await client.get(f"/api/v1/audit/{update_entry['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["payload"] == {"sensitivity": "pii"}
 
 
 @pytest.mark.asyncio
@@ -93,7 +105,9 @@ async def test_audit_redacts_data_source_password(client: AsyncClient) -> None:
     assert audit.status_code == 200
     items = audit.json()["items"]
     assert len(items) == 1
-    payload = items[0]["payload"]
+    detail = await client.get(f"/api/v1/audit/{items[0]['id']}")
+    assert detail.status_code == 200
+    payload = detail.json()["payload"]
     assert payload["password"] == "***"
     assert payload["host"] == "localhost"
 
@@ -169,3 +183,86 @@ async def test_audit_covers_meta_field_variable_revision(client: AsyncClient) ->
         "variable.create",
         "plan_revision.create",
     } <= actions
+
+
+@pytest.mark.asyncio
+async def test_audit_paging_is_total_when_a_batch_shares_one_timestamp() -> None:
+    """One bulk action writes many rows under a single ``created_at``.
+
+    ``created_at`` is ``server_default=now()`` — ``transaction_timestamp()`` on
+    Postgres — so the inbox bulk route, which files one row per incident with
+    ``commit=False`` and commits once, stamps up to 200 rows identically. Ordering
+    on ``created_at`` alone leaves that tie group unordered, and each LIMIT/OFFSET
+    page is its own top-N sort with a different bound: rows could come back on two
+    pages and others on none. The ids here are fixed and ascending so descending-id
+    order is the reverse of insertion order — the assertion below fails on
+    insertion order, which is what an untied sort returns.
+    """
+    stamp = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
+    ids = [uuid.UUID(int=n) for n in range(1, 7)]
+
+    async with TestSessionLocal() as session:
+        for n, entry_id in enumerate(ids):
+            session.add(
+                AuditLog(
+                    id=entry_id,
+                    created_at=stamp,
+                    user_email="bulk@example.com",
+                    project_slug="audit-paging",
+                    action="alert_inbox.mute",
+                    target_type="alert_incident",
+                    target_name=f"incident-{n}",
+                    payload={},
+                )
+            )
+        await session.commit()
+
+        pages = [
+            await audit_service.list_entries(
+                session, project_slug="audit-paging", limit=2, offset=offset
+            )
+            for offset in (0, 2, 4)
+        ]
+
+    assert [page.total for page in pages] == [6, 6, 6]
+    seen = [entry.id for page in pages for entry in page.items]
+    # Every row reachable from exactly one page: nothing repeated, nothing lost.
+    assert sorted(seen) == sorted(ids)
+    assert seen == sorted(ids, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_audit_detail_is_owner_only(client: AsyncClient) -> None:
+    """The payload moved to its own route, and the gate had to move with it.
+
+    The feed is owner-only because entries carry the warehouse connection
+    details a direct read blanks for non-owners, and the ``base_query`` SQL
+    authoring a scan is owner-only to protect (test_rbac.py's
+    ``test_audit_log_is_owner_only``). Those fields now leave the API through
+    THIS route only, so an ungated get-one would reopen exactly that back door.
+    """
+    await _setup_project(client, "audit-gate")
+    listed = await client.get("/api/v1/audit?project_slug=audit-gate")
+    entry_id = listed.json()["items"][0]["id"]
+
+    # The conftest client registered first and is therefore the owner; the next
+    # registration defaults to editor.
+    await client.post("/api/v1/auth/logout")
+    register = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "audit-editor@example.com",
+            "password": "Password123!",
+            "name": "Audit Editor",
+        },
+    )
+    assert register.status_code == 201, register.text
+
+    denied = await client.get(f"/api/v1/audit/{entry_id}")
+    assert denied.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_audit_detail_reports_an_unknown_id_as_missing(client: AsyncClient) -> None:
+    resp = await client.get(f"/api/v1/audit/{uuid.uuid4()}")
+    assert resp.status_code == 404

@@ -12,6 +12,7 @@ import {
 
 export function BulkActionBar({
   selectedCount,
+  selectedVisibleCount,
   matchingTotal,
   onSelectAllMatching,
   isSelectingAll,
@@ -25,6 +26,15 @@ export function BulkActionBar({
   onClear,
 }: {
   selectedCount: number
+  /**
+   * How many of the selected events are among the rows currently loaded. The
+   * selection deliberately keeps ids that are off-screen so "Select all N
+   * matching" can sweep unloaded rows — but a hand-ticked selection orphaned by
+   * a narrowing filter or a tab switch got the same silence, leaving the bar
+   * reading "20 selected" over a table with nothing ticked and a total of 3
+   * (tripl-4i49). Omit when the two cannot differ.
+   */
+  selectedVisibleCount?: number
   /** Total events matching the current filters/tab (may exceed loaded rows). */
   matchingTotal?: number
   /** Select every matching event so one bulk action sweeps the whole queue. */
@@ -57,6 +67,11 @@ export function BulkActionBar({
       <span className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
         <span className="mono font-semibold" style={{ color: 'var(--fg)' }}>{selectedCount}</span> selected
       </span>
+      {selectedVisibleCount !== undefined && selectedVisibleCount < selectedCount && (
+        <span className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+          · <span className="mono">{selectedVisibleCount}</span> on screen
+        </span>
+      )}
       {canSelectAll && (
         <button
           type="button"

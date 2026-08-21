@@ -42,15 +42,26 @@ import { ColumnFilter, FilterableHead, type ColumnFilterType } from './ColumnFil
 import { eventsEmptyCopy, type EventsEmptyContext } from './emptyState'
 import { EventRow, type RowAction } from './EventRow'
 import { groupEventNames, type EventNameGroup } from './eventNameGroups'
+import { PINNED_EVENT_CELL_STYLE } from './useEventsTableOverflow'
 import { EMPTY_WINDOW_POINTS, ROW_METRICS_LABEL } from './utils'
 import { variablesKey } from '@/lib/queryKeys'
 
 /** Cap the cluster list so the summary header stays compact; the rest fold into a count. */
 const MAX_VISIBLE_CLUSTERS = 6
 
+// The "*" a Δ cell prints needs a legend somewhere. It is the only mark a reader
+// sees when collection lags and a 24h window is short of its hours (tripl-oooj:
+// the demo's series ends ~2h before now, so the recent window covers 22 of 24),
+// and the per-cell tooltip is only reachable once you already suspect something.
+const DELTA_HEAD_HELP =
+  'Δ · 24h — change in volume versus the previous 24-hour window. A * marks a window the collected series does not fully cover; hover the value for what it does cover.'
+
 export type EventsTableProps = {
   // Layout
   tableScrollRef: React.RefObject<HTMLDivElement | null>
+  /** Hands the `<table>` to `useEventsTableOverflow` (owned by the page, since
+   *  the toolbar's Columns chip reports the off-screen count it measures). */
+  tableRef: React.RefCallback<HTMLTableElement>
   isTabChartOpen: boolean
   // Drag-and-drop reorder
   dndSensors: SensorDescriptor<SensorOptions>[]
@@ -107,6 +118,7 @@ export type EventsTableProps = {
 
 export function EventsTable({
   tableScrollRef,
+  tableRef,
   isTabChartOpen,
   dndSensors,
   handleDragEnd,
@@ -324,6 +336,7 @@ export function EventsTable({
             }}
           >
             <Table
+              ref={tableRef}
               className="tripl-table"
               aria-label={activeEt ? `${activeEt.display_name} events` : 'Events'}
             >
@@ -337,9 +350,15 @@ export function EventsTable({
                       aria-label="Select all visible events"
                     />
                   </TableHead>
+                  {/* Pinned left with the checkbox: 8 of 17 columns sit
+                      off-screen at 1512px, so without this the reader scrolls
+                      to PAGE/CATEGORY/ACTION with no way to see which event the
+                      row belongs to (tripl-1uls). `data-pinned` also tells the
+                      overflow measurement which column never leaves. */}
                   <TableHead
-                    className="border-r"
-                    style={{ borderColor: 'var(--border)' }}
+                    data-pinned="true"
+                    className="tripl-pin-l border-r"
+                    style={{ ...PINNED_EVENT_CELL_STYLE, borderColor: 'var(--border)' }}
                   >
                     Event
                   </TableHead>
@@ -364,7 +383,7 @@ export function EventsTable({
                   {!hideDelta && (
                     <TableHead
                       className="w-20 text-right text-[11px]"
-                      title="Δ · 24h — change in volume versus the previous 24-hour window"
+                      title={DELTA_HEAD_HELP}
                     >
                       Δ · 24h
                     </TableHead>

@@ -574,6 +574,46 @@ function renderEventDetail() {
   )
 }
 
+describe('MonitoringDetailPage back affordance (tripl-lkox)', () => {
+  function installProjectTotalOnlyFetch() {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/metrics/total')) {
+        return mockJsonResponse({
+          scope: 'project_total',
+          scan_config_id: 'scan-1',
+          event_id: null,
+          event_type_id: null,
+          interval: '1h',
+          latest_signal: null,
+          data: [metricPoint('2026-01-01T05:00:00Z', 5)],
+          forecast: [],
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1')) {
+        return mockJsonResponse({ id: 'scan-1', app_version_column: null })
+      }
+      if (url.includes('/api/v1/projects/demo/annotations')) return mockJsonResponse([])
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+  }
+
+  it('names Anomalies on a project-total drilldown, the area it is reached from', async () => {
+    // navigation.ts assigns /monitoring/project-total/ (and /monitoring/
+    // event-type/) to Anomalies, and the breadcrumb above the button says so.
+    // The label branched on `metric` alone, so the only navigation affordance
+    // above the fold offered "Back to events" — somewhere the reader had not
+    // been.
+    installProjectTotalOnlyFetch()
+    renderMonitoringPage()
+
+    expect(await screen.findByRole('button', { name: /back to anomalies/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /back to events/i })).toBeNull()
+  })
+})
+
 describe('MonitoringDetailPage event detail', () => {
   it('renders the event-aware detail with signal banner and routes Edit to the edit page', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
@@ -774,6 +814,58 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     const miniChart = within(await screen.findByTestId('signal-volume-chart'))
       .getByTestId('metrics-chart')
     expect(miniChart).toHaveAttribute('data-points', '2')
+  })
+
+  it('names the baseline instead of titling a chart that cannot draw one (tripl-v2lm)', async () => {
+    // expected_count/stddev are persisted only on FLAGGED buckets, so the
+    // dashed expectation has a single non-null point and paints nothing. The
+    // panel was titled "Volume vs. baseline" above one bare series — the
+    // comparison that justifies the alert, promised and then not shown.
+    installEventDetailFetch({
+      latestSignal: {
+        scan_config_id: 'scan-1',
+        scope_type: 'event',
+        scope_ref: 'event-1',
+        state: 'recent',
+        event_id: 'event-1',
+        event_type_id: null,
+        bucket: '2026-01-02T00:00:00Z',
+        actual_count: 8_400,
+        expected_count: 2_915,
+        stddev: 140,
+        z_score: 39.6,
+        direction: 'spike',
+      },
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const panel = within(await screen.findByTestId('signal-volume-chart'))
+    expect(panel.getByText('Volume')).toBeInTheDocument()
+    expect(panel.queryByText(/vs\. baseline/i)).toBeNull()
+    // Locale-safe: the page groups through toLocaleString, like every other count.
+    expect(
+      panel.getByText(`baseline ${(2915).toLocaleString()} at the flagged bucket`),
+    ).toBeInTheDocument()
+  })
+
+  it('keeps a sub-unit baseline readable instead of rounding it to the no-baseline case', async () => {
+    // `expected_count` is a mean of prior buckets, so a rare event's baseline is
+    // legitimately below 1. The caption's `> 0` gate admits it and then
+    // `Math.round` printed "baseline 0" — the caption contradicting the gate
+    // that had just decided a baseline existed, on the same page whose signal
+    // card already formats this value-aware.
+    installEventDetailFetch({
+      latestSignal: { ...dropToZeroSignal(), expected_count: 0.4, z_score: -6.2 },
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const panel = within(await screen.findByTestId('signal-volume-chart'))
+    expect(
+      panel.getByText(`baseline ${(0.4).toLocaleString()} at the flagged bucket`),
+    ).toBeInTheDocument()
+    expect(panel.queryByText(/baseline 0 at the flagged bucket/)).toBeNull()
   })
 
   it('omits the signal mini-chart when the event has no active anomaly', async () => {

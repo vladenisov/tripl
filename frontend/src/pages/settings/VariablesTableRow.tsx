@@ -61,15 +61,21 @@ function VariablesTableRowImpl({
         />
       </TableCell>
       <TableCell className="font-mono text-xs align-top">
-        <div className="flex items-center gap-2">
-          <code className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
+        {/* Pills never wrap and never shrink; the variable name absorbs the
+            squeeze instead. In a ~225px column the drift badge broke inside its
+            own pill — "1" on one line, "drift" on the next — which reads as a
+            rendering fault on the one signal this page asks a reader to act on
+            (tripl-bb8m). `whitespace-nowrap` is the house pattern here; the same
+            badge in ScansTab already carries it. */}
+        <div className="flex min-w-0 items-center gap-2">
+          <code className="min-w-0 truncate rounded bg-primary/10 px-1.5 py-0.5 text-primary" title={`\${${variable.name}}`}>
             {`\${${variable.name}}`}
           </code>
-          <span className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          <span className="shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">
             {typeLabel}
           </span>
           {driftCount > 0 && (
-            <span className="rounded border border-warning/40 bg-warning-soft px-1.5 py-0.5 text-[10px] font-medium text-warning" title="Observed values outside the documented list">
+            <span className="shrink-0 whitespace-nowrap rounded border border-warning/40 bg-warning-soft px-1.5 py-0.5 text-[10px] font-medium text-warning" title="Observed values outside the documented list">
               {driftCount} drift{driftCount === 1 ? '' : 's'}
             </span>
           )}

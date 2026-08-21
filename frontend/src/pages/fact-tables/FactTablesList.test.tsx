@@ -86,6 +86,36 @@ describe('FactTablesList', () => {
     expect(within(row).getByText('created_at')).toBeInTheDocument()
   })
 
+  it('titles the list panel for what it lists, not for the tab next to it', async () => {
+    mockList({ items: [makeItem({})], total: 1 })
+
+    renderList()
+
+    const table = await screen.findByRole('table', { name: 'Fact tables' })
+    const panel = table.closest('section') as HTMLElement
+    expect(panel).not.toBeNull()
+    const header = panel.querySelector('header') as HTMLElement
+    expect(header).not.toBeNull()
+    // The header used to read "Catalog / 1 total": the same hardcoded title as
+    // the panel on the Catalog tab (tripl-p4kr). Only the title was wrong. The
+    // "N total" caption is the shape both tabs' list panels share, and dropping
+    // it here left Fact tables the one bare header on the page (tripl-9jzt).
+    expect(header.textContent).toBe('Fact tables1 total')
+    expect(screen.queryByText('Catalog')).toBeNull()
+  })
+
+  // The count is the server's `total`, not `items.length`: a truncated first
+  // page would otherwise caption the panel with the page size.
+  it('captions the panel with the server total, not the row count', async () => {
+    mockList({ items: [makeItem({ id: 'ft-1' })], total: 12 })
+
+    renderList()
+
+    const table = await screen.findByRole('table', { name: 'Fact tables' })
+    const header = (table.closest('section') as HTMLElement).querySelector('header') as HTMLElement
+    expect(header.textContent).toBe('Fact tables12 total')
+  })
+
   it('links each row to its edit route under Metrics', async () => {
     mockList({ items: [makeItem({ id: 'abc-123', display_name: 'Sessions' })], total: 1 })
 

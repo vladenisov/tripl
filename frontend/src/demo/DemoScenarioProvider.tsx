@@ -301,8 +301,18 @@ export function DemoScenarioProvider({
       },
       dismissChapter: (chapterId) => dispatch({ type: 'dismissChapter', chapter: chapterId }),
       muteHints: () => setHintsMuted(true),
+      unmuteHints: () => setHintsMuted(false),
+      // Not a reducer event: this discards the persisted blob outright rather
+      // than transitioning it, which is exactly what a re-seed does to the data
+      // the old progress was recorded against.
+      resetScenario: () => {
+        setHintsMuted(false)
+        const fresh = initialScenarioState()
+        setState(fresh)
+        if (slug) writeScenarioState(slug, fresh)
+      },
     }),
-    [dispatch],
+    [dispatch, slug],
   )
 
   const value = useMemo<DemoScenarioValue>(() => {

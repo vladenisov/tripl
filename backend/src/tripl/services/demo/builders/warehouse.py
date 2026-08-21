@@ -144,8 +144,22 @@ async def _build_scan_config(session: AsyncSession, ctx: DemoContext) -> None:
         interval="1h",
         replay_chunk_interval="6h",
         anomaly_detection_enabled=True,
-        distribution_drift_fields=["platform"],
-        metric_breakdown_columns=["platform"],
+        # Both lists stay EMPTY of ``platform``, and that is load-bearing rather
+        # than an omission. Designating ``platform_column`` already collects the
+        # column as a deduped scan-level breakdown (tripl-4de), so naming it
+        # again here is a double-collect — which is exactly why
+        # ``check_scalar_columns_unreserved`` rejects a reserved column in either
+        # list. The seeder used to write both anyway, because it inserts through
+        # the ORM and never meets that check: the result was a demo whose own
+        # scan config the API refused to save, so renaming the demo scan failed
+        # with a 422 naming fields the user had not touched (tripl-4rr4).
+        #
+        # The demo still tells its distribution-drift story: builders/monitoring
+        # seeds DistributionDrift rows for ``platform`` directly, with PSI from
+        # the real ``compute_psi``, so the panel has 14 days of history without
+        # the config claiming a field it may not claim.
+        distribution_drift_fields=[],
+        metric_breakdown_columns=[],
         # Platform + app-version observation are CONFIGURED here (the synthetic
         # dataset carries both columns), so the presence matrix, per-platform
         # volume, version adoption, and release-regression features are live —

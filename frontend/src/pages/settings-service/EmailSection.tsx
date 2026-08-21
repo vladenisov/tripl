@@ -1,8 +1,13 @@
 import type { ServiceSettings } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Field, SCard, TextInput, ToggleRow } from '@/components/settings/kit'
-import { ResetRow, SourceBadge } from './ServiceSettingsPrimitives'
-import type { EditableSettings, SecretDrafts, SectionKey } from './serviceSettingsHelpers'
+import { SourceBadge } from './ServiceSettingsPrimitives'
+import type {
+  EditableSettings,
+  SecretDrafts,
+  SecretField,
+  SectionKey,
+} from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
 
 export function EmailSection({
@@ -11,8 +16,7 @@ export function EmailSection({
   secretDrafts,
   setField,
   setSecretDrafts,
-  onReset,
-  resetting,
+  saving,
   onClearSecret,
 }: {
   form: EditableSettings
@@ -20,13 +24,12 @@ export function EmailSection({
   secretDrafts: SecretDrafts
   setField: (section: SectionKey, field: string, value: string | number | boolean) => void
   setSecretDrafts: (updater: (current: SecretDrafts) => SecretDrafts) => void
-  onReset: () => void
-  resetting: boolean
-  onClearSecret: (section: 'ai' | 'email', field: string) => void
+  saving: boolean
+  onClearSecret: (section: 'ai' | 'email', field: SecretField) => void
 }) {
   return (
     <>
-      <SCard title="SMTP" footer={<ResetRow onReset={onReset} resetting={resetting} />}>
+      <SCard title="SMTP">
         <Field
           label="SMTP host"
           labelRight={<SourceBadge source={sourceFor(settings, 'email', 'smtp_host')} />}
@@ -79,7 +82,7 @@ export function EmailSection({
               variant="outline"
               size="sm"
               onClick={() => onClearSecret('email', 'smtp_password')}
-              disabled={resetting}
+              disabled={saving}
             >
               Clear
             </Button>

@@ -8,7 +8,10 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Skeleton } from '@/components/ui/skeleton'
 import { formatTimestamp } from '@/lib/datetime'
+import { countOf } from '@/lib/plural'
+import { getErrorMessage } from '@/lib/utils'
 
 const ACTION_TONE: Record<string, string> = {
   create: 'bg-success-soft text-success',
@@ -158,9 +161,15 @@ const ACTION_GROUPS: { label: string; actions: string[] }[] = [
   },
 ]
 
-// Backend caps page size at 200; tighten the filter to narrow results when
-// you hit this ceiling.
-const PAGE_SIZE = 200
+// One page of audit entries. It used to be 200 — the endpoint's own ceiling —
+// and the page sent no offset, so the most recent 200 rows were the ONLY rows a
+// reader could reach: past that the card said "narrow the filter to drill into
+// older actions", which means guessing an action type or a date range to audit
+// anything older (tripl-5ydt). `offset` was already carried end to end by
+// api/audit.ts, api/v1/audit.py and audit_service.list_entries; only the buttons
+// were missing. 50 matches the sibling delivery log (ProjectAlertingTab.tsx),
+// which got the same treatment in tripl-oxkt.12.
+const PAGE_SIZE = 50
 
 function actionTone(action: string) {
   const verb = action.split('.').pop() ?? ''
@@ -185,6 +194,55 @@ function toIsoOrUndef(localDateTime: string, endOfDay = false): string | undefin
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString()
 }
 
+/**
+ * The payload of one entry, fetched when its row is expanded.
+ *
+ * The list response carries no payload at all: a page is 50 rows and only the
+ * rows a reader opens ever render one, so every other row's payload was
+ * serialised, sent and parsed to be shown nowhere. On the one project with real
+ * audit history this tab had the slowest first content of the 75 routes in the
+ * 2026-08-17 walk — one sample per route, so the wasted bytes are the fact and
+ * the timing is the hint (tripl-5ydt).
+ *
+ * An entry recorded without a payload — a bulk inbox mute files `{}` — still
+ * renders nothing here, so an expanded row looks exactly as it did.
+ */
+function AuditPayload({ entryId }: { entryId: string }) {
+  const detailQuery = useQuery({
+    queryKey: ['auditEntry', entryId],
+    queryFn: () => auditApi.get(entryId),
+    // An audit entry is frozen history: `audit_service` only ever inserts one,
+    // so re-expanding a row has nothing to re-read.
+    staleTime: Infinity,
+  })
+
+  if (detailQuery.isPending) {
+    // The row is already open, so silence here reads as "this entry has no
+    // payload" — which is a different fact, and one of the two answers this
+    // request is about to give.
+    return (
+      <div className="mt-2 ml-5" aria-busy="true" aria-label="Loading payload">
+        <Skeleton className="h-8 w-full max-w-sm" />
+      </div>
+    )
+  }
+  if (detailQuery.isError) {
+    return (
+      <p className="mt-2 ml-5 text-[11px] text-danger">
+        Could not load this entry's payload: {getErrorMessage(detailQuery.error)}
+      </p>
+    )
+  }
+
+  const { payload } = detailQuery.data
+  if (Object.keys(payload).length === 0) return null
+  return (
+    <pre className="mt-2 ml-5 overflow-auto rounded-md border bg-muted/30 px-2 py-1.5 font-mono text-[10px]">
+{JSON.stringify(payload, null, 2)}
+    </pre>
+  )
+}
+
 export function AuditTab({ slug }: { slug: string }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [action, setAction] = useState('')
@@ -192,6 +250,11 @@ export function AuditTab({ slug }: { slug: string }) {
   const [emailApplied, setEmailApplied] = useState('')
   const [sinceDate, setSinceDate] = useState('')
   const [untilDate, setUntilDate] = useState('')
+  // Where the page window starts. Every filter write resets it — the offset is
+  // an index INTO the filtered set, so narrowing while parked on page 4 lands
+  // the reader on a blank page of a list that has rows, which reads as "nothing
+  // matches". Same reasoning as AlertAuditPanel.tsx.
+  const [offset, setOffset] = useState(0)
 
   const queryParams = useMemo(
     () => ({
@@ -201,8 +264,9 @@ export function AuditTab({ slug }: { slug: string }) {
       since: toIsoOrUndef(sinceDate, false),
       until: toIsoOrUndef(untilDate, true),
       limit: PAGE_SIZE,
+      offset,
     }),
-    [slug, action, emailApplied, sinceDate, untilDate],
+    [slug, action, emailApplied, sinceDate, untilDate, offset],
   )
 
   const listQuery = useQuery({
@@ -214,7 +278,25 @@ export function AuditTab({ slug }: { slug: string }) {
 
   const items = listQuery.data?.items ?? []
   const total = listQuery.data?.total ?? 0
-  const truncated = total > items.length
+  // `placeholderData` holds the previous page on screen for the whole round
+  // trip, so `offset` — which advances the instant Older is clicked — describes
+  // rows that are not there yet. Every count below is read off the offset the
+  // VISIBLE rows came from instead, or the caption asserted "Showing 51–100"
+  // above rows 1–50 and `hasOlder` kept the button live for a second click that
+  // jumped straight to 100, discarding the page in flight.
+  const [settledOffset, setSettledOffset] = useState(0)
+  const isPaging = listQuery.isPlaceholderData
+  // Adjusted during render, not in an effect: this follows the query the way
+  // React documents following a prop, and an effect would paint one frame with
+  // the fresh rows still described by the previous offset.
+  if (listQuery.isSuccess && !listQuery.isPlaceholderData && settledOffset !== offset) {
+    setSettledOffset(offset)
+  }
+
+  const rangeStart = settledOffset + 1
+  const rangeEnd = settledOffset + items.length
+  const hasNewer = settledOffset > 0
+  const hasOlder = rangeEnd < total
 
   const toggle = (id: string) => {
     setExpanded((prev) => {
@@ -232,10 +314,29 @@ export function AuditTab({ slug }: { slug: string }) {
     setEmailApplied('')
     setSinceDate('')
     setUntilDate('')
+    setOffset(0)
   }
 
   const applyEmail = () => {
     setEmailApplied(emailInput.trim())
+    setOffset(0)
+  }
+
+  // Every filter write goes through one of these so none can forget the offset
+  // reset; see the `offset` state above for what forgetting looks like.
+  const applyAction = (next: string) => {
+    setAction(next)
+    setOffset(0)
+  }
+
+  const applySince = (next: string) => {
+    setSinceDate(next)
+    setOffset(0)
+  }
+
+  const applyUntil = (next: string) => {
+    setUntilDate(next)
+    setOffset(0)
   }
 
   return (
@@ -259,7 +360,7 @@ export function AuditTab({ slug }: { slug: string }) {
               <select
                 id="audit-action"
                 value={action}
-                onChange={(e) => setAction(e.target.value)}
+                onChange={(e) => applyAction(e.target.value)}
                 className="flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
               >
                 <option value="">All actions</option>
@@ -300,7 +401,7 @@ export function AuditTab({ slug }: { slug: string }) {
                 id="audit-since"
                 type="date"
                 value={sinceDate}
-                onChange={(e) => setSinceDate(e.target.value)}
+                onChange={(e) => applySince(e.target.value)}
                 className="h-8 text-xs"
               />
             </div>
@@ -312,7 +413,7 @@ export function AuditTab({ slug }: { slug: string }) {
                 id="audit-until"
                 type="date"
                 value={untilDate}
-                onChange={(e) => setUntilDate(e.target.value)}
+                onChange={(e) => applyUntil(e.target.value)}
                 className="h-8 text-xs"
               />
             </div>
@@ -334,7 +435,20 @@ export function AuditTab({ slug }: { slug: string }) {
       <Card>
         <CardContent className="p-0">
           {listQuery.isLoading ? (
-            <div className="p-4 text-sm text-muted-foreground">Loading…</div>
+            // Rows, not a bare "Loading…" line: the header and the whole filter
+            // card render immediately, so the only thing pending is this card,
+            // and a one-line placeholder made a card that is about to be a list
+            // look like a card that is empty (tripl-5ydt).
+            <div className="divide-y" aria-busy="true" aria-label="Loading audit entries">
+              {Array.from({ length: 6 }, (_, i) => (
+                <div key={i} className="flex items-center gap-2 px-3 py-2.5">
+                  <Skeleton className="h-3 w-36 shrink-0" />
+                  <Skeleton className="h-3 w-28 shrink-0" />
+                  <Skeleton className="h-3 w-40" />
+                  <Skeleton className="ml-auto h-3 w-32 shrink-0" />
+                </div>
+              ))}
+            </div>
           ) : items.length === 0 ? (
             <div className="p-4 text-sm text-muted-foreground">
               {filtersActive
@@ -342,7 +456,7 @@ export function AuditTab({ slug }: { slug: string }) {
                 : 'No audit entries yet. Future schema or data-source changes will show up here.'}
             </div>
           ) : (
-            <ul className="divide-y">
+            <ul className="divide-y" aria-busy={isPaging}>
               {items.map((entry) => {
                 const isOpen = expanded.has(entry.id)
                 return (
@@ -373,11 +487,7 @@ export function AuditTab({ slug }: { slug: string }) {
                         {entry.user_email}
                       </span>
                     </button>
-                    {isOpen && Object.keys(entry.payload).length > 0 && (
-                      <pre className="mt-2 ml-5 overflow-auto rounded-md border bg-muted/30 px-2 py-1.5 font-mono text-[10px]">
-{JSON.stringify(entry.payload, null, 2)}
-                      </pre>
-                    )}
+                    {isOpen && <AuditPayload entryId={entry.id} />}
                   </li>
                 )
               })}
@@ -386,11 +496,46 @@ export function AuditTab({ slug }: { slug: string }) {
         </CardContent>
       </Card>
 
-      {items.length > 0 && truncated && (
-        <p className="text-xs text-muted-foreground">
-          Showing the most recent {items.length} of {total} entries — narrow
-          the filter to drill into older actions.
-        </p>
+      {items.length > 0 && (hasNewer || hasOlder) && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {/* This line used to end "narrow the filter to drill into older
+              actions" — the only way past row 200 was to guess an action type
+              or a date range, on the surface the user guide points at for
+              tracking down a wrong edit or merge (tripl-5ydt). */}
+          <p className="text-xs text-muted-foreground">
+            {hasNewer
+              ? `Showing ${rangeStart}–${rangeEnd} of ${countOf(total, 'entry', 'entries')}.`
+              : `Showing the most recent ${items.length} of ${countOf(total, 'entry', 'entries')} — use Older to reach the rest, or narrow the filter.`}
+          </p>
+          <div className="flex items-center gap-2">
+            {/* The rows do not change while a page is in flight, so without a
+                word here the click looks like it did nothing. Both buttons are
+                held shut for the same window: a second click moved the query key
+                again and the page in flight was dropped unrendered — 0 → 50 →
+                100, with rows 51–100 never shown and nothing saying so. */}
+            {isPaging && <span className="text-xs text-muted-foreground">Updating…</span>}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              disabled={!hasNewer || isPaging}
+              onClick={() => setOffset((current) => Math.max(0, current - PAGE_SIZE))}
+            >
+              Newer
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              disabled={!hasOlder || isPaging}
+              onClick={() => setOffset((current) => current + PAGE_SIZE)}
+            >
+              Older
+            </Button>
+          </div>
+        </div>
       )}
     </div>
   )

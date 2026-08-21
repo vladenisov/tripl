@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import type { EventMetricPoint, MonitoringSignal, Variable } from '@/types'
 import {
   computeWindowDelta,
+  describeWindowDelta,
   deriveRowSignalFromMetrics,
+  formatCompactCount,
   formatRelativeTime,
   mapLatestSignals,
   pickLatestSignal,
@@ -319,13 +321,16 @@ describe('resolveTemplateTokens', () => {
 
 describe('computeWindowDelta', () => {
   const HOUR_MS = 60 * 60 * 1000
+  // Both halves are anchored on NOW, so every fixture states the `now` it was
+  // captured at instead of leaning on the wall clock.
+  const NOW = Date.parse('2026-06-10T23:00:00Z')
 
   // Builds a 48h hourly series where the prior 24h buckets carry `priorPerHour`
-  // and the most recent 24h carry `recentPerHour`, latest bucket at `latest`.
+  // and the most recent 24h carry `recentPerHour`, newest bucket at `latest`.
   function windowSeries(
     priorPerHour: number,
     recentPerHour: number,
-    latest = Date.parse('2026-06-10T23:00:00Z'),
+    latest = NOW,
   ): EventMetricPoint[] {
     const points: EventMetricPoint[] = []
     for (let hoursAgo = 47; hoursAgo >= 0; hoursAgo -= 1) {
@@ -341,20 +346,32 @@ describe('computeWindowDelta', () => {
 
   it('returns the percent change of the recent 24h versus the prior 24h', () => {
     // prior window = 24 * 10 = 240, recent window = 24 * 20 = 480 → +100%.
-    expect(computeWindowDelta(windowSeries(10, 20))).toBeCloseTo(100)
+    const delta = computeWindowDelta(windowSeries(10, 20), NOW)
+    expect(delta.pct).toBeCloseTo(100)
+    expect(delta.status).toBe('ok')
+    expect(delta.partial).toBe(false)
   })
 
   it('reports a negative delta when recent volume drops', () => {
     // prior = 240, recent = 120 → -50%.
-    expect(computeWindowDelta(windowSeries(10, 5))).toBeCloseTo(-50)
+    expect(computeWindowDelta(windowSeries(10, 5), NOW).pct).toBeCloseTo(-50)
   })
 
   it('returns null when there is no prior-window volume to divide by', () => {
-    expect(computeWindowDelta(windowSeries(0, 20))).toBeNull()
+    const delta = computeWindowDelta(windowSeries(0, 20), NOW)
+    expect(delta.pct).toBeNull()
+    // The one empty state that survives: prior really is 0, so there is nothing
+    // to divide by — and the copy says exactly that rather than claiming there
+    // is no prior window.
+    expect(delta.status).toBe('no-prior-volume')
+    expect(describeWindowDelta(delta)).toBe(
+      'No volume in the prior 24h to compare against — the last 24h carry 480.',
+    )
   })
 
   it('returns null for an empty series', () => {
-    expect(computeWindowDelta([])).toBeNull()
+    expect(computeWindowDelta([], NOW).pct).toBeNull()
+    expect(computeWindowDelta([], NOW).status).toBe('no-series')
   })
 
   it('does not rely on per-bucket expected_count (the old broken source)', () => {
@@ -362,7 +379,114 @@ describe('computeWindowDelta', () => {
     // resolve from raw volume, which was the actual bug.
     const points = windowSeries(4, 8)
     expect(points.every((p) => p.expected_count === null)).toBe(true)
-    expect(computeWindowDelta(points)).toBeCloseTo(100)
+    expect(computeWindowDelta(points, NOW).pct).toBeCloseTo(100)
+  })
+
+  it('prints the delta of a 46h span whose two windows are both populated (tripl-oooj)', () => {
+    // The exact payload measured on a fresh demo: 47 hourly points spanning
+    // 46.0h, because collection ends ~2h before now. The old blanket span guard
+    // (< 47h ⇒ render nothing) blanked the ENTIRE column on this, while the same
+    // points carry recent 51,456 against prior 45,812 — a sound +12%.
+    const oldestHoursAgo = 48
+    const recentBuckets = 22 // ages 2h…23h
+    const priorBuckets = 25 // ages 24h…48h, the far edge inclusive
+    const spread = (total: number, buckets: number): number[] => {
+      const base = Math.floor(total / buckets)
+      return Array.from({ length: buckets }, (_, i) =>
+        i === buckets - 1 ? total - base * (buckets - 1) : base,
+      )
+    }
+    const recentCounts = spread(51_456, recentBuckets)
+    const priorCounts = spread(45_812, priorBuckets)
+    const lagging: EventMetricPoint[] = []
+    for (let hoursAgo = oldestHoursAgo; hoursAgo >= 2; hoursAgo -= 1) {
+      const isRecent = hoursAgo < 24
+      const count = isRecent
+        ? recentCounts[23 - hoursAgo]
+        : priorCounts[oldestHoursAgo - hoursAgo]
+      lagging.push(
+        metricPoint({ bucket: new Date(NOW - hoursAgo * HOUR_MS).toISOString(), count }),
+      )
+    }
+    expect(lagging).toHaveLength(47)
+
+    const delta = computeWindowDelta(lagging, NOW)
+    expect(delta.status).toBe('ok')
+    expect(delta.recentTotal).toBe(51_456)
+    expect(delta.priorTotal).toBe(45_812)
+    expect(delta.pct).toBeCloseTo(12.32, 1)
+    // Shown, and marked: the recent half stops at the newest bucket, 2h short
+    // of now, so it compares 22 hours against a whole one.
+    expect(delta.partial).toBe(true)
+    expect(delta.recentCoveredHours).toBe(22)
+    expect(delta.priorCoveredHours).toBe(24)
+    expect(delta.trailingGapHours).toBe(2)
+    expect(describeWindowDelta(delta)).toBe(
+      'Last 24h 51,456 vs 45,812 in the 24h before it. Incomplete window: the last '
+      + '24h are covered to 22 of 24 hours and the 24h before it to 24 of 24; the '
+      + 'series ends 2h before now, so this compares less than a full window.',
+    )
+  })
+
+  it('refuses to divide one window by another it barely covers (tripl-7vnw)', () => {
+    // Collection lagging ~23h behind the 48h fetch window. Anchored on NOW the
+    // thin half is the recent one (1 of 24 hours), where anchoring on the newest
+    // bucket used to thin the PRIOR half instead and divide 24h of volume by
+    // ~1.25h of it — every row on that stand came out between +1673% and +1907%,
+    // beside rows whose Last seen read "never".
+    const latest = NOW - 23 * HOUR_MS
+    const lagged: EventMetricPoint[] = []
+    for (let hoursAgo = 24; hoursAgo >= 0; hoursAgo -= 1) {
+      lagged.push(
+        metricPoint({
+          bucket: new Date(latest - hoursAgo * HOUR_MS).toISOString(),
+          count: 200,
+        }),
+      )
+    }
+
+    const delta = computeWindowDelta(lagged, NOW)
+    expect(delta.pct).toBeNull()
+    expect(delta.status).toBe('window-too-thin')
+    expect(delta.recentCoveredHours).toBe(1)
+    expect(describeWindowDelta(delta)).toBe(
+      'Too little of the window to compare: the last 24h are covered to 1 of 24 '
+      + 'hours and the 24h before it to 24 of 24; the series ends 23h before now.',
+    )
+  })
+
+  it('still compares two buckets on a daily collection grid', () => {
+    // Coverage is read off the grid, so a scan whose interval puts exactly two
+    // buckets in the 48h window keeps its delta — one daily bucket IS 24 hours.
+    const daily = [
+      metricPoint({ bucket: new Date(NOW - 24 * HOUR_MS).toISOString(), count: 100 }),
+      metricPoint({ bucket: new Date(NOW).toISOString(), count: 150 }),
+    ]
+
+    const delta = computeWindowDelta(daily, NOW)
+    expect(delta.pct).toBeCloseTo(50)
+    expect(delta.partial).toBe(false)
+  })
+
+  it('returns null for a single bucket, which has no prior window at all', () => {
+    const lone = [metricPoint({ bucket: '2026-06-10T23:00:00Z', count: 900 })]
+
+    expect(computeWindowDelta(lone, NOW).pct).toBeNull()
+    expect(computeWindowDelta(lone, NOW).status).toBe('no-series')
+  })
+})
+
+describe('formatCompactCount', () => {
+  // The 48h column sits next to "Last seen", which renders "1m ago"/"1h ago".
+  // A lowercase "1m" volume there reads as one minute, not one million.
+  it('keeps the millions suffix uppercase so it cannot be read as a duration', () => {
+    expect(formatCompactCount(4_000_000)).toBe('4M')
+    expect(formatCompactCount(1_200_000)).toBe('1M')
+  })
+
+  it('leaves the Intl casing alone for thousands and bare counts', () => {
+    expect(formatCompactCount(505_000)).toBe('505K')
+    expect(formatCompactCount(12)).toBe('12')
   })
 })
 

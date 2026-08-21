@@ -80,6 +80,9 @@ function mockSignal() {
     stddev: 3,
     z_score: 7,
     direction: 'spike',
+    // Resolved server-side and carried on the signal, so the bell reads a name
+    // off the payload instead of downloading catalogs to find one (tripl-y4wt).
+    scope_name: 'Page View',
   }
 }
 
@@ -120,17 +123,9 @@ function mockNotificationsFetch(signals: unknown[], deliveries: unknown[]) {
     if (url.endsWith('/api/v1/projects/demo/alert-deliveries?limit=5')) {
       return mockJsonResponse({ items: deliveries, total: deliveries.length })
     }
-    // Name lookups the open bell makes so its rows read as names, not uuids
-    // (tripl-9tyr). Keyed the same way EventsPage / Overview key theirs.
-    if (/\/api\/v1\/projects\/demo\/event-types(\?|$)/.test(url)) {
-      return mockJsonResponse([{ id: 'type-123', display_name: 'Page View' }])
-    }
-    if (/\/api\/v1\/projects\/demo\/events\/[^/?]+/.test(url)) {
-      return mockJsonResponse({ id: 'event-9', name: 'checkout_started' })
-    }
-    if (url.includes('/metrics-catalog')) {
-      return mockJsonResponse({ items: [{ id: 'metric-7', display_name: 'Checkout conversion' }] })
-    }
+    // No branch for the event / event-type / metrics-catalog lookups on purpose:
+    // names ride on the signals now, so any such request lands on the throw
+    // below rather than being quietly served (tripl-y4wt).
     throw new Error(`Unhandled fetch: ${url}`)
   })
   return calls
@@ -145,7 +140,7 @@ describe('TopBar notifications', () => {
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
 
     await waitFor(() => {
-      expect(screen.getByText('Spike on Event type type-123')).toBeInTheDocument()
+      expect(screen.getByText('Spike on Event type · Page View')).toBeInTheDocument()
     })
     expect(screen.getByText('Active Signals')).toBeInTheDocument()
     expect(screen.getByText('Recent Alert Deliveries')).toBeInTheDocument()
@@ -158,7 +153,12 @@ describe('TopBar notifications', () => {
     // signal was announced as an event.
     mockNotificationsFetch(
       [
-        { ...mockSignal(), scope_type: 'metric', scope_ref: 'm1234567-aaaa-bbbb-cccc-dddddddddddd' },
+        {
+          ...mockSignal(),
+          scope_type: 'metric',
+          scope_ref: 'm1234567-aaaa-bbbb-cccc-dddddddddddd',
+          scope_name: 'Checkout conversion',
+        },
       ],
       [],
     )
@@ -167,9 +167,9 @@ describe('TopBar notifications', () => {
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
 
     await waitFor(() => {
-      expect(screen.getByText('Spike on Metric m1234567')).toBeInTheDocument()
+      expect(screen.getByText('Spike on Metric · Checkout conversion')).toBeInTheDocument()
     })
-    expect(screen.queryByText(/on Event m1234567/)).toBeNull()
+    expect(screen.queryByText(/on Event ·/)).toBeNull()
   })
 
   it('labels a drop-to-zero signal as "dropped to zero" instead of the clamped z-score', async () => {
@@ -183,7 +183,7 @@ describe('TopBar notifications', () => {
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
 
     await waitFor(() => {
-      expect(screen.getByText('Drop on Event type type-123')).toBeInTheDocument()
+      expect(screen.getByText('Drop on Event type · Page View')).toBeInTheDocument()
     })
     // The zeroed drop reads "dropped to zero"; the repeated clamped z is hidden.
     expect(screen.getByText(/dropped to zero/)).toBeInTheDocument()
@@ -199,7 +199,7 @@ describe('TopBar notifications', () => {
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
 
     await waitFor(() => {
-      expect(screen.getByText('Spike on Event type type-123')).toBeInTheDocument()
+      expect(screen.getByText('Spike on Event type · Page View')).toBeInTheDocument()
     })
     // Header reads 1 active (signals.length), not 2 (signals + delivery).
     expect(screen.getByText('1 active')).toBeInTheDocument()
@@ -332,43 +332,60 @@ describe('TopBar notifications', () => {
   })
 })
 
-describe('TopBar notifications — scope names (tripl-9tyr)', () => {
-  it('shows the display name instead of a uuid once the bell is open', async () => {
+describe('TopBar notifications — scope names (tripl-9tyr, tripl-y4wt)', () => {
+  it('names the scope off the signal, fetching no catalog to do it', async () => {
     // The bell used to read "Spike on Event type type-123" while the Overview
-    // panel below it read "Event type · Page View" for the very same signal.
-    mockNotificationsFetch([{ ...mockSignal(), scope_ref: 'type-123' }], [])
+    // panel below it read "Event type · Page View" for the very same signal, and
+    // it closed that gap by fanning out one GET per event id plus the event-type
+    // list and the metrics catalog — every one of them now unhandled here.
+    const calls = mockNotificationsFetch([mockSignal()], [])
 
     renderTopBar()
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
 
     expect(await screen.findByText('Spike on Event type · Page View')).toBeInTheDocument()
     expect(screen.queryByText(/Spike on Event type type-123/)).toBeNull()
+    expect(
+      calls.filter(u => /\/event-types|\/metrics-catalog|\/events\//.test(u)),
+    ).toEqual([])
   })
 
-  it('falls back to the short ref when the name never arrives', async () => {
-    // A deleted entity, or a lookup still in flight: the row must still render.
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
-      const url = String(input)
-      if (url.endsWith(SIGNALS_URL)) return mockJsonResponse([{ ...mockSignal(), scope_ref: 'type-123' }])
-      if (url.includes('/alert-deliveries')) return mockJsonResponse({ items: [], total: 0 })
-      return mockJsonResponse([])
-    })
+  it('says an unnameable scope is gone, and keeps its ref in the tooltip only', async () => {
+    // A null name is terminal: the entity was deleted (the scope FKs are
+    // ondelete=SET NULL), never "still loading". Printing "Event type type-123"
+    // instead reads as a name, so the same incident the activity rail calls
+    // Page View gets a second, uuid-shaped one.
+    mockNotificationsFetch([{ ...mockSignal(), scope_name: null }], [])
 
     renderTopBar()
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
 
-    expect(await screen.findByText('Spike on Event type type-123')).toBeInTheDocument()
+    const row = await screen.findByText('Spike on deleted event type')
+    expect(row).toHaveAttribute('title', 'Spike on Event type type-123')
+    expect(screen.queryByText(/type-123/)).toBeNull()
   })
 
-  it('fetches no name catalogs while the bell is closed', async () => {
-    const calls = mockNotificationsFetch([{ ...mockSignal(), scope_ref: 'type-123' }], [])
+  it('keeps a sub-unit baseline instead of rounding it away', async () => {
+    // `metric` is a first-class alert scope and a `%` catalog metric stores a
+    // fraction (0.08 == 8%), so Math.round printed "vs 0 expected" beside a
+    // delta computed from the real baseline (tripl-nj4n).
+    mockNotificationsFetch(
+      [
+        {
+          ...mockSignal(),
+          scope_type: 'metric',
+          scope_name: 'Checkout conversion',
+          actual_count: 1.2,
+          expected_count: 0.4,
+        },
+      ],
+      [],
+    )
 
     renderTopBar()
-    await screen.findByRole('button', { name: /Notifications/ })
-    await new Promise(r => setTimeout(r, 50))
+    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
 
-    // A closed bell must not make every route in the app pay for the name
-    // catalogs — that trade is why it showed uuids in the first place.
-    expect(calls.filter(u => /\/event-types|\/metrics-catalog/.test(u))).toEqual([])
+    expect(await screen.findByText(/1\.2 actual vs 0\.4 expected/)).toBeInTheDocument()
+    expect(screen.queryByText(/vs 0 expected/)).toBeNull()
   })
 })

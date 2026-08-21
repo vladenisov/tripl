@@ -288,7 +288,9 @@ export function ScanEssentialsSection({
           </select>
         )}
       </Field>
-      <Field label="Base query" hint="Used as a subquery. tripl wraps it to scan windows.">
+      {/* id={false}: SqlEditor is a CodeMirror contenteditable, not a labelable
+          element — it names itself with ariaLabel below. */}
+      <Field label="Base query" id={false} hint="Used as a subquery. tripl wraps it to scan windows.">
         <SqlEditor
           ariaLabel="SQL base query"
           value={state.baseQuery}
@@ -302,6 +304,8 @@ export function ScanEssentialsSection({
           rendered at the foot of this card, after the fields that feed it. */}
       <Field
         label="Preview"
+        // No control to point a label at — a button and, on failure, an error.
+        id={false}
         hint="Loads sample rows so the pickers below can offer real columns. What this scan would create is answered underneath them."
       >
         <div className="flex flex-col gap-2">

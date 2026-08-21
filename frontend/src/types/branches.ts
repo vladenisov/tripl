@@ -197,6 +197,12 @@ export interface PlanDiff {
   summary: { added: number; removed: number; changed: number }
 }
 
+/**
+ * One row of the audit list, with no `payload` — the list response does not
+ * carry one. AuditTab renders a payload only for the rows a reader expanded, so
+ * a page of them crossed the wire to be displayed nowhere; the row now fetches
+ * its own on expand (tripl-5ydt).
+ */
 export interface AuditEntry {
   id: string
   created_at: string
@@ -208,6 +214,10 @@ export interface AuditEntry {
   target_type: string
   target_id: string | null
   target_name: string
+}
+
+/** One entry WITH the request payload that produced it: `GET /audit/{id}`. */
+export interface AuditEntryDetail extends AuditEntry {
   payload: Record<string, unknown>
 }
 

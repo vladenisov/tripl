@@ -500,3 +500,49 @@ describe('ScanFormSections — the mode choice', () => {
     )
   })
 })
+
+describe('ScanFormSections — field labelling', () => {
+  // This form's Field takes an explicit `id` and every call site repeats it on
+  // the control it renders — a shadcn Input or a raw <select>, none of which
+  // adopt anything on their own. Nothing checks the two still agree, so a
+  // renamed control id leaves the label naming nothing (tripl-5gdg).
+  //
+  // Only labels that carry a `for` are checked: the rows holding the SQL editor
+  // and the Load preview button hold nothing a <label> can point at, so they opt
+  // out with `id={false}` and are named as groups instead — see the next test.
+  it('associates every field label with the control it names', async () => {
+    setupFetch([eventType])
+    renderCreatePage()
+
+    await screen.findByText('New scan')
+    fireEvent.click(screen.getByRole('button', { name: /Event names and grouping/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Limits/ }))
+
+    const labels = Array.from(document.querySelectorAll<HTMLLabelElement>('label[for]'))
+    expect(labels.length).toBeGreaterThan(1)
+    for (const label of labels) {
+      const name = label.textContent ?? ''
+      expect(name.trim().length).toBeGreaterThan(0)
+      expect(screen.getByLabelText(name)).toBe(label.control)
+    }
+  })
+
+  // Field rendered <label htmlFor={id}> unconditionally, so the two rows that
+  // pass no control id shipped a caption naming nothing: the SQL editor is a
+  // CodeMirror contenteditable that names itself with ariaLabel, and Preview is
+  // a button with no control beside it. `id={false}` exposes the caption as a
+  // group name instead (tripl-otlv), the same hatch components/settings/kit.tsx
+  // already had.
+  it('names the rows that hold no labelable control as groups, not dangling labels', async () => {
+    setupFetch()
+    const { container } = renderCreatePage()
+
+    await screen.findByText('New scan')
+
+    expect(screen.getByRole('group', { name: 'Base query' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Preview' })).toBeInTheDocument()
+    const captions = Array.from(container.querySelectorAll('label'), el => el.textContent)
+    expect(captions).not.toContain('Base query')
+    expect(captions).not.toContain('Preview')
+  })
+})

@@ -62,3 +62,19 @@ describe('BulkActionBar select-all-matching (tripl-7l83.11)', () => {
     expect(container).toBeEmptyDOMElement()
   })
 })
+
+describe('BulkActionBar stale-selection disclosure (tripl-4i49)', () => {
+  it('says how much of the selection is still on screen when they diverge', () => {
+    renderBar({ selectedCount: 20, selectedVisibleCount: 3, matchingTotal: 3 })
+
+    expect(screen.getByText('20')).toBeInTheDocument()
+    expect(screen.getByText('3')).toBeInTheDocument()
+    expect(screen.getByText(/on screen/)).toBeInTheDocument()
+  })
+
+  it('stays a bare count while every selected row is on screen', () => {
+    renderBar({ selectedCount: 2, selectedVisibleCount: 2, matchingTotal: 2 })
+
+    expect(screen.queryByText(/on screen/)).toBeNull()
+  })
+})

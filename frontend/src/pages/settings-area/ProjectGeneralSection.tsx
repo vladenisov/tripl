@@ -62,6 +62,24 @@ const RESET_PERIODS: { value: string; label: string; days: number | null }[] = [
 const DAY_MS = 24 * 60 * 60 * 1000
 const MAX_APP_VERSION_KEEP_RELEASES = 100
 
+/**
+ * The left affix on the Slug field — the one place in the product that shows a
+ * reader what their project's address looks like.
+ *
+ * It was the bare literal `example.com/p/` (tripl-gex5), so every install welded
+ * a stranger's domain onto a real slug and anyone who transcribed what they saw
+ * got a dead link. The server cannot supply the answer either: it does not
+ * reliably know its own public origin behind a proxy — the same reason
+ * api/invitations.ts returns a path and lets the client join it to
+ * window.location.origin — and the one value that records it, the instance's
+ * app_base_url, is owner-only while this page is open to every editor. So take
+ * the host the page was actually served from, which is by definition the one in
+ * the reader's address bar.
+ */
+function projectUrlPrefix(): string {
+  return `${window.location.host}/p/`
+}
+
 // Query prefixes refreshed after a reset so the cleared state is reflected
 // everywhere the deleted detections (and their derived signals) surface.
 const ANOMALY_INVALIDATE_KEYS: readonly (readonly string[])[] = [
@@ -462,7 +480,7 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
                 value={slugDraft}
                 onChange={setSlugDraft}
                 mono
-                prefix="example.com/p/"
+                prefix={projectUrlPrefix()}
                 disabled={!canEdit}
               />
             </Field>

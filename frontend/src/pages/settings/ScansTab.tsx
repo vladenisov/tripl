@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react"
-import { useNavigate } from "react-router-dom"
+import { Link, useNavigate } from "react-router-dom"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Plus, RotateCw } from "lucide-react"
 import { dataSourcesApi } from "@/api/dataSources"
@@ -237,7 +237,17 @@ export function ScansTab({ slug }: { slug: string }) {
         <EmptyState
           icon={Search}
           title="No data sources"
-          description="Add a data source connection first (via the global Data Sources page) to create a scan."
+          description="Add a data source connection first to create a scan."
+          action={
+            // The empty state used to name the page that fixes it and leave the
+            // reader to find it; the link IS the remedy now (tripl-eadx).
+            <Button asChild size="sm">
+              <Link to="/settings/data-sources">
+                <Plus className="size-3.5" />
+                Add connection
+              </Link>
+            </Button>
+          }
         />
       )}
 

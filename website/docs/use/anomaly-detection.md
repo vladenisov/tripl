@@ -47,7 +47,9 @@ On low-volume series the phase baseline also applies a **Poisson (√N) spread f
 
 ### The rolling baseline — fallback for new or sparse series
 
-When a series is too young to have three full seasonal cycles (a brand-new scan, or a very sparse event), the detector falls back to a **seasonality-blind rolling baseline**: the plain **mean** and **standard deviation** of the most recent window of buckets (the window length is the `baseline_window_buckets` setting). This baseline knows nothing about hour-of-week, so it is less precise on cyclic data — but it lets monitoring produce *something* on day one instead of staying silent. The rolling baseline also refuses to fire until it has seen at least `min_history_buckets` real buckets in its window.
+When a series is too young to have three full seasonal cycles (a brand-new scan, or a very sparse event), the detector falls back to a **seasonality-blind rolling baseline**: the plain **mean** and **standard deviation** of the most recent window of buckets (the window length is the `baseline_window_buckets` setting, **Baseline window (buckets)** in the UI). This baseline knows nothing about hour-of-week, so it is less precise on cyclic data — but it lets monitoring produce *something* on day one instead of staying silent. The rolling baseline also refuses to fire until it has seen at least `min_history_buckets` real buckets in its window (**Min history (buckets)** in the UI).
+
+Both are counted in **buckets**, not hours, and the settings page says so under them: *a bucket is one collection interval of the series being scored*. So 14 buckets of baseline is 14 hours on an hourly scan and 14 days on a daily catalog metric.
 
 ### Seasonal decomposition and the trend-shift detector
 
@@ -135,7 +137,7 @@ With the default `sigma_threshold = 4.0`, `|4.8| ≥ 4.0` passes, and `expected 
 
 ## Tunables and defaults
 
-These live in the project's **monitoring settings** and apply to every scan in the project. (The two most impactful values, `sigma_threshold` and `min_expected_count`, can also be raised automatically for a **single scope** — see [False positives](#false-positives-self-tune-the-thresholds) below.)
+These live in the project's **Detection settings** (route `/p/<slug>/settings/monitoring`) and apply to every scan in the project. (The two most impactful values, `sigma_threshold` and `min_expected_count`, can also be raised automatically for a **single scope** — see [False positives](#false-positives-self-tune-the-thresholds) below.)
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -144,8 +146,8 @@ These live in the project's **monitoring settings** and apply to every scan in t
 | `detect_event_types` | `true` | Watch each event type's volume. |
 | `detect_events` | `true` | Watch each individual event's volume. |
 | `detect_metrics` | `true` | Watch each active metric (the metrics catalog). |
-| `baseline_window_buckets` | `14` | How many recent buckets the rolling fallback baseline averages over. |
-| `min_history_buckets` | `7` | Minimum buckets the rolling fallback needs before it will fire. |
+| `baseline_window_buckets` | `14` | How many recent buckets the rolling fallback baseline averages over. Labelled **Baseline window (buckets)** in the UI. |
+| `min_history_buckets` | `7` | Minimum buckets the rolling fallback needs before it will fire. Labelled **Min history (buckets)** in the UI. |
 | `sigma_threshold` | `4.0` | How many normal wobbles of deviation are required to flag a bucket. |
 | `min_expected_count` | `50` | Minimum expected volume before a bucket is eligible to be flagged. |
 | `recent_signal_window_hours` | `24` | How long a flagged bucket keeps counting as an **open signal**. Must stay above the settling allowance below. |
@@ -303,7 +305,7 @@ User-defined **metrics** are watched by the very same detector, at a dedicated *
 - **Fractional** metrics drop both. A gap means "no data for this bucket" rather than zero — a ratio whose denominator was zero produces *no value at all* — and the minimum-count gate is lifted, so a ratio that naturally sits below 1, or a sparse average, is neither silenced nor constantly flagged as "too low".
 
 Per project, **`detect_metrics`** turns the metric scope on or off (the
-**Metrics** box in monitoring settings); per alert rule, **`include_metrics`**
+**Metrics** box in Detection settings); per alert rule, **`include_metrics`**
 decides whether metric anomalies are actually delivered — the **Metrics** box in
 the rule editor, off by default (see [Alerting](./alerting.md)). Everything else — the seasonal baseline, the robust
 spread and its floor, the z-score, and false-positive self-tuning — works exactly
@@ -351,6 +353,29 @@ The expanded view is requested with `expanded=true` on
 `GET /projects/{slug}/anomalies/signals`; each returned signal carries an
 `incident_child` flag that is `true` for the child scopes folded under a
 project-total incident (always `false` in the collapsed view, which omits them).
+
+Every signal from that endpoint — and from the `POST
+/projects/{slug}/anomalies/signals/query` variant — also carries **`scope_name`**:
+the display name of the thing that fired, resolved server-side to the event's
+name, the event type's display name, or the catalog metric's display name. It is
+`null` for `project_total`, which is named by the project rather than by a
+lookup, and for an entity that was deleted out from under the anomaly row. A
+client can therefore label a row from the signal alone, without downloading the
+event catalog to build an id → name map. **Do not fall back to `scope_ref` when
+`scope_name` is null** — `scope_ref` is a routing key, and a hex prefix printed
+where a name belongs reads as a name (*"Spike on Event d4c684dd"*).
+
+Signals from those endpoints also carry **`relative_effect`**: how big the
+signal is relative to what was expected, and the value both the Anomalies page's
+"Significant" magnitude filter and the sidebar badge gate on (at `0.5`). It is
+computed server-side because only the server knows whether a catalog metric's
+series is count-shaped, which decides whether the denominator is floored at 1:
+for a count it is `|actual − expected| / max(expected, 1)`, so a scope with
+essentially no traffic cannot outrank a real move on a busy one; for a
+fractional metric series that floor would be a category error, so it is
+`|actual − expected| / expected`. `null` means the path that produced the signal
+did not compute it — fall back to your own count-shaped estimate rather than
+treating the signal as having no magnitude.
 
 ### Alert rules are an additional gate
 

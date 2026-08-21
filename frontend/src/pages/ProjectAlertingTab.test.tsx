@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { alertingApi } from '@/api/alerting'
@@ -440,11 +440,21 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
     return { inboxUrls }
   }
 
-  function renderInboxTab(focusIncidentId?: string) {
+  /** Exposes the live URL so the `?status=` round trip is assertable. */
+  function LocationProbe() {
+    const location = useLocation()
+    return <div>alerting-location:{location.pathname}{location.search}</div>
+  }
+
+  function renderInboxTab(
+    focusIncidentId?: string,
+    entry = '/p/demo/settings/alerting?section=inbox',
+  ) {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     return render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=inbox']}>
+        <MemoryRouter initialEntries={[entry]}>
+          <LocationProbe />
           <ProjectAlertingTab slug="demo" focusIncidentId={focusIncidentId} />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -494,6 +504,59 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
       expect(inboxUrls.at(-1)).not.toContain('status=')
       expect(inboxUrls.at(-1)).toContain('offset=0')
     })
+  })
+
+  // An incident card links to its scope's monitoring page, off this route
+  // entirely — so with the filter in component state, checking one metric and
+  // pressing Back handed the operator all 93 incidents again, and a narrowed
+  // queue could not be pasted to a colleague (tripl-ahg5).
+  it('reads the status filter from ?status= so a narrowed queue is linkable', async () => {
+    const { inboxUrls } = mockPagedInbox([
+      makeInboxGroup({ status: 'muted', muted: true, muted_until: '2026-08-19T10:00:00Z' }),
+    ])
+    renderInboxTab(undefined, '/p/demo/settings/alerting?section=inbox&status=muted')
+
+    // Narrowed from the first request, with no unfiltered page in between.
+    await waitFor(() => expect(inboxUrls.length).toBeGreaterThan(0))
+    for (const url of inboxUrls) {
+      expect(url).toContain('status=muted')
+    }
+    // The chips render with the panel, which lands after the first page
+    // resolves — the request firing is not enough to assert on them.
+    expect(await screen.findByRole('button', { name: 'Muted' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+  })
+
+  it('writes the filter back to ?status=, and clears the parameter on All', async () => {
+    mockPagedInbox([makeInboxGroup()])
+    renderInboxTab()
+
+    await screen.findByText(/Showing 1 of 1/)
+    fireEvent.click(screen.getByRole('button', { name: 'Resolved' }))
+    expect(
+      await screen.findByText(
+        'alerting-location:/p/demo/settings/alerting?section=inbox&status=resolved',
+      ),
+    ).toBeInTheDocument()
+
+    // ...and "All" removes the key rather than leaving `status=`.
+    fireEvent.click(screen.getByRole('button', { name: 'All' }))
+    expect(
+      await screen.findByText('alerting-location:/p/demo/settings/alerting?section=inbox'),
+    ).toBeInTheDocument()
+  })
+
+  it('degrades an unknown ?status= to All rather than showing an empty queue', async () => {
+    const { inboxUrls } = mockPagedInbox([makeInboxGroup()])
+    renderInboxTab(undefined, '/p/demo/settings/alerting?section=inbox&status=not-a-status')
+
+    await screen.findByText(/Showing 1 of 1/)
+    for (const url of inboxUrls) {
+      expect(url).not.toContain('status=')
+    }
+    expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('loads the rest of the queue instead of replacing what is on screen', async () => {

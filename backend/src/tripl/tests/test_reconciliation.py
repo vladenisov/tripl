@@ -128,7 +128,10 @@ async def test_list_shadow_events_orders_by_volume_and_counts_new(client: AsyncC
     assert [item["event_name"] for item in data["items"]] == ["big", "small"]
     assert data["new_count"] == 2
     assert data["total"] == 2
-    assert data["items"][1]["event_type_name"] == "pv"
+    # display_name, not the internal key: Reconciliation used to be the one
+    # surface that showed "pv" where every other one showed "Page View"
+    # (tripl-w9od).
+    assert data["items"][1]["event_type_name"] == "Page View"
     assert data["items"][0]["scan_config_name"] == "main scan"
 
 

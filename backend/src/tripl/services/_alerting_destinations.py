@@ -50,6 +50,33 @@ def _encrypt_secret(value: str | None) -> str | None:
     return encrypt_value(value)
 
 
+async def _refresh_main_search_index(
+    session: AsyncSession, project_id: uuid.UUID, slug: str
+) -> None:
+    """Refresh the search index after an alert-rule mutation.
+
+    Alert rules are global (they reach their project through their destination,
+    not through a branch), so only the MAIN branch index is refreshed eagerly;
+    feature-branch indexes pick the change up on their next rebuild. Same rule
+    metrics, fact tables and scan configs already follow.
+
+    Without this a rule the user just created stayed unfindable in the command
+    palette until some unrelated reindex happened to fire (tripl-ugrm).
+
+    The imports are deferred because the module graph is cyclic here:
+    ``search_service`` imports ``project_service``, which imports
+    ``alerting_service``, which imports this module. Same reason
+    ``plan_branch_merge_service`` defers its own reindex import.
+    """
+    from tripl.services.plan_branch_service import resolve_branch_id
+    from tripl.services.search_service import reindex_project_branch
+
+    main_branch_id = await resolve_branch_id(session, project_id, None)
+    await reindex_project_branch(
+        session, project_id=project_id, branch_id=main_branch_id, slug=slug
+    )
+
+
 def _destination_query(project_id: uuid.UUID) -> Select[tuple[AlertDestination]]:
     return (
         select(AlertDestination)
@@ -631,6 +658,11 @@ async def delete_destination(
     await clear_rule_states(session, [rule.id for rule in destination.rules])
     await session.delete(destination)
     await session.commit()
+    # ``AlertDestination.rules`` cascades, so this delete took every rule the
+    # destination owned with it — and each of those was an indexed document.
+    # Creating or renaming a destination needs no such refresh: no document kind
+    # carries a destination's own text.
+    await _refresh_main_search_index(session, project.id, slug)
     return name
 
 
@@ -702,6 +734,7 @@ async def create_rule(
         filters=data.filters,
     )
     await session.commit()
+    await _refresh_main_search_index(session, project.id, slug)
     _destination, refreshed_rule = await get_rule(
         session,
         project_id=project.id,
@@ -777,6 +810,7 @@ async def update_rule(
         )
 
     await session.commit()
+    await _refresh_main_search_index(session, project.id, slug)
     _destination, refreshed_rule = await get_rule(
         session,
         project_id=project.id,
@@ -802,3 +836,4 @@ async def delete_rule(
     await clear_rule_states(session, [rule.id])
     await session.delete(rule)
     await session.commit()
+    await _refresh_main_search_index(session, project.id, slug)

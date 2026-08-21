@@ -6958,9 +6958,11 @@ async def test_bulk_action_writes_one_audit_row_per_group_sharing_a_batch_id(
         # Same action name as the single route — not a separate "bulk_mute" verb
         # that an existing audit query would silently miss.
         assert {row.action for row in rows} == {"alert_inbox.mute"}
-        # Each row names its OWN incident.
+        # Each row names its OWN incident. ``target_id`` is the identity; the name
+        # is the readable form of it (see the scope-name test below, tripl-ckun),
+        # which for these fixtures is the same scope on every group.
         assert {row.target_id for row in rows} == set(group_ids)
-        assert {row.target_name for row in rows} == {str(group_id) for group_id in group_ids}
+        assert {row.target_name for row in rows} == {"event · event scope"}
         # And every row carries the batch id the response advertised, so the three
         # rows can be recognised as one decision after the fact.
         assert {row.payload["batch_id"] for row in rows} == {batch_id}
@@ -6969,6 +6971,89 @@ async def test_bulk_action_writes_one_audit_row_per_group_sharing_a_batch_id(
         # The id LIST is not repeated into every row: target_id already says which
         # incident this row is about.
         assert all("correlation_group_ids" not in row.payload for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_inbox_audit_rows_name_the_incident_rather_than_its_uuid(
+    client: AsyncClient,
+) -> None:
+    """An ``alert_inbox.*`` row has to say WHICH incident, in words (tripl-ckun).
+
+    Both routes recorded ``str(correlation_group_id)`` as the target name, so the
+    project Audit log — the page whose stated job is a compliance trail — was a
+    wall of 8-character hex sitting next to rows that named their target
+    ("scan_config.update  Old events (Android)"). Neither affordance on the row
+    rescued it: the title attribute reveals the FULL UUID, and expanding the row
+    shows only ``{action, note, muted_until}``.
+
+    The name comes from the fields the incident card already renders — the newest
+    item's ``scope_type`` and the group's ``scope_names`` — so the trail reads
+    like the thing the operator clicked. ``target_id`` still carries the UUID, so
+    nothing that looks an incident up by id changes.
+    """
+    from tripl.models.audit_log import AuditLog
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Inbox Named", "slug": "inbox-named", "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    now = datetime.now(UTC)
+    # Distinct scope names, so a row proves it named ITS OWN incident rather than
+    # picking up whatever the fixture happens to share.
+    named_scopes = {"checkout_started": uuid.uuid4(), "settings/choose_model": uuid.uuid4()}
+    for index, (scope_name, group_id) in enumerate(named_scopes.items()):
+        await _seed_inbox_delivery(
+            project_id,
+            scan_config_id=scan_config_id,
+            destination_id=destination_id,
+            rule_id=rule_ids[0],
+            created_at=now - timedelta(hours=index + 1),
+            items=[
+                {
+                    **_inbox_item(
+                        scope_type="event",
+                        bucket=now - timedelta(hours=index + 1),
+                        percent_delta=100.0,
+                        correlation_group_id=group_id,
+                    ),
+                    "scope_name": scope_name,
+                }
+            ],
+        )
+
+    single_target = named_scopes["checkout_started"]
+    single = await client.post(
+        f"/api/v1/projects/inbox-named/alert-inbox/{single_target}/actions",
+        json={"action": "mute", "note": "Vendor outage"},
+    )
+    assert single.status_code == 200
+
+    bulk_target = named_scopes["settings/choose_model"]
+    bulk = await client.post(
+        "/api/v1/projects/inbox-named/alert-inbox/bulk-actions",
+        json={"correlation_group_ids": [str(bulk_target)], "action": "acknowledge"},
+    )
+    assert bulk.status_code == 200
+
+    async with TestSessionLocal() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(AuditLog).where(AuditLog.target_type == "alert_correlation_group")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    named = {row.target_id: row.target_name for row in rows}
+    # Both routes, because the hex came from both of them.
+    assert named == {
+        single_target: "event · checkout_started",
+        bulk_target: "event · settings/choose_model",
+    }
 
 
 @pytest.mark.asyncio

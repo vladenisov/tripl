@@ -37,6 +37,8 @@ Available query parameters:
 | `event_type_id` | events of a specific event type (a UUID) |
 | `status` | events in a given lifecycle status — repeatable |
 | `silent_since_days` | events not seen for at least N days |
+| `reviewed` | `true` for events marked reviewed, `false` for those not yet reviewed; omit for either |
+| `order_by` | `catalog` (the default — the authored catalog order) or `volume` (busiest-first by ingested volume over the last 24h) |
 | `offset` | skip the first N items (paging) |
 | `limit` | cap the number of items returned (default `200`, max `10000`) |
 

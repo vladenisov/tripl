@@ -60,6 +60,13 @@ export const TEXTAREA_CLASS =
 
 export const HELP_CLASS = 'text-xs text-muted-foreground'
 
+// One field column inside a `grid-cols-N` row: label, control, and usually a
+// help paragraph. `content-start` is load-bearing — without it the row height
+// comes from the tallest column and grid hands the surplus to the shorter
+// column's auto rows, so Username's label and input sat 12px below Password's
+// purely because the Password column carried a third child (tripl-ofvc).
+export const FIELD_COL_CLASS = 'grid content-start gap-2'
+
 function parseAllowlist(value: string): string[] {
   return value
     .split(/[\s,]+/)

@@ -1,14 +1,25 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-// The audit list endpoint is stubbed so the tab renders its filter card without
-// firing a real request; the From/To hint text is static and present regardless.
+import type { AuditEntry, AuditEntryDetail, AuditListResponse } from '@/types'
+
+// The audit endpoints are stubbed so the tab renders without firing a real
+// request; each test decides what the page it asks for contains, and what the
+// one-entry payload read behind an expanded row answers.
+const { listMock, getMock } = vi.hoisted(() => ({ listMock: vi.fn(), getMock: vi.fn() }))
+
 vi.mock('@/api/audit', () => ({
-  auditApi: { list: vi.fn(async () => ({ items: [], total: 0 })) },
+  auditApi: { list: listMock, get: getMock },
 }))
 
 import { AuditTab } from './AuditTab'
+
+beforeEach(() => {
+  listMock.mockReset()
+  listMock.mockResolvedValue({ items: [], total: 0 })
+  getMock.mockReset()
+})
 
 function renderTab() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -17,6 +28,32 @@ function renderTab() {
       <AuditTab slug="demo" />
     </QueryClientProvider>,
   )
+}
+
+/** One list row. Carries no payload — the list response does not have one. */
+function auditRow(index: number): AuditEntry {
+  return {
+    id: `entry-${index}`,
+    created_at: '2026-08-17T10:00:00Z',
+    user_id: null,
+    user_email: 'alice@example.com',
+    project_id: null,
+    project_slug: 'demo',
+    action: 'event_type.update',
+    target_type: 'event_type',
+    target_id: null,
+    target_name: `checkout_started_${index}`,
+  }
+}
+
+/** One page of `size` rows out of `total` — what any page but the last looks like. */
+function auditPage(size: number, total: number): AuditListResponse {
+  return { items: Array.from({ length: size }, (_, index) => auditRow(index)), total }
+}
+
+/** What `GET /audit/{id}` answers for row `index`: the same row, plus its payload. */
+function auditDetail(index: number, payload: Record<string, unknown>): AuditEntryDetail {
+  return { ...auditRow(index), payload }
 }
 
 /** Every action the Action <select> offers, in DOM order (minus "All actions"). */
@@ -96,5 +133,167 @@ describe('AuditTab — date filters (tripl-jfm3.37)', () => {
     // labelled From/To.
     expect(screen.getByLabelText('From')).toHaveAttribute('type', 'date')
     expect(screen.getByLabelText('To')).toHaveAttribute('type', 'date')
+  })
+})
+
+describe('AuditTab — paging (tripl-5ydt)', () => {
+  it('asks for one 50-row page and offers a step past it', async () => {
+    listMock.mockResolvedValue(auditPage(50, 254))
+    renderTab()
+
+    // The page used to request the endpoint's own 200 ceiling and send no
+    // offset, so those 200 rows were the only rows reachable at all.
+    await waitFor(() =>
+      expect(listMock).toHaveBeenCalledWith(expect.objectContaining({ limit: 50, offset: 0 })),
+    )
+    expect(await screen.findByRole('button', { name: 'Older' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Newer' })).toBeDisabled()
+    // The dead end it replaced: the only route to row 201 was guessing an
+    // action type or a date range.
+    expect(screen.queryByText(/narrow the filter to drill into older actions/)).toBeNull()
+  })
+
+  it('steps Older and Newer by exactly one page', async () => {
+    listMock.mockResolvedValue(auditPage(50, 254))
+    renderTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Older' }))
+
+    await waitFor(() =>
+      expect(listMock).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 50 })),
+    )
+    expect(await screen.findByText('Showing 51–100 of 254 entries.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Newer' }))
+
+    expect(
+      await screen.findByText(/Showing the most recent 50 of 254 entries/),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Newer' })).toBeDisabled()
+  })
+
+  it('returns to the newest page whenever a filter is written', async () => {
+    listMock.mockResolvedValue(auditPage(50, 254))
+    renderTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Older' }))
+    await waitFor(() =>
+      expect(listMock).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 50 })),
+    )
+
+    // The offset indexes INTO the filtered set, so narrowing 254 entries to a
+    // handful while parked on page 2 would land on a blank page of a list that
+    // has rows — which reads as "nothing matches".
+    fireEvent.change(screen.getByLabelText('Action'), {
+      target: { value: 'alert_inbox.mute' },
+    })
+
+    await waitFor(() =>
+      expect(listMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({ action: 'alert_inbox.mute', offset: 0 }),
+      ),
+    )
+  })
+
+  it('says the next page is loading and refuses a second step until it lands', async () => {
+    listMock.mockResolvedValue(auditPage(50, 254))
+    renderTab()
+
+    const older = await screen.findByRole('button', { name: 'Older' })
+    let releasePage2: (value: AuditListResponse) => void = () => {}
+    listMock.mockReturnValueOnce(
+      new Promise<AuditListResponse>((resolve) => {
+        releasePage2 = resolve
+      }),
+    )
+
+    fireEvent.click(older)
+    await waitFor(() =>
+      expect(listMock).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 50 })),
+    )
+
+    // keepPreviousData holds page 1 on screen for the whole round trip, so the
+    // caption has to keep describing page 1: it used to read "Showing 51–100"
+    // above rows 1–50, i.e. name rows the list was not showing.
+    expect(screen.getByText(/Showing the most recent 50 of 254 entries/)).toBeInTheDocument()
+    expect(screen.getByText('Updating…')).toBeInTheDocument()
+
+    // Nothing on screen changed, so the obvious reaction is to click again. That
+    // moved the key to offset 100 and the offset-50 response was dropped
+    // unrendered — rows 51–100 unreachable, with no sign a page was skipped.
+    expect(screen.getByRole('button', { name: 'Older' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Newer' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Older' }))
+    expect(listMock).not.toHaveBeenCalledWith(expect.objectContaining({ offset: 100 }))
+
+    releasePage2(auditPage(50, 254))
+
+    expect(await screen.findByText('Showing 51–100 of 254 entries.')).toBeInTheDocument()
+    expect(screen.queryByText('Updating…')).toBeNull()
+  })
+
+  it('hides the pager when one page holds everything', async () => {
+    listMock.mockResolvedValue(auditPage(3, 3))
+    renderTab()
+
+    await screen.findByText('checkout_started_0')
+    expect(screen.queryByRole('button', { name: 'Older' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Newer' })).toBeNull()
+  })
+})
+
+describe('AuditTab — pending list card (tripl-5ydt)', () => {
+  it('holds the shape of the list instead of a bare "Loading…" line', async () => {
+    let release: (value: AuditListResponse) => void = () => {}
+    listMock.mockReturnValue(
+      new Promise<AuditListResponse>((resolve) => {
+        release = resolve
+      }),
+    )
+    renderTab()
+
+    // The header and the whole filter card render immediately; only this card
+    // is pending, and a one-line placeholder made it look empty rather than
+    // about to be a list.
+    expect(screen.getByLabelText('Loading audit entries')).toBeInTheDocument()
+    expect(screen.queryByText('Loading…')).toBeNull()
+
+    release(auditPage(1, 1))
+    await waitFor(() =>
+      expect(screen.queryByLabelText('Loading audit entries')).not.toBeInTheDocument(),
+    )
+  })
+})
+
+describe('AuditTab — payload on expand (tripl-5ydt)', () => {
+  it('reads a payload only for the row the reader expanded', async () => {
+    listMock.mockResolvedValue(auditPage(3, 3))
+    getMock.mockResolvedValue(auditDetail(1, { sensitivity: 'pii' }))
+    renderTab()
+
+    // The list used to carry a payload for every row while the tab rendered one
+    // only for expanded rows: a page of JSON blobs on the wire to display none.
+    await screen.findByText('checkout_started_1')
+    expect(getMock).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByText('checkout_started_1'))
+
+    expect(await screen.findByText(/"sensitivity": "pii"/)).toBeInTheDocument()
+    expect(getMock).toHaveBeenCalledTimes(1)
+    expect(getMock).toHaveBeenCalledWith('entry-1')
+  })
+
+  it('leaves a row whose payload is empty looking exactly as it did', async () => {
+    listMock.mockResolvedValue(auditPage(1, 1))
+    // A bulk inbox mute files one row per incident with `{}`, and expanding one
+    // showed the header line and nothing else.
+    getMock.mockResolvedValue(auditDetail(0, {}))
+    const { container } = renderTab()
+
+    fireEvent.click(await screen.findByText('checkout_started_0'))
+
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith('entry-0'))
+    await waitFor(() => expect(screen.queryByLabelText('Loading payload')).toBeNull())
+    expect(container.querySelector('pre')).toBeNull()
   })
 })

@@ -454,11 +454,17 @@ anomaly delivery.
 
 ### Search flow
 
-Plan changes, scans, branch merges, and metric/fact-table CRUD refresh
-`search_documents`. Reindexing diffs content hashes so unchanged embeddings are
-preserved. PostgreSQL full-text/trigram ranking is always available; optional
-provider embeddings add semantic ranking, and a periodic chaser requeues old
-pending documents.
+Plan changes, scans, branch merges, and metric, fact-table, scan-config and
+alert-rule CRUD refresh `search_documents`. Reindexing diffs content hashes so
+unchanged embeddings are preserved. PostgreSQL full-text/trigram ranking is
+always available; optional provider embeddings add semantic ranking, and a
+periodic chaser requeues old pending documents.
+
+The first search of a branch that has never been indexed does **not** build the
+index inline on the request. It enqueues
+`tripl.worker.tasks.search.reindex_search_branch` and answers with whatever is
+already stored — for a never-indexed branch that is an empty result, and the
+branch is searchable from the next request.
 
 ---
 

@@ -1221,6 +1221,53 @@ async def test_event_owner_and_reviewed(client: AsyncClient):
     assert item["owner_id"] == owner_id
 
 
+@pytest.mark.asyncio
+async def test_list_events_filters_by_reviewed_flag(client: AsyncClient):
+    """`reviewed` narrows by the review FLAG, independent of `status`.
+
+    Without it, "Mark reviewed" wrote a boolean the UI could neither show nor
+    isolate, so bulk-reviewing a queue looked like it did nothing (tripl-invv).
+    """
+    et_id, field_id, _ = await _setup_events(client, slug="ev-reviewed-filter")
+
+    ids = {}
+    for name in ("Checkout", "Signup"):
+        created = await client.post(
+            "/api/v1/projects/ev-reviewed-filter/events",
+            json={
+                "event_type_id": et_id,
+                "name": name,
+                "status": "in_review",
+                "field_values": [{"field_definition_id": field_id, "value": "x"}],
+            },
+        )
+        assert created.status_code == 201
+        ids[name] = created.json()["id"]
+
+    marked = await client.post(
+        "/api/v1/projects/ev-reviewed-filter/events/bulk-update",
+        json={"event_ids": [ids["Checkout"]], "reviewed": True},
+    )
+    assert marked.status_code == 204
+
+    reviewed = (await client.get("/api/v1/projects/ev-reviewed-filter/events?reviewed=true")).json()
+    assert reviewed["total"] == 1
+    assert [item["id"] for item in reviewed["items"]] == [ids["Checkout"]]
+
+    # The pairing the review tab needs: still-unreviewed rows inside the queue.
+    unreviewed = (
+        await client.get(
+            "/api/v1/projects/ev-reviewed-filter/events?status=in_review&reviewed=false"
+        )
+    ).json()
+    assert unreviewed["total"] == 1
+    assert [item["id"] for item in unreviewed["items"]] == [ids["Signup"]]
+
+    # Omitting the param keeps every row, reviewed or not.
+    unfiltered = (await client.get("/api/v1/projects/ev-reviewed-filter/events")).json()
+    assert unfiltered["total"] == 2
+
+
 async def _count_search_docs(slug: str, *, title: str | None = None) -> int:
     async with TestSessionLocal() as session:
         statement = (

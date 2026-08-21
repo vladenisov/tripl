@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef } from 'react'
-import type { NavigateFunction } from 'react-router-dom'
 import type { DragEndEvent } from '@dnd-kit/core'
 
 import type { EventListItem } from '@/types'
@@ -21,16 +20,12 @@ type ConfirmFn = (options: {
  * re-renders, which keeps `React.memo` on EventRow effective.
  */
 export function useEventRowActions({
-  slug,
-  navigate,
   openEvent,
   mutations,
   confirm,
   visibleEventIds,
   selectedSet,
 }: {
-  slug: string | undefined
-  navigate: NavigateFunction
   openEvent: (ev: EventListItem) => void
   mutations: EventMutations
   confirm: ConfirmFn
@@ -38,8 +33,6 @@ export function useEventRowActions({
   selectedSet: Set<string>
 }) {
   const rowCtxRef = useRef({
-    slug,
-    navigate,
     openEvent,
     mutations,
     confirm,
@@ -48,8 +41,6 @@ export function useEventRowActions({
   })
   useEffect(() => {
     rowCtxRef.current = {
-      slug,
-      navigate,
       openEvent,
       mutations,
       confirm,
@@ -83,9 +74,6 @@ export function useEventRowActions({
     switch (action) {
       case 'edit':
         ctx.openEvent(ev)
-        return
-      case 'navigate-monitoring':
-        ctx.navigate(`/p/${ctx.slug}/monitoring/event/${ev.id}`)
         return
       case 'move-up':
         mutations.moveEventMut.mutate({ id: ev.id, direction: 'up', visibleEventIds: ctx.visibleEventIds })

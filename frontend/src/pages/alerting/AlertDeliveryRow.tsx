@@ -8,6 +8,7 @@ import { getScopeMonitoringPath } from "@/lib/monitoring"
 import { useCanWrite } from "@/lib/permissions"
 import { getErrorMessage } from "@/lib/utils"
 import { formatDateTime } from "@/lib/datetime"
+import { formatIncidentCount } from "@/lib/alertStatus"
 import { formatPercentDelta } from "@/lib/percentDelta"
 import { Badge } from "@/components/ui/badge"
 import { LocalDeliveryBadge } from "@/demo/capabilityBadges"
@@ -480,16 +481,31 @@ export function AlertDeliveryRow({
                               <div className="text-muted-foreground">{item.scope_type}</div>
                             </TableCell>
                             <TableCell className="text-xs">{item.direction}</TableCell>
-                            <TableCell className="text-xs">{item.actual_count}</TableCell>
+                            {/* All three are declared `float` on
+                                AlertDeliveryItemResponse, so interpolating them
+                                raw printed full JS precision — "88.318" for a
+                                count of events (tripl-nj4n). The shared helper
+                                rounds by value, not unconditionally: the
+                                `scope_type` two cells left can be `metric`, and
+                                those columns are float precisely so a sub-unit
+                                measurement survives. Unrounded in the title for
+                                anyone reconciling against the detector. */}
+                            <TableCell className="text-xs" title={String(item.actual_count)}>
+                              {formatIncidentCount(item.actual_count)}
+                            </TableCell>
                             <TableCell className="text-xs">
-                              <div>{item.expected_count}</div>
+                              <div title={String(item.expected_count)}>
+                                {formatIncidentCount(item.expected_count)}
+                              </div>
                               {basisNote && (
                                 <div className="mt-0.5 max-w-64 text-[10px] leading-snug text-muted-foreground">
                                   {basisNote}
                                 </div>
                               )}
                             </TableCell>
-                            <TableCell className="text-xs">{item.absolute_delta}</TableCell>
+                            <TableCell className="text-xs" title={String(item.absolute_delta)}>
+                              {formatIncidentCount(item.absolute_delta)}
+                            </TableCell>
                             <TableCell className="text-xs">
                               {formatPercentDelta(item.percent_delta, item.expected_count)}
                             </TableCell>

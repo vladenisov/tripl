@@ -21,9 +21,29 @@ from tripl.schemas.scan_config import (
     check_replay_chunk_against_interval,
     check_scalar_columns_unreserved,
 )
+from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_lookup import get_project_id_by_slug
+from tripl.services.search_service import reindex_project_branch
 
 logger = logging.getLogger(__name__)
+
+
+async def _refresh_main_search_index(
+    session: AsyncSession, project_id: uuid.UUID, slug: str
+) -> None:
+    """Refresh the search index after a scan-config mutation.
+
+    Scan configs are global (project-scoped, not branched), so only the MAIN
+    branch index is refreshed eagerly; feature-branch indexes pick the change up
+    on their next rebuild. Same rule metrics and fact tables already follow.
+
+    Without this a scan the user just created stayed unfindable in the command
+    palette until some unrelated reindex happened to fire (tripl-ugrm).
+    """
+    main_branch_id = await resolve_branch_id(session, project_id, None)
+    await reindex_project_branch(
+        session, project_id=project_id, branch_id=main_branch_id, slug=slug
+    )
 
 
 async def _verify_data_source(
@@ -97,6 +117,7 @@ async def create_scan_config(
     session.add(config)
     await session.commit()
     await session.refresh(config)
+    await _refresh_main_search_index(session, project_id, slug)
     return config
 
 
@@ -147,6 +168,7 @@ async def update_scan_config(
         setattr(config, key, value)
     await session.commit()
     await session.refresh(config)
+    await _refresh_main_search_index(session, config.project_id, slug)
     return config
 
 
@@ -327,9 +349,13 @@ async def delete_scan_config(session: AsyncSession, slug: str, scan_id: uuid.UUI
     from tripl.services._alerting_destinations import disable_rules_bound_to_scan
 
     config = await get_scan_config(session, slug, scan_id)
+    project_id = config.project_id
     await disable_rules_bound_to_scan(session, scan_id)
     await session.delete(config)
     await session.commit()
+    # Covers both document kinds this delete moved: the scan_config row is gone,
+    # and every alert_rule that was narrowed to it lost its subtitle above.
+    await _refresh_main_search_index(session, project_id, slug)
 
 
 async def _reject_if_already_running(session: AsyncSession, scan_config_id: uuid.UUID) -> None:

@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { SETTINGS_NAV } from '@/components/settings/nav'
 
 /**
  * Centralized per-page document-title mechanism.
@@ -84,8 +85,8 @@ const LEGACY_TOP_LEVEL_LABELS: Record<string, string> = {
 //
 // Most `settings` sub-surfaces are their own sidebar destinations (see
 // `lib/navigation.ts`) rather than tabs of a settings page, so they are named
-// here with the labels the sidebar uses. The two that really are project
-// configuration (`general`, `monitoring`) stay on the parent label.
+// here with the labels the sidebar uses. `general` is the one that really is
+// project configuration, so it alone stays on the parent label.
 const PROJECT_SUBSURFACE_LABELS: Record<string, Record<string, string>> = {
   metrics: { 'fact-tables': 'Fact tables' },
   settings: {
@@ -94,6 +95,13 @@ const PROJECT_SUBSURFACE_LABELS: Record<string, Record<string, string>> = {
     variables: 'Variables',
     relations: 'Relations',
     branches: 'Plan branches',
+    history: 'Plan history',
+    // Three surfaces named this page at once — tab title "Project settings",
+    // breadcrumb terminal "Anomalies", heading "Detection settings" — and it
+    // was the only route in the production walk where all three disagreed
+    // (tripl-34tw). This string is the page's own H2 (MonitoringTab) and the
+    // breadcrumb leaf in `lib/navigation.ts`; a test pins the two together.
+    monitoring: 'Detection settings',
     alerting: 'Alerting',
     // `settings/scans` is redirect-only since Scans moved to `/p/:slug/scans`.
     // It stays named here for the same reason `alerting` does: the redirect
@@ -105,12 +113,19 @@ const PROJECT_SUBSURFACE_LABELS: Record<string, Record<string, string>> = {
 
 // Human labels for the full-takeover Settings sections (`/settings/<section>`),
 // which mount OUTSIDE the app shell — the top-level resolver still names them.
-const SETTINGS_SECTION_LABELS: Record<string, string> = {
-  members: 'Members',
-  'api-keys': 'API keys',
-  profile: 'Profile',
-  security: 'Security',
-  'data-sources': 'Data sources',
+// Derived from the settings rail's own model so the tab title is always the
+// label on the item the reader clicked, and a renamed section cannot leave a
+// stale title behind.
+const SETTINGS_RAIL_LABELS: Record<string, string> = Object.fromEntries(
+  Object.values(SETTINGS_NAV).flatMap((groups) =>
+    groups.flatMap((group) => group.items.map((item) => [item.path, item.label] as const)),
+  ),
+)
+
+// The two section parents. Neither has a page of its own — both only ever
+// render a child — so the rail does not list them, and they stand in for any
+// path beneath them the rail does not list either.
+const SETTINGS_PARENT_LABELS: Record<string, string> = {
   project: 'Project settings',
   instance: 'Instance settings',
 }
@@ -128,8 +143,26 @@ export function resolveTitleFromPath(pathname: string): { label: string; slug?: 
   if (parts[0] === 'auth') return { label: 'Sign in' }
   if (parts[0] === 'workspace' || parts[0] === 'projects') return { label: 'Workspace' }
   if (parts[0] === 'settings') {
-    const section = parts[1]
-    return { label: section ? (SETTINGS_SECTION_LABELS[section] ?? 'Settings') : 'Settings' }
+    // Keyed on the FULL section path, not on its first segment. The rail's paths
+    // are a mix of one and two segments (`members` next to `instance/runtime`),
+    // so a first-segment lookup gave every one of the seven `instance/*`
+    // sections the same title and both `project/*` sections another — eleven
+    // routes collapsed onto three tab titles, which is unusable for the
+    // owner-operator who has several of them open at once (tripl-xl9r).
+    const sectionPath = parts.slice(1).join('/')
+    if (!sectionPath) return { label: 'Settings' }
+    // Longest rail prefix wins, then the section parent. A route can be deeper
+    // than the rail entry it belongs to — `/settings/data-sources/<id>` is the
+    // one in App.tsx, and it is where opening a data-source row lands — and
+    // exact-matching the full path alone titled that tab the generic "Settings"
+    // instead of inheriting "Data sources" from the entry above it.
+    const label =
+      SETTINGS_RAIL_LABELS[sectionPath] ??
+      SETTINGS_RAIL_LABELS[parts.slice(1, 3).join('/')] ??
+      SETTINGS_RAIL_LABELS[parts[1]] ??
+      SETTINGS_PARENT_LABELS[parts[1]] ??
+      'Settings'
+    return { label }
   }
   if (parts[0] === 'p' && parts[1]) {
     const surface = parts[2] ?? 'events'

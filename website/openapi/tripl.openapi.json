@@ -4425,6 +4425,22 @@
             }
           },
           {
+            "name": "reviewed",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reviewed"
+            }
+          },
+          {
             "name": "field_value",
             "in": "query",
             "required": false,
@@ -12461,6 +12477,49 @@
         }
       }
     },
+    "/api/v1/audit/{entry_id}": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Get Audit Entry",
+        "operationId": "get_audit_entry_api_v1_audit__entry_id__get",
+        "parameters": [
+          {
+            "name": "entry_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Entry Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditEntryDetailResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/users/invitations": {
       "get": {
         "tags": [
@@ -16438,7 +16497,7 @@
         ],
         "title": "AppVersionSeriesResponse"
       },
-      "AuditEntryResponse": {
+      "AuditEntryDetailResponse": {
         "properties": {
           "id": {
             "type": "string",
@@ -16526,7 +16585,93 @@
           "target_name",
           "payload"
         ],
-        "title": "AuditEntryResponse"
+        "title": "AuditEntryDetailResponse",
+        "description": "One entry WITH the request payload that produced it.\n\n``payload`` is the half of an audit entry that carries warehouse hosts and\n``base_query`` SQL, which is why the whole router is owner-only \u2014 see the\ngate write-up in api/v1/audit.py. Secrets are already masked at write time\nby ``audit_service._redact``."
+      },
+      "AuditEntryResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "user_email": {
+            "type": "string",
+            "title": "User Email"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "project_slug": {
+            "type": "string",
+            "title": "Project Slug"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "target_type": {
+            "type": "string",
+            "title": "Target Type"
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Id"
+          },
+          "target_name": {
+            "type": "string",
+            "title": "Target Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "created_at",
+          "user_id",
+          "user_email",
+          "project_id",
+          "project_slug",
+          "action",
+          "target_type",
+          "target_id",
+          "target_name"
+        ],
+        "title": "AuditEntryResponse",
+        "description": "One row of the audit list \u2014 everything the row itself renders.\n\nDeliberately WITHOUT ``payload``. The tab renders a payload only for the\nrows the reader expanded (AuditTab.tsx), so shipping one per row sent a page\nof JSON blobs across the wire to be displayed nowhere: on the only project\nwith real audit history, ``/p/*/settings/audit`` had the slowest first\ncontent of the 75 routes in the 2026-08-17 walk. The payload now travels one\nrow at a time, as ``AuditEntryDetailResponse`` (tripl-5ydt)."
       },
       "AuditListResponse": {
         "properties": {
@@ -24595,6 +24740,28 @@
           },
           "direction": {
             "$ref": "#/components/schemas/AnomalyDirection"
+          },
+          "relative_effect": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relative Effect"
+          },
+          "scope_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Name"
           },
           "incident_child": {
             "type": "boolean",

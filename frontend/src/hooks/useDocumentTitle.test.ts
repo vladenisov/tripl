@@ -127,12 +127,25 @@ describe('resolveTitleFromPath', () => {
     })
   })
 
-  it('keeps project configuration tabs on the parent settings label', () => {
-    expect(resolveTitleFromPath('/p/acme/settings/general')).toEqual({
-      label: 'Project settings',
+  it('names the settings sub-surfaces that name themselves (tripl-34tw, tripl-ebib)', () => {
+    // These two shared "Project settings" with the general tab while their own
+    // headings read "Detection settings" and "Plan history" — the only two
+    // routes in the production walk where the tab, the breadcrumb and the page
+    // heading all disagreed. The label here is the page's own heading.
+    expect(resolveTitleFromPath('/p/acme/settings/monitoring')).toEqual({
+      label: 'Detection settings',
       slug: 'acme',
     })
-    expect(resolveTitleFromPath('/p/acme/settings/monitoring')).toEqual({
+    expect(resolveTitleFromPath('/p/acme/settings/history')).toEqual({
+      label: 'Plan history',
+      slug: 'acme',
+    })
+  })
+
+  it('keeps the project configuration tab on the parent settings label', () => {
+    // `general` really is project configuration rather than a destination of its
+    // own, so it stays named by its parent.
+    expect(resolveTitleFromPath('/p/acme/settings/general')).toEqual({
       label: 'Project settings',
       slug: 'acme',
     })
@@ -163,8 +176,60 @@ describe('resolveTitleFromPath', () => {
   it('labels the full-takeover Settings routes that mount outside the shell (no slug)', () => {
     expect(resolveTitleFromPath('/settings/members')).toEqual({ label: 'Members' })
     expect(resolveTitleFromPath('/settings/data-sources')).toEqual({ label: 'Data sources' })
-    expect(resolveTitleFromPath('/settings/instance/runtime')).toEqual({ label: 'Instance settings' })
     expect(resolveTitleFromPath('/settings')).toEqual({ label: 'Settings' })
+  })
+
+  it('gives each two-segment settings section its own title (tripl-xl9r)', () => {
+    // Eleven routes used to share three titles, because the lookup read only the
+    // first path segment and the rail's paths are a mix of one and two segments.
+    // The owner-operator configuring an instance has several of these open at
+    // once and could not tell the tabs apart, and history search for "Storage"
+    // found nothing.
+    expect(resolveTitleFromPath('/settings/instance/runtime')).toEqual({ label: 'Runtime' })
+    expect(resolveTitleFromPath('/settings/instance/storage')).toEqual({ label: 'Storage' })
+    expect(resolveTitleFromPath('/settings/instance/security')).toEqual({
+      label: 'Security & access',
+    })
+    expect(resolveTitleFromPath('/settings/project/plan-rules')).toEqual({ label: 'Plan rules' })
+
+    // The seven instance sections are distinguishable from each other, which is
+    // the property that was actually broken.
+    const instanceTitles = [
+      'runtime',
+      'ai',
+      'email',
+      'security',
+      'storage',
+      'observability',
+      'system',
+    ].map((section) => resolveTitleFromPath(`/settings/instance/${section}`).label)
+    expect(new Set(instanceTitles).size).toBe(instanceTitles.length)
+    // The account-level Security section keeps its own, different name.
+    expect(resolveTitleFromPath('/settings/security')).toEqual({ label: 'Security' })
+  })
+
+  it('keeps the rail label on a route deeper than its rail entry', () => {
+    // Opening a data source from the list navigates to /settings/data-sources/<id>,
+    // which the rail lists only one segment shorter. Matching the full section
+    // path alone dropped it to the generic "Settings".
+    expect(
+      resolveTitleFromPath('/settings/data-sources/0f8fad5b-d9cb-469f-a165-70867728950e'),
+    ).toEqual({ label: 'Data sources' })
+    // The same inheritance one level down from a two-segment rail entry.
+    expect(resolveTitleFromPath('/settings/instance/runtime/anything')).toEqual({
+      label: 'Runtime',
+    })
+  })
+
+  it('falls back to the section parent for a path the settings rail does not list', () => {
+    // Bare parents and the retired top-level sections that only redirect into a
+    // child still have to name a tab rather than reading "Settings" or flashing
+    // not-found.
+    expect(resolveTitleFromPath('/settings/instance')).toEqual({ label: 'Instance settings' })
+    expect(resolveTitleFromPath('/settings/project')).toEqual({ label: 'Project settings' })
+    expect(resolveTitleFromPath('/settings/instance/no-such-section')).toEqual({
+      label: 'Instance settings',
+    })
   })
 
   it('labels auth, workspace and the root, and names unmatched paths not-found', () => {

@@ -1,7 +1,7 @@
 import type { DbType, JsonPathDiscovery } from '@/types'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { HELP_CLASS, SELECT_CLASS, TEXTAREA_CLASS } from './connection-settings'
+import { FIELD_COL_CLASS, HELP_CLASS, SELECT_CLASS, TEXTAREA_CLASS } from './connection-settings'
 import type { ConnectionCoreForm } from './connection-core'
 
 // ClickHouse JSON path discovery options (the preview step that enumerates
@@ -58,6 +58,23 @@ export function ConnectionCoreFields({
   const isEdit = mode === 'edit'
   const secretName = dbType === 'bigquery' ? 'Service account key' : 'Password'
 
+  // Three states, three different sentences.
+  //
+  // `&& secretSet`, like the BigQuery key above: on a source with no stored
+  // password the field said "Leave empty to keep" directly above a hint reading
+  // "Password: not set." (tripl-ofvc). Falling back to masked dots for that case
+  // only inverted the contradiction — eight dots in the same grey as the
+  // "default" placeholder next to it read as an 8-character stored password,
+  // still directly above "Password: not set." (tripl-s8rg). The empty state now
+  // says it is empty, the way the instance SMTP password field already does
+  // ("Not configured"); the dots are left to `create`, where nothing is stored
+  // yet by definition and the box is the one you have to type into.
+  const passwordPlaceholder = !isEdit
+    ? '••••••••'
+    : secretSet
+      ? 'Leave empty to keep'
+      : 'No password stored'
+
   // On edit the secret is write-only: we can say whether one is stored, never
   // what it is. An empty field therefore means "keep what is stored".
   const secretStatus = isEdit ? (
@@ -73,7 +90,7 @@ export function ConnectionCoreFields({
       {dbType === 'bigquery' ? (
         <>
           <div className="grid grid-cols-2 gap-3">
-            <div className="grid gap-2">
+            <div className={FIELD_COL_CLASS}>
               <Label htmlFor={`${idPrefix}-project-id`}>Project ID</Label>
               <Input
                 id={`${idPrefix}-project-id`}
@@ -86,7 +103,7 @@ export function ConnectionCoreFields({
                 The GCP project the queries run in and that gets billed for the bytes they scan.
               </p>
             </div>
-            <div className="grid gap-2">
+            <div className={FIELD_COL_CLASS}>
               <Label htmlFor={`${idPrefix}-default-dataset`}>Default dataset</Label>
               <Input
                 id={`${idPrefix}-default-dataset`}
@@ -101,7 +118,7 @@ export function ConnectionCoreFields({
               </p>
             </div>
           </div>
-          <div className="grid gap-2">
+          <div className={FIELD_COL_CLASS}>
             <Label htmlFor={`${idPrefix}-service-account-json`}>Service account JSON</Label>
             <textarea
               id={`${idPrefix}-service-account-json`}
@@ -126,7 +143,7 @@ export function ConnectionCoreFields({
       ) : (
         <>
           <div className="grid grid-cols-5 gap-3">
-            <div className="col-span-2 grid gap-2">
+            <div className={`col-span-2 ${FIELD_COL_CLASS}`}>
               <Label htmlFor={`${idPrefix}-host`}>Host</Label>
               <Input
                 id={`${idPrefix}-host`}
@@ -136,7 +153,7 @@ export function ConnectionCoreFields({
                 placeholder="localhost"
               />
             </div>
-            <div className="grid gap-2">
+            <div className={FIELD_COL_CLASS}>
               <Label htmlFor={`${idPrefix}-port`}>Port</Label>
               <Input
                 id={`${idPrefix}-port`}
@@ -146,7 +163,7 @@ export function ConnectionCoreFields({
                 required
               />
             </div>
-            <div className="col-span-2 grid gap-2">
+            <div className={`col-span-2 ${FIELD_COL_CLASS}`}>
               <Label htmlFor={`${idPrefix}-database`}>Database</Label>
               <Input
                 id={`${idPrefix}-database`}
@@ -158,7 +175,7 @@ export function ConnectionCoreFields({
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <div className="grid gap-2">
+            <div className={FIELD_COL_CLASS}>
               <Label htmlFor={`${idPrefix}-username`}>Username</Label>
               <Input
                 id={`${idPrefix}-username`}
@@ -167,14 +184,14 @@ export function ConnectionCoreFields({
                 placeholder="default"
               />
             </div>
-            <div className="grid gap-2">
+            <div className={FIELD_COL_CLASS}>
               <Label htmlFor={`${idPrefix}-password`}>Password</Label>
               <Input
                 id={`${idPrefix}-password`}
                 type="password"
                 value={value.secret}
                 onChange={(e) => onChange({ secret: e.target.value })}
-                placeholder={isEdit ? 'Leave empty to keep' : '••••••••'}
+                placeholder={passwordPlaceholder}
               />
               {secretStatus}
             </div>
@@ -182,25 +199,27 @@ export function ConnectionCoreFields({
         </>
       )}
 
-      {/* Applies to every warehouse — BigQuery included. */}
-      <div className="grid grid-cols-2 gap-3">
-        <div className="grid gap-2">
-          <Label htmlFor={`${idPrefix}-timeout`}>Timeout, s</Label>
-          <Input
-            id={`${idPrefix}-timeout`}
-            type="number"
-            min={1}
-            step={1}
-            value={value.timeoutSeconds}
-            onChange={(e) => onChange({ timeoutSeconds: e.target.value })}
-            placeholder="Default"
-          />
-          <p className={HELP_CLASS}>{TIMEOUT_HELP}</p>
-        </div>
+      {/* Applies to every warehouse — BigQuery included. Full-width column with
+          the number box held narrow: as the lone child of a `grid-cols-2` row the
+          help wrapped into four ragged lines down the left half while the right
+          half of the dialog stayed empty (tripl-ofvc). */}
+      <div className={FIELD_COL_CLASS}>
+        <Label htmlFor={`${idPrefix}-timeout`}>Timeout, s</Label>
+        <Input
+          id={`${idPrefix}-timeout`}
+          type="number"
+          min={1}
+          step={1}
+          value={value.timeoutSeconds}
+          onChange={(e) => onChange({ timeoutSeconds: e.target.value })}
+          placeholder="Default"
+          className="max-w-[10rem]"
+        />
+        <p className={HELP_CLASS}>{TIMEOUT_HELP}</p>
       </div>
 
       {dbType === 'clickhouse' && (
-        <div className="grid gap-2">
+        <div className={FIELD_COL_CLASS}>
           <Label htmlFor={`${idPrefix}-json-path-discovery`}>JSON path discovery</Label>
           <select
             id={`${idPrefix}-json-path-discovery`}

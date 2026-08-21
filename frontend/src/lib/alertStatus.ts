@@ -133,8 +133,40 @@ export function incidentDirectionGlyph(direction: AlertInboxGroup['direction']):
   return direction === 'drop' ? '↓' : '↑'
 }
 
-function formatCount(value: number): string {
-  return value.toLocaleString()
+/**
+ * A magnitude, group-separated: `88.318` reads as "88", `0.04` stays "0.04".
+ *
+ * `expected_count` is a rolling baseline, so it arrives as a float. Printing it
+ * raw put "197 vs 88.318 expected" on every inbox card while the activity rail
+ * 400px away said "42,280 actual vs 33,376 expected" — two formats for one kind
+ * of number, and "88.318" is read as 88,318 by anyone used to a decimal comma
+ * (tripl-nj4n). The inbox card rounded neither, which is what this first fixed;
+ * the sibling surfaces (AnomaliesPage, OverviewPage, the top bar, the projects
+ * list, the replay dialog) each reached for `Math.round` on the baseline, and
+ * all five now come through here so one incident cannot be spelled two ways
+ * depending on which page is showing it.
+ *
+ * Rounding is value-aware, because not every magnitude here is a count of
+ * events. `metric` is a first-class alert scope and its values are genuinely
+ * sub-unit: a `%` catalog metric STORES A FRACTION (0.08 == 8%, see
+ * `alert_templates`), and ratio / average / per-distinct-user metrics have no
+ * ×100 to rescue them at all. These columns were migrated integer → float
+ * precisely so those values survive (f9a0b1c2d3e4), so an unconditional
+ * `Math.round` would print "0 vs 0 expected · -66.7%" — a card contradicting
+ * both its own delta and the "actual=4%, expected=12%" message the operator is
+ * holding. Below 1 the decimals ARE the number; at 1 and above the integer part
+ * carries it and the decimals are baseline noise.
+ *
+ * Callers that have room for it should keep the unrounded value in a `title`.
+ * Named for the domain rather than `formatCount`, which is already taken by
+ * `ui/chart-format` for the axis-tick abbreviation ("380k") — the opposite
+ * trade-off, and not one an incident row wants.
+ */
+export function formatIncidentCount(value: number): string {
+  if (Math.abs(value) >= 1) return Math.round(value).toLocaleString()
+  // Significant digits, not fraction digits: a bare `toLocaleString()` caps at
+  // three FRACTION digits, which turns a 0.000123 ratio back into "0".
+  return value.toLocaleString(undefined, { maximumSignificantDigits: 3 })
 }
 
 /**
@@ -156,10 +188,25 @@ export function incidentMagnitudeLabel(group: {
   percent_delta: number | null
 }): string {
   const delta = formatPercentDelta(group.percent_delta, group.expected_count)
+  const actual = formatIncidentCount(group.actual_count)
   if (group.expected_count <= 0) {
-    return `${formatCount(group.actual_count)} actual, none expected · ${delta}`
+    return `${actual} actual, none expected · ${delta}`
   }
-  return `${formatCount(group.actual_count)} vs ${formatCount(group.expected_count)} expected · ${delta}`
+  return `${actual} vs ${formatIncidentCount(group.expected_count)} expected · ${delta}`
+}
+
+/**
+ * The unrounded counts behind {@link incidentMagnitudeLabel}, for the tooltip.
+ *
+ * Rounding is right for reading the card at a glance; it is wrong for anyone
+ * reconciling a baseline against the detector, so the precision is moved rather
+ * than dropped.
+ */
+export function incidentMagnitudeTitle(group: {
+  actual_count: number
+  expected_count: number
+}): string {
+  return `Unrounded: ${group.actual_count} actual, ${group.expected_count} expected`
 }
 
 /**

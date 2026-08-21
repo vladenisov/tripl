@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import inspect
 import json
 import re
 from pathlib import Path
@@ -536,6 +537,11 @@ def test_the_declared_query_bounds_are_the_ones_the_routes_enforce(
         (events.LIST, "limit", "maximum"): events.LIMIT_MAX,
         (events.LIST, "limit", "default"): events.LIMIT_DEFAULT,
         (events.LIST, "silent_since_days", "maximum"): events.SILENT_SINCE_DAYS_MAX,
+        # Not a bound the CLI enforces: `--order-by` is left off the wire when
+        # unasked-for, and this is the value its help text tells the operator
+        # that omission buys. A route that changed its default would leave the
+        # help stating an ordering nobody gets (tripl-nhj0).
+        (events.LIST, "order_by", "default"): events.ORDER_BY_DEFAULT,
         (variables.LIST, "limit", "maximum"): variables.LIMIT_MAX,
         (variables.LIST, "limit", "default"): variables.LIMIT_DEFAULT,
         (search.SEARCH, "limit", "maximum"): search.LIMIT_MAX,
@@ -551,13 +557,55 @@ def test_the_declared_query_bounds_are_the_ones_the_routes_enforce(
     assert not wrong, "the CLI's query bounds are not the route's:\n  " + "\n  ".join(wrong)
 
 
-def test_the_declared_enums_are_the_openapi_ones(openapi: dict[str, Any]) -> None:
-    """``--status`` and ``--type`` are ``choices=``; hold the choices to the schema.
+def test_the_events_list_builder_takes_every_filter_the_route_declares(
+    openapi_paths: dict[str, Any],
+) -> None:
+    """A filter the route offers and the builder cannot spell reaches no client.
+
+    ``reviewed`` shipped to the route and to the frontend and to neither of the
+    two distributions that share this builder, so the UI's "Mark reviewed" wrote
+    a flag no shell and no agent could isolate afterwards. The builder's own
+    comment already said it mirrors the route's Query constraints - that was a
+    habit, and a habit does not fail CI. One direction only: ``branch`` is a
+    dependency rather than a declared parameter and is deliberately absent from
+    the document (see test_branch_is_resolved_by_name_and_sent_as_an_id).
+
+    No allowance list any more. This shipped with one, naming the two parameters
+    that predated the shared layer - ``field_value`` from PR #78 and ``order_by``
+    from PR #29 - and both are mirrored as of tripl-nhj0. An empty allowance list
+    is an invitation to append to, so the set is deleted rather than emptied:
+    every query parameter the route declares must be spellable here.
+    """
+    from tripl_cli.api import events
+
+    operation = openapi_paths[f"{API_PREFIX}{events.LIST}"]["get"]
+    declared = {
+        parameter["name"]
+        for parameter in operation.get("parameters", [])
+        if parameter.get("in") == "query"
+    }
+    assert declared, "read no query parameters at all - the walk is broken, not the builder"
+    accepted = set(inspect.signature(events.list_events).parameters)
+    missing = sorted(declared - accepted)
+    assert not missing, (
+        "GET /events declares query parameters tripl_cli.api.events.list_events cannot send, "
+        f"so neither the CLI nor tripl-mcp can filter on them: {missing}"
+    )
+
+
+def test_the_declared_enums_are_the_openapi_ones(
+    openapi: dict[str, Any], openapi_paths: dict[str, Any]
+) -> None:
+    """``--status``, ``--type`` and ``--order-by`` are ``choices=``; hold them to the schema.
 
     A value the parser rejects is exit 2 on a filter the API supports, and the
     operator has no way to tell that from a typo. Checked against the components
     rather than against a copy, for the same reason ``DRIFT_STATUSES`` is a
     verbatim transcription: the enum is the API's, not this CLI's.
+
+    ``order_by`` is a route-level ``Literal`` rather than a named schema, so its
+    two values are read off the parameter itself - the same rule, the other
+    corner of the document (tripl-nhj0).
     """
     from tripl_cli.api import events, search
 
@@ -568,6 +616,10 @@ def test_the_declared_enums_are_the_openapi_ones(openapi: dict[str, Any]) -> Non
     entity_type = schemas["SearchResult"]["properties"]["entity_type"]
     assert list(search.ENTITY_TYPES) == entity_type["enum"], (
         "tripl_cli.api.search.ENTITY_TYPES and the API's SearchResult.entity_type disagree"
+    )
+    order_by = _query_schema(openapi_paths[f"{API_PREFIX}{events.LIST}"]["get"], "order_by")
+    assert list(events.ORDER_BY) == order_by.get("enum"), (
+        "tripl_cli.api.events.ORDER_BY and GET /events?order_by's Literal disagree"
     )
 
 

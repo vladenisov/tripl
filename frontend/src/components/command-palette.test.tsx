@@ -2,6 +2,8 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { AuthUser } from '@/types'
+import { buildNavGroups } from '@/lib/navigation'
 import { AuthContext, type AuthContextValue } from './auth-context'
 import { CommandPaletteProvider } from './command-palette'
 import {
@@ -16,20 +18,55 @@ function mockJsonResponse(body: unknown) {
   })
 }
 
+const ownerUser: AuthUser = {
+  id: 'user-1',
+  email: 'owner@example.com',
+  name: 'Owner',
+  role: 'owner',
+  created_at: '2026-04-18T10:00:00Z',
+  updated_at: '2026-04-18T10:00:00Z',
+}
+
 const authValue: AuthContextValue = {
-  user: {
-    id: 'user-1',
-    email: 'owner@example.com',
-    name: 'Owner',
-    role: 'owner',
-    created_at: '2026-04-18T10:00:00Z',
-    updated_at: '2026-04-18T10:00:00Z',
-  },
+  user: ownerUser,
   status: 'authenticated',
   error: null,
   isLoggingOut: false,
   logout: async () => {},
   refresh: () => {},
+}
+
+/**
+ * The project payload the palette reads: identity, plus the summary the nav
+ * model takes its badges from. Every counter is quiet — the palette renders no
+ * counts, and a fixture that only ever carries zeros keeps the tests about
+ * which DESTINATIONS are offered.
+ */
+function demoProject(overrides: { id?: string; name?: string; slug?: string } = {}) {
+  return {
+    id: 'project-1',
+    name: 'Demo',
+    slug: 'demo',
+    ...overrides,
+    description: '',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    summary: {
+      event_type_count: 0,
+      event_count: 0,
+      active_event_count: 0,
+      implemented_event_count: 0,
+      review_pending_event_count: 0,
+      archived_event_count: 0,
+      variable_count: 0,
+      scan_count: 0,
+      alert_destination_count: 0,
+      alert_rule_count: 0,
+      monitoring_signal_count: 0,
+      latest_scan_job: null,
+      latest_signal: null,
+    },
+  }
 }
 
 function PaletteOpener() {
@@ -61,13 +98,13 @@ function LocationBeacon() {
   return <div data-testid="location">{location.pathname}</div>
 }
 
-function renderHarness(initialEntry = '/p/demo/events') {
+function renderHarness(initialEntry = '/p/demo/events', auth: AuthContextValue = authValue) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
   return render(
     <QueryClientProvider client={queryClient}>
-      <AuthContext.Provider value={authValue}>
+      <AuthContext.Provider value={auth}>
         <MemoryRouter initialEntries={[initialEntry]}>
           <Routes>
             <Route
@@ -146,14 +183,15 @@ describe('CommandPalette', () => {
 
     expect(await screen.findByPlaceholderText(/Search projects/i)).toBeInTheDocument()
     expect(await screen.findByText('Demo')).toBeInTheDocument()
-    expect(screen.getByText('Event type settings')).toBeInTheDocument()
-    expect(screen.getByText('Meta field settings')).toBeInTheDocument()
-    expect(screen.getByText('Relation settings')).toBeInTheDocument()
-    expect(screen.getByText('Variable settings')).toBeInTheDocument()
-    expect(screen.getByText('Monitoring settings')).toBeInTheDocument()
-    expect(screen.getByText('Alerting settings')).toBeInTheDocument()
-    // Not "Scan settings": scans are an operational surface with its own
-    // top-level route, not a settings tab.
+    // The sidebar's words, not a palette-only dialect: these rows used to read
+    // "Event type settings", "Meta field settings", "Relation settings",
+    // "Variable settings" and "Monitoring settings" (tripl-m6cv).
+    expect(screen.getByText('Event types')).toBeInTheDocument()
+    expect(screen.getByText('Schema & fields')).toBeInTheDocument()
+    expect(screen.getByText('Relations')).toBeInTheDocument()
+    expect(screen.getByText('Variables')).toBeInTheDocument()
+    expect(screen.getByText('Detection settings')).toBeInTheDocument()
+    expect(screen.getByText('Alerting')).toBeInTheDocument()
     expect(screen.getByText('Scans')).toBeInTheDocument()
 
     fireEvent.click(screen.getByText('Project settings'))
@@ -200,7 +238,10 @@ describe('CommandPalette', () => {
     renderHarness('/p/demo/events')
 
     fireEvent.click(screen.getByTestId('open-palette'))
-    fireEvent.click(await screen.findByText('Monitoring settings'))
+    // Named as the page names itself. It is not a sidebar destination — the
+    // Anomalies item claims the route by match — so it is listed by hand next to
+    // the other off-model destinations rather than derived (tripl-m6cv).
+    fireEvent.click(await screen.findByText('Detection settings'))
 
     await waitFor(() => {
       expect(screen.getByTestId('location').textContent).toBe('/p/demo/settings/monitoring')
@@ -226,6 +267,54 @@ describe('CommandPalette', () => {
     // The old, divergent palette-only labels are gone.
     expect(screen.queryByText('Users')).toBeNull()
     expect(screen.queryByText('Service settings')).toBeNull()
+  })
+
+  it('offers every sidebar destination, so the jump list cannot drift (tripl-m6cv)', async () => {
+    // The hand-written list this replaces covered 8 of the sidebar's
+    // destinations. Typing "anomalies" matched no row, so every static group
+    // vanished and the query fell through to knowledge search — the user got
+    // event types and fields back, never the page, and no signal that no such
+    // page existed. Derived from `buildNavGroups`, so a nav item added tomorrow
+    // is in the palette the same day.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects')) return mockJsonResponse([demoProject()])
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderHarness('/p/demo/events')
+    fireEvent.click(screen.getByTestId('open-palette'))
+    await screen.findByText('Demo')
+
+    for (const item of buildNavGroups('demo', undefined).flatMap((group) => group.items)) {
+      expect(screen.getByText(item.label), `no palette row for "${item.label}"`).toBeInTheDocument()
+    }
+    // Plus the destinations the sidebar renders outside the nav model.
+    expect(screen.getByText('Project settings')).toBeInTheDocument()
+    expect(screen.getByText('Concepts')).toBeInTheDocument()
+  })
+
+  it('does not offer a non-owner the owner-only destinations (tripl-m6cv)', async () => {
+    // The sidebar drops `ownerOnly` items because the route behind them 403s;
+    // a palette that mapped the nav model without the same filter would hand an
+    // editor a row straight into that wall.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects')) return mockJsonResponse([demoProject()])
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderHarness('/p/demo/events', { ...authValue, user: { ...ownerUser, role: 'editor' } })
+    fireEvent.click(screen.getByTestId('open-palette'))
+    await screen.findByText('Demo')
+
+    expect(screen.queryByText('Audit log')).toBeNull()
+    // The instance-wide Runtime section is owner-only for the same reason.
+    expect(screen.queryByText('Runtime')).toBeNull()
+    // Everything else still shows: this is a filter, not an empty nav.
+    expect(screen.getByText('Anomalies')).toBeInTheDocument()
   })
 
   it('toggles via ⌘K keyboard shortcut', async () => {
@@ -422,30 +511,6 @@ describe('CommandPalette', () => {
  * it made reachable for the first time (tripl-k6gt).
  */
 describe('CommandPalette ranking and filtering (tripl-k6gt)', () => {
-  function projectFixture(project: { id: string; name: string; slug: string }) {
-    return {
-      ...project,
-      description: '',
-      created_at: '2026-01-01T00:00:00Z',
-      updated_at: '2026-01-01T00:00:00Z',
-      summary: {
-        event_type_count: 0,
-        event_count: 0,
-        active_event_count: 0,
-        implemented_event_count: 0,
-        review_pending_event_count: 0,
-        archived_event_count: 0,
-        variable_count: 0,
-        scan_count: 0,
-        alert_destination_count: 0,
-        alert_rule_count: 0,
-        monitoring_signal_count: 0,
-        latest_scan_job: null,
-        latest_signal: null,
-      },
-    }
-  }
-
   /**
    * One row of a search response. `entityType` and `score` are parameters and
    * not constants on purpose, because both were constants once and both hid a
@@ -485,7 +550,7 @@ describe('CommandPalette ranking and filtering (tripl-k6gt)', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects')) {
-        return mockJsonResponse([projectFixture(project)])
+        return mockJsonResponse([demoProject(project)])
       }
       if (url.endsWith(`/api/v1/projects/${project.slug}/event-types`)) {
         return mockJsonResponse([])
@@ -576,16 +641,16 @@ describe('CommandPalette ranking and filtering (tripl-k6gt)', () => {
     renderHarness('/p/demo/events')
 
     fireEvent.click(screen.getByTestId('open-palette'))
-    expect(await screen.findByText('Overview')).toBeInTheDocument()
+    expect(await screen.findByText('All projects')).toBeInTheDocument()
 
     fireEvent.change(screen.getByPlaceholderText(/Search projects/i), {
-      target: { value: 'monitoring' },
+      target: { value: 'anomalies' },
     })
 
     await waitFor(() => {
-      expect(screen.queryByText('Overview')).toBeNull()
+      expect(screen.queryByText('All projects')).toBeNull()
     })
-    expect(screen.getByText('Monitoring settings')).toBeInTheDocument()
+    expect(screen.getByText('Anomalies')).toBeInTheDocument()
     expect(screen.queryByText('Data sources')).toBeNull()
   })
 
@@ -598,7 +663,7 @@ describe('CommandPalette ranking and filtering (tripl-k6gt)', () => {
     expect(await screen.findByText('Projects')).toBeInTheDocument()
 
     fireEvent.change(screen.getByPlaceholderText(/Search projects/i), {
-      target: { value: 'monitoring' },
+      target: { value: 'anomalies' },
     })
 
     // cmdk hides nothing once its own filter is off, so an empty group keeps its
@@ -627,7 +692,7 @@ describe('CommandPalette ranking and filtering (tripl-k6gt)', () => {
     })
 
     await waitFor(() => {
-      expect(screen.queryByText('Overview')).toBeNull()
+      expect(screen.queryByText('All projects')).toBeNull()
     })
     expect(screen.getByText('Acme Analytics')).toBeInTheDocument()
   })
@@ -676,13 +741,100 @@ describe('CommandPalette ranking and filtering (tripl-k6gt)', () => {
     expect(screen.queryByText('No matches.')).toBeNull()
   })
 
+  it('keeps the fetched rows on screen while the next search is in flight (tripl-2x5d)', async () => {
+    // The query key carries the debounced text, so each 200ms boundary minted a
+    // key with no data and the list fell back to a single "Searching." line for
+    // the whole round trip — measured at over 2.2s, during which the dialog held
+    // zero selectable rows while the events table behind it listed the very rows
+    // being searched for. Narrowing beats blanking.
+    let searches = 0
+    mockPalette({ id: 'project-1', name: 'Demo', slug: 'demo' }, async () => {
+      searches += 1
+      if (searches > 1) return new Promise<Response>(() => {})
+      return mockJsonResponse({
+        items: [
+          searchDocument({
+            id: 'doc-session',
+            entityType: 'event',
+            title: 'Session Started',
+            subtitle: 'Session',
+            score: 9,
+          }),
+        ],
+        total: 1,
+        semantic_used: false,
+      })
+    })
+
+    renderHarness('/p/demo/events')
+
+    fireEvent.click(screen.getByTestId('open-palette'))
+    const input = await screen.findByPlaceholderText(/Search projects/i)
+    fireEvent.change(input, { target: { value: 'session' } })
+    expect(await screen.findByText('Session Started')).toBeInTheDocument()
+
+    fireEvent.change(input, { target: { value: 'session_start' } })
+
+    // Wait until the SECOND request is actually out, so this is the new query
+    // key and not just the debounce window: that is the moment the rows used to
+    // disappear.
+    await waitFor(() => expect(searches).toBe(2))
+    expect(screen.getByText('Session Started')).toBeInTheDocument()
+    expect(screen.getByText('Updating results…')).toBeInTheDocument()
+    // The cold-start line belongs to a palette session that has never had
+    // results; it must not replace rows the reader is already looking at.
+    expect(screen.queryByText('Searching.')).toBeNull()
+  })
+
+  it('does not hand the previous search’s rows to an unrelated one (tripl-2x5d)', async () => {
+    // The palette is mounted for the life of the page — only the dialog unmounts
+    // — so React Query's observer keeps the last rows it saw forever. Without a
+    // record of which query they answer, "checkout"'s results came back under
+    // "Updating results…" for every later search, dimmed but selectable: Enter
+    // navigated to a checkout result while the input read something else.
+    let searches = 0
+    mockPalette({ id: 'project-1', name: 'Demo', slug: 'demo' }, async () => {
+      searches += 1
+      if (searches > 1) return new Promise<Response>(() => {})
+      return mockJsonResponse({
+        items: [
+          searchDocument({
+            id: 'doc-session',
+            entityType: 'event',
+            title: 'Session Started',
+            subtitle: 'Session',
+            score: 9,
+          }),
+        ],
+        total: 1,
+        semantic_used: false,
+      })
+    })
+
+    renderHarness('/p/demo/events')
+
+    fireEvent.click(screen.getByTestId('open-palette'))
+    const input = await screen.findByPlaceholderText(/Search projects/i)
+    fireEvent.change(input, { target: { value: 'session' } })
+    expect(await screen.findByText('Session Started')).toBeInTheDocument()
+
+    // Clearing the input abandons that search; what follows is a new one.
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.change(input, { target: { value: 'zzzqqq' } })
+
+    await waitFor(() => expect(searches).toBe(2))
+    expect(screen.queryByText('Session Started')).toBeNull()
+    expect(screen.queryByText('Updating results…')).toBeNull()
+    expect(screen.getByText('Searching.')).toBeInTheDocument()
+  })
+
   it('shows "No matches." when a query below the search floor matches nothing', async () => {
     mockPalette({ id: 'project-1', name: 'Demo', slug: 'demo' }, emptySearch)
 
     renderHarness('/p/demo/events')
 
     fireEvent.click(screen.getByTestId('open-palette'))
-    expect(await screen.findByText('Overview')).toBeInTheDocument()
+    expect(await screen.findByText('All projects')).toBeInTheDocument()
 
     fireEvent.change(screen.getByPlaceholderText(/Search projects/i), {
       // One character, so knowledge search never starts (2-char floor), and one
@@ -695,7 +847,7 @@ describe('CommandPalette ranking and filtering (tripl-k6gt)', () => {
     // because every other assertion about it in this file is an absence — so
     // deleting the block outright used to keep the suite green.
     expect(await screen.findByText('No matches.')).toBeInTheDocument()
-    expect(screen.queryByText('Overview')).toBeNull()
+    expect(screen.queryByText('All projects')).toBeNull()
     expect(screen.queryByText('Sign out')).toBeNull()
   })
 

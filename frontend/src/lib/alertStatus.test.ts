@@ -9,6 +9,7 @@ import {
   bulkMuteConfirmMessage,
   inboxActionSuccessMessage,
   incidentMagnitudeLabel,
+  incidentMagnitudeTitle,
   incidentReasonLabel,
   incidentWorstDeltaLabel,
   isHandledInboxStatus,
@@ -96,6 +97,66 @@ describe('what fired, on the card (tripl-oxkt.4)', () => {
 
   it('writes the magnitude against its baseline', () => {
     expect(incidentMagnitudeLabel(makeGroup())).toContain('expected · -59.2%')
+  })
+
+  it('rounds and groups the counts so a baseline never reads as "88.318"', () => {
+    // `expected_count` is a rolling baseline and arrives as a float. Raw, the
+    // card read "197 vs 88.318 expected", which a reader used to a decimal comma
+    // takes for 88,318 — and every other surface in the product already rounds
+    // (tripl-nj4n).
+    const label = incidentMagnitudeLabel(
+      makeGroup({ actual_count: 197, expected_count: 88.318, percent_delta: 123.1 }),
+    )
+    expect(label).toBe('197 vs 88 expected · 123.1%')
+    expect(label).not.toContain('88.318')
+  })
+
+  it('keeps a sub-unit metric value instead of collapsing it to "0 vs 0"', () => {
+    // `metric` is a first-class alert scope and a `%` catalog metric STORES a
+    // fraction (0.08 == 8%) — these columns were migrated integer → float for
+    // exactly that (f9a0b1c2d3e4). Rounded, a purchase-conversion drop read
+    // "0 vs 0 expected · -66.7%": a card contradicting both its own delta and
+    // the "actual=4%, expected=12%" message the operator is holding.
+    expect(
+      incidentMagnitudeLabel(
+        makeGroup({
+          scope_type: 'metric',
+          scope_types: ['metric'],
+          actual_count: 0.04,
+          expected_count: 0.12,
+          percent_delta: -66.7,
+        }),
+      ),
+    ).toBe('0.04 vs 0.12 expected · -66.7%')
+    // A ratio metric has no ×100 to rescue it, and `toLocaleString()` alone caps
+    // at three FRACTION digits — which would round it to "0" a second way.
+    expect(
+      incidentMagnitudeLabel(
+        makeGroup({
+          scope_type: 'metric',
+          scope_types: ['metric'],
+          actual_count: 0.000123,
+          expected_count: 0.0009,
+          percent_delta: -86.3,
+        }),
+      ),
+    ).toBe('0.000123 vs 0.0009 expected · -86.3%')
+  })
+
+  it('groups thousands the way the activity rail does', () => {
+    expect(
+      incidentMagnitudeLabel(
+        makeGroup({ actual_count: 42280, expected_count: 33375.6, percent_delta: 26.7 }),
+      ),
+    ).toContain('42,280 vs 33,376 expected')
+  })
+
+  it('keeps the unrounded counts for the tooltip', () => {
+    // Rounding is for reading; reconciling a baseline against the detector needs
+    // the precision, so it moves to the title rather than being dropped.
+    expect(incidentMagnitudeTitle(makeGroup({ actual_count: 197, expected_count: 88.318 }))).toBe(
+      'Unrounded: 197 actual, 88.318 expected',
+    )
   })
 
   it('says a zero baseline in words, never as 0%', () => {

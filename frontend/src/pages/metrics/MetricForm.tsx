@@ -386,8 +386,12 @@ function FactOperandEditor({
           />
         </MField>
       )}
+      {/* A filter list plus two buttons, so there is no one control the label
+          names — and with no filters yet (the default) the generated id
+          addressed nothing at all. `false` names the row as a group instead. */}
       <MField
         label="Filters"
+        htmlFor={false}
         last
         stacked
         hint="Optional. Add named filters, structured conditions, or SQL fragments; all are combined with AND."
@@ -1160,9 +1164,16 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
           <TemplateGallery onPick={applyTemplate} onSkip={() => setShowTemplates(false)} />
         )}
 
-        {/* Top row: Details on the left, Kind + its primary config on the right
-            (roughly matched heights, full page width). */}
-        <div className="grid grid-cols-1 gap-x-5 lg:grid-cols-2">
+        {/* One column, full width — the same shape as the sibling event and
+            fact-table forms. Two columns here put every kit Field inside a
+            ~415px card, and Field spends a fixed 232px on its label gutter from
+            `sm` up, so the control column measured ~125px: "Checkout conversion"
+            rendered as "Checkout conver", "checkout_conversion" as
+            "checkout_conve", and the Source card's data source as "Demo wareho"
+            — while ~130px of the label gutter beside them sat empty
+            (tripl-vv2f). Nothing narrower than the page fits a 232px gutter plus
+            a usable control, so the cards stack instead. */}
+        <div>
           <div>
             <SCard title="Details">
               <MField
@@ -1175,7 +1186,10 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               </MField>
               <MField
                 label="Internal name"
-                htmlFor={isNew ? 'metric-name' : undefined}
+                // After creation this row holds the name as text, not a control:
+                // `false` names it as a group, where `undefined` left the label
+                // pointing at a generated id nothing in the row carries.
+                htmlFor={isNew ? 'metric-name' : false}
                 required={isNew}
                 hint={isNew ? 'Stable identifier used in queries.' : "Can't be changed after creation."}
                 error={isNew ? fieldErrors['metric-name'] : undefined}
@@ -1227,9 +1241,8 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               </MField>
             </SCard>
 
-            {/* Light, kind-specific config sits beside Details to balance the
-                row; only the wide parts (SQL editor, fact operands) go full-width
-                below. */}
+            {/* Kind-specific config follows the kind picker it belongs to; the
+                bulkier parts (SQL editor, fact operands) come after it. */}
             {kind === 'sql' && (
               <SCard title="Source" description="Where the query runs, and how often.">
                 <MField
@@ -1339,8 +1352,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
           </div>
         </div>
 
-        {/* Only the wide parts go full-width; data source / interval live in the
-            Source card beside Details above. */}
+        {/* The query itself, below the Source card that says where it runs. */}
         {kind === 'sql' && (
           <SCard title="Query" description="A custom query returning one numeric value per bucket.">
             <MField
@@ -1417,8 +1429,10 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
           </SCard>
         )}
 
-        {/* Fact aggregation operands span full width below the top row: a single
-            operand, or numerator | denominator side by side for a ratio. */}
+        {/* Fact aggregation operands: a single operand, or numerator then
+            denominator for a ratio. Stacked, not side by side, for the reason
+            the top row is stacked — every row inside is a kit Field, and a
+            half-width card leaves its controls ~125px wide (tripl-vv2f). */}
         {factEnabled && (
           factTablesQuery.isSuccess && !hasFactTables ? (
             <SCard title="Aggregation">
@@ -1441,7 +1455,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               />
             </SCard>
           ) : (
-            <div className="grid grid-cols-1 gap-x-5 lg:grid-cols-2">
+            <div>
               <div>
                 <SCard title="Numerator">
                   <FactOperandEditor
@@ -1488,11 +1502,17 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               no data source, so hide these dimension inputs for that kind. */}
           {kind !== 'event_composition' && (
             <>
-              <MField label="Breakdown columns" hint="Warehouse columns to roll up by. Tick the columns to break this metric down by.">
+              {/* A grid of individually-labelled checkboxes: nothing a <label> can
+                  point at, so the row names the group. The picker's own
+                  aria-label went with it — it would name the same group twice. */}
+              <MField
+                label="Breakdown columns"
+                htmlFor={false}
+                hint="Warehouse columns to roll up by. Tick the columns to break this metric down by."
+              >
                 <div className="max-w-[420px]">
                   <ColumnCheckboxPicker
                     id="metric-breakdowns"
-                    aria-label="Breakdown columns"
                     columns={breakdownColumnChoices}
                     value={breakdownColumns}
                     onChange={setBreakdownColumns}

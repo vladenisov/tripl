@@ -128,6 +128,11 @@ describe('RuleReplayDialog responsive results', () => {
       'whitespace-nowrap',
     )
 
+    // Both count columns are grouped by the same formatter, so one row cannot
+    // read "5780" beside "3,529".
+    expect(within(table as HTMLTableElement).getByText('5,780')).toBeInTheDocument()
+    expect(within(table as HTMLTableElement).getByText('3,529')).toBeInTheDocument()
+
     const preview = dialog.querySelector('pre')
     expect(preview?.textContent).toContain(LONG_MESSAGE)
     expect(preview).toHaveClass('min-w-0', 'max-w-full', '[overflow-wrap:anywhere]')
@@ -235,5 +240,32 @@ describe('RuleReplayDialog threshold overrides', () => {
       await screen.findByText(/the message this run would have sent, as plain text/),
     ).toBeInTheDocument()
     expect(screen.queryByText(/Slack\/Telegram/)).toBeNull()
+  })
+
+  it('keeps a sub-unit baseline instead of replaying it as "0 vs 0" (tripl-nj4n)', async () => {
+    // A `%` catalog metric stores a fraction (0.08 == 8%) and metrics are a
+    // first-class rule scope, so Math.round emptied both columns of a replay row
+    // whose Δ% beside them was computed from the real values.
+    vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue({
+      ...RESULT,
+      firings: [
+        {
+          ...RESULT.firings[0]!,
+          scope_type: 'metric',
+          actual_count: 0.04,
+          expected_count: 0.12,
+          absolute_delta: -0.08,
+          percent_delta: -66.7,
+        },
+      ],
+    })
+    renderDialog()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
+
+    const table = (await screen.findByText(LONG_SCOPE)).closest('table') as HTMLTableElement
+    expect(within(table).getByText('0.04')).toBeInTheDocument()
+    expect(within(table).getByText('0.12')).toBeInTheDocument()
+    expect(within(table).queryByText('0')).toBeNull()
   })
 })
