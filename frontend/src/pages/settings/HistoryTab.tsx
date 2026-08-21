@@ -206,9 +206,20 @@ function RevisionRow({
       >
         <GitBranch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          {/* A summary can still outrun the card, and it is the only thing on
-              screen naming the branch — so it carries its own tooltip. */}
-          <div className="truncate text-xs font-medium" title={rev.summary || undefined}>
+          {/* Wraps instead of truncating. Widening the card to 2fr was not
+              enough on its own: at 1512px the row is ~355px and the
+              product-generated summary "Base snapshot for branch '<name>'"
+              still overran it, so one `truncate` line clipped to "Base snapshot
+              for branch 'feature/checkout-f…" — losing the branch name, which
+              is the only identity the row carries and the only thing on the
+              page that names it (tripl-lzge). Two lines hold roughly 90
+              characters; `break-words` keeps an unbroken branch name inside the
+              card, and the tooltip stays as the fallback for a summary longer
+              than that. */}
+          <div
+            className="line-clamp-2 break-words text-xs font-medium"
+            title={rev.summary || undefined}
+          >
             {rev.summary || <span className="text-muted-foreground">(no summary)</span>}
           </div>
           {/* One `truncate` line rather than a wrapping one: as flowing text the

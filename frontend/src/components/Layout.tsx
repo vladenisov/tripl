@@ -317,11 +317,7 @@ export default function Layout() {
             />
 
             <div className="flex flex-1 overflow-hidden">
-              <div
-                id={MAIN_CONTENT_ID}
-                tabIndex={-1}
-                className="relative min-w-0 flex-1 overflow-y-auto focus:outline-none"
-              >
+              <div className="relative min-w-0 flex-1 overflow-y-auto">
                 <div className="p-3 sm:p-5 lg:p-8">
                   {/* Persistent demo marker across every surface of a demo
                       project — synthetic/local data, recipe version, freshness,
@@ -330,19 +326,48 @@ export default function Layout() {
                   {/* The coached scenario. Gated with the banner, but it decides
                       for itself whether there is anything left to coach. */}
                   {activeProject?.is_demo && <DemoScenarioStrip />}
-                  {projectsQuery.isError && (
-                    <div className="mb-6">
-                      <ErrorState
-                        title="Backend is unavailable"
-                        description="The frontend is up, but the initial API request failed."
-                        error={projectsQuery.error}
-                        onRetry={() => {
-                          void projectsQuery.refetch()
-                        }}
-                      />
-                    </div>
-                  )}
-                  <Outlet />
+                  {/* The skip link's landmark — and it starts HERE, below the
+                      demo chrome, not around it. Both blocks above are shell
+                      furniture, and on a demo project they put six controls
+                      between the landmark and the page's own first one on the
+                      captured stand: "What's simulated", "Tour & chapters",
+                      "Reset" and "Delete" (those two owner-only), the strip's
+                      CTA, "Dismiss". A keyboard user who asked to skip
+                      the shell was therefore walked onto the demo's DESTRUCTIVE
+                      Delete before reaching the page they had opened
+                      (tripl-rinm). Nothing is hidden: the chrome is still in the
+                      tab order, reached forwards from the top bar or backwards
+                      from here.
+
+                      This element's box is ALSO the content column — the page
+                      gutter is padding on the parent, so this box starts and
+                      ends exactly where the cards do. ScenarioCoachMark bounds
+                      its popovers to it and depends on that.
+
+                      `scroll-mt-*` mirrors that parent padding because jumping
+                      to a fragment scrolls its top flush to the viewport: with
+                      no scroll margin the skip link would eat the page's own top
+                      gutter (32px at lg) on EVERY surface, demo or not. Matched
+                      to the padding, a non-demo page does not move at all. */}
+                  <div
+                    id={MAIN_CONTENT_ID}
+                    tabIndex={-1}
+                    className="scroll-mt-3 focus:outline-none sm:scroll-mt-5 lg:scroll-mt-8"
+                  >
+                    {projectsQuery.isError && (
+                      <div className="mb-6">
+                        <ErrorState
+                          title="Backend is unavailable"
+                          description="The frontend is up, but the initial API request failed."
+                          error={projectsQuery.error}
+                          onRetry={() => {
+                            void projectsQuery.refetch()
+                          }}
+                        />
+                      </div>
+                    )}
+                    <Outlet />
+                  </div>
                 </div>
               </div>
 

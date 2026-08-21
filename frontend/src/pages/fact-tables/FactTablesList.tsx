@@ -108,10 +108,20 @@ export function FactTablesList({ slug }: { slug?: string }) {
              header sat 154px below the unselected "Catalog" tab, at the same
              spot the Catalog tab's own panel header occupies, so a reader
              glancing at it to work out where they are got the wrong answer
-             (tripl-p4kr). The count subtitle went with it: it read the very
-             same `data.total ?? factTables.length` as the "Fact tables" stat
-             60px above, which stated one number twice in adjacent chrome. */
-          <Panel title="Fact tables">
+             (tripl-p4kr).
+
+             Renaming it took the "N total" subtitle with it, on the grounds
+             that the stat strip 60px above already states the same number.
+             True — and equally true of the Catalog tab, which keeps
+             "Catalog / 4 total" under a "METRICS 4" stat. Dropping it here
+             only made the two tabs of one page disagree about whether a list
+             panel is captioned, so the two panel headers no longer lined up
+             (tripl-9jzt). Same expression as MetricsCatalog.tsx:603 so the
+             sibling headers stay one shape. */
+          <Panel
+            title="Fact tables"
+            subtitle={data ? `${(data.total ?? factTables.length).toLocaleString()} total` : undefined}
+          >
             {factTablesQuery.isLoading ? (
               <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
                 Loading…

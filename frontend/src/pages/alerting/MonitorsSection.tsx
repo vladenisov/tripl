@@ -69,14 +69,23 @@ export interface RuleWithDestination extends AlertRule {
 // state that legitimately needs more: MuteControl reveals its duration presets
 // inline, and a fixed track would squash the controls instead of growing.
 //
+// "Last fired" gets 84px, not the 64px "State" gets, because a column has to fit
+// its own header (tripl-fgiv). "LAST FIRED" at the header's 10.5px/600 with
+// `tracking-[0.05em]` measures ~65px in Inter and ~69px in the system-ui
+// fallback, so at 64px it was the ONE header that wrapped to two lines: the
+// whole header row grew a line and every other label floated in it. The cells
+// themselves ("22h ago", "–") never needed the width; the label does.
+//
 // Every column string is written out in full: Tailwind scans source for literal
 // class names, so an interpolated `grid-cols-[…]` would never be built.
 const RULE_GRID_BASE = 'grid items-center gap-3 px-4'
 const RULE_GRID_COLS
-  = 'grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1fr)_64px_64px_minmax(188px,auto)]'
+  = 'grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1fr)_64px_84px_minmax(188px,auto)]'
 const RULE_GRID_COLS_READ_ONLY
-  = 'grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1fr)_64px_64px_minmax(52px,auto)]'
-const RULE_TABLE_MIN_WIDTH = 'min-w-[820px]'
+  = 'grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1fr)_64px_84px_minmax(52px,auto)]'
+// 840px = the 820px the text columns were budgeted at, plus the 20px "Last
+// fired" just took, so widening the label's track did not narrow CONDITION.
+const RULE_TABLE_MIN_WIDTH = 'min-w-[840px]'
 
 /** The one grid definition the header row and every rule row must share. */
 function ruleGridClass(canWrite: boolean): string {

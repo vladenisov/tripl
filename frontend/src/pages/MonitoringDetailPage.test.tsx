@@ -849,6 +849,25 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     ).toBeInTheDocument()
   })
 
+  it('keeps a sub-unit baseline readable instead of rounding it to the no-baseline case', async () => {
+    // `expected_count` is a mean of prior buckets, so a rare event's baseline is
+    // legitimately below 1. The caption's `> 0` gate admits it and then
+    // `Math.round` printed "baseline 0" — the caption contradicting the gate
+    // that had just decided a baseline existed, on the same page whose signal
+    // card already formats this value-aware.
+    installEventDetailFetch({
+      latestSignal: { ...dropToZeroSignal(), expected_count: 0.4, z_score: -6.2 },
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const panel = within(await screen.findByTestId('signal-volume-chart'))
+    expect(
+      panel.getByText(`baseline ${(0.4).toLocaleString()} at the flagged bucket`),
+    ).toBeInTheDocument()
+    expect(panel.queryByText(/baseline 0 at the flagged bucket/)).toBeNull()
+  })
+
   it('omits the signal mini-chart when the event has no active anomaly', async () => {
     installEventDetailFetch() // latest_signal defaults to null → no banner, no chart
     renderEventDetail()

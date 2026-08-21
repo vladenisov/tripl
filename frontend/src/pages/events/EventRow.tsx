@@ -32,7 +32,12 @@ import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { EventDriftBadge } from './EventDriftBadge'
 import { EventWindowMetricsCell } from './EventWindowMetricsCell'
 import { PINNED_EVENT_CELL_STYLE } from './useEventsTableOverflow'
-import { computeWindowDelta, formatRelativeTime, splitTemplateValue } from './utils'
+import {
+  computeWindowDelta,
+  describeWindowDelta,
+  formatRelativeTime,
+  splitTemplateValue,
+} from './utils'
 
 export type RowAction =
   | 'edit'
@@ -321,9 +326,16 @@ export const EventRow = memo(function EventRow({
       {!hideDelta && (
         <TableCell className="tnum text-right text-[11px]">
           {(() => {
-            const pct = computeWindowDelta(windowData)
+            const delta = computeWindowDelta(windowData)
+            // One sentence for every outcome, naming what was compared and how
+            // much of each 24h window was there to compare. The blanket "No
+            // prior 24h window to compare against" this replaces was false on
+            // the fresh demo, where the prior window held 45,812 events and the
+            // cell still showed a dash (tripl-oooj).
+            const title = describeWindowDelta(delta)
+            const pct = delta.pct
             if (pct == null) {
-              return <NoData title="No prior 24h window to compare against" />
+              return <NoData title={title} />
             }
             const color =
               Math.abs(pct) < 1
@@ -332,9 +344,16 @@ export const EventRow = memo(function EventRow({
                   ? 'var(--success)'
                   : 'var(--danger)'
             return (
-              <span style={{ color }}>
+              <span style={{ color }} title={title}>
                 {pct >= 0 ? '+' : ''}
                 {pct.toFixed(0)}%
+                {/* The window is short of its 48h — on the demo, 46.0h of it,
+                    because collection ends ~2h before now. The number is still
+                    the best available answer, so it is printed and flagged
+                    rather than withheld; the title states the real coverage. */}
+                {delta.partial && (
+                  <span aria-hidden="true" style={{ color: 'var(--fg-faint)' }}>*</span>
+                )}
               </span>
             )
           })()}

@@ -69,14 +69,34 @@ export function formatCompactCount(value: number): string {
   return compactCountFormatter.format(value)
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000
+const HOUR_MS = 60 * 60 * 1000
+const DAY_MS = 24 * HOUR_MS
+
+/** Width of each half of the Δ column's comparison, in hours. */
+export const WINDOW_DELTA_HOURS = 24
+
+/**
+ * Least of its 24 hours a window may carry and still be divided by the other.
+ *
+ * The two windows are summed raw, so a coverage gap between them leaks straight
+ * into the printed percentage: at 22 of 24 hours (the demo's 2h collection lag)
+ * the number is ~8% low, which the "*" marker and the tooltip disclose. At 1 of
+ * 24 hours it is ~24x off, which is how 13 rows on one stand came out between
+ * +1673% and +1907% (tripl-7vnw) — no marker rescues a number that is mostly
+ * gap. Three quarters caps the leak at a third and still keeps the column alive
+ * through a six-hour lag.
+ */
+const MIN_WINDOW_COVERAGE = 0.75
+
+const exactCountFormatter = new Intl.NumberFormat('en-US')
 
 /**
  * Width of the collection grid, read off the series instead of assumed. The
  * window-metrics endpoint returns stored EventMetric rows only — no zero fill —
  * so the smallest gap between consecutive buckets is the scan interval whenever
  * any two adjacent buckets survived. A gap-riddled series only inflates it,
- * which loosens the coverage check below rather than tightening it.
+ * which makes the coverage below read LOW, i.e. it errs toward disclosing an
+ * incomplete window rather than hiding one.
  */
 function inferBucketMs(points: EventMetricPoint[]): number {
   let smallest = Number.POSITIVE_INFINITY
@@ -87,43 +107,169 @@ function inferBucketMs(points: EventMetricPoint[]): number {
   return Number.isFinite(smallest) ? smallest : 0
 }
 
+export type WindowDeltaStatus =
+  | 'ok'
+  | 'no-series'
+  | 'no-prior-volume'
+  | 'window-too-thin'
+
+export interface WindowDelta {
+  status: WindowDeltaStatus
+  /** Percent change; non-null only when `status` is 'ok'. */
+  pct: number | null
+  /** Raw volume summed in each half, as quoted back in the tooltip. */
+  recentTotal: number
+  priorTotal: number
+  /** How many of each window's 24 hours actually carry a bucket. */
+  recentCoveredHours: number
+  priorCoveredHours: number
+  /** Hours between the newest bucket and now; 0 when collection is current. */
+  trailingGapHours: number
+  /** Either half is short of its 24 hours, so it compares less than a window. */
+  partial: boolean
+}
+
 /**
  * 24h volume delta for a catalog row: percent change of the most recent 24h of
  * volume versus the prior 24h, read off the same window-metric series the event
- * detail page uses. Mirrors MonitoringDetailPage.computeEventStats so the list's
- * "Δ · 24h" column and the detail page agree (the previous implementation keyed
- * off per-bucket anomaly `expected_count`, which is null on non-anomaly buckets,
- * so nearly every row rendered "—"). Summing raw points equals summing an hourly
- * aggregation, so no pre-bucketing is needed.
+ * detail page uses (the first implementation keyed off per-bucket anomaly
+ * `expected_count`, which is null on non-anomaly buckets, so nearly every row
+ * rendered "—"). Summing raw points equals summing an hourly aggregation, so no
+ * pre-bucketing is needed.
  *
- * Returns null unless the series actually reaches back two full 24h windows
- * from its newest bucket. The fetch window is 48h anchored on NOW
- * (ROW_METRICS_RANGE_HOURS) while the comparison anchors on the newest bucket
- * that carries data, so a collection that lags clips the "prior" slot to
- * whatever still fits inside the window: on a stand whose newest bucket sat
- * ~22h behind now, every one of 13 rows divided 24h of volume by ~1.25h of it
- * and landed between +1673% and +1907% — a column that could not be sorted,
- * compared, or acted on, beside rows reading "last seen: never" (tripl-7vnw).
- * "No prior 24h window to compare against" is the honest answer there, and it
- * is already what the cell renders for null.
+ * Both halves are anchored on NOW, not on the newest bucket that carries data —
+ * "Δ · 24h" is a claim about the last 24 hours, and anchoring on the newest
+ * bucket made a lagging collection shrink the PRIOR half instead of the recent
+ * one, which inflates the ratio (tripl-7vnw). Anchored here, a lag shrinks the
+ * recent half, so the error is conservative and, above `MIN_WINDOW_COVERAGE`,
+ * small enough to print with a marker.
+ *
+ * It does NOT gate on the series spanning a full 47h. That blanket span guard
+ * blanked the whole column on the fresh demo, where 47 hourly points span 46.0h
+ * because collection ends ~2h before now, while the same payload carries recent
+ * 51,456 against prior 45,812 — a perfectly sound +12% (tripl-oooj). Coverage is
+ * now measured per half and reported instead of being a reason to render
+ * nothing; the genuine empty states are a prior half with no volume at all and
+ * a half too thin to divide by.
+ *
+ * NOT yet shared with MonitoringDetailPage.computeEventStats, which still splits
+ * on the newest bucket with no coverage check at all — so the detail page prints
+ * the inflated figure this column stopped printing. Folding it onto this
+ * function is follow-up work in that file.
  */
-export function computeWindowDelta(points: EventMetricPoint[]): number | null {
-  if (points.length < 2) return null
-  const latest = Date.parse(points[points.length - 1].bucket)
-  const earliest = Date.parse(points[0].bucket)
-  if (!Number.isFinite(latest) || !Number.isFinite(earliest)) return null
-  // One bucket of slack: a fully covered 48h window puts its first and last
-  // hourly bucket 47h apart, and a daily grid fits exactly two buckets in it.
-  if (latest - earliest < 2 * DAY_MS - inferBucketMs(points)) return null
-  let recent = 0
-  let prior = 0
-  for (const point of points) {
-    const age = latest - Date.parse(point.bucket)
-    if (age < DAY_MS) recent += point.count
-    else if (age < 2 * DAY_MS) prior += point.count
+export function computeWindowDelta(
+  points: EventMetricPoint[],
+  now: number = Date.now(),
+): WindowDelta {
+  const noSeries: WindowDelta = {
+    status: 'no-series',
+    pct: null,
+    recentTotal: 0,
+    priorTotal: 0,
+    recentCoveredHours: 0,
+    priorCoveredHours: 0,
+    trailingGapHours: 0,
+    partial: true,
   }
-  if (prior <= 0) return null
-  return ((recent - prior) / prior) * 100
+  if (points.length < 2) return noSeries
+  const bucketMs = inferBucketMs(points)
+  if (bucketMs <= 0) return noSeries
+
+  let recentTotal = 0
+  let priorTotal = 0
+  let recentBuckets = 0
+  let priorBuckets = 0
+  let latest = Number.NEGATIVE_INFINITY
+  for (const point of points) {
+    const at = Date.parse(point.bucket)
+    if (!Number.isFinite(at)) continue
+    if (at > latest) latest = at
+    const age = now - at
+    // A bucket newer than `now` (clock skew between browser and collector)
+    // belongs to the recent half, not to neither.
+    if (age < DAY_MS) {
+      recentTotal += point.count
+      recentBuckets += 1
+    } else if (age <= 2 * DAY_MS) {
+      // Inclusive at the far edge: the fetch window is [now-48h, now]
+      // (ROW_METRICS_RANGE_HOURS), so the bucket stamped exactly now-48h is in
+      // the payload and belongs to the prior half rather than to neither.
+      priorTotal += point.count
+      priorBuckets += 1
+    }
+  }
+  if (!Number.isFinite(latest)) return noSeries
+
+  // Expressed in hours rather than buckets so the tooltip reads the same on any
+  // collection grid: 23 hourly buckets and 1 daily bucket are "23 of 24" and
+  // "24 of 24" hours respectively.
+  const coveredHours = (buckets: number): number =>
+    Math.min(WINDOW_DELTA_HOURS, Math.round((buckets * bucketMs) / HOUR_MS))
+  const recentCoveredHours = coveredHours(recentBuckets)
+  const priorCoveredHours = coveredHours(priorBuckets)
+  const measured = {
+    recentTotal,
+    priorTotal,
+    recentCoveredHours,
+    priorCoveredHours,
+    trailingGapHours: Math.max(0, Math.round((now - latest) / HOUR_MS)),
+    partial:
+      recentCoveredHours < WINDOW_DELTA_HOURS || priorCoveredHours < WINDOW_DELTA_HOURS,
+  }
+
+  const minCoveredHours = WINDOW_DELTA_HOURS * MIN_WINDOW_COVERAGE
+  if (recentCoveredHours < minCoveredHours || priorCoveredHours < minCoveredHours) {
+    return { ...measured, status: 'window-too-thin', pct: null }
+  }
+  if (priorTotal <= 0) return { ...measured, status: 'no-prior-volume', pct: null }
+  return { ...measured, status: 'ok', pct: ((recentTotal - priorTotal) / priorTotal) * 100 }
+}
+
+/**
+ * The Δ cell's tooltip. It always names what was compared and how much of each
+ * window was there to compare, because the sentence it replaces ("No prior 24h
+ * window to compare against") was asserted for every null — including the fresh
+ * demo, where the prior window held 45,812 events (tripl-oooj).
+ */
+export function describeWindowDelta(delta: WindowDelta): string {
+  const {
+    status,
+    recentTotal,
+    priorTotal,
+    recentCoveredHours,
+    priorCoveredHours,
+    trailingGapHours,
+  } = delta
+  const lag =
+    trailingGapHours > 0 ? `; the series ends ${trailingGapHours}h before now` : ''
+
+  if (status === 'no-series') {
+    return 'No metrics collected for this event in the last 48h.'
+  }
+  if (status === 'window-too-thin') {
+    return (
+      `Too little of the window to compare: the last 24h are covered to `
+      + `${recentCoveredHours} of ${WINDOW_DELTA_HOURS} hours and the 24h before it to `
+      + `${priorCoveredHours} of ${WINDOW_DELTA_HOURS}${lag}.`
+    )
+  }
+  if (status === 'no-prior-volume') {
+    return (
+      `No volume in the prior 24h to compare against — the last 24h carry `
+      + `${exactCountFormatter.format(recentTotal)}.`
+    )
+  }
+
+  const compared =
+    `Last 24h ${exactCountFormatter.format(recentTotal)} vs `
+    + `${exactCountFormatter.format(priorTotal)} in the 24h before it.`
+  if (!delta.partial) return `${compared} Both windows fully covered.`
+  return (
+    `${compared} Incomplete window: the last 24h are covered to `
+    + `${recentCoveredHours} of ${WINDOW_DELTA_HOURS} hours and the 24h before it to `
+    + `${priorCoveredHours} of ${WINDOW_DELTA_HOURS}${lag}, so this compares less `
+    + `than a full window.`
+  )
 }
 
 /**

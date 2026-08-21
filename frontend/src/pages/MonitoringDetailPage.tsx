@@ -2285,10 +2285,15 @@ function EventSignalMiniChart({
       <div className="mb-[6px] flex items-baseline justify-between gap-3 text-[11px]">
         <span className="font-medium" style={{ color: 'var(--fg-subtle)' }}>Volume</span>
         {/* Same `expected > 0` gate the banner uses, so the two cannot disagree
-            about whether this signal had a baseline at all. */}
+            about whether this signal had a baseline at all — and the SAME
+            value-aware formatter the signal card 1200 lines up already uses, so
+            they cannot disagree about what it was. `expected_count` is a mean of
+            prior buckets, so a rare event's baseline is legitimately sub-unit
+            (0.4/hour); `Math.round` wrote that as "baseline 0", contradicting
+            the gate that had just decided a baseline existed. */}
         <span style={{ color: 'var(--fg-faint)' }}>
           {signal.expected_count > 0
-            ? `baseline ${formatNum(Math.round(signal.expected_count))} at the flagged bucket`
+            ? `baseline ${formatIncidentCount(signal.expected_count)} at the flagged bucket`
             : `${NO_BASELINE_LABEL} at the flagged bucket`}
         </span>
       </div>

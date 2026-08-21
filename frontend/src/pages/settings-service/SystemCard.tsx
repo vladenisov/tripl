@@ -11,8 +11,14 @@ type SystemRow = {
   /** What the instance reports, in this row's own vocabulary. */
   value: string
   tone: SystemTone
-  /** Stated only where the state changes what an operator should do next. */
-  note?: string
+  /**
+   * Required, not optional. The tiles sit in a `grid`, which equalises the
+   * height of every tile in a row, so the three annotated rows stretched the
+   * four bare ones to their height and left ~70px of dead space under the word
+   * "Configured" on each (tripl-my0t). Seven explanations or none; this is the
+   * seven.
+   */
+  note: string
 }
 
 const VALUE_COLOR: Record<SystemTone, string> = {
@@ -22,13 +28,18 @@ const VALUE_COLOR: Record<SystemTone, string> = {
   danger: 'var(--danger)',
 }
 
-/** A dependency the API cannot run without: unset is a failure, not a blank. */
-function required(label: string, configured: boolean): SystemRow {
+/**
+ * A dependency the API cannot run without: unset is a failure, not a blank.
+ *
+ * @param use What the connection is for, shown once it is configured — the
+ *   only thing left to say about a row that is already fine.
+ */
+function required(label: string, configured: boolean, use: string): SystemRow {
   return {
     label,
     value: configured ? 'Configured' : 'Unset',
     tone: configured ? 'success' : 'danger',
-    note: configured ? undefined : 'Required — the API cannot reach this dependency.',
+    note: configured ? use : 'Required — the API cannot reach this dependency.',
   }
 }
 
@@ -61,17 +72,29 @@ function systemRows(system: SystemSettings): SystemRow[] {
       tone: system.debug ? 'warning' : 'success',
       note: system.debug
         ? 'Production startup checks are skipped and CORS falls back to "*".'
-        : undefined,
+        : 'Production startup checks ran at boot and CORS is limited to the configured origins.',
     },
-    required('Database URL', system.database_url_configured),
-    required('Sync database URL', system.sync_database_url_configured),
-    required('RabbitMQ URL', system.rabbitmq_url_configured),
+    required(
+      'Database URL',
+      system.database_url_configured,
+      'The async Postgres connection the API request path reads and writes through.',
+    ),
+    required(
+      'Sync database URL',
+      system.sync_database_url_configured,
+      'The sync Postgres connection Celery tasks check their sessions out of.',
+    ),
+    required(
+      'RabbitMQ URL',
+      system.rabbitmq_url_configured,
+      'The Celery broker every scan, alert and digest task is dispatched through.',
+    ),
     {
       label: 'Redis URL',
       value: system.redis_url_configured ? 'Configured' : 'Unset',
       tone: system.redis_url_configured ? 'success' : 'neutral',
       note: system.redis_url_configured
-        ? undefined
+        ? 'Backs the response cache and the live-update stream.'
         : 'Optional — caching and live updates stay off without it.',
     },
     {
@@ -79,7 +102,7 @@ function systemRows(system: SystemSettings): SystemRow[] {
       value: system.encryption_key_configured ? 'Configured' : 'Unset',
       tone: system.encryption_key_configured ? 'success' : 'danger',
       note: system.encryption_key_configured
-        ? undefined
+        ? 'Data source and alert destination secrets are encrypted at rest with it.'
         : 'Data source and alert destination secrets are stored as plaintext.',
     },
     {
@@ -87,7 +110,7 @@ function systemRows(system: SystemSettings): SystemRow[] {
       value: system.openai_api_key_configured ? 'Configured' : 'Unset',
       tone: system.openai_api_key_configured ? 'success' : 'neutral',
       note: system.openai_api_key_configured
-        ? undefined
+        ? 'Used when the AI or embedding key is blank.'
         : 'Optional — only used when the AI or embedding key is blank.',
     },
   ]
@@ -136,11 +159,9 @@ export function SystemCard({ system }: { system: SystemSettings }) {
               <span className="text-[12.5px] font-medium" style={{ color: VALUE_COLOR[row.tone] }}>
                 {row.value}
               </span>
-              {row.note && (
-                <span className="text-[11px] leading-[1.4]" style={{ color: 'var(--fg-subtle)' }}>
-                  {row.note}
-                </span>
-              )}
+              <span className="text-[11px] leading-[1.4]" style={{ color: 'var(--fg-subtle)' }}>
+                {row.note}
+              </span>
             </div>
           ))}
         </div>

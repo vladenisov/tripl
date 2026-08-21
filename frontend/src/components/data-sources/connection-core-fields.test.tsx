@@ -35,4 +35,19 @@ describe('Edit dialog password field', () => {
     expect(field.getAttribute('placeholder') ?? '').not.toMatch(/keep/i)
     expect(screen.getByText('Password: not set.')).toBeInTheDocument()
   })
+
+  /**
+   * Dropping "Leave empty to keep" for masked dots inverted the contradiction
+   * rather than removing it: eight bullets render in the same grey as the
+   * "default" placeholder in the Username box beside it, so the field reads as
+   * holding an 8-character stored password — directly above the hint
+   * "Password: not set." (tripl-s8rg). The empty state has to say, in words,
+   * that it is empty.
+   */
+  it('spells out the empty state instead of showing masked dots', () => {
+    const placeholder = renderEdit(false).getAttribute('placeholder') ?? ''
+
+    expect(placeholder).toBe('No password stored')
+    expect(placeholder).not.toMatch(/[•*·]/)
+  })
 })

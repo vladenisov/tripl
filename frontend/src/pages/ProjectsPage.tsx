@@ -1014,14 +1014,27 @@ function LatestSignalSummary({
             detector expected — not the run's row count. The scan tile beside it
             reports warehouse rows read, and the two were printing 8,261 and
             13,373 under the same scan name with nothing saying they count
-            different things (tripl-h5um). */}
+            different things (tripl-h5um).
+
+            The scan tile answers that by naming its population in the line
+            itself. This one put its noun in a `title` only, which no reader
+            sees: on a freshly seeded stand the pair still read "7,953 warehouse
+            rows read" beside a bare "12,024 actual", same scan name, same 1:00
+            PM, i.e. two surfaces disagreeing about one figure. So the noun is on
+            the line now, and the noun is "events" — the workspace summary only
+            ever carries project_total / event_type / event scopes
+            (project_service `_populate_monitoring_signals` filters to exactly
+            those three) and all three are EventMetric volume. "In this bucket"
+            is the other half: it is what stops 12,024 events reading as an
+            impossible yield from 7,953 rows. */}
         <p
-          className="mono text-[11px]"
+          className="text-[11px]"
           style={{ color: 'var(--fg-subtle)' }}
           title="What the detector measured in this one bucket, against the baseline it expected. Not a row count."
         >
-          {signal.actual_count.toLocaleString()} actual vs{' '}
-          {formatIncidentCount(signal.expected_count)} expected
+          <span className="mono tnum">{signal.actual_count.toLocaleString()}</span> events in this
+          bucket vs <span className="mono tnum">{formatIncidentCount(signal.expected_count)}</span>{' '}
+          expected
         </p>
         {/* "Bucket" names the timestamp. Unlabelled it looked like the scan
             tile's "Completed <time>" — the demo stand shows both as 9:00 AM,

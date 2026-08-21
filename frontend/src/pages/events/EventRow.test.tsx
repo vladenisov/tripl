@@ -19,11 +19,20 @@ const LATEST = Date.parse('2026-06-10T23:00:00Z')
 
 // 48h hourly series: prior 24h at `priorPerHour`, recent 24h at `recentPerHour`.
 // expected_count stays null (non-anomaly) — the delta must come from raw volume.
-function windowSeries(priorPerHour: number, recentPerHour: number): EventMetricPoint[] {
+//
+// Anchored on the clock the row renders against, not on a frozen date: the Δ
+// cell splits the series on NOW, because "Δ · 24h" is a claim about the last 24
+// hours (tripl-oooj). A fixture pinned to LATEST would sit outside both windows
+// and every delta assertion here would pass on an em dash.
+function windowSeries(
+  priorPerHour: number,
+  recentPerHour: number,
+  endsAt = Date.now(),
+): EventMetricPoint[] {
   const points: EventMetricPoint[] = []
   for (let hoursAgo = 47; hoursAgo >= 0; hoursAgo -= 1) {
     points.push({
-      bucket: new Date(LATEST - hoursAgo * HOUR_MS).toISOString(),
+      bucket: new Date(endsAt - hoursAgo * HOUR_MS).toISOString(),
       count: hoursAgo < 24 ? recentPerHour : priorPerHour,
       expected_count: null,
       stddev: null,
@@ -169,7 +178,44 @@ describe('EventRow Δ · 24h and Signal cells', () => {
   it('renders a populated 24h delta (not a dash) from the window series', () => {
     // prior 24h = 24 * 10 = 240, recent 24h = 24 * 20 = 480 → +100%.
     renderRow(makeEvent(), windowSeries(10, 20))
-    expect(screen.getByText('+100%')).toBeInTheDocument()
+    const cell = screen.getByText('+100%')
+    expect(cell).toBeInTheDocument()
+    // Both windows are whole, so the incomplete-window marker stays off.
+    expect(cell).not.toHaveTextContent('*')
+  })
+
+  // tripl-oooj: the fresh demo's own payload. Collection ends ~2h before now, so
+  // the series spans 46h rather than 47h — and the span guard blanked the whole
+  // column on it, while the same points carried a sound double-digit delta. The
+  // number is shown and marked; the tooltip states what is actually covered.
+  it('prints a marked delta, not a dash, when the series ends before now', () => {
+    const endsAt = Date.now() - 2 * HOUR_MS
+    const lagging: EventMetricPoint[] = []
+    for (let hoursAgo = 45; hoursAgo >= 0; hoursAgo -= 1) {
+      lagging.push({
+        // Ages 2h…47h relative to now: 22 hourly buckets land in the last 24h,
+        // the other 24 in the 24h before it.
+        bucket: new Date(endsAt - hoursAgo * HOUR_MS).toISOString(),
+        count: hoursAgo < 22 ? 2400 : 2000,
+        expected_count: null,
+        stddev: null,
+        is_anomaly: false,
+        anomaly_direction: null,
+        z_score: null,
+      })
+    }
+    renderRow(makeEvent(), lagging)
+
+    // recent = 22 * 2400 = 52,800 vs prior = 24 * 2000 = 48,000 → +10%.
+    const cell = screen.getByText('+10%')
+    expect(cell).toHaveTextContent('+10%*')
+    const title = cell.getAttribute('title') ?? ''
+    expect(title).toContain('Last 24h 52,800 vs 48,000 in the 24h before it')
+    expect(title).toContain('the last 24h are covered to 22 of 24 hours')
+    expect(title).toContain('the series ends 2h before now')
+    // The sentence this replaces was asserted for every blank cell, including
+    // this one — where the prior window holds 48,000 events.
+    expect(screen.queryByTitle(/No prior 24h window/)).not.toBeInTheDocument()
   })
 
   it('shows a Monitored chip when the event has alert-rule coverage', () => {

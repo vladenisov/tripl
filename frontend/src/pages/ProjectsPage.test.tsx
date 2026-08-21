@@ -674,7 +674,15 @@ describe('ProjectsPage', () => {
     // "Project total" is the name of the series that fired, not a total of the
     // project — the verb in front of it is what says so.
     expect(screen.getByText('Spike on Project total')).toBeInTheDocument()
-    const countsLine = screen.getByText(/actual vs/)
+    // Both halves of the pair name their population IN THE LINE. A `title` is
+    // not an answer: it never renders, so the reader comparing the two tiles
+    // still saw a bare 13,373 beside "8,261 warehouse rows read" under one scan
+    // name and one clock time.
+    expect(screen.getByText(/warehouse rows read/)).toHaveTextContent(
+      '8,261 warehouse rows read',
+    )
+    const countsLine = screen.getByText(/events in this bucket vs/)
+    expect(countsLine).toHaveTextContent('13,373 events in this bucket vs 8,392 expected')
     expect(countsLine).toHaveAttribute(
       'title',
       'What the detector measured in this one bucket, against the baseline it expected. Not a row count.',

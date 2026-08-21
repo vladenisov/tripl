@@ -122,9 +122,20 @@ export function ScenarioCoachMark({
   // Radix flips and shifts only to avoid the VIEWPORT edge, so on the 1512px
   // shell a card anchored near the right of the content column keeps going and
   // lands on the activity rail (its left border sits at x≈1208), cutting the
-  // rail's rows mid-glyph. Bound the card to the scroll container the anchor
-  // lives in: the rail and the sidebar are SIBLINGS of that container, never
-  // inside it, so a card can now only shift within the page it is coaching.
+  // rail's rows mid-glyph. Bound the card to the landmark the anchor lives in:
+  // the rail and the sidebar are SIBLINGS of it, never inside, so a card can
+  // only shift within the page it is coaching.
+  //
+  // The landmark is the content COLUMN, not the scroll container around it —
+  // Layout keeps the page's 32px gutter as padding on a wrapper OUTSIDE
+  // #main-content. That distinction is the whole fix: floating-ui clips
+  // to an element's PADDING box, so bounding to the container let a card stop
+  // 8px short of x≈1208 — about 24px past x≈1176, where the right edge of every
+  // card on the page sits. Measured on the scan header, whose `align: 'start'`
+  // mark had just been moved off the description into that gutter (tripl-5mra).
+  // Bounded to the column, the same card stops at 1168 and still clears the
+  // description, which wraps at x≈891.
+  //
   // No landmark (tests, a portalled anchor) falls back to the viewport, which
   // is what every mark had before.
   const boundary: Element | Element[] = anchorEl?.closest(`#${MAIN_CONTENT_ID}`) ?? []

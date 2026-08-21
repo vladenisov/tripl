@@ -63,6 +63,32 @@ describe('Instance System card', () => {
     expect(tile('RabbitMQ URL')).toHaveTextContent(/Required/i)
   })
 
+  /**
+   * Only the three rows that needed action carried a note, so on a healthy
+   * instance four of the seven tiles said nothing beyond "Configured" — and
+   * because the tiles are grid cells, the annotated ones stretched the bare
+   * ones to their height and left roughly 70px of dead space in each
+   * (tripl-my0t). This is a property of the row data, not of the CSS: every
+   * row explains itself in whatever state it is in.
+   */
+  it.each([
+    ['Debug mode', 'Off'],
+    ['Database URL', 'Configured'],
+    ['Sync database URL', 'Configured'],
+    ['RabbitMQ URL', 'Configured'],
+    ['Redis URL', 'Configured'],
+    ['Encryption key', 'Configured'],
+    ['OpenAI fallback key', 'Configured'],
+  ])('explains %s on a healthy instance, not just the rows that need action', (label, value) => {
+    renderCard()
+
+    const row = tile(label)
+    expect(within(row).getByText(value)).toBeInTheDocument()
+    // Whatever the tile says past its label and its one-word value.
+    const explanation = (row.textContent ?? '').replace(label, '').replace(value, '').trim()
+    expect(explanation).not.toBe('')
+  })
+
   it('says these values are read from the environment, not editable here', () => {
     renderCard()
 

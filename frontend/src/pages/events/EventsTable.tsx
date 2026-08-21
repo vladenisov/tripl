@@ -49,6 +49,13 @@ import { variablesKey } from '@/lib/queryKeys'
 /** Cap the cluster list so the summary header stays compact; the rest fold into a count. */
 const MAX_VISIBLE_CLUSTERS = 6
 
+// The "*" a Δ cell prints needs a legend somewhere. It is the only mark a reader
+// sees when collection lags and a 24h window is short of its hours (tripl-oooj:
+// the demo's series ends ~2h before now, so the recent window covers 22 of 24),
+// and the per-cell tooltip is only reachable once you already suspect something.
+const DELTA_HEAD_HELP =
+  'Δ · 24h — change in volume versus the previous 24-hour window. A * marks a window the collected series does not fully cover; hover the value for what it does cover.'
+
 export type EventsTableProps = {
   // Layout
   tableScrollRef: React.RefObject<HTMLDivElement | null>
@@ -376,7 +383,7 @@ export function EventsTable({
                   {!hideDelta && (
                     <TableHead
                       className="w-20 text-right text-[11px]"
-                      title="Δ · 24h — change in volume versus the previous 24-hour window"
+                      title={DELTA_HEAD_HELP}
                     >
                       Δ · 24h
                     </TableHead>

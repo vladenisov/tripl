@@ -58,6 +58,23 @@ export function ConnectionCoreFields({
   const isEdit = mode === 'edit'
   const secretName = dbType === 'bigquery' ? 'Service account key' : 'Password'
 
+  // Three states, three different sentences.
+  //
+  // `&& secretSet`, like the BigQuery key above: on a source with no stored
+  // password the field said "Leave empty to keep" directly above a hint reading
+  // "Password: not set." (tripl-ofvc). Falling back to masked dots for that case
+  // only inverted the contradiction — eight dots in the same grey as the
+  // "default" placeholder next to it read as an 8-character stored password,
+  // still directly above "Password: not set." (tripl-s8rg). The empty state now
+  // says it is empty, the way the instance SMTP password field already does
+  // ("Not configured"); the dots are left to `create`, where nothing is stored
+  // yet by definition and the box is the one you have to type into.
+  const passwordPlaceholder = !isEdit
+    ? '••••••••'
+    : secretSet
+      ? 'Leave empty to keep'
+      : 'No password stored'
+
   // On edit the secret is write-only: we can say whether one is stored, never
   // what it is. An empty field therefore means "keep what is stored".
   const secretStatus = isEdit ? (
@@ -174,10 +191,7 @@ export function ConnectionCoreFields({
                 type="password"
                 value={value.secret}
                 onChange={(e) => onChange({ secret: e.target.value })}
-                // `&& secretSet`, like the BigQuery key above: on a source with
-                // no stored password the field said "Leave empty to keep"
-                // directly above a hint reading "Password: not set." (tripl-ofvc).
-                placeholder={isEdit && secretSet ? 'Leave empty to keep' : '••••••••'}
+                placeholder={passwordPlaceholder}
               />
               {secretStatus}
             </div>
