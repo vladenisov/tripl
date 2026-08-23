@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import http.client
 import json
 import logging
-import urllib.error
 import urllib.request
 from typing import Any, cast
 
@@ -75,23 +75,61 @@ def embed_texts(texts: list[str], *, config: AiConfig | None = None) -> list[lis
         },
         method="POST",
     )
+    # ``OSError`` is the transport family in one name: ``URLError``, its
+    # ``HTTPError`` subclass, and ``TimeoutError`` all derive from it.
+    # ``http.client.HTTPException`` is the other half — a connection dropped
+    # mid-body raises ``IncompleteRead`` out of ``read()``, after the 200 has
+    # already been accepted, so nothing downstream would catch it.
     try:
         with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
-            body = response.read().decode("utf-8")
-    except urllib.error.HTTPError, urllib.error.URLError, TimeoutError:
+            body = response.read()
+    except OSError, http.client.HTTPException:
         logger.exception("Search embedding request failed")
         return []
 
-    parsed = cast(dict[str, Any], json.loads(body))
-    data = parsed.get("data")
-    if not isinstance(data, list):
+    # A 200 is not a promise of a parseable body (tripl-l33u). The endpoint is
+    # operator-configurable, so a gateway in front of a self-hosted provider can
+    # answer 200 with an HTML error page (JSONDecodeError, a ValueError), bytes
+    # that are not UTF-8 at all (UnicodeDecodeError, also a ValueError — which is
+    # why the undecoded body is handed to ``json.loads`` inside this guard rather
+    # than decoded above it), a JSON array instead of an object (AttributeError
+    # on ``.get``), or a vector carrying a null or a string (TypeError/ValueError
+    # in ``float``). All of them degrade to [] like the transport failures above,
+    # because every caller — the request path's semantic leg and the worker task
+    # alike — is written against "no embeddings" and not against an exception.
+    #
+    # Vectors land at the position the PROVIDER named, not at the position they
+    # happened to arrive in: an OpenAI-compatible ``data`` array carries an
+    # ``index`` per item and does not promise order. Skipping an unusable entry
+    # while appending to a list attributed every later vector to the wrong text —
+    # document N's embedding written onto document N-1, silently.
+    try:
+        parsed = cast(dict[str, Any], json.loads(body))
+        data = parsed.get("data")
+        if not isinstance(data, list):
+            return []
+        by_index: dict[int, list[float]] = {}
+        for position, item in enumerate(data):
+            if not isinstance(item, dict):
+                continue
+            raw_embedding = item.get("embedding")
+            if not isinstance(raw_embedding, list):
+                continue
+            index = item.get("index")
+            # ``bool`` is an ``int`` subclass, so a JSON ``true`` would key slot
+            # 1. A provider that omits ``index`` entirely falls back to array
+            # position, which is safe now only because a skipped entry leaves its
+            # OWN slot empty rather than pulling the rest of the array forward.
+            if not isinstance(index, int) or isinstance(index, bool):
+                index = position
+            by_index[index] = [float(value) for value in raw_embedding]
+    except AttributeError, TypeError, ValueError:
+        logger.exception("Search embedding response could not be parsed")
         return []
-    embeddings: list[list[float]] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        raw_embedding = item.get("embedding")
-        if not isinstance(raw_embedding, list):
-            continue
-        embeddings.append([float(value) for value in raw_embedding])
-    return embeddings
+
+    # Nothing usable anywhere is a REQUEST-level failure, not one per document:
+    # the worker retries an empty list but marks a gapped one failed, and "the
+    # gateway answered with no vectors" is not evidence about any one document.
+    if not by_index:
+        return []
+    return [by_index.get(position, []) for position in range(len(texts))]

@@ -34,7 +34,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -188,19 +188,37 @@ def detect_variable_value_drifts(
     if not rows:
         return 0
 
-    refresh_columns = ("scan_config_id", "observed_values", "detected_at")
+    refresh_columns = ("observed_values", "detected_at")
+
+    def _refresh(stmt: Any) -> dict[str, Any]:
+        # The incoming ``scan_config_id`` wins, falling back to the stored one
+        # only when this caller has none. Detection and dispatch run in the same
+        # collect_metrics task for the same config, so the run that just saw the
+        # drift must be the one the alert query (which filters on this column)
+        # then matches — freezing the first writer would strand the row on a
+        # config that may never dispatch again. COALESCE rather than a plain
+        # refresh so a caller without a scan config still cannot blank an
+        # attribution, and so a row an older build left NULL heals (tripl-l33u.1).
+        assignments: dict[str, Any] = {
+            column: getattr(stmt.excluded, column) for column in refresh_columns
+        }
+        assignments["scan_config_id"] = func.coalesce(
+            stmt.excluded.scan_config_id, VariableValueDrift.scan_config_id
+        )
+        return assignments
+
     if session.bind is not None and session.bind.dialect.name == "sqlite":
         sqlite_stmt = sqlite_insert(VariableValueDrift).values(rows)
         sqlite_stmt = sqlite_stmt.on_conflict_do_update(
             index_elements=["variable_id", "event_id"],
-            set_={column: getattr(sqlite_stmt.excluded, column) for column in refresh_columns},
+            set_=_refresh(sqlite_stmt),
         )
         session.execute(sqlite_stmt)
     else:
         pg_stmt = pg_insert(VariableValueDrift).values(rows)
         pg_stmt = pg_stmt.on_conflict_do_update(
             constraint="uq_variable_value_drift_context",
-            set_={column: getattr(pg_stmt.excluded, column) for column in refresh_columns},
+            set_=_refresh(pg_stmt),
         )
         session.execute(pg_stmt)
 

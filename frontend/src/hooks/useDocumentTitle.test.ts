@@ -232,6 +232,16 @@ describe('resolveTitleFromPath', () => {
     })
   })
 
+  it('labels the invite acceptance page rather than calling it not-found', () => {
+    // /invite/:token is a real rendered page that sets no title of its own, and
+    // it is the first (often only) tripl page an invited member opens — reading
+    // "Page not found" on it looked like a dead link (tripl-l33u.12).
+    expect(resolveTitleFromPath('/invite/abc123')).toEqual({ label: 'Invitation' })
+    expect(buildDocumentTitle(resolveTitleFromPath('/invite/abc123').label)).toBe(
+      `Invitation${SEP}tripl`,
+    )
+  })
+
   it('labels auth, workspace and the root, and names unmatched paths not-found', () => {
     expect(resolveTitleFromPath('/auth')).toEqual({ label: 'Sign in' })
     expect(resolveTitleFromPath('/')).toEqual({ label: 'Workspace' })

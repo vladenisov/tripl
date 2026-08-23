@@ -97,6 +97,9 @@ def downgrade() -> None:
     op.drop_column("project_anomaly_settings", "detect_metrics")
     op.drop_index("uq_metric_anomaly_metric_scope", table_name="metric_anomalies")
     op.drop_index("ix_metric_anomaly_scope_ref_bucket", table_name="metric_anomalies")
+    # ``metric``-scope rows are project-global and carry no scan_config_id, so
+    # there is nothing to backfill for them under the restored NOT NULL.
+    op.execute("DELETE FROM metric_anomalies WHERE scan_config_id IS NULL")
     op.alter_column(
         "metric_anomalies",
         "scan_config_id",

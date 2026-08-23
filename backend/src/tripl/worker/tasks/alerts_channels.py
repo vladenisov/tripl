@@ -6,7 +6,8 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from email.message import EmailMessage
-from typing import Protocol
+from http.client import HTTPMessage
+from typing import IO, Protocol
 from urllib.parse import urlparse
 
 from tripl.alert_templates import (
@@ -71,6 +72,95 @@ def _reject_private_target(url: str, *, field: str) -> None:
         reject_private_host(hostname, field=field)
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+# Everything this module sends beyond ``Accept`` is a credential: the Jira /
+# Linear ``Authorization`` header, and the operator's configured webhook secret
+# header — whose *name* is operator-chosen, so no denylist can enumerate it.
+# Hence an allowlist: a header is forwarded across an origin change only if it
+# is named here.
+_CROSS_ORIGIN_SAFE_HEADERS = frozenset({"accept"})
+
+
+def _origin(url: str) -> tuple[str, str | None, int | None]:
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    return scheme, parsed.hostname, parsed.port or _DEFAULT_PORTS.get(scheme)
+
+
+def _may_forward_credentials(from_url: str, to_url: str) -> bool:
+    """True when ``to_url`` is close enough to ``from_url`` to keep its headers.
+
+    Same origin, plus the one scheme change that does not widen exposure: an
+    ``http -> https`` upgrade on the same host and default ports, which real
+    destinations issue often enough that refusing it would break deliveries. A
+    downgrade to ``http`` is treated as a different origin — it would put the
+    credential on the wire in cleartext.
+    """
+    from_scheme, from_host, from_port = _origin(from_url)
+    to_scheme, to_host, to_port = _origin(to_url)
+    if from_host != to_host:
+        return False
+    if from_scheme == to_scheme:
+        return from_port == to_port
+    return (
+        (from_scheme, to_scheme) == ("http", "https")
+        and from_port == _DEFAULT_PORTS["http"]
+        and to_port == _DEFAULT_PORTS["https"]
+    )
+
+
+class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Run the SSRF guard on every redirect hop, not just the configured URL.
+
+    ``_reject_private_target`` only ever sees the URL an operator saved, while
+    urllib's default opener follows a 3xx to any host with no second check. A
+    public destination answering ``302 -> 169.254.169.254`` therefore reached
+    the metadata endpoint anyway, and a non-2xx final hop put that response
+    body into the delivery error the API returns (tripl-l33u.5).
+
+    Raising the guard's own ValueError instead of returning ``None`` (which
+    urllib turns into an opaque HTTP 302 error) keeps the reason in the message
+    the operator reads.
+
+    The hop is still followed when the target is public, so credentials must be
+    dropped when the origin changes: urllib copies every header except the
+    content ones onto the new request, which handed the operator's Jira basic
+    auth and webhook secret to whatever public host answered the 302.
+    """
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        parsed = urlparse(newurl)
+        # urllib's own scheme check here also permits ftp:// and scheme-relative
+        # targets; alert delivery has no use for either.
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError("Redirect target must be an http or https URL")
+        reject_private_host(parsed.hostname, field="Redirect target")
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is None or _may_forward_credentials(req.full_url, newurl):
+            return redirected
+        redirected.headers = {
+            name: value
+            for name, value in redirected.headers.items()
+            if name.lower() in _CROSS_ORIGIN_SAFE_HEADERS
+        }
+        return redirected
+
+
+# Deliberately not installed with install_opener: that would swap the redirect
+# policy for every other urllib caller in the process. The redirect-chain limit
+# stays urllib's default (HTTPRedirectHandler.max_redirections).
+_REDIRECT_SAFE_OPENER = urllib.request.build_opener(_ValidatingRedirectHandler)
+
+
 def _post_json(
     url: str,
     body: dict[str, object],
@@ -87,7 +177,7 @@ def _post_json(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
+        with _REDIRECT_SAFE_OPENER.open(request, timeout=10) as response:
             raw = response.read()
         if raw:
             try:
@@ -135,7 +225,7 @@ def _get_json(
         request_headers.update(headers)
     request = urllib.request.Request(url, headers=request_headers, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
+        with _REDIRECT_SAFE_OPENER.open(request, timeout=10) as response:
             raw = response.read()
         if raw:
             try:

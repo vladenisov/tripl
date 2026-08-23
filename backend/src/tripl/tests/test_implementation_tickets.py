@@ -2,6 +2,7 @@ import uuid
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import tripl.alerting_validation as av
@@ -139,6 +140,52 @@ async def test_create_implementation_ticket_creates_row_and_is_idempotent(
     async with TestSessionLocal() as session:
         remaining = (await session.execute(select(ImplementationTicket))).scalars().all()
         assert len(remaining) == 1
+
+
+@pytest.mark.asyncio
+async def test_implementation_tickets_reject_a_second_row_for_the_same_branch() -> None:
+    """The database, not the check-then-act above it, is what holds one per branch.
+
+    Two deliveries that enqueue concurrently both pass the existence check, so
+    without ``uq_implementation_ticket_branch`` both rows land and the branch
+    shows two tickets (tripl-l33u.11).
+    """
+    project_id = uuid.uuid4()
+    branch_id = uuid.uuid4()
+    async with TestSessionLocal() as session:
+        session.add(Project(id=project_id, name="Twice", slug="twice", description=""))
+        await _seed_event_parents(session, project_id, branch_id)
+        session.add(
+            ImplementationTicket(
+                project_id=project_id,
+                branch_id=branch_id,
+                tracker_type="jira",
+                external_id="10001",
+                external_key="ENG-1",
+                external_url="https://example.atlassian.net/browse/ENG-1",
+                status="open",
+                summary="first",
+                event_ids=[],
+            )
+        )
+        await session.commit()
+
+    async with TestSessionLocal() as session:
+        session.add(
+            ImplementationTicket(
+                project_id=project_id,
+                branch_id=branch_id,
+                tracker_type="jira",
+                external_id="10002",
+                external_key="ENG-2",
+                external_url="https://example.atlassian.net/browse/ENG-2",
+                status="open",
+                summary="second",
+                event_ids=[],
+            )
+        )
+        with pytest.raises(IntegrityError):
+            await session.commit()
 
 
 @pytest.mark.asyncio

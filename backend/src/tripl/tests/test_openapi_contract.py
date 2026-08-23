@@ -54,6 +54,38 @@ def test_openapi_snapshot_matches_live_schema() -> None:
     )
 
 
+def test_branch_override_is_a_declared_parameter() -> None:
+    """``branch`` must reach the spec, not just the request object.
+
+    It was read straight off ``request.query_params`` for a long time, so
+    FastAPI never declared it and the one documented way to keep an agent's
+    edits off the main plan was invisible in all three generated artifacts. A
+    client built from the spec then dropped it and silently wrote to main
+    (tripl-l33u.7).
+    """
+    schema = app.openapi()
+    declaring = {
+        (method, path)
+        for path, operations in schema["paths"].items()
+        for method, operation in operations.items()
+        if isinstance(operation, dict)
+        for parameter in operation.get("parameters", ())
+        if parameter.get("name") == "branch"
+    }
+
+    # A representative branch-scoped read and write: both resolve the override
+    # through ``BranchIdDep``, so both must advertise it.
+    assert ("get", "/api/v1/projects/{slug}/events") in declaring
+    assert ("patch", "/api/v1/projects/{slug}/events/{event_id}") in declaring
+
+    for method, path in declaring:
+        parameter = next(
+            p for p in schema["paths"][path][method]["parameters"] if p["name"] == "branch"
+        )
+        assert parameter["in"] == "query"
+        assert parameter["required"] is False
+
+
 def test_live_schema_carries_no_servers_block(monkeypatch: pytest.MonkeyPatch) -> None:
     """``app.openapi()`` must stay independent of the environment.
 

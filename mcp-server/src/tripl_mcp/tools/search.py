@@ -43,8 +43,10 @@ def register(mcp: FastMCP) -> None:
             "Search the tripl tracking plan with a natural-language phrase or partial "
             "event name. ALWAYS search first, then fetch the canonical entity by id "
             "(get_event etc.) before making decisions or edits. 'types' restricts to "
-            "entity kinds: event, event_type, field, meta_field, variable, relation, "
-            "tag, metric, fact_table. Each hit carries a confidence in [0,1]. "
+            "entity kinds, spelled the way a hit's entity_type is spelled — plan "
+            "content (event, event_type, field, ...) and project configuration "
+            "(scan_config, alert_rule) alike; an unfiltered search shows which kinds "
+            "this plan holds. Each hit carries a confidence in [0,1]. "
             "Requires a tk_r_ or tk_w_ tripl API key."
         ),
     )(search_plan)

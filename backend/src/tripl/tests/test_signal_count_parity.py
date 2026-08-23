@@ -22,6 +22,8 @@ same incident shape to the same number — that is the parity claim.
 
 from __future__ import annotations
 
+import json
+import math
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -40,6 +42,7 @@ from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
+from tripl.schemas.event_metric import MetricSignalResponse
 from tripl.services.metrics_insights_service import get_active_signals, is_significant_signal
 from tripl.tests.conftest import TestSessionLocal
 from tripl.tests.test_project_lookup_perf import captured_sql
@@ -959,7 +962,62 @@ def test_relative_effect_floors_a_count_but_not_a_fractional_series() -> None:
 
 
 def test_relative_effect_states_a_zero_baseline_rather_than_dividing_by_it() -> None:
-    from tripl.services.metrics_insights_service import relative_effect
+    """Unbounded growth off a zero baseline, reported as a FINITE ceiling.
+
+    Finite because the number is serialized: ``inf`` leaves
+    ``MetricSignalResponse`` as JSON null, the client reads null as "the server
+    did not compute this" and falls back to its count-shaped estimate, which for
+    a sub-unit actual scores below the 0.5 bar. The badge gates in-process, where
+    ``inf`` compares fine, so such a signal was counted on the sidebar and hidden
+    on every page the badge links to (tripl-l33u.3).
+    """
+    from tripl.services.metrics_insights_service import (
+        MAX_RELATIVE_EFFECT,
+        SIGNIFICANT_MIN_REL_EFFECT,
+        relative_effect,
+    )
 
     assert relative_effect(0.0, 0.0, count_shaped=False) == 0.0
-    assert relative_effect(0.5, 0.0, count_shaped=False) == float("inf")
+
+    effect = relative_effect(0.5, 0.0, count_shaped=False)
+    assert math.isfinite(effect)
+    assert effect == MAX_RELATIVE_EFFECT
+    assert effect >= SIGNIFICANT_MIN_REL_EFFECT
+    assert is_significant_signal(0.5, 0.0, count_shaped=False)
+
+    # A baseline small enough to overflow the division on its own lands on the
+    # same ceiling rather than on inf.
+    assert math.isfinite(relative_effect(1e300, 1e-300, count_shaped=False))
+
+
+def test_a_zero_baseline_signal_reaches_the_client_as_a_number() -> None:
+    """The magnitude has to survive the wire, not just the process.
+
+    Serialization is where the badge and the page parted: the count is taken in
+    Python and the filter is applied in the browser, so a value that only
+    compares correctly in Python is a parity bug (tripl-l33u.3).
+    """
+    from tripl.services.metrics_insights_service import (
+        SIGNIFICANT_MIN_REL_EFFECT,
+        relative_effect,
+    )
+
+    # Sub-unit actual on purpose: it is the shape where the client's own fallback
+    # (|actual - expected| / max(expected, 1) = 0.3) lands below the bar.
+    payload = json.loads(
+        MetricSignalResponse(
+            scope_type="metric",
+            scope_ref=str(uuid.uuid4()),
+            state="latest_scan",
+            bucket=_BUCKET,
+            actual_count=0.3,
+            expected_count=0.0,
+            stddev=1e-9,
+            z_score=9.0,
+            direction="spike",
+            relative_effect=relative_effect(0.3, 0.0, count_shaped=False),
+        ).model_dump_json()
+    )
+
+    assert payload["relative_effect"] is not None
+    assert payload["relative_effect"] >= SIGNIFICANT_MIN_REL_EFFECT

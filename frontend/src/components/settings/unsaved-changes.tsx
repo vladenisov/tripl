@@ -10,6 +10,10 @@ import { createContext, useContext } from 'react'
  * the group keeps it — InstanceSection is a module-scope lazy() ref rendered
  * without a key, so AI → Email preserves the draft — which is why the guard is
  * a predicate over the target path rather than a blanket "is dirty" block.
+ *
+ * Registering also arms the shell's browser-level guards — Back and
+ * reload/close — for as long as the draft is registered (tripl-l33u.6), so a
+ * section that forgets to pass `null` after saving leaves them armed.
  */
 export type UnsavedWork = {
   /** True for settings paths that keep this draft alive (no warning needed). */

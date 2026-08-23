@@ -22,6 +22,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -158,7 +159,21 @@ async def _create_ticket(
             event_ids=list(event_ids),
         )
     )
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # uq_implementation_ticket_branch. The check at the top is a
+        # check-then-act, so a delivery that enqueued concurrently can insert
+        # between it and here; the constraint is what actually holds
+        # one-ticket-per-branch. Both tracker issues exist by then — closing that
+        # window needs tracker-side idempotency, which Jira's create does not
+        # offer (tripl-l33u.11) — but the loser must not also fail the merge that
+        # enqueued it.
+        await session.rollback()
+        logger.warning(
+            "Implementation ticket for branch %s was created concurrently; keeping the first",
+            branch_id,
+        )
 
 
 async def _mark_events_implemented(session: AsyncSession, event_ids: list[str]) -> None:

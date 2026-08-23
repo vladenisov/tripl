@@ -144,25 +144,35 @@ describe('SettingsLayout unsaved-changes guard', () => {
   const DRAFT_MESSAGE = 'Instance settings you edited here have not been saved.'
 
   /** Stands in for ServiceSettingsPage: a draft only the instance group keeps. */
-  function InstanceDraft() {
+  function InstanceDraft({ dirty = true }: { dirty?: boolean }) {
     const { registerUnsaved } = useUnsavedChanges()
     useEffect(() => {
-      registerUnsaved({
-        keptBy: (path) => path.startsWith('instance/'),
-        message: DRAFT_MESSAGE,
-      })
-    }, [registerUnsaved])
+      registerUnsaved(
+        dirty ? { keptBy: (path) => path.startsWith('instance/'), message: DRAFT_MESSAGE } : null,
+      )
+      return () => registerUnsaved(null)
+    }, [dirty, registerUnsaved])
     return <div>draft</div>
   }
 
-  function renderWithDraft() {
-    return render(
+  function draftShell(dirty: boolean) {
+    return (
       <MemoryRouter>
         <SettingsLayout activePath="instance/ai" backHref="/p/demo/events">
-          <InstanceDraft />
+          <InstanceDraft dirty={dirty} />
         </SettingsLayout>
-      </MemoryRouter>,
+      </MemoryRouter>
     )
+  }
+
+  function renderWithDraft() {
+    return render(draftShell(true))
+  }
+
+  function reload(): Event {
+    const event = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(event)
+    return event
   }
 
   it('warns before a rail link navigates the draft out of existence', async () => {
@@ -228,6 +238,28 @@ describe('SettingsLayout unsaved-changes guard', () => {
     fireEvent.click(screen.getByRole('link', { name: 'Email' }))
 
     expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+
+  it('lets the browser prompt before a reload or tab close discards the draft', () => {
+    // Neither is a React navigation, so the dialog above can never run for
+    // them — only a beforeunload listener reaches them (tripl-l33u.6).
+    renderWithDraft()
+
+    expect(reload().defaultPrevented).toBe(true)
+  })
+
+  it('leaves reload alone while there is nothing to lose', () => {
+    renderSettings('instance/ai')
+
+    expect(reload().defaultPrevented).toBe(false)
+  })
+
+  it('stops prompting on reload once the draft is saved', () => {
+    const { rerender } = render(draftShell(true))
+
+    rerender(draftShell(false))
+
+    expect(reload().defaultPrevented).toBe(false)
   })
 })
 

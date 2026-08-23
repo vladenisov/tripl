@@ -49,6 +49,17 @@ describe('relativeEffect', () => {
     expect(selectSignificantSignals([without])).toHaveLength(0)
   })
 
+  it('keeps a zero-baseline signal, which arrives capped rather than as Infinity', () => {
+    // JSON carries no Infinity: the backend reports an unbounded move off a zero
+    // baseline as a finite ceiling (MAX_RELATIVE_EFFECT). Shipped as inf it
+    // arrived here as null and the fallback scored 0.3 — below the bar — so the
+    // sidebar badge counted a signal this list hid (tripl-l33u.3).
+    const capped = signal({ scope_type: 'metric', actual_count: 0.3, expected_count: 0, relative_effect: 1e6 })
+    const asNull = signal({ scope_type: 'metric', actual_count: 0.3, expected_count: 0 })
+    expect(selectSignificantSignals([capped])).toHaveLength(1)
+    expect(selectSignificantSignals([asNull])).toHaveLength(0)
+  })
+
   it('sorts by the server value, biggest first', () => {
     const small = signal({ scope_ref: 'a', relative_effect: 0.6 })
     const big = signal({ scope_ref: 'b', relative_effect: 3 })

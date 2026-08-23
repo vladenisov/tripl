@@ -11346,7 +11346,10 @@ export interface operations {
     };
     ask_plan_api_v1_projects__slug__ai_ask_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -11381,7 +11384,10 @@ export interface operations {
     };
     describe_event_api_v1_projects__slug__ai_describe_event_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -11416,7 +11422,10 @@ export interface operations {
     };
     describe_event_type_api_v1_projects__slug__ai_describe_event_type_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13062,7 +13071,10 @@ export interface operations {
     };
     retire_unused_variables_api_v1_projects__slug__danger_retire_unused_variables_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13134,7 +13146,10 @@ export interface operations {
     };
     list_event_types_api_v1_projects__slug__event_types_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13165,7 +13180,10 @@ export interface operations {
     };
     create_event_type_api_v1_projects__slug__event_types_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13236,7 +13254,10 @@ export interface operations {
     };
     get_event_type_api_v1_projects__slug__event_types__event_type_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13268,7 +13289,10 @@ export interface operations {
     };
     delete_event_type_api_v1_projects__slug__event_types__event_type_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13298,7 +13322,10 @@ export interface operations {
     };
     update_event_type_api_v1_projects__slug__event_types__event_type_id__patch: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13366,7 +13393,10 @@ export interface operations {
     };
     list_fields_api_v1_projects__slug__event_types__event_type_id__fields_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13398,7 +13428,10 @@ export interface operations {
     };
     create_field_api_v1_projects__slug__event_types__event_type_id__fields_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13434,7 +13467,10 @@ export interface operations {
     };
     bulk_create_fields_api_v1_projects__slug__event_types__event_type_id__fields_bulk_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13470,7 +13506,10 @@ export interface operations {
     };
     reorder_fields_api_v1_projects__slug__event_types__event_type_id__fields_reorder_patch: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13506,7 +13545,10 @@ export interface operations {
     };
     delete_field_api_v1_projects__slug__event_types__event_type_id__fields__field_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13537,7 +13579,10 @@ export interface operations {
     };
     update_field_api_v1_projects__slug__event_types__event_type_id__fields__field_id__patch: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13720,6 +13765,8 @@ export interface operations {
                 offset?: number;
                 limit?: number;
                 order_by?: "catalog" | "volume";
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
             };
             header?: never;
             path: {
@@ -13751,7 +13798,10 @@ export interface operations {
     };
     create_event_api_v1_projects__slug__events_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13824,7 +13874,10 @@ export interface operations {
     };
     bulk_create_events_api_v1_projects__slug__events_bulk_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13859,7 +13912,10 @@ export interface operations {
     };
     bulk_delete_events_api_v1_projects__slug__events_bulk_delete_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13892,7 +13948,10 @@ export interface operations {
     };
     bulk_update_events_api_v1_projects__slug__events_bulk_update_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13925,7 +13984,10 @@ export interface operations {
     };
     reorder_events_api_v1_projects__slug__events_reorder_patch: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -13960,7 +14022,10 @@ export interface operations {
     };
     list_tags_api_v1_projects__slug__events_tags_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -14026,7 +14091,10 @@ export interface operations {
     };
     get_event_api_v1_projects__slug__events__event_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -14058,7 +14126,10 @@ export interface operations {
     };
     delete_event_api_v1_projects__slug__events__event_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -14088,7 +14159,10 @@ export interface operations {
     };
     update_event_api_v1_projects__slug__events__event_id__patch: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -14124,7 +14198,10 @@ export interface operations {
     };
     get_event_history_api_v1_projects__slug__events__event_id__history_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -14227,7 +14304,10 @@ export interface operations {
     };
     move_event_api_v1_projects__slug__events__event_id__move_patch: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -14772,7 +14852,10 @@ export interface operations {
     };
     list_meta_fields_api_v1_projects__slug__meta_fields_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -14803,7 +14886,10 @@ export interface operations {
     };
     create_meta_field_api_v1_projects__slug__meta_fields_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -14838,7 +14924,10 @@ export interface operations {
     };
     delete_meta_field_api_v1_projects__slug__meta_fields__meta_field_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -14868,7 +14957,10 @@ export interface operations {
     };
     update_meta_field_api_v1_projects__slug__meta_fields__meta_field_id__patch: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -15718,7 +15810,10 @@ export interface operations {
     };
     archive_dead_events_api_v1_projects__slug__reconciliation_dead_events_archive_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -15787,7 +15882,10 @@ export interface operations {
     };
     accept_shadow_event_api_v1_projects__slug__reconciliation_shadow_events__candidate_id__accept_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -15855,7 +15953,10 @@ export interface operations {
     };
     list_relations_api_v1_projects__slug__relations_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -15886,7 +15987,10 @@ export interface operations {
     };
     create_relation_api_v1_projects__slug__relations_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -15921,7 +16025,10 @@ export interface operations {
     };
     delete_relation_api_v1_projects__slug__relations__relation_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -16841,6 +16948,8 @@ export interface operations {
                 types?: ("event" | "event_type" | "field" | "meta_field" | "variable" | "relation" | "tag" | "metric" | "fact_table" | "scan_config" | "alert_rule")[] | null;
                 include_archived?: boolean;
                 limit?: number;
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
             };
             header?: never;
             path: {
@@ -16872,7 +16981,10 @@ export interface operations {
     };
     reindex_project_search_api_v1_projects__slug__search_reindex_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -16974,6 +17086,8 @@ export interface operations {
                 limit?: number;
                 /** @description Narrow to the variables nothing refers to ('unused' — exactly the set the retirement sweep would take) or to their complement ('used'). Declared as an enum rather than a free string so an unknown value is a 422 and not a 500 (tripl-57g0). */
                 usage?: "all" | "used" | "unused";
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
             };
             header?: never;
             path: {
@@ -17005,7 +17119,10 @@ export interface operations {
     };
     create_variable_api_v1_projects__slug__variables_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -17040,7 +17157,10 @@ export interface operations {
     };
     bulk_delete_variables_api_v1_projects__slug__variables_bulk_delete_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -17073,7 +17193,10 @@ export interface operations {
     };
     bulk_update_variables_api_v1_projects__slug__variables_bulk_update_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -17176,7 +17299,10 @@ export interface operations {
     };
     delete_variable_api_v1_projects__slug__variables__variable_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -17206,7 +17332,10 @@ export interface operations {
     };
     update_variable_api_v1_projects__slug__variables__variable_id__patch: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -17242,7 +17371,10 @@ export interface operations {
     };
     list_event_overrides_api_v1_projects__slug__variables__variable_id__event_overrides_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -17274,7 +17406,10 @@ export interface operations {
     };
     upsert_event_override_api_v1_projects__slug__variables__variable_id__event_overrides__event_id__put: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -17311,7 +17446,10 @@ export interface operations {
     };
     delete_event_override_api_v1_projects__slug__variables__variable_id__event_overrides__event_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -17342,7 +17480,10 @@ export interface operations {
     };
     list_variable_values_api_v1_projects__slug__variables__variable_id__values_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;

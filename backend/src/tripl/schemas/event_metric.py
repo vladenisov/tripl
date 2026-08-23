@@ -62,9 +62,13 @@ class MetricSignalResponse(BaseModel):
     # here rather than mirrored client-side: the formula lived in two places and
     # drifted twice (tripl-yfsj.1, tripl-jfm3.89), and only the server knows
     # whether a catalog metric's series is count-shaped, which decides whether
-    # the denominator is floored at 1 (tripl-yf8c). NULL only on a path that did
-    # not compute it; a client seeing NULL should fall back to its own
-    # count-shaped estimate rather than treat the signal as having no magnitude.
+    # the denominator is floored at 1 (tripl-yf8c). Always a FINITE number: an
+    # unbounded move off a zero baseline is reported as
+    # ``metrics_insights_service.MAX_RELATIVE_EFFECT``, because ``inf`` serializes
+    # to JSON null and the client then re-derives a magnitude below the gate
+    # (tripl-l33u.3). NULL only on a path that did not compute it; a client seeing
+    # NULL should fall back to its own count-shaped estimate rather than treat the
+    # signal as having no magnitude.
     relative_effect: float | None = None
     # Display name of the scope that fired — the event name, the event type's
     # display name, or the catalog metric's display name. Carried here so a

@@ -5,12 +5,13 @@ back to a human in the tripl UI (see ``tripl_mcp.tools.branches``). A builder
 would be the first half of shipping them.
 
 Note how the OTHER builders spell "the live plan": by leaving ``branch`` unset.
-``deps.get_branch_id_override`` reads the RAW query string, resolves main
-whenever ``?branch=`` is missing or empty, and refuses anything that is not a
-UUID belonging to this project (400) or names no branch of it (404). So there is
-no literal for main, here or anywhere — which is also why ``?branch=`` is absent
-from ``backend/openapi.json``: it is a dependency rather than a declared query
-parameter, and the contract test therefore cannot see it.
+``deps.get_branch_id_override`` resolves main whenever ``?branch=`` is missing or
+empty, and refuses anything that is not a UUID belonging to this project (400) or
+names no branch of it (404). So there is no literal for main, here or anywhere.
+It IS a declared query parameter, so ``backend/openapi.json`` carries it and the
+contract test can see it — typed ``str`` rather than ``format: uuid`` because the
+dependency parses the value itself, which is what keeps a malformed id a 400
+instead of FastAPI's own 422.
 """
 
 from __future__ import annotations

@@ -107,10 +107,11 @@ DRIFTS_ENDPOINTS: dict[str, tuple[tuple[str, str], ...]] = {
 # events.LIST/DETAIL exist in the shared layer for tripl-mcp and are absent here
 # because no CLI verb reaches them (see commands/events.py for why).
 #
-# `?branch=` is not in either map, and cannot be: it is a DEPENDENCY
-# (deps.get_branch_id_override reads the raw query string), so it never appears
-# in backend/openapi.json and this contract test cannot watch it. That is the
-# one parameter these commands send which nothing below protects.
+# `?branch=` is not in either map, and cannot be: these are (method, path) pairs
+# and it is a query parameter. It is watched all the same -
+# deps.get_branch_id_override declares it, so it is in backend/openapi.json, and
+# for GET /events test_the_events_list_builder_takes_every_filter_the_route_declares
+# covers it alongside every other filter the route offers (tripl-l33u.7).
 EVENTS_ENDPOINTS: dict[str, tuple[tuple[str, str], ...]] = {
     "events": (("get", events.LIST),),
     "event": (("get", events.DETAIL),),

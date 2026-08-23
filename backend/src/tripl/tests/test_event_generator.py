@@ -2935,6 +2935,16 @@ def test_group_merge_repoints_an_open_ticket_and_leaves_a_closed_one(
         )
         sync_session.add(branch)
         sync_session.flush()
+    # One ticket per branch: uq_implementation_ticket_branch (tripl-l33u.11).
+    shipped_branch = PlanBranch(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        name="shipped",
+        kind=BranchKind.working.value,
+        status=BranchStatus.draft.value,
+    )
+    sync_session.add(shipped_branch)
+    sync_session.flush()
     open_ticket = ImplementationTicket(
         id=uuid.uuid4(),
         project_id=project.id,
@@ -2945,7 +2955,7 @@ def test_group_merge_repoints_an_open_ticket_and_leaves_a_closed_one(
     closed_ticket = ImplementationTicket(
         id=uuid.uuid4(),
         project_id=project.id,
-        branch_id=branch.id,
+        branch_id=shipped_branch.id,
         status="closed",
         event_ids=[str(source.id)],
     )

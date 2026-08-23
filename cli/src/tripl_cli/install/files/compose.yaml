@@ -97,7 +97,16 @@ x-app-environment: &app-environment
   AI_API_KEY: ${AI_API_KEY:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   SEARCH_EMBEDDINGS_ENABLED: ${SEARCH_EMBEDDINGS_ENABLED:-}
+  SEARCH_EMBEDDING_PROVIDER: ${SEARCH_EMBEDDING_PROVIDER:-}
+  SEARCH_EMBEDDING_MODEL: ${SEARCH_EMBEDDING_MODEL:-}
+  SEARCH_EMBEDDING_DIMENSIONS: ${SEARCH_EMBEDDING_DIMENSIONS:-}
   SEARCH_EMBEDDING_API_KEY: ${SEARCH_EMBEDDING_API_KEY:-}
+  # Not a tuning knob: this line is the whole of the documented "keep indexed
+  # text on your own endpoint" control, and without it the app falls back to
+  # api.openai.com whatever .env says (tripl-l33u.2). Changing it — or
+  # DIMENSIONS — after documents are indexed requires a re-index, since vectors
+  # from two embedding spaces are not comparable.
+  SEARCH_EMBEDDING_BASE_URL: ${SEARCH_EMBEDDING_BASE_URL:-}
 
 services:
   postgres:

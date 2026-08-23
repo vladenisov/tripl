@@ -1722,12 +1722,12 @@ The human output reflects that: it prints `prod` with no branch named when you
 read main, and `prod (branch 'checkout-redesign')` when you name one. The
 `--json` document carries `"branch": null` for main.
 
-One consequence worth knowing: `?branch=` is resolved by a FastAPI **dependency**
-that reads the raw query string, so it does not appear in `backend/openapi.json`
-at all. The contract test that checks every path and every bound against that
-document therefore cannot see this parameter. It is pinned by a CLI test
-instead — it is the one parameter these commands send that the schema does not
-describe.
+One consequence worth knowing: `?branch=` is contributed by a shared FastAPI
+**dependency**, so it is declared on every route that takes plan context at once
+and appears that way in `backend/openapi.json` and in generated clients. Its
+schema there is a plain string rather than a UUID, because the dependency parses
+the value itself — which is what makes a malformed id the `400` documented above
+rather than FastAPI's own `422`.
 :::
 
 ### `tripl plan types`
