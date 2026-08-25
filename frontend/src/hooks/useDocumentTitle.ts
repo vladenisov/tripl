@@ -141,6 +141,10 @@ export function resolveTitleFromPath(pathname: string): { label: string; slug?: 
   const parts = pathname.split('/').filter(Boolean)
   if (parts.length === 0) return { label: 'Workspace' } // "/"
   if (parts[0] === 'auth') return { label: 'Sign in' }
+  // `/invite/:token` renders outside the app shell and sets no title of its own,
+  // so without an entry here the one page a brand-new member ever sees titled
+  // its tab "Page not found" (tripl-l33u.12).
+  if (parts[0] === 'invite') return { label: 'Invitation' }
   if (parts[0] === 'workspace' || parts[0] === 'projects') return { label: 'Workspace' }
   if (parts[0] === 'settings') {
     // Keyed on the FULL section path, not on its first segment. The rail's paths

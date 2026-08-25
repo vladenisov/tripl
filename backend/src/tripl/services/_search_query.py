@@ -7,6 +7,8 @@ merging/boosting, event-hit enrichment, and response-shaping helpers.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import re
 import uuid
 from collections.abc import Mapping
@@ -31,6 +33,8 @@ from tripl.services import app_settings_service
 from tripl.services._search_documents import _clean
 from tripl.services.demo.search_embeddings import demo_query_embedding
 from tripl.services.embedding_service import embed_query
+
+logger = logging.getLogger(__name__)
 
 # Cosine similarity a semantic hit must clear to be merged into the result set
 # (tripl-txcz). Below this the vector leg is not "a weaker answer", it is noise:
@@ -223,11 +227,32 @@ async def postgres_search(
     # measured at over 2.2s. Both legs still receive exactly the inputs they
     # received before and ``merge_results`` is handed the same two lists, so this
     # moves WHEN the vector is fetched and nothing about the ranking.
+    #
+    # The two legs fail independently (tripl-l33u), and awaiting the lexical one
+    # DIRECTLY is what buys that without a gather. An embed failure is simply "no
+    # embedding" — the same state an empty provider response produces — so it is
+    # logged and the fallback below still runs. A lexical failure is the request
+    # failing, and it must surface at the speed it happened: the embed leg is a
+    # blocking HTTP POST with a 30s socket timeout, so waiting for it to settle
+    # before re-raising (what ``gather(..., return_exceptions=True)`` does) held
+    # an immediate SQL error hostage to a hung provider for half a minute.
+    # Cancelling the embed task cannot strand SQL on this request's AsyncSession,
+    # because the thread it wraps touches neither the session nor the lexical
+    # rows; the await after the cancel exists to retrieve an exception from a
+    # task that had already finished, which asyncio would otherwise log at GC.
     if is_semantic_eligible and ai_config.search_embeddings_enabled:
-        lexical_results, embedding = await asyncio.gather(
-            lexical,
-            asyncio.to_thread(embed_query, query, config=ai_config),
-        )
+        embed_leg = asyncio.ensure_future(asyncio.to_thread(embed_query, query, config=ai_config))
+        try:
+            lexical_results = await lexical
+        except BaseException:
+            embed_leg.cancel()
+            with contextlib.suppress(BaseException):
+                await embed_leg
+            raise
+        try:
+            embedding = await embed_leg
+        except Exception:
+            logger.warning("Search embedding leg failed; continuing without it", exc_info=True)
     else:
         lexical_results = await lexical
     if is_semantic_eligible and not embedding and project_is_demo:

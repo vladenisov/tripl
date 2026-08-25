@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, func
+from sqlalchemy import JSON, DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, UUIDMixin
@@ -16,9 +16,16 @@ class ImplementationTicket(UUIDMixin, Base):
     MAIN-branch event UUID strings the ticket covers. Polling sync flips
     ``status`` to ``closed`` and marks the covered events ``implemented`` once the
     ticket's tracker status category reads ``done``.
+
+    The worker commits the row BEFORE it calls the tracker, so a ticket whose
+    ``external_id`` is NULL is a claim on the branch that has not come back from
+    the tracker yet. ``uq_implementation_ticket_branch`` is what makes that claim
+    binding: at most one ticket per branch, so a redelivered or concurrent task
+    can never open a second tracker issue for the same merge.
     """
 
     __tablename__ = "implementation_tickets"
+    __table_args__ = (UniqueConstraint("branch_id", name="uq_implementation_ticket_branch"),)
 
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
     branch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("plan_branches.id", ondelete="CASCADE"))

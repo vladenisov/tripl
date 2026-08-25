@@ -134,6 +134,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Non-main branches hold deep copies of the main plan under the same names,
+    # so the project-scoped unique constraints below cannot be restored while
+    # they exist. Runs first, and while plan_branches is still around to name
+    # them; deleting an event_type cascades to its events and relations.
+    for table in _BRANCHED_TABLES:
+        op.execute(
+            f"""
+            DELETE FROM {table}
+            WHERE branch_id IN (SELECT id FROM plan_branches WHERE kind <> 'main')
+            """  # noqa: S608 — table names are a fixed internal allowlist
+        )
+
     for name, (table, columns) in _OLD_UNIQUE.items():
         op.drop_constraint(name, table, type_="unique")
         op.create_unique_constraint(name, table, columns)

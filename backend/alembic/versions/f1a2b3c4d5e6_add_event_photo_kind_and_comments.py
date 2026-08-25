@@ -85,6 +85,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_event_photo_comment_photo_created", table_name="event_photo_comments")
     op.drop_table("event_photo_comments")
+    # Non-photo kinds uploaded no bytes, so their NULL storage_* columns have
+    # nothing to restore under NOT NULL. ``kind`` is still here to find them by.
+    op.execute("DELETE FROM event_photos WHERE kind <> 'photo'")
     op.alter_column(
         "event_photos", "storage_key", existing_type=sa.String(length=500), nullable=False
     )

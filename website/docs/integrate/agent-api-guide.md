@@ -132,9 +132,11 @@ GET /api/v1/projects/{slug}/search?q=user_id&types=variable&limit=10&branch=<bra
 Useful query parameters:
 
 - `q`: required search text, 1 to 500 characters.
-- `types`: optional repeated filter. Supported values are `event`, `event_type`,
-  `field`, `meta_field`, `variable`, `relation`, `tag`, `metric`, and
-  `fact_table`.
+- `types`: optional repeated filter, taking the same values a result's
+  `entity_type` carries. The accepted set is enumerated on the parameter itself
+  in `/openapi.json` — read it from there rather than from a list here, since it
+  grows as new kinds are indexed. It spans plan content and project
+  configuration alike, so scan configs and alert rules are filterable values.
 - `include_archived`: defaults to `false`.
 - `limit`: 1 to 100, defaults to 20.
 - `branch`: optional branch id.

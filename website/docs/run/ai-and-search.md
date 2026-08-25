@@ -44,6 +44,7 @@ time and bundled with the release.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SEARCH_EMBEDDINGS_ENABLED` | `false` | Master switch for semantic search. When `false`, `/search` uses keyword/substring fallback only. |
+| `SEARCH_EMBEDDING_BASE_URL` | `https://api.openai.com/v1` | Base URL of the OpenAI-compatible embeddings endpoint; `/embeddings` is appended. Env-only — no instance-settings override, see the re-indexing warning below. |
 | `SEARCH_EMBEDDING_PROVIDER` | `openai` | Embedding provider. |
 | `SEARCH_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model used to index and query tracking-plan text. |
 | `SEARCH_EMBEDDING_DIMENSIONS` | `1536` | Vector dimensionality. Must match the chosen model. |
@@ -128,12 +129,18 @@ anchor at the top of `compose.yaml`, **not** to a single service: `app` serves
 the API while `celery-worker` runs the embedding task, and both read these
 settings. Every service that runs the app image inherits the anchor.
 
+The anchor is an explicit allowlist, not a mount of your `.env`: a variable it
+does not name reaches nothing inside the container, the application default wins
+instead, and nothing is logged about it. Check the anchor before concluding that
+a value you put in `.env` took effect.
+
 ```yaml
 x-app-environment: &app-environment
   # …existing entries…
 
   # Semantic search embeddings (opt-in)
   SEARCH_EMBEDDINGS_ENABLED: "true"
+  SEARCH_EMBEDDING_BASE_URL: https://api.openai.com/v1
   SEARCH_EMBEDDING_PROVIDER: openai
   SEARCH_EMBEDDING_MODEL: text-embedding-3-small
   SEARCH_EMBEDDING_DIMENSIONS: "1536"

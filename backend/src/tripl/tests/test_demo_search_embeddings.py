@@ -8,10 +8,12 @@ pgvector-dependent paths.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib.util
 import json
 import sys
+import threading
 import uuid
 from collections.abc import Iterator
 from dataclasses import replace
@@ -33,7 +35,7 @@ from tripl.services._search_documents import (
     build_documents,
     embed_text_for,
 )
-from tripl.services.app_settings_service import env_ai_config
+from tripl.services.app_settings_service import AiConfig, env_ai_config
 from tripl.services.demo import search_embeddings
 from tripl.services.demo.scenario import DEMO_RECIPE_VERSION
 from tripl.services.demo.search_embeddings import (
@@ -422,6 +424,83 @@ async def test_postgres_search_demo_fallback_uses_canned_query_vector(
     assert await run("unknown demo query", project_is_demo=True) is False
     assert await run("pu", project_is_demo=True) is False
     assert semantic_calls == []
+
+
+# Bounds on the fake lexical leg's wait below. Nothing here measures a duration:
+# they pin the ORDERING, so the lexical leg is provably still suspended at the
+# moment its sibling fails.
+_EMBED_FAILURE_TIMEOUT_SECONDS = 5.0
+_EMBED_FAILURE_POLL_SECONDS = 0.005
+
+
+async def test_postgres_search_serves_lexical_results_when_the_embed_leg_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An embed leg that raises degrades to lexical instead of 500ing (tripl-l33u).
+
+    ``embed_texts`` degrades to ``[]`` for everything it anticipates, but the
+    ``asyncio.gather`` here carried no ``return_exceptions``, so anything it did
+    NOT anticipate propagated the instant it was raised — and the lexical
+    coroutine was left running SQL on the request's AsyncSession while the
+    request unwound. Both halves are asserted: the response, and that the
+    stranded leg is awaited rather than abandoned.
+    """
+    from tripl.services import _search_query, app_settings_service
+
+    hit = SearchResult(
+        id=uuid.uuid4(),
+        entity_type="event",
+        entity_id=uuid.uuid4(),
+        title="purchase_completed",
+        route_path="/p/demo/events/purchase_completed",
+        score=5.0,
+    )
+    embed_failed = threading.Event()
+    lexical_completed: list[bool] = []
+
+    async def fake_lexical(session: AsyncSession, **kwargs: object) -> list[SearchResult]:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _EMBED_FAILURE_TIMEOUT_SECONDS
+        while not embed_failed.is_set():
+            if loop.time() > deadline:
+                pytest.fail("the embedding leg had not failed while the lexical leg was running")
+            await asyncio.sleep(_EMBED_FAILURE_POLL_SECONDS)
+        lexical_completed.append(True)
+        return [hit]
+
+    def failing_embed(query: str, *, config: AiConfig) -> list[float]:
+        embed_failed.set()
+        raise ValueError("the provider answered 200 with a body that is not JSON")
+
+    async def fake_semantic(
+        session: AsyncSession, *, embedding: list[float], **kwargs: object
+    ) -> list[SearchResult]:
+        pytest.fail("the semantic leg ran without an embedding")
+
+    enabled = replace(env_ai_config(), search_embeddings_enabled=True)
+
+    async def fake_ai_config(session: AsyncSession) -> AiConfig:
+        return enabled
+
+    monkeypatch.setattr(_search_query, "postgres_lexical_search", fake_lexical)
+    monkeypatch.setattr(_search_query, "postgres_semantic_search", fake_semantic)
+    monkeypatch.setattr(_search_query, "embed_query", failing_embed)
+    monkeypatch.setattr(app_settings_service, "get_ai_config", fake_ai_config)
+
+    async with TestSessionLocal() as session:
+        results, semantic_used = await _search_query.postgres_search(
+            session,
+            project_id=uuid.uuid4(),
+            branch_id=uuid.uuid4(),
+            query="purchase",
+            entity_types=None,
+            include_archived=False,
+            limit=10,
+        )
+
+    assert [item.title for item in results] == ["purchase_completed"]
+    assert semantic_used is False
+    assert lexical_completed == [True]
 
 
 async def test_generator_script_end_to_end_with_fake_embedder(

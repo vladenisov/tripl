@@ -566,9 +566,10 @@ def test_the_events_list_builder_takes_every_filter_the_route_declares(
     two distributions that share this builder, so the UI's "Mark reviewed" wrote
     a flag no shell and no agent could isolate afterwards. The builder's own
     comment already said it mirrors the route's Query constraints - that was a
-    habit, and a habit does not fail CI. One direction only: ``branch`` is a
-    dependency rather than a declared parameter and is deliberately absent from
-    the document (see test_branch_is_resolved_by_name_and_sent_as_an_id).
+    habit, and a habit does not fail CI. ``branch`` is resolved through a
+    dependency but is declared like any other query parameter, so it appears in
+    the document and this check covers it too (tripl-l33u.7; how the CLI turns a
+    name into an id is test_branch_is_resolved_by_name_and_sent_as_an_id).
 
     No allowance list any more. This shipped with one, naming the two parameters
     that predated the shared layer - ``field_value`` from PR #78 and ``order_by``
@@ -1161,6 +1162,56 @@ def test_the_packaged_compose_matches_the_repo_compose() -> None:
         "update MCP_BUILD_BLOCK and re-copy the packaged asset"
     )
     assert packaged("compose.yaml") == expected.replace(MCP_BUILD_BLOCK, "")
+
+
+def _forwarded_variables(compose: str) -> set[str]:
+    """The names a compose file's top-level `x-*-environment` anchor passes through.
+
+    Two-space indentation is the discriminator: a service's own `environment:`
+    map sits four levels deeper, and every other key at this depth (services,
+    volumes) is lower-case.
+    """
+    return set(re.findall(r"^  ([A-Z][A-Z0-9_]*):", compose, re.MULTILINE))
+
+
+def test_both_stacks_forward_every_documented_embedding_variable() -> None:
+    """A documented variable that no stack forwards is a control that does nothing.
+
+    Compose passes an explicit allowlist - no `env_file:`, no .env mount - so a
+    name in .env.example that the anchor omits reaches nothing in the container
+    and the application default silently wins. That is how DEMO_ENABLED
+    (tripl-2su6.16) and REGISTRATION_MODE (tripl-jfm3.101) shipped inert, and
+    the third time it cost more than a switch: SEARCH_EMBEDDING_BASE_URL is the
+    whole of the documented "keep indexed text on your own endpoint" control, so
+    its omission POSTed tracking-plan text to api.openai.com on stacks
+    configured for a self-hosted endpoint (tripl-l33u.2).
+
+    Derived from .env.example rather than a hand-kept list, so a future
+    SEARCH_EMBEDDING_* documented there and forwarded nowhere fails here.
+    """
+    from tripl_cli.install.files import packaged
+
+    documented = {
+        line.split("=", 1)[0]
+        for line in (REPO_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+        if line.startswith("SEARCH_EMBEDDING")
+    }
+    assert "SEARCH_EMBEDDING_BASE_URL" in documented, (
+        ".env.example no longer documents SEARCH_EMBEDDING_BASE_URL; if the setting is "
+        "gone this test is stale, and if it merely moved the privacy control is undocumented"
+    )
+
+    stacks = {
+        "compose.yaml": (REPO_ROOT / "compose.yaml").read_text(encoding="utf-8"),
+        "compose.dev.yaml": (REPO_ROOT / "compose.dev.yaml").read_text(encoding="utf-8"),
+        "the packaged compose.yaml": packaged("compose.yaml"),
+    }
+    for name, compose in stacks.items():
+        missing = sorted(documented - _forwarded_variables(compose))
+        assert not missing, (
+            f"{name} does not forward {missing}; .env.example documents them, so a value "
+            "set there would never reach the container"
+        )
 
 
 def test_the_packaged_rabbitmq_conf_matches_the_repo_one() -> None:

@@ -291,6 +291,16 @@ async def _get_active_metric_signals(
 # (significant) open-signal count across every scope (tripl-yfsj.1).
 SIGNIFICANT_MIN_REL_EFFECT = 0.5
 
+# The magnitude a move off a zero baseline is reported as, and the ceiling every
+# other magnitude is clamped to. It has to be FINITE: this number is shipped on
+# ``MetricSignalResponse.relative_effect``, and Pydantic serializes ``inf`` to
+# JSON null, so an unbounded value reached the client as "not computed" and the
+# client re-derived a count-shaped estimate that lands below the gate. The badge,
+# which gates in-process where ``inf`` still compares, counted such a signal while
+# every page it links to hid it (tripl-l33u.3). Far above the highest magnitude
+# preset ("Major", 1.0) so it cannot be mistaken for a measured ratio.
+MAX_RELATIVE_EFFECT = 1e6
+
 
 def relative_effect(actual: float, expected: float, *, count_shaped: bool = True) -> float:
     """How big a signal is, relative to what was expected.
@@ -310,14 +320,18 @@ def relative_effect(actual: float, expected: float, *, count_shaped: bool = True
     Measured when this was written: of 191 open signals on production, all were
     event scope and none were affected — the fault was latent, waiting for the
     first percent-unit metric to move.
+
+    Every branch is clamped to ``MAX_RELATIVE_EFFECT`` because the result travels
+    over JSON, where a non-finite float becomes null (see that constant).
     """
     if count_shaped:
-        return abs(actual - expected) / max(expected, 1.0)
+        return min(abs(actual - expected) / max(expected, 1.0), MAX_RELATIVE_EFFECT)
     if expected == 0:
         # No baseline to be relative to. Anything non-zero is unbounded change;
         # nothing from nothing is no change.
-        return float("inf") if actual != 0 else 0.0
-    return abs(actual - expected) / abs(expected)
+        return MAX_RELATIVE_EFFECT if actual != 0 else 0.0
+    # A near-zero (but non-zero) fractional baseline overflows to inf on its own.
+    return min(abs(actual - expected) / abs(expected), MAX_RELATIVE_EFFECT)
 
 
 def is_significant_signal(actual: float, expected: float, *, count_shaped: bool = True) -> bool:

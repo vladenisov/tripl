@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -241,18 +241,32 @@ WRITE_GATES = frozenset(
 PROJECT_SCOPED_GATES = frozenset({get_editor_user, get_owner_user, get_key_reachable_owner_user})
 
 
-async def get_branch_id_override(request: Request, session: SessionDep) -> uuid.UUID | None:
+async def get_branch_id_override(
+    request: Request,
+    session: SessionDep,
+    branch: Annotated[
+        str | None,
+        Query(description="Plan branch id (UUID) to read and write instead of the main branch."),
+    ] = None,
+) -> uuid.UUID | None:
     """Resolve the editor's active branch from the ``?branch=`` query param.
 
     Returns ``None`` when no override is supplied (services then default to the
     project's main branch). Validates that the branch belongs to the project
     referenced by the path's ``slug`` so cross-project ids can't leak through.
+
+    Declared as a parameter rather than read off ``request.query_params`` so
+    FastAPI propagates it into the OpenAPI schema of every route carrying
+    :data:`BranchIdDep` — otherwise the one documented way to keep agent edits
+    off the live plan is invisible to every generated client (tripl-l33u.7).
+    Typed ``str`` and parsed here on purpose: FastAPI's own ``uuid.UUID``
+    coercion answers a malformed value with 422, and the published contract for
+    this parameter is 400.
     """
-    branch_raw = request.query_params.get("branch")
-    if not branch_raw:
+    if not branch:
         return None
     try:
-        branch_id = uuid.UUID(branch_raw)
+        branch_id = uuid.UUID(branch)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -264,17 +278,17 @@ async def get_branch_id_override(request: Request, session: SessionDep) -> uuid.
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Branch context requires a project slug in the path",
         )
-    branch = await session.scalar(
+    plan_branch = await session.scalar(
         select(PlanBranch)
         .join(Project, Project.id == PlanBranch.project_id)
         .where(PlanBranch.id == branch_id, Project.slug == slug)
     )
-    if branch is None:
+    if plan_branch is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Branch not found",
         )
-    return branch.id
+    return plan_branch.id
 
 
 BranchIdDep = Annotated[uuid.UUID | None, Depends(get_branch_id_override)]

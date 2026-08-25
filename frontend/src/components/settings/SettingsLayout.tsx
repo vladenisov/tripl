@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ChevronLeft, LogOut, Menu } from 'lucide-react'
 import { useAuth } from '@/components/auth-context'
@@ -79,26 +79,41 @@ export function SettingsLayout({
    * The predicate lives here alone so that every way out of the takeover asks
    * the same question: the rail, the palette and Sign out all used to answer it
    * separately, and two of them answered "no" unconditionally (tripl-l8v2).
+   * Browser Back and reload/close reach it through the effects below, which are
+   * the two exits with no element to hang an onClick on (tripl-l33u.6).
    */
-  const draftAtRisk = (settingsPath: string | null): UnsavedWork | null => {
-    if (!unsaved) return null
-    if (settingsPath !== null && unsaved.keptBy(settingsPath)) return null
-    return unsaved
-  }
+  const draftAtRisk = useCallback(
+    (settingsPath: string | null): UnsavedWork | null => {
+      if (!unsaved) return null
+      if (settingsPath !== null && unsaved.keptBy(settingsPath)) return null
+      return unsaved
+    },
+    [unsaved],
+  )
 
-  /** Resolves true when leaving is safe, or once the user has accepted the loss. */
-  const confirmLeave = async (settingsPath: string | null): Promise<boolean> => {
-    const work = draftAtRisk(settingsPath)
-    if (!work) return true
-    const leave = await confirm({
-      title: 'Leave with unsaved changes?',
-      message: work.message,
-      confirmLabel: 'Leave',
-      variant: 'danger',
-    })
-    if (leave) setUnsaved(null)
-    return leave
-  }
+  /**
+   * Resolves true when leaving is safe, or once the user has accepted the loss.
+   *
+   * Accepting deliberately does not clear the registration. The section that
+   * registered the draft owns it and drops it as it unmounts, and the leaves
+   * that keep it mounted — AI → Email, a Back that lands inside the instance
+   * group — would otherwise leave the shell believing a live draft was gone:
+   * beforeunload unregistered, no entry parked, every rail link silent, and the
+   * next exit discarding the draft with no warning at all (tripl-l33u.6).
+   */
+  const confirmLeave = useCallback(
+    async (settingsPath: string | null): Promise<boolean> => {
+      const work = draftAtRisk(settingsPath)
+      if (!work) return true
+      return confirm({
+        title: 'Leave with unsaved changes?',
+        message: work.message,
+        confirmLabel: 'Leave',
+        variant: 'danger',
+      })
+    },
+    [confirm, draftAtRisk],
+  )
 
   /**
    * Intercept a rail link only when following it would discard unsaved work.
@@ -135,6 +150,38 @@ export function SettingsLayout({
       if (leave) void auth.logout().then(() => navigate('/auth'))
     })
   }
+
+  // Whether a draft exists at all. The section re-registers a new UnsavedWork as
+  // it edits, so the listener below is keyed on this rather than on the draft.
+  const hasUnsaved = unsaved !== null
+
+  /**
+   * Reload and tab-close are not React navigations, so the dialog above cannot
+   * run for them — only the browser's own prompt can, and only from a listener
+   * that exists while the draft does. Registered off the dirty flag alone so a
+   * settings page nobody has typed into never interrupts a reload.
+   */
+  useEffect(() => {
+    if (!hasUnsaved) return
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      // Browsers show their own wording. returnValue is what makes the older
+      // ones (Chrome/Edge < 119) prompt at all.
+      event.returnValue = true
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [hasUnsaved])
+
+  // Browser Back is deliberately NOT guarded. The app mounts a plain
+  // BrowserRouter, so react-router has no blocker to offer, and the alternative
+  // — parking a spare history entry and reading popstate — was tried and pulled:
+  // a settings move the draft survives buries the parked entry, and every
+  // repair for that opened another hole (a Forward press reading as a leave, a
+  // second Back walking out of the area, dead entries left behind). A guard
+  // that mis-fires is worse than none, because the user learns to dismiss it.
+  // Guarding Back properly needs the data-router migration tripl-l8v2 first
+  // proposed; until then this covers the in-app exits plus reload and close.
 
   return (
     <div className="relative flex h-screen overflow-hidden" style={{ background: 'var(--bg)' }}>

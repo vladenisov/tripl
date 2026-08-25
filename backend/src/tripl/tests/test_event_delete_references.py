@@ -42,6 +42,7 @@ from tripl.models.event import Event
 from tripl.models.implementation_ticket import ImplementationTicket
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
+from tripl.models.plan_branch import BranchKind, BranchStatus, PlanBranch
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.tests.conftest import TestSessionLocal
@@ -327,7 +328,20 @@ async def _seed_annotations(fx: _Fixture) -> None:
 async def _seed_tickets(fx: _Fixture) -> tuple[uuid.UUID, uuid.UUID]:
     open_id = uuid.uuid4()
     closed_id = uuid.uuid4()
+    # The closed ticket needs its own branch: uq_implementation_ticket_branch
+    # allows one ticket per branch (tripl-l33u.11).
+    shipped_branch_id = uuid.uuid4()
     async with TestSessionLocal() as session:
+        session.add(
+            PlanBranch(
+                id=shipped_branch_id,
+                project_id=fx.project_id,
+                name="shipped",
+                kind=BranchKind.working.value,
+                status=BranchStatus.draft.value,
+            )
+        )
+        await session.flush()
         session.add_all(
             [
                 ImplementationTicket(
@@ -341,7 +355,7 @@ async def _seed_tickets(fx: _Fixture) -> tuple[uuid.UUID, uuid.UUID]:
                 ImplementationTicket(
                     id=closed_id,
                     project_id=fx.project_id,
-                    branch_id=fx.branch_id,
+                    branch_id=shipped_branch_id,
                     status="closed",
                     summary="a record of what shipped",
                     event_ids=[fx.doomed_ref, fx.survivor_ref],

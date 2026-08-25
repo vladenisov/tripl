@@ -92,14 +92,14 @@ Query parameters:
 | Param | Meaning |
 | --- | --- |
 | `q` | the natural-language query (1–500 characters) |
-| `types` | restrict the entity kinds returned — repeatable |
+| `types` | restrict the returned hits to any of the `entity_type` values below — repeatable |
 | `include_archived` | include archived entities (default `false`) |
 | `limit` | cap the number of hits (default `20`, max `100`) |
 
 Each item carries:
 
 - `entity_type` — one of `event`, `event_type`, `field`, `meta_field`, `variable`,
-  `relation`, `tag`, `metric`, `fact_table`
+  `relation`, `tag`, `metric`, `fact_table`, `scan_config`, `alert_rule`
 - `title`, `subtitle`, `description` (or `snippet`)
 - `confidence` — relevance in `0..1`
 - `route_path` — where the entity lives in the app

@@ -93,6 +93,7 @@ class _GenerateEventsFn(Protocol):
         event_group_rules: Sequence[Mapping[str, object]] | None = None,
         reserved_columns: Collection[str] | None = None,
         max_events: int = 10000,
+        scan_config_id: uuid.UUID | None = None,
     ) -> GenerationResult: ...
 
 
@@ -235,6 +236,10 @@ def sync_catalog(
                 # FieldDefinition above, so the generator does not then report
                 # their absence as a plan gap (tripl-jfm3.90).
                 reserved_columns=skip_cols,
+                # Stamps provenance on the variable value drifts this generates.
+                # Alert dispatch filters drifts by scan config, so an unstamped
+                # row is detected but can never be alerted on (tripl-l33u.1).
+                scan_config_id=config.id,
             )
             out.gen_results[et_name] = result
             logger.info(
@@ -300,6 +305,7 @@ def sync_catalog(
             event_name_format=config.event_name_format,
             event_group_rules=config.event_group_rules,
             reserved_columns=skip_cols,
+            scan_config_id=config.id,
         )
         logger.info(
             f"Single scan: {out.single_result.events_created} created, "

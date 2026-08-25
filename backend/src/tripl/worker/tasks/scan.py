@@ -413,6 +413,7 @@ def _scan_with_grouping(
             event_name_format=config.event_name_format,
             event_group_rules=config.event_group_rules,
             reserved_columns=reserved_catalog_columns(config),
+            scan_config_id=config.id,
         )
         combined.events_created += result.events_created
         combined.events_skipped += result.events_skipped
