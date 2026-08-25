@@ -428,12 +428,37 @@ export interface MonitorSummaryItem {
   muted_until: string | null
 }
 
+/**
+ * Whether each drift-style scope has any source data at all, PROJECT-wide.
+ *
+ * Not a per-rule verdict and not a prediction: it answers "could this scope ever
+ * produce a candidate here", so a screen can tell an enabled-but-inert toggle
+ * from a quiet one (tripl-wkwv.1).
+ */
+export interface AlertScopeReadiness {
+  /**
+   * False when nothing on the MAIN branch documents an allowed-values list —
+   * neither a variable's own list nor a per-event override — for a variable
+   * scans still observe, and no value drift has been collected yet. Collected
+   * rows alone are enough.
+   */
+  variable_value_drift: boolean
+  /**
+   * False when no scan lists distribution drift fields AND no drift has been
+   * collected yet. Collected rows alone are enough.
+   */
+  distribution_drift: boolean
+}
+
 export interface MonitorsSummaryResponse {
   monitors: MonitorSummaryItem[]
   firing_count: number
   warning_count: number
   healthy_count: number
   total: number
+  // On the envelope, never on `MonitorSummaryItem`: one project fact, not N
+  // copies of a value that cannot differ between rules.
+  scope_readiness: AlertScopeReadiness
 }
 
 /** A single monitor with the extra context a drill-in detail view needs. */
@@ -454,4 +479,7 @@ export interface MonitorDetail extends MonitorSummaryItem {
   total_deliveries: number
   last_delivery_at: string | null
   last_delivery_status: AlertDeliveryStatus | null
+  // The same block the monitors list carries, under the same name: both screens
+  // render the same two toggles and must not disagree about what feeds them.
+  scope_readiness: AlertScopeReadiness
 }

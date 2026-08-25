@@ -242,6 +242,22 @@ describe('EventRow name and type cells', () => {
     expect(link).toHaveAttribute('href', '/p/proj-1/monitoring/event/evt-1')
   })
 
+  // tripl-wkwv.5: windy-ios holds one event whose name is the empty string. The
+  // anchor's only child was <EventName name="">, which rendered nothing — a
+  // zero-width click target with no accessible name, on the one row a user would
+  // most want to open in order to rename or archive it.
+  it('keeps a clickable, announceable link when the event has no name', () => {
+    renderRow(makeEvent({ name: '' }), windowSeries(10, 20))
+
+    const link = screen.getByRole('link', { name: '(unnamed event)' })
+    expect(link).toHaveAttribute('href', '/p/proj-1/monitoring/event/evt-1')
+    // The row's other controls were labelled "Select " and "Edit " — a trailing
+    // space and nothing else.
+    expect(screen.getByLabelText('Select (unnamed event)')).toBeInTheDocument()
+    expect(screen.getByLabelText('Edit (unnamed event)')).toBeInTheDocument()
+    expect(screen.getByLabelText('Drag to reorder (unnamed event)')).toBeInTheDocument()
+  })
+
   // tripl-w9od: the sidebar and Settings call this type "Page View"; the table
   // answered with the internal key "pv" and no legend anywhere.
   it('badges the type with its display name, not its internal key', () => {

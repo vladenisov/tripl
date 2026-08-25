@@ -8,6 +8,7 @@ from typing import Any, cast
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tripl.middleware.branch_context import current_branch
 from tripl.models.audit_log import AuditLog
 from tripl.models.project import Project
 from tripl.models.user import User
@@ -75,6 +76,16 @@ async def record(
     It defaults to True because every other caller writes exactly one row and
     relies on this function to land it; flipping that default would silently
     leave audit rows uncommitted across the whole API.
+
+    The branch is NOT a parameter. It is read off the request-scoped contextvar
+    that ``api.deps.get_branch_id_override`` — the one function that resolves
+    ``?branch=`` — binds, so all 21 branch-scoped route handlers record it
+    without a single call-site edit and the 22nd cannot forget to (tripl-wkwv.6).
+    A NULL ``branch_id`` with an empty ``branch_name`` means "not written through
+    a branch-scoped request": either main, or an action with no plan-branch
+    dimension at all (alerting, scans, data sources, users, API keys). It does
+    not assert "main", which is why the audit tab shows a chip only when
+    ``branch_name`` is non-empty.
     """
     project_id: uuid.UUID | None
     slug = ""
@@ -95,11 +106,17 @@ async def record(
     else:
         project_id = None
 
+    # Read once per row so a ``commit=False`` batch (the inbox bulk route) is
+    # consistent within itself; that route carries no branch, so it gets NULL.
+    branch = current_branch()
+
     entry = AuditLog(
         user_id=user.id if user else None,
         user_email=user.email if user else "",
         project_id=project_id,
         project_slug=slug,
+        branch_id=branch[0] if branch else None,
+        branch_name=branch[1] if branch else "",
         action=action,
         target_type=target_type,
         target_id=target_id,

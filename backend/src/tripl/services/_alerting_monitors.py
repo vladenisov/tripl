@@ -19,6 +19,7 @@ from tripl.schemas.alerting import (
     MonitorsSummaryResponse,
     MonitorSummaryItem,
 )
+from tripl.services._alerting_scope_readiness import load_scope_readiness
 from tripl.services.monitoring_utils import summarize_monitor_states
 from tripl.services.project_lookup import get_project_by_slug as _get_project
 
@@ -124,12 +125,14 @@ async def get_monitors_summary(session: AsyncSession, slug: str) -> MonitorsSumm
         warning_count=sum(1 for monitor in monitors if monitor.status == "warning"),
         healthy_count=sum(1 for monitor in monitors if monitor.status == "healthy"),
         total=len(monitors),
+        scope_readiness=await load_scope_readiness(session, project.id),
     )
 
 
 async def _build_monitor_detail(
     session: AsyncSession,
     *,
+    project_id: uuid.UUID,
     rule: AlertRule,
     destination: AlertDestination,
     now: datetime,
@@ -197,6 +200,10 @@ async def _build_monitor_detail(
         last_delivery_status=(
             AlertDeliveryStatus(last_delivery[1]) if last_delivery is not None else None
         ),
+        # Project-level, so it is the identical block the monitors list carries
+        # — the detail screen renders the same two toggles and must not disagree
+        # with the list about whether anything feeds them (tripl-wkwv.1).
+        scope_readiness=await load_scope_readiness(session, project_id),
     )
 
 
@@ -213,6 +220,7 @@ async def get_monitor(
     )
     return await _build_monitor_detail(
         session,
+        project_id=project.id,
         rule=rule,
         destination=destination,
         now=datetime.now(UTC),
@@ -238,6 +246,7 @@ async def mute_monitor(
     await session.commit()
     return await _build_monitor_detail(
         session,
+        project_id=project.id,
         rule=rule,
         destination=destination,
         now=now,
@@ -259,6 +268,7 @@ async def unmute_monitor(
     await session.commit()
     return await _build_monitor_detail(
         session,
+        project_id=project.id,
         rule=rule,
         destination=destination,
         now=datetime.now(UTC),

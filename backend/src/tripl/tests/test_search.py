@@ -127,6 +127,11 @@ async def test_retrieval_window_does_not_vary_with_the_page_size(
     This asserts the invariant where it lives — the window handed to the
     retrieval leg — rather than through a ranking, because on SQLite there is no
     semantic leg to fuse and the fault could not reproduce end to end.
+
+    The ``+ 1`` is the truncation probe (tripl-wkwv.3): a leg that came back
+    exactly full is otherwise indistinguishable from one that returned
+    everything there was. It is a constant, so the invariant this test exists for
+    — the window does not track the page size — is untouched.
     """
     await client.post("/api/v1/projects", json={"name": "Window", "slug": "search-window"})
 
@@ -142,13 +147,13 @@ async def test_retrieval_window_does_not_vary_with_the_page_size(
         page_sizes = (1, 5, 20, 49, 50, 100)
         for page_size in page_sizes:
             await search_service.search_project(session, "search-window", "spot", limit=page_size)
-        assert windows == [CANDIDATE_WINDOW] * len(page_sizes)
+        assert windows == [CANDIDATE_WINDOW + 1] * len(page_sizes)
 
         # A bulk caller still gets the bigger window it asked for: the fixed
         # value is a floor, not a ceiling.
         windows.clear()
         await search_service.search_event_ids(session, "search-window", "spot")
-        assert windows == [10000]
+        assert windows == [10001]
 
 
 async def test_index_maintenance_runs_once_per_branch_not_once_per_search(
@@ -411,6 +416,100 @@ def test_a_hybrid_hit_keeps_the_stronger_of_its_two_certainties() -> None:
     finalized = _finalize_results(merged, limit=10)
     # 5.0 / 7.0 = 0.714 from the score, 0.8 from the cosine — the stronger wins.
     assert finalized[0].confidence == pytest.approx(0.8, abs=1e-4)
+
+
+def test_a_document_the_lexical_leg_also_found_is_not_labelled_semantic() -> None:
+    """Provenance is which leg PRODUCED the row, not which windows held it.
+
+    tripl-wkwv.3. ``q='local_push_scheduled'`` on production answered with the
+    event named exactly that, at confidence 1.0 — and a ``semantic`` chip, as did
+    nine of its ten rows. The vector leg is a ``LIMIT``-ed kNN scan with a cosine
+    floor, so it returns rows for ANY query, and the rows both legs hold are
+    exactly the ones the sum lifts to the top. The flag was therefore dense at
+    the head of the list and told the reader the wrong story about the one result
+    they are most likely to trust.
+
+    The other two assertions are the ones that make this a labelling change and
+    nothing else: the ranking sum and tripl-txcz's hybrid ``max`` both survive.
+    """
+    document_id = uuid.uuid4()
+    lexical = _result(entity_type="event", title="local_push_scheduled", score=12.0)
+    lexical.id = document_id
+
+    merged = merge_results(
+        [lexical],
+        [_semantic_result(title="local_push_scheduled", cosine=0.9, result_id=document_id)],
+        10,
+    )
+
+    assert len(merged) == 1
+    assert merged[0].semantic_used is False, "the keyword ladder produced this row"
+    assert merged[0].score == pytest.approx(12.0 + 0.9 * _SEMANTIC_SCORE_WEIGHT)
+    # Confidence and provenance answer different questions, and disagreeing here
+    # is intended: the identity match is still certain (tripl-d5u8), and a hybrid
+    # row still keeps the stronger of its two certainties (tripl-txcz).
+    assert _finalize_results(merged, limit=10)[0].confidence == 1.0
+
+
+def test_a_vector_only_hit_is_still_labelled_semantic() -> None:
+    """The narrowed rule must not empty the flag out (tripl-wkwv.3).
+
+    A row no keyword matched is exactly the row the chip exists for.
+    """
+    merged = merge_results([], [_semantic_result(title="Пейволл", cosine=0.9)], 10)
+
+    assert merged[0].semantic_used is True
+
+
+async def test_the_envelope_and_the_row_may_disagree_about_the_semantic_leg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production shape end to end: the leg RAN, this row is not its work.
+
+    tripl-wkwv.3. Both flags are spelled ``semantic_used`` and they are two
+    different claims — the envelope's is "embeddings answered this request", a
+    row's is "no keyword matched this one". Both legs returning the same document
+    is the ordinary case, so the two disagreeing is the ordinary response, not a
+    fault. An operator diagnosing configuration reads the envelope; a reader
+    asking why a row is in front of them reads the row.
+    """
+    document_id = uuid.uuid4()
+
+    async def fake_lexical(_session: object, **_kwargs: object) -> list[SearchResult]:
+        hit = _result(entity_type="event", title="local_push_scheduled", score=12.0)
+        hit.id = document_id
+        return [hit]
+
+    async def fake_semantic(_session: object, **_kwargs: object) -> list[SearchResult]:
+        return [_semantic_result(title="local_push_scheduled", cosine=0.9, result_id=document_id)]
+
+    def fake_embed(_query: str, *, config: AiConfig) -> list[float]:
+        return [0.5]
+
+    enabled = replace(env_ai_config(), search_embeddings_enabled=True)
+
+    async def fake_ai_config(_session: object) -> AiConfig:
+        return enabled
+
+    monkeypatch.setattr(_search_query, "postgres_lexical_search", fake_lexical)
+    monkeypatch.setattr(_search_query, "postgres_semantic_search", fake_semantic)
+    monkeypatch.setattr(_search_query, "embed_query", fake_embed)
+    monkeypatch.setattr(app_settings_service, "get_ai_config", fake_ai_config)
+
+    async with TestSessionLocal() as session:
+        merged, semantic_used = await _search_query.postgres_search(
+            session,
+            project_id=uuid.uuid4(),
+            branch_id=uuid.uuid4(),
+            query="local_push_scheduled",
+            entity_types=None,
+            include_archived=False,
+            limit=10,
+        )
+
+    assert semantic_used is True, "the envelope flag says only that the leg ran"
+    assert len(merged) == 1
+    assert merged[0].semantic_used is False, "the keyword ladder is why this row is here"
 
 
 def test_sqlite_prefix_match_is_not_served_as_a_certain_answer() -> None:
@@ -1053,7 +1152,130 @@ async def test_search_query_with_nul_byte_behaves_like_the_clean_query(
     # and deliberately not a 422 either (see ``sanitize_query``).
     only_nuls = await client.get("/api/v1/projects/search-nul/search", params={"q": "\x00"})
     assert only_nuls.status_code == 200
-    assert only_nuls.json() == {"items": [], "total": 0, "semantic_used": False}
+    assert only_nuls.json() == {
+        "items": [],
+        "total": 0,
+        "truncated": False,
+        "semantic_used": False,
+    }
+
+
+async def test_search_reports_truncation_rather_than_a_full_page(client: AsyncClient) -> None:
+    """``total`` cannot say whether hits were dropped, so something else must.
+
+    tripl-wkwv.3. ``total`` is ``len(items)`` computed AFTER the trim, so on a
+    full page it equals ``limit`` whether the engine had six more answers or
+    none — and this route takes no ``offset``, so an agent reading it as a
+    catalog count (the way ``/events`` total genuinely is one) cannot tell a
+    complete result set from a clipped one. ``total`` keeps its value and its
+    name; ``truncated`` carries the fact it never could.
+    """
+    await client.post("/api/v1/projects", json={"name": "Trunc", "slug": "search-trunc"})
+    event_type_id, _field_id = await _create_event_type(
+        client,
+        "search-trunc",
+        name="checkout",
+        display_name="Checkout",
+    )
+    for step in range(5):
+        created = await client.post(
+            "/api/v1/projects/search-trunc/events",
+            json={"event_type_id": event_type_id, "name": f"checkout_step_{step}"},
+        )
+        assert created.status_code == 201
+
+    clipped_resp = await client.get(
+        "/api/v1/projects/search-trunc/search", params={"q": "checkout", "limit": 2}
+    )
+    assert clipped_resp.status_code == 200
+    clipped = clipped_resp.json()
+    assert len(clipped["items"]) == 2
+    # The old signal, still exactly as ambiguous as it was — and the new one.
+    assert clipped["total"] == 2
+    assert clipped["truncated"] is True
+
+    # Same query, room for every hit: nothing was dropped and the route says so,
+    # which is what makes the flag worth reading at all.
+    whole_resp = await client.get(
+        "/api/v1/projects/search-trunc/search", params={"q": "checkout", "limit": 20}
+    )
+    assert whole_resp.status_code == 200
+    whole = whole_resp.json()
+    assert whole["total"] == len(whole["items"]) > 2
+    assert whole["truncated"] is False
+
+
+async def test_a_full_retrieval_window_is_not_by_itself_a_dropped_hit(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The window filling and hits being dropped are two different facts.
+
+    tripl-wkwv.3, found reviewing it. ``truncated`` also fired on
+    ``candidate_count >= candidate_limit`` — "the retrieval window filled" —
+    and every consumer had already been told the flag means "ranked hits exist
+    that this response does not carry". Those coincide except on the boundary
+    the HTTP ceiling puts a caller on: at ``limit=100``, the maximum
+    ``GET /search`` accepts, ``candidate_limit == capped_limit``, so a query
+    matching exactly 100 documents filled the window while the body carried
+    every hit either leg can produce. The route called that answer truncated,
+    and the documented remedy — raise ``limit`` — was already exhausted.
+
+    Reproduced at a window of ``n`` rather than 100 so the corpus can be five
+    events instead of a hundred; ``capped_limit == candidate_limit == n`` is the
+    same arithmetic the real ceiling produces. The route now retrieves one row
+    PAST the window, so a full window and a complete answer are distinguishable.
+    """
+    await client.post("/api/v1/projects", json={"name": "Edge", "slug": "search-trunc-edge"})
+    event_type_id, _field_id = await _create_event_type(
+        client,
+        "search-trunc-edge",
+        name="checkout",
+        display_name="Checkout",
+    )
+    for step in range(5):
+        created = await client.post(
+            "/api/v1/projects/search-trunc-edge/events",
+            json={"event_type_id": event_type_id, "name": f"checkout_step_{step}"},
+        )
+        assert created.status_code == 201
+
+    # How many documents this query actually matches, read rather than assumed:
+    # the corpus is events plus the event type plus its field.
+    whole = (
+        await client.get(
+            "/api/v1/projects/search-trunc-edge/search",
+            params={"q": "checkout", "limit": 100},
+        )
+    ).json()
+    matched = len(whole["items"])
+    assert matched > 1
+    # ...and that this reading is itself complete, or `matched` would be a page
+    # size rather than the size of the eligible set.
+    assert whole["truncated"] is False
+
+    # capped_limit == candidate_limit == matched: the page is full, the window is
+    # full, and every hit is in the body.
+    monkeypatch.setattr(search_service, "CANDIDATE_WINDOW", matched)
+    exact = (
+        await client.get(
+            "/api/v1/projects/search-trunc-edge/search",
+            params={"q": "checkout", "limit": matched},
+        )
+    ).json()
+    assert len(exact["items"]) == matched
+    assert exact["truncated"] is False, "every matching document is in this response"
+
+    # One row short of the eligible set, same saturated window: now a hit really
+    # was dropped, and the flag must still say so.
+    monkeypatch.setattr(search_service, "CANDIDATE_WINDOW", matched - 1)
+    clipped = (
+        await client.get(
+            "/api/v1/projects/search-trunc-edge/search",
+            params={"q": "checkout", "limit": matched - 1},
+        )
+    ).json()
+    assert len(clipped["items"]) == matched - 1
+    assert clipped["truncated"] is True
 
 
 async def _create_fact_table(

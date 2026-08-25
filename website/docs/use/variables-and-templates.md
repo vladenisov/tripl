@@ -137,6 +137,18 @@ other drift signals: they use the spike direction for rule matching, carry the
 variable name and novel-value sample in the alert, and bypass numeric volume
 thresholds.
 
+The scope produces nothing until some variable documents values, because drift
+is measured against a documented list and there is nothing to compare an
+observation with until one exists. A global documented list or a per-event
+override will do — either one is enough — but it has to be on the **main**
+branch: detection runs against main, so a list documented on a working branch
+counts only once that branch merges. A variable
+[excluded from scans](#exclude-instead-of-deleting-scan-owned-variables) never
+drifts however full its list is, because scans stop observing it. The rule
+editor and the monitor detail now say so where the scope is switched on, rather
+than leaving a rule to look enabled and stay silent — see
+[When a scope is on but nothing feeds it](alerting.md#when-a-scope-is-on-but-nothing-feeds-it).
+
 ## When a scan merges events into a group
 
 Scan **event group** rules can fold several existing events into one. The

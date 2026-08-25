@@ -41,10 +41,17 @@ precomputed embedding vectors for its own content, so demo searches can report
 leaving the instance, since those vectors are computed by maintainers ahead of
 time and bundled with the release.
 
+The `semantic_used` above is the flag on the **envelope**, and it is the one to
+read when diagnosing configuration: it says the semantic leg ran. Each hit in
+`items` carries its own `semantic_used`, which is narrower — that hit came from
+the vector leg alone — so a correctly configured instance routinely answers
+`semantic_used: true` on the envelope with every row reading `false`. Never
+diagnose an instance from a row.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SEARCH_EMBEDDINGS_ENABLED` | `false` | Master switch for semantic search. When `false`, `/search` uses keyword/substring fallback only. |
-| `SEARCH_EMBEDDING_BASE_URL` | `https://api.openai.com/v1` | Base URL of the OpenAI-compatible embeddings endpoint; `/embeddings` is appended. Env-only — no instance-settings override, see the re-indexing warning below. |
+| `SEARCH_EMBEDDING_BASE_URL` | `https://api.openai.com/v1` | Base URL of the OpenAI-compatible embeddings endpoint; `/embeddings` is appended. Env-only — no instance-settings override, see the re-indexing warning below — but shown read-only, with its source badge, under **Settings → Instance → AI**. |
 | `SEARCH_EMBEDDING_PROVIDER` | `openai` | Embedding provider. |
 | `SEARCH_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model used to index and query tracking-plan text. |
 | `SEARCH_EMBEDDING_DIMENSIONS` | `1536` | Vector dimensionality. Must match the chosen model. |
@@ -168,6 +175,22 @@ the AI-assistance settings and the embeddings toggle, with the environment
 variables above acting as defaults that the stored overrides can replace at
 runtime — so you can confirm the active model and flip features on or off
 without redeploying.
+
+**Embeddings base URL** and **Embedding dimensions** appear there too, read-only:
+neither takes an override, because the vectors already in the index were written
+against one endpoint at one width and similarity across two embedding spaces is
+meaningless. They are shown because their **source badge** answers a question
+nothing else in the running system did. **Env** on the base URL means something
+delivered `SEARCH_EMBEDDING_BASE_URL` to this container; **Default** means the
+value equals the built-in `https://api.openai.com/v1`, which is either because
+nothing delivered it or because what was delivered says the same thing.
+
+That is how you verify from a browser that a self-hosted
+`SEARCH_EMBEDDING_BASE_URL` actually reached the process, which is the failure
+the `x-app-environment` allowlist warning above describes and which is otherwise
+silent. A base URL you pointed at a local endpoint and that reads **Default** in
+the browser did not arrive, and every indexed event name, description and field
+value is going to OpenAI instead.
 
 ---
 

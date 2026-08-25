@@ -172,6 +172,45 @@ def test_search_reports_whether_the_semantic_index_answered(
     assert document["offset"] is None
 
 
+def test_search_prefers_the_routes_truncation_flag_over_a_full_page(
+    tripl_api: FakeInstance, configured_env: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A page that filled exactly is not a page that dropped rows (tripl-wkwv.3).
+
+    ``/search`` retrieves one row past its candidate window, so it KNOWS. The CLI
+    was guessing from ``len(items) >= limit`` and printing "more may have
+    matched" on a query whose matches land exactly on ``--limit`` — while
+    ``tripl-mcp``'s ``search_plan``, reading the same key out of the same body,
+    answered false. Two surfaces of one product, opposite answers about one
+    response, and ``--limit`` raised for nothing.
+    """
+    tripl_api.search("prod", [make_search_result()], truncated=False)
+
+    assert main(["plan", "search", "purchase", "--project", "prod", "--limit", "1"]) == 0
+    out = capsys.readouterr().out
+    assert out.endswith("1 search result.\n")
+    assert "more may have matched" not in out
+
+    assert main(["plan", "search", "purchase", "--project", "prod", "--limit", "1", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["truncated"] is False
+
+
+def test_search_still_guesses_against_an_instance_that_reports_no_truncation(
+    tripl_api: FakeInstance, configured_env: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Silence is not the route saying nothing was dropped (tripl-wkwv.3).
+
+    ``truncated`` is new and the CLI is installed separately from the instance it
+    talks to, so an older body simply has no key. The page-fullness guess — the
+    only signal that ever existed for this route — has to keep running there, or
+    the fix would turn a warning that is sometimes spurious into a silence that
+    is sometimes wrong.
+    """
+    tripl_api.search("prod", [make_search_result()])
+    assert main(["plan", "search", "purchase", "--project", "prod", "--limit", "1", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["truncated"] is True
+
+
 def test_meta_is_present_and_empty_on_the_verbs_whose_route_reports_nothing(
     tripl_api: FakeInstance, configured_env: None, capsys: pytest.CaptureFixture[str]
 ) -> None:

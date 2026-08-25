@@ -56,8 +56,9 @@ async def patch_service_settings(
     _current_user: OwnerUserDep,
     payload: ServiceSettingsUpdate,
 ) -> ServiceSettingsResponse:
-    settings_payload = app_settings_service.public_service_settings(
-        await app_settings_service.update_service_overrides(session, _flatten_update(payload))
+    settings_payload = await app_settings_service.service_settings_payload(
+        session,
+        await app_settings_service.update_service_overrides(session, _flatten_update(payload)),
     )
     return ServiceSettingsResponse.model_validate(settings_payload)
 
@@ -93,8 +94,8 @@ async def put_ai_settings(
     applied, via exclude_unset). PUT — not PATCH — because the frontend AI
     settings form calls this endpoint; semantics are upsert, not replace-all."""
     changes = payload.model_dump(exclude_unset=True)
-    settings_payload = app_settings_service.public_service_settings(
-        await app_settings_service.update_ai_overrides(session, changes)
+    settings_payload = await app_settings_service.service_settings_payload(
+        session, await app_settings_service.update_ai_overrides(session, changes)
     )
     return _ai_response(settings_payload)
 

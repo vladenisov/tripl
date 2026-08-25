@@ -63,7 +63,17 @@ export function AiSection({
             mono
           />
         </Field>
-        <Field label="AI API key">
+        {/* Badged like every other resettable field. A stored key IS an override
+            — overrideCount counts it and Reset nulls it — but the row rendered
+            nothing, so an instance whose only override was this key showed a red
+            "Clears the 1 AI override" card above rows that all read "Default"
+            (tripl-5qp9 / tripl-wkwv.2). The source says override/env/default and
+            nothing about the value; the *_configured placeholder beside it
+            already reveals more. */}
+        <Field
+          label="AI API key"
+          labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'ai_api_key')} />}
+        >
           <div className="flex gap-2">
             <div className="flex-1">
               <TextInput
@@ -183,11 +193,30 @@ export function AiSection({
           value={form.ai.search_embeddings_enabled}
           onChange={value => setField('ai', 'search_embeddings_enabled', value)}
         />
-        {/* The one inert control on this page. It carried `disabled` and nothing
-            else — no badge, no hint — so it read as an editable number sitting
-            in a row of editable numbers. Say why it cannot move. */}
+        {/* Where indexed plan text is actually POSTed. It was configurable but
+            unreportable: nothing in the running system said which endpoint the
+            vectors came from, so a compose allowlist slip that dropped
+            SEARCH_EMBEDDING_BASE_URL sent the text to OpenAI with nothing to
+            notice it by (tripl-wkwv.2). Shown, never editable — and its badge is
+            what answers "did the variable reach this container?", which is the
+            whole reason the row exists. */}
+        <Field
+          label="Embeddings base URL"
+          labelRight={
+            <SourceBadge source={sourceFor(settings, 'ai', 'search_embedding_base_url')} />
+          }
+          hint="Env-only (SEARCH_EMBEDDING_BASE_URL). Every indexed event name, description and field value is POSTed here. The vectors already in the index came from whatever endpoint produced them, and similarity across two embedding spaces is meaningless — changing this is a re-embed and a deploy, not a setting."
+        >
+          <TextInput value={form.ai.search_embedding_base_url} disabled mono />
+        </Field>
+        {/* The other inert control on this page. It carried `disabled` and
+            nothing else — no badge, no hint — so it read as an editable number
+            sitting in a row of editable numbers. Say why it cannot move. */}
         <Field
           label="Embedding dimensions"
+          labelRight={
+            <SourceBadge source={sourceFor(settings, 'ai', 'search_embedding_dimensions')} />
+          }
           hint="Env-only (SEARCH_EMBEDDING_DIMENSIONS). The vectors already in the index were written at this width, and similarity across two widths is meaningless — changing it is a re-embed and a deploy, not a setting."
         >
           <TextInput
@@ -216,7 +245,13 @@ export function AiSection({
             mono
           />
         </Field>
-        <Field label="Embedding API key" last>
+        <Field
+          label="Embedding API key"
+          labelRight={
+            <SourceBadge source={sourceFor(settings, 'ai', 'search_embedding_api_key')} />
+          }
+          last
+        >
           <div className="flex gap-2">
             <div className="flex-1">
               <TextInput

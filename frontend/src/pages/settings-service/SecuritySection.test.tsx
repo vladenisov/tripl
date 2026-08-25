@@ -68,6 +68,7 @@ function settingsFixture(
       search_embedding_model: '',
       search_embedding_api_key_configured: false,
       search_embedding_dimensions: 1536,
+      search_embedding_base_url: 'https://api.openai.com/v1',
     },
     system: {
       debug: false,
@@ -77,6 +78,9 @@ function settingsFixture(
       redis_url_configured: false,
       encryption_key_configured: true,
       openai_api_key_configured: false,
+      alembic_revision: 'abc123def456',
+      alembic_head_revision: 'abc123def456',
+      alembic_up_to_date: true,
     },
     overridden_fields: [],
     sources,

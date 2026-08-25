@@ -45,6 +45,9 @@ const BASE_MONITOR = {
   total_deliveries: 3,
   last_delivery_at: '2026-06-26T10:01:00Z',
   last_delivery_status: 'sent',
+  // Both drift scopes have source data, so the ordinary fixture renders plain
+  // chips. The inert case is its own describe block (tripl-wkwv.1).
+  scope_readiness: { variable_value_drift: true, distribution_drift: true },
 }
 
 const HISTORY = {
@@ -380,5 +383,85 @@ describe('MonitorDetailPage', () => {
     // "Rule", not "Monitor": the second noun for one object went with the
     // standalone list it named (tripl-89ps).
     expect(await screen.findByText('Rule unavailable')).toBeInTheDocument()
+  })
+})
+
+/**
+ * A watched scope with nothing behind it (tripl-wkwv.1).
+ *
+ * "Watching: Value drifts" is a promise, and in production it was one the
+ * project could not keep — no variable documented an allowed-values list, so
+ * the scope could never produce a candidate. The chip said the same thing
+ * either way.
+ */
+describe('MonitorDetailPage inert scopes', () => {
+  // Loose on purpose: the exact wording is pinned once, in InertScopeNotice's
+  // own test. Repeating it here only bought a second file to edit whenever the
+  // qualifiers the backend enforces changed (tripl-wkwv.1).
+  const VALUE_DRIFT_SENTENCE = /documents an allowed-values list/
+
+  it('marks a watched scope the project cannot feed, and links to the fix', async () => {
+    mockApi({
+      monitor: {
+        ...BASE_MONITOR,
+        include_variable_value_drifts: true,
+        scope_readiness: { variable_value_drift: false, distribution_drift: true },
+      },
+    })
+
+    renderDetail()
+
+    expect(await screen.findByText(VALUE_DRIFT_SENTENCE)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Variables' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/variables',
+    )
+    // The chip carries the same sentence, so hovering the marked scope answers
+    // the question the marking raises.
+    expect(screen.getByText('Value drifts')).toHaveAttribute(
+      'title',
+      expect.stringContaining('documents an allowed-values list'),
+    )
+  })
+
+  it('opens the fix in this tab, because nothing here is unsaved', async () => {
+    // The rule editor passes `newTab` to protect a draft it holds in state.
+    // This page holds no unsaved anything, so a new tab would only litter the
+    // reader's tab bar for nothing.
+    mockApi({
+      monitor: {
+        ...BASE_MONITOR,
+        include_variable_value_drifts: true,
+        scope_readiness: { variable_value_drift: false, distribution_drift: true },
+      },
+    })
+
+    renderDetail()
+
+    expect(await screen.findByRole('link', { name: 'Variables' })).not.toHaveAttribute('target')
+  })
+
+  it('leaves a fed scope as a plain chip with nothing appended', async () => {
+    mockApi({ monitor: { ...BASE_MONITOR, include_variable_value_drifts: true } })
+
+    renderDetail()
+
+    expect(await screen.findByText('Value drifts')).not.toHaveAttribute('title')
+    expect(screen.queryByText(VALUE_DRIFT_SENTENCE)).toBeNull()
+  })
+
+  it('says nothing when the response carries no readiness at all', async () => {
+    // A server or fixture that predates the field must render exactly as
+    // before: a missing fact is not a negative one.
+    const { scope_readiness, ...withoutReadiness } = BASE_MONITOR
+    // Assert the baseline really carries it, so this test is provably removing
+    // something rather than asserting against a fixture that never had it.
+    expect(scope_readiness).toBeDefined()
+    mockApi({ monitor: { ...withoutReadiness, include_variable_value_drifts: true } })
+
+    renderDetail()
+
+    expect(await screen.findByText('Value drifts')).toBeInTheDocument()
+    expect(screen.queryByText(VALUE_DRIFT_SENTENCE)).toBeNull()
   })
 })

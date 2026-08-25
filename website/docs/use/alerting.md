@@ -281,6 +281,10 @@ the drift/regression signals are opt-in:
 | Release regression | off |
 | Metric anomaly | off |
 
+The two drift scopes act on signals something else in the project has to produce
+first, so one of them can be switched on and still be unable to fire — see
+[When a scope is on but nothing feeds it](#when-a-scope-is-on-but-nothing-feeds-it).
+
 **Metric anomalies** are opt-in via a rule's **`include_metrics`** field — the
 **Metrics** box in the rule editor, off by default. Unlike
 the drift and regression signals they behave like a volume anomaly — they carry
@@ -323,6 +327,68 @@ Thresholds apply to the volume scopes (project total / event type / event) and t
 **metric anomalies**. Schema drift, distribution drift, variable-value drift,
 and release regressions **bypass** thresholds — if you enable those scopes, they
 fire regardless of the count thresholds.
+:::
+
+### When a scope is on but nothing feeds it
+
+Enabling a scope narrows what a rule reacts to; it never creates the signals.
+The two drift scopes depend on plan and scan configuration a rule does not own,
+so a rule can have one of them switched on and still be structurally unable to
+fire — no error anywhere, just permanent silence.
+
+**Variable value drift** needs some variable to document an allowed-values list
+on the **main** branch, *or* a value drift already collected in this project.
+Either documented source counts: the variable's own list of allowed values, or a
+per-event override of it. One of them is enough. Values documented on a working
+branch change nothing until that branch merges, because detection runs against
+main, and a variable excluded from scans never drifts however full its list is.
+Collected drift counts on its own for the same reason it does for distribution
+drift — candidates are built from the drift rows, so an open or snoozed row from
+the last 30 days keeps the scope live even after the documented list that
+produced it is emptied.
+
+**Distribution drift** needs a scan that names the columns to watch (**Scan
+settings → Metric breakdowns and drift → Distribution drift**), *or* drift
+already collected in this project. Either one is enough — candidates are built
+from the drift rows, so a project that has collected drift keeps the scope live
+even if the scan's field list is later emptied.
+
+When neither source exists, the rule editor and the monitor detail say so
+inline, beside the box you just ticked:
+
+- *Value drift is on, but no variable that scans observe documents an
+  allowed-values list on the main branch — this scope cannot fire until one
+  does.* The notice links to **Variables**, and adds that Variables opens on the
+  branch you have selected — a list documented on a working branch counts only
+  once it merges. (A variable excluded from scans does not count, which is what
+  "that scans observe" means.)
+- *Distribution drift is on, but no scan in this project watches a column for
+  it — this scope cannot fire until one does.* The notice links to **Scan
+  settings**.
+
+On the monitor detail the notice sits under the scope chips in the **Condition**
+panel, and the affected chip itself is flagged and repeats the sentence on hover.
+The checkbox in the editor stays enabled: the precondition can be satisfied
+later, and locking the toggle would report a problem from the one screen that
+then refused to let you set the rule up before the data exists. In the editor
+the notice's link opens in a **new tab**, so acting on it does not close the
+dialog and discard a half-built rule; on the read-only monitor detail it opens
+in the same tab.
+
+Programs read the same fact from `scope_readiness` on `GET /monitors-summary`
+and `GET /monitors/{rule_id}` — two booleans, `variable_value_drift` and
+`distribution_drift`, with the same meaning on both responses. It answers *could
+this scope ever produce a candidate in this project*, not *will this rule fire*.
+Whether a rule fires also depends on thresholds, filters, mutes and a scan
+actually running, and readiness says nothing about any of those.
+
+:::warning Readiness is project-wide, and not scan-aware
+`scope_readiness` is one fact about the whole project. A rule
+[bound to a single scan](#narrowing-a-rule-to-one-scan) therefore shows no
+warning as long as *some* scan in the project watches a column for distribution
+drift — even when the scan that rule is actually bound to watches none. For a
+scan-bound rule, check that scan's own **Distribution drift** list before
+concluding the scope can fire.
 :::
 
 ### Narrowing a rule to one scan

@@ -433,6 +433,10 @@ export function MonitorsSection({
         setRuleForm={setRuleForm}
         eventTypes={eventTypes}
         scans={scans}
+        // Rides the monitors-summary response this section already polls, so the
+        // editor gains the fact without a second request. Undefined until that
+        // request answers, which the dialog reads as "say nothing yet".
+        scopeReadiness={summary?.scope_readiness}
         onSubmit={() => ruleMutation.mutate()}
         isPending={ruleMutation.isPending}
         isError={ruleMutation.isError}

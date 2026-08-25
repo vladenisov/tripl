@@ -97,6 +97,7 @@ const SETTINGS = {
     search_embedding_model: '',
     search_embedding_api_key_configured: false,
     search_embedding_dimensions: 1536,
+    search_embedding_base_url: 'https://api.openai.com/v1',
   },
   system: {
     debug: false,
@@ -106,6 +107,9 @@ const SETTINGS = {
     redis_url_configured: false,
     encryption_key_configured: true,
     openai_api_key_configured: false,
+    alembic_revision: 'abc123def456',
+    alembic_head_revision: 'abc123def456',
+    alembic_up_to_date: true,
   },
   overridden_fields: [],
   sources: OVERRIDDEN_SOURCES,
@@ -155,6 +159,19 @@ describe('Instance settings destructive actions', () => {
     expect(update).toHaveBeenCalledWith({
       security: Object.fromEntries(RESET_FIELDS.security.map((field) => [field, null])),
     })
+  })
+
+  it('does not promise the AI prompts an environment variable that cannot exist', async () => {
+    // The dialog names "all three system prompts" in its own stakes line, and
+    // none of the three has an environment variable — a reset returns them to a
+    // built-in constant. Said in front of an irreversible write (tripl-wkwv.2).
+    renderSection('ai')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Reset to defaults/ }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog).toHaveTextContent(/all three system prompts/i)
+    expect(dialog).toHaveTextContent(/built-in default where none is set/i)
   })
 
   it('abandons the reset when the confirmation is declined', async () => {
@@ -285,6 +302,50 @@ describe('Instance settings reset card', () => {
     // The "applies immediately" warning belongs to an action that can happen.
     expect(screen.queryByText(/does not wait for Save changes/)).toBeNull()
   })
+
+  /**
+   * The badges below this card now have three states, and the card's copy had
+   * claimed every non-overridden field "comes from an environment variable".
+   * Beside a row badged "Default" that is the same copy-disagrees-with-badges
+   * bug tripl-5qp9 was, in a second vocabulary — so it moves in the same change
+   * as the third state (tripl-wkwv.2).
+   */
+  it('does not claim the environment delivered fields the badges call Default', async () => {
+    renderSection('email', {})
+
+    const copy = await screen.findByText(/Nothing to clear/)
+    expect(copy).toHaveTextContent(/built-in default/i)
+    expect(screen.queryByText('Env')).toBeNull()
+    // Every Email field carries a badge, SMTP password included (tripl-wkwv.2):
+    // RESET_FIELDS.email.length, so a row losing or gaining one fails here.
+    expect(screen.getAllByText('Default')).toHaveLength(6)
+  })
+})
+
+describe('Instance settings source badges', () => {
+  /**
+   * `SettingSource` was `env | override`, computed as "override if a stored row
+   * exists, else env" — so a field nothing had ever delivered was still badged
+   * "Env", and the badge was not evidence of anything (tripl-wkwv.2).
+   */
+  it('separates a delivered value from one that merely equals the built-in default', async () => {
+    renderSection('email', { 'email.smtp_host': 'default', 'email.smtp_port': 'env' })
+
+    expect(await screen.findByText('Env')).toBeInTheDocument()
+    // Only the one field the server said was delivered.
+    expect(screen.getAllByText('Env')).toHaveLength(1)
+    // The rest of RESET_FIELDS.email — one fewer than above, since that one
+    // field is the delivered one (tripl-wkwv.2).
+    expect(screen.getAllByText('Default')).toHaveLength(5)
+  })
+
+  it('states what Default does and does not prove, rather than letting the label overclaim', async () => {
+    renderSection('email', {})
+
+    const badge = (await screen.findAllByText('Default'))[0]!
+    // The one thing value-versus-default comparison genuinely cannot tell apart.
+    expect(badge).toHaveAttribute('title', expect.stringMatching(/indistinguishable/i))
+  })
 })
 
 describe('Instance settings save row', () => {
@@ -295,6 +356,21 @@ describe('Instance settings save row', () => {
     // Runtime — which is read per request — carried the redeploy note
     // (tripl-tezn).
     expect(await screen.findByText(/after the next restart/i)).toBeInTheDocument()
+  })
+
+  /**
+   * The note promised "Unset fields fall back to environment variables" two
+   * lines above the three AI prompt rows — and those three have no environment
+   * variable at all: the backend reads them off ai_defaults, never off Settings,
+   * so DESCRIBE_SYSTEM_PROMPT is silently ignored if anyone sets it. The badges
+   * gained a third state in this same change; this sentence never caught up
+   * (tripl-wkwv.2).
+   */
+  it('does not promise an environment fallback for fields that have no variable', async () => {
+    renderSection('ai')
+
+    const note = await screen.findByText(/no restart needed/i)
+    expect(note).toHaveTextContent(/built-in default where none is set/i)
   })
 
   it('offers Discard beside Save and keeps both reachable while the pane scrolls', async () => {

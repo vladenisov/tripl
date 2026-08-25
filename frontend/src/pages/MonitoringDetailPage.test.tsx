@@ -773,6 +773,20 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     expect(await screen.findByRole('heading', { name: 'checkout_completed' })).toBeInTheDocument()
   })
 
+  it('titles the page and the breadcrumb when the event has no name (tripl-wkwv.5)', async () => {
+    // windy-ios holds one event whose name is the empty string. Both the <h1>
+    // and the aria-current breadcrumb rendered it raw, so the page had an empty
+    // top-level heading and the trail ended in nothing.
+    installEventDetailFetch({ event: { ...eventFixture(), name: '' } })
+    renderEventDetail()
+
+    expect(
+      await screen.findByRole('heading', { level: 1, name: '(unnamed event)' }),
+    ).toBeInTheDocument()
+    const breadcrumb = within(screen.getByRole('navigation', { name: 'Breadcrumb' }))
+    expect(breadcrumb.getByText('(unnamed event)')).toHaveAttribute('aria-current', 'page')
+  })
+
   it('keeps only live actions in the primary row and tucks coming-soon ones into an overflow menu', async () => {
     installEventDetailFetch()
     renderEventDetail()

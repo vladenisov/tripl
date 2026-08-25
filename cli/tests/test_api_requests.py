@@ -163,6 +163,47 @@ def test_semantic_used_reads_an_absent_flag_as_false_rather_than_unknown() -> No
         assert search_api.semantic_used({"items": [], "total": 0, "semantic_used": junk}) is False
 
 
+def test_truncated_reads_an_absent_flag_as_false_rather_than_unknown() -> None:
+    """The second envelope fact ``/search`` adds, read the same way (tripl-wkwv.3).
+
+    ``total`` on this route is ``len(items)``, so it equals ``limit`` on any full
+    page and cannot say whether ranked hits were dropped. ``truncated`` can, and
+    the backend declares it ``bool = False`` — so a body without the key IS the
+    route saying nothing was dropped, not the route declining to say. Junk takes
+    the absent path for the same reason it does above: under ``bool()`` the
+    string ``"false"`` would report a clipped answer on a complete one.
+    """
+    assert search_api.truncated({"items": [], "total": 0, "truncated": True}) is True
+    assert search_api.truncated({"items": [], "total": 0, "truncated": False}) is False
+    assert search_api.truncated({"items": [], "total": 0}) is False
+    assert search_api.truncated(None) is False
+
+    junk_values: tuple[object, ...] = ("false", "true", 1, 0, [], {}, "yes")
+    for junk in junk_values:
+        assert search_api.truncated({"items": [], "total": 0, "truncated": junk}) is False
+
+
+def test_reported_truncated_separates_a_silent_route_from_one_saying_false() -> None:
+    """The distinction ``truncated`` cannot make, for the consumer that needs it.
+
+    tripl-wkwv.3. ``tripl plan search`` uses this as the top rung of a ladder
+    whose bottom rung is "the page filled". Collapsed to a bool, an instance
+    that predates the field would read as the route saying nothing was dropped,
+    and the guess that exists for exactly that instance would never run. The MCP
+    republishes the fact instead of deciding from it, so it keeps the bool.
+    """
+    assert search_api.reported_truncated({"items": [], "total": 0, "truncated": True}) is True
+    assert search_api.reported_truncated({"items": [], "total": 0, "truncated": False}) is False
+    assert search_api.reported_truncated({"items": [], "total": 0}) is None
+    assert search_api.reported_truncated(None) is None
+
+    # Junk is not the route making the claim either, so it falls through to the
+    # guess rather than being believed.
+    junk_values: tuple[object, ...] = ("false", "true", 1, 0, [], {}, "yes")
+    for junk in junk_values:
+        assert search_api.reported_truncated({"items": [], "total": 0, "truncated": junk}) is None
+
+
 def test_is_untriaged_matrix() -> None:
     now = datetime(2026, 8, 1, tzinfo=UTC)
     later = (now + timedelta(days=3)).isoformat()

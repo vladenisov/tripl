@@ -853,9 +853,10 @@ class FakeInstance:
         slug: str,
         items: Any,
         semantic_used: bool = False,
+        truncated: bool | None = None,
         status: int = 200,
     ) -> respx.Route:
-        """``SearchResponse``: ``{items, total, semantic_used}``.
+        """``SearchResponse``: ``{items, total, truncated, semantic_used}``.
 
         No ``total`` parameter, deliberately. ``search_service`` answers
         ``total=len(items)`` AFTER trimming to the limit — it never reports a
@@ -863,9 +864,26 @@ class FakeInstance:
         grow a truncation line no real response could trigger, and let two tests
         assert that line's wording while proving only that the fake could lie
         (found reviewing tripl-3ixs).
+
+        ``truncated`` IS a parameter, for the opposite reason: the route now
+        answers it authoritatively, so a double that could not say so left the
+        CLI's new top rung unreachable — it would only ever be exercised by a
+        test hand-building the body (tripl-wkwv.3).
+
+        It defaults to ``None`` meaning OMIT THE KEY, because the CLI ships
+        separately from the instance it talks to and both worlds are real: an
+        older instance sends no such key and must still get the page-fullness
+        guess. A default of ``False`` would have quietly retired that case and
+        with it the test that pins it.
         """
         rows = items or []
-        body = {"items": rows, "total": len(rows), "semantic_used": semantic_used}
+        body: dict[str, Any] = {
+            "items": rows,
+            "total": len(rows),
+            "semantic_used": semantic_used,
+        }
+        if truncated is not None:
+            body["truncated"] = truncated
         return self._respond(self.search_url(slug), status, body)
 
     def coverage(self, slug: str, payload: Any = _UNSET, status: int = 200) -> respx.Route:

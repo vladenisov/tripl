@@ -5,7 +5,10 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
-SettingSource = Literal["env", "override"]
+# Mirrors app_settings_service.SettingSource. "default" means the value equals
+# the built-in default — either nothing was delivered for it, or what was
+# delivered matches it; the two are indistinguishable from here (tripl-wkwv.2).
+SettingSource = Literal["env", "override", "default"]
 # Self-service registration policy. "open" lets anyone reaching the instance
 # create an account; "disabled" refuses new signups (the first-owner bootstrap
 # on an empty instance stays exempt so a fresh install can still be claimed).
@@ -129,6 +132,12 @@ class AiSettings(BaseModel):
     search_embedding_model: str
     search_embedding_api_key_configured: bool
     search_embedding_dimensions: int
+    # Reported, never accepted: absent from AiSettingsUpdate below AND from
+    # EDITABLE_FIELDS, so a body carrying it is dropped twice over. Repointing
+    # the endpoint at runtime would silently poison every vector already in the
+    # index; leaving it invisible turned a compose allowlist slip into an
+    # unnoticed change of where plan text is sent (tripl-wkwv.2).
+    search_embedding_base_url: str
 
 
 class AiSettingsUpdate(BaseModel):
@@ -172,6 +181,19 @@ class SystemSettings(BaseModel):
     redis_url_configured: bool
     encryption_key_configured: bool
     openai_api_key_configured: bool
+    # The one part of this section read from the database rather than the
+    # process environment. Named ``alembic_*`` because that is the word the
+    # runbook, the deployment docs and the table itself already use, so it is
+    # what an operator greps for. All three are nullable: a database that is
+    # unreachable, or has never been stamped, degrades to an honest unknown
+    # rather than a guess (tripl-wkwv.7).
+    alembic_revision: str | None = None
+    alembic_head_revision: str | None = None
+    #: ``None`` whenever either revision above is unknown. Computed here rather
+    #: than derived in the frontend so the tri-state rule lives in one place:
+    #: ``applied === head`` in TypeScript quietly answers ``false`` for two
+    #: nulls, which would paint an unreadable instance as "migrations skipped".
+    alembic_up_to_date: bool | None = None
 
 
 class ServiceSettingsResponse(BaseModel):

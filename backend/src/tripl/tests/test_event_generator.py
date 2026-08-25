@@ -526,6 +526,52 @@ class TestEventGeneration:
         assert "evt_0" in names
         assert "evt_149" in names
 
+    def test_generate_events_writes_no_row_for_an_empty_derived_name(
+        self, sync_session: Session, project_and_type
+    ):
+        """The persist half needs no guard of its own (tripl-wkwv.5).
+
+        A NULL naming column derives ``""`` and the run used to write
+        ``Event(name="", source_name="", status="in_review")`` — a row the metric
+        collector's ``if event_name:`` gate can never measure, and a zero-width
+        unlabelled link on every surface. The planner is the single place the run
+        and the dry-run both read, so the guard lives there; re-declaring a naming
+        rule in a second module is the drift this repo has already paid for twice.
+
+        ``events_skipped`` stays 0 on purpose: that counter means "this identity
+        was already in the plan", and these rows are not an identity at all.
+        """
+        project, et, fds = project_and_type
+        cardinality = {
+            "action": CardinalityResult(
+                column=ColumnInfo("action", "String"),
+                count=1,
+                is_low=True,
+                sample_values=[None],
+            ),
+        }
+
+        result = generate_events(
+            sync_session,
+            project.id,
+            et.id,
+            _make_analysis(cardinality),
+            fds,
+            event_name_format="{action}",
+        )
+        sync_session.commit()
+
+        assert result.events_created == 0
+        assert result.events_skipped == 0
+        written = (
+            sync_session.execute(select(Event).where(Event.project_id == project.id))
+            .scalars()
+            .all()
+        )
+        assert written == []
+        # The plan's disclosure reaches the run report through `details.extend`.
+        assert "Skipped 1 row whose derived event name was empty" in result.details
+
     def test_group_rule_collapses_matching_generated_events(
         self, sync_session: Session, project_and_type
     ):

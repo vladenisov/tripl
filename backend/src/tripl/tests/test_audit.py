@@ -266,3 +266,174 @@ async def test_audit_detail_is_owner_only(client: AsyncClient) -> None:
 async def test_audit_detail_reports_an_unknown_id_as_missing(client: AsyncClient) -> None:
     resp = await client.get(f"/api/v1/audit/{uuid.uuid4()}")
     assert resp.status_code == 404
+
+
+# --- branch context on audit rows (tripl-wkwv.6) ----------------------------
+
+
+async def _create_branch(client: AsyncClient, slug: str, name: str) -> str:
+    resp = await client.post(f"/api/v1/projects/{slug}/branches", json={"name": name})
+    assert resp.status_code == 201, resp.text
+    return str(resp.json()["id"])
+
+
+async def _one_entry(client: AsyncClient, slug: str, action: str) -> dict:
+    """The single audit row for ``action`` on ``slug``, as the list renders it."""
+    listed = await client.get(f"/api/v1/audit?project_slug={slug}&action={action}")
+    assert listed.status_code == 200
+    items = listed.json()["items"]
+    assert len(items) == 1, items
+    return dict(items[0])
+
+
+@pytest.mark.asyncio
+async def test_audit_records_the_branch_a_write_was_scoped_to(client: AsyncClient) -> None:
+    """PR #143 made ``?branch=`` an ordinary, documented way to write, but the
+    audit row could not say which plan it wrote to: two contradictory edits to
+    the same object on two branches produced two identical-looking rows."""
+    await _setup_project(client, "audit-branch")
+    branch_id = await _create_branch(client, "audit-branch", "redesign-checkout")
+
+    created = await client.post(
+        f"/api/v1/projects/audit-branch/meta-fields?branch={branch_id}",
+        json={"name": "owner", "display_name": "Owner", "field_type": "string"},
+    )
+    assert created.status_code == 201, created.text
+
+    row = await _one_entry(client, "audit-branch", "meta_field.create")
+    assert row["branch_id"] == branch_id
+    assert row["branch_name"] == "redesign-checkout"
+
+    # Both projections carry it: the issue asks for the list AND the owner-only
+    # detail payload, and the detail response inherits the list's fields.
+    detail = await client.get(f"/api/v1/audit/{row['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["branch_id"] == branch_id
+    assert detail.json()["branch_name"] == "redesign-checkout"
+
+
+@pytest.mark.asyncio
+async def test_audit_on_main_records_no_branch(client: AsyncClient) -> None:
+    """No ``?branch=`` means main, and main is spelled as the absence of a
+    branch — no synthetic main id, so nothing has to be backfilled."""
+    await _setup_project(client, "audit-main")
+
+    created = await client.post(
+        "/api/v1/projects/audit-main/meta-fields",
+        json={"name": "owner", "display_name": "Owner", "field_type": "string"},
+    )
+    assert created.status_code == 201, created.text
+
+    row = await _one_entry(client, "audit-main", "meta_field.create")
+    assert row["branch_id"] is None
+    assert row["branch_name"] == ""
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_main_branch_id_records_no_branch_either(client: AsyncClient) -> None:
+    """``GET /branches`` hands an API caller main's own id, and every write route
+    accepts it — nothing filters on ``kind``.
+
+    Main is spelled as the absence of a branch everywhere else (the chip, the
+    schema docstring, the CLI's "there is no literal for main"), so binding it
+    here would spell it a second way: two identical writes to main, one with the
+    parameter and one without, would render differently in the same compliance
+    trail and the chip would read "main" (tripl-wkwv.6).
+    """
+    await _setup_project(client, "audit-main-id")
+    listed = await client.get("/api/v1/projects/audit-main-id/branches")
+    assert listed.status_code == 200, listed.text
+    main_id = next(b["id"] for b in listed.json()["items"] if b["kind"] == "main")
+
+    created = await client.post(
+        f"/api/v1/projects/audit-main-id/meta-fields?branch={main_id}",
+        json={"name": "owner", "display_name": "Owner", "field_type": "string"},
+    )
+    # The write still targets main exactly as it does with no parameter at all.
+    assert created.status_code == 201, created.text
+
+    row = await _one_entry(client, "audit-main-id", "meta_field.create")
+    assert row["branch_id"] is None
+    assert row["branch_name"] == ""
+
+
+@pytest.mark.asyncio
+async def test_branch_context_does_not_leak_into_the_next_request(client: AsyncClient) -> None:
+    """The branch is carried on a request-scoped contextvar, so unbinding it is
+    the whole correctness argument.
+
+    Under uvicorn each request cycle is its own task and so its own ``Context``,
+    which would hide a missing reset entirely. The suite drives the app through
+    ``httpx.ASGITransport`` (conftest.py), which awaits the app in the CALLER's
+    task — so dropping the ``finally: reset(token)`` in ``bound_branch`` stamps
+    the branch of the first write onto every later row this client writes,
+    including rows on routes that have no branch dimension at all.
+    """
+    await _setup_project(client, "audit-leak")
+    branch_id = await _create_branch(client, "audit-leak", "feature-leak")
+
+    scoped = await client.post(
+        f"/api/v1/projects/audit-leak/meta-fields?branch={branch_id}",
+        json={"name": "owner", "display_name": "Owner", "field_type": "string"},
+    )
+    assert scoped.status_code == 201, scoped.text
+    assert (await _one_entry(client, "audit-leak", "meta_field.create"))["branch_id"] == branch_id
+
+    # A route that declares no branch dependency at all, through the SAME client.
+    revision = await client.post(
+        "/api/v1/projects/audit-leak/revisions",
+        json={"summary": "after the branch write"},
+    )
+    assert revision.status_code == 201, revision.text
+
+    row = await _one_entry(client, "audit-leak", "plan_revision.create")
+    assert row["branch_id"] is None
+    assert row["branch_name"] == ""
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_branch_keeps_the_branch_name_on_its_audit_rows(
+    client: AsyncClient,
+) -> None:
+    """``branch_name`` is denormalized because the FK erases itself.
+
+    ``plan_branch.delete`` hard-deletes the row and the FK is ``ON DELETE SET
+    NULL``, so an id-only column would wipe the branch context from exactly the
+    rows that recorded that branch's work — the same reason ``user_email`` and
+    ``project_slug`` sit next to their ids.
+    """
+    await _setup_project(client, "audit-branch-gone")
+    branch_id = await _create_branch(client, "audit-branch-gone", "short-lived")
+    created = await client.post(
+        f"/api/v1/projects/audit-branch-gone/meta-fields?branch={branch_id}",
+        json={"name": "owner", "display_name": "Owner", "field_type": "string"},
+    )
+    assert created.status_code == 201, created.text
+
+    deleted = await client.delete(f"/api/v1/projects/audit-branch-gone/branches/{branch_id}")
+    assert deleted.status_code == 204, deleted.text
+
+    row = await _one_entry(client, "audit-branch-gone", "meta_field.create")
+    assert row["branch_id"] is None
+    assert row["branch_name"] == "short-lived"
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_branch_still_answers_400_and_writes_nothing(
+    client: AsyncClient,
+) -> None:
+    """Binding the branch turned the dependency into a generator; every raise
+    has to stay AHEAD of its first yield or 400 becomes a 500 (or a 422)."""
+    await _setup_project(client, "audit-bad-branch")
+
+    resp = await client.post(
+        "/api/v1/projects/audit-bad-branch/meta-fields?branch=not-a-uuid",
+        json={"name": "owner", "display_name": "Owner", "field_type": "string"},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Invalid branch id"
+    listed = await client.get(
+        "/api/v1/audit?project_slug=audit-bad-branch&action=meta_field.create"
+    )
+    assert listed.json()["items"] == []

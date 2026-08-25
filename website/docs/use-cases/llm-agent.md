@@ -65,7 +65,7 @@ Everything lives under `/api/v1`. `{slug}` is the project slug (for example
 | `GET` | `/projects/{slug}/meta-fields` | read | Project meta fields |
 | `GET` | `/projects/{slug}/events` | read | Filtered listing → `{items, total}`; each item embeds `field_values`, `meta_values`, `tags` |
 | `GET` | `/projects/{slug}/events/{id}` | read | Full event detail |
-| `GET` | `/projects/{slug}/search` | read | Smart / global search → `{items, total, semantic_used}` |
+| `GET` | `/projects/{slug}/search` | read | Smart / global search → `{items, total, truncated, semantic_used}`. Unlike the `/events` row above, this `total` counts only the hits in *this* response — `/search` cannot be paged, so `truncated` is the completeness signal |
 | `POST` | `/projects/{slug}/events` | write | Create an event |
 | `PATCH` | `/projects/{slug}/events/{id}` | write | Update an event |
 | `DELETE` | `/projects/{slug}/events/{id}` | write | Permanently delete an event |
@@ -106,7 +106,25 @@ Each hit carries a `confidence` in `[0, 1]` (an absolute relevance score, compar
 between queries — a weak query returns low confidence on every item, first one
 included; a hit found by meaning rather than by keyword reports that leg's cosine
 similarity, so one cutoff works for both) and `semantic_used` reports whether
-embeddings were used.
+embeddings were used — that is the **envelope** flag, a fact about the instance's
+configuration.
+
+Each hit carries its own `semantic_used` too, and it means something narrower:
+the keyword leg did not surface this row inside its candidate window, so the
+meaning leg is why it is here. A hit the keyword ladder ranked reads `false` even
+when its `confidence` came from the meaning leg's cosine, so the envelope and the
+items routinely disagree on one response. That is the normal case, not a fault:
+read the envelope to answer "are embeddings on", and a row to answer "why is this
+row here". Do not read a row's `true` as "the word is not there" — the keyword
+leg is a capped scan, so a weak match crowded out of it can re-enter through the
+meaning index and carry the flag.
+
+`total` is the size of *this* response, not a count of everything that matched:
+`/search` takes no `offset` and cannot be paged, so raise `limit` (max `100`) to
+see more. `truncated` is the completeness signal — but with `semantic_used: true`
+the ranked tail is effectively unbounded and `truncated` is normally `true`, so
+an agent should gate on `confidence` rather than treat the flag as "results are
+missing".
 
 If your agent branches on confidence, know the shape of the scale: `1.0` is reserved
 for a hit whose **identity** is the query (its name, or its keywords, being exactly

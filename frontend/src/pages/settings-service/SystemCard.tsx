@@ -15,8 +15,8 @@ type SystemRow = {
    * Required, not optional. The tiles sit in a `grid`, which equalises the
    * height of every tile in a row, so the three annotated rows stretched the
    * four bare ones to their height and left ~70px of dead space under the word
-   * "Configured" on each (tripl-my0t). Seven explanations or none; this is the
-   * seven.
+   * "Configured" on each (tripl-my0t). Every row explains itself, in every
+   * state it can be in — including the unknown branches of the schema row.
    */
   note: string
 }
@@ -40,6 +40,73 @@ function required(label: string, configured: boolean, use: string): SystemRow {
     value: configured ? 'Configured' : 'Unset',
     tone: configured ? 'success' : 'danger',
     note: configured ? use : 'Required — the API cannot reach this dependency.',
+  }
+}
+
+/**
+ * The one row read from the database rather than from the process environment.
+ *
+ * A serving app used to merely IMPLY that `alembic upgrade head` had run,
+ * because compose gates it behind a `migrate` one-shot with
+ * `service_completed_successfully`. That is an inference from a compose file,
+ * not an observation, and it says nothing about a hand-rolled deploy — a
+ * constraint-only migration changes nothing else a probe can see
+ * (tripl-wkwv.7).
+ *
+ * Unknown is a real answer here and gets its own branch: a database whose
+ * revision merely could not be read must not be painted as one whose migrations
+ * were skipped. `up_to_date` is null for BOTH unknowns, though, so the branches
+ * below split on which side is actually missing — an undeterminable head is not
+ * an unreadable `alembic_version`, and only the second has nothing to report.
+ */
+function schemaRevisionRow(system: SystemSettings): SystemRow {
+  const {
+    alembic_revision: applied,
+    alembic_head_revision: head,
+    alembic_up_to_date: upToDate,
+  } = system
+  if (upToDate === true) {
+    return {
+      label: 'Schema revision',
+      value: applied ?? '',
+      tone: 'success',
+      note: 'The database is at the newest migration this build ships.',
+    }
+  }
+  if (upToDate === false) {
+    return {
+      label: 'Schema revision',
+      // Both numbers, deliberately: what the database is at, and what this build
+      // wants. Either alone leaves the operator unable to tell how far apart.
+      value: applied ?? '',
+      tone: 'danger',
+      // Direction is deliberately not asserted. The payload carries two revision
+      // strings and no ordering between them, and this said "the migrate step
+      // has not applied it" for both causes the admin guide itself lists: the
+      // second is a rollback, where migrate DID run and applied something newer,
+      // and pointing that operator at `alembic upgrade head` on the older image
+      // only earns them "Can't locate revision" (tripl-wkwv.7).
+      note: `This database is stamped with a revision that is not this build's head (${head}). Either the migrate step has not run here, or a newer release upgraded this database — migrations are forward-only.`,
+    }
+  }
+  if (applied) {
+    // Only the head is missing. The applied revision arrived in the payload, and
+    // printing "Unknown" over it sent the operator to psql for a number already
+    // on the tile (tripl-wkwv.7).
+    return {
+      label: 'Schema revision',
+      value: applied,
+      tone: 'warning',
+      note: "The database is stamped with this revision. This build's own migration head could not be determined, so the two cannot be compared.",
+    }
+  }
+  return {
+    label: 'Schema revision',
+    value: 'Unknown',
+    tone: 'warning',
+    note: head
+      ? `Could not read alembic_version. This build ships ${head}.`
+      : "Could not read alembic_version, and this build's own migration head could not be determined either.",
   }
 }
 
@@ -113,6 +180,7 @@ function systemRows(system: SystemSettings): SystemRow[] {
         ? 'Used when the AI or embedding key is blank.'
         : 'Optional — only used when the AI or embedding key is blank.',
     },
+    schemaRevisionRow(system),
   ]
 }
 
@@ -123,7 +191,7 @@ export function SystemCard({ system }: { system: SystemSettings }) {
     <SCard
       title="System"
       icon={<ServerCog className="h-4 w-4" />}
-      description="Read from this instance's environment when the API started. None of it can be changed from the app — set the variable where the process gets its environment, then restart."
+      description="Read from this instance's environment when the API started. None of it can be changed from the app — set the variable where the process gets its environment, then restart. The schema revision is the exception: it is read from the database each time this page loads."
     >
       <div className="p-[18px]">
         <div className="grid gap-2.5 sm:grid-cols-3">
@@ -133,7 +201,7 @@ export function SystemCard({ system }: { system: SystemSettings }) {
               className="flex flex-col gap-1.5 rounded-[10px] border px-3 py-2.5"
               style={{
                 // A tile that needs attention says so with its own border, not
-                // only with a dot the eye skips on a seven-tile scan.
+                // only with a dot the eye skips scanning a grid of them.
                 borderColor:
                   row.tone === 'warning' || row.tone === 'danger'
                     ? `color-mix(in oklab, var(--${row.tone}) 45%, var(--border))`

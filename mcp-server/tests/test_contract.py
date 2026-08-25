@@ -27,9 +27,12 @@ MCP_PACKAGE = Path(tripl_mcp.__file__).parent
 PATH_LITERAL = re.compile(r'f?"(/(?:projects|auth|data-sources)[^"]*)"')
 
 # Wire keys whose meaning ``tripl_cli.api`` owns: the paged envelope, search's
-# semantic flag, and the array ``event_types.field_count`` exists to replace.
-# Kept identical to the CLI suite's own list on purpose - the two are one rule.
-SHARED_RESPONSE_KEYS = frozenset({"items", "total", "semantic_used", "field_definitions"})
+# semantic flag, search's truncation flag (tripl-wkwv.3), and the array
+# ``event_types.field_count`` exists to replace. Kept identical to the CLI
+# suite's own list on purpose - the two are one rule.
+SHARED_RESPONSE_KEYS = frozenset(
+    {"items", "total", "truncated", "semantic_used", "field_definitions"}
+)
 
 
 @pytest.fixture(scope="module")
@@ -195,8 +198,8 @@ def test_no_tool_re_derives_a_shared_response_fact() -> None:
                 offenders.append(f"{source.name}:{node.lineno} reads {key!r}")
     assert not offenders, (
         "tripl_mcp reads a response key tripl_cli.api already answers - call "
-        "page_items/page_total, search.semantic_used or event_types.field_count "
-        f"instead of a second `.get`: {sorted(offenders)}"
+        "page_items/page_total, search.semantic_used, search.truncated or "
+        f"event_types.field_count instead of a second `.get`: {sorted(offenders)}"
     )
 
 

@@ -13983,6 +13983,10 @@
           "search_embedding_dimensions": {
             "type": "integer",
             "title": "Search Embedding Dimensions"
+          },
+          "search_embedding_base_url": {
+            "type": "string",
+            "title": "Search Embedding Base Url"
           }
         },
         "type": "object",
@@ -14000,7 +14004,8 @@
           "search_embedding_provider",
           "search_embedding_model",
           "search_embedding_api_key_configured",
-          "search_embedding_dimensions"
+          "search_embedding_dimensions",
+          "search_embedding_base_url"
         ],
         "title": "AiSettings"
       },
@@ -14021,7 +14026,8 @@
               "type": "string",
               "enum": [
                 "env",
-                "override"
+                "override",
+                "default"
               ]
             },
             "type": "object",
@@ -16725,6 +16731,25 @@
         "type": "object",
         "title": "AlertRuleUpdate"
       },
+      "AlertScopeReadiness": {
+        "properties": {
+          "variable_value_drift": {
+            "type": "boolean",
+            "title": "Variable Value Drift"
+          },
+          "distribution_drift": {
+            "type": "boolean",
+            "title": "Distribution Drift"
+          }
+        },
+        "type": "object",
+        "required": [
+          "variable_value_drift",
+          "distribution_drift"
+        ],
+        "title": "AlertScopeReadiness",
+        "description": "Whether each drift-style scope has any source data at all, PROJECT-wide.\n\nNot a per-rule verdict and not a prediction: it answers \"could this scope\never produce a candidate here\", so a client can tell an enabled-but-inert\ntoggle from a quiet one (tripl-wkwv.1). Both fields are always sent and\nneither carries a default \u2014 see the no-defaults note on\n``MonitorSummaryItem`` for why a default here would be a lie to the\ngenerated client rather than a server behaviour."
+      },
       "AnomalyDirection": {
         "type": "string",
         "enum": [
@@ -17405,6 +17430,22 @@
             "type": "string",
             "title": "Project Slug"
           },
+          "branch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Id"
+          },
+          "branch_name": {
+            "type": "string",
+            "title": "Branch Name"
+          },
           "action": {
             "type": "string",
             "title": "Action"
@@ -17443,6 +17484,8 @@
           "user_email",
           "project_id",
           "project_slug",
+          "branch_id",
+          "branch_name",
           "action",
           "target_type",
           "target_id",
@@ -17496,6 +17539,22 @@
             "type": "string",
             "title": "Project Slug"
           },
+          "branch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Id"
+          },
+          "branch_name": {
+            "type": "string",
+            "title": "Branch Name"
+          },
           "action": {
             "type": "string",
             "title": "Action"
@@ -17529,13 +17588,15 @@
           "user_email",
           "project_id",
           "project_slug",
+          "branch_id",
+          "branch_name",
           "action",
           "target_type",
           "target_id",
           "target_name"
         ],
         "title": "AuditEntryResponse",
-        "description": "One row of the audit list \u2014 everything the row itself renders.\n\nDeliberately WITHOUT ``payload``. The tab renders a payload only for the\nrows the reader expanded (AuditTab.tsx), so shipping one per row sent a page\nof JSON blobs across the wire to be displayed nowhere: on the only project\nwith real audit history, ``/p/*/settings/audit`` had the slowest first\ncontent of the 75 routes in the 2026-08-17 walk. The payload now travels one\nrow at a time, as ``AuditEntryDetailResponse`` (tripl-5ydt)."
+        "description": "One row of the audit list \u2014 everything the row itself renders.\n\nDeliberately WITHOUT ``payload``. The tab renders a payload only for the\nrows the reader expanded (AuditTab.tsx), so shipping one per row sent a page\nof JSON blobs across the wire to be displayed nowhere: on the only project\nwith real audit history, ``/p/*/settings/audit`` had the slowest first\ncontent of the 75 routes in the 2026-08-17 walk. The payload now travels one\nrow at a time, as ``AuditEntryDetailResponse`` (tripl-5ydt).\n\n``branch_id`` / ``branch_name`` are the plan branch the write was scoped to.\nNull and empty mean the write was not made through a branch-scoped request \u2014\nmain, or an action with no plan-branch dimension (alerting, scans, users) \u2014\nso a reader must not render them as \"main\" (tripl-wkwv.6)."
       },
       "AuditListResponse": {
         "properties": {
@@ -25942,6 +26003,9 @@
                 "type": "null"
               }
             ]
+          },
+          "scope_readiness": {
+            "$ref": "#/components/schemas/AlertScopeReadiness"
           }
         },
         "type": "object",
@@ -25976,7 +26040,8 @@
           "include_metrics",
           "total_deliveries",
           "last_delivery_at",
-          "last_delivery_status"
+          "last_delivery_status",
+          "scope_readiness"
         ],
         "title": "MonitorDetailResponse",
         "description": "A single monitor with the extra context a drill-in detail view needs."
@@ -26149,6 +26214,9 @@
           "total": {
             "type": "integer",
             "title": "Total"
+          },
+          "scope_readiness": {
+            "$ref": "#/components/schemas/AlertScopeReadiness"
           }
         },
         "type": "object",
@@ -26157,7 +26225,8 @@
           "firing_count",
           "warning_count",
           "healthy_count",
-          "total"
+          "total",
+          "scope_readiness"
         ],
         "title": "MonitorsSummaryResponse"
       },
@@ -30518,6 +30587,11 @@
             "type": "integer",
             "title": "Total"
           },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          },
           "semantic_used": {
             "type": "boolean",
             "title": "Semantic Used",
@@ -31033,7 +31107,8 @@
               "type": "string",
               "enum": [
                 "env",
-                "override"
+                "override",
+                "default"
               ]
             },
             "type": "object",
@@ -31869,6 +31944,39 @@
           "openai_api_key_configured": {
             "type": "boolean",
             "title": "Openai Api Key Configured"
+          },
+          "alembic_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alembic Revision"
+          },
+          "alembic_head_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alembic Head Revision"
+          },
+          "alembic_up_to_date": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alembic Up To Date"
           }
         },
         "type": "object",

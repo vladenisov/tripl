@@ -9,6 +9,7 @@ import type {
 import { eventsApi } from "@/api/events"
 import { useActiveBranchId } from "@/hooks/useBranch"
 import { useDebouncedValue } from "@/hooks/useDebouncedValue"
+import { eventNameLabel } from "@/lib/eventName"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -140,13 +141,25 @@ function useEventOptions({
     })),
     combine: results =>
       results.flatMap(result =>
-        result.data ? ([[result.data.id, result.data.name]] as [string, string][]) : [],
+        result.data
+          ? ([[result.data.id, eventNameLabel(result.data.name)]] as [string, string][])
+          : [],
       ),
   })
 
   const items = useMemo(() => listQuery.data?.items ?? [], [listQuery.data])
+  // A stored name of "" paints an option with no text and no accessible name —
+  // a picker row a screen reader announces as nothing but "button", on the one
+  // event a user would most want to find in order to clean it up (tripl-wkwv.5).
+  //
+  // Both label sources are wrapped HERE rather than at the `?? value` fallbacks
+  // that read them: `Map.get` returns '' as a HIT, so `??` never fires for an
+  // empty stored name. Wrapping at the source makes `labelByValue` non-empty by
+  // construction, which is what the chips and the collapsed trigger print — and
+  // leaves `?? value` covering the case it is actually for, a selected id whose
+  // per-id read has not resolved yet and whose uuid is the right stand-in.
   const options = useMemo(
-    () => items.map(event => ({ value: event.id, label: event.name })),
+    () => items.map(event => ({ value: event.id, label: eventNameLabel(event.name) })),
     [items],
   )
 

@@ -1,5 +1,6 @@
 import { Fragment } from 'react'
 import type { ReactNode } from 'react'
+import { UNNAMED_EVENT_LABEL } from '@/lib/eventName'
 import { NAME_SEGMENT_SEPARATOR, splitEventName } from '@/pages/events/utils'
 
 function EmptySegment(): ReactNode {
@@ -11,12 +12,28 @@ function EmptySegment(): ReactNode {
 }
 
 /**
- * Renders a colon-namespaced event name, surfacing empty segments (e.g.
- * "spot::services") as an intentional muted ∅ placeholder rather than a silent
- * gap. Ordinary names render unchanged. Shared by the Events list and the
+ * Renders an event name, covering TWO distinct defects the catalog holds:
+ *
+ * - a name that is MISSING entirely, which used to render as nothing at all —
+ *   a zero-width anchor with no accessible name (tripl-wkwv.5). It becomes the
+ *   muted, italic `(unnamed event)` placeholder below. Real text, deliberately
+ *   NOT `aria-hidden`: the whole point is that the enclosing link gets an
+ *   accessible name and a clickable area.
+ * - a name with empty SEGMENTS (e.g. "spot::services"), which is a real
+ *   identity and keeps its intentional muted ∅ per empty piece rather than a
+ *   silent gap.
+ *
+ * Ordinary names render unchanged. Shared by the Events list and the
  * Reconciliation page so glitchy names read identically across surfaces.
  */
 export function EventName({ name }: { name: string }): ReactNode {
+  if (!name || name.trim() === '') {
+    return (
+      <span className="italic" style={{ color: 'var(--fg-faint)' }}>
+        {UNNAMED_EVENT_LABEL}
+      </span>
+    )
+  }
   const segments = splitEventName(name)
   if (!segments) return name
   return segments.map((seg, i) => (

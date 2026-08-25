@@ -43,7 +43,11 @@ def search_plan(
     limit: int | None = None,
     branch: str | None = None,
 ) -> ApiRequest:
-    """Answers ``{items, total, semantic_used}``. NOT offset-paged: raise ``limit``."""
+    """Answers ``{items, total, truncated, semantic_used}``.
+
+    NOT offset-paged: ``total`` is the size of THIS response, and ``truncated``
+    says whether ranked hits were dropped. Raise ``limit`` to see them.
+    """
     return ApiRequest(
         "GET",
         SEARCH.format(slug=slug),
@@ -72,3 +76,38 @@ def semantic_used(payload: Any) -> bool:
     that claim, so it takes the same path as absent (Copilot, PR #78).
     """
     return as_dict(payload).get("semantic_used") is True
+
+
+def reported_truncated(payload: Any) -> bool | None:
+    """The route's own ``truncated``, or ``None`` where it reported none.
+
+    The second envelope fact this route adds, and the one ``total`` cannot give:
+    ``total`` is ``len(items)`` after the trim, so on a full page it equals
+    ``limit`` whether or not anything was dropped (tripl-wkwv.3). ``/search``
+    takes no ``offset``, so the answer to a True is a bigger ``limit``.
+
+    Absent is ``None`` rather than False HERE because the two surfaces want two
+    different things from one key, and this is the one that can express both.
+    ``tripl plan search`` uses it as the top rung of ``PlanRead.truncated``'s
+    ladder, where "this instance predates the field" must fall through to the
+    page-fullness guess instead of being published as "nothing was dropped".
+    :func:`truncated` is the projection for the surface that needs a bool.
+
+    Only a real boolean counts, for the reason spelled out on
+    :func:`semantic_used`: the string ``"false"`` must not read as True.
+    """
+    value = as_dict(payload).get("truncated")
+    return value if isinstance(value, bool) else None
+
+
+def truncated(payload: Any) -> bool:
+    """Did the route drop ranked hits it could not fit in this response?
+
+    :func:`reported_truncated` collapsed onto a bool, for the surface that
+    republishes the fact rather than deciding from it: ``tripl-mcp``'s
+    ``search_plan`` puts this in its envelope, and an envelope key that is
+    sometimes null is a shape every agent has to test for. The backend declares
+    ``SearchResponse.truncated: bool = False``, so a body without the key reads
+    as the route saying nothing was dropped.
+    """
+    return reported_truncated(payload) is True

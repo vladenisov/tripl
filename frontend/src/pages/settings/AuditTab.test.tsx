@@ -30,8 +30,13 @@ function renderTab() {
   )
 }
 
-/** One list row. Carries no payload — the list response does not have one. */
-function auditRow(index: number): AuditEntry {
+/**
+ * One list row. Carries no payload — the list response does not have one.
+ *
+ * `branchName` defaults to '' because that is the common row: a write to main,
+ * or an action with no plan-branch dimension at all.
+ */
+function auditRow(index: number, branchName = ''): AuditEntry {
   return {
     id: `entry-${index}`,
     created_at: '2026-08-17T10:00:00Z',
@@ -39,6 +44,8 @@ function auditRow(index: number): AuditEntry {
     user_email: 'alice@example.com',
     project_id: null,
     project_slug: 'demo',
+    branch_id: branchName ? `branch-${index}` : null,
+    branch_name: branchName,
     action: 'event_type.update',
     target_type: 'event_type',
     target_id: null,
@@ -295,5 +302,45 @@ describe('AuditTab — payload on expand (tripl-5ydt)', () => {
     await waitFor(() => expect(getMock).toHaveBeenCalledWith('entry-0'))
     await waitFor(() => expect(screen.queryByLabelText('Loading payload')).toBeNull())
     expect(container.querySelector('pre')).toBeNull()
+  })
+})
+
+describe('AuditTab — branch chip (tripl-wkwv.6)', () => {
+  it('names the working branch a write was scoped to', async () => {
+    listMock.mockResolvedValue({ items: [auditRow(1, 'redesign-checkout')], total: 1 })
+    renderTab()
+
+    // Before this, two contradictory edits to the same object on two branches
+    // produced two audit rows that read identically.
+    expect(await screen.findByText('redesign-checkout')).toBeInTheDocument()
+    // The chip is capped and truncated, so the full name has to stay reachable.
+    expect(screen.getByTitle('redesign-checkout')).toBeInTheDocument()
+  })
+
+  it('leaves a row with no branch unchipped rather than calling it main', async () => {
+    // An empty branch_name covers BOTH a write to main and an action with no
+    // plan-branch dimension at all (alerting, scans, metrics, API keys — all
+    // listed in this tab's own filter), so labelling it "main" would assert
+    // something false about the second kind.
+    listMock.mockResolvedValue({
+      items: [auditRow(0), auditRow(1, 'redesign-checkout')],
+      total: 2,
+    })
+    renderTab()
+
+    await screen.findByText('checkout_started_0')
+    expect(screen.getByText('checkout_started_1')).toBeInTheDocument()
+    // Both rows rendered; exactly one of them carries a chip.
+    expect(screen.getAllByTitle('redesign-checkout')).toHaveLength(1)
+    expect(screen.queryByText('main')).toBeNull()
+
+    // …and the tab's own help text must not say it for us. The line above
+    // cannot catch that: queryByText matches an element's whole normalized
+    // text exactly, and the help paragraph is a long sentence, so it passed
+    // while the copy read "entries with no chip were written on main" —
+    // false for every alerting, scan, metric and API-key row this tab lists.
+    const help = screen.getByText(/Compliance trail/)
+    expect(help.textContent).not.toMatch(/no chip were written on main/i)
+    expect(help.textContent).toMatch(/no branch to name/i)
   })
 })

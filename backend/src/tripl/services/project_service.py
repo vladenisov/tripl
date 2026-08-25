@@ -570,8 +570,15 @@ async def _populate_monitoring_signals(
             interval=scan_interval_to_timedelta(scan_interval),
             recent_window=recent_windows.get(project_id),
             # An outage announced once and never re-emitted is re-checked against
-            # the current series rather than its own age (tripl-l429.15).
+            # the current series rather than its own age (tripl-l429.15), and only
+            # while the anchor had volume to lose (tripl-wkwv.4). The magnitude
+            # gate below already hides a zero-versus-zero row from this count, so
+            # the expectation changes no number here today; it is passed because
+            # the badge and the page must reach ``classify_signal_state`` with the
+            # same inputs — classifying by different rules is how these two
+            # surfaces drifted apart twice before.
             anomaly_actual_count=anomaly.actual_count,
+            anomaly_expected_count=anomaly.expected_count,
             scan_latest_bucket=scan_latest_buckets.get(anomaly.scan_config_id),
         )
         if state is None:

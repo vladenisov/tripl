@@ -110,6 +110,9 @@ function makeSummary(overrides: Partial<MonitorsSummaryResponse> = {}): Monitors
     warning_count: 0,
     healthy_count: 0,
     total: 1,
+    // Both scopes fed, so every assertion below sees the ordinary editor. The
+    // inert case is its own describe block at the bottom (tripl-wkwv.1).
+    scope_readiness: { variable_value_drift: true, distribution_drift: true },
     ...overrides,
   }
 }
@@ -530,5 +533,99 @@ describe('MonitorsSection viewer gating (tripl-oxkt.9)', () => {
     renderSection({ canWrite: false })
 
     expect(await screen.findByRole('button', { name: 'Replay Prod drops' })).toBeEnabled()
+  })
+})
+
+/**
+ * A scope switched on that nothing can feed (tripl-wkwv.1).
+ *
+ * Production had both drift scopes enabled on its only monitor while no scan
+ * watched a column and no variable documented a value list, so the editor
+ * showed two switches wired to nothing. The negative cases matter as much as
+ * the positive one: a warning painted over a healthy project, or over a
+ * response that has not arrived yet, is worse than the silence it replaces.
+ */
+describe('MonitorsSection inert scope notice', () => {
+  const DISTRIBUTION_SENTENCE = /no scan in this project watches a column for it/
+
+  async function openEditorFor(rule: RuleWithDestination, summary: MonitorsSummaryResponse) {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(summary)
+    renderSection({ rules: [rule] })
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit rule Prod drops' }))
+    return screen.findByText('Edit Alert Rule')
+  }
+
+  it('names the missing scan setting, and links to the screen that supplies it', async () => {
+    await openEditorFor(
+      makeRule({ include_distribution_drifts: true }),
+      makeSummary({ scope_readiness: { variable_value_drift: true, distribution_drift: false } }),
+    )
+
+    expect(await screen.findByText(DISTRIBUTION_SENTENCE)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Scan settings' })).toHaveAttribute(
+      'href',
+      '/p/windy-ios/scans',
+    )
+  })
+
+  it('opens that link in a new tab, so the half-built rule survives the click', async () => {
+    // The dialog is modal and its draft is component state — Escape, Cancel and
+    // a same-tab navigation all discard it. This link is the only navigation
+    // inside the form, and it exists to be followed (tripl-wkwv.1).
+    await openEditorFor(
+      makeRule({ include_distribution_drifts: true }),
+      makeSummary({ scope_readiness: { variable_value_drift: true, distribution_drift: false } }),
+    )
+
+    await screen.findByText(DISTRIBUTION_SENTENCE)
+    expect(screen.getByRole('link', { name: 'Scan settings' })).toHaveAttribute('target', '_blank')
+    expect(screen.getByText('Edit Alert Rule')).toBeInTheDocument()
+  })
+
+  it('leaves the toggle usable, because the precondition can be met later', async () => {
+    // Disabling it would make the problem unfixable from the one screen that
+    // reports it: the reader would be told what is wrong and denied the switch.
+    await openEditorFor(
+      makeRule({ include_distribution_drifts: true }),
+      makeSummary({ scope_readiness: { variable_value_drift: true, distribution_drift: false } }),
+    )
+
+    await screen.findByText(DISTRIBUTION_SENTENCE)
+    const box = within(screen.getByText('Distribution').closest('label')!).getByRole('checkbox')
+    expect(box).not.toBeDisabled()
+    expect(box).toBeChecked()
+  })
+
+  it('says nothing about a scope that has source data', async () => {
+    await openEditorFor(
+      makeRule({ include_distribution_drifts: true, include_variable_value_drifts: true }),
+      makeSummary(),
+    )
+
+    expect(screen.queryByText(DISTRIBUTION_SENTENCE)).toBeNull()
+    expect(screen.queryByText(/documents an allowed-values list/)).toBeNull()
+  })
+
+  it('says nothing about a scope the rule has not switched on', async () => {
+    // The project being unable to feed a scope is only worth saying to someone
+    // who asked for that scope.
+    await openEditorFor(
+      makeRule({ include_distribution_drifts: false }),
+      makeSummary({ scope_readiness: { variable_value_drift: false, distribution_drift: false } }),
+    )
+
+    expect(screen.queryByText(DISTRIBUTION_SENTENCE)).toBeNull()
+  })
+
+  it('stays silent while the readiness request is still in flight', async () => {
+    // `scopeReadiness` is undefined until monitors-summary answers. A form must
+    // not accuse a project on the strength of a value it does not have.
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockReturnValue(new Promise(() => {}))
+    renderSection({ rules: [makeRule({ include_distribution_drifts: true })] })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit rule Prod drops' }))
+
+    expect(await screen.findByText('Edit Alert Rule')).toBeInTheDocument()
+    expect(screen.queryByText(DISTRIBUTION_SENTENCE)).toBeNull()
   })
 })

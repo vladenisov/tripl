@@ -93,6 +93,8 @@ Plan branch context is passed as the query parameter named `branch`:
 
 If `branch` is omitted, services resolve the project's main branch. For read-only context gathering, omitting `branch` is usually correct. For proposed edits, pass the working branch id explicitly so the agent does not mutate the live plan by accident.
 
+Passing `branch` also makes the write **attributable**: the audit log records the entry against that working branch, by id and by name, and an owner reading the log sees a branch chip on the row. A write with no `branch` carries no chip, which covers both a deliberate write to main and an action that has no branch dimension at all — and passing the **main** branch's own id records no branch either, by design, so one write to main cannot render two ways. So an agent's branch-scoped edits are distinguishable after the fact from writes to the live plan — which is the other reason to pass the id rather than rely on the default. This applies to the branch-scoped plan writes (`field.*`, `event_type.*`, `variable.*`, `meta_field.*`, `relation.*`, and `project.retire_unused_variables`). Drift resolutions (`variable.drift_action`, `schema_drift.*`) are the exception: a drift is only ever detected against main, so accepting one is always a write to the main plan and carries no chip whatever `branch` you pass. Event create/update/delete are not written to the audit log at all and keep their own per-event history instead.
+
 Discover branches:
 
 ```http

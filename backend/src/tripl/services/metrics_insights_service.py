@@ -720,8 +720,12 @@ async def get_active_signals(
             interval=scan_interval_to_timedelta(interval_map.get(anomaly.scan_config_id)),
             recent_window=recent_window,
             # An outage announced once and never re-emitted is re-checked against
-            # the current series rather than its own age (tripl-l429.15).
+            # the current series rather than its own age (tripl-l429.15) — but
+            # only while the anchor had volume to lose, or a scope expected to
+            # emit nothing would sit in this list, and in the "N of M open"
+            # denominator it feeds, forever (tripl-wkwv.4).
             anomaly_actual_count=anomaly.actual_count,
+            anomaly_expected_count=anomaly.expected_count,
             scan_latest_bucket=scan_latest_buckets.get(anomaly.scan_config_id),
         )
         if state is not None:

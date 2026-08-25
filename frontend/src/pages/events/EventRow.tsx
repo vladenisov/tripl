@@ -21,6 +21,7 @@ import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { EVENT_STATUS_DOT_TONE, EVENT_STATUS_LABELS } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
+import { eventNameLabel } from '@/lib/eventName'
 import { SIGNAL_LEVEL, rowSignalLevel } from '@/lib/statusLexicon'
 import { getMonitoringPath } from '@/lib/monitoring'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
@@ -164,6 +165,11 @@ export const EventRow = memo(function EventRow({
       ? historicalAnomalyIdx
       : null
   const statusTone = EVENT_STATUS_DOT_TONE[(ev.status as EventStatus) ?? 'draft'] ?? 'neutral'
+  // Every place this row puts the name into a STRING — an aria-label, a native
+  // title, the sparkline's labels. A blank name made those read "Select " and
+  // "Edit " with a trailing space (tripl-wkwv.5). The link's own text keeps the
+  // RAW name, because <EventName> needs it to paint ∅ empty segments.
+  const nameLabel = eventNameLabel(ev.name)
 
   // The edit affordance is hover-revealed like the drag handle, but the row the
   // coached scenario points at must not hide its own click target — so it stays
@@ -187,7 +193,7 @@ export const EventRow = memo(function EventRow({
         <button
           type="button"
           className="flex h-6 w-6 cursor-grab touch-none items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 active:cursor-grabbing"
-          aria-label={`Drag to reorder ${ev.name}`}
+          aria-label={`Drag to reorder ${nameLabel}`}
           {...attributes}
           {...listeners}
         >
@@ -198,7 +204,7 @@ export const EventRow = memo(function EventRow({
         <Checkbox
           checked={selected}
           onCheckedChange={(checked) => onToggleSelected(ev.id, checked === true)}
-          aria-label={`Select ${ev.name}`}
+          aria-label={`Select ${nameLabel}`}
         />
       </TableCell>
       <TableCell
@@ -219,7 +225,7 @@ export const EventRow = memo(function EventRow({
                 className="mono truncate text-left text-[12.5px] hover:underline underline-offset-4"
                 // Native title only when there's no description to show in the
                 // richer tooltip — avoids a double (native + Radix) popover.
-                title={ev.description ? undefined : ev.name}
+                title={ev.description ? undefined : nameLabel}
               >
                 <EventName name={ev.name} />
               </Link>
@@ -246,7 +252,7 @@ export const EventRow = memo(function EventRow({
             <button
               type="button"
               onClick={() => onRowAction('edit', ev)}
-              aria-label={`Edit ${ev.name}`}
+              aria-label={`Edit ${nameLabel}`}
               className={`flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 ${
                 coachEdit ? 'opacity-100' : 'opacity-0'
               }`}
@@ -362,7 +368,7 @@ export const EventRow = memo(function EventRow({
       <TableCell className="w-32 text-right">
         <div className="flex items-center justify-end align-middle">
           <EventWindowMetricsCell
-            eventName={ev.name}
+            eventName={nameLabel}
             color={eventType?.color ?? 'var(--accent)'}
             totalCount={windowTotal}
             data={windowData}

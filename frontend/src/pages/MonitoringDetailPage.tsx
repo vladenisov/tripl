@@ -39,6 +39,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
+import { eventNameLabel } from '@/lib/eventName'
 import { formatIncidentCount } from '@/lib/alertStatus'
 import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/metricFormat'
 import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, defaultGranularityForRange, type MetricsGranularity } from '@/lib/metrics'
@@ -2058,8 +2059,16 @@ function EventDetailBreadcrumb({ name, onBack }: { name: string; onBack: () => v
         Events
       </button>
       <span aria-hidden style={{ color: 'var(--fg-faint)' }}>/</span>
-      <span aria-current="page" className="mono min-w-0 truncate" style={{ color: 'var(--fg)' }}>
-        {name}
+      {/* A blank name left this crumb empty, so the trail ended in nothing
+          (tripl-wkwv.5). Plain string rather than <EventName>: the crumb
+          truncates and carries its own native title. */}
+      <span
+        aria-current="page"
+        className="mono min-w-0 truncate"
+        style={{ color: 'var(--fg)' }}
+        title={eventNameLabel(name)}
+      >
+        {eventNameLabel(name)}
       </span>
       <div className="flex-1" />
       <button
@@ -2149,8 +2158,10 @@ function EventDetailHeader({
           than letting it overflow the column. */}
       <div className="min-w-0 flex-1 basis-60">
         <div className="flex flex-wrap items-center gap-[10px]">
+          {/* Never an empty top-level heading: a blank name gave the whole page
+              no accessible title (tripl-wkwv.5). */}
           <h1 className="mono m-0 min-w-0 break-all text-[19px] font-semibold tracking-[-0.01em]">
-            {event.name}
+            {eventNameLabel(event.name)}
           </h1>
           <Chip tone={statusTone} size="sm">{EVENT_STATUS_LABELS[status] ?? event.status}</Chip>
           {event.tags.map(tag => <Chip key={tag.id} size="xs">{tag.name}</Chip>)}

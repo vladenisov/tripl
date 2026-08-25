@@ -192,6 +192,21 @@ sends. A break anywhere in that chain produces silence.
    re-enqueues deliveries still `pending` after 15 minutes, up to 5 attempts,
    then marks them `failed`. A permanently failing delivery will eventually stop
    cycling and show as failed.
+8. **A drift scope is on but nothing feeds it.** The two drift scopes act on
+   signals another part of the project has to produce first, so a rule can have
+   one enabled and be structurally unable to fire. **Variable value drift**
+   needs some variable to document an allowed-values list on the **main**
+   branch — the variable's own list or a per-event override, either one is
+   enough — which you supply under **Variables**, *or* a value drift already
+   collected in the project (an open or snoozed row from the last 30 days);
+   values documented on a working branch do not count until it merges. **Distribution drift** needs a scan that
+   names the columns to watch (**Scan settings → Distribution drift**), or drift
+   already collected in the project. The monitor's own screens now say this out
+   loud: the rule editor and the monitor detail mark such a scope inline and
+   link to the screen that supplies the missing data. The check behind those
+   notices is project-wide, so a rule bound to a single scan shows no warning as
+   long as *some* scan watches a column — see
+   [When a scope is on but nothing feeds it](alerting.md#when-a-scope-is-on-but-nothing-feeds-it).
 
 **Fix workflow.**
 
@@ -282,7 +297,7 @@ first answer and buys a silence you did not want.
 events, or far fewer than you expected.
 
 The dry run is the same planner a real run uses, so "it would create nothing" is
-a real answer, not a broken panel. Five causes, in the order worth checking:
+a real answer, not a broken panel. Six causes, in the order worth checking:
 
 1. **Nothing tells the scan how to name events.** A scan names its events one of
    two ways: an **Event type**, which makes every row the same event, or an
@@ -323,6 +338,16 @@ a real answer, not a broken panel. Five causes, in the order worth checking:
    role (event type, time, app version, platform, or an event-group-rule column)
    are listed as **reserved**: tripl already uses these, so they never become
    event fields, and their absence from the plan is intentional.
+
+6. **The derived name came out empty.** Where the **Event name format** resolves
+   to nothing — every column it names was NULL for those rows — the row is
+   skipped rather than turned into a nameless event, and the panel warns
+   *Skipped N rows whose derived event name was empty* (singular *row* when N is
+   1). A real run does the same, so this is not a preview artefact. Fix it in the
+   format (name a column those rows actually populate, or add a literal segment)
+   or in the base query (filter the NULL rows out, or coalesce the column). Note
+   that a name with empty **segments** — `::`, `onboarding:start:` — is *not*
+   this case: those are real identities and are planned normally.
 
 If the events list is present but prefixed with **at least**, nothing is wrong —
 the sample hit its cap, and the count is a floor rather than a total. That case

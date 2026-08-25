@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, ScrollText, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, GitBranch, ScrollText, X } from 'lucide-react'
 
 import { auditApi } from '@/api/audit'
 import { Badge } from '@/components/ui/badge'
@@ -348,7 +348,10 @@ export function AuditTab({ slug }: { slug: string }) {
         </h2>
         <p className="text-xs text-muted-foreground">
           Compliance trail of mutation actions on this project's schema and
-          data sources. Secrets are redacted in stored payloads.
+          data sources. Secrets are redacted in stored payloads. A branch chip
+          names the working branch an entry was written through. No chip means
+          the write was not branch-scoped: main, or an action with no branch to
+          name at all (alerting, scans, metrics, API keys).
         </p>
       </div>
 
@@ -477,6 +480,25 @@ export function AuditTab({ slug }: { slug: string }) {
                       <Badge className={`${actionTone(entry.action)} text-[10px] shrink-0`}>
                         {entry.action}
                       </Badge>
+                      {/* The chip means "this was NOT written on main". An empty
+                          branch_name covers both a write to main and an action
+                          with no plan-branch dimension (alerting, scans, data
+                          sources), so rendering "main" here would mislabel
+                          alert_rule.create — hence a chip or nothing
+                          (tripl-wkwv.6). An explicit ?branch=<main id> binds no
+                          branch context (api/deps.py), so the chip can never
+                          read "main". Capped and truncated because the row is
+                          one flex line and a fourth item squeezes the target. */}
+                      {entry.branch_name && (
+                        <Badge
+                          variant="outline"
+                          className="shrink-0 max-w-[9rem] text-[10px]"
+                          title={entry.branch_name}
+                        >
+                          <GitBranch />
+                          <span className="truncate">{entry.branch_name}</span>
+                        </Badge>
+                      )}
                       <span
                         className="font-mono text-[11px] truncate"
                         title={entry.target_name ?? undefined}

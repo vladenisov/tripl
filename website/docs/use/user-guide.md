@@ -213,7 +213,10 @@ Set the scan's **Event name format** when event identity is assembled from field
 values (for example `{action}:{category}`). The same template governs manual
 creation for that event type: the event form previews the generated name and
 requires every referenced field. This prevents a hand-written event and its
-scan-generated counterpart from becoming two different catalog rows.
+scan-generated counterpart from becoming two different catalog rows. A row whose
+format resolves to nothing — every column it names was NULL for that row — is
+skipped rather than becoming a nameless event, and the run report says how many:
+*Skipped N rows whose derived event name was empty*.
 
 This is the fastest way to turn an existing warehouse into a written plan, and
 it is what populates monitoring later.
@@ -373,9 +376,14 @@ If something lands on main that shouldn't have:
   exactly who changed what and when, then make a follow-up branch that sets the
   values back and merge it through review. An action older than the first page
   is still reachable: page back with **Older** (or narrow the filter first).
-  Each event also has its own
+  An audit row also shows **which branch** the write was made in — a chip naming
+  the working branch, or no chip for a write that was not branch-scoped (main, or
+  an action with no branch to name at all) — which is how you tell a branch edit
+  that arrived through a merge from someone editing main directly while tracing a
+  wrong change. Each event also has its own
   field-level change history on its detail page, which helps you work out what
-  the correct values were.
+  the correct values were; event edits are kept there rather than in the audit
+  log.
 - **A deleted event** — re-create its definition by hand (description, fields,
   tags) and let monitoring start collecting again from the next scan. The
   deleted event's earlier metrics and history are not restored.
@@ -549,8 +557,12 @@ Replaying the rule against recent data is the quickest way to confirm whether it
   to the plan.
 - **Audit log** — every meaningful change, filterable by who, what, and when,
   and paged with **Newer** / **Older** so the list is not limited to the most
-  recent entries. This is also your first stop when recovering from a mistaken
-  change.
+  recent entries. Each entry also names the **branch** it was written in, so two
+  contradictory edits to the same object on two branches are told apart rather
+  than reading as one person changing their mind. Entries with no branch chip
+  were written on main, or are actions that have no branch to name at all
+  (alerting, scans, data sources, users, API keys). This is also your first stop
+  when recovering from a mistaken change.
 - **Roles** — in workspace settings, invite teammates as **viewer** (read-only),
   **editor** (can change the plan, scans, and alerts), or **owner** (full
   control, including people and data sources). Owner is also the only role that

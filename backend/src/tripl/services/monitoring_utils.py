@@ -136,6 +136,7 @@ def latest_bucket_by_scan(
 def _outage_is_still_running(
     *,
     anomaly_actual_count: float | None,
+    anomaly_expected_count: float | None = None,
     scan_latest_bucket: datetime | None,
     cutoff: datetime,
 ) -> bool:
@@ -144,8 +145,8 @@ def _outage_is_still_running(
     Only meaningful from inside ``classify_signal_state``'s
     ``anomaly_bucket >= latest_metric_bucket`` branch, which already establishes
     the second half of the question: the scope has stored nothing newer than the
-    anomaly, so it has emitted nothing since. This adds the two facts that turn
-    that into "still down":
+    anomaly, so it has emitted nothing since. This adds the facts that turn that
+    into "still down":
 
       * the ANCHOR ROW says the scope was at zero when it was announced
         (``actual_count == 0``). ``_collapse_outage_runs`` gives an outage
@@ -155,14 +156,35 @@ def _outage_is_still_running(
         the same freshness horizon), so the silence belongs to this scope rather
         than to a collector that stopped. Without it the very cap the
         latest-scan branch exists for would be gone, and a switched-off scan
-        would pin its final anomaly red forever.
+        would pin its final anomaly red forever;
+      * and the anchor row says there was something to LOSE
+        (``expected_count > 0``). A scope that was expected to emit nothing and
+        emitted nothing is not an incident, and it is the one shape this
+        predicate alone can end: an empty scope stores no metric row, so its own
+        head stays frozen AT the anchor and the latest-scan branch above is true
+        for it forever. Production carried 14 such rows — "spike, 0 actual vs 0
+        expected", written by ``_detect_trend_shift`` on a project running
+        ``min_expected_count = 0`` — open since the day they were detected,
+        invisible below the magnitude gate but permanently inflating the
+        denominator the Anomalies page states out loud (tripl-wkwv.4).
 
-    Callers that cannot answer both — catalog ``metric`` scopes have no scan to
-    ask, and a fractional series' 0.0 is a value rather than "emitted nothing" —
-    pass neither and land exactly where they did before. COUNT-shaped,
+    The three inputs are deliberately NOT symmetrical in how ``None`` is read.
+    The first two are evidence FOR an outage, so an unanswered one cannot prove
+    it and returns False. ``anomaly_expected_count`` is a DISQUALIFIER, so an
+    unanswered one cannot disqualify and is ignored: a caller that supplies the
+    pair but not the expectation keeps exactly today's answer instead of quietly
+    closing an incident that is still running — the regression tripl-l429.15/.26
+    fixed, and by far the more expensive of the two ways to be wrong here. Every
+    caller that can answer it should, and all of them do.
+
+    Callers that cannot answer the pair — catalog ``metric`` scopes have no scan
+    to ask, and a fractional series' 0.0 is a value rather than "emitted nothing"
+    — pass neither and land exactly where they did before. COUNT-shaped,
     scan-backed scopes only, matching ``_collapse_outage_runs``.
     """
     if anomaly_actual_count is None or anomaly_actual_count > 0:
+        return False
+    if anomaly_expected_count is not None and anomaly_expected_count <= 0:
         return False
     if scan_latest_bucket is None:
         return False
@@ -177,6 +199,7 @@ def classify_signal_state(
     interval: timedelta | None = None,
     recent_window: timedelta | None = None,
     anomaly_actual_count: float | None = None,
+    anomaly_expected_count: float | None = None,
     scan_latest_bucket: datetime | None = None,
     emission_lag: timedelta = timedelta(0),
 ) -> str | None:
@@ -191,7 +214,7 @@ def classify_signal_state(
     (tripl-l429.14, tripl-l429.19), each time showing a signal open on the page
     while the alerting path treated it as closed.
 
-    The three optional inputs are the ones only some callers can answer, and each
+    The optional inputs below are the ones only some callers can answer, and each
     defaults to the value that reproduces the behaviour of a caller that cannot:
 
     * ``emission_lag`` — how far behind the metric head the newest EMITTABLE
@@ -205,7 +228,11 @@ def classify_signal_state(
     * ``anomaly_actual_count`` / ``scan_latest_bucket`` — the outage re-check, see
       ``_outage_is_still_running``. Callers that cannot answer both (a catalog
       metric has no scan to probe, and a fractional series' ``0.0`` is a value
-      rather than silence) pass neither and land where they did before.
+      rather than silence) pass neither and land where they did before;
+    * ``anomaly_expected_count`` — the third input to that same re-check, and the
+      only one whose ``None`` means "ignore" rather than "cannot conclude". Every
+      caller that passes the pair above should pass this too; the polarity is
+      explained in ``_outage_is_still_running`` (tripl-wkwv.4).
     """
     # No stored metric values means there is no live scan to anchor recency on, so
     # there is nothing to keep open — treat the signal as closed.
@@ -229,6 +256,7 @@ def classify_signal_state(
         # and "latest_scan" is still literally true.
         if _outage_is_still_running(
             anomaly_actual_count=anomaly_actual_count,
+            anomaly_expected_count=anomaly_expected_count,
             scan_latest_bucket=scan_latest_bucket,
             cutoff=latest_scan_cutoff,
         ):

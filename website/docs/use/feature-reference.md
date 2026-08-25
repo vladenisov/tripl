@@ -65,6 +65,13 @@ clusters for group selection, and expand the selection from loaded rows to
 The **Reviewed** column is hidden by default in the column picker but is forced
 visible on the review tab (`/events/review`).
 
+An event whose name is blank renders as *(unnamed event)* rather than as nothing
+at all, so the row keeps a click target and an accessible name — the one event
+you would most want to clean up used to be the one you could not open. Names with
+**empty segments** (`::`, `onboarding:start:`) are a different case: those are
+real identities and each empty piece still renders as ∅. The same treatment
+follows the name onto the Reconciliation page and the command palette.
+
 A **More** menu on the toolbar holds **Export CSV**. It exports the whole
 filtered view rather than the rows scrolled into view so far: the active filters
 and sort go to the server, the matching events are paged down from it, and the
@@ -346,9 +353,10 @@ so a call that omits it only reports; the response carries `scanned`,
 the warehouse that a later run would otherwise mint again — and is not offered
 in the UI, which always deletes. The route honours `?branch=` and defaults to
 `main`, records `project.retire_unused_variables` in the audit log when it is
-not a dry run, and takes the strict owner gate: like the other owner-only
-administration routes it refuses an API key, so it needs an owner signed in
-through the browser.
+not a dry run — and that entry names the branch it ran against, so a retirement
+on a working branch is not read later as one on main — and takes the strict owner
+gate: like the other owner-only administration routes it refuses an API key, so
+it needs an owner signed in through the browser.
 
 ### Plan history & revisions
 
@@ -401,6 +409,16 @@ cooldown, thresholds, message template, filters — and carries its own controls
 enable, **mute** (**1h / 24h / 7d**, the duration written on the button),
 **replay**, edit, delete.
 Open a rule for its detail page, which adds the fired history.
+
+The rule editor and the monitor detail also mark an enabled drift scope whose
+source data does not exist anywhere in the project — value drift with no
+documented allowed-values list on main and no drift collected, distribution drift
+with no scan watching a column and no drift collected — with an inline notice
+linking to the screen
+that supplies it (**Variables**, **Scan settings**). The toggle stays usable,
+because the missing data can arrive later; the check is project-wide, so it says
+nothing about the particular scan a rule is bound to. See
+[When a scope is on but nothing feeds it](./alerting.md#when-a-scope-is-on-but-nothing-feeds-it).
 
 A rule has no **indefinite** mute, and the asymmetry with the Inbox is
 deliberate: muting a rule silences every scope it watches, so a rule you never
@@ -559,6 +577,11 @@ down, rather than ageing out of the open-signal window after a day — the outag
 is announced once, so tripl re-checks whether it is still down instead of judging
 it by the age of that one announcement (see
 [An event that goes silent is reported once](./anomaly-detection.md#an-event-that-goes-silent-is-reported-once)).
+That covers a scope which had volume to lose. A scope whose expectation was
+itself zero is not held open: nothing was lost, so it ages out normally, and the
+open-signal rollup at the top of this page cannot accumulate zero-versus-zero
+rows forever. Those rows sit below the default **Significant** magnitude filter,
+so what this changes is the rollup's count rather than the list under it.
 When one incident trips several scopes on the same bucket,
 the child rows (event type / event) are still shown and tagged `part of total`
 rather than folded into the project-total row. A **magnitude filter**
@@ -870,7 +893,7 @@ It never projects a table-wide total. Each event carries its share of the sample
 and an exact count of the sampled rows behind it — not an estimate of how many
 rows exist in your warehouse.
 
-Three more things it reports, each answering a question the raw rows could not:
+Four more things it reports, each answering a question the raw rows could not:
 
 - **Templated columns.** A column with more distinct values than the
   **Cardinality threshold** collapses into a `${column}` template, so you get one
@@ -881,6 +904,15 @@ Three more things it reports, each answering a question the raw rows could not:
   fails *every* run of that config. Catching it here, instead of after two
   hundred failed production runs, is the single most valuable thing this feature
   does. The error is reported, not raised — the dry run still completes.
+- **Rows with no derived name.** When every column the **Event name format**
+  names is NULL for a row, the name comes out empty. Such rows are **not
+  planned** — the preview does not list an event for them, because the run will
+  not create one — and the dry run reports the count as a warning:
+  *Skipped N rows whose derived event name was empty* (singular *row* when N is
+  1). A name with empty **segments** is a different thing and *is* still
+  planned: `::` and `onboarding:start:` are real identities with a click target
+  and a rendering of their own, and refusing them would leave real traffic
+  unplanned.
 - **Fields.** A field is either `json` or `string`. That is the entire type
   inference a scan performs; claiming `integer` or `timestamp` would be a claim
   about something the scan does not do. Fields are only reported as "would be
@@ -926,7 +958,11 @@ those rows, and about reserved role columns (event type, time, version,
 platform, and any column an event-group rule matches on), which tripl already
 uses elsewhere and never expects to have a plan field. The same list reports
 variables the run retired — *Retired N unused variables no event refers to*,
-see [Variables](#variables) — and says nothing when there were none. Repeated identical failures collapse into
+see [Variables](#variables) — and says nothing when there were none. It also
+reports rows the run refused to name: *Skipped N rows whose derived event name
+was empty* (singular *row* when N is 1), which means every column the **Event
+name format** refers to was NULL for those rows, so the run planned nothing for
+them rather than creating a nameless event. Repeated identical failures collapse into
 a streak with an expander, and **Run again** retries the config without losing
 its history.
 
@@ -987,8 +1023,31 @@ queued*. Nothing was removed — the sentences lead, the counters follow.
 
 **Where:** Govern › Audit log — **owners only**; the nav item is hidden from
 everyone else. A record of mutating actions across the whole instance,
-filterable by action, user, project, and time range. Each entry keeps the
-request payload, which is why it is owner-gated: see
+filterable by action, user, project, and time range. Each entry also records the
+**plan branch** the write was scoped to, so two contradictory edits to the same
+object on two branches are told apart. The rule is exact:
+
+- an entry written through `?branch=<working branch id>` carries that branch's id
+  and name, and the row shows a **branch chip**;
+- an entry with **no chip** was written on **main**, *or* is an action with no
+  plan-branch dimension at all — alerting, scans, data sources, users, API keys.
+  A blank branch is not an assertion of "main", which is why the row shows a chip
+  or nothing rather than labelling anything. Passing main's own id counts as no
+  branch — main is spelled as the absence of a branch, so the same write cannot
+  render two ways.
+
+The branch **name** is stored verbatim alongside the id, so the trail survives
+deleting the branch: the id goes null, the name remains, and the row stays
+readable.
+
+This covers the plan writes that carry a branch — `field.*`, `event_type.*`,
+`variable.*`, `meta_field.*`, `relation.*` and
+`project.retire_unused_variables`. Edits to **events** are not in the audit log
+at all — they are recorded as **per-event history** on the event itself — so
+"who edited event X, and on which branch" is a question for that history, not for
+this page.
+
+Each entry keeps the request payload, which is why it is owner-gated: see
 [Security](../run/security.md#roles-and-access-control-rbac).
 
 ---
@@ -1053,6 +1112,17 @@ the ranking the server computed — including semantic hits, which a literal
 in-browser match would have pushed down or dropped. One consequence
 of keeping each type together: a result can sit above a slightly stronger one of
 a *different* type, when the weaker one's type opened higher up the list.
+
+A row carrying a **`semantic`** chip is one the **keyword ranking did not
+surface** — it is there because the meaning index found it, and the chip's
+tooltip says *Found by meaning — the keyword ranking didn't surface this*. The
+keyword leg is itself a capped scan, so a weak keyword match crowded out of it
+can come back through the meaning index and carry the chip: the chip says which
+leg put the row in front of you, not that the word is absent from it. So a row
+whose name IS what you typed does not carry the chip, however certain the match:
+the chip is about how the row was
+found, not how good it is. Nothing changes about the ranking; the chip only
+explains rows that would otherwise look like they arrived for no reason.
 
 While the **first** search of a palette session is running the list shows a
 **Searching knowledge…** group. After that there are already rows on screen, and

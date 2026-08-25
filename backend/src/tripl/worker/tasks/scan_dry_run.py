@@ -37,6 +37,7 @@ from tripl.core.analyzers.event_plan import (
     DEFAULT_MAX_EVENTS,
     breakdown_row_count,
     plan_events,
+    unnamed_skip_detail,
 )
 from tripl.core.name_template import NameFormatError
 from tripl.core.warehouse_types import is_complex_type
@@ -212,6 +213,7 @@ def build_dry_run_payload(
     errors: list[str] = []
     known_field_names: set[str] = set()
     max_events_reached = False
+    unnamed_total = 0
 
     for target in targets:
         existing_fds = (
@@ -262,7 +264,19 @@ def build_dry_run_payload(
             errors.append(str(exc))
             continue
 
-        warnings.extend(plan.details)
+        # The skip line is per-PLAN and a grouped scan plans once per event type,
+        # so five groups each dropping one row printed "Skipped 1 row whose
+        # derived event name was empty" five times. An operator reading that
+        # panel concludes five separate one-row problems, not the five rows that
+        # were actually dropped (tripl-wkwv.5). Withhold each plan's own line
+        # here and say the total once, below.
+        #
+        # ``generate_events``' run report keeps the per-plan line on purpose: it
+        # renders ``details`` as a per-event-type Log, where one line per type is
+        # the established shape and the attribution is the point.
+        skip_line = unnamed_skip_detail(plan.events_unnamed) if plan.events_unnamed else None
+        unnamed_total += plan.events_unnamed
+        warnings.extend(detail for detail in plan.details if detail != skip_line)
         max_events_reached = max_events_reached or plan.truncated
         for col_name, meta in plan.col_meta.items():
             if meta.get("is_json") or meta.get("is_low") or col_name in templated:
@@ -289,6 +303,9 @@ def build_dry_run_payload(
             display_by_identity.setdefault(key, planned.name)
             if planned.matched_rule_name is not None:
                 rule_by_identity.setdefault(key, planned.matched_rule_name)
+
+    if unnamed_total:
+        warnings.append(unnamed_skip_detail(unnamed_total))
 
     breakdown_combinations = sum(len(t.analysis.rows) for t in targets)
     sampled_rows = sum(

@@ -28,6 +28,7 @@ second document shape for one verb, are both worse than not shipping it yet.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 
 import httpx
 
@@ -409,7 +410,7 @@ def run_search(args: argparse.Namespace, config: Config) -> int:
                 )
             )
         )
-        return context.read(
+        read = context.read(
             reader,
             command="plan search",
             kind="search_result",
@@ -418,8 +419,7 @@ def run_search(args: argparse.Namespace, config: Config) -> int:
             items=page_items(payload),
             # No total: the route answers `total = len(items)` AFTER trimming to
             # the limit, so echoing it would state "20 of 20 shown" on a search
-            # that dropped hits. Null says the count is not on offer, and
-            # `PlanRead.truncated` then falls back to the page being full.
+            # that dropped hits. Null says the count is not on offer.
             total=None,
             # No offset: the route has no such parameter, so a hit past --limit
             # is unreachable except by raising it. Saying `offset: null` is what
@@ -427,6 +427,17 @@ def run_search(args: argparse.Namespace, config: Config) -> int:
             limit=limit,
             meta={"semantic_used": search_api.semantic_used(payload)},
         )
+        # The route's OWN truncation flag, which `PlanRead.truncated` prefers to
+        # its page-fullness guess (tripl-wkwv.3). That guess reads True whenever
+        # the matches land exactly on --limit, so this command was printing "more
+        # may have matched" on the same HTTP body that said nothing was dropped —
+        # and answering the opposite of `tripl-mcp`'s `search_plan`, which reads
+        # the same key from the same body. None against an instance that predates
+        # the field, which is what keeps the guess as the fallback there.
+        #
+        # Attached here rather than through `ReadContext.read` so the shared
+        # constructor keeps only the envelope numbers all seven verbs answer.
+        return replace(read, route_truncated=search_api.reported_truncated(payload))
 
     read = run_async(config, body, timeout=float(args.timeout))
     emit(

@@ -1056,6 +1056,32 @@ class AlertRuleSimulateResponse(BaseModel):
     rendered_message: str | None = None
 
 
+class AlertScopeReadiness(BaseModel):
+    """Whether each drift-style scope has any source data at all, PROJECT-wide.
+
+    Not a per-rule verdict and not a prediction: it answers "could this scope
+    ever produce a candidate here", so a client can tell an enabled-but-inert
+    toggle from a quiet one (tripl-wkwv.1). Both fields are always sent and
+    neither carries a default — see the no-defaults note on
+    ``MonitorSummaryItem`` for why a default here would be a lie to the
+    generated client rather than a server behaviour.
+    """
+
+    # False when nothing on the MAIN branch documents an allowed-values list —
+    # neither a ``Variable.allowed_values`` nor a per-event override — for a
+    # variable scans still observe, AND no open/snoozed VariableValueDrift row
+    # from the last 30 days is linked to one of this project's scans.
+    # Documentation on a working branch does not count until it merges: the
+    # detector runs against main (core/analyzers/event_generator.py). Rows alone
+    # are enough — the candidate builder reads rows, not documentation
+    # (worker/tasks/metrics/signals.py).
+    variable_value_drift: bool
+    # False when no scan config lists ``distribution_drift_fields`` AND no
+    # DistributionDrift row exists yet. Rows alone are enough — the candidate
+    # builder reads rows, not config (worker/tasks/metrics/signals.py).
+    distribution_drift: bool
+
+
 class MonitorSummaryItem(BaseModel):
     """One alert rule rolled up into a single monitor status."""
 
@@ -1096,6 +1122,10 @@ class MonitorsSummaryResponse(BaseModel):
     warning_count: int
     healthy_count: int
     total: int
+    # On the envelope, never on ``MonitorSummaryItem``: this is one fact about
+    # the PROJECT, and repeating it per rule would be N copies of a value that
+    # cannot differ between them.
+    scope_readiness: AlertScopeReadiness
 
 
 class MonitorDetailResponse(MonitorSummaryItem):
@@ -1122,6 +1152,11 @@ class MonitorDetailResponse(MonitorSummaryItem):
     total_deliveries: int
     last_delivery_at: datetime | None
     last_delivery_status: AlertDeliveryStatus | None
+    # The SAME block, under the same name and with the same meaning, as the one
+    # on ``MonitorsSummaryResponse``. The monitors list and the monitor detail
+    # describe one project, and a field name that meant two things on two
+    # responses is the disagreement tripl-oxkt.18 was filed about.
+    scope_readiness: AlertScopeReadiness
 
 
 class MonitorMuteRequest(BaseModel):

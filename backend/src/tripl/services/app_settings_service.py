@@ -22,8 +22,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from tripl import crypto
-from tripl.config import settings
+from tripl.config import Settings, settings
 from tripl.models.app_setting import AI_SETTINGS_KEY, SERVICE_SETTINGS_KEY, AppSetting
+from tripl.services import migration_status_service
 from tripl.services.ai_defaults import (
     DEFAULT_ALERT_EXPLANATION_SYSTEM_PROMPT,
     DEFAULT_ASK_SYSTEM_PROMPT,
@@ -32,7 +33,12 @@ from tripl.services.ai_defaults import (
 
 logger = logging.getLogger(__name__)
 
-SettingSource = Literal["env", "override"]
+# Where the value an owner is looking at actually came from. "default" exists
+# because the badge used to assert "env" for every field with no DB override,
+# which made it useless as evidence: search_embedding_provider read "Env" on an
+# instance that had never been told anything about it (tripl-wkwv.2). See
+# _setting_source for what "default" does and does not claim.
+SettingSource = Literal["env", "override", "default"]
 
 RUNTIME_FIELDS = (
     "app_base_url",
@@ -104,6 +110,19 @@ FIELD_SECTIONS: dict[str, tuple[str, ...]] = {
     "email": EMAIL_FIELDS,
     "ai": AI_FIELDS,
 }
+# AI fields that are REPORTED but can never be edited. Deliberately declared
+# OUTSIDE FIELD_SECTIONS, because EDITABLE_FIELDS is derived from it just below
+# and ``update_service_overrides`` gates on that set — listing either field there
+# would make it persistable in the same edit. Both describe the vector space
+# every row already in pgvector was written into: repointing the endpoint or
+# resizing the width makes similarity against older vectors meaningless, with no
+# error anywhere. They still get a ``sources`` entry, because "which endpoint is
+# the indexed plan text going to" is the question the AI section exists to
+# answer, and nothing in the running system answered it (tripl-wkwv.2).
+READ_ONLY_ENV_FIELDS: tuple[str, ...] = (
+    "search_embedding_base_url",
+    "search_embedding_dimensions",
+)
 EDITABLE_FIELDS = frozenset(
     field for section_fields in FIELD_SECTIONS.values() for field in section_fields
 )
@@ -162,9 +181,23 @@ def default_ai_prompts() -> dict[str, str]:
     }
 
 
+# What the environment (or the built-in default) held for each field that
+# ``apply_startup_service_overrides`` pinned onto ``settings`` at boot. Written
+# there, read here; see that function for why nothing ever puts it back.
+_ENV_BEFORE_STARTUP_APPLY: dict[str, Any] = {}
+
+
 def env_service_values() -> dict[str, Any]:
-    """Every editable service setting from env/default settings only."""
-    return {
+    """Every editable service setting from env/default settings only.
+
+    "env only" is not the same as "whatever ``settings`` holds right now". For a
+    STARTUP_APPLIED_FIELDS field whose override was applied at boot, the singleton
+    permanently carries the OVERRIDE's value, so once that override is cleared
+    the singleton is no longer a witness for anything the environment delivered —
+    it would report the deleted value and ``_setting_source`` would badge it
+    "Env", crediting a variable that may not exist (tripl-wkwv.2).
+    """
+    values: dict[str, Any] = {
         "app_base_url": settings.app_base_url,
         "scan_row_limit_default": settings.scan_row_limit_default,
         "metrics_row_limit_default": settings.metrics_row_limit_default,
@@ -215,6 +248,11 @@ def env_service_values() -> dict[str, Any]:
         "search_embedding_model": settings.search_embedding_model,
         "search_embedding_api_key": settings.resolved_search_embedding_api_key(),
     }
+    # Last, and unconditionally: a startup-applied override is still an override,
+    # and ``build_service_values`` writes it back over this a moment later. What
+    # this restores is the answer for a field whose override was CLEARED.
+    values.update(_ENV_BEFORE_STARTUP_APPLY)
+    return values
 
 
 def env_ai_config() -> AiConfig:
@@ -340,8 +378,7 @@ async def get_ai_config(session: AsyncSession) -> AiConfig:
 
 
 async def get_service_settings(session: AsyncSession) -> dict[str, Any]:
-    overrides = await get_service_overrides(session)
-    return public_service_settings(overrides)
+    return await service_settings_payload(session, await get_service_overrides(session))
 
 
 def get_ai_config_sync(session: Session | None = None) -> AiConfig:
@@ -489,6 +526,16 @@ def apply_startup_service_overrides(session: Session | None = None) -> list[str]
                 return []
 
     if applied:
+        # This apply is permanent for the life of the process — the only restore
+        # is the rollback branch above, which returns [] before reaching here —
+        # so ``settings`` has now lost what the environment delivered for these
+        # fields. Keep it, or clearing the override later reports the deleted
+        # value and badges it "Env" (tripl-wkwv.2).
+        #
+        # ``setdefault``, not ``update``: only the FIRST apply in a process saw
+        # the pre-override value, so a repeat call must not record what it wrote.
+        for field, env_value in previous.items():
+            _ENV_BEFORE_STARTUP_APPLY.setdefault(field, env_value)
         logger.info("Applied %d service override(s) onto settings at startup", len(applied))
     return applied
 
@@ -570,13 +617,79 @@ async def update_ai_overrides(
     return await update_service_overrides(session, ai_changes)
 
 
-def public_service_settings(overrides: dict[str, Any]) -> dict[str, Any]:
+_NO_DEFAULT = object()
+
+# The three system prompts are not ``Settings`` fields at all — env_service_values
+# reads them straight off ai_defaults — so no environment variable can deliver
+# them and their built-in constant IS the default to compare against.
+_PROMPT_DEFAULTS = default_ai_prompts()
+
+
+def _code_default(field: str) -> Any:
+    """What this field holds when nothing — no env var, no .env line — delivered it."""
+    # ``model_fields`` is read off the CLASS: instance access is deprecated in
+    # pydantic 2.11+ and this project pins 2.13.
+    info = Settings.model_fields.get(field)
+    if info is not None and not info.is_required():
+        return info.get_default(call_default_factory=True)
+    return _PROMPT_DEFAULTS.get(field, _NO_DEFAULT)
+
+
+def _setting_source(field: str, value: Any, overrides: dict[str, Any]) -> SettingSource:
+    """Where the value in front of the operator actually came from.
+
+    Note the honest limit of comparing against the built-in default: an operator
+    who sets an environment variable to EXACTLY that default is reported as
+    "default", because from here the two are indistinguishable. That is the safe
+    direction — this never claims a delivery that did not happen, it only
+    declines to credit a redundant variable — and the UI's badge says so in as
+    many words rather than implying "default" proves nothing arrived.
+
+    A normalising validator can fold a delivered value onto the default the same
+    way (``LOG_LEVEL=info`` -> ``"INFO"``), with the same consequence.
+
+    ``override`` is checked first on purpose: an override whose value happens to
+    equal the default still reads "Override", because a row exists and Reset
+    will clear it.
+    """
+    if field in overrides:
+        return "override"
+    default = _code_default(field)
+    # ``type(value) is type(default)`` keeps Python's ``False == 0`` from matching
+    # a bool field against an int default.
+    if default is not _NO_DEFAULT and type(value) is type(default) and value == default:
+        return "default"
+    return "env"
+
+
+async def service_settings_payload(
+    session: AsyncSession, overrides: dict[str, Any]
+) -> dict[str, Any]:
+    """Public settings for already-read overrides, plus live migration status.
+
+    Every router path goes through here so GET and PATCH answer identically: the
+    frontend writes the PATCH response straight into its query cache, so a field
+    present on one and absent from the other blanks out on the next save.
+    """
+    return public_service_settings(
+        overrides, await migration_status_service.get_migration_status(session)
+    )
+
+
+def public_service_settings(
+    overrides: dict[str, Any], migration: migration_status_service.MigrationStatus
+) -> dict[str, Any]:
     values = build_service_values(overrides)
     overridden_fields = sorted(key for key in overrides if key in EDITABLE_FIELDS)
     sources: dict[str, SettingSource] = {}
     for section, section_fields in FIELD_SECTIONS.items():
         for field in section_fields:
-            sources[f"{section}.{field}"] = "override" if field in overrides else "env"
+            sources[f"{section}.{field}"] = _setting_source(field, values[field], overrides)
+    # No override can exist for these — they are outside EDITABLE_FIELDS — so the
+    # only question they can answer is delivered-versus-default, which is exactly
+    # the one an operator verifying SEARCH_EMBEDDING_BASE_URL is asking.
+    for field in READ_ONLY_ENV_FIELDS:
+        sources[f"ai.{field}"] = _setting_source(field, getattr(settings, field), {})
 
     return {
         "runtime": {
@@ -640,6 +753,7 @@ def public_service_settings(overrides: dict[str, Any]) -> dict[str, Any]:
             "search_embedding_model": values["search_embedding_model"],
             "search_embedding_api_key_configured": bool(values["search_embedding_api_key"]),
             "search_embedding_dimensions": settings.search_embedding_dimensions,
+            "search_embedding_base_url": settings.search_embedding_base_url,
         },
         "system": {
             "debug": settings.debug,
@@ -649,6 +763,9 @@ def public_service_settings(overrides: dict[str, Any]) -> dict[str, Any]:
             "redis_url_configured": bool(settings.redis_url),
             "encryption_key_configured": bool(settings.encryption_key),
             "openai_api_key_configured": bool(settings.openai_api_key),
+            "alembic_revision": migration.applied_revision,
+            "alembic_head_revision": migration.head_revision,
+            "alembic_up_to_date": migration.up_to_date,
         },
         "overridden_fields": overridden_fields,
         "sources": sources,

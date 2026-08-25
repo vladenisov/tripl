@@ -377,6 +377,79 @@ class TestDryRunWorker:
         finally:
             engine.dispose()
 
+    def test_dry_run_does_not_promise_an_unnamed_event(self, tmp_path, monkeypatch) -> None:
+        """Preview/run parity for the rows the run now refuses to name.
+
+        tripl-wkwv.5. Both halves read the same planner, which is the whole
+        reason ``event_plan`` exists — a preview that still listed a nameless
+        event would be promising a row the run no longer writes. The skip is a
+        warning rather than a silence because the operator's next question is
+        which rows, and the answer is the name format or the base query.
+        """
+        engine = create_engine(f"sqlite:///{tmp_path / 'dry_unnamed.db'}")
+        try:
+            Base.metadata.create_all(engine)
+            factory = sessionmaker(engine, expire_on_commit=False)
+            job_id, _project_id = _seed(factory, event_name_format="{action}")
+
+            # The production shape: one row whose naming column is NULL, beside a
+            # row that names an event perfectly well.
+            adapter = _FakeAdapter([("/home", None, 9), ("/about", "click", 5)])
+            result = _run(monkeypatch, factory, adapter, job_id)
+
+            assert [event["name"] for event in result["events"]] == ["click"]
+            assert "Skipped 1 row whose derived event name was empty" in result["warnings"]
+            assert result["errors"] == []
+        finally:
+            engine.dispose()
+
+    def test_a_grouped_dry_run_reports_one_total_for_the_rows_it_skipped(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """One count, not one line per event type (tripl-wkwv.5).
+
+        A grouped scan plans once per group value, each plan counts its own
+        unnamed rows, and every plan appended its own sentence — so a config
+        dropping one row inside each of two groups told the operator "Skipped 1
+        row" twice. Two identical sentences do not read as two rows; they read
+        as one problem printed twice, or as two separate one-row problems.
+        Neither is what happened.
+
+        Uses the GROUPED seed deliberately: ``_seed`` names an explicit event
+        type, which is the single-target path where per-plan and total are the
+        same number and this assertion would hold either way.
+        """
+        engine = create_engine(f"sqlite:///{tmp_path / 'dry_unnamed_grouped.db'}")
+        try:
+            Base.metadata.create_all(engine)
+            factory = sessionmaker(engine, expire_on_commit=False)
+            job_id, _project_id = _seed_grouped(factory)
+
+            # ``event_name_format='{screen}'``: the NULL-screen row inside each of
+            # the two groups is a row a run would refuse to name.
+            adapter = _FakeAdapter(
+                [
+                    ("home", "click", 50),
+                    (None, "click", 3),
+                    ("home", "view", 30),
+                    (None, "view", 2),
+                ]
+            )
+            result = _run(monkeypatch, factory, adapter, job_id)
+
+            unnamed = [w for w in result["warnings"] if "derived event name was empty" in w]
+            assert unnamed == ["Skipped 2 rows whose derived event name was empty"], (
+                "the dry run reports the total, once, not one line per event type"
+            )
+            # The two named rows still become events, one per event type.
+            assert [(e["event_type"], e["source_name"]) for e in result["events"]] == [
+                ("click", "home"),
+                ("view", "home"),
+            ]
+            assert result["errors"] == []
+        finally:
+            engine.dispose()
+
     def test_an_incomplete_sample_is_reported_as_incomplete(self, tmp_path, monkeypatch) -> None:
         """ "At least N" or nothing.
 

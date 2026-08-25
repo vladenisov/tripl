@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Query, Request, status
@@ -7,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.config import settings
 from tripl.database import get_session
-from tripl.models.plan_branch import PlanBranch
+from tripl.middleware.branch_context import bound_branch
+from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.project import Project
 from tripl.models.user import User
 from tripl.services import api_key_service, project_service
@@ -248,10 +250,10 @@ async def get_branch_id_override(
         str | None,
         Query(description="Plan branch id (UUID) to read and write instead of the main branch."),
     ] = None,
-) -> uuid.UUID | None:
+) -> AsyncIterator[uuid.UUID | None]:
     """Resolve the editor's active branch from the ``?branch=`` query param.
 
-    Returns ``None`` when no override is supplied (services then default to the
+    Yields ``None`` when no override is supplied (services then default to the
     project's main branch). Validates that the branch belongs to the project
     referenced by the path's ``slug`` so cross-project ids can't leak through.
 
@@ -262,9 +264,22 @@ async def get_branch_id_override(
     Typed ``str`` and parsed here on purpose: FastAPI's own ``uuid.UUID``
     coercion answers a malformed value with 422, and the published contract for
     this parameter is 400.
+
+    A generator rather than a plain ``async def`` because this is also the ONE
+    place that binds the request's branch for ``audit_service.record`` — see
+    :mod:`tripl.middleware.branch_context` — and the binding needs a teardown
+    point. Every raise below stays ahead of the first ``yield``, so the 400 and
+    404 contracts are unchanged. A yield dependency's teardown runs in the same
+    task, and so the same ``Context``, as its setup (fastapi/routing.py enters
+    and exits ``request_stack`` inside one coroutine), which is what makes
+    ``ContextVar.reset`` valid here; that has only been true since FastAPI
+    0.106, and the pin is 0.141.1.
     """
     if not branch:
-        return None
+        # Unbound rather than bound-to-None: a route with no ``?branch=`` is
+        # main, which is what the contextvar's default already says.
+        yield None
+        return
     try:
         branch_id = uuid.UUID(branch)
     except ValueError as exc:
@@ -288,7 +303,21 @@ async def get_branch_id_override(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Branch not found",
         )
-    return plan_branch.id
+    if plan_branch.kind == BranchKind.main.value:
+        # ``GET /branches`` hands a caller main's own id (list_branches returns
+        # the kind="main" row), and passing it back here is accepted. Main is
+        # spelled as the absence of a branch everywhere else — audit_service,
+        # the audit tab's chip, the CLI's "there is no literal for main" — so
+        # binding it would spell it a second way and make two identical writes
+        # to main render differently in the same compliance trail
+        # (tripl-wkwv.6). The id still yields unchanged: the write targets main
+        # exactly as it does with no ``?branch=`` at all.
+        yield plan_branch.id
+        return
+    # The name comes free — the query above already loads the whole row — and it
+    # is what keeps an audit entry readable after the branch is deleted.
+    with bound_branch(plan_branch.id, plan_branch.name):
+        yield plan_branch.id
 
 
 BranchIdDep = Annotated[uuid.UUID | None, Depends(get_branch_id_override)]

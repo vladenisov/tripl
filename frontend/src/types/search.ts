@@ -67,11 +67,35 @@ export interface SearchResult {
    */
   confidence: number
   highlights: string[]
+  /**
+   * Whether the MEANING LEG is why this row is here — the keyword leg's own
+   * ranked candidate window did not hold it (tripl-wkwv.3).
+   *
+   * NOT "no keyword matched this": the keyword leg is itself a capped scan, so a
+   * weak match (a stem-only one, which earns no exact-match tier) can be
+   * displaced from that window and re-enter through the vector leg, reading
+   * `true` on a row the keyword index did match. The palette's chip is worded
+   * "the keyword ranking didn't surface this" for exactly that reason.
+   *
+   * Narrower than `SearchResponse.semantic_used`, which says only that the leg
+   * ran. A hit the keyword ladder produced reads `false` even when the vector
+   * leg also ranked it and even when its `confidence` comes from that leg's
+   * cosine — the vector leg is a top-k scan that returns rows for any query, so
+   * "it was in that window too" says nothing about this row.
+   */
   semantic_used: boolean
 }
 
 export interface SearchResponse {
   items: SearchResult[]
+  /**
+   * Hits IN THIS RESPONSE, not a catalog-wide count — `/search` takes no
+   * `offset` and cannot be paged. Read `truncated`, not `total`, to learn
+   * whether anything was dropped (tripl-wkwv.3).
+   */
   total: number
+  /** Ranked hits exist that this response does not carry; raise `limit`. */
+  truncated: boolean
+  /** Whether the semantic leg ran at all. See `SearchResult.semantic_used`. */
   semantic_used: boolean
 }
