@@ -20,7 +20,11 @@ import {
   priorDecisionLabel,
 } from '@/lib/alertStatus'
 import { formatDateTime } from '@/lib/datetime'
-import { getScopeMonitoringPath } from '@/lib/monitoring'
+import {
+  getScopeMonitoringPath,
+  getScopeNavigationTarget,
+  type ScopeNavigationTarget,
+} from '@/lib/monitoring'
 import {
   INBOX_MUTE_CHOICES,
   muteChoiceName,
@@ -526,6 +530,33 @@ function StatusFilterChips({
   )
 }
 
+/**
+ * What each navigation destination is called, and the caveat its handful of
+ * visible words have no room for.
+ *
+ * Two entries because the two pages chart different entities: announcing an
+ * event-type page as "view event volume" would re-make the event/event-type
+ * conflation the deny-set is fenced against (tripl-oxkt.21). The words name the
+ * CHART the reader lands on rather than the entity ("open event", "details"),
+ * which is what stops the click reading as corroboration of a release-cohort
+ * comparison neither page can reproduce.
+ */
+const NAVIGATION_DESTINATION: Record<
+  ScopeNavigationTarget['scope'],
+  { words: string; title: string }
+> = {
+  event: {
+    words: 'event volume',
+    title:
+      "Opens this event's own monitoring page. It charts the event's volume against the seasonal baseline over that page's own range — not the release-cohort comparison this incident made. Its By version tab holds release regressions for the current latest release only, so it will not show this comparison once a newer release ships.",
+  },
+  event_type: {
+    words: 'event type volume',
+    title:
+      "Opens this event type's own monitoring page. It charts the type's aggregated volume against the seasonal baseline over that page's own range — not the release-cohort comparison this incident made. Its By version tab holds release regressions for the current latest release only, so it will not show this comparison once a newer release ships.",
+  },
+}
+
 /** Short enough to be spoken as part of a button name, long enough to identify. */
 function scopeSummary(group: AlertInboxGroup): string {
   const names = group.scope_names.join(', ')
@@ -618,6 +649,20 @@ function IncidentCard({
   const id = group.correlation_group_id
   const target = scopeSummary(group)
   const scopePath = getScopeMonitoringPath(slug, group)
+  // Null whenever `scopePath` is not — it is guarded by that function's
+  // complement (tripl-wkwv.12), so the two can never both have an answer and no
+  // card can offer two links to one page. Which page it is decides the wording,
+  // so the strings are resolved here rather than assumed to be the event's.
+  const navTarget = getScopeNavigationTarget(slug, group)
+  const navLink = navTarget && {
+    path: navTarget.path,
+    label: `view ${NAVIGATION_DESTINATION[navTarget.scope].words}`,
+    // Named by the scope, like this row's checkbox and for the same reason: 30
+    // links all announced "view event volume" are 30 controls a screen-reader
+    // operator cannot tell apart.
+    announce: `View ${NAVIGATION_DESTINATION[navTarget.scope].words} for ${target}`,
+    title: NAVIGATION_DESTINATION[navTarget.scope].title,
+  }
   const reason = incidentReasonLabel(group.direction, group.scope_types)
   const worstDelta = incidentWorstDeltaLabel(group)
   const decision = priorDecisionLabel(group)
@@ -729,7 +774,39 @@ function IncidentCard({
               {group.scope_names.join(', ')}
             </Link>
           ) : (
-            group.scope_names.join(', ')
+            <>
+              {group.scope_names.join(', ')}
+              {/* A SEPARATE affordance, not the name made clickable
+                  (tripl-wkwv.12). A release regression left a quarter of the
+                  production inbox as dead text: the name-as-link above is the
+                  substantiating gesture the deny-set in lib/monitoring.ts
+                  governs, and it is right to withhold it here — but "you cannot
+                  prove it from there" is not "you may not go there". A distinct
+                  link with its own words is what makes that difference sayable.
+
+                  Both halves of a release regression get it, and they land on
+                  different pages: an event-scoped one on the event, an
+                  event-TYPE-scoped one on the event type. `title` carries the
+                  caveat the visible words have no room for, as
+                  `incidentMagnitudeTitle` and the checkbox's shift-click hint
+                  already do on this card.
+
+                  Rendered inside this arm rather than beside the ternary so the
+                  structure guards the double link too, not only the helper. */}
+              {navLink && (
+                <>
+                  {' · '}
+                  <Link
+                    to={navLink.path}
+                    aria-label={navLink.announce}
+                    title={navLink.title}
+                    className="underline hover:text-foreground"
+                  >
+                    {navLink.label}
+                  </Link>
+                </>
+              )}
+            </>
           )}
         </div>
         <div

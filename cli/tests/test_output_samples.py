@@ -335,8 +335,17 @@ def test_plan_search_sample(
     configured_env: None,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Search is capped by ``--limit`` alone: the route has no offset parameter."""
-    tripl_api.search("prod", [make_search_result()], semantic_used=True)
+    """Search is capped by ``--limit`` alone: the route has no offset parameter.
+
+    The body is what a CURRENT instance sends, so the warning below is the
+    route's own ``truncated`` rather than the CLI's page-fullness guess
+    (tripl-wkwv.11). One row against ``--limit 1`` renders identically either
+    way, which is precisely why the canonical sample has to say which rung it
+    means: the documentation quotes this output under a paragraph that credits
+    the route. The instance that predates the key keeps its own test in
+    ``test_plan_cmd.py``.
+    """
+    tripl_api.search("prod", [make_search_result()], semantic_used=True, truncated=True)
     assert main(["plan", "search", "purchase", "--project", "prod", "--limit", "1"]) == 0
     assert capsys.readouterr().out == (
         "tripl plan search - http://tripl.test (from $TRIPL_BASE_URL)\n"

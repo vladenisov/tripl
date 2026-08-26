@@ -18,10 +18,91 @@ from tripl.schemas.event import (
     EventUpdate,
 )
 from tripl.schemas.text_filters import FreeTextFilter
-from tripl.services import event_service
+from tripl.services import audit_service, event_service
 
 router = APIRouter(prefix="/projects/{slug}/events", tags=["events"])
+# Kept for the two routes that only permute ``Event.order`` and are deliberately
+# not audited (see reorder_events / move_event). The six routes that DO record
+# take the same gate as a ``current_user: EditorUserDep`` parameter instead,
+# because the audit row needs the user object — the shape event_types.py and
+# variables.py already use. Both spellings land in ``route.dependant.dependencies``,
+# which is what tests/test_rbac.py checks, so the write gate is unchanged.
 _editor_required = [Depends(get_editor_user)]
+
+# How many ids/names one bulk audit payload carries.
+#
+# ONE ROW PER BULK REQUEST, not one per event — the call the closest sibling
+# already made (``variable.bulk_update`` / ``variable.bulk_delete`` in
+# variables.py). ``EventBulkDelete.event_ids`` and ``EventBulkUpdate.event_ids``
+# carry ``min_length=1`` and NO upper bound, so a row per event would let one API
+# call write an unbounded number of audit rows. The lists inside the payload are
+# sampled for the same reason: ``audit_log.payload`` is an uncapped JSON column
+# and nobody reads the 201st id off a compliance row (tripl-wkwv.10).
+_BULK_SAMPLE = 200
+
+
+def _create_payload(data: EventCreate) -> dict[str, object]:
+    """What an ``event.create`` row stores.
+
+    Deliberately NOT ``data.model_dump()``, the shape every other router uses:
+    one ``EventFieldValueIn.value`` may be 100 000 characters and the list has no
+    upper bound, and ``EventMetaValueIn.value`` is uncapped outright, so copying
+    the body verbatim would put megabytes into a single ``audit_log.payload``.
+    The counts record that values were written; the values themselves live on the
+    event (tripl-wkwv.10).
+
+    The two value lists are the whole target. ``description`` and ``tags`` are
+    also uncapped and DO stay in the payload, because event_types.py and
+    variables.py already dump their own uncapped ``description`` verbatim and no
+    writer in the repo bloats one — a length cap for those belongs in
+    ``audit_service``, where it would cover all six routers at once, not here.
+    """
+    return {
+        **data.model_dump(mode="json", exclude={"field_values", "meta_values"}),
+        "field_value_count": len(data.field_values),
+        "meta_value_count": len(data.meta_values),
+    }
+
+
+def _update_payload(data: EventUpdate) -> dict[str, object]:
+    """Same size guard as ``_create_payload``, keeping ``exclude_unset`` so the
+    row still reports exactly the fields the client sent — and two booleans so it
+    still says the field or meta values were rewritten."""
+    return {
+        **data.model_dump(mode="json", exclude_unset=True, exclude={"field_values", "meta_values"}),
+        "field_values_replaced": data.field_values is not None,
+        "meta_values_replaced": data.meta_values is not None,
+    }
+
+
+def bulk_event_audit_payload(
+    event_ids: list[uuid.UUID],
+    *,
+    event_names: list[str] | None = None,
+    extra: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """One bulk route's payload: the true count, a sample of the ids and (for
+    deletes) of the names, plus whatever the request itself said.
+
+    ``count`` is the real number of events; the two lists are samples, so a
+    reader can always tell a 3-event delete from a 3000-event one even when the
+    ids are cut off. That makes ``event_ids`` the caller's contract: pass the
+    events the service actually touched, not the ids the request listed — see
+    ``bulk_update_events`` below, the one route where those differ.
+
+    The fixed keys are written last so a request field can never shadow them.
+
+    Public, not ``_``-prefixed, because reconciliation.py's dead-event archive
+    files the same ``event.bulk_update`` action and one action must not have two
+    payload shapes (tripl-wkwv.10).
+    """
+    return {
+        **(extra or {}),
+        "count": len(event_ids),
+        "event_ids": [str(event_id) for event_id in event_ids[:_BULK_SAMPLE]],
+        "truncated": len(event_ids) > _BULK_SAMPLE,
+        **({} if event_names is None else {"event_names": event_names[:_BULK_SAMPLE]}),
+    }
 
 
 @router.get("", response_model=EventListResponse)
@@ -81,35 +162,79 @@ async def list_tags(session: SessionDep, slug: str, branch_id: BranchIdDep) -> l
     return await event_service.list_tags(session, slug, branch_id)
 
 
-@router.post(
-    "",
-    response_model=EventMutationResponse,
-    status_code=201,
-    dependencies=_editor_required,
-)
+@router.post("", response_model=EventMutationResponse, status_code=201)
 async def create_event(
-    session: SessionDep, slug: str, data: EventCreate, branch_id: BranchIdDep
+    session: SessionDep,
+    slug: str,
+    data: EventCreate,
+    branch_id: BranchIdDep,
+    current_user: EditorUserDep,
 ) -> Event:
-    return await event_service.create_event(session, slug, data, branch_id)
+    event = await event_service.create_event(session, slug, data, branch_id)
+    # ``event.name``, not ``data.name``: a governing scan rule can generate the
+    # name, and the audit row has to name the event that exists.
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="event.create",
+        target_type="event",
+        target_id=event.id,
+        target_name=event.name,
+        project_slug=slug,
+        payload=_create_payload(data),
+    )
+    return event
 
 
-@router.post(
-    "/bulk",
-    response_model=list[EventResponse],
-    status_code=201,
-    dependencies=_editor_required,
-)
+@router.post("/bulk", response_model=list[EventResponse], status_code=201)
 async def bulk_create_events(
-    session: SessionDep, slug: str, data: list[EventCreate], branch_id: BranchIdDep
+    session: SessionDep,
+    slug: str,
+    data: list[EventCreate],
+    branch_id: BranchIdDep,
+    current_user: EditorUserDep,
 ) -> list[Event]:
-    return await event_service.bulk_create_events(session, slug, data, branch_id)
+    created = await event_service.bulk_create_events(session, slug, data, branch_id)
+    # Ids only: these rows are alive, so their names are one GET away.
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="event.bulk_create",
+        target_type="event",
+        target_id=None,
+        project_slug=slug,
+        payload=bulk_event_audit_payload([event.id for event in created]),
+    )
+    return created
 
 
-@router.post("/bulk-delete", status_code=204, dependencies=_editor_required)
+@router.post("/bulk-delete", status_code=204)
 async def bulk_delete_events(
-    session: SessionDep, slug: str, data: EventBulkDelete, branch_id: BranchIdDep
+    session: SessionDep,
+    slug: str,
+    data: EventBulkDelete,
+    branch_id: BranchIdDep,
+    current_user: EditorUserDep,
 ) -> None:
-    await event_service.bulk_delete_events(session, slug, data, branch_id)
+    # The service validates the ids, raises the 404 when one is missing, and
+    # hands back (id, name) per deleted row — the division of labour
+    # variables.py:delete_variable documents.
+    deleted = await event_service.bulk_delete_events(session, slug, data, branch_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="event.bulk_delete",
+        target_type="event",
+        target_id=None,
+        project_slug=slug,
+        # Names, not just ids. After this request the ids resolve to nothing and
+        # each event's change history went with it (FK ondelete=CASCADE), so the
+        # names are the only readable trace of what was deleted.
+        payload=bulk_event_audit_payload(
+            [event_id for event_id, _ in deleted],
+            event_names=[name for _, name in deleted],
+        ),
+    )
 
 
 @router.post("/bulk-update", status_code=204)
@@ -121,8 +246,32 @@ async def bulk_update_events(
     current_user: EditorUserDep,
 ) -> None:
     await event_service.bulk_update_events(session, slug, data, branch_id, user_id=current_user.id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="event.bulk_update",
+        target_type="event",
+        target_id=None,
+        project_slug=slug,
+        payload=bulk_event_audit_payload(
+            # Deduplicated, order-preserving — the idiom
+            # reconciliation_service.archive_dead_events already uses. Unlike the
+            # two routes above, this one has no rows to count: the service
+            # updates ``set(data.event_ids)`` and validates against that set, so
+            # ``{"event_ids": [A, A, B]}`` succeeds having changed two events.
+            # Auditing the raw list would file ``count: 3`` for a 2-event change
+            # (tripl-wkwv.10). bulk_delete deliberately 404s the same body, so
+            # only this route can see a duplicate at all.
+            list(dict.fromkeys(data.event_ids)),
+            extra=data.model_dump(mode="json", exclude_none=True, exclude={"event_ids"}),
+        ),
+    )
 
 
+# NOT audited, deliberately: reorder_events and move_event only permute
+# ``Event.order``, which is display ordering with no plan semantics, and the
+# events table's drag-to-reorder would file one audit row per drag
+# (tripl-wkwv.10).
 @router.patch(
     "/reorder",
     response_model=list[EventResponse],
@@ -160,11 +309,26 @@ async def update_event(
     branch_id: BranchIdDep,
     current_user: EditorUserDep,
 ) -> Event:
-    return await event_service.update_event(
+    event = await event_service.update_event(
         session, slug, event_id, data, branch_id, user_id=current_user.id
     )
+    # This row and the per-event history are different surfaces, not duplicates:
+    # ``_record_changes`` covers four fields' before/after values and dies with
+    # the event, this one covers who/what/when/which-branch and outlives it.
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="event.update",
+        target_type="event",
+        target_id=event.id,
+        target_name=event.name,
+        project_slug=slug,
+        payload=_update_payload(data),
+    )
+    return event
 
 
+# Not audited, for the reason given above reorder_events: display order only.
 @router.patch(
     "/{event_id}/move",
     response_model=EventResponse,
@@ -180,8 +344,26 @@ async def move_event(
     return await event_service.move_event(session, slug, event_id, data, branch_id)
 
 
-@router.delete("/{event_id}", status_code=204, dependencies=_editor_required)
+@router.delete("/{event_id}", status_code=204)
 async def delete_event(
-    session: SessionDep, slug: str, event_id: uuid.UUID, branch_id: BranchIdDep
+    session: SessionDep,
+    slug: str,
+    event_id: uuid.UUID,
+    branch_id: BranchIdDep,
+    current_user: EditorUserDep,
 ) -> None:
-    await event_service.delete_event(session, slug, event_id, branch_id)
+    # The service does the branch-scoped lookup, raises the 404 when the event is
+    # missing, and hands back the name for the audit record. This is the row the
+    # whole issue is about: ``event_changes`` is FK ondelete=CASCADE, so the
+    # event's own history is destroyed by the very delete it would need to
+    # record, and without this the deletion leaves no trace anywhere.
+    name = await event_service.delete_event(session, slug, event_id, branch_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="event.delete",
+        target_type="event",
+        target_id=event_id,
+        target_name=name,
+        project_slug=slug,
+    )

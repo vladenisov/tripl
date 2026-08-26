@@ -684,11 +684,25 @@ async def delete_event(
     slug: str,
     event_id: uuid.UUID,
     branch_id: uuid.UUID | None = None,
-) -> None:
+) -> str:
+    """Delete one event and hand its name back for the audit record.
+
+    Returning the name follows the precedent in ``variable_service`` and matters
+    more here: ``event_changes.event_id`` is ``ondelete="CASCADE"``, so the
+    event's own history dies with the row and the audit entry is the only trace
+    the delete ever happened (tripl-wkwv.10).
+    """
     is_main = branch_id is None
     event = await get_event(session, slug, event_id, branch_id)
     project_id = event.project_id
     resolved_branch_id = event.branch_id
+    # Snapshotted for the same reason as the two ids above: the flush below
+    # evicts this instance from the identity map and marks it deleted, so it no
+    # longer stands for a live row and must not be read afterwards. Not because
+    # the read would raise — both session factories are ``expire_on_commit=False``
+    # (database.py, tests/conftest.py), so the attribute would in fact still
+    # answer; the rule is about not reading a deleted instance.
+    event_name = event.name
     # Before the delete: several rows point at this event by string or JSON id,
     # or through a SET NULL foreign key, and would otherwise outlive it. The
     # anomalies are the sharp one — a NULL event_id satisfies every event filter,
@@ -706,6 +720,7 @@ async def delete_event(
     _queue_embedding_refresh(project_id, resolved_branch_id, ai_config=ai_config)
     if is_main:
         await cache.delete_prefix(cache.prefix_projects())
+    return event_name
 
 
 async def bulk_delete_events(
@@ -713,20 +728,33 @@ async def bulk_delete_events(
     slug: str,
     data: EventBulkDelete,
     branch_id: uuid.UUID | None = None,
-) -> None:
+) -> list[tuple[uuid.UUID, str]]:
+    """Delete the listed events and hand back ``(id, name)`` for each.
+
+    The names are what the audit row keeps: once this returns the ids resolve to
+    nothing, so an id-only record of a bulk delete names nothing a reader can
+    recognise (tripl-wkwv.10).
+    """
     is_main = branch_id is None
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
-    # Validate all ids exist + belong to this project+branch in a single count query.
-    present = await session.scalar(
-        select(func.count(Event.id)).where(
-            Event.project_id == project_id,
-            Event.branch_id == branch_id,
-            Event.id.in_(data.event_ids),
+    # Validate all ids exist + belong to this project+branch in a single query,
+    # which also collects the names the caller audits — same one round trip the
+    # COUNT this replaced cost. The comparison stays against
+    # ``len(data.event_ids)`` and NOT the deduplicated set: a request repeating
+    # an id matches fewer rows than it listed and 404s, exactly as before.
+    rows = (
+        await session.execute(
+            select(Event.id, Event.name).where(
+                Event.project_id == project_id,
+                Event.branch_id == branch_id,
+                Event.id.in_(data.event_ids),
+            )
         )
-    )
-    if (present or 0) != len(data.event_ids):
+    ).all()
+    if len(rows) != len(data.event_ids):
         raise HTTPException(status_code=404, detail="One or more events were not found")
+    deleted = [(event_id, name) for event_id, name in rows]
 
     # Same cleanup as the single delete, and it matters MORE here: this is a
     # Core DELETE, so no ORM cascade runs at all and everything not covered by a
@@ -750,6 +778,7 @@ async def bulk_delete_events(
     _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
     if is_main:
         await cache.delete_prefix(cache.prefix_projects())
+    return deleted
 
 
 async def bulk_update_events(

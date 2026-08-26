@@ -25946,6 +25946,29 @@
             "type": "boolean",
             "title": "Destination Enabled"
           },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
+          "scan_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Name"
+          },
           "include_project_total": {
             "type": "boolean",
             "title": "Include Project Total"
@@ -26030,6 +26053,8 @@
           "muted_until",
           "rule_enabled",
           "destination_enabled",
+          "scan_config_id",
+          "scan_name",
           "include_project_total",
           "include_event_types",
           "include_events",

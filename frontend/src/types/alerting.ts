@@ -466,6 +466,19 @@ export interface MonitorDetail extends MonitorSummaryItem {
   // Raw enable flags (the summary `enabled` is the AND of these two).
   rule_enabled: boolean
   destination_enabled: boolean
+  /**
+   * Which scan's anomalies this rule can see — same name and same meaning as
+   * `AlertRule.scan_config_id`: null means every scan in the project.
+   * `scan_name` is that scan's display name, null exactly when the id is; the
+   * detail page runs no scans query to resolve an id against.
+   *
+   * NOT an input to `scope_readiness` below, which stays a PROJECT fact. A rule
+   * bound to a scan that feeds nothing can still read ready because a sibling
+   * scan does — the limitation tripl-wkwv.9 names, which these two fields make
+   * visible rather than fix.
+   */
+  scan_config_id: string | null
+  scan_name: string | null
   // Which signal kinds this monitor subscribes to.
   include_project_total: boolean
   include_event_types: boolean

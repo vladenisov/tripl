@@ -568,6 +568,26 @@ describe('MonitorsSection inert scope notice', () => {
     )
   })
 
+  it('keeps that link project-level even for a rule narrowed to one scan', async () => {
+    // The tripwire for tripl-wkwv.9. The monitor detail now aims this same link
+    // at the scan its rule is bound to, because there the binding is SAVED. Here
+    // it is a draft the picker two fields up can change at any keystroke, while
+    // `scopeReadiness` is the project's answer fetched once — so narrowing the
+    // link would promise a per-scan verdict this dialog does not have, and the
+    // editor and the detail would disagree about one rule. If this goes red, the
+    // per-scan destination has leaked into the editor.
+    await openEditorFor(
+      makeRule({ include_distribution_drifts: true, scan_config_id: 'scan-7' }),
+      makeSummary({ scope_readiness: { variable_value_drift: true, distribution_drift: false } }),
+    )
+
+    expect(await screen.findByText(DISTRIBUTION_SENTENCE)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Scan settings' })).toHaveAttribute(
+      'href',
+      '/p/windy-ios/scans',
+    )
+  })
+
   it('opens that link in a new tab, so the half-built rule survives the click', async () => {
     // The dialog is modal and its draft is component state — Escape, Cancel and
     // a same-tab navigation all discard it. This link is the only navigation

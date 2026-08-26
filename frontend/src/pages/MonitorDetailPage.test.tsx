@@ -36,6 +36,10 @@ const BASE_MONITOR = {
   muted_until: null,
   rule_enabled: true,
   destination_enabled: true,
+  // Project-wide, the default every rule is created with. The scan-bound case
+  // is its own describe block (tripl-wkwv.9).
+  scan_config_id: null,
+  scan_name: null,
   include_project_total: true,
   include_event_types: true,
   include_events: false,
@@ -178,6 +182,34 @@ describe('MonitorDetailPage', () => {
       'href',
       '/p/demo/monitors',
     )
+  })
+
+  // The Condition panel described everything that narrows a rule except the
+  // first thing that does. A reader told by the docs to go and check the bound
+  // scan's own drift settings could not learn from this screen which scan that
+  // was — the only scan it ever named was a delivery's (tripl-wkwv.9).
+  it('names the scan a rule is narrowed to', async () => {
+    mockApi({
+      monitor: { ...BASE_MONITOR, scan_config_id: 'scan-7', scan_name: 'ios hourly' },
+    })
+
+    renderDetail()
+
+    await screen.findByRole('heading', { name: RULE })
+    expect(screen.getByText('Scan')).toBeInTheDocument()
+    expect(screen.getByText('ios hourly')).toBeInTheDocument()
+    expect(screen.queryByText('All scans')).toBeNull()
+  })
+
+  it('spells the project-wide default out rather than leaving the row blank', async () => {
+    // A null here means "every scan in the project", not "unknown". An empty
+    // value would read as a missing fact and send the reader looking for one.
+    mockApi()
+
+    renderDetail()
+
+    await screen.findByRole('heading', { name: RULE })
+    expect(screen.getByText('All scans')).toBeInTheDocument()
   })
 
   // Pins the unit agreement from tripl-oxkt.18: this page and the alerting
@@ -448,6 +480,49 @@ describe('MonitorDetailPage inert scopes', () => {
 
     expect(await screen.findByText('Value drifts')).not.toHaveAttribute('title')
     expect(screen.queryByText(VALUE_DRIFT_SENTENCE)).toBeNull()
+  })
+
+  it('sends a scan-bound reader to that scan, not to the scan list', async () => {
+    // Note the fixture: distribution_drift readiness is FALSE, so nothing in the
+    // project feeds the scope — this notice cannot render in the case where only
+    // the bound scan is empty, and it is not the answer to that question
+    // (tripl-wkwv.9 ships readiness as a PROJECT verdict; the bound scan is named
+    // separately in the Condition panel). What this pins is narrower and real:
+    // when the notice DOES render for a scan-bound rule, it sends the reader to
+    // that scan's own settings rather than making them find it in the list.
+    mockApi({
+      monitor: {
+        ...BASE_MONITOR,
+        include_distribution_drifts: true,
+        scan_config_id: 'scan-7',
+        scan_name: 'ios hourly',
+        scope_readiness: { variable_value_drift: true, distribution_drift: false },
+      },
+    })
+
+    renderDetail()
+
+    expect(await screen.findByRole('link', { name: 'Scan settings' })).toHaveAttribute(
+      'href',
+      '/p/demo/scans/scan-7',
+    )
+  })
+
+  it('sends a project-wide reader to the scan list, as before', async () => {
+    mockApi({
+      monitor: {
+        ...BASE_MONITOR,
+        include_distribution_drifts: true,
+        scope_readiness: { variable_value_drift: true, distribution_drift: false },
+      },
+    })
+
+    renderDetail()
+
+    expect(await screen.findByRole('link', { name: 'Scan settings' })).toHaveAttribute(
+      'href',
+      '/p/demo/scans',
+    )
   })
 
   it('says nothing when the response carries no readiness at all', async () => {

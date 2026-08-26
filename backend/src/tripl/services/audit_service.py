@@ -40,6 +40,18 @@ _REDACTED_KEYS = frozenset(
     }
 )
 
+# ``audit_log.target_name`` is String(255) and no call site truncated. Every
+# target that existed before events fits by construction — event_type, field,
+# variable and meta_field names are String(100), plan_branch is String(255) —
+# but ``Event.name`` is String(500), so a 300-character event name would make
+# the audit INSERT fail with "value too long for character varying(255)" AFTER
+# the event itself was already committed: a 500 response with the write applied
+# and no audit row. The guard lives here, not at the six event call sites, so
+# the next long-named target cannot reintroduce it. Widening the column was the
+# alternative and was rejected: a migration whose downgrade has to truncate
+# rows, for a display-only field (tripl-wkwv.10).
+_TARGET_NAME_MAX = 255
+
 
 def _jsonable(payload: dict[str, Any]) -> dict[str, Any]:
     """Round-trip through JSON to coerce UUIDs, datetimes, enums to primitives."""
@@ -77,10 +89,17 @@ async def record(
     relies on this function to land it; flipping that default would silently
     leave audit rows uncommitted across the whole API.
 
+    ``target_name`` is truncated to the column width — see ``_TARGET_NAME_MAX``
+    for why that is a guard and not a formality.
+
     The branch is NOT a parameter. It is read off the request-scoped contextvar
     that ``api.deps.get_branch_id_override`` — the one function that resolves
-    ``?branch=`` — binds, so all 21 branch-scoped route handlers record it
-    without a single call-site edit and the 22nd cannot forget to (tripl-wkwv.6).
+    ``?branch=`` — binds, so EVERY branch-scoped route handler records it
+    without a single call-site edit and the next one cannot forget to
+    (tripl-wkwv.6). Deliberately not a census: this sentence used to say "all 21
+    ... and the 22nd", which was already off by one when it was written and is
+    off by six now that the six event routes record. Universal quantification is
+    what the mechanism guarantees, and it cannot go stale.
     A NULL ``branch_id`` with an empty ``branch_name`` means "not written through
     a branch-scoped request": either main, or an action with no plan-branch
     dimension at all (alerting, scans, data sources, users, API keys). It does
@@ -120,7 +139,7 @@ async def record(
         action=action,
         target_type=target_type,
         target_id=target_id,
-        target_name=target_name or "",
+        target_name=(target_name or "")[:_TARGET_NAME_MAX],
         payload=_redact(_jsonable(payload or {})),
     )
     session.add(entry)

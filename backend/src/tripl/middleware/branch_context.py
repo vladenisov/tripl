@@ -1,9 +1,11 @@
 """Request-scoped plan-branch context for the audit writer.
 
-``audit_service.record`` is called from 69 route handlers and must not grow a
-``branch=`` argument in 21 of them — that is a standing invitation for the 22nd
-branch-scoped route to forget it, which is how tripl-wkwv.6 arrived in the first
-place. ``?branch=`` is already resolved in exactly one place
+``audit_service.record`` is called from every write route and must not grow a
+``branch=`` argument in the branch-scoped ones — that is a standing invitation
+for the next branch-scoped route to forget it, which is how tripl-wkwv.6 arrived
+in the first place. Deliberately not a census: the counts this paragraph used to
+carry were already wrong when they were written, and adding the six event routes
+moved them again. ``?branch=`` is already resolved in exactly one place
 (:func:`tripl.api.deps.get_branch_id_override`), so it is bound there and read in
 exactly one place (:func:`tripl.services.audit_service.record`). Those two are
 the only binder and the only reader; each names the other in a comment.

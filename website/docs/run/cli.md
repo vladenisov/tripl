@@ -1931,7 +1931,7 @@ wired to and the warehouse SQL it runs, so `--type scan_config` answers "which
 scan reads this table"; an alert rule carries its message and item templates.
 
 ```bash
-tripl plan search 'checkout funnel' --project prod --type event
+tripl plan search 'checkout funnel' --project prod --type event --limit 2
 ```
 
 ```text

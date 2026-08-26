@@ -7755,6 +7755,10 @@ export interface components {
             rule_id: string;
             /** Rule Name */
             rule_name: string;
+            /** Scan Config Id */
+            scan_config_id: string | null;
+            /** Scan Name */
+            scan_name: string | null;
             scope_readiness: components["schemas"]["AlertScopeReadiness"];
             /**
              * Status

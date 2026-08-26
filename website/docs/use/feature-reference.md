@@ -580,8 +580,10 @@ it by the age of that one announcement (see
 That covers a scope which had volume to lose. A scope whose expectation was
 itself zero is not held open: nothing was lost, so it ages out normally, and the
 open-signal rollup at the top of this page cannot accumulate zero-versus-zero
-rows forever. Those rows sit below the default **Significant** magnitude filter,
-so what this changes is the rollup's count rather than the list under it.
+rows forever — and no new ones arrive, because the detector no longer reports a
+bucket that had neither an expectation nor any traffic. Those rows sit below the
+default **Significant** magnitude filter, so what this changes is the rollup's
+count rather than the list under it.
 When one incident trips several scopes on the same bucket,
 the child rows (event type / event) are still shown and tagged `part of total`
 rather than folded into the project-total row. A **magnitude filter**
@@ -1040,12 +1042,45 @@ The branch **name** is stored verbatim alongside the id, so the trail survives
 deleting the branch: the id goes null, the name remains, and the row stays
 readable.
 
-This covers the plan writes that carry a branch — `field.*`, `event_type.*`,
-`variable.*`, `meta_field.*`, `relation.*` and
-`project.retire_unused_variables`. Edits to **events** are not in the audit log
-at all — they are recorded as **per-event history** on the event itself — so
-"who edited event X, and on which branch" is a question for that history, not for
-this page.
+This covers the plan writes that carry a branch — `event.*`, `field.*`,
+`event_type.*`, `variable.*`, `meta_field.*`, `relation.*` and
+`project.retire_unused_variables`. Events are recorded as `event.create`,
+`event.bulk_create`, `event.update`, `event.bulk_update`, `event.delete` and
+`event.bulk_delete`; a bulk route files one row per request, not one per event,
+with the ids — and, for a delete, the names — in the row's payload, sampled to
+the first 200 alongside the true count when the request was larger than that.
+Retiring events from **Reconciliation → Dead events** is in the log too, filed
+as `event.bulk_update`: it is the same write, so it files the same action, with
+the ids and the chosen status in the payload. That is the action to filter on —
+there is no separate archive action.
+
+Events have a second surface, and the two answer different questions. The audit
+log answers **who, what, when and on which branch**, and it survives the event:
+an `event.delete` row still names what was deleted after the event and its
+history are gone. **Per-event history** on the event's own detail page answers
+the **before/after values** of `status`, `name`, `description` and `sunset_at`,
+and it is removed with the event. Neither is a backup — an `event.delete` row
+does not let you reconstruct the deleted event's field values, deliberately, as
+a single field value may be 100 000 characters.
+
+Two exclusions, both deliberate: **reordering** an event (drag-to-reorder, and
+the move up/down control) is not recorded — it changes display order only, and
+would file a row per drag. Events written by a **scan** are not recorded either;
+a scan is not a user action, and that covers the event created when you accept a
+scan's shadow-event candidate, which is written through reconciliation rather
+than the event routes. Retiring dead events is the one reconciliation write that
+*is* recorded, as above: it edits events you already planned, rather than
+admitting one a scan proposed. The log covers events from this release forward —
+edits made before it are genuinely not recorded anywhere and are not backfilled.
+
+A **cascade** is neither exclusion: it is recorded, but as the action that
+caused it. Deleting an event type, and deleting, merging or reverting a plan
+branch, each file their own row — `event_type.delete`, `plan_branch.delete`,
+`plan_branch.merge`, `plan_branch.revert` — while the events destroyed with them
+get no `event.*` row of their own. So the log tells you which action swept them
+away, who ran it and when; it does not name the events it took. The count is on
+screen before you commit to it: the event type's **Danger zone** states how many
+events the delete will destroy, archived ones included.
 
 Each entry keeps the request payload, which is why it is owner-gated: see
 [Security](../run/security.md#roles-and-access-control-rbac).

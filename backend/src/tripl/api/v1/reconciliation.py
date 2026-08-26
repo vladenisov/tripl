@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep
+from tripl.api.v1.events import bulk_event_audit_payload
 from tripl.models.domain_enums import ShadowEventStatus
 from tripl.schemas.reconciliation import (
     CoverageResponse,
@@ -15,7 +16,7 @@ from tripl.schemas.reconciliation import (
     ShadowEventDismissResponse,
     ShadowEventListResponse,
 )
-from tripl.services import reconciliation_service
+from tripl.services import audit_service, reconciliation_service
 from tripl.services.reconciliation_service import (
     DeadEventArchiveRequest,
     DeadEventArchiveResponse,
@@ -96,13 +97,38 @@ async def archive_dead_events(
     branch_id: BranchIdDep,
     current_user: EditorUserDep,
 ) -> DeadEventArchiveResponse:
-    return await reconciliation_service.archive_dead_events(
+    result = await reconciliation_service.archive_dead_events(
         session,
         slug,
         payload,
         user_id=current_user.id,
         branch_id=branch_id,
     )
+    # Audited as ``event.bulk_update``, the same action POST /events/bulk-update
+    # files, because it is the same write: archive_dead_events delegates to
+    # ``event_service.bulk_update_events`` to move events into a terminal
+    # lifecycle state. Without this row an editor could retire 40 events from
+    # Reconciliation and the audit log — which the docs describe as covering
+    # every event edit — would say nothing (tripl-wkwv.10). Recorded in the
+    # router, not the service, so the scan pipeline that also calls
+    # event_service stays structurally unable to write audit rows; the branch
+    # comes off the contextvar ``BranchIdDep`` above already bound.
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="event.bulk_update",
+        target_type="event",
+        target_id=None,
+        project_slug=slug,
+        # ``result.event_ids`` is the service's deduplicated list, so ``count``
+        # is the number of events actually moved and matches what the response
+        # echoed to the caller.
+        payload=bulk_event_audit_payload(
+            result.event_ids,
+            extra={"status": result.status.value},
+        ),
+    )
+    return result
 
 
 @router.get("/coverage", response_model=CoverageResponse)

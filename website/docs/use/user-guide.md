@@ -365,7 +365,9 @@ mistake in a diff than to unwind it afterwards. **Before** a merge, any change o
 a branch can be reverted from the diff (see [Undo one change on a
 branch](#undo-one-change-on-a-branch)). **After** a merge there is no "undo merge"
 button, and deleting an event is permanent: an event and its change history are
-removed outright, and its collected metrics are keyed to the event internally, so
+removed outright — the **Audit log** keeps an `event.delete` row naming who
+deleted it and when, which tells you what happened but does not make the values
+recoverable — and its collected metrics are keyed to the event internally, so
 re-creating an event with the same name produces a **new** event with no prior
 metrics or history. Post-merge recovery is manual.
 :::
@@ -380,10 +382,11 @@ If something lands on main that shouldn't have:
   the working branch, or no chip for a write that was not branch-scoped (main, or
   an action with no branch to name at all) — which is how you tell a branch edit
   that arrived through a merge from someone editing main directly while tracing a
-  wrong change. Each event also has its own
-  field-level change history on its detail page, which helps you work out what
-  the correct values were; event edits are kept there rather than in the audit
-  log.
+  wrong change. Event creates, edits and deletes are in this log too, with the
+  branch chip like any other plan write. Each event also has its own field-level
+  change history on its detail page, which is where the **before and after
+  values** live and which helps you work out what the correct values were — that
+  history is removed with the event, while the audit row survives it.
 - **A deleted event** — re-create its definition by hand (description, fields,
   tags) and let monitoring start collecting again from the next scan. The
   deleted event's earlier metrics and history are not restored.
@@ -603,7 +606,7 @@ If you're rolling tripl out on real data, this order tends to work well:
 | A variable value keeps showing as drift | It is outside the effective documented list | Accept it globally or for that event, or resolve/snooze the drift |
 | Alert never arrived | No signal, rule off, threshold/cooldown, or delivery failed | Work the "alert never fired" checklist above |
 | Wrong change merged | — | Use the **Audit log** + a corrective branch through review |
-| Event deleted by mistake | Deletion is permanent | Re-create the definition by hand; earlier metrics/history are not restored |
+| Event deleted by mistake | Deletion is permanent | Check the **Audit log** for who deleted it and when (an `event_type.delete` row, if the whole type went with it); re-create the definition by hand — earlier metrics/history are not restored |
 
 For a wider list of issues, see [Troubleshooting](./troubleshooting).
 

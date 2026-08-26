@@ -50,6 +50,22 @@ const ACTION_TONE: Record<string, string> = {
  */
 const ACTION_GROUPS: { label: string; actions: string[] }[] = [
   {
+    // First because the event is the central object of the product — and it was
+    // the one object the log had no rows for at all until tripl-wkwv.10. All six
+    // are recorded with `project_slug`, so all six can be filtered here.
+    // Reordering an event is deliberately not recorded: it permutes display
+    // order only, and drag-to-reorder would file a row per drag.
+    label: 'Events',
+    actions: [
+      'event.create',
+      'event.bulk_create',
+      'event.update',
+      'event.bulk_update',
+      'event.delete',
+      'event.bulk_delete',
+    ],
+  },
+  {
     label: 'Schema',
     actions: [
       'event_type.create',
@@ -347,11 +363,15 @@ export function AuditTab({ slug }: { slug: string }) {
           Audit log
         </h2>
         <p className="text-xs text-muted-foreground">
-          Compliance trail of mutation actions on this project's schema and
-          data sources. Secrets are redacted in stored payloads. A branch chip
-          names the working branch an entry was written through. No chip means
-          the write was not branch-scoped: main, or an action with no branch to
-          name at all (alerting, scans, metrics, API keys).
+          Compliance trail of mutation actions on this project's plan — events,
+          schema, variables, branches — and on its scans, metrics and alerting.
+          Secrets are redacted in stored payloads. A branch chip names the
+          working branch an entry was written through. No chip means the write
+          was not branch-scoped: main, or an action with no branch to name at
+          all (alerting, scans, metrics, API keys). Field-level before/after
+          values for an event live on that event's own history, which is removed
+          with the event; this log records who created, edited or deleted it and
+          on which branch, and survives the deletion.
         </p>
       </div>
 
@@ -456,7 +476,7 @@ export function AuditTab({ slug }: { slug: string }) {
             <div className="p-4 text-sm text-muted-foreground">
               {filtersActive
                 ? 'No entries match the current filter.'
-                : 'No audit entries yet. Future schema or data-source changes will show up here.'}
+                : 'No audit entries yet. Future changes to this project — events, schema, scans, alerting — will show up here.'}
             </div>
           ) : (
             <ul className="divide-y" aria-busy={isPaging}>

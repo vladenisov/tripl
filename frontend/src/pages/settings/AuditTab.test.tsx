@@ -127,6 +127,63 @@ describe('AuditTab — action filter vocabulary (tripl-jfm3.79)', () => {
   })
 })
 
+describe('AuditTab — events in the log (tripl-wkwv.10)', () => {
+  // api/v1/events.py called audit_service.record zero times, so the central
+  // object of the product was the one object this filter had nothing to offer
+  // for. Per-event history is not a substitute: it never records creation or
+  // deletion and CASCADEs away with the event it documents.
+  it('offers every event action the backend now records', () => {
+    renderTab()
+
+    const actions = offeredActions()
+
+    for (const action of [
+      'event.create',
+      'event.bulk_create',
+      'event.update',
+      'event.bulk_update',
+      'event.delete',
+      'event.bulk_delete',
+    ]) {
+      expect(actions).toContain(action)
+    }
+    // Reordering permutes Event.order only and is deliberately not recorded —
+    // offering it here would be an action that can never match a row.
+    expect(actions).not.toContain('event.reorder')
+    expect(actions).not.toContain('event.move')
+  })
+
+  it('groups them under their own Events optgroup', () => {
+    renderTab()
+
+    const select = screen.getByLabelText('Action') as HTMLSelectElement
+    const group = Array.from(select.querySelectorAll('optgroup')).find(
+      (candidate) => candidate.label === 'Events',
+    )
+    expect(group).toBeDefined()
+    const grouped = Array.from(group!.querySelectorAll('option')).map((o) => o.value)
+    expect(grouped).toContain('event.delete')
+  })
+
+  it('describes a log that covers events and outlives the event it records', () => {
+    renderTab()
+
+    const help = screen.getByText(/Compliance trail/)
+    // The paragraph scoped itself to "schema and data sources" — true before
+    // this change, and a false promise the moment events started landing here.
+    expect(help.textContent).not.toMatch(/schema and data sources/i)
+    expect(help.textContent).toMatch(/events/i)
+    // Points across to the per-event history instead of pretending this log
+    // carries field-level before/after values, which it deliberately does not.
+    expect(help.textContent).toMatch(/history/i)
+    // The two facts the branch-chip test below also depends on survive the
+    // rewrite; asserting them here too so a copy edit fails in the test that
+    // owns the copy.
+    expect(help.textContent).not.toMatch(/no chip were written on main/i)
+    expect(help.textContent).toMatch(/no branch to name/i)
+  })
+})
+
 describe('AuditTab — date filters (tripl-jfm3.37)', () => {
   it('labels the date filters without a format hint the control contradicts', () => {
     renderTab()

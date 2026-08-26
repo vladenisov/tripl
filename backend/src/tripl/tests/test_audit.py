@@ -1,5 +1,8 @@
+import ast
+import json
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
@@ -437,3 +440,337 @@ async def test_a_malformed_branch_still_answers_400_and_writes_nothing(
         "/api/v1/audit?project_slug=audit-bad-branch&action=meta_field.create"
     )
     assert listed.json()["items"] == []
+
+
+# --- events in the audit log (tripl-wkwv.10) --------------------------------
+#
+# api/v1/events.py called ``audit_service.record`` zero times, so the central
+# object of the product was the one object the compliance trail had no rows for.
+# The per-event ``event_changes`` history is not a substitute and was not a
+# defensible "deliberate alternative" either: it never records creation or
+# deletion, covers 4 of the 10 mutable fields, and its FK is
+# ``ondelete="CASCADE"`` — so it is destroyed by the very deletion an audit log
+# most exists to record.
+
+
+async def _create_event(
+    client: AsyncClient, slug: str, event_type_id: str, name: str, **extra: object
+) -> str:
+    resp = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": event_type_id, "name": name, **extra},
+    )
+    assert resp.status_code == 201, resp.text
+    return str(resp.json()["id"])
+
+
+async def _payload_of(client: AsyncClient, entry_id: str) -> dict:
+    """The owner-only detail payload for one entry — list rows carry none."""
+    detail = await client.get(f"/api/v1/audit/{entry_id}")
+    assert detail.status_code == 200, detail.text
+    return dict(detail.json()["payload"])
+
+
+@pytest.mark.asyncio
+async def test_audit_records_event_create_update_delete(client: AsyncClient) -> None:
+    """The three single-object routes each file exactly one row, naming the
+    event as it stood when the action happened."""
+    et_id = await _setup_project(client, "audit-events")
+    event_id = await _create_event(client, "audit-events", et_id, "checkout_started")
+
+    patched = await client.patch(
+        f"/api/v1/projects/audit-events/events/{event_id}",
+        json={"name": "checkout_completed"},
+    )
+    assert patched.status_code == 200, patched.text
+
+    deleted = await client.delete(f"/api/v1/projects/audit-events/events/{event_id}")
+    assert deleted.status_code == 204, deleted.text
+
+    create_row = await _one_entry(client, "audit-events", "event.create")
+    assert create_row["target_type"] == "event"
+    assert create_row["target_id"] == event_id
+    assert create_row["target_name"] == "checkout_started"
+
+    update_row = await _one_entry(client, "audit-events", "event.update")
+    assert update_row["target_id"] == event_id
+    # The name AFTER the edit: the row has to name the event that now exists,
+    # not the one the request replaced.
+    assert update_row["target_name"] == "checkout_completed"
+    assert await _payload_of(client, update_row["id"]) == {
+        "name": "checkout_completed",
+        "field_values_replaced": False,
+        "meta_values_replaced": False,
+    }
+
+    delete_row = await _one_entry(client, "audit-events", "event.delete")
+    assert delete_row["target_id"] == event_id
+    # The id no longer resolves to anything, so the name is the whole record.
+    assert delete_row["target_name"] == "checkout_completed"
+
+
+@pytest.mark.asyncio
+async def test_audit_survives_the_event_it_records(client: AsyncClient) -> None:
+    """THE regression test for this issue.
+
+    ``event_changes.event_id`` is ``ForeignKey(..., ondelete="CASCADE")``, so
+    deleting an event erases its change rows AND their read path — and the
+    activity feed is a projection over live events, so it loses the event too.
+    Before this fix, deleting an event left no trace anywhere in the product.
+    """
+    et_id = await _setup_project(client, "audit-event-gone")
+    event_id = await _create_event(client, "audit-event-gone", et_id, "checkout_started")
+
+    patched = await client.patch(
+        f"/api/v1/projects/audit-event-gone/events/{event_id}",
+        json={"status": "live"},
+    )
+    assert patched.status_code == 200, patched.text
+
+    history = await client.get(f"/api/v1/projects/audit-event-gone/events/{event_id}/history")
+    assert history.status_code == 200
+    assert history.json() != [], "the edit should have produced per-event history"
+
+    deleted = await client.delete(f"/api/v1/projects/audit-event-gone/events/{event_id}")
+    assert deleted.status_code == 204, deleted.text
+
+    # The per-event surface is gone with the event, which is exactly why it
+    # cannot be the audit trail.
+    gone = await client.get(f"/api/v1/projects/audit-event-gone/events/{event_id}/history")
+    assert gone.status_code == 404
+
+    # The audit row outlives it and still names what was deleted, by whom.
+    row = await _one_entry(client, "audit-event-gone", "event.delete")
+    assert row["target_name"] == "checkout_started"
+    assert row["user_email"] == "test@example.com"
+
+
+@pytest.mark.asyncio
+async def test_audit_records_the_branch_an_event_write_was_scoped_to(client: AsyncClient) -> None:
+    """Branch attribution is inherited, not re-implemented: every event route
+    already declares ``BranchIdDep``, and ``record`` reads the contextvar that
+    binds (tripl-wkwv.6). This is the case tripl-wkwv.6 could not cover, because
+    the row it needed did not exist."""
+    await _setup_project(client, "audit-event-branch")
+    branch_id = await _create_branch(client, "audit-event-branch", "redesign-checkout")
+
+    # The branch's OWN event-type id: creating a branch deep-copies the plan and
+    # FK-remaps the copies away from main (see test_plan_branches.py).
+    branch_ets = await client.get(
+        f"/api/v1/projects/audit-event-branch/event-types?branch={branch_id}"
+    )
+    assert branch_ets.status_code == 200, branch_ets.text
+    branch_et_id = next(et["id"] for et in branch_ets.json() if et["name"] == "pv")
+
+    created = await client.post(
+        f"/api/v1/projects/audit-event-branch/events?branch={branch_id}",
+        json={"event_type_id": branch_et_id, "name": "checkout_started"},
+    )
+    assert created.status_code == 201, created.text
+
+    row = await _one_entry(client, "audit-event-branch", "event.create")
+    assert row["branch_id"] == branch_id
+    assert row["branch_name"] == "redesign-checkout"
+
+
+@pytest.mark.asyncio
+async def test_bulk_event_routes_write_exactly_one_audit_row_each(client: AsyncClient) -> None:
+    """One row per REQUEST, not one per event.
+
+    ``EventBulkDelete.event_ids`` and ``EventBulkUpdate.event_ids`` carry
+    ``min_length=1`` and no upper bound, so a row per event would let one API
+    call write an unbounded number of audit rows. ``_one_entry`` asserts exactly
+    one match, which is the whole point of this test.
+    """
+    et_id = await _setup_project(client, "audit-event-bulk")
+    created = await client.post(
+        "/api/v1/projects/audit-event-bulk/events/bulk",
+        json=[{"event_type_id": et_id, "name": name} for name in ("one", "two", "three")],
+    )
+    assert created.status_code == 201, created.text
+    event_ids = [str(row["id"]) for row in created.json()]
+
+    updated = await client.post(
+        "/api/v1/projects/audit-event-bulk/events/bulk-update",
+        json={"event_ids": event_ids, "reviewed": True},
+    )
+    assert updated.status_code == 204, updated.text
+
+    deleted = await client.post(
+        "/api/v1/projects/audit-event-bulk/events/bulk-delete",
+        json={"event_ids": event_ids},
+    )
+    assert deleted.status_code == 204, deleted.text
+
+    for action in ("event.bulk_create", "event.bulk_update", "event.bulk_delete"):
+        row = await _one_entry(client, "audit-event-bulk", action)
+        # No single target: the ids live in the payload, as variable.bulk_* does.
+        assert row["target_id"] is None, action
+
+    update_payload = await _payload_of(
+        client, (await _one_entry(client, "audit-event-bulk", "event.bulk_update"))["id"]
+    )
+    assert update_payload["count"] == 3
+    assert update_payload["reviewed"] is True
+
+    delete_payload = await _payload_of(
+        client, (await _one_entry(client, "audit-event-bulk", "event.bulk_delete"))["id"]
+    )
+    assert delete_payload["count"] == 3
+    assert sorted(delete_payload["event_ids"]) == sorted(event_ids)
+    # Names, not just ids — after this request the ids resolve to nothing.
+    assert sorted(delete_payload["event_names"]) == ["one", "three", "two"]
+    assert delete_payload["truncated"] is False
+
+    still_there = await client.get(f"/api/v1/projects/audit-event-bulk/events/{event_ids[0]}")
+    assert still_there.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_bulk_update_audit_counts_events_changed_not_ids_sent(client: AsyncClient) -> None:
+    """``bulk_update_events`` updates ``set(data.event_ids)`` and validates the
+    404 against that same set, so a request repeating an id is legal and changes
+    fewer events than it listed. Auditing the raw request list filed
+    ``count: 3`` for a 2-event change, which is the one thing
+    ``bulk_event_audit_payload`` promises it never does. ``bulk-delete`` 404s
+    this body, deliberately (event_service.bulk_delete_events), so bulk-update is
+    the only route that can see a duplicate at all.
+    """
+    et_id = await _setup_project(client, "audit-bulk-dupe")
+    first = await _create_event(client, "audit-bulk-dupe", et_id, "one")
+    second = await _create_event(client, "audit-bulk-dupe", et_id, "two")
+
+    updated = await client.post(
+        "/api/v1/projects/audit-bulk-dupe/events/bulk-update",
+        json={"event_ids": [first, first, second], "reviewed": True},
+    )
+    assert updated.status_code == 204, updated.text
+
+    payload = await _payload_of(
+        client, (await _one_entry(client, "audit-bulk-dupe", "event.bulk_update"))["id"]
+    )
+    assert payload["count"] == 2
+    # Deduplicated in request order, so the sample matches the count it labels.
+    assert payload["event_ids"] == [first, second]
+    assert payload["reviewed"] is True
+
+
+@pytest.mark.asyncio
+async def test_archiving_dead_events_writes_an_audit_row(client: AsyncClient) -> None:
+    """Reconciliation → Dead events → Archive is an editor retiring plan events,
+    not a scan write.
+
+    It calls ``event_service.bulk_update_events`` — byte for byte the call
+    ``POST /events/bulk-update`` makes — to move events into a terminal
+    lifecycle state, so it files the same ``event.bulk_update`` action. Before
+    this, an editor could retire 40 events from that screen and the audit log
+    the docs describe as covering every event edit held nothing for it; the only
+    trace was per-event history, which is the surface the docs contrast with the
+    log rather than a substitute for it (tripl-wkwv.10).
+    """
+    et_id = await _setup_project(client, "audit-dead-archive")
+    first = await _create_event(client, "audit-dead-archive", et_id, "one")
+    second = await _create_event(client, "audit-dead-archive", et_id, "two")
+
+    archived = await client.post(
+        "/api/v1/projects/audit-dead-archive/reconciliation/dead-events/archive",
+        json={"event_ids": [first, second]},
+    )
+    assert archived.status_code == 200, archived.text
+
+    row = await _one_entry(client, "audit-dead-archive", "event.bulk_update")
+    assert row["target_type"] == "event"
+    # One row per request with the ids in the payload, exactly as the events
+    # router's own bulk routes file it — the action must not have two shapes.
+    assert row["target_id"] is None
+    assert row["user_email"] == "test@example.com"
+
+    payload = await _payload_of(client, row["id"])
+    assert payload["status"] == "archived"
+    assert payload["count"] == 2
+    assert sorted(payload["event_ids"]) == sorted([first, second])
+    assert payload["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_audit_payload_omits_event_field_values(client: AsyncClient) -> None:
+    """``EventFieldValueIn.value`` permits 100 000 characters and the list has no
+    upper bound, so the ``data.model_dump()`` every other router files would put
+    megabytes into one ``audit_log.payload``. The counts say the values were
+    written; the values themselves live on the event."""
+    et_id = await _setup_project(client, "audit-event-payload")
+    field = await client.post(
+        f"/api/v1/projects/audit-event-payload/event-types/{et_id}/fields",
+        json={"name": "blob", "display_name": "Blob", "field_type": "string"},
+    )
+    assert field.status_code == 201, field.text
+
+    huge = "x" * 50_000
+    await _create_event(
+        client,
+        "audit-event-payload",
+        et_id,
+        "checkout_started",
+        field_values=[{"field_definition_id": field.json()["id"], "value": huge}],
+    )
+
+    payload = await _payload_of(
+        client, (await _one_entry(client, "audit-event-payload", "event.create"))["id"]
+    )
+    assert payload["field_value_count"] == 1
+    assert payload["meta_value_count"] == 0
+    assert "field_values" not in payload
+    assert huge not in json.dumps(payload)
+
+
+@pytest.mark.asyncio
+async def test_audit_truncates_a_target_name_longer_than_the_column(client: AsyncClient) -> None:
+    """``audit_log.target_name`` is String(255) and ``Event.name`` is String(500).
+
+    Events are the first audit target that can overflow the column. Untruncated,
+    the audit INSERT fails on Postgres with "value too long for type character
+    varying(255)" AFTER ``create_event`` already committed — a 500 response with
+    the event created and no audit row. The suite runs on sqlite, which does not
+    enforce the width, so this asserts the length the guard produces rather than
+    waiting for the driver to complain.
+    """
+    et_id = await _setup_project(client, "audit-event-longname")
+    long_name = "e" * 400  # valid input: Event.name and EventCreate.name allow 500
+
+    await _create_event(client, "audit-event-longname", et_id, long_name)
+
+    row = await _one_entry(client, "audit-event-longname", "event.create")
+    assert len(row["target_name"]) == 255
+    assert row["target_name"] == long_name[:255]
+
+
+def test_the_scan_pipeline_cannot_write_audit_rows() -> None:
+    """A scan must never fill the audit log, and the boundary is structural.
+
+    ``audit_service.record`` is a coroutine over an ``AsyncSession`` that reads a
+    request-scoped contextvar; the scan pipeline is the SYNC Celery worker
+    constructing ``Event(...)`` rows directly, so a 10 000-event scan writes zero
+    audit rows — not by policy but because that code cannot reach this function.
+    Recording in the ROUTER is what keeps it that way. This test freezes the
+    property cheaply, without standing up a sync-worker fixture: it reads
+    imports, so a comment mentioning audit_service does not trip it.
+    """
+    package = Path(audit_service.__file__).parent.parent
+    offenders: list[str] = []
+
+    for root in (package / "worker", package / "core" / "analyzers"):
+        # A renamed package would make rglob find nothing and the test pass while
+        # guarding nothing at all.
+        assert root.is_dir(), root
+        for path in sorted(root.rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.ImportFrom):
+                    names = [(node.module or "")] + [alias.name for alias in node.names]
+                elif isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                else:
+                    continue
+                if any("audit_service" in name for name in names):
+                    offenders.append(str(path.relative_to(package)))
+
+    assert offenders == []

@@ -402,6 +402,15 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
 
   return (
     <Panel title="Condition" subtitle="When this monitor fires">
+      {/* Which scan's anomalies this rule can see at all — the first thing that
+          narrows it, so it reads before the direction and thresholds that narrow
+          it further. The screen refused to name it before, while the docs told
+          the reader to go and check that scan's own drift settings whenever
+          `scope_readiness` looked healthy (tripl-wkwv.9). "All scans" is the
+          null, spelled out: an empty row would read as a missing value. The
+          wording is the rule editor's own option label, not a third phrasing —
+          the screen that SETS this value is the one worth agreeing with. */}
+      <InfoRow label="Scan" value={monitor.scan_name ?? 'All scans'} mono={false} />
       <InfoRow label="Direction" value={directionLabel(monitor)} mono={false} />
       <InfoRow
         label="Threshold"
@@ -453,7 +462,16 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
             )}
           </div>
           {inertScopes.map((scope) => (
-            <InertScopeNotice key={scope} slug={slug} scope={scope} />
+            <InertScopeNotice
+              key={scope}
+              slug={slug}
+              scope={scope}
+              // The verdict above is still the PROJECT's — this only aims the
+              // link at the scan the reader was going to have to find anyway
+              // (tripl-wkwv.9). `?? undefined` because the prop is optional and
+              // a null would defeat its default.
+              scanConfigId={monitor.scan_config_id ?? undefined}
+            />
           ))}
         </div>
       </div>

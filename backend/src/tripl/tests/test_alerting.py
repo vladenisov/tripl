@@ -5204,6 +5204,11 @@ async def test_monitor_detail_mute_and_unmute(client: AsyncClient) -> None:
     assert detail["destination_enabled"] is True
     assert detail["total_deliveries"] == 0
     assert detail["last_delivery_at"] is None
+    # The project-wide default, which is what every rule is created with and
+    # every rule predating the column carries. The scan join is an OUTER one for
+    # exactly this row; an inner join would 404 here (tripl-wkwv.9).
+    assert detail["scan_config_id"] is None
+    assert detail["scan_name"] is None
 
     # A mute in the past is rejected.
     past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
@@ -5221,6 +5226,11 @@ async def test_monitor_detail_mute_and_unmute(client: AsyncClient) -> None:
     assert mute_resp.status_code == 200
     assert mute_resp.json()["muted"] is True
     assert mute_resp.json()["muted_until"] is not None
+    # All three endpoints return MonitorDetailResponse through one builder, and
+    # all three had to be rewired for the scan join — a GET-only assertion would
+    # miss a POST that stopped compiling the pair (tripl-wkwv.9).
+    assert mute_resp.json()["scan_config_id"] is None
+    assert mute_resp.json()["scan_name"] is None
 
     # The summary list reflects the mute too.
     summary_resp = await client.get("/api/v1/projects/monitor-detail/monitors-summary")
@@ -5234,9 +5244,109 @@ async def test_monitor_detail_mute_and_unmute(client: AsyncClient) -> None:
     assert unmute_resp.status_code == 200
     assert unmute_resp.json()["muted"] is False
     assert unmute_resp.json()["muted_until"] is None
+    assert unmute_resp.json()["scan_config_id"] is None
+    assert unmute_resp.json()["scan_name"] is None
 
     missing_resp = await client.get(f"/api/v1/projects/monitor-detail/monitors/{uuid.uuid4()}")
     assert missing_resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_monitor_detail_names_the_scan_a_rule_is_narrowed_to(client: AsyncClient) -> None:
+    """A scan-bound monitor says WHICH scan, on every response that builds it.
+
+    The detail screen never named the binding, while the docs told the reader to
+    go and check that scan's own distribution-drift list before trusting
+    ``scope_readiness`` — a project verdict that a sibling scan can satisfy on a
+    bound rule's behalf. Naming the scan does not fix that verdict; it makes the
+    documented workaround reachable (tripl-wkwv.9).
+
+    ``scope_readiness`` is asserted UNCHANGED here on purpose: it is still the
+    project's answer, and re-pointing it at the named scan on this response only
+    would give one field name two meanings across two responses — tripl-oxkt.18.
+    """
+    from tripl.services.scan_service import delete_scan_config
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Monitor Scan", "slug": "monitor-scan", "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_id = await _seed_scan_config(project_id, "Legacy iOS scan")
+    # A SIBLING scan that does watch a column. This is the shape the issue
+    # describes: the bound scan feeds distribution drift nothing, the project
+    # reads ready because this one does, and the reader is left to work out
+    # which scan to look at.
+    sibling_id = await _seed_scan_config(project_id, "Web scan")
+    async with TestSessionLocal() as session:
+        sibling = await session.get(ScanConfig, sibling_id)
+        assert sibling is not None
+        sibling.distribution_drift_fields = ["country"]
+        await session.commit()
+
+    destination_resp = await client.post(
+        "/api/v1/projects/monitor-scan/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Mon Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T1/B1/scan",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+
+    rule_resp = await client.post(
+        f"/api/v1/projects/monitor-scan/alert-destinations/{destination_id}/rules",
+        json={
+            "name": "iOS only",
+            "scan_config_id": str(scan_id),
+            "include_distribution_drifts": True,
+            "filters": [],
+        },
+    )
+    assert rule_resp.status_code == 201
+    rule_id = rule_resp.json()["id"]
+
+    detail = (await client.get(f"/api/v1/projects/monitor-scan/monitors/{rule_id}")).json()
+    assert detail["scan_config_id"] == str(scan_id)
+    assert detail["scan_name"] == "Legacy iOS scan"
+    # The binding is named BESIDE the readiness block, never folded into it. The
+    # verdict is still True — the SIBLING scan watches a column, this rule's own
+    # scan does not — which is the shipped limitation this task mitigates rather
+    # than fixes. It reads identically on the monitors list, which is what stops
+    # one field name meaning two things on two responses (tripl-oxkt.18).
+    assert detail["scope_readiness"]["distribution_drift"] is True
+    summary = (await client.get("/api/v1/projects/monitor-scan/monitors-summary")).json()
+    assert detail["scope_readiness"] == summary["scope_readiness"]
+
+    # Mute and unmute return the same model through the same builder.
+    muted_until = (datetime.now(UTC) + timedelta(hours=2)).isoformat()
+    mute_resp = await client.post(
+        f"/api/v1/projects/monitor-scan/monitors/{rule_id}/mute",
+        json={"muted_until": muted_until},
+    )
+    assert mute_resp.status_code == 200
+    assert mute_resp.json()["scan_config_id"] == str(scan_id)
+    assert mute_resp.json()["scan_name"] == "Legacy iOS scan"
+
+    unmute_resp = await client.post(f"/api/v1/projects/monitor-scan/monitors/{rule_id}/unmute")
+    assert unmute_resp.status_code == 200
+    assert unmute_resp.json()["scan_name"] == "Legacy iOS scan"
+
+    # Deleting the scan unbinds AND disables the rule
+    # (``disable_rules_bound_to_scan``), so the monitor must come back nameless
+    # and off rather than 404 — the row the OUTER join exists for, produced by
+    # the path that actually creates it in production.
+    async with TestSessionLocal() as session:
+        await delete_scan_config(session, "monitor-scan", scan_id)
+
+    orphaned = await client.get(f"/api/v1/projects/monitor-scan/monitors/{rule_id}")
+    assert orphaned.status_code == 200
+    assert orphaned.json()["scan_config_id"] is None
+    assert orphaned.json()["scan_name"] is None
+    assert orphaned.json()["rule_enabled"] is False
 
 
 # --- tripl-57g0: enum-shaped query params reject garbage at the edge ---------
@@ -8049,6 +8159,13 @@ def test_monitor_and_test_send_contracts_declare_every_field_they_always_send() 
     # The two monitor timestamps have no rule counterpart but are sent just as
     # unconditionally, by the same two builders.
     assert {"last_anomaly_at", "last_notified_at"} <= set(schemas["MonitorSummaryItem"]["required"])
+    # Same doctrine for the scan binding: nullable, always sent. A default would
+    # let the generated client treat "every scan in the project" and "the server
+    # did not say" as one value — and ``AlertRuleResponse`` already declares
+    # ``scan_config_id`` required-but-nullable for the very same column, so a
+    # default here would give one AlertRule two shapes again (tripl-wkwv.9).
+    assert "scan_config_id" in set(schemas["AlertRuleResponse"]["required"])
+    assert {"scan_config_id", "scan_name"} <= set(schemas["MonitorDetailResponse"]["required"])
     # The test-send reply serializes both on every response, including the
     # ``None`` half of each pair — exactly the mismatch ``event_id`` warns about.
     assert {"ok", "error", "sent_at"} <= set(schemas["AlertDestinationTestResponse"]["required"])

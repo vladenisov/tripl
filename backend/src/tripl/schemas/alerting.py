@@ -1135,6 +1135,27 @@ class MonitorDetailResponse(MonitorSummaryItem):
     # (``enabled`` on the summary is the AND of these two).
     rule_enabled: bool
     destination_enabled: bool
+    # WHICH scan's anomalies this rule can see. SAME name and SAME meaning as
+    # ``AlertRuleResponse.scan_config_id`` and the column behind both: null means
+    # every scan in the project. ``scan_name`` is that scan's display name, null
+    # exactly when the id is — shipped beside the id for the reason
+    # ``AlertDeliveryResponse`` ships ``scan_config_id`` next to ``scan_name``:
+    # the consuming screen holds no scans list to resolve an id against. Named
+    # rather than pointed at by line number: the ``(:NNN)`` refs this tree uses
+    # elsewhere rot silently, and this one was already two lines off when written.
+    #
+    # These two and ``scope_readiness`` below answer DIFFERENT questions and must
+    # never be read as one (tripl-wkwv.9):
+    #   scan_config_id / scan_name — which scan this rule is narrowed to.
+    #   scope_readiness            — whether the PROJECT has any source data for
+    #                                a drift scope. It is NOT narrowed by the
+    #                                binding above, so a rule bound to a scan
+    #                                that feeds nothing can still read ready
+    #                                because a sibling scan does.
+    # Naming them separately is the whole point: one name carrying two meanings
+    # on two responses is the failure tripl-oxkt.18 was filed about.
+    scan_config_id: uuid.UUID | None
+    scan_name: str | None
     # Scope coverage — which signal kinds this monitor subscribes to.
     include_project_total: bool
     include_event_types: bool
@@ -1156,6 +1177,11 @@ class MonitorDetailResponse(MonitorSummaryItem):
     # on ``MonitorsSummaryResponse``. The monitors list and the monitor detail
     # describe one project, and a field name that meant two things on two
     # responses is the disagreement tripl-oxkt.18 was filed about.
+    #
+    # Still PROJECT-level even on a rule that carries a ``scan_config_id`` above:
+    # narrowing it here and not on the summary would give one name two meanings,
+    # and narrowing it on both would need a per-draft query the rule editor does
+    # not have (tripl-wkwv.9).
     scope_readiness: AlertScopeReadiness
 
 

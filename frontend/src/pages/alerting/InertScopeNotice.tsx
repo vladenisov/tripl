@@ -13,8 +13,16 @@ interface ScopeCopy {
    */
   note?: string
   linkLabel: string
-  /** Path builder, so both callers send the reader to the same screen. */
-  href: (slug: string) => string
+  /**
+   * Path builder, so both callers send the reader to the same screen.
+   *
+   * `scanConfigId` is the scan a rule is narrowed to, when the caller knows one.
+   * It only ever picks a MORE specific destination on the same screen — never a
+   * different screen, and never a different sentence: readiness is a project
+   * verdict and stays one, so a scope-bound reader is shown the scan to check,
+   * not told a different thing about it (tripl-wkwv.9).
+   */
+  href: (slug: string, scanConfigId?: string) => string
 }
 
 /**
@@ -43,7 +51,14 @@ const SCOPE_COPY: Record<DriftScope, ScopeCopy> = {
     sentence:
       'Distribution drift is on, but no scan in this project watches a column for it — this scope cannot fire until one does.',
     linkLabel: 'Scan settings',
-    href: (slug) => `/p/${slug}/scans`,
+    // A scan-bound rule goes to THAT scan's own settings rather than the list,
+    // so the reader does not have to find it again. Deliberately NOT billed as
+    // making the scan-aware check one click: this notice renders only when
+    // NOTHING in the project feeds the scope, which is the opposite of the case
+    // that check is about. The monitor detail names the bound scan separately,
+    // as text (tripl-wkwv.9).
+    href: (slug, scanConfigId) =>
+      scanConfigId ? `/p/${slug}/scans/${scanConfigId}` : `/p/${slug}/scans`,
   },
   variable_value_drift: {
     sentence:
@@ -85,10 +100,18 @@ export function inertScopeSentence(scope: DriftScope): string {
 export function InertScopeNotice({
   slug,
   scope,
+  scanConfigId,
   newTab = false,
 }: {
   slug?: string
   scope: DriftScope
+  /**
+   * The scan the rule this notice is about is narrowed to, when the caller
+   * knows one. Optional and absent by default, so the rule editor — whose draft
+   * scan changes under the reader's hand, and whose readiness block is the
+   * project's — keeps sending readers to the scan list unchanged.
+   */
+  scanConfigId?: string
   newTab?: boolean
 }) {
   const copy = SCOPE_COPY[scope]
@@ -109,7 +132,7 @@ export function InertScopeNotice({
           {copy.sentence}{' '}
           {slug && (
             <Link
-              to={copy.href(slug)}
+              to={copy.href(slug, scanConfigId)}
               // React Router hands any target other than `_self` back to the
               // browser, so this is what keeps the dialog mounted.
               target={newTab ? '_blank' : undefined}
