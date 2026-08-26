@@ -1065,13 +1065,33 @@ a single field value may be 100 000 characters.
 
 Two exclusions, both deliberate: **reordering** an event (drag-to-reorder, and
 the move up/down control) is not recorded — it changes display order only, and
-would file a row per drag. Events written by a **scan** are not recorded either;
-a scan is not a user action, and that covers the event created when you accept a
-scan's shadow-event candidate, which is written through reconciliation rather
-than the event routes. Retiring dead events is the one reconciliation write that
-*is* recorded, as above: it edits events you already planned, rather than
-admitting one a scan proposed. The log covers events from this release forward —
-edits made before it are genuinely not recorded anywhere and are not backfilled.
+would file a row per drag. Events written by a **scan** are not recorded either:
+a scan is not a user action, and a collection run that creates ten thousand
+events would file ten thousand rows saying that nobody did anything. The log
+covers events from this release forward — edits made before it are genuinely not
+recorded anywhere and are not backfilled.
+
+Writes made from **Reconciliation** *are* recorded, because each one is a person
+deciding something:
+
+- **Accepting** a shadow-event candidate files `event.create`, the same action
+  authoring an event by hand files. The scan only *proposed* an identity;
+  admitting it into the plan is your decision, and the event that results is
+  indistinguishable from one you typed. The payload names the candidate, the
+  scan that observed it and how much traffic it carried, which is what tells the
+  two doors apart.
+- **Dismissing** a candidate creates nothing, so it has an action of its own —
+  `shadow_event.dismiss`, filed against the candidate rather than an event. The
+  payload carries the identity's latest observed volume and the span it has been
+  seen over. Worth recording precisely because nothing is left behind otherwise:
+  the candidate row is removed with the scan that found it, taking `resolved by`
+  with it.
+- **Retiring dead events** files `event.bulk_update`, as above.
+
+The rule behind all three: the action names *what now exists*, not the screen it
+was done on. Accepting a candidate is not a different thing to search for than
+authoring an event by hand, and there is no separate reconciliation vocabulary
+to remember.
 
 A **cascade** is neither exclusion: it is recorded, but as the action that
 caused it. Deleting an event type, and deleting, merging or reverting a plan

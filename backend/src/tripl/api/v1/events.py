@@ -41,7 +41,11 @@ _editor_required = [Depends(get_editor_user)]
 _BULK_SAMPLE = 200
 
 
-def _create_payload(data: EventCreate) -> dict[str, object]:
+def event_create_audit_payload(
+    data: EventCreate,
+    *,
+    extra: dict[str, object] | None = None,
+) -> dict[str, object]:
     """What an ``event.create`` row stores.
 
     Deliberately NOT ``data.model_dump()``, the shape every other router uses:
@@ -56,8 +60,15 @@ def _create_payload(data: EventCreate) -> dict[str, object]:
     variables.py already dump their own uncapped ``description`` verbatim and no
     writer in the repo bloats one — a length cap for those belongs in
     ``audit_service``, where it would cover all six routers at once, not here.
+
+    Public, and with an ``extra`` escape hatch, for the same reason
+    ``bulk_event_audit_payload`` is: reconciliation.py files ``event.create`` too
+    when an editor admits a shadow-event candidate into the plan, and one action
+    must not have two payload shapes (tripl-wkwv.13). ``extra`` is merged FIRST,
+    so a caller cannot shadow a field of the event that was actually created.
     """
     return {
+        **(extra or {}),
         **data.model_dump(mode="json", exclude={"field_values", "meta_values"}),
         "field_value_count": len(data.field_values),
         "meta_value_count": len(data.meta_values),
@@ -65,7 +76,7 @@ def _create_payload(data: EventCreate) -> dict[str, object]:
 
 
 def _update_payload(data: EventUpdate) -> dict[str, object]:
-    """Same size guard as ``_create_payload``, keeping ``exclude_unset`` so the
+    """Same size guard as ``event_create_audit_payload``, keeping ``exclude_unset`` so the
     row still reports exactly the fields the client sent — and two booleans so it
     still says the field or meta values were rewritten."""
     return {
@@ -181,7 +192,7 @@ async def create_event(
         target_id=event.id,
         target_name=event.name,
         project_slug=slug,
-        payload=_create_payload(data),
+        payload=event_create_audit_payload(data),
     )
     return event
 

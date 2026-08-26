@@ -1,13 +1,16 @@
 import ast
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
 
 from tripl.models.audit_log import AuditLog
+from tripl.models.data_source import DataSource
+from tripl.models.scan_config import ScanConfig
+from tripl.models.shadow_event_candidate import SHADOW_STATUS_NEW, ShadowEventCandidate
 from tripl.services import audit_service
 from tripl.tests.conftest import TestSessionLocal
 
@@ -690,6 +693,147 @@ async def test_archiving_dead_events_writes_an_audit_row(client: AsyncClient) ->
     assert payload["count"] == 2
     assert sorted(payload["event_ids"]) == sorted([first, second])
     assert payload["truncated"] is False
+
+
+async def _seed_shadow_candidate(
+    client: AsyncClient,
+    slug: str,
+    *,
+    event_type_id: str | None = None,
+    event_name: str = "screen | checkout",
+    observed_count: int = 42,
+) -> str:
+    """A scan config and one still-unresolved candidate on it, written to the DB.
+
+    The metrics collector is the only writer of ``shadow_event_candidates``, so
+    there is no API to seed one through, and a candidate needs a scan config,
+    which needs a data source.
+    """
+    project = await client.get(f"/api/v1/projects/{slug}")
+    assert project.status_code == 200, project.text
+    project_id = uuid.UUID(project.json()["id"])
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            name=f"wh-{uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=9000,
+            database_name="db",
+            username="u",
+        )
+        session.add(data_source)
+        await session.flush()
+        config = ScanConfig(
+            project_id=project_id,
+            data_source_id=data_source.id,
+            name="main scan",
+            base_query="SELECT 1",
+        )
+        session.add(config)
+        await session.flush()
+        now = datetime.now(UTC)
+        candidate = ShadowEventCandidate(
+            project_id=project_id,
+            scan_config_id=config.id,
+            event_type_id=uuid.UUID(event_type_id) if event_type_id else None,
+            event_name=event_name,
+            observed_count=observed_count,
+            first_seen_at=now - timedelta(days=2),
+            last_seen_at=now,
+            status=SHADOW_STATUS_NEW,
+        )
+        session.add(candidate)
+        await session.commit()
+        return str(candidate.id)
+
+
+@pytest.mark.asyncio
+async def test_accepting_a_shadow_event_writes_an_event_create_row(client: AsyncClient) -> None:
+    """Reconciliation → Shadow events → Accept files ``event.create``, the same
+    action ``POST /events`` files.
+
+    This sat behind "events written by a scan are not recorded", which never
+    covered it: the scan only PROPOSED an identity, and accepting it is a person
+    authoring a plan row — the event that results is indistinguishable from a
+    hand-written one. An action of its own would have been worse than none, not
+    better: an owner filtering ``event.create`` for "which events did people
+    create?" would get a subset that looks complete (tripl-wkwv.13).
+    """
+    et_id = await _setup_project(client, "audit-shadow-accept")
+    candidate_id = await _seed_shadow_candidate(
+        client,
+        "audit-shadow-accept",
+        event_type_id=et_id,
+        event_name="screen | checkout",
+    )
+
+    accepted = await client.post(
+        f"/api/v1/projects/audit-shadow-accept/reconciliation/shadow-events/{candidate_id}/accept",
+        json={"name": "Checkout Screen"},
+    )
+    assert accepted.status_code == 200, accepted.text
+
+    row = await _one_entry(client, "audit-shadow-accept", "event.create")
+    assert row["target_type"] == "event"
+    assert row["target_id"] == accepted.json()["event_id"]
+    assert row["target_name"] == "Checkout Screen"
+
+    payload = await _payload_of(client, row["id"])
+    # The shape POST /events files, so one action reads one way whichever door
+    # the event came through...
+    assert payload["name"] == "Checkout Screen"
+    assert payload["status"] == "live"
+    assert payload["field_value_count"] == 0
+    # ...and one nested key says which door, naming the traffic the plan was
+    # changed to match.
+    assert payload["accepted_from"]["shadow_candidate_id"] == candidate_id
+    assert payload["accepted_from"]["source_name"] == "screen | checkout"
+    assert payload["accepted_from"]["observed_count"] == 42
+
+
+@pytest.mark.asyncio
+async def test_dismissing_a_shadow_event_is_recorded_against_the_candidate(
+    client: AsyncClient,
+) -> None:
+    """Dismissal creates nothing, so it gets its own action and its own target.
+
+    It is terminal through the API — accept and dismiss both require the
+    candidate to still be new — so one click writes observed traffic off for
+    everyone, permanently. The candidate row storing ``resolved_by`` is not a
+    substitute for the audit row: it is CASCADE-deleted with its project and its
+    scan config, so deleting the scan that found the traffic would erase every
+    trace of who waved it away — the same way ``event_changes`` died with the
+    event it described (tripl-wkwv.13).
+    """
+    await _setup_project(client, "audit-shadow-dismiss")
+    candidate_id = await _seed_shadow_candidate(
+        client,
+        "audit-shadow-dismiss",
+        event_name="screen | ghost",
+        observed_count=1234,
+    )
+
+    dismissed = await client.post(
+        f"/api/v1/projects/audit-shadow-dismiss/reconciliation/shadow-events/{candidate_id}/dismiss"
+    )
+    assert dismissed.status_code == 200, dismissed.text
+
+    row = await _one_entry(client, "audit-shadow-dismiss", "shadow_event.dismiss")
+    assert row["target_type"] == "shadow_event_candidate"
+    assert row["target_id"] == candidate_id
+    assert row["target_name"] == "screen | ghost"
+
+    payload = await _payload_of(client, row["id"])
+    # How much traffic was written off, and over what span — the two facts that
+    # keep the decision reviewable once the candidate row is gone.
+    assert payload["observed_count"] == 1234
+    assert payload["first_seen_at"] < payload["last_seen_at"]
+
+    # Nothing was created, so the create action must stay empty: the two
+    # resolutions differ in exactly the way the log says they do.
+    listed = await client.get("/api/v1/audit?project_slug=audit-shadow-dismiss&action=event.create")
+    assert listed.json()["items"] == []
 
 
 @pytest.mark.asyncio

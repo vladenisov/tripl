@@ -119,7 +119,7 @@ const ACTION_GROUPS: { label: string; actions: string[] }[] = [
     ],
   },
   {
-    label: 'Scans',
+    label: 'Scans & reconciliation',
     // Data sources are an instance-level resource: their audit entries carry no
     // project, so they are filtered on the workspace surface, not here.
     actions: [
@@ -128,6 +128,12 @@ const ACTION_GROUPS: { label: string; actions: string[] }[] = [
       'scan_config.delete',
       'scan_config.event_groups.apply',
       'scan_job.cancel',
+      // Dismissing a shadow-event candidate writes observed traffic off for
+      // everyone, and cannot be undone through the API. Accepting one is NOT
+      // listed here on purpose: it creates a catalog event, so it files
+      // `event.create` under Events — filtering "which events did people
+      // create?" has to find it (tripl-wkwv.13).
+      'shadow_event.dismiss',
     ],
   },
   {
@@ -148,6 +154,10 @@ const ACTION_GROUPS: { label: string; actions: string[] }[] = [
       'alert_destination.create',
       'alert_destination.update',
       'alert_destination.delete',
+      // Recorded with a project slug (api/v1/alerting.py) and missing here, so
+      // "who sent a test to prod Slack, and did it work" was in the feed but
+      // not isolatable — the exact gap the doctrine above forbids.
+      'alert_destination.test',
       'alert_rule.create',
       'alert_rule.update',
       'alert_rule.delete',
@@ -170,6 +180,10 @@ const ACTION_GROUPS: { label: string; actions: string[] }[] = [
       'project_tracker_config.update',
       'project.reset_anomalies',
       'project.reset_drifts',
+      // A bulk plan write — it retires variables — but grouped by its prefix
+      // like every other action here, because that is the string a reader is
+      // scanning for. Also missing until now.
+      'project.retire_unused_variables',
       // Only recorded with a project when the key is scoped to one; a
       // workspace-wide key carries no project and never lands here.
       'api_key.create',

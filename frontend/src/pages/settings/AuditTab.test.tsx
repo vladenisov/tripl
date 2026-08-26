@@ -114,6 +114,11 @@ describe('AuditTab — action filter vocabulary (tripl-jfm3.79)', () => {
       'alert_delivery.retry',
       'project.reset_anomalies',
       'project_tracker_config.update',
+      // Both recorded with a project all along and both absent from the list
+      // until tripl-wkwv.13 — found while auditing the list for one new
+      // action, which is the failure mode this doctrine exists to catch.
+      'alert_destination.test',
+      'project.retire_unused_variables',
     ]) {
       expect(actions).toContain(action)
     }
@@ -181,6 +186,23 @@ describe('AuditTab — events in the log (tripl-wkwv.10)', () => {
     // owns the copy.
     expect(help.textContent).not.toMatch(/no chip were written on main/i)
     expect(help.textContent).toMatch(/no branch to name/i)
+  })
+})
+
+describe('AuditTab — reconciliation resolutions (tripl-wkwv.13)', () => {
+  it('offers the dismissal, and files an acceptance under the create action', () => {
+    renderTab()
+
+    const actions = offeredActions()
+
+    // Dismissing writes observed traffic off for everyone and is terminal
+    // through the API; without an entry here it lands in the unfiltered feed
+    // and can never be isolated.
+    expect(actions).toContain('shadow_event.dismiss')
+    // Accepting deliberately has NO action of its own: a catalog event now
+    // exists, so it files `event.create`. An action of its own would split
+    // "which events did people create?" into two answers, each looking whole.
+    expect(actions).not.toContain('shadow_event.accept')
   })
 })
 
