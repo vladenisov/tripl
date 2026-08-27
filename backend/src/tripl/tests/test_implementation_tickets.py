@@ -274,6 +274,70 @@ async def test_sync_implementation_tickets_closes_and_marks_implemented(
 
 
 @pytest.mark.asyncio
+async def test_one_failing_ticket_does_not_strand_the_rest_of_the_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-ticket handler used to end the sweep instead of containing it.
+
+    ``rollback()`` expires every loaded instance — ``expire_on_commit=False``
+    covers commits, not rollbacks — so after the first failure the next
+    iteration's attribute access became a lazy refresh, which asyncio SQLAlchemy
+    raises MissingGreenlet for. Ten tickets and a 500 on the first meant nine
+    never polled, that run and every run after it (tripl-l33u.16).
+    """
+    _patch_public_dns(monkeypatch)
+    project_id = uuid.uuid4()
+    branch_one, branch_two = uuid.uuid4(), uuid.uuid4()
+    failing_id, healthy_id = uuid.uuid4(), uuid.uuid4()
+    async with TestSessionLocal() as session:
+        session.add(Project(id=project_id, name="Sweep", slug="sweep", description=""))
+        session.add(_tracker_config(project_id))
+        # Only the PlanBranch parents matter here — these tickets cover no
+        # events, so no EventType is needed.
+        session.add(PlanBranch(id=branch_one, project_id=project_id, name="sweep-one"))
+        session.add(PlanBranch(id=branch_two, project_id=project_id, name="sweep-two"))
+        await session.flush()
+        for ticket_id, branch_id, key in (
+            (failing_id, branch_one, "ENG-1"),
+            (healthy_id, branch_two, "ENG-2"),
+        ):
+            session.add(
+                ImplementationTicket(
+                    id=ticket_id,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    tracker_type="jira",
+                    external_id=key,
+                    external_key=key,
+                    external_url=f"https://example.atlassian.net/browse/{key}",
+                    status="open",
+                    summary="s",
+                    event_ids=[],
+                )
+            )
+        await session.commit()
+
+    def flaky_status(get_json, *, base_url, auth_email, api_token, issue_key):  # noqa: ANN001, ANN202
+        if issue_key == "ENG-1":
+            raise RuntimeError("Jira returned 500")
+        return "done"
+
+    monkeypatch.setattr(impl_tasks, "_get_jira_issue_status", flaky_status)
+
+    async with TestSessionLocal() as session:
+        # Must not raise: the failure belongs to one ticket.
+        await impl_tasks._sync_tickets(session)
+
+    async with TestSessionLocal() as session:
+        failing = await session.get(ImplementationTicket, failing_id)
+        healthy = await session.get(ImplementationTicket, healthy_id)
+        assert failing is not None and healthy is not None
+        # The one that failed is untouched, and the one behind it was still polled.
+        assert failing.status == "open"
+        assert healthy.status == "closed"
+
+
+@pytest.mark.asyncio
 async def test_sync_implementation_tickets_leaves_open_when_not_done(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

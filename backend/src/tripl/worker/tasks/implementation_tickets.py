@@ -226,10 +226,26 @@ async def _sync_one(session: AsyncSession, ticket: ImplementationTicket) -> None
 
 
 async def _sync_tickets(session: AsyncSession) -> None:
-    tickets = (
+    """Poll every open ticket, isolating failures to the ticket that caused them.
+
+    IDS, not ORM objects — and that is the whole fix (tripl-l33u.16).
+    ``rollback()`` expires every persistent instance in the identity map;
+    ``expire_on_commit=False`` suppresses expiry on COMMIT and says nothing about
+    rollback. So a loop holding loaded tickets across the handler below had the
+    exact opposite of its stated effect: the first tracker failure expired all of
+    them, the next iteration's ``ticket.external_key`` became a lazy refresh —
+    synchronous IO inside a coroutine, which asyncio SQLAlchemy raises
+    MissingGreenlet for — and the exception escaped the per-ticket handler that
+    existed to contain it. Ten open tickets and a 500 on the first meant the other
+    nine went unpolled, that run and every run after it.
+
+    A uuid cannot expire. Each ticket is loaded inside its own try, after any
+    rollback the previous iteration performed.
+    """
+    ticket_ids = (
         (
             await session.execute(
-                select(ImplementationTicket).where(
+                select(ImplementationTicket.id).where(
                     ImplementationTicket.status == "open",
                     ImplementationTicket.external_key.is_not(None),
                 )
@@ -238,13 +254,17 @@ async def _sync_tickets(session: AsyncSession) -> None:
         .scalars()
         .all()
     )
-    for ticket in tickets:
+    for ticket_id in ticket_ids:
         try:
+            ticket = await session.get(ImplementationTicket, ticket_id)
+            if ticket is None:
+                # Deleted between the id sweep and now; nothing to poll.
+                continue
             await _sync_one(session, ticket)
         except Exception:
             # Isolate per-ticket failures — one bad ticket must not strand the rest.
             await session.rollback()
-            logger.exception("Failed to sync implementation ticket %s", ticket.id)
+            logger.exception("Failed to sync implementation ticket %s", ticket_id)
 
 
 async def _with_worker_session(run: Callable[[AsyncSession], Awaitable[None]]) -> None:
