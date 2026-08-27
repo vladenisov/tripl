@@ -57,10 +57,20 @@ synthetic source:
   branch operations, alerting changes) go through the same audited service paths
   as a real project and show up in **Govern → Audit log**. The recipe writes the
   seeded plan directly rather than through those paths, so it also backfills a
-  matching trail: one entry per authored event type, field, meta field, variable,
-  data source, scan, alert destination and rule, attributed to whoever
-  generated the demo and back‑dated so the log reads as a build‑up. Those entries
-  are marked `demo_seed` in their payload.
+  matching trail: one entry per authored event, event type, field, meta field,
+  variable, scan, alert destination and rule, attributed to whoever generated the
+  demo and back‑dated so the log reads as a build‑up. Those entries are marked
+  `demo_seed` in their payload. Connecting the warehouse is recorded too, but a
+  data source belongs to the workspace rather than to one project, so — exactly
+  like a real one — that entry carries no project and this tab does not list it.
+
+  The event entries are dated from the events themselves, so the trail agrees
+  with the catalog rather than talking over it: a creation carries the event's
+  own first‑seen date, and the edits behind the demo's shipped, archived and
+  deprecated events carry the instant their **event history** records — the two
+  surfaces describe the same edits from their two angles. Nothing was ever
+  bulk‑edited or deleted in the recipe, so those filters start empty and mean it;
+  do one yourself and watch the row appear.
 - **Semantic search** — the demo bundles precomputed embedding vectors for its
   own content and a few suggested queries (try `purchase funnel` or `money back`
   in the command palette), so smart search ranks by meaning and marks semantic

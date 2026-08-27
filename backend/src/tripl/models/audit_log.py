@@ -13,10 +13,32 @@ from tripl.models.base import Base, UUIDMixin
 
 class AuditLog(UUIDMixin, Base):
     __tablename__ = "audit_log"
-    # Without this, every ``DELETE FROM plan_branches`` — and every project
-    # delete, which cascades to its branches — seq-scans the whole append-only
-    # audit log to apply the ``SET NULL`` below.
-    __table_args__ = (Index("ix_audit_log_branch", "branch_id"),)
+    __table_args__ = (
+        # Without this, every ``DELETE FROM plan_branches`` — and every project
+        # delete, which cascades to its branches — seq-scans the whole append-only
+        # audit log to apply the ``SET NULL`` below.
+        Index("ix_audit_log_branch", "branch_id"),
+        # The read path. ``audit_service.list_entries`` filters on
+        # ``project_slug`` on every load of the only audit surface in the product,
+        # runs a second COUNT with the same predicate for the pager, and orders by
+        # ``created_at DESC, id DESC``. Unindexed that is two full scans of a table
+        # that only ever grows, plus a sort — fast in every test and slower every
+        # month in production (tripl-wkwv.20).
+        #
+        # Ascending, though the query reads descending: a btree is scanned equally
+        # well in either direction as long as EVERY sort column is reversed
+        # together, which these are. Carrying ``id`` too means the index serves
+        # the tie-break the pager depends on (tripl-5ydt) rather than leaving a
+        # sort on top of it.
+        Index("ix_audit_log_project_slug_created", "project_slug", "created_at", "id"),
+        # ``project_id`` is ``ON DELETE SET NULL``, so deleting any project scans
+        # the same table to null it out — the argument that earned ``branch_id``
+        # its index, applied to the column one level up. Deliberately NOT claimed
+        # for the demo reset's purge: that predicate is an OR across two columns
+        # and the second half (``target_type``/``target_id``) is unindexed, so a
+        # scan is the honest expectation there. A reset is rare enough to pay it.
+        Index("ix_audit_log_project", "project_id"),
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     user_id: Mapped[uuid.UUID | None] = mapped_column(

@@ -1093,6 +1093,25 @@ was done on. Accepting a candidate is not a different thing to search for than
 authoring an event by hand, and there is no separate reconciliation vocabulary
 to remember.
 
+The **project itself** is in the log too — `project.create`, `project.update`
+(renames included), `project.delete`, and `project.reset` for a demo re-seeded in
+place. The delete row is the odd one out and the reason the rest exist: once a
+project is gone, so is every per-project surface that could have answered for it,
+so that row carries the name and slug in its own **payload** rather than relying
+on an id that now resolves to nothing.
+
+Two limits worth knowing, both of them about *reaching* an entry rather than
+recording one:
+
+- An entry records the slug a project had **at the time**, and this tab lists
+  entries by that slug. So a rename splits the history: the tab shows what
+  happened after it, and the entries from before stay under the old slug. Nothing
+  is lost — every entry on both sides carries the same project — but joining them
+  is a query, not a click, for now.
+- The tab lives inside a project, so a **deleted** project has no page to open.
+  Its `project.delete` entry is recorded and readable through the API; a
+  workspace-wide view that can show it is not built yet.
+
 A **cascade** is neither exclusion: it is recorded, but as the action that
 caused it. Deleting an event type, and deleting, merging or reverting a plan
 branch, each file their own row — `event_type.delete`, `plan_branch.delete`,

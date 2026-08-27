@@ -839,9 +839,13 @@ async def purge_project_rows(session: AsyncSession, project: Project) -> None:
 
     Data sources OWNED by this project (a demo's synthetic warehouse) go first,
     so nothing leaks a workspace-wide orphan. Real, workspace-global sources carry
-    project_id IS NULL and are untouched. On Postgres the FK cascade would also
-    remove them, but doing it explicitly keeps behaviour correct under SQLite
-    (tests), where FK cascades are off.
+    project_id IS NULL and are untouched. The FK is ``ondelete="CASCADE"``, so
+    both databases would remove them anyway — this used to claim otherwise, that
+    SQLite has cascades off, which stopped being true when the suite began
+    setting ``PRAGMA foreign_keys=ON`` on every connection (tests/_sqlite.py).
+    Doing it explicitly is still worth the line: it puts the cleanup where a
+    reader of this function can see it, rather than resting on a schema detail
+    two files away.
 
     The flush matters: it forces the DELETE out before any later INSERT, so a
     caller re-creating a project under the same (unique) slug within this same

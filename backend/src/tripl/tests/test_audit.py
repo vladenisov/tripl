@@ -888,6 +888,86 @@ async def test_audit_truncates_a_target_name_longer_than_the_column(client: Asyn
     assert row["target_name"] == long_name[:255]
 
 
+@pytest.mark.asyncio
+async def test_audit_records_the_life_of_a_project(client: AsyncClient) -> None:
+    """Everything the log tracks lives inside a project, and the project was the
+    one object with no record of its own: an owner could destroy a workspace
+    whole and the log held nothing about who did it (tripl-wkwv.19).
+
+    The delete row is the point. Afterwards the id resolves to nothing and every
+    per-project surface is gone with it, so the row has to carry what it named.
+    """
+    created = await client.post(
+        "/api/v1/projects", json={"name": "Checkout", "slug": "life-before"}
+    )
+    assert created.status_code == 201, created.text
+    project_id = created.json()["id"]
+
+    renamed = await client.patch(
+        "/api/v1/projects/life-before", json={"name": "Checkout Funnel", "slug": "life-after"}
+    )
+    assert renamed.status_code == 200, renamed.text
+
+    deleted = await client.delete("/api/v1/projects/life-after")
+    assert deleted.status_code == 204, deleted.text
+
+    # Filed under the slug the project had AT THE TIME, so the create row keeps
+    # the old one — which is why the tab has to resolve a slug rather than match
+    # the label (tripl-wkwv.18).
+    create_row = await _one_entry(client, "life-before", "project.create")
+    assert create_row["target_type"] == "project"
+    assert create_row["target_id"] == project_id
+    assert create_row["target_name"] == "Checkout"
+
+    update_row = await _one_entry(client, "life-after", "project.update")
+    assert update_row["target_id"] == project_id
+    # The name AFTER the edit: the row names the project that now exists.
+    assert update_row["target_name"] == "Checkout Funnel"
+    assert await _payload_of(client, update_row["id"]) == {
+        "slug": "life-after",
+        "name": "Checkout Funnel",
+    }
+
+    delete_row = await _one_entry(client, "life-after", "project.delete")
+    assert delete_row["target_id"] == project_id
+    assert delete_row["target_name"] == "Checkout Funnel"
+    # No project id — it points at nothing now, and saying so is the honest
+    # shape. The slug and name survive in the row itself.
+    assert delete_row["project_id"] is None
+    assert await _payload_of(client, delete_row["id"]) == {
+        "slug": "life-after",
+        "name": "Checkout Funnel",
+    }
+
+
+@pytest.mark.asyncio
+async def test_audit_records_generating_and_resetting_a_demo(client: AsyncClient) -> None:
+    """A demo is a project, and generating one is a person's decision — so it
+    files the same action a hand-made project does.
+
+    A reset files ``project.reset`` against the REPLACEMENT: the reset drops the
+    old demo's rows by its id (tripl-wkwv.16), so a row filed against the project
+    being destroyed would go with them, and this one is what explains why the
+    trail below it starts fresh.
+    """
+    slug = (await client.post("/api/v1/projects/demo")).json()["slug"]
+
+    created = await _one_entry(client, slug, "project.create")
+    assert created["target_type"] == "project"
+    assert (await _payload_of(client, created["id"]))["is_demo"] is True
+
+    reset = await client.post(f"/api/v1/projects/demo/{slug}/reset")
+    assert reset.status_code == 200, reset.text
+
+    after = (await client.get(f"/api/v1/audit?project_slug={slug}&limit=200")).json()["items"]
+    actions = {entry["action"] for entry in after}
+    assert "project.reset" in actions
+    # The generation row named the project the reset destroyed, so it went with
+    # it. Left behind it would sit under the replacement's slug and date the
+    # replacement's creation to before the reset that made it.
+    assert "project.create" not in actions
+
+
 def test_the_scan_pipeline_cannot_write_audit_rows() -> None:
     """A scan must never fill the audit log, and the boundary is structural.
 

@@ -177,6 +177,19 @@ const ACTION_GROUPS: { label: string; actions: string[] }[] = [
   {
     label: 'Project',
     actions: [
+      // The project's own life. `project.delete` is offered for the case that
+      // actually reaches a reader: a project deleted and later RE-created under
+      // the same slug, whose predecessor's delete row still matches this label
+      // (tripl-wkwv.18). It cannot show the ordinary case — this tab lives at
+      // /p/:slug/..., so once a project is gone there is no page to open. Until
+      // the instance-wide view exists (tripl-wkwv.17), that row is written for
+      // the API alone.
+      'project.create',
+      'project.update',
+      'project.delete',
+      // Only a demo can be reset; it re-seeds in place and clears the trail that
+      // came before, which is what this row explains.
+      'project.reset',
       'project_tracker_config.update',
       'project.reset_anomalies',
       'project.reset_drifts',

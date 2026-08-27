@@ -28,6 +28,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # change (the main plan is deep-copied onto it and one event description is
 # edited, so the branch diff / merge preview are non-empty) and one open
 # variable-value drift is seeded on product_id (Trial Started).
+#
+# NOT bumped for tripl-wkwv.14 (events in the seeded audit trail), and that is a
+# decision rather than an oversight: this string is what
+# ``search_embeddings._parse_fixture`` matches the precomputed vector bundle's
+# manifest against, while the bundle's filename is a SEPARATE constant
+# (``search_embeddings_v4.npz``). Bumping without regenerating the bundle makes
+# every demo fall back to lexical search — a headline demo feature lost to a
+# version stamp, silently. Nothing else consumes the value: the banner displays
+# it and does not compare it. So bump when the recipe gains something a reader
+# can navigate to that an older demo lacks AND the fixture is regenerated with
+# it; tripl-wkwv.14 adds rows to surfaces a recipe-4 demo already has, and
+# indexes nothing new.
 DEMO_RECIPE_VERSION = "4"
 
 # Default scenario seed. Fixed so the seeded metrics/anomalies/drift are

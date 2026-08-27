@@ -189,6 +189,33 @@ describe('AuditTab — events in the log (tripl-wkwv.10)', () => {
   })
 })
 
+describe('AuditTab — the project itself (tripl-wkwv.19)', () => {
+  it('offers the project lifecycle actions, including the one that outlives the project', () => {
+    renderTab()
+
+    const actions = offeredActions()
+
+    for (const action of ['project.create', 'project.update', 'project.delete', 'project.reset']) {
+      expect(actions).toContain(action)
+    }
+  })
+
+  it('groups them with the other project actions', () => {
+    renderTab()
+
+    const select = screen.getByLabelText('Action') as HTMLSelectElement
+    const group = Array.from(select.querySelectorAll('optgroup')).find(
+      (candidate) => candidate.label === 'Project',
+    )
+    expect(group).toBeDefined()
+    const grouped = Array.from(group!.querySelectorAll('option')).map((o) => o.value)
+    // A delete row keeps its slug even though its project id goes null, so it
+    // still answers a project-scoped filter — this is the one surface that can
+    // say what happened to a workspace that is gone.
+    expect(grouped).toContain('project.delete')
+  })
+})
+
 describe('AuditTab — reconciliation resolutions (tripl-wkwv.13)', () => {
   it('offers the dismissal, and files an acceptance under the create action', () => {
     renderTab()

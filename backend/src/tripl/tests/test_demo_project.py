@@ -1157,6 +1157,139 @@ async def test_demo_audit_log_is_not_empty_out_of_the_box(client: AsyncClient) -
 
 
 @pytest.mark.asyncio
+async def test_demo_audit_trail_covers_the_events_it_authored(client: AsyncClient) -> None:
+    """Events lead the Audit tab's filter, and on a demo holding eighteen of them
+    that group matched nothing — the log implied nobody had ever created an event
+    on the project (tripl-wkwv.14).
+
+    The rows are derived, not invented: a creation is dated from the event's own
+    ``created_at``, an edit from the ``EventChange`` the activity builder seeded,
+    a dismissal from the candidate's ``resolved_at``. So what is worth pinning is
+    not a row count but the coherence that derivation buys — one creation per
+    event, every edit after the creation it edits, and nothing dated ahead of the
+    seed instant.
+    """
+    slug = (await client.post("/api/v1/projects/demo")).json()["slug"]
+
+    listed = await client.get(f"/api/v1/audit?project_slug={slug}&limit=200")
+    assert listed.status_code == 200
+    entries = listed.json()["items"]
+
+    def parsed(value: str) -> datetime:
+        # The suite runs on sqlite, which drops the offset on a timezone-aware
+        # column, so these come back naive here and aware on Postgres. The
+        # builders normalise the same way (core.bucketing.to_utc).
+        stamp = datetime.fromisoformat(value)
+        return stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
+
+    at = {entry["id"]: parsed(entry["created_at"]) for entry in entries}
+
+    created = [entry for entry in entries if entry["action"] == "event.create"]
+    updated = [entry for entry in entries if entry["action"] == "event.update"]
+    assert created, "the Events filter group would match nothing"
+    assert updated, "no edit was recorded for the events the recipe edited"
+    assert "shadow_event.dismiss" in {entry["action"] for entry in entries}
+
+    # ONE creation per event, and the guard has to be on the NAME. The branches
+    # builder deep-copies the whole plan onto a feature branch before the audit
+    # builder runs, and the copies carry fresh uuids but the SAME names — so a
+    # project-wide select would file a second row per event that a unique-id
+    # check would wave straight through.
+    creation_at = {entry["target_id"]: at[entry["id"]] for entry in created}
+    assert len(creation_at) == len(created)
+    assert len({entry["target_name"] for entry in created}) == len(created)
+    assert all(entry["target_name"] for entry in created)
+
+    # An event cannot be edited before it exists. This is what breaks if the
+    # creation rows are ever dated from the seed instant instead of the event:
+    # the stagger puts events up to ~3 weeks back, the edits days back.
+    for entry in updated:
+        assert entry["target_id"] in creation_at, entry
+        assert creation_at[entry["target_id"]] < at[entry["id"]], entry
+
+    # Nothing in the future, on any row: a seeded row that forgets its explicit
+    # created_at silently lands at transaction_timestamp, i.e. after everything.
+    assert max(at.values()) <= datetime.now(UTC)
+
+
+@pytest.mark.asyncio
+async def test_demo_does_not_scope_the_data_source_entry_to_the_project(
+    client: AsyncClient,
+) -> None:
+    """A data source is a workspace resource, and api/v1/data_sources.py records
+    its actions with no project at all — which is exactly why the Audit tab's
+    filter excludes ``data_source.*``.
+
+    The recipe used to seed that one row WITH a project, so the demo was the only
+    place in the product where that shape existed: a row sitting in the feed that
+    no filter option could ever isolate (tripl-wkwv.15). The demo's warehouse is
+    project-OWNED so it is cleaned up with the project, but that is a cascade
+    detail, not an audit scope.
+    """
+    slug = (await client.post("/api/v1/projects/demo")).json()["slug"]
+
+    listed = await client.get(f"/api/v1/audit?project_slug={slug}&limit=200")
+    actions = {entry["action"] for entry in listed.json()["items"]}
+
+    assert "data_source.create" not in actions
+    # The scan config IS a project resource and its real route records it as one,
+    # so it must still be there — the fix is about matching each route, not about
+    # hiding the recipe's setup work.
+    assert "scan_config.create" in actions
+
+    # Absence alone would also pass if the row had been dropped altogether, which
+    # is a different change with a different meaning. It still exists, unscoped —
+    # exactly what api/v1/data_sources.py writes.
+    unscoped = await client.get("/api/v1/audit?action=data_source.create&limit=200")
+    rows = [entry for entry in unscoped.json()["items"] if entry["target_name"] == "Demo warehouse"]
+    assert len(rows) == 1, rows
+    assert rows[0]["project_id"] is None
+    assert rows[0]["project_slug"] == ""
+
+
+@pytest.mark.asyncio
+async def test_resetting_a_demo_does_not_stack_the_previous_trail(client: AsyncClient) -> None:
+    """A reset destroys the project and seeds a replacement under the SAME slug,
+    and the audit list filters on the slug — so the old project's rows used to
+    reattach to the new one (tripl-wkwv.16).
+
+    Two resets and the tab claimed every event had been created three times, by a
+    project that no longer exists. The rows were not being preserved, they were
+    being misattributed.
+    """
+    slug = (await client.post("/api/v1/projects/demo")).json()["slug"]
+
+    def creations(items: list[dict]) -> int:
+        return sum(1 for entry in items if entry["action"] == "event.create")
+
+    before = creations(
+        (await client.get(f"/api/v1/audit?project_slug={slug}&limit=200")).json()["items"]
+    )
+    assert before
+
+    reset = await client.post(f"/api/v1/projects/demo/{slug}/reset")
+    assert reset.status_code == 200, reset.text
+
+    after = (await client.get(f"/api/v1/audit?project_slug={slug}&limit=200")).json()["items"]
+    assert creations(after) == before
+    # And every surviving row belongs to the project that exists now: none may
+    # point at the replaced one, on either database (sqlite does not honour the
+    # ON DELETE SET NULL that Postgres would apply).
+    project_id = (await client.get(f"/api/v1/projects/{slug}")).json()["id"]
+    assert {entry["project_id"] for entry in after} == {project_id}
+
+    # The demo's own data-source row carries no project, so the id-scoped delete
+    # cannot see it — it is found by the warehouse it names instead. Left behind
+    # it would outlive the DataSource the same reset destroys, and every reset
+    # would add another creation of a warehouse that no longer exists.
+    unscoped = await client.get("/api/v1/audit?action=data_source.create&limit=200")
+    warehouses = [
+        entry for entry in unscoped.json()["items"] if entry["target_name"] == "Demo warehouse"
+    ]
+    assert len(warehouses) == 1, warehouses
+
+
+@pytest.mark.asyncio
 async def test_a_shell_abandoned_mid_seed_never_locks_out_the_creator(
     client: AsyncClient,
 ) -> None:
