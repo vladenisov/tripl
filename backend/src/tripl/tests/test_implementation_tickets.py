@@ -27,6 +27,20 @@ def _patch_public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(av.socket, "getaddrinfo", fake_getaddrinfo)
 
 
+def _no_existing_issue(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer the pre-create lookup with "nothing there", without a network call.
+
+    _find_existing_issue swallows a failed search on purpose, so leaving this
+    unpatched would let every create test attempt a real HTTP request and still
+    pass — slowly, and for the wrong reason (tripl-l33u.15).
+    """
+
+    def nothing(get_json, *, base_url, auth_email, api_token, label):  # noqa: ANN001, ANN202
+        return (None, None)
+
+    monkeypatch.setattr(impl_tasks, "_find_jira_issue_by_label", nothing)
+
+
 def _tracker_config(project_id: uuid.UUID) -> ProjectTrackerConfig:
     return ProjectTrackerConfig(
         project_id=project_id,
@@ -87,6 +101,7 @@ async def test_create_implementation_ticket_creates_row_and_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_public_dns(monkeypatch)
+    _no_existing_issue(monkeypatch)
     project_id = uuid.uuid4()
     branch_id = uuid.uuid4()
     event = None
@@ -271,6 +286,85 @@ async def test_sync_implementation_tickets_closes_and_marks_implemented(
         assert ready_after.status == EventStatus.implemented.value
         # ...but a higher-ranked live event is NEVER downgraded.
         assert live_after.status == EventStatus.live.value
+
+
+@pytest.mark.asyncio
+async def test_a_redelivered_create_adopts_the_issue_it_already_opened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE kill window: the row is committed after the Jira POST, and the worker
+    runs acks_late with a SIGKILL time limit, so a worker killed in between is
+    redelivered — finds no row — and used to open a second issue.
+
+    Jira's create takes no idempotency key, so nothing local can close that: the
+    only durable record of the first attempt is the issue, and the only way to
+    recognise it is to have labelled it with the branch (tripl-l33u.15).
+    """
+    _patch_public_dns(monkeypatch)
+    project_id = uuid.uuid4()
+    branch_id = uuid.uuid4()
+    async with TestSessionLocal() as session:
+        session.add(Project(id=project_id, name="Redeliver", slug="redeliver", description=""))
+        session.add(_tracker_config(project_id))
+        await _seed_event_parents(session, project_id, branch_id)
+        await session.commit()
+
+    searched: dict[str, str] = {}
+
+    def found(get_json, *, base_url, auth_email, api_token, label):  # noqa: ANN001, ANN202
+        searched["label"] = label
+        return ("10001", "ENG-1")
+
+    def must_not_post(url, body, headers=None):  # noqa: ANN001, ANN202
+        raise AssertionError("a second issue must not be created for this branch")
+
+    monkeypatch.setattr(impl_tasks, "_find_jira_issue_by_label", found)
+    monkeypatch.setattr(impl_tasks, "_post_json", must_not_post)
+
+    async with TestSessionLocal() as session:
+        await impl_tasks._create_ticket(
+            session, str(project_id), str(branch_id), [], "Implement branch"
+        )
+
+    # Searched for THIS branch, and adopted what it found rather than creating.
+    assert searched["label"] == f"tripl-branch-{branch_id.hex}"
+    async with TestSessionLocal() as session:
+        tickets = (await session.execute(select(ImplementationTicket))).scalars().all()
+        assert len(tickets) == 1
+        assert tickets[0].external_key == "ENG-1"
+        assert tickets[0].external_id == "10001"
+
+
+@pytest.mark.asyncio
+async def test_a_created_issue_carries_the_label_that_makes_it_findable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The adopt path above is only reachable if the create wrote the marker."""
+    _patch_public_dns(monkeypatch)
+    _no_existing_issue(monkeypatch)
+    project_id = uuid.uuid4()
+    branch_id = uuid.uuid4()
+    async with TestSessionLocal() as session:
+        session.add(Project(id=project_id, name="Label", slug="label", description=""))
+        session.add(_tracker_config(project_id))
+        await _seed_event_parents(session, project_id, branch_id)
+        await session.commit()
+
+    sent: dict[str, object] = {}
+
+    def fake_post_json(url, body, headers=None):  # noqa: ANN001, ANN202
+        sent["body"] = body
+        return {"id": "10002", "key": "ENG-2"}
+
+    monkeypatch.setattr(impl_tasks, "_post_json", fake_post_json)
+
+    async with TestSessionLocal() as session:
+        await impl_tasks._create_ticket(
+            session, str(project_id), str(branch_id), [], "Implement branch"
+        )
+
+    fields = sent["body"]["fields"]  # type: ignore[index]
+    assert fields["labels"] == [f"tripl-branch-{branch_id.hex}"]
 
 
 @pytest.mark.asyncio

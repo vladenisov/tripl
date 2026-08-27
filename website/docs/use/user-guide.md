@@ -321,6 +321,16 @@ polls it in the background; when Jira reports Done, those events advance to
 is separate from a Jira alert destination, which opens incident tickets from
 monitoring signals.
 
+Each ticket tripl opens carries a label naming the branch it came from
+(`tripl-branch-<id>`), and tripl looks for that label before opening one. Jira's
+create call has no idempotency key, so if a worker dies between opening the issue
+and recording it, that label is the only way the retry can tell the issue already
+exists rather than opening a second one — leave it on the issue. Two caveats
+worth knowing: Jira indexes new issues asynchronously, so a retry within seconds
+of the first attempt can still miss it; and if the search itself fails tripl
+opens the ticket anyway, because a duplicate you can see and close beats a merged
+branch with no ticket at all.
+
 Select the merged branch to reach its ticket: the **Implementation ticket**
 panel on the branch detail shows the ticket key as a link that opens the issue
 in Jira, and a chip that flips from `Open` to `Done` once the background poll
