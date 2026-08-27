@@ -1171,6 +1171,13 @@ which project you came from well enough to search it. Leaving through any of its
 rows goes through the same unsaved-changes guard as the rail links, so a draft is
 never dropped silently, and Esc hands focus back to whatever opened it.
 
+That guard now covers **every** way out of the takeover: the rail, this palette,
+Back to project, Sign out, the browser's **Back and Forward buttons**, and — as
+the browser's own prompt rather than ours — reload and closing the tab. A
+destination that keeps the draft, like moving between two Instance sections,
+passes without a word. Opening a rail link in a new tab is not a leave at all:
+the draft stays exactly where it is.
+
 The two halves of the app-wide palette's list narrow differently, and on purpose.
 
 The **menu rows** — Navigate, the project's own groups, Projects, Event types,

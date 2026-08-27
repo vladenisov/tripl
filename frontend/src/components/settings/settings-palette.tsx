@@ -67,7 +67,10 @@ export function SettingsCommandPalette({
   isOwner: boolean
   projects: readonly Pick<Project, 'name' | 'slug'>[]
   /** Guarded navigation. `settingsPath` is null for a destination outside /settings. */
-  onLeave: (href: string, settingsPath: string | null) => void
+  /** Navigate away. The destination is all a caller needs: the settings
+   *  layout's blocker asks about the URL itself, so nothing here has to
+   *  classify it (tripl-l33u.14). */
+  onLeave: (href: string) => void
   onSignOut: () => void
 }) {
   const [open, setOpenState] = useState(false)
@@ -147,7 +150,7 @@ export function SettingsCommandPalette({
             label: 'Back to project',
             hint: backHref,
             icon: ChevronLeft,
-            onSelect: () => run(() => onLeave(backHref, null)),
+            onSelect: () => run(() => onLeave(backHref)),
           },
         ]),
     {
@@ -155,7 +158,7 @@ export function SettingsCommandPalette({
       label: 'All projects',
       hint: '/workspace',
       icon: LayoutDashboard,
-      onSelect: () => run(() => onLeave('/workspace', null)),
+      onSelect: () => run(() => onLeave('/workspace')),
     },
   ]
 
@@ -170,7 +173,7 @@ export function SettingsCommandPalette({
       hint: `/settings/${item.path}`,
       icon: item.icon,
       active: item.path === activePath,
-      onSelect: () => run(() => onLeave(`/settings/${item.path}`, item.path)),
+      onSelect: () => run(() => onLeave(`/settings/${item.path}`)),
     })),
   }))
 
@@ -181,7 +184,7 @@ export function SettingsCommandPalette({
     label: project.name,
     hint: project.slug,
     icon: Folder,
-    onSelect: () => run(() => onLeave(`/p/${project.slug}/events`, null)),
+    onSelect: () => run(() => onLeave(`/p/${project.slug}/events`)),
   }))
 
   const accountRows: PaletteRow[] = [

@@ -1,15 +1,22 @@
-import { useCallback, useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Link, useBlocker, useNavigate, type Location } from 'react-router-dom'
 import { ChevronLeft, LogOut, Menu } from 'lucide-react'
 import { useAuth } from '@/components/auth-context'
 import { useConfirm } from '@/hooks/useConfirm'
 import { SETTINGS_CONTENT_ID } from './landmarks'
-import { visibleGroupsAll } from './nav'
+import { sectionPathForUrl, visibleGroupsAll } from './nav'
 import { SettingsCommandPalette } from './settings-palette'
 import { UnsavedChangesProvider, type UnsavedWork } from './unsaved-changes'
 import type { Project } from '@/types'
 
 const RAIL_TITLE_ID = 'settings-rail-title'
+
+/**
+ * Carried in the navigation's own `state` by the one exit that has already
+ * asked. Scoped to that single navigation, so unlike a ref or a piece of
+ * component state it cannot survive to wave a later one through.
+ */
+const LEAVE_CONFIRMED = { leaveConfirmed: true } as const
 
 /**
  * Full-viewport takeover shell for the Settings area (Linear/Vercel pattern).
@@ -116,38 +123,32 @@ export function SettingsLayout({
   )
 
   /**
-   * Intercept a rail link only when following it would discard unsaved work.
-   * Modified clicks (new tab / new window) are left to the browser — the whole
-   * point of rendering real anchors here was to make those work (tripl-wd66).
+   * A rail link needs no interception any more: it is a `<Link>`, so the click
+   * becomes a router navigation and the blocker below sees it — along with the
+   * palette, Back, Forward and everything else. Modified clicks (new tab / new
+   * window) never reach the router at all, which is why real anchors were
+   * rendered here in the first place (tripl-wd66) and why they still open a
+   * second window leaving the draft where it is.
    */
-  const guardLeave = (
-    event: MouseEvent<HTMLAnchorElement>,
-    href: string,
-    settingsPath: string | null,
-  ) => {
-    closeRail()
-    if (event.defaultPrevented || event.button !== 0) return
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
-    if (!draftAtRisk(settingsPath)) return
+  const guardLeave = () => closeRail()
 
-    event.preventDefault()
-    void confirmLeave(settingsPath).then((leave) => {
-      if (leave) navigate(href)
-    })
+  /** The palette's way out: no anchor, but still a router navigation. */
+  const leaveTo = (href: string) => {
+    closeRail()
+    navigate(href)
   }
 
-  /** The palette's way out: no anchor to intercept, same predicate. */
-  const leaveTo = (href: string, settingsPath: string | null) => {
-    closeRail()
-    void confirmLeave(settingsPath).then((leave) => {
-      if (leave) navigate(href)
-    })
-  }
-
-  /** Signing out unmounts the section too, so it is a leave like any other. */
+  /**
+   * Sign out is the one exit the blocker cannot own, because the destructive
+   * part is not the navigation: logging out first and asking afterwards would
+   * end a session the user might have chosen to keep. So it asks, then logs out,
+   * then navigates — telling the blocker the question is already answered in the
+   * navigation's own state, rather than in a flag that could outlive it.
+   */
   const signOut = () => {
     void confirmLeave(null).then((leave) => {
-      if (leave) void auth.logout().then(() => navigate('/auth'))
+      if (!leave) return
+      void auth.logout().then(() => navigate('/auth', { state: LEAVE_CONFIRMED }))
     })
   }
 
@@ -173,15 +174,56 @@ export function SettingsLayout({
     return () => window.removeEventListener('beforeunload', warn)
   }, [hasUnsaved])
 
-  // Browser Back is deliberately NOT guarded. The app mounts a plain
-  // BrowserRouter, so react-router has no blocker to offer, and the alternative
-  // — parking a spare history entry and reading popstate — was tried and pulled:
-  // a settings move the draft survives buries the parked entry, and every
-  // repair for that opened another hole (a Forward press reading as a leave, a
-  // second Back walking out of the area, dead entries left behind). A guard
-  // that mis-fires is worse than none, because the user learns to dismiss it.
-  // Guarding Back properly needs the data-router migration tripl-l8v2 first
-  // proposed; until then this covers the in-app exits plus reload and close.
+  /**
+   * ONE guard for every navigation: the rail, the palette, Back and Forward.
+   *
+   * A blocker is asked BEFORE the navigation commits, which is the whole reason
+   * this needed the data router (see main.tsx). The history-parking attempt it
+   * replaces could only ever react AFTER the browser had already moved, which is
+   * what made it unfixable: a settings move the draft survives buried the parked
+   * entry, and every repair opened another hole (tripl-l33u.14).
+   *
+   * Note what is NOT here any more: four call sites that each ran their own
+   * confirm and then navigated. Under a blocker that shape asks twice — once by
+   * hand, once when the navigation it triggers is itself intercepted. The exits
+   * now just navigate, and this decides.
+   */
+  const blocker = useBlocker(
+    useCallback(
+      ({ nextLocation }: { nextLocation: Location }) => {
+        // Sign-out has already asked; see `signOut`.
+        if ((nextLocation.state as typeof LEAVE_CONFIRMED | null)?.leaveConfirmed) return false
+        return draftAtRisk(sectionPathForUrl(nextLocation.pathname)) !== null
+      },
+      [draftAtRisk],
+    ),
+  )
+
+  /**
+   * Blocked navigations are resolved here rather than at the call site, because
+   * a blocker has no idea which one it caught. `proceed` replays the navigation
+   * the user accepted; `reset` returns them to where they were with the draft
+   * intact.
+   *
+   * Deliberately does NOT clear the registration on accept — see `confirmLeave`.
+   */
+  const askingFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (blocker.state !== 'blocked') {
+      askingFor.current = null
+      return
+    }
+    // ONCE per blocked navigation. `useBlocker` hands back a fresh object every
+    // render, so an effect that depends on it re-runs while the dialog is open —
+    // and asking again from inside the answer is a loop that never lets the
+    // dialog be answered. The key identifies the navigation, not the render.
+    if (askingFor.current === blocker.location.key) return
+    askingFor.current = blocker.location.key
+    void confirmLeave(sectionPathForUrl(blocker.location.pathname)).then((leave) => {
+      if (leave) blocker.proceed()
+      else blocker.reset()
+    })
+  }, [blocker, confirmLeave])
 
   return (
     <div className="relative flex h-screen overflow-hidden" style={{ background: 'var(--bg)' }}>
@@ -215,7 +257,7 @@ export function SettingsLayout({
         <div className="px-4 pb-2.5 pt-3.5">
           <Link
             to={backHref}
-            onClick={(event) => guardLeave(event, backHref, null)}
+            onClick={guardLeave}
             className="-ml-1 inline-flex items-center gap-[7px] rounded-md px-2 py-1 pr-2 text-[12.5px] no-underline transition-colors"
             style={{ color: 'var(--fg-muted)' }}
             onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--fg)')}
@@ -270,7 +312,7 @@ export function SettingsLayout({
                       to={href}
                       aria-current={active ? 'page' : undefined}
                       aria-label={item.label}
-                      onClick={(event) => guardLeave(event, href, item.path)}
+                      onClick={guardLeave}
                       className="flex items-center gap-2 rounded-md px-[9px] py-[7px] text-left text-[12.5px] font-medium no-underline transition-colors"
                       style={{
                         // Match the app shell: the main sidebar marks the active

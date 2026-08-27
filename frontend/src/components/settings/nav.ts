@@ -128,6 +128,24 @@ export function firstSectionPath(ctx: SettingsContext): string {
   return SETTINGS_NAV[ctx][0].items[0].path
 }
 
+/**
+ * The settings section a URL points at, or `null` when it points outside the
+ * takeover altogether.
+ *
+ * `null` is the answer the unsaved-work predicate treats as "leaving the area",
+ * which no draft survives. A bare `/settings` counts as leaving too: it is not a
+ * section, and nothing renders a draft there.
+ *
+ * Exists so the navigation blocker can ask about a DESTINATION the same question
+ * the rail asks about a link — one parser, so a Back press and a click cannot
+ * disagree about where they are going (tripl-l33u.14).
+ */
+export function sectionPathForUrl(pathname: string): string | null {
+  const prefix = '/settings/'
+  if (!pathname.startsWith(prefix)) return null
+  return pathname.slice(prefix.length).replace(/\/+$/, '') || null
+}
+
 /** Resolve which context owns a given section path. Defaults to 'workspace'. */
 export function contextForPath(path: string): SettingsContext {
   return path.startsWith('project/') ? 'project' : 'workspace'
