@@ -1100,17 +1100,19 @@ project is gone, so is every per-project surface that could have answered for it
 so that row carries the name and slug in its own **payload** rather than relying
 on an id that now resolves to nothing.
 
-Two limits worth knowing, both of them about *reaching* an entry rather than
-recording one:
+This tab lists one project's entries, and it asks for them by **project**, not by
+name: the slug in the URL is resolved to the project it currently belongs to. So
+renaming a project keeps its history in one place rather than splitting it at the
+rename, and a slug freed by a deletion and then taken by a new project does not
+hand the newcomer its predecessor's past.
 
-- An entry records the slug a project had **at the time**, and this tab lists
-  entries by that slug. So a rename splits the history: the tab shows what
-  happened after it, and the entries from before stay under the old slug. Nothing
-  is lost — every entry on both sides carries the same project — but joining them
-  is a query, not a click, for now.
-- The tab lives inside a project, so a **deleted** project has no page to open.
-  Its `project.delete` entry is recorded and readable through the API; a
-  workspace-wide view that can show it is not built yet.
+Which leaves the entries with no project to answer to — a data source connected,
+a member invited or given a role, a workspace API key minted, and a project's own
+deletion, since a deleted project has no page left to open. Those live in
+**Settings → Instance → Audit log**, the owner-only view of every entry on the
+instance with no project filter at all. It is the same log read at a different
+scope, so an entry appears in both places when it belongs to a project, and only
+there when it does not.
 
 A **cascade** is neither exclusion: it is recorded, but as the action that
 caused it. Deleting an event type, and deleting, merging or reverting a plan

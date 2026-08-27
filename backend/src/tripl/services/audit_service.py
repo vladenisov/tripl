@@ -164,8 +164,27 @@ async def list_entries(
     count_base = select(func.count()).select_from(AuditLog)
 
     if project_slug:
-        base = base.where(AuditLog.project_slug == project_slug)
-        count_base = count_base.where(AuditLog.project_slug == project_slug)
+        # Resolve the slug to a project and filter on the ID. ``project_slug`` on
+        # a row is DENORMALIZED — the slug the project answered to when the row
+        # was written — so matching the label means a rename splits a trail in two
+        # and a slug re-used by a later project makes it inherit its predecessor's
+        # history (tripl-wkwv.18).
+        #
+        # The fallback is the other half of the same idea: when NOTHING live
+        # answers to this slug, the label is all there is and no live project can
+        # be confused by it. That is what keeps a deleted project's rows reachable
+        # — including its ``project.delete`` row, which is born with a NULL
+        # project id because it is written after its subject is gone. Reaching
+        # those from the UI needs the workspace-wide view, which is why
+        # tripl-wkwv.17 ships with this.
+        owner_id = await session.scalar(select(Project.id).where(Project.slug == project_slug))
+        scope = (
+            AuditLog.project_id == owner_id
+            if owner_id is not None
+            else AuditLog.project_slug == project_slug
+        )
+        base = base.where(scope)
+        count_base = count_base.where(scope)
     if action:
         base = base.where(AuditLog.action == action)
         count_base = count_base.where(AuditLog.action == action)

@@ -13,7 +13,7 @@ vi.mock('@/api/audit', () => ({
   auditApi: { list: listMock, get: getMock },
 }))
 
-import { AuditTab } from './AuditTab'
+import { AuditTab, WorkspaceAuditLog } from './AuditTab'
 
 beforeEach(() => {
   listMock.mockReset()
@@ -189,18 +189,95 @@ describe('AuditTab — events in the log (tripl-wkwv.10)', () => {
   })
 })
 
+describe('WorkspaceAuditLog — the instance-wide feed (tripl-wkwv.17)', () => {
+  function renderWorkspace() {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <WorkspaceAuditLog />
+      </QueryClientProvider>,
+    )
+  }
+
+  it('asks for every project, by sending no project filter at all', async () => {
+    renderWorkspace()
+
+    await waitFor(() => expect(listMock).toHaveBeenCalled())
+    // Not an empty string, not the current project: absent. The endpoint treats
+    // project_slug as a filter rather than a scope, so omitting it is what makes
+    // this the whole instance.
+    expect(listMock.mock.calls[0][0].projectSlug).toBeUndefined()
+  })
+
+  it('offers the actions that carry no project, which the project tab cannot', async () => {
+    renderWorkspace()
+    await waitFor(() => expect(listMock).toHaveBeenCalled())
+
+    const actions = offeredActions()
+
+    // Recorded by the backend and displayed nowhere before this view.
+    // `project.delete` is here for the same reason as the rest: it is written
+    // once its subject is gone, so it carries no project either.
+    for (const action of [
+      'data_source.create',
+      'data_source.update',
+      'data_source.delete',
+      'user.invite',
+      'user.invite_revoke',
+      'user.role_update',
+      'api_key.revoke',
+      'project.delete',
+    ]) {
+      expect(actions).toContain(action)
+    }
+    // Additive, not alternative: this feed is unfiltered, so a project action
+    // matches here too and a filter narrower than its own list would lie.
+    expect(actions).toContain('event.create')
+    // Still exactly once each — `api_key.create` belongs to both halves.
+    expect(actions).toHaveLength(new Set(actions).size)
+  })
+
+  it('names the project each row belongs to, since rows from all of them sit together', async () => {
+    listMock.mockResolvedValue({ items: [auditRow(0)], total: 1 })
+    renderWorkspace()
+
+    expect(await screen.findByTitle('demo')).toBeInTheDocument()
+  })
+
+  it('does not repeat the project chip inside one project', async () => {
+    listMock.mockResolvedValue({ items: [auditRow(0)], total: 1 })
+    renderTab()
+
+    await screen.findByText('checkout_started_0')
+    // Every row on that page belongs to the project whose page it is, so the
+    // chip would restate the heading on every line.
+    expect(screen.queryByTitle('demo')).toBeNull()
+  })
+})
+
 describe('AuditTab — the project itself (tripl-wkwv.19)', () => {
-  it('offers the project lifecycle actions, including the one that outlives the project', () => {
+  it('offers the lifecycle actions a project can still answer for', () => {
     renderTab()
 
     const actions = offeredActions()
 
-    for (const action of ['project.create', 'project.update', 'project.delete', 'project.reset']) {
+    for (const action of ['project.create', 'project.update', 'project.reset']) {
       expect(actions).toContain(action)
     }
   })
 
-  it('groups them with the other project actions', () => {
+  it('does not offer the one entry a live project can never match', () => {
+    renderTab()
+
+    // `project.delete` is written after its subject is gone, so it carries no
+    // project id — and this list is filtered by the project a slug resolves to
+    // (tripl-wkwv.18). Offering it here would be an option that can only ever
+    // answer "no entries", which is what the doctrine at the top of the module
+    // forbids. It belongs to the workspace view, tested above.
+    expect(offeredActions()).not.toContain('project.delete')
+  })
+
+  it('groups the rest with the other project actions', () => {
     renderTab()
 
     const select = screen.getByLabelText('Action') as HTMLSelectElement
@@ -209,10 +286,7 @@ describe('AuditTab — the project itself (tripl-wkwv.19)', () => {
     )
     expect(group).toBeDefined()
     const grouped = Array.from(group!.querySelectorAll('option')).map((o) => o.value)
-    // A delete row keeps its slug even though its project id goes null, so it
-    // still answers a project-scoped filter — this is the one surface that can
-    // say what happened to a workspace that is gone.
-    expect(grouped).toContain('project.delete')
+    expect(grouped).toContain('project.create')
   })
 })
 

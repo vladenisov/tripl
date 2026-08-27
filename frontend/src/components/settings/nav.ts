@@ -6,6 +6,7 @@ import {
   Key,
   Lock,
   Mail,
+  ScrollText,
   Server,
   Shield,
   SlidersHorizontal,
@@ -98,6 +99,19 @@ export const WORKSPACE_GROUPS: SettingsNavGroup[] = [
         ownerOnly: true,
       },
       { id: 'system', label: 'System', icon: Server, path: 'instance/system', ownerOnly: true },
+      // The only Instance section that is not a settings form: it reads the
+      // whole audit feed rather than editing configuration. It lives here
+      // because the actions it exists for — data sources, member roles, API
+      // keys, and a project's own DELETION, which is recorded once its subject
+      // is gone — belong to no project, so the per-project tab can never show
+      // them (tripl-wkwv.17).
+      {
+        id: 'inst-audit',
+        label: 'Audit log',
+        icon: ScrollText,
+        path: 'instance/audit',
+        ownerOnly: true,
+      },
     ],
   },
 ]

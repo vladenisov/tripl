@@ -16,6 +16,7 @@ const ApiKeysSection = lazy(() => import('./ApiKeysSection'))
 const ProfileSection = lazy(() => import('./ProfileSection'))
 const SecuritySection = lazy(() => import('./SecuritySection'))
 const InstanceSection = lazy(() => import('./InstanceSection'))
+const WorkspaceAuditSection = lazy(() => import('./WorkspaceAuditSection'))
 
 const LAST_SLUG_STORAGE_KEY = 'tripl-last-project-slug'
 
@@ -133,6 +134,11 @@ function renderSection({
   if (section === 'security') return <SecuritySection />
   if (section.startsWith('instance/')) {
     if (!isOwner) return <OwnerOnly />
+    // Audit is the one Instance section that is not a settings form, so it does
+    // not go through InstanceSection — that component's whole job is to frame a
+    // ServiceSettingsPage section, and this reads a feed instead. It shares the
+    // owner gate above rather than adding a second one (tripl-wkwv.17).
+    if (section === 'instance/audit') return <WorkspaceAuditSection />
     return <InstanceSection section={section.slice('instance/'.length)} />
   }
   // Everything below is project-scoped. Never guess which project that is.

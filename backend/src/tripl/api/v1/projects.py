@@ -263,13 +263,11 @@ async def update_project(
     # Named as it stands AFTER the edit, like every other update row, and filed
     # under the NEW slug — the only slug this project answers to from here on.
     #
-    # Which splits the trail, and the split is REAL today: rows written before the
-    # rename keep the old slug, and the Audit tab matches that label rather than
-    # resolving it to a project id, so it shows nothing from before the rename.
-    # Every row on both sides does carry the same ``project_id``, so nothing is
-    # lost — it is the read path that cannot yet join them (open: tripl-wkwv.18,
-    # which has to land with the instance-wide view or deleted-project rows go
-    # from misattributed to invisible).
+    # Which leaves the rows written BEFORE it carrying the old one. That is why
+    # ``audit_service.list_entries`` resolves a slug to a project and filters on
+    # the id rather than matching the label (tripl-wkwv.18): every row on both
+    # sides of a rename carries the same ``project_id``, so the trail stays whole
+    # as long as the reader asks by project rather than by name.
     await _record_lifecycle(
         session,
         current_user,

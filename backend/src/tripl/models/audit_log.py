@@ -18,25 +18,35 @@ class AuditLog(UUIDMixin, Base):
         # delete, which cascades to its branches — seq-scans the whole append-only
         # audit log to apply the ``SET NULL`` below.
         Index("ix_audit_log_branch", "branch_id"),
-        # The read path. ``audit_service.list_entries`` filters on
-        # ``project_slug`` on every load of the only audit surface in the product,
-        # runs a second COUNT with the same predicate for the pager, and orders by
-        # ``created_at DESC, id DESC``. Unindexed that is two full scans of a table
-        # that only ever grows, plus a sort — fast in every test and slower every
-        # month in production (tripl-wkwv.20).
+        # THE THREE READ PATHS. Every one of them ends in the same
+        # ``ORDER BY created_at DESC, id DESC`` with a LIMIT, so each needs its
+        # filter column in front of those two or the page becomes a top-N sort
+        # over everything that matched (tripl-wkwv.20). All three are ASCENDING
+        # though the query reads descending: a btree is scanned equally well in
+        # either direction as long as EVERY sort column is reversed together,
+        # which these are. And all three carry ``id``, because ``created_at``
+        # alone is not a total order — ``server_default=now()`` gives every row of
+        # one batch the same value, so the pager needs its tie-break inside the
+        # index rather than in a sort on top of it (tripl-5ydt).
         #
-        # Ascending, though the query reads descending: a btree is scanned equally
-        # well in either direction as long as EVERY sort column is reversed
-        # together, which these are. Carrying ``id`` too means the index serves
-        # the tie-break the pager depends on (tripl-5ydt) rather than leaving a
-        # sort on top of it.
+        # 1. One project's log, the common case. ``list_entries`` resolves the
+        # slug to a project and matches the ID (tripl-wkwv.18), so the leading
+        # column is ``project_id`` and not the slug. This also covers the
+        # ``ON DELETE SET NULL`` cascade as a prefix: deleting any project scans
+        # this table to null the column out, which is the argument that earned
+        # ``branch_id`` its own index. Deliberately NOT claimed for the demo
+        # reset's purge — that predicate ORs across two columns and the second
+        # half is unindexed, so a scan is the honest expectation there.
+        Index("ix_audit_log_project_created", "project_id", "created_at", "id"),
+        # 2. The fallback, for a slug NO live project answers to: a deleted
+        # project's rows keep the label and lose the id, so this is the only way
+        # back to them.
         Index("ix_audit_log_project_slug_created", "project_slug", "created_at", "id"),
-        # ``project_id`` is ``ON DELETE SET NULL``, so deleting any project scans
-        # the same table to null it out — the argument that earned ``branch_id``
-        # its index, applied to the column one level up. Deliberately NOT claimed
-        # for the demo reset's purge: that predicate is an OR across two columns
-        # and the second half (``target_type``/``target_id``) is unindexed, so a
-        # scan is the honest expectation there. A reset is rare enough to pay it.
+        # 3. The workspace-wide feed, which filters by nothing at all
+        # (tripl-wkwv.17). Without this the instance audit page sorts the whole
+        # table on every load — the same failure as the others, with no predicate
+        # to narrow it first.
+        Index("ix_audit_log_created", "created_at", "id"),
         Index("ix_audit_log_project", "project_id"),
     )
 

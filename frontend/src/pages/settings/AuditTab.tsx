@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, GitBranch, ScrollText, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, FolderOpen, GitBranch, ScrollText, X } from 'lucide-react'
 
 import { auditApi } from '@/api/audit'
 import { Badge } from '@/components/ui/badge'
@@ -169,6 +169,11 @@ const ACTION_GROUPS: { label: string; actions: string[] }[] = [
       'alert_inbox.mute',
       'alert_inbox.reopen',
       'alert_inbox.false_positive',
+      // Recorded like its five siblings — the router files
+      // `alert_inbox.{action}` for every member of the AlertInboxAction literal
+      // — and missing from this list until tripl-wkwv.17, so leaving a note on an
+      // incident showed up in the feed and could not be isolated.
+      'alert_inbox.note',
       // Undoing a false-positive ratchet re-sensitises a scope, so it belongs
       // in the same filter as the click that tightened it.
       'anomaly_scope_override.delete',
@@ -177,16 +182,14 @@ const ACTION_GROUPS: { label: string; actions: string[] }[] = [
   {
     label: 'Project',
     actions: [
-      // The project's own life. `project.delete` is offered for the case that
-      // actually reaches a reader: a project deleted and later RE-created under
-      // the same slug, whose predecessor's delete row still matches this label
-      // (tripl-wkwv.18). It cannot show the ordinary case — this tab lives at
-      // /p/:slug/..., so once a project is gone there is no page to open. Until
-      // the instance-wide view exists (tripl-wkwv.17), that row is written for
-      // the API alone.
+      // The project's own life, minus its end. `project.delete` is NOT here: it
+      // is written after its subject is gone, so it carries no project id, and
+      // this list is now filtered by the project a slug RESOLVES TO
+      // (tripl-wkwv.18) — the entry could never match. It is offered in the
+      // workspace list instead, which is also the only place it can be read
+      // from: this tab lives at /p/:slug/..., and a deleted project has no page.
       'project.create',
       'project.update',
-      'project.delete',
       // Only a demo can be reset; it re-seeds in place and clears the trail that
       // came before, which is what this row explains.
       'project.reset',
@@ -200,6 +203,42 @@ const ACTION_GROUPS: { label: string; actions: string[] }[] = [
       // Only recorded with a project when the key is scoped to one; a
       // workspace-wide key carries no project and never lands here.
       'api_key.create',
+    ],
+  },
+]
+
+/**
+ * The other half of the vocabulary: actions the backend records with NO project,
+ * because their subject belongs to the workspace rather than to one project.
+ *
+ * They are excluded from ACTION_GROUPS above — a project-scoped query can never
+ * match them — and until tripl-wkwv.17 they were offered nowhere at all: written
+ * faithfully and readable on no screen, which is the worst possible place for
+ * "who connected this warehouse" and "who made that person an editor" to live.
+ * The workspace view offers this list ON TOP of the project one rather than
+ * instead of it, because that view is the unfiltered feed and every action can
+ * match there.
+ *
+ * `api_key.create` is deliberately absent: it is already offered under Project,
+ * where it lands whenever the key is scoped to one, and one action must appear
+ * in the select exactly once.
+ */
+const WORKSPACE_ACTION_GROUPS: { label: string; actions: string[] }[] = [
+  {
+    label: 'Workspace',
+    actions: [
+      'data_source.create',
+      'data_source.update',
+      'data_source.delete',
+      'user.invite',
+      'user.invite_revoke',
+      'user.role_update',
+      'api_key.revoke',
+      // Written after its subject is gone, so it carries no project id and the
+      // project tab — which filters by the project a slug resolves to — cannot
+      // match it. This is the only place a deleted workspace can be accounted
+      // for at all (tripl-wkwv.19).
+      'project.delete',
     ],
   },
 ]
@@ -286,7 +325,32 @@ function AuditPayload({ entryId }: { entryId: string }) {
   )
 }
 
+/** The audit log of one project, as its settings tab renders it. */
 export function AuditTab({ slug }: { slug: string }) {
+  return <AuditLog slug={slug} />
+}
+
+/**
+ * The same log with no project bound: every entry on the instance, newest first.
+ *
+ * This is where the actions that carry no project finally answer — and where a
+ * `project.delete` entry can be read at all, since the project tab lives under
+ * /p/:slug and a deleted project has no page to open (tripl-wkwv.17). The owner
+ * gate is the endpoint's own: the whole /audit router requires an interactive
+ * owner session, so nothing here re-checks it.
+ */
+export function WorkspaceAuditLog() {
+  return <AuditLog />
+}
+
+function AuditLog({ slug }: { slug?: string }) {
+  // Absent slug IS the workspace scope — the endpoint treats project_slug as a
+  // filter rather than a scope, so omitting it returns the whole instance.
+  const workspace = slug === undefined
+  // Additive, not alternative: the workspace feed is unfiltered, so a project
+  // action can match there too and hiding it would make the filter narrower than
+  // the list it filters.
+  const offeredGroups = workspace ? [...ACTION_GROUPS, ...WORKSPACE_ACTION_GROUPS] : ACTION_GROUPS
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [action, setAction] = useState('')
   const [emailInput, setEmailInput] = useState('')
@@ -315,7 +379,9 @@ export function AuditTab({ slug }: { slug: string }) {
   const listQuery = useQuery({
     queryKey: ['audit', queryParams],
     queryFn: () => auditApi.list(queryParams),
-    enabled: !!slug,
+    // A project view with no slug has nothing to ask about; the workspace view
+    // has no slug BY DESIGN, so the guard has to distinguish the two.
+    enabled: workspace || !!slug,
     placeholderData: keepPreviousData,
   })
 
@@ -385,20 +451,41 @@ export function AuditTab({ slug }: { slug: string }) {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-base font-semibold flex items-center gap-2">
-          <ScrollText className="h-4 w-4" />
-          Audit log
-        </h2>
+        {/* The workspace scope is mounted inside a takeover section that already
+            renders the title and a one-line description through SHeader, so a
+            second "Audit log" heading would be the page saying its own name
+            twice. The paragraph below is kept in both: it carries what the
+            one-liner cannot. */}
+        {!workspace && (
+          <h2 className="text-base font-semibold flex items-center gap-2">
+            <ScrollText className="h-4 w-4" />
+            Audit log
+          </h2>
+        )}
         <p className="text-xs text-muted-foreground">
-          Compliance trail of mutation actions on this project's plan — events,
-          schema, variables, branches — and on its scans, metrics and alerting.
-          Secrets are redacted in stored payloads. A branch chip names the
-          working branch an entry was written through. No chip means the write
-          was not branch-scoped: main, or an action with no branch to name at
-          all (alerting, scans, metrics, API keys). Field-level before/after
-          values for an event live on that event's own history, which is removed
-          with the event; this log records who created, edited or deleted it and
-          on which branch, and survives the deletion.
+          {workspace ? (
+            <>
+              Compliance trail for the whole instance: every project's plan
+              changes, plus the actions that belong to no project — data
+              sources, member invitations and roles, API keys — and the projects
+              themselves being created, renamed and deleted. A project chip names
+              the project an entry was written for; entries with none were not
+              made inside one. Secrets are redacted in stored payloads.
+            </>
+          ) : (
+            <>
+              Compliance trail of mutation actions on this project's plan —
+              events, schema, variables, branches — and on its scans, metrics and
+              alerting. Secrets are redacted in stored payloads. A branch chip
+              names the working branch an entry was written through. No chip
+              means the write was not branch-scoped: main, or an action with no
+              branch to name at all (alerting, scans, metrics, API keys).
+              Field-level before/after values for an event live on that event's
+              own history, which is removed with the event; this log records who
+              created, edited or deleted it and on which branch, and survives the
+              deletion.
+            </>
+          )}
         </p>
       </div>
 
@@ -414,7 +501,7 @@ export function AuditTab({ slug }: { slug: string }) {
                 className="flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
               >
                 <option value="">All actions</option>
-                {ACTION_GROUPS.map((group) => (
+                {offeredGroups.map((group) => (
                   <optgroup key={group.label} label={group.label}>
                     {group.actions.map((a) => (
                       <option key={a} value={a}>{a}</option>
@@ -503,7 +590,9 @@ export function AuditTab({ slug }: { slug: string }) {
             <div className="p-4 text-sm text-muted-foreground">
               {filtersActive
                 ? 'No entries match the current filter.'
-                : 'No audit entries yet. Future changes to this project — events, schema, scans, alerting — will show up here.'}
+                : workspace
+                  ? 'No audit entries yet. Recorded actions from every project, and the ones outside them — data sources, members, API keys — will show up here.'
+                  : 'No audit entries yet. Future changes to this project — events, schema, scans, alerting — will show up here.'}
             </div>
           ) : (
             <ul className="divide-y" aria-busy={isPaging}>
@@ -544,6 +633,22 @@ export function AuditTab({ slug }: { slug: string }) {
                         >
                           <GitBranch />
                           <span className="truncate">{entry.branch_name}</span>
+                        </Badge>
+                      )}
+                      {/* Only in the workspace feed, where rows from every
+                          project sit together and a row without this chip is
+                          unattributable. In the project tab every row belongs to
+                          the project whose page you are on, so the chip would
+                          repeat the heading on every line. An empty slug means
+                          the entry was not made inside a project at all. */}
+                      {workspace && entry.project_slug && (
+                        <Badge
+                          variant="outline"
+                          className="shrink-0 max-w-[9rem] text-[10px]"
+                          title={entry.project_slug}
+                        >
+                          <FolderOpen />
+                          <span className="truncate">{entry.project_slug}</span>
                         </Badge>
                       )}
                       <span

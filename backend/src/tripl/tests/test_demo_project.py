@@ -1258,6 +1258,7 @@ async def test_resetting_a_demo_does_not_stack_the_previous_trail(client: AsyncC
     being misattributed.
     """
     slug = (await client.post("/api/v1/projects/demo")).json()["slug"]
+    replaced_id = (await client.get(f"/api/v1/projects/{slug}")).json()["id"]
 
     def creations(items: list[dict]) -> int:
         return sum(1 for entry in items if entry["action"] == "event.create")
@@ -1272,11 +1273,18 @@ async def test_resetting_a_demo_does_not_stack_the_previous_trail(client: AsyncC
 
     after = (await client.get(f"/api/v1/audit?project_slug={slug}&limit=200")).json()["items"]
     assert creations(after) == before
-    # And every surviving row belongs to the project that exists now: none may
-    # point at the replaced one, on either database (sqlite does not honour the
-    # ON DELETE SET NULL that Postgres would apply).
-    project_id = (await client.get(f"/api/v1/projects/{slug}")).json()["id"]
-    assert {entry["project_id"] for entry in after} == {project_id}
+
+    # Asserted on the UNFILTERED feed, deliberately, and by COUNT. Since
+    # tripl-wkwv.18 the project filter resolves the slug to whichever project
+    # owns it now, so it hides the replaced demo's rows whether or not they were
+    # deleted — the assertion above would pass with the purge removed. And the
+    # rows cannot be recognised by the id they used to carry either: deleting the
+    # project nulls it (ON DELETE SET NULL, which the suite enforces). What
+    # survives the purge is a second full generation of the trail, so counting is
+    # what catches it.
+    everything = (await client.get("/api/v1/audit?limit=200")).json()["items"]
+    assert creations(everything) == before
+    assert all(entry["project_id"] != replaced_id for entry in everything)
 
     # The demo's own data-source row carries no project, so the id-scoped delete
     # cannot see it — it is found by the warehouse it names instead. Left behind

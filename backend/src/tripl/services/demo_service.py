@@ -411,11 +411,17 @@ async def _purge_audit_trail(session: AsyncSession, project: Project) -> None:
     entry stays readable once its project is gone — "who deleted what" is the
     thing an audit log exists to keep.
 
-    A demo reset is the one delete that RE-USES the slug, and the Audit tab
-    filters on the slug (``audit_service.list_entries``), so those surviving rows
-    do not stay readable — they reattach to the replacement. Two resets and the
-    tab claims every event was created three times, by a project that no longer
-    exists. The rows are not being preserved, they are being misattributed.
+    A demo reset is the one delete that RE-USES the slug, so those surviving rows
+    do not stay readable — they pile up behind the replacement's name. Two resets
+    and three generations of one project's authoring sit in the log, two of them
+    describing a project that no longer exists. The rows are not being preserved,
+    they are being orphaned in place.
+
+    Note what this does NOT rely on: ``list_entries`` resolves a slug to a project
+    and filters on its id now (tripl-wkwv.18), so the project tab would hide the
+    old rows either way. Hiding is not the same as not having — the workspace-wide
+    view (tripl-wkwv.17) shows every row on the instance, and that is where three
+    generations of a demo would otherwise be on display.
 
     The demo's own ``data_source.create`` row goes too, and it needs finding by a
     second rule: it deliberately carries no project (its real route records the

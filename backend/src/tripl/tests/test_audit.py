@@ -968,6 +968,66 @@ async def test_audit_records_generating_and_resetting_a_demo(client: AsyncClient
     assert "project.create" not in actions
 
 
+@pytest.mark.asyncio
+async def test_renaming_a_project_keeps_its_history_together(client: AsyncClient) -> None:
+    """A row records the slug the project answered to at the time, so matching
+    that label split a renamed project's trail in two: the tab showed what
+    happened after the rename and nothing from before (tripl-wkwv.18).
+
+    Filtering by the project the slug RESOLVES TO puts them back together, which
+    is what the row's ``project_id`` was carrying all along.
+    """
+    await _setup_project(client, "rename-before")
+    renamed = await client.patch("/api/v1/projects/rename-before", json={"slug": "rename-after"})
+    assert renamed.status_code == 200, renamed.text
+    later = await client.post(
+        "/api/v1/projects/rename-after/event-types",
+        json={"name": "click", "display_name": "Click"},
+    )
+    assert later.status_code == 201, later.text
+
+    listed = await client.get(
+        "/api/v1/audit?project_slug=rename-after&action=event_type.create&limit=200"
+    )
+    assert listed.status_code == 200
+    # Both: the one authored under the old slug and the one after the rename.
+    assert len(listed.json()["items"]) == 2, listed.json()
+
+
+@pytest.mark.asyncio
+async def test_a_recreated_slug_does_not_inherit_the_previous_trail(client: AsyncClient) -> None:
+    """Delete a project and make a new one at the same slug and the newcomer
+    used to show its predecessor's history as its own — a slug is unique only
+    among projects that currently exist (tripl-wkwv.18)."""
+    await _setup_project(client, "recycled")
+    assert (await client.delete("/api/v1/projects/recycled")).status_code == 204
+
+    again = await client.post("/api/v1/projects", json={"name": "Second", "slug": "recycled"})
+    assert again.status_code == 201, again.text
+
+    listed = await client.get("/api/v1/audit?project_slug=recycled&limit=200")
+    actions = [entry["action"] for entry in listed.json()["items"]]
+    # Its own creation, and nothing the project before it did.
+    assert actions == ["project.create"], actions
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_project_keeps_answering_to_its_freed_slug(client: AsyncClient) -> None:
+    """The other half of the same rule, and the reason it is not simply "filter
+    by id": a deleted project's rows have a NULL project id, so an id-only filter
+    would make them unreachable from every slug.
+
+    While nothing live answers to that slug, the label is all there is and no
+    live project can be confused by it.
+    """
+    await _setup_project(client, "gone-for-good")
+    assert (await client.delete("/api/v1/projects/gone-for-good")).status_code == 204
+
+    listed = await client.get("/api/v1/audit?project_slug=gone-for-good&limit=200")
+    actions = {entry["action"] for entry in listed.json()["items"]}
+    assert {"project.create", "event_type.create", "project.delete"} <= actions, actions
+
+
 def test_the_scan_pipeline_cannot_write_audit_rows() -> None:
     """A scan must never fill the audit log, and the boundary is structural.
 
