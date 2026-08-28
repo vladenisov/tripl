@@ -99,6 +99,24 @@ Important runtime facts:
 - API health endpoint is `GET /health`.
 - CORS is open in dev app setup.
 
+### Python 3.14 syntax — do not report these as errors
+
+The backend targets Python 3.14 (`requires-python = ">=3.14"`, ruff
+`target-version = "py314"`), so it uses syntax that older interpreters reject.
+Most notably [PEP 758](https://peps.python.org/pep-0758/) lets an `except`
+clause list several exception types **without parentheses**:
+
+```python
+except ValueError, TypeError:  # valid on 3.14; used ~21 times in this repo
+```
+
+Any interpreter older than 3.14 reports `SyntaxError: multiple exception types
+must be parenthesized` for every one of those lines. That is the wrong
+interpreter, not a defect — it has twice been written up as a fabricated "the
+backend cannot boot" finding. Run Python through `uv run python` (or
+`backend/.venv/bin/python`), never a system `python3`, and never report a
+syntax or type error you have not reproduced with the pinned interpreter.
+
 ## Environment Variables
 
 Primary backend settings are in [backend/src/tripl/config.py](backend/src/tripl/config.py).
