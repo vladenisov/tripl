@@ -3340,6 +3340,8 @@ export interface components {
             describe_system_prompt: string;
             /** Search Embedding Api Key Configured */
             search_embedding_api_key_configured: boolean;
+            /** Search Embedding Base Url */
+            search_embedding_base_url: string;
             /** Search Embedding Dimensions */
             search_embedding_dimensions: number;
             /** Search Embedding Model */
@@ -3356,7 +3358,7 @@ export interface components {
             overridden_fields: string[];
             /** Sources */
             sources: {
-                [key: string]: "env" | "override";
+                [key: string]: "env" | "override" | "default";
             };
         };
         /** AiSettingsTestRequest */
@@ -4285,6 +4287,23 @@ export interface components {
             scan_config_id?: string | null;
         };
         /**
+         * AlertScopeReadiness
+         * @description Whether each drift-style scope has any source data at all, PROJECT-wide.
+         *
+         *     Not a per-rule verdict and not a prediction: it answers "could this scope
+         *     ever produce a candidate here", so a client can tell an enabled-but-inert
+         *     toggle from a quiet one (tripl-wkwv.1). Both fields are always sent and
+         *     neither carries a default — see the no-defaults note on
+         *     ``MonitorSummaryItem`` for why a default here would be a lie to the
+         *     generated client rather than a server behaviour.
+         */
+        AlertScopeReadiness: {
+            /** Distribution Drift */
+            distribution_drift: boolean;
+            /** Variable Value Drift */
+            variable_value_drift: boolean;
+        };
+        /**
          * AnomalyDirection
          * @enum {string}
          */
@@ -4534,6 +4553,10 @@ export interface components {
         AuditEntryDetailResponse: {
             /** Action */
             action: string;
+            /** Branch Id */
+            branch_id: string | null;
+            /** Branch Name */
+            branch_name: string;
             /**
              * Created At
              * Format: date-time
@@ -4573,10 +4596,19 @@ export interface components {
          *     with real audit history, ``/p/*\/settings/audit`` had the slowest first
          *     content of the 75 routes in the 2026-08-17 walk. The payload now travels one
          *     row at a time, as ``AuditEntryDetailResponse`` (tripl-5ydt).
+         *
+         *     ``branch_id`` / ``branch_name`` are the plan branch the write was scoped to.
+         *     Null and empty mean the write was not made through a branch-scoped request —
+         *     main, or an action with no plan-branch dimension (alerting, scans, users) —
+         *     so a reader must not render them as "main" (tripl-wkwv.6).
          */
         AuditEntryResponse: {
             /** Action */
             action: string;
+            /** Branch Id */
+            branch_id: string | null;
+            /** Branch Name */
+            branch_name: string;
             /**
              * Created At
              * Format: date-time
@@ -7723,6 +7755,11 @@ export interface components {
             rule_id: string;
             /** Rule Name */
             rule_name: string;
+            /** Scan Config Id */
+            scan_config_id: string | null;
+            /** Scan Name */
+            scan_name: string | null;
+            scope_readiness: components["schemas"]["AlertScopeReadiness"];
             /**
              * Status
              * @enum {string}
@@ -7798,6 +7835,7 @@ export interface components {
             healthy_count: number;
             /** Monitors */
             monitors: components["schemas"]["MonitorSummaryItem"][];
+            scope_readiness: components["schemas"]["AlertScopeReadiness"];
             /** Total */
             total: number;
             /** Warning Count */
@@ -9464,6 +9502,11 @@ export interface components {
             semantic_used: boolean;
             /** Total */
             total: number;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
         };
         /** SearchResult */
         SearchResult: {
@@ -9649,7 +9692,7 @@ export interface components {
             security: components["schemas"]["SecuritySettings"];
             /** Sources */
             sources: {
-                [key: string]: "env" | "override";
+                [key: string]: "env" | "override" | "default";
             };
             storage: components["schemas"]["StorageSettings"];
             system: components["schemas"]["SystemSettings"];
@@ -9926,6 +9969,12 @@ export interface components {
         SyntheticSettings: Record<string, never>;
         /** SystemSettings */
         SystemSettings: {
+            /** Alembic Head Revision */
+            alembic_head_revision?: string | null;
+            /** Alembic Revision */
+            alembic_revision?: string | null;
+            /** Alembic Up To Date */
+            alembic_up_to_date?: boolean | null;
             /** Database Url Configured */
             database_url_configured: boolean;
             /** Debug */

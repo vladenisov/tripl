@@ -1,11 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
+import uuid
+
+from fastapi import APIRouter, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.api.deps import (
     BranchIdDep,
     EditorUserDep,
     OwnerUserDep,
     SessionDep,
-    get_owner_user,
 )
 from tripl.config import settings
 from tripl.models.domain_enums import UserRole
@@ -31,8 +33,6 @@ from tripl.services import (
 )
 
 router = APIRouter(prefix="/projects", tags=["projects"])
-
-_owner_required = [Depends(get_owner_user)]
 
 
 def _is_project_manager(user: User, project: Project) -> bool:
@@ -73,6 +73,52 @@ def _require_project_manager(user: User, project: Project) -> None:
     )
 
 
+async def _record_lifecycle(
+    session: AsyncSession,
+    user: User,
+    action: str,
+    *,
+    project_id: uuid.UUID,
+    name: str,
+    slug: str,
+    payload: dict[str, object] | None = None,
+) -> None:
+    """One audit row for a project's OWN life: created, renamed, reset, destroyed.
+
+    Everything the audit log tracks lives inside a project, and the project
+    itself was the one object with no record of its own — an owner could destroy
+    a workspace whole, with every event, variable, metric and alert rule in it,
+    and the log held nothing about who did it (tripl-wkwv.19). That is the shape
+    tripl-wkwv.10 fixed for events, one level up, and worse here: a deletion is
+    irreversible and takes every per-project surface with it, so there is no
+    second place left to look.
+
+    ``project_slug`` rather than ``project``: it resolves the id by lookup, so
+    the SAME call is correct before and after the row's subject exists. A delete
+    row therefore carries the slug and a NULL project id — which is exactly what
+    a project that no longer exists should look like — while a create or rename
+    row carries both.
+
+    The name and slug are repeated into the payload deliberately. After a delete
+    the id resolves to nothing, so the row has to be readable on its own; this is
+    the same reason ``event.bulk_delete`` files names rather than ids alone.
+
+    Takes the three values rather than the project: a delete row is written after
+    its subject is gone, and reading attributes off a deleted ORM instance is a
+    detail of session state, not something an audit row should depend on.
+    """
+    await audit_service.record(
+        session,
+        user=user,
+        action=action,
+        target_type="project",
+        target_id=project_id,
+        target_name=name,
+        project_slug=slug,
+        payload={"slug": slug, "name": name, **(payload or {})},
+    )
+
+
 def _require_demo_enabled() -> None:
     """Enforce the master rollback switch on demo PROVISIONING paths only.
 
@@ -100,7 +146,17 @@ async def create_project(
 ) -> ProjectResponse:
     # Record the creator so the editor who made a project keeps control of it
     # (see _require_project_manager) without needing an owner for every rename.
-    return await project_service.create_project(session, data, created_by=current_user.id)
+    project = await project_service.create_project(session, data, created_by=current_user.id)
+    await _record_lifecycle(
+        session,
+        current_user,
+        "project.create",
+        project_id=project.id,
+        name=project.name,
+        slug=project.slug,
+        payload=data.model_dump(),
+    )
+    return project
 
 
 @router.post(
@@ -110,7 +166,21 @@ async def create_project(
 )
 async def create_demo_project(session: SessionDep, current_user: EditorUserDep) -> ProjectResponse:
     _require_demo_enabled()
-    return await demo_service.create_demo_project(session, created_by=current_user.id)
+    project = await demo_service.create_demo_project(session, created_by=current_user.id)
+    # A demo is a project, and generating one is a person's decision — so it files
+    # the same action a hand-made project does. The recipe's own backfilled rows
+    # are the ones marked ``demo_seed``; this one is not, because it describes
+    # something a user really did.
+    await _record_lifecycle(
+        session,
+        current_user,
+        "project.create",
+        project_id=project.id,
+        name=project.name,
+        slug=project.slug,
+        payload={"is_demo": True},
+    )
+    return project
 
 
 @router.post("/demo/cancel", response_model=DemoCancelResponse)
@@ -139,7 +209,21 @@ async def reset_demo_project(
     if not project.is_demo:
         raise HTTPException(status_code=404, detail="Demo project not found")
     _require_demo_manager(current_user, project)
-    return await demo_service.reset_demo_project(session, slug, created_by=current_user.id)
+    replacement = await demo_service.reset_demo_project(session, slug, created_by=current_user.id)
+    # Recorded against the REPLACEMENT, and after it exists, so the row survives:
+    # the reset drops the old demo's audit rows by its id (tripl-wkwv.16), and a
+    # row filed against the project being destroyed would go with them. It is also
+    # the only thing that explains why the trail below it starts fresh.
+    await _record_lifecycle(
+        session,
+        current_user,
+        "project.reset",
+        project_id=replacement.id,
+        name=replacement.name,
+        slug=replacement.slug,
+        payload={"is_demo": True},
+    )
+    return replacement
 
 
 @router.delete("/demo/{slug}", status_code=204)
@@ -149,7 +233,19 @@ async def delete_demo_project(session: SessionDep, current_user: EditorUserDep, 
     if not project.is_demo:
         raise HTTPException(status_code=404, detail="Demo project not found")
     _require_demo_manager(current_user, project)
+    # Captured before the delete: afterwards the row is the only thing that knows
+    # what the id pointed at.
+    project_id, name = project.id, project.name
     await project_service.delete_project(session, slug)
+    await _record_lifecycle(
+        session,
+        current_user,
+        "project.delete",
+        project_id=project_id,
+        name=name,
+        slug=slug,
+        payload={"is_demo": True},
+    )
 
 
 @router.get("/{slug}", response_model=ProjectResponse)
@@ -163,12 +259,45 @@ async def update_project(
 ) -> ProjectResponse:
     project = await project_service.get_project_by_slug(session, slug)
     _require_project_manager(current_user, project)
-    return await project_service.update_project(session, slug, data)
+    updated = await project_service.update_project(session, slug, data)
+    # Named as it stands AFTER the edit, like every other update row, and filed
+    # under the NEW slug — the only slug this project answers to from here on.
+    #
+    # Which leaves the rows written BEFORE it carrying the old one. That is why
+    # ``audit_service.list_entries`` resolves a slug to a project and filters on
+    # the id rather than matching the label (tripl-wkwv.18): every row on both
+    # sides of a rename carries the same ``project_id``, so the trail stays whole
+    # as long as the reader asks by project rather than by name.
+    await _record_lifecycle(
+        session,
+        current_user,
+        "project.update",
+        project_id=updated.id,
+        name=updated.name,
+        slug=updated.slug,
+        payload=data.model_dump(exclude_unset=True),
+    )
+    return updated
 
 
-@router.delete("/{slug}", status_code=204, dependencies=_owner_required)
-async def delete_project(session: SessionDep, slug: str) -> None:
+# ``current_user`` as a parameter rather than a route dependency: the same
+# ``get_owner_user`` gate, but the handler now needs the user it resolves in
+# order to say WHO deleted the project.
+@router.delete("/{slug}", status_code=204)
+async def delete_project(session: SessionDep, current_user: OwnerUserDep, slug: str) -> None:
+    project = await project_service.get_project_by_slug(session, slug)
+    # Read before the delete: afterwards this row is the only thing that knows
+    # what the id pointed at.
+    project_id, name = project.id, project.name
     await project_service.delete_project(session, slug)
+    await _record_lifecycle(
+        session,
+        current_user,
+        "project.delete",
+        project_id=project_id,
+        name=name,
+        slug=slug,
+    )
 
 
 @router.post("/{slug}/danger/reset-anomalies", response_model=AnomalyResetCounts)

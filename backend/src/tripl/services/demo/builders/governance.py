@@ -219,6 +219,15 @@ async def _build_shadow_candidates(session: AsyncSession, ctx: DemoContext) -> N
             first_seen_at=week_ago,
             last_seen_at=week_ago + timedelta(days=1),
             status=SHADOW_STATUS_DISMISSED,
+            # A dismissal recording no resolver is a state the API cannot
+            # produce: reconciliation_service sets status, resolved_by and
+            # resolved_at in one step. It also gives the audit builder the
+            # instant to file its ``shadow_event.dismiss`` row at, so the row and
+            # the candidate name one moment rather than two (tripl-wkwv.14).
+            # Dated after the identity was last seen — you cannot wave away
+            # traffic before it arrives.
+            resolved_by=ctx.created_by,
+            resolved_at=week_ago + timedelta(days=2),
         )
     )
     await session.flush()

@@ -55,7 +55,7 @@ Both are counted in **buckets**, not hours, and the settings page says so under 
 
 On top of the per-bucket phase check, the detector runs a second, slower-moving test built on **seasonal decomposition** (STL for a single season, MSTL when both a daily and a weekly season are present). Decomposition splits the series into three layers: a smooth **trend**, the repeating **seasonal** shape, and the left-over **residual** noise.
 
-The **trend-shift detector** works entirely on the deseasonalized trend layer. It compares the trend level *now* against the trend level *exactly one full seasonal cycle ago*, scaled by the robust spread of the residuals. Because it operates on the deseasonalized trend, it can never be fooled by the time of day — its job is to catch **slow, sustained level changes** (a gradual 30% decline over a week) that the per-bucket band quietly absorbs one bucket at a time. A shift must clear both the sigma threshold and a **15% relative effect-size gate**, and a contiguous run is collapsed into one anomaly instead of one row per bucket. The same decomposition also powers the forecast band you see drawn ahead of the latest data in the UI.
+The **trend-shift detector** works entirely on the deseasonalized trend layer. It compares the trend level *now* against the trend level *exactly one full seasonal cycle ago*, scaled by the robust spread of the residuals. Because it operates on the deseasonalized trend, it can never be fooled by the time of day — its job is to catch **slow, sustained level changes** (a gradual 30% decline over a week) that the per-bucket band quietly absorbs one bucket at a time. A shift must clear both the sigma threshold and a **15% relative effect-size gate**, and a contiguous run is collapsed into one anomaly instead of one row per bucket. A shift is also never reported on a bucket that has neither an expectation nor any traffic: with nothing expected and nothing observed there is no movement to describe. Only that pair is excluded — an empty bucket against a real expectation is still a drop, and traffic against a zero expectation is still a spike. The same decomposition also powers the forecast band you see drawn ahead of the latest data in the UI.
 
 When both detectors flag the same bucket, the one with the **larger absolute z-score** wins, so you see the more significant explanation.
 
@@ -67,13 +67,17 @@ A scope that stops emitting keeps scoring the same way for as long as it stays s
 
 The marker can land a few buckets **after** the moment the traffic stopped, and that is expected rather than a rounding error. The anchor decides *which* run gets reported, but the report itself has to sit on a bucket the detector was allowed to flag — and `min_expected_count` blocks any bucket whose phase normally expects fewer events than that. An event that trickles through the small hours and only gets busy at 06:00 therefore dies at 02:00 but is marked at the first busy hour after it, because the 02:00 phase is below the volume floor you set. It is still one report for the whole outage, and it stays on record from then on: later scans re-derive the same anchor, see it behind their window, and leave the existing marker alone instead of rewriting it.
 
-Reported once does **not** mean visible for a day. That single report stays an **open signal** for as long as the scope is still silent, however old its bucket gets — a five-day-old outage is still listed, still counted on the badge, and still in the Overview **Open signals** stat. tripl re-checks it against the stored series rather than against the report's own age: the report says the scope was at zero, the series says it has produced nothing since, and the scan says it is still collecting for other scopes. The moment the scope emits again the signal closes on its own. Nothing new is emitted to keep it open, so an outage still costs exactly one row.
+Reported once does **not** mean visible for a day. That single report stays an **open signal** for as long as the scope is still silent, however old its bucket gets — a five-day-old outage is still listed, still counted on the badge, and still in the Overview **Open signals** stat. tripl re-checks it against the stored series rather than against the report's own age: the report says the scope was at zero **and that it normally has volume** — it had something to lose — the series says it has produced nothing since, and the scan says it is still collecting for other scopes. The moment the scope emits again the signal closes on its own. Nothing new is emitted to keep it open, so an outage still costs exactly one row.
 
 **Alerting judges it the same way.** A rule watching that scope keeps its state **open** for as long as the outage is running, rather than resolving itself after a day because the one report describing it got old. That is what keeps the monitor's status honest — it cannot read *healthy* while the Anomalies page still lists the scope as down — and it stops an incident you have already acknowledged in the Inbox from quietly un-acknowledging itself while it is still going. Holding the state open costs no repeat messages: the report's bucket never advances, so there is nothing new to notify you about (see the note on `recent_signal_window_hours` below).
 
 Clicking that row opens the scope's chart, and the chart follows the report rather than the other way round. The detail page opens on the last 7 days, so an outage that started before then would otherwise have no row of any kind inside the range it loads — the page for the incident you just clicked would show nothing at all. When the scope's open report predates the selected range, the range is extended back far enough to include it. Only a report that is **still open** does that; an older one that has since closed leaves your selection exactly where you put it.
 
-Two things close it while the scope is still down — on the page and in alerting alike. This holds for scopes backed by a scan; a **catalog metric** has no scan whose health could vouch for it, so its outage report is judged on its own age instead and drops off once that age passes the freshness window. The first is the scan itself going quiet: if *nothing* on that scan has collected within the freshness window, a switched-off collector and a dead event look identical from the stored data, and tripl will not leave a scan red on that basis. (A drop to zero on the **project total** is that case by definition, so a whole-scan blackout is judged on scan health rather than held open here.) The second is retention — an anomaly record is eventually trimmed like any other, and a scope nobody ever brought back stops being news long before then.
+Three things close it while the scope is still down — on the page and in alerting alike. This holds for scopes backed by a scan; a **catalog metric** has no scan whose health could vouch for it, so its outage report is judged on its own age instead and drops off once that age passes the freshness window. The first is the scan itself going quiet: if *nothing* on that scan has collected within the freshness window, a switched-off collector and a dead event look identical from the stored data, and tripl will not leave a scan red on that basis. (A drop to zero on the **project total** is that case by definition, so a whole-scan blackout is judged on scan health rather than held open here.) The second is a **zero baseline**: a report whose expected count is itself zero describes a scope that was not expected to emit anything, so there is no incident to hold open and it is judged on its own age like any other signal. The third is retention — an anomaly record is eventually trimmed like any other, and a scope nobody ever brought back stops being news long before then.
+
+:::note Why a zero-versus-zero report cannot be an outage
+A scope holding an outage open is checked against the series it stopped producing, and a scope that never produced anything stores no rows to check — its head stays frozen at the report, so the "still collecting" test stays true for it forever. Reports of that shape (`0 actual` against `0 expected`) were therefore permanently open, and were the one shape nothing could ever close. The detector no longer writes them at all — a bucket with neither an expectation nor any traffic is not a level shift — so the rule above now applies only to reports already on record, including those a project running `min_expected_count = 0` accumulated before the change. What that changes is the **denominator** on the Anomalies page: the *N* of "M of N open" no longer counts rows nobody could act on. The **Significant** view, the sidebar badge and the Overview headline do not move, because a zero-versus-zero row has no magnitude and never passed the gate those surfaces apply.
+:::
 
 This applies to volume series only — and to *every* volume series, not just the scope total. A single **breakdown slice** that dies (one platform, one country, while the rest of the event carries on) is reported once and keeps that report exactly the same way, so a value that disappears from the Breakdowns tab leaves a marker that stays put rather than one that vanishes on the next scan. **App-version slices are the exception** and carry no volume markers at all: a version's share rises and falls with its rollout, so scoring it against its own past would flag every release twice — once as it ramps up and once as it retires. Releases are compared against each other instead, by the release-regression check described below. Anything measured as a fraction is outside this rule: for a catalog metric with a ratio or average value, and for the platform-share comparison below, zero is a value like any other rather than an absence.
 
@@ -192,6 +196,8 @@ If a spike you can see on the chart has no marker on it yet, check the bucket's 
 
 Volume detection answers "did the count spike or drop?" Distribution drift answers a different question: **"did the *mix* change even though the total stayed flat?"** — for example, 80% of an event's traffic suddenly arriving from a single platform when it used to be evenly split.
 
+Nothing is compared until a scan names the columns to watch (**Scan settings → Distribution drift**), so an alert rule subscribed to the scope stays silent until one does. The rule editor and the monitor detail mark that scope inline when no scan in the project watches a column and no drift has been collected yet — see [When a scope is on but nothing feeds it](alerting.md#when-a-scope-is-on-but-nothing-feeds-it).
+
 When a scan designates a **platform column**, Tripl also monitors each platform's
 share of the same event total (`platform count / total count`) bucket by bucket.
 These **platform parity** anomalies appear as before/after share badges on the
@@ -277,7 +283,11 @@ Two surfaces, and they answer different questions.
 check for the **current latest release**: every regressed scope in the scan,
 with the comparability verdict and the reason when a comparison is withheld.
 These rows are recomputed from scratch on every scan, so the tab always
-describes the newest rollout and never keeps a history.
+describes the newest rollout and never keeps a history. A release-regression
+incident in the Alerting Inbox links to the monitoring page of whatever it was
+found on — **view event volume** for an event, **view event type volume** for an
+event type — so this tab is one click from there, with the same caveat that it
+describes the newest rollout only.
 
 **An alert's own row** in Settings → Alerting → Delivery log shows a *past*
 regression exactly as it was reported: scope, actual, expected and percentage,
@@ -336,11 +346,14 @@ A latest-scan signal remains open only while it is fresh in wall-clock time:
 `max(recent_signal_window_hours, 3 × the series' own interval)` — 24 hours and
 the scan interval by default, or the catalog metric's own collection interval
 where the series is a metric rather than an event scope. This prevents a stopped scan from pinning its
-last anomaly red forever. The one exception is a scope that is **still silent**:
-because its outage is reported once and never re-announced, ageing that single
-report out would erase a running incident, so it stays open until the scope
-emits again or its scan stops collecting altogether (see [An event that goes
-silent is reported once](#an-event-that-goes-silent-is-reported-once)). When the same scan/bucket/direction fires at project,
+last anomaly red forever. The one exception is a scope that is **still silent
+and had a non-zero expectation to lose**: because its outage is reported once and
+never re-announced, ageing that single report out would erase a running incident,
+so it stays open until the scope emits again or its scan stops collecting
+altogether (see [An event that goes silent is reported
+once](#an-event-that-goes-silent-is-reported-once)). A report whose expected
+count was itself zero gets no such exemption — nothing was lost, so it ages out
+on wall-clock time like every other signal. When the same scan/bucket/direction fires at project,
 event-type, and event scopes, that is one **incident**. The **Anomalies page**
 uses the *expanded* active-signals view: it lists every co-firing scope — project
 total, each event type, and each event — and tags the child rows `part of total`

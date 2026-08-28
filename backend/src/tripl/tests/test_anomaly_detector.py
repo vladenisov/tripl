@@ -850,6 +850,126 @@ def test_trend_shift_direction_matches_actual_vs_expected() -> None:
     assert trend_anomalies[0].direction == "drop"
 
 
+# A zero floor is what makes the trend path's clamped-to-zero expectation
+# reachable at all: for any positive floor the volume gate on the REPORTED value
+# (tripl-jfm3.48) already rejects it. This is the windy-ios configuration the 14
+# production rows came from (tripl-wkwv.8).
+ZERO_FLOOR_SETTINGS = AnomalyDetectionSettings(
+    baseline_window_buckets=14,
+    min_history_buckets=7,
+    sigma_threshold=4.0,
+    min_expected_count=0,
+)
+
+
+def test_trend_shift_emits_only_when_something_moved() -> None:
+    """tripl-wkwv.8: a bucket with neither an expectation nor any traffic is not
+    a spike, it is no movement, and no row may be written for it. Only the PAIR
+    is degenerate — the three other corners of the same boundary still emit.
+
+    Hand-built components so every corner is exact and costs no MSTL fit.
+    The reconstructed expectation at the anchor is ``trend[anchor - 168] +
+    seasonal[anchor]`` = ``-6.0 + seasonal``, which the clamp at the emit site
+    turns into exactly 0.0 for the low-seasonal cases; the negative pre-shift
+    level is what a real STL fit produces inside a run of dead buckets."""
+    hours = 24 * 22  # 3 full hour-of-week cycles, so period 168 is selectable
+    anchor = hours - 1
+
+    def trend_rows(seasonal_at_anchor: float, anchor_count: float) -> list[DetectedAnomaly]:
+        points = [SeriesPoint(bucket=_bucket(hour), count=1.0) for hour in range(hours)]
+        points[anchor] = SeriesPoint(bucket=_bucket(anchor), count=anchor_count)
+        trend = [1.0] * hours
+        trend[anchor] = 0.5
+        trend[anchor - 168] = -6.0
+        seasonal = [0.0] * hours
+        seasonal[anchor] = seasonal_at_anchor
+        return _detect_trend_shift(
+            points,
+            (tuple(trend), tuple(seasonal), tuple([0.0] * hours)),
+            evaluation_start=_bucket(anchor - 1),
+            settings=ZERO_FLOOR_SETTINGS,
+            interval=timedelta(hours=1),
+        ).anomalies
+
+    # Nothing expected and nothing arrived: the pre-fix code read ``0 >= 0`` as a
+    # spike and wrote "0 actual vs 0 expected".
+    assert trend_rows(0.5, 0.0) == []
+
+    # ...but traffic against a zero expectation is a real spike from nothing and
+    # must survive. This assertion is what keeps the fix honest.
+    spike_from_nothing = trend_rows(0.5, 40.0)
+    assert [
+        (row.direction, row.actual_count, row.expected_count) for row in spike_from_nothing
+    ] == [("spike", 40.0, 0.0)]
+
+    # A NEGATIVE actual against the same clamped-zero expectation is a real drop.
+    # No lane reaching this guard is signed today — the one zero-floor fractional
+    # lane, platform parity, is a ratio of two event counts. This pins the
+    # ``point.count == 0.0`` semantics for the day a signed fractional series does
+    # get a zero floor, so the guard swallows the degenerate pair and nothing else.
+    assert [(row.direction, row.expected_count) for row in trend_rows(0.5, -3.0)] == [("drop", 0.0)]
+
+    # Both halves of the boundary against a REAL expectation are untouched.
+    assert [(row.direction, row.expected_count) for row in trend_rows(10.0, 0.0)] == [("drop", 4.0)]
+    assert [(row.direction, row.expected_count) for row in trend_rows(10.0, 40.0)] == [
+        ("spike", 4.0)
+    ]
+
+
+def test_trend_shift_does_not_write_a_zero_expectation_against_an_empty_bucket() -> None:
+    """The same shape through the real MSTL fit, which is how production got its
+    14 rows (tripl-wkwv.8). A scope busy 09:00-18:00 with genuinely empty nights,
+    dead for 8 days, then alive again: inside the dead run the deseasonalized
+    trend overshoots NEGATIVE, so one seasonal period later the per-bucket
+    reconstruction clamps to exactly 0.0 — and the bucket it anchors on is a
+    night bucket that is legitimately empty. Pre-fix that wrote one row reading
+    "spike, 0.0 actual vs 0.0 expected" at z=+4.03.
+
+    Asserts the property and not the bucket: the anchor moved between hours
+    across neighbouring fixture shapes, so it is a function of the fit."""
+    hours = 24 * 37
+    points = []
+    for hour in range(hours):
+        is_alive = hour // 24 < 21 or hour // 24 >= 29  # 21 days alive, 8 dead, 8 alive again
+        is_open = 9 <= hour % 24 < 18
+        count = 40.0 if is_alive and is_open else 0.0
+        points.append(SeriesPoint(bucket=_bucket(hour), count=count))
+
+    def is_zero_versus_zero(row: DetectedAnomaly) -> bool:
+        return row.expected_count == 0.0 and row.actual_count == 0.0
+
+    evaluation_start = _bucket(hours - (24 * 8 + 12))  # covers the whole return to life
+    expanded = expand_series(points, interval=timedelta(hours=1), end_exclusive=_bucket(hours))
+    components = _fit_components([point.count for point in expanded], interval=timedelta(hours=1))
+    assert components is not None
+
+    trend_result = _detect_trend_shift(
+        expanded,
+        components,
+        evaluation_start=evaluation_start,
+        settings=ZERO_FLOOR_SETTINGS,
+        interval=timedelta(hours=1),
+    )
+
+    # The fixture must still reach the emit site, or a future refit that stops
+    # producing a shifted run would let this test pass while proving nothing.
+    assert trend_result.shifted_buckets
+    assert [row for row in trend_result.anomalies if is_zero_versus_zero(row)] == []
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=evaluation_start,
+        evaluation_end=_bucket(hours),
+        settings=ZERO_FLOOR_SETTINGS,
+    ).anomalies
+
+    assert [row for row in anomalies if is_zero_versus_zero(row)] == []
+    # ...and the incident itself is still announced: the per-bucket phase path
+    # reports the return to life, so suppressing the degenerate row loses nothing.
+    assert [row for row in anomalies if row.kind == "phase" and row.actual_count > 0]
+
+
 # --------------------------------------------------------------------------
 # Ingestion settling (tripl-jfm3.7 / tripl-jfm3.6)
 # --------------------------------------------------------------------------

@@ -403,6 +403,101 @@ describe('AlertingInbox — the card says what fired (tripl-oxkt.4)', () => {
   })
 })
 
+/**
+ * tripl-wkwv.12. A release regression's name was dead text on 30 of the 123
+ * incidents on the live instance: the deny-set in lib/monitoring.ts refuses the
+ * event page as SUBSTANTIATION for a release-cohort comparison, and this card
+ * was using that one answer to decide whether there was anywhere to go at all.
+ *
+ * The deny-set is unchanged and these tests are written so it has to stay that
+ * way — what the card gains is a second, separately-worded affordance that says
+ * what it opens instead of pretending to prove anything. Both partitions the
+ * detector emits get one, and they are different pages worded differently: the
+ * event-scoped row opens the event, the event-TYPE-scoped row the event type.
+ */
+describe('AlertingInbox — a release regression can be navigated to, not substantiated (tripl-wkwv.12)', () => {
+  /** The production shape: scope_ref IS the event id, and `event_id` repeats it. */
+  function regression(overrides: Partial<AlertInboxGroup> = {}): AlertInboxGroup {
+    return makeGroup({
+      scope_type: 'release_regression',
+      scope_types: ['release_regression'],
+      scope_ref: 'evt-1',
+      event_id: 'evt-1',
+      ...overrides,
+    })
+  }
+
+  it('leaves the name unlinked and offers a separate way to open the event', () => {
+    renderInbox({ inbox: makeInbox({ items: [regression()], total: 1 }) })
+
+    // The name itself stays plain text: clicking the identity line reads as
+    // "here is the proof", and the event page cannot prove this comparison.
+    const card = document.getElementById('incident-grp-1')!
+    expect(card).toHaveTextContent(TARGET)
+    expect(screen.queryByRole('link', { name: TARGET })).toBeNull()
+
+    expect(
+      screen.getByRole('link', { name: `View event volume for ${TARGET}` }),
+    ).toHaveAttribute('href', '/p/demo/monitoring/event/evt-1')
+  })
+
+  it('names the chart it opens and carries the caveat the words have no room for', () => {
+    renderInbox({ inbox: makeInbox({ items: [regression()], total: 1 }) })
+
+    const link = screen.getByRole('link', { name: `View event volume for ${TARGET}` })
+    // "view event volume", not "open event" or "details": the visible words
+    // name the chart the reader lands on, which is what stops the click reading
+    // as corroboration of the release-cohort comparison above it.
+    expect(link).toHaveTextContent('view event volume')
+    expect(link.getAttribute('title')).toContain('not the release-cohort comparison')
+  })
+
+  it('opens the event TYPE when the regression was found on one, in its own words', () => {
+    // The detector's other partition, emitted on every scan with an app version
+    // column: event_id is null and scope_ref is the event_type_id, which
+    // /monitoring/event-type/:id is a real page for. Withholding a link here
+    // used to be justified by "the row carries no event" — true of the EVENT
+    // route and silent about this one, so the type's name stayed dead text
+    // beside a page that renders it perfectly well.
+    renderInbox({
+      inbox: makeInbox({
+        items: [regression({ scope_ref: 'et-1', event_id: null })],
+        total: 1,
+      }),
+    })
+
+    const card = document.getElementById('incident-grp-1')!
+    expect(card).toHaveTextContent(TARGET)
+    // Still not the name: this is navigation, and the deny-set's refusal to
+    // substantiate a release-cohort comparison is untouched.
+    expect(screen.queryByRole('link', { name: TARGET })).toBeNull()
+
+    // Its OWN wording. "view event volume" on an event-type page would repeat
+    // the event/event-type conflation the deny-set exists to stop, and the two
+    // links have to stay tellable apart when both shapes sit in one inbox.
+    const link = screen.getByRole('link', { name: `View event type volume for ${TARGET}` })
+    expect(link).toHaveAttribute('href', '/p/demo/monitoring/event-type/et-1')
+    expect(link).toHaveTextContent('view event type volume')
+    expect(link.getAttribute('title')).toContain("event type's own monitoring page")
+  })
+
+  it('adds no second link to a scope the card already links', () => {
+    // The double-link guard from the card's side: an ordinary event group has
+    // its name linked as substantiation and must not also grow a navigation
+    // link to the same page. `getScopeNavigationTarget` is guarded by the
+    // complement of `getScopeMonitoringPath` precisely so this cannot be
+    // forgotten. The pattern spans both wordings so adding a third destination
+    // cannot slip past this guard.
+    renderInbox()
+
+    expect(screen.getByRole('link', { name: TARGET })).toHaveAttribute(
+      'href',
+      '/p/demo/monitoring/event/scope-a',
+    )
+    expect(screen.queryByRole('link', { name: /view event (type )?volume/i })).toBeNull()
+  })
+})
+
 describe('AlertingInbox — action slots do not move between rows (tripl-oxkt.8)', () => {
   it('renders every slot on every row, disabling the inapplicable one', () => {
     renderInbox({

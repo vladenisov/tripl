@@ -404,6 +404,38 @@ describe('VariablesTab', () => {
     )
   })
 
+  it('names a blank-named event in the override picker and its row actions (tripl-wkwv.5)', async () => {
+    // windy-ios holds exactly one event whose stored name is ''. A native
+    // <option> takes its accessible name from its text content, so that row was
+    // a selectable option announced as nothing — indistinguishable from a
+    // rendering glitch — and the two icon buttons on its existing override read
+    // "Edit override for " / "Delete override for ": a trailing space and no
+    // more (tripl-wkwv.5).
+    mockList([makeVariable({ id: 'var-1', name: 'variant', allowed_values: ['a'] })])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    vi.mocked(variableOverridesApi.list).mockResolvedValue([
+      { id: 'ovr-1', variable_id: 'var-1', event_id: 'ev-blank', event_name: '', values: ['x'] },
+    ])
+    vi.mocked(eventsApi.list).mockResolvedValue({
+      items: [{ id: 'ev-blank', name: '' }] as never,
+      total: 1,
+    })
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+
+    expect(
+      await screen.findByRole('button', { name: 'Edit override for (unnamed event)' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Delete override for (unnamed event)' }),
+    ).toBeInTheDocument()
+    // The picker itself, whose only other row is the "Select event…" placeholder.
+    expect(
+      await screen.findByRole('option', { name: '(unnamed event)' }),
+    ).toBeInTheDocument()
+  })
+
   it('keeps a legacy dotted name editable while unchanged but restricts renames', async () => {
     mockList([
       makeVariable({

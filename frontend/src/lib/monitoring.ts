@@ -78,6 +78,102 @@ export function getScopeMonitoringPath(
   return null
 }
 
+/**
+ * Scopes whose `scope_ref` is an event_type_id exactly when `event_id` is absent.
+ *
+ * Only release regressions, and only because their builder says so: a scan with
+ * an app version column detects over BOTH partitions on every pass and persists
+ * one row per finding — `event_id` set with `event_type_id` NULL for the event
+ * partition, the reverse for the event-TYPE one, and `scope_ref` holding
+ * whichever id that row is about (worker/tasks/metrics/regression.py). The
+ * delivery and the inbox group carry `scope_ref` and `event_id` but no
+ * `event_type_id`, so a null `event_id` on one of these IS the event-type
+ * partition and its ref is the id /monitoring/event-type/:id wants.
+ *
+ * Nothing else may join without that same guarantee. Schema and distribution
+ * drift also carry an `event_type_id` on the backend row, but their `scope_ref`
+ * is a FIELD NAME — reading it as an id here would rebuild the
+ * valid-looking-URL-for-a-nonexistent-page defect one scope to the left
+ * (tripl-wkwv.12, tripl-oxkt.21).
+ */
+const SCOPES_WHOSE_REF_IS_AN_EVENT_TYPE = new Set<string>(['release_regression'])
+
+/**
+ * Where a caller may send a reader to LOOK at what an alert names, and which
+ * monitoring page that is.
+ *
+ * The page is on the result because the two destinations chart different
+ * entities: an event page and an event-type page announced with the same words
+ * is the event/event-type conflation this whole area was fenced against
+ * (tripl-oxkt.21), so callers must word the link from `scope`.
+ */
+export interface ScopeNavigationTarget {
+  path: string
+  scope: 'event' | 'event_type'
+}
+
+/**
+ * Where to go and LOOK at the entity an alert names, for the scopes
+ * {@link getScopeMonitoringPath} has already refused — `null` when there is no
+ * such place either.
+ *
+ * Two different questions, and the deny-set above was being made to answer both
+ * (tripl-wkwv.12). `getScopeMonitoringPath` answers "does a page corroborate
+ * this alert?" — for a release regression the answer is still no, and nothing
+ * here weakens it: the monitoring page charts its entity's volume against the
+ * seasonal baseline over that page's own range, a different numerator,
+ * denominator, window and estimator, and the By version panel it does mount is
+ * keyed by the SCAN and only ever describes the current latest release. This
+ * answers "is there anywhere to go and look at the thing this alert names?",
+ * which for a quarter of the production inbox had no answer at all — the event
+ * name rendered as dead text and the reader had to go find it by hand on the
+ * Events page, which is the complaint the linked scope name existed to fix.
+ *
+ * GUARDED by the COMPLEMENT of {@link getScopeMonitoringPath} rather than by a
+ * second copy of the deny-set, and that form is load-bearing: it can never
+ * return a path a caller is already linking, so a surface that renders both can
+ * never show two links to one page — the exact failure the deny-set's own
+ * comment ("no second, contradicting link is offered beside it") exists to
+ * prevent. Neither branch below relaxes that guard, so it holds however the
+ * deny-set changes.
+ *
+ * BOTH partitions of a release regression get an answer, and they are different
+ * pages — the event-scoped row through its `event_id`, the event-TYPE-scoped one
+ * through its `scope_ref` (see the set above). Answering only the first left the
+ * event type's name as dead text beside a page that renders it perfectly well,
+ * for a reason ("the row carries no event") that is true of the EVENT route and
+ * says nothing about the event-type one.
+ *
+ * Callers must label the result as navigation and not as evidence: it is only
+ * ever offered for a scope whose alert the destination cannot substantiate.
+ */
+export function getScopeNavigationTarget(
+  slug: string,
+  scope: { scope_type: string; scope_ref: string; event_id?: string | null },
+): ScopeNavigationTarget | null {
+  if (getScopeMonitoringPath(slug, scope) !== null) return null
+  // For the EVENT page, read `event_id` and never `scope_ref`, even though a
+  // release regression's scope_ref IS its event id on this partition: on the
+  // other one that same field is an event_type_id, and building the event URL
+  // out of it is how /monitoring/event/{event_type_id} — a valid-looking link to
+  // a page that does not exist — got emitted (tripl-oxkt.21).
+  if (scope.event_id) {
+    return { path: `/p/${slug}/monitoring/event/${scope.event_id}`, scope: 'event' }
+  }
+  // No event, but the ref may still be an id a page is mounted on. Gated on the
+  // scope type rather than on the ref's shape, because "is this a uuid?" is the
+  // guess that produced the wrong route in the first place.
+  if (SCOPES_WHOSE_REF_IS_AN_EVENT_TYPE.has(scope.scope_type)) {
+    return {
+      // Through the shared builder, so the event-type route is spelled in one
+      // place and this cannot drift away from what App.tsx mounts.
+      path: getMonitoringPath(slug, { scope_type: 'event_type', scope_ref: scope.scope_ref }),
+      scope: 'event_type',
+    }
+  }
+  return null
+}
+
 export function getMonitoringPath(
   slug: string,
   signal: { scope_type: MetricScopeType; scope_ref: string },

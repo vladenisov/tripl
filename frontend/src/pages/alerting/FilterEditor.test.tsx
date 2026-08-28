@@ -37,14 +37,31 @@ function mockEventsFetch(): string[] {
   return calls
 }
 
+// windy-ios holds exactly one event whose stored `name` is the empty string, and
+// both label sources have to survive it: the per-id read that labels an already
+// selected value, and the searched page that labels the rows you pick from.
+function mockBlankEventFetch() {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = String(input)
+    if (/\/events\/evt-blank(\?|$)/.test(url)) {
+      return jsonResponse({ id: 'evt-blank', name: '' })
+    }
+    if (url.includes('/events')) {
+      return jsonResponse({ items: [{ id: 'evt-blank', name: '' }], total: 1 })
+    }
+    throw new Error(`Unhandled fetch: ${url}`)
+  })
+}
+
 function listCalls(calls: string[]) {
   return calls.filter((url) => /\/events\?/.test(url))
 }
 
-function renderEventFilter() {
-  const filters: RuleFilterDraft[] = [
-    { uid: 'filter-1', field: 'event', operator: 'in', values: ['evt-1'] },
-  ]
+const DEFAULT_FILTERS: RuleFilterDraft[] = [
+  { uid: 'filter-1', field: 'event', operator: 'in', values: ['evt-1'] },
+]
+
+function renderEventFilter(filters: RuleFilterDraft[] = DEFAULT_FILTERS) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
@@ -105,5 +122,29 @@ describe('FilterEditor — event scope picker (tripl-jfm3.106)', () => {
     )
     // Server-side filtering: the browser never sees the rows it did not ask for.
     expect(await screen.findByText('checkout_completed')).toBeInTheDocument()
+  })
+
+  it('names an event whose stored name is blank, on the trigger and in the list (tripl-wkwv.5)', async () => {
+    // `??` cannot catch this: `labelByValue.get()` returns '' as a HIT, so the
+    // `?? value` fallback never fires and the collapsed trigger painted nothing
+    // but a chevron — no text, and so no accessible name at all. Single-value
+    // mode is where it bites hardest, because `eq`/`ne` render no chip row: the
+    // trigger is the only place the selection is named.
+    mockBlankEventFetch()
+    renderEventFilter([
+      { uid: 'filter-1', field: 'event', operator: 'eq', values: ['evt-blank'] },
+    ])
+
+    // Source 1 — the per-id read behind `selectedLabels`, which is what labels a
+    // saved id the current page does not contain.
+    const trigger = await screen.findByRole('button', { name: '(unnamed event)' })
+
+    // Source 2 — the searched page behind `options`, which is what labels the
+    // row you would click to change the selection. Two buttons carry the name
+    // once the picker is open: the trigger and that row.
+    fireEvent.click(trigger)
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: '(unnamed event)' })).toHaveLength(2),
+    )
   })
 })

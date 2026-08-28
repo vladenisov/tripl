@@ -17,11 +17,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
 from tripl.middleware.request_id import current_request_id
+from tripl.models.audit_log import AuditLog
+from tripl.models.data_source import DataSource
 from tripl.models.domain_enums import ProjectGenerationStatus
 from tripl.models.project import Project
 from tripl.schemas.project import DemoCancelResponse, ProjectResponse
@@ -360,6 +362,7 @@ async def reset_demo_project(
     now = _demo_clock()
 
     try:
+        await _purge_audit_trail(session, project)
         await project_service.purge_project_rows(session, project)
         replacement = _new_demo_project(slug=slug, created_by=creator, name=name)
         session.add(replacement)
@@ -397,6 +400,52 @@ async def reset_demo_project(
     await cache.delete_prefix(cache.prefix_projects())
     await cache.delete_prefix(cache.prefix_data_sources())
     return await project_service.get_project(session, slug)
+
+
+async def _purge_audit_trail(session: AsyncSession, project: Project) -> None:
+    """Drop the audit rows belonging to the demo a reset is about to replace.
+
+    Deliberately HERE and not in ``project_service.purge_project_rows``: for a
+    real project the trail is meant to OUTLIVE the delete. ``audit_log.project_id``
+    is ``ON DELETE SET NULL`` and ``project_slug`` is denormalized precisely so an
+    entry stays readable once its project is gone — "who deleted what" is the
+    thing an audit log exists to keep.
+
+    A demo reset is the one delete that RE-USES the slug, so those surviving rows
+    do not stay readable — they pile up behind the replacement's name. Two resets
+    and three generations of one project's authoring sit in the log, two of them
+    describing a project that no longer exists. The rows are not being preserved,
+    they are being orphaned in place.
+
+    Note what this does NOT rely on: ``list_entries`` resolves a slug to a project
+    and filters on its id now (tripl-wkwv.18), so the project tab would hide the
+    old rows either way. Hiding is not the same as not having — the workspace-wide
+    view (tripl-wkwv.17) shows every row on the instance, and that is where three
+    generations of a demo would otherwise be on display.
+
+    The demo's own ``data_source.create`` row goes too, and it needs finding by a
+    second rule: it deliberately carries no project (its real route records the
+    action instance-wide, tripl-wkwv.15), so an id-scoped delete cannot see it.
+    Left behind it would outlive the warehouse it names — ``purge_project_rows``
+    drops that DataSource in this same transaction and writes no ``delete``
+    counterpart — so every reset would add another creation of a warehouse that
+    no longer exists. Only sources this project OWNS are matched, so a
+    workspace-global source a reader connected themselves keeps its trail.
+
+    Runs INSIDE the reset transaction, before the purge, so a seeding failure
+    rolls the whole thing back and the old demo returns with its trail intact.
+    """
+    owned_sources = (
+        (await session.execute(select(DataSource.id).where(DataSource.project_id == project.id)))
+        .scalars()
+        .all()
+    )
+    scopes: list[ColumnElement[bool]] = [AuditLog.project_id == project.id]
+    if owned_sources:
+        scopes.append(
+            and_(AuditLog.target_type == "data_source", AuditLog.target_id.in_(owned_sources))
+        )
+    await session.execute(delete(AuditLog).where(or_(*scopes)))
 
 
 def _safe_generation_error(exc: Exception) -> str:

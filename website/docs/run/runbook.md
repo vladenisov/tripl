@@ -275,6 +275,18 @@ After any `docker compose up -d` (deploy, rollback, or recovery):
    docker compose logs migrate           # ends with the upgrade head output
    ```
 
+   Then confirm it from the database rather than from the compose file:
+   **Settings → Instance → System** shows the revision this database is actually
+   stamped with and whether it equals the head this build ships. The two checks
+   above are an *inference* — the app started, so the one-shot it waits on must
+   have succeeded — and they are only available where that compose file is what
+   started the instance. The **Schema revision** tile is an *observation*, and it
+   still holds on a hand-rolled deploy that never ran `alembic upgrade head`.
+   That matters because a constraint-only migration changes nothing else a probe
+   can see: a skipped upgrade looks exactly like a correct one until something
+   writes. See [System (read-only)](../administer/admin-guide.md#system-read-only)
+   for the three states the tile reports.
+
 2. **Core services up and healthy.**
 
    ```bash

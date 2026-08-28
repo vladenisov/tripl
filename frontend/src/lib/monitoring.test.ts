@@ -4,6 +4,7 @@ import {
   getMetricMonitoringPath,
   getMonitoringPath,
   getScopeMonitoringPath,
+  getScopeNavigationTarget,
   resolveDetailScope,
   routeScopeToApiScope,
 } from './monitoring'
@@ -84,6 +85,9 @@ describe('getScopeMonitoringPath', () => {
     // refuses to emit this link. Note both fields are populated and a regression
     // scope_ref IS its event id, so nothing cheaper than an explicit deny would
     // have caught it: before the fix this returned the event page twice over.
+    // Navigation to that event lives in `getScopeNavigationTarget` below
+    // (tripl-wkwv.12) — deleting this deny-set entry restores nothing, it only
+    // puts the contradicting link back.
     expect(
       getScopeMonitoringPath('demo', {
         scope_type: 'release_regression',
@@ -126,6 +130,81 @@ describe('getScopeMonitoringPath', () => {
     expect(
       getScopeMonitoringPath('demo', {
         scope_type: 'schema',
+        scope_ref: 'field_a',
+        event_id: null,
+      }),
+    ).toBeNull()
+  })
+})
+
+describe('getScopeNavigationTarget', () => {
+  it('opens the event a release regression was found on (tripl-wkwv.12)', () => {
+    // 30 of 123 incidents on the live instance were exactly this shape and
+    // rendered their event name as dead text. The deny-set still refuses this
+    // page as SUBSTANTIATION for a release-cohort comparison; this answers the
+    // other question — "where do I go to look at the event it names?".
+    expect(
+      getScopeNavigationTarget('demo', {
+        scope_type: 'release_regression',
+        scope_ref: 'evt-1',
+        event_id: 'evt-1',
+      }),
+    ).toEqual({ path: '/p/demo/monitoring/event/evt-1', scope: 'event' })
+  })
+
+  it('opens the event TYPE a release regression was found on', () => {
+    // The other partition of the same detector, emitted on every scan with an
+    // app version column. `event_id` is null and scope_ref is the event_type_id
+    // (worker/tasks/metrics/regression.py), and /monitoring/event-type/:id is a
+    // real page for exactly that id — so "the row carries no event" is a reason
+    // to withhold the EVENT route, not a reason to leave the name dead text.
+    // What tripl-oxkt.21 removed was /monitoring/event/{event_type_id}: the
+    // wrong route for an id, not the absence of a destination.
+    expect(
+      getScopeNavigationTarget('demo', {
+        scope_type: 'release_regression',
+        scope_ref: 'et-1',
+        event_id: null,
+      }),
+    ).toEqual({ path: '/p/demo/monitoring/event-type/et-1', scope: 'event_type' })
+  })
+
+  it('offers nothing for any scope getScopeMonitoringPath already routes', () => {
+    // The complement property, asserted rather than assumed: a surface
+    // rendering both helpers can never show two links to one page. The drift
+    // row is the interesting one — it has no route of its own and reaches the
+    // event page through the fallback, so a naive "has no detail route?"
+    // implementation would double-link exactly there.
+    const routed = [
+      { scope_type: 'event', scope_ref: 'evt-1', event_id: 'evt-1' },
+      { scope_type: 'event_type', scope_ref: 'et-1', event_id: null },
+      { scope_type: 'project_total', scope_ref: 'pt-1', event_id: null },
+      { scope_type: 'metric', scope_ref: 'm-1', event_id: null },
+      { scope_type: 'variable_value_drift', scope_ref: 'plan_tier', event_id: 'evt-9' },
+    ]
+    for (const scope of routed) {
+      expect(getScopeMonitoringPath('demo', scope)).not.toBeNull()
+      expect(getScopeNavigationTarget('demo', scope)).toBeNull()
+    }
+  })
+
+  it('offers nothing for a scope with neither a page nor an event', () => {
+    // schema / distribution drift carry a null event_id: both questions have
+    // the same answer here, and it is "nowhere". Gating the event-type branch on
+    // the SCOPE TYPE rather than on "no event_id" is what keeps it that way —
+    // these carry an event_type_id on the backend row too, but their scope_ref
+    // is a field name, so reading it as an id would route `field_a` to an
+    // event-type page that does not exist.
+    expect(
+      getScopeNavigationTarget('demo', {
+        scope_type: 'schema',
+        scope_ref: 'field_a',
+        event_id: null,
+      }),
+    ).toBeNull()
+    expect(
+      getScopeNavigationTarget('demo', {
+        scope_type: 'distribution',
         scope_ref: 'field_a',
         event_id: null,
       }),

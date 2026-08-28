@@ -55,7 +55,7 @@ describe('Settings command palette destinations', () => {
 
     // The settings path travels with the href so the shell's unsaved-changes
     // predicate can tell "still in the instance group" from "leaving it".
-    expect(onLeave).toHaveBeenCalledWith('/settings/instance/storage', 'instance/storage')
+    expect(onLeave).toHaveBeenCalledWith('/settings/instance/storage')
   })
 
   it('hides owner-only sections from a non-owner, exactly as the rail does', async () => {
@@ -77,7 +77,7 @@ describe('Settings command palette destinations', () => {
     // The app palette bound itself to `projects[0]` on these routes, because no
     // /settings/* route carries a :slug — so it searched Windy Android and
     // navigated into it from a takeover bound to Windy iOS.
-    expect(onLeave).toHaveBeenCalledWith('/p/windy-ios/events', null)
+    expect(onLeave).toHaveBeenCalledWith('/p/windy-ios/events')
   })
 
   it('offers nothing scoped to a project it cannot know it is in', async () => {

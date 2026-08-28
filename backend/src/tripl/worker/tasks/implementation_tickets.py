@@ -40,6 +40,7 @@ from tripl.models.implementation_ticket import ImplementationTicket
 from tripl.models.project_tracker_config import ProjectTrackerConfig
 from tripl.worker.celery_app import celery_app
 from tripl.worker.tasks.alerts_channels import (
+    _find_jira_issue_by_label,
     _get_jira_issue_status,
     _get_json,
     _post_json,
@@ -98,6 +99,42 @@ def _resolve_jira_config(config: ProjectTrackerConfig) -> tuple[str, str, str, s
     return base_url, auth_email, api_token, project_key, issue_type
 
 
+def _branch_marker(branch_uuid: uuid.UUID) -> str:
+    """The label a branch's ticket carries, so a later run can find it again.
+
+    Derived from the branch id alone, because that is what "one ticket per
+    branch" is keyed on everywhere else — the unique constraint, the existence
+    check, the sync sweep. Hex, so it is a single JQL-safe token.
+    """
+    return f"tripl-branch-{branch_uuid.hex}"
+
+
+def _find_existing_issue(
+    *, base_url: str, auth_email: str, api_token: str, label: str
+) -> tuple[str | None, str | None]:
+    """Look for an issue this task already created, tolerating a failed search.
+
+    A search error leaves the question unanswered, and the two ways to be wrong
+    are not equal: creating a second issue is visible to a human and closable in
+    a click, while refusing to create leaves a merged branch with no ticket and
+    nothing on any screen to say why. So a failed lookup falls through to the
+    create — the behaviour that shipped before this check existed.
+    """
+    try:
+        return _find_jira_issue_by_label(
+            _get_json,
+            base_url=base_url,
+            auth_email=auth_email,
+            api_token=api_token,
+            label=label,
+        )
+    except Exception:
+        logger.warning(
+            "Could not search Jira for an existing issue labelled %s; creating one", label
+        )
+        return (None, None)
+
+
 async def _create_ticket(
     session: AsyncSession,
     project_id: str,
@@ -133,17 +170,36 @@ async def _create_ticket(
     # SSRF re-check immediately before the outbound call (DNS-rebinding defense).
     _reject_private_target(base_url, field="Jira base_url")
 
-    body_text = await _build_ticket_body(session, event_ids)
-    issue_id, issue_key = _send_jira_issue(
-        _post_json,
-        base_url=base_url,
-        auth_email=auth_email,
-        api_token=api_token,
-        project_key=project_key,
-        issue_type=issue_type,
-        summary=summary,
-        body_text=body_text,
+    # ASK BEFORE CREATING (tripl-l33u.15). The row is committed after the POST,
+    # and the worker runs acks_late with a hard time limit that SIGKILLs the
+    # child — so a worker killed in between is redelivered, finds no row, and
+    # used to open a SECOND Jira issue. Jira's create takes no idempotency key,
+    # so nothing local can close that window: the only durable record of the
+    # first attempt is the issue itself, and the only way to recognise it is to
+    # have labelled it.
+    marker = _branch_marker(branch_uuid)
+    issue_id, issue_key = _find_existing_issue(
+        base_url=base_url, auth_email=auth_email, api_token=api_token, label=marker
     )
+    if issue_key is not None:
+        logger.info(
+            "Adopting existing Jira issue %s for branch %s instead of creating a second one",
+            issue_key,
+            branch_id,
+        )
+    else:
+        body_text = await _build_ticket_body(session, event_ids)
+        issue_id, issue_key = _send_jira_issue(
+            _post_json,
+            base_url=base_url,
+            auth_email=auth_email,
+            api_token=api_token,
+            project_key=project_key,
+            issue_type=issue_type,
+            summary=summary,
+            body_text=body_text,
+            labels=[marker],
+        )
 
     external_url = f"{base_url}/browse/{issue_key}" if issue_key else ""
     session.add(
@@ -226,10 +282,26 @@ async def _sync_one(session: AsyncSession, ticket: ImplementationTicket) -> None
 
 
 async def _sync_tickets(session: AsyncSession) -> None:
-    tickets = (
+    """Poll every open ticket, isolating failures to the ticket that caused them.
+
+    IDS, not ORM objects — and that is the whole fix (tripl-l33u.16).
+    ``rollback()`` expires every persistent instance in the identity map;
+    ``expire_on_commit=False`` suppresses expiry on COMMIT and says nothing about
+    rollback. So a loop holding loaded tickets across the handler below had the
+    exact opposite of its stated effect: the first tracker failure expired all of
+    them, the next iteration's ``ticket.external_key`` became a lazy refresh —
+    synchronous IO inside a coroutine, which asyncio SQLAlchemy raises
+    MissingGreenlet for — and the exception escaped the per-ticket handler that
+    existed to contain it. Ten open tickets and a 500 on the first meant the other
+    nine went unpolled, that run and every run after it.
+
+    A uuid cannot expire. Each ticket is loaded inside its own try, after any
+    rollback the previous iteration performed.
+    """
+    ticket_ids = (
         (
             await session.execute(
-                select(ImplementationTicket).where(
+                select(ImplementationTicket.id).where(
                     ImplementationTicket.status == "open",
                     ImplementationTicket.external_key.is_not(None),
                 )
@@ -238,13 +310,17 @@ async def _sync_tickets(session: AsyncSession) -> None:
         .scalars()
         .all()
     )
-    for ticket in tickets:
+    for ticket_id in ticket_ids:
         try:
+            ticket = await session.get(ImplementationTicket, ticket_id)
+            if ticket is None:
+                # Deleted between the id sweep and now; nothing to poll.
+                continue
             await _sync_one(session, ticket)
         except Exception:
             # Isolate per-ticket failures — one bad ticket must not strand the rest.
             await session.rollback()
-            logger.exception("Failed to sync implementation ticket %s", ticket.id)
+            logger.exception("Failed to sync implementation ticket %s", ticket_id)
 
 
 async def _with_worker_session(run: Callable[[AsyncSession], Awaitable[None]]) -> None:

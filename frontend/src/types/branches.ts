@@ -210,6 +210,16 @@ export interface AuditEntry {
   user_email: string
   project_id: string | null
   project_slug: string
+  /**
+   * The plan branch the write was scoped to. Null/empty means the write was NOT
+   * made through a branch-scoped request — main, or an action with no
+   * plan-branch dimension at all (alerting, scans, data sources, users, API
+   * keys) — so it must never be rendered as "main" (tripl-wkwv.6). `branch_id`
+   * is nulled when the branch is deleted; `branch_name` is kept verbatim so the
+   * trail outlives it.
+   */
+  branch_id: string | null
+  branch_name: string
   action: string
   target_type: string
   target_id: string | null

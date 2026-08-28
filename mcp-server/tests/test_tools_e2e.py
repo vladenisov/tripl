@@ -136,7 +136,34 @@ async def test_search_reports_a_missing_semantic_flag_as_false_rather_than_null(
     is_error, text = await call_tool("search_plan", {"slug": "demo", "q": "purchase"})
 
     assert not is_error
-    assert json.loads(text)["semantic_used"] is False
+    envelope = json.loads(text)
+    assert envelope["semantic_used"] is False
+    # Same rule, same reason, for the truncation flag the route added later:
+    # ``SearchResponse.truncated: bool = False`` (tripl-wkwv.3).
+    assert envelope["truncated"] is False
+
+
+@respx.mock
+async def test_search_reports_route_truncation_to_the_agent(
+    stdio_runtime: Runtime,
+) -> None:
+    """``total`` here is the size of the response, not a count to page against.
+
+    The CLI worked around that with a page-fullness guess; this surface had no
+    workaround at all and republished ``total`` verbatim, so an agent could not
+    tell a complete answer from a clipped one (tripl-wkwv.3). ``/search`` takes
+    no offset, so the flag's answer is a bigger ``limit``.
+    """
+    respx.get(f"{API_BASE}/projects/demo/search").mock(
+        return_value=httpx.Response(
+            200, json={"items": [], "total": 0, "truncated": True, "semantic_used": True}
+        )
+    )
+
+    is_error, text = await call_tool("search_plan", {"slug": "demo", "q": "purchase", "limit": 1})
+
+    assert not is_error
+    assert json.loads(text)["truncated"] is True
 
 
 @respx.mock

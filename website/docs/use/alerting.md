@@ -281,6 +281,10 @@ the drift/regression signals are opt-in:
 | Release regression | off |
 | Metric anomaly | off |
 
+The two drift scopes act on signals something else in the project has to produce
+first, so one of them can be switched on and still be unable to fire — see
+[When a scope is on but nothing feeds it](#when-a-scope-is-on-but-nothing-feeds-it).
+
 **Metric anomalies** are opt-in via a rule's **`include_metrics`** field — the
 **Metrics** box in the rule editor, off by default. Unlike
 the drift and regression signals they behave like a volume anomaly — they carry
@@ -325,12 +329,90 @@ and release regressions **bypass** thresholds — if you enable those scopes, th
 fire regardless of the count thresholds.
 :::
 
+### When a scope is on but nothing feeds it
+
+Enabling a scope narrows what a rule reacts to; it never creates the signals.
+The two drift scopes depend on plan and scan configuration a rule does not own,
+so a rule can have one of them switched on and still be structurally unable to
+fire — no error anywhere, just permanent silence.
+
+**Variable value drift** needs some variable to document an allowed-values list
+on the **main** branch, *or* a value drift already collected in this project.
+Either documented source counts: the variable's own list of allowed values, or a
+per-event override of it. One of them is enough. Values documented on a working
+branch change nothing until that branch merges, because detection runs against
+main, and a variable excluded from scans never drifts however full its list is.
+Collected drift counts on its own for the same reason it does for distribution
+drift — candidates are built from the drift rows, so an open or snoozed row from
+the last 30 days keeps the scope live even after the documented list that
+produced it is emptied.
+
+**Distribution drift** needs a scan that names the columns to watch (**Scan
+settings → Metric breakdowns and drift → Distribution drift**), *or* drift
+already collected in this project. Either one is enough — candidates are built
+from the drift rows, so a project that has collected drift keeps the scope live
+even if the scan's field list is later emptied.
+
+When neither source exists, the rule editor and the monitor detail say so
+inline, beside the box you just ticked:
+
+- *Value drift is on, but no variable that scans observe documents an
+  allowed-values list on the main branch — this scope cannot fire until one
+  does.* The notice links to **Variables**, and adds that Variables opens on the
+  branch you have selected — a list documented on a working branch counts only
+  once it merges. (A variable excluded from scans does not count, which is what
+  "that scans observe" means.)
+- *Distribution drift is on, but no scan in this project watches a column for
+  it — this scope cannot fire until one does.* The notice links to **Scan
+  settings**. On the monitor detail, a rule bound to a single scan gets a link
+  straight to **that scan's** settings; an **All scans** rule, and the rule
+  editor in every case, links to the scan list.
+
+On the monitor detail the notice sits under the scope chips in the **Condition**
+panel, and the affected chip itself is flagged and repeats the sentence on hover.
+The checkbox in the editor stays enabled: the precondition can be satisfied
+later, and locking the toggle would report a problem from the one screen that
+then refused to let you set the rule up before the data exists. In the editor
+the notice's link opens in a **new tab**, so acting on it does not close the
+dialog and discard a half-built rule; on the read-only monitor detail it opens
+in the same tab.
+
+Programs read the same fact from `scope_readiness` on `GET /monitors-summary`
+and `GET /monitors/{rule_id}` — two booleans, `variable_value_drift` and
+`distribution_drift`, with the same meaning on both responses. It answers *could
+this scope ever produce a candidate in this project*, not *will this rule fire*.
+Whether a rule fires also depends on thresholds, filters, mutes and a scan
+actually running, and readiness says nothing about any of those.
+`GET /monitors/{rule_id}` additionally carries `scan_config_id` and
+`scan_name` — the scan the rule is narrowed to, both null on an **All scans**
+rule. They name the binding; they do **not** narrow `scope_readiness`, which is
+still the project-wide answer on both responses.
+
+:::warning Readiness is project-wide, and not scan-aware
+`scope_readiness` is one fact about the whole project. A rule
+[bound to a single scan](#narrowing-a-rule-to-one-scan) therefore shows no
+warning as long as *some* scan in the project watches a column for distribution
+drift — even when the scan that rule is actually bound to watches none. For a
+scan-bound rule, check that scan's own **Distribution drift** list before
+concluding the scope can fire. The monitor detail now names that scan for you:
+the **Condition** panel's **Scan** row shows which one to open, so the check is
+no longer a hunt for *which* scan. The row is text, though — opening it is still
+a trip through **Scans**. The direct link to a scan's own settings appears only
+in the notice above, and that notice shows only when *nothing* in the project
+feeds distribution drift, which is the opposite of the case this warning is
+about. The verdict itself is still the project's.
+:::
+
 ### Narrowing a rule to one scan
 
 The **Scan** picker in the rule editor binds a rule to a single scan
 configuration. **All scans** (the default, and what every rule created before
 this option existed still has) keeps the original project-wide behaviour, so
 nothing changes unless you pick a scan.
+
+A rule's binding is also shown on its monitor detail: the **Condition** panel's
+first row is **Scan**, reading **All scans** when the rule is project-wide. You
+can tell a narrowed rule from a project-wide one without opening the editor.
 
 Use it when one scan is materially noisier or less valuable than the rest — a
 legacy or archived-data scan, for example — and you want it out of a channel
@@ -597,6 +679,11 @@ window rather than a scope over a bucket:
   the message, and the link keeps working after the next release ships. Release
   regression is the only item type that links there — every other scope has a
   page that shows *more* than its alert line did, and gets sent to that instead.
+  The Inbox row for the same incident offers a separate link beside the scope
+  name — **view event volume**, or **view event type volume** when the
+  regression was found on a type. That is navigation to the event or event type
+  it names, not a second route to these numbers: this delivery row is still the
+  only surface that holds them, and the message still carries exactly one link.
 - **Each line links to its own row, not just to the delivery.** One delivery
   carries up to 8 items, so the `?item=` on the end of the link names the scope
   that line was about: the delivery table scrolls to that row and marks it **from
@@ -814,6 +901,18 @@ event type, project-total or metric monitoring page — so you can check whether
 the alert is real without leaving for the catalog and finding it by hand. Scopes
 with no page of their own (a schema or distribution drift) link to the event they
 were detected on, or stay plain text when there is nothing to open.
+
+A **release regression** is the one scope whose name stays plain text even
+though it names something you can open. No page corroborates the comparison it
+made — see [Release-regression items](#release-regression-items) — so linking
+the name would offer a chart that disagrees with the alert as if it were the
+proof. The row instead offers a separate link beside the name, worded for what
+it opens: **view event volume** when the regression was found on an event,
+**view event type volume** when it was found on an event *type*. Either way it
+is navigation, not evidence. It opens that entity's own monitoring page, which
+charts its volume against the seasonal baseline over that page's own range; the
+page's **By version** tab covers the current latest release only, so it will not
+show this incident's comparison once a newer release ships.
 
 **The 30 days are a rolling window, not a backlog.** An incident nobody touches
 is not resolved when it leaves the page — it simply stops having fired inside the

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
@@ -183,6 +184,53 @@ async def _get_candidate(
     return candidate
 
 
+# --- inbox resolutions: what the route answers, and what its audit row needs ---
+#
+# Both resolutions are recorded, and the audit row is written in the ROUTER, never
+# here. That is not style. The sync Celery worker imports from ``services`` —
+# app_settings_service, search_service, embedding_service, the demo builders — and
+# never from ``api``, so keeping ``audit_service.record`` on the router side of
+# that line is what makes "a scan writes no audit rows" structural rather than a
+# promise; tests/test_audit.py freezes it by reading imports. So the facts the row
+# needs have to LEAVE the service, the same division of labour
+# ``event_service.bulk_delete_events`` uses when it hands the router back
+# (id, name) pairs for the delete row (tripl-wkwv.13).
+
+
+@dataclass(frozen=True)
+class ShadowEventAcceptResult:
+    """The accept route's answer plus the facts its audit row names.
+
+    ``event_create`` is the schema object this service actually passed to
+    ``event_service.create_event``, not a reconstruction of it from the created
+    row. ``event.create`` is one action filed through two doors — POST /events and
+    this one — and one action must not grow two payload shapes; re-deriving the
+    input from the output is how the two quietly stop matching.
+
+    ``event`` is carried separately because ``event.name`` is not always
+    ``event_create.name``: a governing scan rule can rename it, and the row has to
+    name the event that exists.
+    """
+
+    response: ShadowEventAcceptResponse
+    event: Event
+    event_create: EventCreate
+    candidate: ShadowEventCandidate
+
+
+@dataclass(frozen=True)
+class ShadowEventDismissResult:
+    """The dismiss route's answer plus the candidate it retired.
+
+    Nothing is created here, so there is no event to point an audit row at — the
+    candidate is the target, and the payload is the traffic the reader is choosing
+    to stop being told about.
+    """
+
+    response: ShadowEventDismissResponse
+    candidate: ShadowEventCandidate
+
+
 async def accept_shadow_event(
     session: AsyncSession,
     slug: str,
@@ -191,7 +239,7 @@ async def accept_shadow_event(
     *,
     user_id: uuid.UUID,
     branch_id: uuid.UUID | None,
-) -> ShadowEventAcceptResponse:
+) -> ShadowEventAcceptResult:
     project_id = await get_project_id_by_slug(session, slug)
     candidate = await _get_candidate(session, project_id, candidate_id)
     if candidate.status != SHADOW_STATUS_NEW:
@@ -221,16 +269,12 @@ async def accept_shadow_event(
             detail="An event with this source identity already exists (possibly archived)",
         )
 
-    event = await event_service.create_event(
-        session,
-        slug,
-        EventCreate(
-            event_type_id=event_type_id,
-            name=data.name or candidate.event_name,
-            status="live",
-        ),
-        branch_id=branch_id,
+    event_create = EventCreate(
+        event_type_id=event_type_id,
+        name=data.name or candidate.event_name,
+        status="live",
     )
+    event = await event_service.create_event(session, slug, event_create, branch_id=branch_id)
     # The scan identity is what the metrics collector matches on — without it
     # the accepted event would never attach to warehouse data.
     event.source_name = candidate.event_name
@@ -241,10 +285,15 @@ async def accept_shadow_event(
     candidate.resolved_at = datetime.now(UTC)
     await session.commit()
 
-    return ShadowEventAcceptResponse(
-        candidate_id=candidate.id,
-        event_id=event.id,
-        status=SHADOW_STATUS_ACCEPTED,
+    return ShadowEventAcceptResult(
+        response=ShadowEventAcceptResponse(
+            candidate_id=candidate.id,
+            event_id=event.id,
+            status=SHADOW_STATUS_ACCEPTED,
+        ),
+        event=event,
+        event_create=event_create,
+        candidate=candidate,
     )
 
 
@@ -254,7 +303,7 @@ async def dismiss_shadow_event(
     candidate_id: uuid.UUID,
     *,
     user_id: uuid.UUID,
-) -> ShadowEventDismissResponse:
+) -> ShadowEventDismissResult:
     project_id = await get_project_id_by_slug(session, slug)
     candidate = await _get_candidate(session, project_id, candidate_id)
     if candidate.status != SHADOW_STATUS_NEW:
@@ -268,9 +317,12 @@ async def dismiss_shadow_event(
     candidate.resolved_at = datetime.now(UTC)
     await session.commit()
 
-    return ShadowEventDismissResponse(
-        candidate_id=candidate.id,
-        status=SHADOW_STATUS_DISMISSED,
+    return ShadowEventDismissResult(
+        response=ShadowEventDismissResponse(
+            candidate_id=candidate.id,
+            status=SHADOW_STATUS_DISMISSED,
+        ),
+        candidate=candidate,
     )
 
 

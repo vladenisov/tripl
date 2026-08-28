@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from "react"
 
-import type { AlertDestination, EventType, ScanConfig } from "@/types"
+import type { AlertDestination, AlertScopeReadiness, EventType, ScanConfig } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { getErrorMessage } from "@/lib/utils"
 
 import { FilterEditor } from "./FilterEditor"
+import { InertScopeNotice } from "./InertScopeNotice"
 import { TemplateEditor } from "./TemplateEditor"
 import {
   ALL_SCANS_OPTION,
@@ -37,6 +38,13 @@ interface RuleEditorDialogProps {
   setRuleForm: Dispatch<SetStateAction<RuleFormState>>
   eventTypes: EventType[]
   scans: ScanConfig[]
+  /**
+   * Whether the two drift scopes have any source data in this project.
+   * Optional because it rides along on the monitors-summary response: while
+   * that request is in flight there is no answer yet, and a form must not
+   * accuse a project on the strength of a value it does not have.
+   */
+  scopeReadiness?: AlertScopeReadiness
   onSubmit: () => void
   isPending: boolean
   isError: boolean
@@ -71,6 +79,7 @@ export function RuleEditorDialog({
   setRuleForm,
   eventTypes,
   scans,
+  scopeReadiness,
   onSubmit,
   isPending,
   isError,
@@ -83,6 +92,14 @@ export function RuleEditorDialog({
     destinations.find(destination => destination.id === destinationId)?.type
     ?? destinations[0]?.type
     ?? 'slack'
+
+  // `=== false` rather than `!`: an absent or still-in-flight readiness must
+  // render NOTHING. The form would otherwise accuse a project on the strength
+  // of a value it does not have yet (tripl-wkwv.1).
+  const distributionIsInert =
+    ruleForm.include_distribution_drifts && scopeReadiness?.distribution_drift === false
+  const valueDriftIsInert =
+    ruleForm.include_variable_value_drifts && scopeReadiness?.variable_value_drift === false
 
   return (
     <Dialog open={open} onOpenChange={value => { if (!value) onClose() }}>
@@ -226,6 +243,27 @@ export function RuleEditorDialog({
                 Metrics
               </label>
             </div>
+
+            {/* The boxes above stay ENABLED while these notices are up. The
+                precondition can be satisfied later, and locking the toggle
+                would make the problem unfixable from the one screen that
+                reports it — the reader would be told what is wrong and denied
+                the switch.
+
+                `newTab` is set here and on no other caller: the draft around
+                these notices is component state that no exit preserves, so a
+                same-tab link would discard a half-built rule the moment the
+                reader acted on what the notice told them (tripl-wkwv.1). */}
+            {(distributionIsInert || valueDriftIsInert) && (
+              <div className="grid gap-2">
+                {distributionIsInert && (
+                  <InertScopeNotice slug={slug} scope="distribution_drift" newTab />
+                )}
+                {valueDriftIsInert && (
+                  <InertScopeNotice slug={slug} scope="variable_value_drift" newTab />
+                )}
+              </div>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <label className="flex items-center gap-2 text-sm">

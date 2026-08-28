@@ -9,23 +9,33 @@ from sqlalchemy import select
 from tripl import crypto
 from tripl.config import settings
 from tripl.models.app_setting import SERVICE_SETTINGS_KEY, AppSetting
-from tripl.services import app_settings_service
+from tripl.services import app_settings_service, embedding_service, migration_status_service
 from tripl.tests.conftest import TestSessionLocal
 
 
 @pytest.mark.asyncio
 async def test_service_settings_update_uses_env_fallback_and_encrypts_secrets(
     client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original_key = settings.encryption_key
     settings.encryption_key = Fernet.generate_key().decode()
     crypto._fernet.cache_clear()
+    # Pin the field the source assertion below reads, so the suite does not
+    # depend on whatever AI_ENABLED the developer's shell happens to carry.
+    monkeypatch.setattr(settings, "ai_enabled", False)
     try:
         await client.post("/api/v1/projects", json={"name": "AI", "slug": "settings-ai"})
 
         initial = await client.get("/api/v1/settings")
         assert initial.status_code == 200
-        assert initial.json()["sources"]["ai.ai_enabled"] == "env"
+        # "default", not "env": nothing delivers AI_ENABLED here and False is the
+        # built-in default (config.py's ``ai_enabled: bool = False``). This
+        # assertion used to read "env" because every field with no stored
+        # override was asserted to come from the environment, which is exactly
+        # the claim tripl-wkwv.2 is about — the badge was not evidence of
+        # anything. The flip is the fix, not a regression.
+        assert initial.json()["sources"]["ai.ai_enabled"] == "default"
         assert "runtime" in initial.json()
         assert "security" in initial.json()
         assert "storage" in initial.json()
@@ -135,6 +145,9 @@ def test_apply_startup_service_overrides_mutates_settings(
     finally:
         for field, value in originals.items():
             setattr(settings, field, value)
+        # Process-lifetime state (tripl-wkwv.2): a successful apply records what
+        # the environment held before it, and pytest shares one process.
+        app_settings_service._ENV_BEFORE_STARTUP_APPLY.clear()
 
 
 def test_apply_startup_service_overrides_is_noop_on_db_error(
@@ -245,6 +258,202 @@ async def test_registration_mode_override_wins_over_env(
     # Clearing the override falls back to the env value.
     cleared = await client.patch("/api/v1/settings", json={"security": {"registration_mode": None}})
     assert cleared.status_code == 200, cleared.text
-    assert cleared.json()["sources"]["security.registration_mode"] == "env"
+    # "default", not "env": the monkeypatch above pins "open", which IS the
+    # built-in default (config.py's ``registration_mode: str = REGISTRATION_OPEN``),
+    # and a resolved value equal to the default cannot be told apart from a
+    # delivered one (tripl-wkwv.2). The fallback itself is unchanged — only the
+    # badge stopped claiming an environment variable it has no evidence for.
+    assert cleared.json()["sources"]["security.registration_mode"] == "default"
     async with TestSessionLocal() as session:
         assert await app_settings_service.get_registration_mode(session) == "open"
+
+
+@pytest.mark.asyncio
+async def test_clearing_a_startup_applied_override_stops_crediting_the_environment(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The case the registration_mode test above cannot reach (tripl-wkwv.2).
+
+    ``registration_mode`` is the one security field excluded from
+    STARTUP_APPLIED_FIELDS, so its singleton is never mutated. Every other one is:
+    ``apply_startup_service_overrides`` pins the stored value onto ``settings``
+    and nothing puts it back. Clearing the override then popped the row while the
+    singleton still held the deleted value, so the badge asserted an environment
+    variable — HSTS_ENABLED here — that was never set anywhere, on the exact
+    surface built to make deployment configuration verifiable.
+    """
+    monkeypatch.setattr(settings, "hsts_enabled", False)
+
+    stored = await client.patch("/api/v1/settings", json={"security": {"hsts_enabled": True}})
+    assert stored.status_code == 200, stored.text
+    assert stored.json()["sources"]["security.hsts_enabled"] == "override"
+
+    # The restart. main.py runs this at module scope, in the process that then
+    # serves /api/v1/settings.
+    async with TestSessionLocal() as session:
+        overrides = await app_settings_service.get_service_overrides(session)
+    monkeypatch.setattr(
+        app_settings_service, "get_service_overrides_sync", lambda _session: overrides
+    )
+    try:
+        applied = app_settings_service.apply_startup_service_overrides(session=object())  # type: ignore[arg-type]
+        assert "hsts_enabled" in applied
+        assert settings.hsts_enabled is True
+        # Still an override, and still applied: the startup mutation changes
+        # nothing about the field while the row exists.
+        held = await client.get("/api/v1/settings")
+        assert held.json()["security"]["hsts_enabled"] is True
+        assert held.json()["sources"]["security.hsts_enabled"] == "override"
+
+        cleared = await client.patch("/api/v1/settings", json={"security": {"hsts_enabled": None}})
+
+        assert cleared.status_code == 200, cleared.text
+        # False is config.py's ``hsts_enabled: bool = False`` — what this instance
+        # will boot with next time, and what nothing delivered.
+        assert cleared.json()["security"]["hsts_enabled"] is False
+        assert cleared.json()["sources"]["security.hsts_enabled"] == "default"
+    finally:
+        app_settings_service._ENV_BEFORE_STARTUP_APPLY.clear()
+
+
+@pytest.mark.asyncio
+async def test_setting_source_distinguishes_a_delivered_value_from_the_code_default(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The assertion the system could not make before tripl-wkwv.2.
+
+    "Is this instance using the shipped default, or was it told otherwise?" was
+    unanswerable from any runtime surface: every field with no stored override
+    was badged "env", so the badge said the same thing either way and the only
+    sound check was diffing values against a copy of the source by hand.
+    """
+    default_model = app_settings_service._code_default("search_embedding_model")
+    monkeypatch.setattr(settings, "search_embedding_model", default_model)
+
+    resting = await client.get("/api/v1/settings")
+    assert resting.status_code == 200
+    assert resting.json()["sources"]["ai.search_embedding_model"] == "default"
+
+    monkeypatch.setattr(settings, "search_embedding_model", "text-embedding-3-large")
+
+    delivered = await client.get("/api/v1/settings")
+    assert delivered.json()["sources"]["ai.search_embedding_model"] == "env"
+
+    # An override wins over both — including one whose value equals the built-in
+    # default, because a row exists and Reset will clear it.
+    stored = await client.patch(
+        "/api/v1/settings", json={"ai": {"search_embedding_model": default_model}}
+    )
+    assert stored.status_code == 200, stored.text
+    assert stored.json()["sources"]["ai.search_embedding_model"] == "override"
+
+
+@pytest.mark.asyncio
+async def test_ai_settings_report_the_embeddings_endpoint_and_agree_with_the_caller(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where indexed plan text is POSTed has to be readable from the running stack.
+
+    SEARCH_EMBEDDING_BASE_URL has been dropped from the compose env allowlist
+    three times. Each time the only way to notice was to read the source and
+    diff by hand, because no API surface carried the value at all (tripl-wkwv.2).
+    """
+    self_hosted = "https://llm.internal.example/v1"
+    monkeypatch.setattr(settings, "search_embedding_base_url", self_hosted)
+
+    resp = await client.get("/api/v1/settings/ai")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ai"]["search_embedding_base_url"] == self_hosted
+    assert body["sources"]["ai.search_embedding_base_url"] == "env"
+    # What the API reports must be the endpoint the text is actually POSTed to,
+    # not a parallel copy that can drift away from the caller.
+    assert embedding_service.embeddings_url().startswith(self_hosted)
+
+    # And the prod state the issue documents: nothing delivered, so the vectors
+    # are going to OpenAI. The badge has to say "default" rather than assert an
+    # environment variable that was never seen.
+    monkeypatch.setattr(
+        settings,
+        "search_embedding_base_url",
+        app_settings_service._code_default("search_embedding_base_url"),
+    )
+    at_default = await client.get("/api/v1/settings/ai")
+    assert at_default.json()["sources"]["ai.search_embedding_base_url"] == "default"
+
+
+@pytest.mark.asyncio
+async def test_the_embeddings_endpoint_cannot_be_repointed_at_runtime(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reported, never editable — pinned at BOTH gates.
+
+    The vectors already in pgvector came from whatever endpoint produced them,
+    and similarity between two embedding spaces is meaningless, so repointing
+    this at runtime would poison the index with no error anywhere. It is kept out
+    of ``AiSettingsUpdate`` AND out of ``EDITABLE_FIELDS``; a later refactor that
+    adds it to AI_FIELDS for badge convenience must fail here rather than
+    silently make it persistable.
+    """
+    monkeypatch.setattr(settings, "search_embedding_base_url", "https://api.openai.com/v1")
+
+    resp = await client.put(
+        "/api/v1/settings/ai", json={"search_embedding_base_url": "https://evil.example/v1"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ai"]["search_embedding_base_url"] == "https://api.openai.com/v1"
+    assert embedding_service.embeddings_url() == "https://api.openai.com/v1/embeddings"
+    assert "search_embedding_base_url" not in app_settings_service.EDITABLE_FIELDS
+
+    async with TestSessionLocal() as session:
+        row = await session.scalar(select(AppSetting).where(AppSetting.key == SERVICE_SETTINGS_KEY))
+        stored = dict(row.value) if row is not None and isinstance(row.value, dict) else {}
+        assert "search_embedding_base_url" not in stored
+
+
+@pytest.mark.asyncio
+async def test_system_section_reports_the_applied_revision_and_head(
+    client: AsyncClient,
+) -> None:
+    """A serving app used to only IMPLY that migrations ran (tripl-wkwv.7).
+
+    Note what this suite can and cannot show: its schema is built by
+    ``Base.metadata.create_all``, so there is no ``alembic_version`` table at
+    all. That makes it the exact honest-unknown case — and the case that must
+    still answer 200, because the settings page may never 500 over a revision it
+    could not read.
+    """
+    migration_status_service.head_revision.cache_clear()
+
+    resp = await client.get("/api/v1/settings")
+
+    assert resp.status_code == 200
+    system = resp.json()["system"]
+    assert system["alembic_head_revision"] == migration_status_service.head_revision()
+    assert system["alembic_head_revision"] is not None
+    assert system["alembic_revision"] is None
+    assert system["alembic_up_to_date"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_response_carries_the_same_migration_status_as_get(
+    client: AsyncClient,
+) -> None:
+    """The frontend writes the PATCH response straight into its query cache.
+
+    So a ``system`` field that GET carries and PATCH does not would blank the
+    schema-revision tile after every save. This is why the migration status is
+    threaded through one payload helper both routes call, rather than defaulted
+    on the formatter.
+    """
+    fields = ("alembic_revision", "alembic_head_revision", "alembic_up_to_date")
+
+    fetched = await client.get("/api/v1/settings")
+    patched = await client.patch(
+        "/api/v1/settings", json={"runtime": {"scan_row_limit_default": 7}}
+    )
+
+    assert patched.status_code == 200, patched.text
+    for field in fields:
+        assert patched.json()["system"][field] == fetched.json()["system"][field]

@@ -6,6 +6,7 @@ import {
   Key,
   Lock,
   Mail,
+  ScrollText,
   Server,
   Shield,
   SlidersHorizontal,
@@ -98,6 +99,19 @@ export const WORKSPACE_GROUPS: SettingsNavGroup[] = [
         ownerOnly: true,
       },
       { id: 'system', label: 'System', icon: Server, path: 'instance/system', ownerOnly: true },
+      // The only Instance section that is not a settings form: it reads the
+      // whole audit feed rather than editing configuration. It lives here
+      // because the actions it exists for — data sources, member roles, API
+      // keys, and a project's own DELETION, which is recorded once its subject
+      // is gone — belong to no project, so the per-project tab can never show
+      // them (tripl-wkwv.17).
+      {
+        id: 'inst-audit',
+        label: 'Audit log',
+        icon: ScrollText,
+        path: 'instance/audit',
+        ownerOnly: true,
+      },
     ],
   },
 ]
@@ -112,6 +126,24 @@ export const SETTINGS_STORAGE_KEY = 'tripl.settings'
 /** First section path for a context (used when switching context). */
 export function firstSectionPath(ctx: SettingsContext): string {
   return SETTINGS_NAV[ctx][0].items[0].path
+}
+
+/**
+ * The settings section a URL points at, or `null` when it points outside the
+ * takeover altogether.
+ *
+ * `null` is the answer the unsaved-work predicate treats as "leaving the area",
+ * which no draft survives. A bare `/settings` counts as leaving too: it is not a
+ * section, and nothing renders a draft there.
+ *
+ * Exists so the navigation blocker can ask about a DESTINATION the same question
+ * the rail asks about a link — one parser, so a Back press and a click cannot
+ * disagree about where they are going (tripl-l33u.14).
+ */
+export function sectionPathForUrl(pathname: string): string | null {
+  const prefix = '/settings/'
+  if (!pathname.startsWith(prefix)) return null
+  return pathname.slice(prefix.length).replace(/\/+$/, '') || null
 }
 
 /** Resolve which context owns a given section path. Defaults to 'workspace'. */

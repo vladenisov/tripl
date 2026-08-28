@@ -1,4 +1,11 @@
-export type SettingSource = 'env' | 'override'
+/**
+ * Where a setting's value came from. `default` means it equals the built-in
+ * default — either nothing was delivered for it, or what was delivered happens
+ * to match; from the running process the two are indistinguishable. The badge
+ * used to answer `env` for every field with no stored override, which made it
+ * useless as evidence that a variable had reached the container (tripl-wkwv.2).
+ */
+export type SettingSource = 'env' | 'override' | 'default'
 
 export interface RuntimeSettings {
   app_base_url: string
@@ -71,6 +78,10 @@ export interface AiServiceSettings {
   search_embedding_model: string
   search_embedding_api_key_configured: boolean
   search_embedding_dimensions: number
+  /** Read-only, and absent from `AiSettingsUpdate` on purpose: this is where
+   *  indexed plan text is POSTed, and repointing it at runtime would poison
+   *  every vector already in the index (tripl-wkwv.2). */
+  search_embedding_base_url: string
 }
 
 export interface SystemSettings {
@@ -81,6 +92,13 @@ export interface SystemSettings {
   redis_url_configured: boolean
   encryption_key_configured: boolean
   openai_api_key_configured: boolean
+  /** Revision stamped in the database's `alembic_version` table. `null` when it
+   *  could not be read — no row, no table, or the DB is unreachable. */
+  alembic_revision: string | null
+  /** Migration head this build ships. `null` if the script directory is unreadable. */
+  alembic_head_revision: string | null
+  /** `null` whenever either side above is unknown — never guessed. */
+  alembic_up_to_date: boolean | null
 }
 
 export interface ServiceSettings {

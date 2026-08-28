@@ -1931,7 +1931,7 @@ wired to and the warehouse SQL it runs, so `--type scan_config` answers "which
 scan reads this table"; an alert rule carries its message and item templates.
 
 ```bash
-tripl plan search 'checkout funnel' --project prod --type event
+tripl plan search 'checkout funnel' --project prod --type event --limit 2
 ```
 
 ```text
@@ -1958,8 +1958,12 @@ exactly that rather than advising a flag that cannot exist. The JSON reports
 `"total"` is `null` too, and that is not an omission: the route computes its
 total **after** trimming to the limit, so it always equals the page and can
 never say how many matched. Reporting it would have read `2 of 2 search results
-shown` on a search that dropped hits. A full page is the only signal search
-has, which is why the line above warns without a number.
+shown` on a search that dropped hits. The warning above comes from the route's
+own `truncated` instead — search retrieves one row past the window it ranks, so
+it reports whether a hit was dropped rather than inferring it from a page that
+happens to be full. That inference survives only as the fallback for an instance
+too old to report the flag. Either way the line warns without a number, because
+there is no count to warn with.
 :::
 
 :::note Read `semantic_used` before you trust a low score
@@ -3324,13 +3328,14 @@ before reading it.
 | `kind` | What one member of `items` **is**: `event`, `event_type`, `field`, `variable`, `branch` or `search_result`. Branch on this, never on `command`'s wording. |
 | `total` | The count the API reported **before** paging, or `null` where the route reports none. |
 | `offset` / `limit` | What was requested, or `null` where the route takes no such parameter. `plan search` has no offset; `plan types`, `plan fields` and `plan branches` page nothing at all. |
-| `truncated` | Whether `total` exceeds `offset` plus the number of rows returned. Derived here so nobody has to do that arithmetic twice. |
+| `truncated` | Whether rows were left behind. The route's own answer where it reports one — `plan search` does, and it is exact; otherwise whether `total` exceeds `offset` plus the rows returned; and where a route reports neither, whether the page filled. Derived here so nobody has to do that arithmetic twice. |
 | `meta` | Facts the **route** reported about the answer rather than about a row. `{}` on six of the seven; `{"semantic_used": bool}` on `plan search`. |
 | `items` | The API's own objects, **verbatim**. |
 
 :::warning `"truncated": true` is not an error, and `"items": []` is not "none exist"
-Truncation is a full page with more behind it. The exit code stays 0, because
-nothing failed — the CLI asked for a page and got one. A loop that reads
+Truncation is rows left behind: a full page with more behind it, or a route that
+says outright it dropped ranked hits. The exit code stays 0, because nothing
+failed — the CLI asked for a page and got one. A loop that reads
 `items` and stops without checking `truncated` will silently process the first
 `limit` rows of a catalog forever.
 

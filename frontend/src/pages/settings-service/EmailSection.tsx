@@ -61,7 +61,10 @@ export function EmailSection({
             mono
           />
         </Field>
-        <Field label="SMTP password">
+        <Field
+          label="SMTP password"
+          labelRight={<SourceBadge source={sourceFor(settings, 'email', 'smtp_password')} />}
+        >
           <div className="flex gap-2">
             <div className="flex-1">
               <TextInput

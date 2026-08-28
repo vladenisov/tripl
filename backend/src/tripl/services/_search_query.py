@@ -1118,6 +1118,29 @@ def merge_results(
     it is the only honest measure of how sure the semantic leg is and the merged
     score destroys it (tripl-txcz). ``finalize_results`` reads it back; nothing
     else does, and it never reaches the API response.
+
+    PROVENANCE IS NEITHER OF THOSE TWO NUMBERS (tripl-wkwv.3)
+    ---------------------------------------------------------
+    The legs are SUMMED for ranking and ``max``-ed for confidence, and per-result
+    ``semantic_used`` used to be set from a third thing again: whether the vector
+    leg's window happened to contain the row. It always did. The vector leg is a
+    plain ``ORDER BY <=> LIMIT`` kNN scan with a cosine floor (see
+    :func:`postgres_semantic_search`), so it returns rows for ANY query, and a
+    document both legs found is paid ``lexical + cosine * 2.5`` — exactly the
+    rows that sort to the top. So the flag was dense at the head of the list and
+    told the reader that an exact-name hit had been "matched by meaning".
+    "The vector leg also listed this row" is a fact about the WINDOW, not about
+    the row. The flag answers "why is this row here", and for a document the
+    lexical ladder already produced the answer is the ladder — so only the
+    vector-ONLY branch below sets it.
+
+    The symmetric caveat, which every consumer's wording has to respect: the
+    LEXICAL leg is a ``LIMIT``-ed scan too, so ``existing is None`` means "the
+    keyword leg did not rank this inside its window", not "no keyword matched
+    it". A weak match — a stem-only tsquery hit, which pays the coverage bonus
+    and no boost tier — can be displaced from that window and re-enter here on
+    the vector-only branch. Hence "found by meaning, the keyword ranking did not
+    surface this" everywhere downstream, never "no keyword matched this".
     """
     merged: dict[uuid.UUID, SearchResult] = {item.id: item for item in lexical_results}
     for item in semantic_results:
@@ -1126,12 +1149,19 @@ def merge_results(
         semantic_score = cosine * _SEMANTIC_SCORE_WEIGHT
         if existing is None:
             item.score = semantic_score
+            # Redundant with ``row_to_result(..., semantic_used=True)``, and kept
+            # explicit: this branch IS the rule, so the rule is legible where a
+            # future reader looks for it.
             item.semantic_used = True
             item.record_semantic_cosine(cosine)
             merged[item.id] = item
             continue
         existing.score += semantic_score
-        existing.semantic_used = True
+        # No ``existing.semantic_used = True`` here — see the docstring. The
+        # cosine below is still recorded, so a hybrid row keeps the stronger of
+        # its two certainties (tripl-txcz); confidence and provenance are
+        # different questions and this row can honestly answer 0.9 to the first
+        # and "the keyword leg" to the second.
         existing.record_semantic_cosine(cosine)
     return sorted(merged.values(), key=lambda item: (-item.score, item.title))[:limit]
 

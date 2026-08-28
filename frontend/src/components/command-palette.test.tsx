@@ -501,6 +501,83 @@ describe('CommandPalette', () => {
     expect(screen.getByText('Checkout Completed')).toBeInTheDocument()
     // Exactly the semantic_used row carries the chip — the lexical one does not.
     expect(screen.getAllByText('semantic')).toHaveLength(1)
+    // ...and what the chip CLAIMS is about the keyword ranking, not about the
+    // keyword index (tripl-wkwv.3). The lexical leg is a LIMIT-ed scan, so a
+    // weak match displaced from its window re-enters through the meaning leg
+    // and carries this chip while containing the word that was typed — "no
+    // keyword matched this" would be false on exactly that row.
+    const chip = screen.getByText('semantic')
+    expect(chip).toHaveAttribute(
+      'title',
+      "Found by meaning — the keyword ranking didn't surface this",
+    )
+    expect(chip.getAttribute('title')).not.toMatch(/no keyword matched/i)
+  })
+
+  it('labels a nameless event result rather than rendering an empty row (tripl-wkwv.5)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects')) return mockJsonResponse([demoProject()])
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/search?')) {
+        return mockJsonResponse({
+          items: [
+            {
+              id: 'doc-blank',
+              entity_type: 'event',
+              entity_id: 'event-1',
+              parent_event_id: 'event-1',
+              // The search document takes its title from `event.name`, so the
+              // one windy-ios row with a blank name arrives here blank: the row
+              // rendered an icon and nothing else.
+              title: '',
+              subtitle: 'Checkout',
+              snippet: '',
+              route_path: '/p/demo/events/detail/event-1',
+              score: 8,
+              highlights: [],
+              semantic_used: false,
+            },
+            {
+              id: 'doc-var',
+              entity_type: 'variable',
+              entity_id: 'var-1',
+              parent_event_id: null,
+              title: '${user_id}',
+              subtitle: '',
+              snippet: '',
+              route_path: '/p/demo/settings/variables',
+              score: 4,
+              highlights: [],
+              semantic_used: false,
+            },
+          ],
+          total: 2,
+          truncated: false,
+          semantic_used: false,
+        })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderHarness('/p/demo/events')
+
+    fireEvent.click(screen.getByTestId('open-palette'))
+    fireEvent.change(await screen.findByPlaceholderText(/Search projects/i), {
+      target: { value: 'checkout' },
+    })
+
+    const blankRow = await screen.findByText('(unnamed event)')
+    // The fallback is event-scoped on purpose: every other entity's title is
+    // non-empty by schema, so a blanket placeholder there would be a lie.
+    expect(screen.getByText('${user_id}')).toBeInTheDocument()
+
+    // Labelled, and still a real row: selecting it is how the user reaches the
+    // event in order to rename or archive it.
+    fireEvent.click(blankRow)
+    await waitFor(() => {
+      expect(screen.getByTestId('location').textContent).toBe('/p/demo/events/detail/event-1')
+    })
   })
 })
 

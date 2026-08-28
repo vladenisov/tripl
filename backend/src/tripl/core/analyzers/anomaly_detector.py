@@ -683,6 +683,30 @@ def _detect_trend_shift(
         # min_expected_count (tripl-jfm3.48). Gate the reported value too.
         if expected_count < settings.min_expected_count:
             continue
+        # ...and a reconstruction that lands AT zero says something else again.
+        # The clamp above turns a negative reconstruction into exactly 0.0 and the
+        # direction line below then reads ``0 >= 0`` as a SPIKE — a row stating,
+        # in the two numbers a reader is shown, that nothing happened. That is
+        # what minted the "spike, 0 actual vs 0 expected" rows production carried
+        # on a project running ``min_expected_count = 0``, the one floor that lets
+        # a zero expectation past the gate above (tripl-wkwv.8; tripl-wkwv.4 made
+        # those rows closable, this stops them being written). Only the PAIR is
+        # degenerate, never one half of it: traffic against a zero expectation is
+        # a real spike from nothing and still emits, and an empty bucket against a
+        # real expectation is still a drop. ``== 0.0`` rather than ``<= 0.0`` on
+        # the actual is the conservative spelling, not a live distinction: every
+        # series that can reach this line today is non-negative, so the two agree.
+        # The only lane running at ``min_expected_count = 0`` on a FRACTIONAL
+        # series is platform parity, and its value is a breakdown count over a
+        # scope total — two event counts, so it lands in [0, 1]. The fractional
+        # series that CAN go negative (a catalog ``fact`` sum/avg/min/max or a
+        # ``sql`` metric, i.e. a level over a possibly-signed column) never get
+        # here: ``detect.py`` pins them to ``_FRACTIONAL_MIN_EXPECTED_COUNT``, so
+        # the gate above rejects their clamped-zero reconstruction first. Keep
+        # ``==`` so that if such a series ever does get a zero floor, a negative
+        # actual against a zero expectation still reads as the drop it is.
+        if expected_count <= 0.0 and point.count == 0.0:
+            continue
         # Direction is derived from the ACTUAL point vs the reconstructed
         # expected level, not from the sign of the trend z-score (tripl-dmch.11).
         # The z-score is computed on the deseasonalized trend delta, which can

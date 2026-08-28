@@ -14,11 +14,13 @@ from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
+from tripl.models.scan_config import ScanConfig
 from tripl.schemas.alerting import (
     MonitorDetailResponse,
     MonitorsSummaryResponse,
     MonitorSummaryItem,
 )
+from tripl.services._alerting_scope_readiness import load_scope_readiness
 from tripl.services.monitoring_utils import summarize_monitor_states
 from tripl.services.project_lookup import get_project_by_slug as _get_project
 
@@ -47,11 +49,20 @@ async def _get_rule_with_destination(
     *,
     project_id: uuid.UUID,
     rule_id: uuid.UUID,
-) -> tuple[AlertRule, AlertDestination]:
+) -> tuple[AlertRule, AlertDestination, str | None]:
+    """The rule, its destination, and the name of the scan it is narrowed to.
+
+    The scan join is an OUTER one and must stay that way: ``scan_config_id`` is
+    nullable, null is the default every rule is created with, and the delete path
+    sets it back to null (``_alerting_destinations.disable_rules_bound_to_scan``). An
+    inner join would 404 every project-wide monitor — which is nearly all of them
+    (tripl-wkwv.9).
+    """
     row = (
         await session.execute(
-            select(AlertRule, AlertDestination)
+            select(AlertRule, AlertDestination, ScanConfig.name)
             .join(AlertDestination, AlertDestination.id == AlertRule.destination_id)
+            .outerjoin(ScanConfig, ScanConfig.id == AlertRule.scan_config_id)
             .where(
                 AlertRule.id == rule_id,
                 AlertDestination.project_id == project_id,
@@ -60,8 +71,8 @@ async def _get_rule_with_destination(
     ).first()
     if row is None:
         raise HTTPException(status_code=404, detail="Monitor not found")
-    rule, destination = row
-    return rule, destination
+    rule, destination, scan_name = row
+    return rule, destination, scan_name
 
 
 async def get_monitors_summary(session: AsyncSession, slug: str) -> MonitorsSummaryResponse:
@@ -124,14 +135,17 @@ async def get_monitors_summary(session: AsyncSession, slug: str) -> MonitorsSumm
         warning_count=sum(1 for monitor in monitors if monitor.status == "warning"),
         healthy_count=sum(1 for monitor in monitors if monitor.status == "healthy"),
         total=len(monitors),
+        scope_readiness=await load_scope_readiness(session, project.id),
     )
 
 
 async def _build_monitor_detail(
     session: AsyncSession,
     *,
+    project_id: uuid.UUID,
     rule: AlertRule,
     destination: AlertDestination,
+    scan_name: str | None,
     now: datetime,
 ) -> MonitorDetailResponse:
     states = (
@@ -181,6 +195,11 @@ async def _build_monitor_detail(
         muted_until=rule.muted_until,
         rule_enabled=rule.enabled,
         destination_enabled=destination.enabled,
+        # Which scan this rule can see at all, named so the detail screen can say
+        # so — it holds no scans list to resolve the id against. NOT an input to
+        # ``scope_readiness`` below, which stays project-level (tripl-wkwv.9).
+        scan_config_id=rule.scan_config_id,
+        scan_name=scan_name,
         include_project_total=rule.include_project_total,
         include_event_types=rule.include_event_types,
         include_events=rule.include_events,
@@ -197,6 +216,10 @@ async def _build_monitor_detail(
         last_delivery_status=(
             AlertDeliveryStatus(last_delivery[1]) if last_delivery is not None else None
         ),
+        # Project-level, so it is the identical block the monitors list carries
+        # — the detail screen renders the same two toggles and must not disagree
+        # with the list about whether anything feeds them (tripl-wkwv.1).
+        scope_readiness=await load_scope_readiness(session, project_id),
     )
 
 
@@ -206,15 +229,17 @@ async def get_monitor(
     rule_id: uuid.UUID,
 ) -> MonitorDetailResponse:
     project = await _get_project(session, slug)
-    rule, destination = await _get_rule_with_destination(
+    rule, destination, scan_name = await _get_rule_with_destination(
         session,
         project_id=project.id,
         rule_id=rule_id,
     )
     return await _build_monitor_detail(
         session,
+        project_id=project.id,
         rule=rule,
         destination=destination,
+        scan_name=scan_name,
         now=datetime.now(UTC),
     )
 
@@ -226,7 +251,7 @@ async def mute_monitor(
     muted_until: datetime,
 ) -> MonitorDetailResponse:
     project = await _get_project(session, slug)
-    rule, destination = await _get_rule_with_destination(
+    rule, destination, scan_name = await _get_rule_with_destination(
         session,
         project_id=project.id,
         rule_id=rule_id,
@@ -238,8 +263,10 @@ async def mute_monitor(
     await session.commit()
     return await _build_monitor_detail(
         session,
+        project_id=project.id,
         rule=rule,
         destination=destination,
+        scan_name=scan_name,
         now=now,
     )
 
@@ -250,7 +277,7 @@ async def unmute_monitor(
     rule_id: uuid.UUID,
 ) -> MonitorDetailResponse:
     project = await _get_project(session, slug)
-    rule, destination = await _get_rule_with_destination(
+    rule, destination, scan_name = await _get_rule_with_destination(
         session,
         project_id=project.id,
         rule_id=rule_id,
@@ -259,7 +286,9 @@ async def unmute_monitor(
     await session.commit()
     return await _build_monitor_detail(
         session,
+        project_id=project.id,
         rule=rule,
         destination=destination,
+        scan_name=scan_name,
         now=datetime.now(UTC),
     )

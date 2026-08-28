@@ -4,11 +4,11 @@ import base64
 import json
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from email.message import EmailMessage
 from http.client import HTTPMessage
 from typing import IO, Protocol
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from tripl.alert_templates import (
     ALERT_MESSAGE_FORMAT_PLAIN,
@@ -403,18 +403,27 @@ def _send_jira_issue(
     issue_type: str,
     summary: str,
     body_text: str,
+    labels: Sequence[str] | None = None,
 ) -> tuple[str | None, str | None]:
-    """Create a Jira issue and return ``(issue_id, issue_key)`` from the response."""
+    """Create a Jira issue and return ``(issue_id, issue_key)`` from the response.
+
+    ``labels`` is how a caller makes its own create findable again. Jira's create
+    is not idempotent and offers no idempotency key, so the only way to answer
+    "did I already create this?" after a crash is to have written something
+    searchable onto the issue itself (tripl-l33u.15). Omitted by default, so the
+    alerting path sends exactly the payload it always has.
+    """
     credentials = base64.b64encode(f"{auth_email}:{api_token}".encode()).decode()
     url = f"{base_url}/rest/api/3/issue"
-    payload: dict[str, object] = {
-        "fields": {
-            "project": {"key": project_key},
-            "issuetype": {"name": issue_type},
-            "summary": summary,
-            "description": _build_jira_adf_body(body_text),
-        }
+    fields: dict[str, object] = {
+        "project": {"key": project_key},
+        "issuetype": {"name": issue_type},
+        "summary": summary,
+        "description": _build_jira_adf_body(body_text),
     }
+    if labels:
+        fields["labels"] = list(labels)
+    payload: dict[str, object] = {"fields": fields}
     response = post_json(
         url,
         payload,
@@ -422,6 +431,50 @@ def _send_jira_issue(
     )
     issue_id = response.get("id") if isinstance(response, dict) else None
     issue_key = response.get("key") if isinstance(response, dict) else None
+    return (
+        issue_id if isinstance(issue_id, str) else None,
+        issue_key if isinstance(issue_key, str) else None,
+    )
+
+
+def _find_jira_issue_by_label(
+    get_json: GetJson,
+    *,
+    base_url: str,
+    auth_email: str,
+    api_token: str,
+    label: str,
+) -> tuple[str | None, str | None]:
+    """The issue carrying ``label``, as ``(issue_id, issue_key)``, or ``(None, None)``.
+
+    This is the read half of the idempotency ``_send_jira_issue``'s ``labels``
+    makes possible: having stamped a create with a label derived from what it was
+    for, a later run can ask whether that create already happened rather than
+    repeating it (tripl-l33u.15).
+
+    TWO LIMITS, both deliberate and both failing SAFE — a miss here means the
+    caller creates, which is exactly what it did before this existed:
+
+    - Jira indexes asynchronously, so an issue created moments ago may not be
+      searchable yet. A redelivery inside that window still duplicates.
+    - This asks the JQL search endpoint. If an instance answers it differently
+      than expected, the parse below yields ``None`` and nothing breaks.
+    """
+    credentials = base64.b64encode(f"{auth_email}:{api_token}".encode()).decode()
+    # Quoted so a label is never parsed as JQL syntax; labels cannot contain
+    # spaces or quotes, and the caller derives this one from a uuid.
+    jql = quote(f'labels = "{label}"', safe="")
+    url = f"{base_url}/rest/api/3/search/jql?jql={jql}&fields=id,key&maxResults=1"
+    response = get_json(
+        url,
+        headers={"Authorization": f"Basic {credentials}", "Accept": "application/json"},
+    )
+    issues = response.get("issues") if isinstance(response, dict) else None
+    first = issues[0] if isinstance(issues, list) and issues else None
+    if not isinstance(first, dict):
+        return (None, None)
+    issue_id = first.get("id")
+    issue_key = first.get("key")
     return (
         issue_id if isinstance(issue_id, str) else None,
         issue_key if isinstance(issue_key, str) else None,

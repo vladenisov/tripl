@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter } from 'react-router-dom'
+import { RouterProvider, createBrowserRouter } from 'react-router-dom'
 import {
   MutationCache,
   QueryCache,
@@ -43,13 +43,35 @@ const queryClient = new QueryClient({
   },
 })
 
+/**
+ * A DATA router, so `useBlocker` exists — and one catch-all route, so nothing
+ * else has to change.
+ *
+ * The settings takeover guards unsaved drafts on every in-app exit and on
+ * reload, but could not guard the browser Back button: a blocker is the only
+ * thing that sees a navigation BEFORE it commits, and a plain `BrowserRouter`
+ * offers none. The alternative — park a spare history entry and read popstate —
+ * was built and pulled, because a settings move the draft survives buries the
+ * parked entry and every repair for that opened another hole (tripl-l33u.14).
+ *
+ * The route table stays in `App.tsx` exactly as it is. `RouterProvider` puts a
+ * data-router context above the whole tree, and a descendant `<Routes>`
+ * navigates through `router.navigate` all the same, so every navigation in the
+ * app is blocker-visible while all 63 route elements keep their current shape.
+ * Migrating them to `createRoutesFromElements` would move the provider stack
+ * into a layout route and rewrite every test that mounts the app, and buy
+ * nothing this needs.
+ *
+ * `QueryClientProvider` stays OUTSIDE: no route uses a loader, so nothing in the
+ * router asks for it before render.
+ */
+const router = createBrowserRouter([{ path: '*', element: <App /> }])
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
+        <RouterProvider router={router} />
       </QueryClientProvider>
     </ErrorBoundary>
   </StrictMode>,

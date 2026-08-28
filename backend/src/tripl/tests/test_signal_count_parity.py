@@ -239,6 +239,8 @@ async def _seed_ongoing_outage(
     scan_alive: bool = True,
     anchor: datetime = _OUTAGE_ANCHOR_BUCKET,
     last_stored_bucket: datetime | None = None,
+    actual_count: float = 0,
+    expected_count: float = 40,
 ) -> None:
     """Seed one event type that went silent at ``anchor`` (five days ago by default).
 
@@ -254,6 +256,12 @@ async def _seed_ongoing_outage(
     to the anchor itself. Production stores no row for an empty bucket, so a real
     outage anchored on the first zero has its last row STRICTLY BEFORE the anchor;
     both shapes must classify the same way.
+
+    ``actual_count``/``expected_count`` describe the anchor row itself. The
+    defaults are the ordinary outage (nothing observed against a baseline of 40);
+    the interesting departures are ``expected_count=0`` (a scope that was never
+    expected to emit — no incident, tripl-wkwv.4) and a non-zero ``actual_count``
+    off a zero baseline (a real spike from nothing, which must keep working).
     """
     project_resp = await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
     assert project_resp.status_code == 201
@@ -289,7 +297,8 @@ async def _seed_ongoing_outage(
             event_type_id=dead_type,
         )
         outage.bucket = anchor
-        outage.actual_count = 0
+        outage.actual_count = actual_count
+        outage.expected_count = expected_count
         outage.z_score = -20
         outage.direction = "drop"
         session.add(outage)
@@ -528,6 +537,135 @@ async def test_outage_on_a_stopped_scan_closes_on_both_surfaces(client: AsyncCli
     resp = await client.get(f"/api/v1/projects/{sidebar_slug}")
     assert resp.status_code == 200
     assert resp.json()["summary"]["monitoring_signal_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# A zero baseline is not an outage (tripl-wkwv.4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_zero_baseline_anchor_closes_on_every_surface(client: AsyncClient) -> None:
+    """Zero expected, zero actual: nothing was lost, so there is nothing to hold open.
+
+    The anchor is shaped exactly like the ongoing outage above and differs in one
+    field — the scope was never expected to emit anything. Nothing has been lost,
+    so the re-check must not hold it open; and it is the one shape the re-check
+    ALONE can end, because an empty scope stores no metric rows and its own head
+    stays frozen at the anchor, keeping ``classify_signal_state``'s latest-scan
+    branch true forever. Production carried 14 of these, open since the day they
+    were written and impossible to close.
+
+    They sit below the magnitude gate, so the badge and the page's "Significant"
+    view never showed them — but the page's own headline denominator ("52 of 214
+    open") is the LENGTH of this list, so a number the operator uses to judge
+    whether detection is noisy could only ever grow.
+    """
+    page_slug = "zero-baseline-page"
+    await _seed_ongoing_outage(client, page_slug, hyphenated=True, expected_count=0)
+    async with TestSessionLocal() as session:
+        page_signals = await get_active_signals(session, page_slug, expanded=True)
+
+    # THE assertion of this test: pre-fix this list had one row, forever.
+    assert page_signals == []
+
+    # The badge read 0 before the fix too (the magnitude gate hid the row), so
+    # this pins that the two surfaces still agree rather than that the badge
+    # moved — parity is what this module exists to hold.
+    sidebar_slug = "zero-baseline-sidebar"
+    await _seed_ongoing_outage(client, sidebar_slug, hyphenated=False, expected_count=0)
+    resp = await client.get(f"/api/v1/projects/{sidebar_slug}")
+    assert resp.status_code == 200
+    assert resp.json()["summary"]["monitoring_signal_count"] == 0
+
+    # And the drilldown the list links to, which classifies the same anchor on
+    # its own path and reported it live while the list no longer lists it.
+    listing = (await client.get(f"/api/v1/projects/{page_slug}/event-types")).json()
+    dead_id = next(row["id"] for row in listing if row["name"] == "dead_type")
+    drilldown = await client.get(f"/api/v1/projects/{page_slug}/event-types/{dead_id}/metrics")
+    assert drilldown.status_code == 200
+    assert drilldown.json()["latest_signal"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_zero_baseline_anchor_does_not_widen_the_drilldown_range(
+    client: AsyncClient,
+) -> None:
+    """And a closed zero-baseline anchor does not drag the chart back to itself.
+
+    The conditional range widening (``metrics_service._load_scope_anomalies``)
+    runs the same classification the response will, so it has to answer the same
+    way: only an anchor that is still OPEN earns a range the user did not pick.
+    Without the expectation in that call the widening kept reaching ten days back
+    for a row that is no longer a signal.
+    """
+    slug = "zero-baseline-before-range"
+    await _seed_ongoing_outage(
+        client,
+        slug,
+        hyphenated=True,
+        anchor=_LONG_OUTAGE_ANCHOR_BUCKET,
+        expected_count=0,
+    )
+
+    async with TestSessionLocal() as session:
+        assert await get_active_signals(session, slug, expanded=True) == []
+
+    listing = (await client.get(f"/api/v1/projects/{slug}/event-types")).json()
+    dead_id = next(row["id"] for row in listing if row["name"] == "dead_type")
+    resp = await client.get(
+        f"/api/v1/projects/{slug}/event-types/{dead_id}/metrics",
+        params={
+            "from": _DEFAULT_RANGE_FROM.isoformat(),
+            "to": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["latest_signal"] is None
+    assert body["data"] == [], "a closed anchor pulled the chart outside the requested range"
+
+
+@pytest.mark.asyncio
+async def test_a_spike_from_a_zero_baseline_is_still_a_signal(client: AsyncClient) -> None:
+    """The class the fix must NOT touch: a real spike out of nothing.
+
+    Expected 0 with a non-zero actual is a scope that started emitting where it
+    never had — a genuine observation, and one the magnitude gate rates highly
+    (|5 - 0| / max(0, 1) = 5.0). It never reaches the outage re-check at all: the
+    anchor row does not say the scope was at zero, so the predicate rejects it on
+    ``actual_count`` before the expectation is looked at. Its behaviour is
+    identical either side of the fix, fresh and aged, and this test says so.
+    """
+    fresh_slug = "zero-baseline-spike-fresh"
+    await _seed_ongoing_outage(
+        client,
+        fresh_slug,
+        hyphenated=True,
+        anchor=_BUCKET,
+        actual_count=5,
+        expected_count=0,
+    )
+    async with TestSessionLocal() as session:
+        fresh = await get_active_signals(session, fresh_slug, expanded=True)
+
+    assert len(fresh) == 1, fresh
+    assert fresh[0].state == "latest_scan"
+    assert (fresh[0].actual_count, fresh[0].expected_count) == (5, 0)
+    assert is_significant_signal(fresh[0].actual_count, fresh[0].expected_count)
+
+    # Aged five days past the horizon it closes on its own age — as it always
+    # did, and for the ordinary reason, not the new one.
+    aged_slug = "zero-baseline-spike-aged"
+    await _seed_ongoing_outage(
+        client,
+        aged_slug,
+        hyphenated=True,
+        actual_count=5,
+        expected_count=0,
+    )
+    async with TestSessionLocal() as session:
+        assert await get_active_signals(session, aged_slug, expanded=True) == []
 
 
 # ---------------------------------------------------------------------------

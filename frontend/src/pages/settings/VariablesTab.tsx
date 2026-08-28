@@ -22,6 +22,7 @@ import { SCENARIO_SEEDED } from "@/demo/scenarioModel"
 import { VariablesBulkBar } from "./VariablesBulkBar"
 import { VariablesTableRow } from "./VariablesTableRow"
 import { getErrorMessage } from '@/lib/utils'
+import { eventNameLabel } from '@/lib/eventName'
 import { variablesKey, variablesPageKey } from '@/lib/queryKeys'
 import { DRIFT_STATUS_LABEL, isResolvedDrift } from '@/lib/variableDrift'
 
@@ -403,7 +404,11 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const editingSummaryRows = editingVarContexts.length > 0
     ? editingVarContexts.map((context) => ({
       id: context.id,
-      eventName: context.event_name,
+      // `event_name` is a bare passthrough of `Event.name` on every one of these
+      // models, so the blank-named catalog row reaches this cell as '' and the
+      // Event column paints nothing (tripl-wkwv.5). The no-contexts branch below
+      // keeps its own '—': that is "no event at all", a different statement.
+      eventName: eventNameLabel(context.event_name),
       values: context.values,
       valueKind: context.value_kind,
     }))
@@ -500,7 +505,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="min-w-0">
                               <div className="text-xs font-medium">
-                                {drift.event_name}
+                                {eventNameLabel(drift.event_name)}
                                 {drift.status !== 'open' && (
                                   <span className="ml-1.5 rounded border px-1 py-0.5 text-[10px] text-muted-foreground">{DRIFT_STATUS_LABEL[drift.status]}</span>
                                 )}
@@ -569,7 +574,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                       {overrides.map(override => (
                         <li key={override.id} className="flex items-start justify-between gap-2 rounded border bg-background px-2 py-1.5">
                           <div className="min-w-0">
-                            <div className="text-xs font-medium">{override.event_name}</div>
+                            <div className="text-xs font-medium">{eventNameLabel(override.event_name)}</div>
                             <div className="mt-0.5 flex flex-wrap gap-1">
                               {override.values.map(value => (
                                 <span key={value} className="rounded border px-1.5 py-0.5 font-mono text-[10px]">{value}</span>
@@ -577,10 +582,14 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                             </div>
                           </div>
                           <div className="flex shrink-0 gap-1">
-                            <Button type="button" variant="ghost" size="icon" className="h-6 w-6" aria-label={`Edit override for ${override.event_name}`} onClick={() => { setOverrideEventId(override.event_id); setOverrideValues(override.values) }}>
+                            {/* Without the placeholder these read "Edit override for " and
+                                "Delete override for " — a trailing space and nothing else,
+                                the same defect EventRow fixed on the events list
+                                (tripl-wkwv.5). */}
+                            <Button type="button" variant="ghost" size="icon" className="h-6 w-6" aria-label={`Edit override for ${eventNameLabel(override.event_name)}`} onClick={() => { setOverrideEventId(override.event_id); setOverrideValues(override.values) }}>
                               <Pencil className="h-3 w-3" aria-hidden="true" />
                             </Button>
-                            <Button type="button" variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-destructive" aria-label={`Delete override for ${override.event_name}`} onClick={() => overrideDeleteMut.mutate(override.event_id)}>
+                            <Button type="button" variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-destructive" aria-label={`Delete override for ${eventNameLabel(override.event_name)}`} onClick={() => overrideDeleteMut.mutate(override.event_id)}>
                               <Trash2 className="h-3 w-3" aria-hidden="true" />
                             </Button>
                           </div>
@@ -596,8 +605,12 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                       className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
                     >
                       <option value="">Select event…</option>
+                      {/* A native <option> takes its accessible name from its text
+                          content, so a blank-named event was a selectable row with
+                          no name at all — indistinguishable from a rendering glitch
+                          in the list, and announced as nothing (tripl-wkwv.5). */}
                       {(eventsList?.items ?? []).map(event => (
-                        <option key={event.id} value={event.id}>{event.name}</option>
+                        <option key={event.id} value={event.id}>{eventNameLabel(event.name)}</option>
                       ))}
                     </select>
                     <ChipListInput values={overrideValues} onChange={setOverrideValues} placeholder="Values for this event" ariaLabel="Add override value" />

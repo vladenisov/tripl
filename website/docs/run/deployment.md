@@ -157,6 +157,8 @@ Note the absence of `-f compose.yaml` and of `--project-directory`: running from
 
 Schema upgrades are applied by the dedicated **`migrate`** one-shot, which runs `alembic upgrade head` before `app` or the workers start. Because all of them wait on `migrate` completing successfully, a multi-worker deploy never races the schema upgrade. You do not run migrations by hand in the normal flow — they run automatically on every `docker compose up -d` after a version bump.
 
+Once the one-shot has run, the applied revision can be confirmed from **Settings → Instance → System** without shelling into a container: the **Schema revision** tile reads the revision this database is stamped with and says whether it matches the head the running build ships. See [System (read-only)](../administer/admin-guide.md#system-read-only).
+
 To run them manually (for example, to inspect output), invoke the same command in a one-off container:
 
 ```bash

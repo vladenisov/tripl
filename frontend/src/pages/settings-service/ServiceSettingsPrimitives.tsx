@@ -10,15 +10,49 @@ import { SECTION_LABELS, resetCardDescription, type SectionKey } from './service
  * chrome, fields and controls now come from the redesign kit
  * (`@/components/settings/kit`): each section is composed of titled `SCard`
  * sub-cards with `Field` / `ToggleRow` / `TextInput` / `Select` / `RadioCards`.
- * What stays here is the override/env source badge, the AI connection-test
- * status badge, and the section-level "reset to defaults" card.
+ * What stays here is the setting-source badge, the AI connection-test status
+ * badge, and the section-level "reset to defaults" card.
  */
 
-/** Override vs. environment-default origin of a single setting. */
+const SOURCE_BADGE: Record<
+  SettingSource,
+  { label: string; variant: 'info' | 'outline' | 'secondary'; title: string }
+> = {
+  override: {
+    label: 'Override',
+    variant: 'info',
+    title: 'Stored in this instance’s settings table. A section reset clears it.',
+  },
+  env: {
+    label: 'Env',
+    variant: 'outline',
+    title:
+      'Delivered by an environment variable or .env line: the value differs from the built-in default.',
+  },
+  default: {
+    label: 'Default',
+    variant: 'secondary',
+    title:
+      'The built-in default. Either nothing was delivered for this setting, or what was delivered happens to match the default — from here the two are indistinguishable.',
+  },
+}
+
+/**
+ * Where this setting's value came from: a stored override, the environment, or
+ * the code default.
+ *
+ * There used to be no third state, so every field with no stored override was
+ * badged "Env" — including ones nothing had ever delivered, which is how an
+ * instance could assert it had been told where to send embeddings when it had
+ * not (tripl-wkwv.2). "Default" is deliberately the weaker claim of the two: it
+ * says the value equals the built-in default, not that nothing arrived, and the
+ * tooltip says so rather than letting the label overreach.
+ */
 export function SourceBadge({ source }: { source: SettingSource }) {
+  const { label, variant, title } = SOURCE_BADGE[source]
   return (
-    <Badge variant={source === 'override' ? 'info' : 'outline'} className="text-[10px]">
-      {source === 'override' ? 'Override' : 'Env'}
+    <Badge variant={variant} className="text-[10px]" title={title}>
+      {label}
     </Badge>
   )
 }

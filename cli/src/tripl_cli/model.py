@@ -471,6 +471,10 @@ class PlanRead:
     total: int | None = None
     offset: int | None = None
     limit: int | None = None
+    # The route's OWN answer to "were rows left behind", where it gives one, and
+    # None where it does not (tripl-wkwv.3). Not published as its own key: it
+    # feeds ``truncated`` below, which is the one thing a consumer reads.
+    route_truncated: bool | None = None
     # Facts the ROUTE reported about the answer itself rather than about any
     # row. Exactly one today — search's ``semantic_used``, which says whether
     # the hits are semantic or substring matches and therefore how much a low
@@ -495,21 +499,33 @@ class PlanRead:
         Reported rather than left to the reader, and for the same reason
         ``DriftCoverage.truncated`` is: a list that stops at the limit looks
         exactly like a list that ended, and the second reading is the dangerous
-        one. ``total`` is what the API counted BEFORE paging, so where a route
-        reports one it is the only number that can tell them apart.
+        one.
 
-        Where a route reports NO pre-paging count, a full page is the only
-        signal left. ``plan search`` is that case, and it is not a corner: the
-        search route answers ``total = len(items)`` AFTER trimming to the limit,
-        so a count-based test is structurally always false there — the one
-        command whose results are RANKED, where the operator picked the cutoff
-        without knowing how many matched, would have been the only one that
-        never warned.
+        A ladder of three rungs, best evidence first.
 
-        Requires ``limit`` and no ``offset``: a verb that pages by offset has a
-        real count and must not fall back to guessing from page fullness, and a
-        verb that sent no limit cannot have filled one.
+        THE ROUTE'S OWN ANSWER, where it gives one (tripl-wkwv.3). ``/search``
+        does: it retrieves one row past its candidate window, so it knows
+        whether a hit was dropped rather than inferring it, and a page that
+        happens to be exactly full is not a dropped hit. Preferring the guess
+        over that answer is how ``plan search`` came to print "more may have
+        matched" on the same HTTP body that said nothing was dropped — while
+        ``tripl-mcp``'s ``search_plan``, reading the same key through the same
+        shared reader, answered ``false``.
+
+        ``total``, which is what the API counted BEFORE paging: where a route
+        reports one it can tell a full page from a finished list.
+
+        A FULL PAGE, last, because it cannot tell the two apart at all — it is
+        only ever "the page filled, and nothing better was on offer". It stays
+        for the instance that predates ``truncated``: silence from an old route
+        is not that route saying nothing was dropped.
+
+        The last two require ``limit`` and no ``offset``: a verb that pages by
+        offset has a real count and must not fall back to guessing from page
+        fullness, and a verb that sent no limit cannot have filled one.
         """
+        if self.route_truncated is not None:
+            return self.route_truncated
         if self.total is not None:
             return self.total > (self.offset or 0) + len(self.items)
         return self.offset is None and self.limit is not None and len(self.items) >= self.limit

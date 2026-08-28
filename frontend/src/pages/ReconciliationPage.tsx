@@ -23,6 +23,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { DEAD_EVENT_DAYS } from '@/lib/coverage'
 import { formatRelativeTime } from '@/lib/datetime'
+import { eventNameLabel } from '@/lib/eventName'
 import { getMonitoringPath } from '@/lib/monitoring'
 import { coverageTone, toneVar } from '@/lib/statusLexicon'
 
@@ -728,14 +729,14 @@ function DeadRow({
       <Checkbox
         checked={selected}
         onCheckedChange={() => onToggle(item.event_id)}
-        aria-label={`Select ${item.name}`}
+        aria-label={`Select ${eventNameLabel(item.name)}`}
       />
       <Dot tone="neutral" size={6} />
       <Link
         to={slug ? getMonitoringPath(slug, { scope_type: 'event', scope_ref: item.event_id }) : '#'}
         className="mono min-w-0 flex-1 truncate text-[12px] hover:underline"
         style={{ color: 'var(--fg-muted)' }}
-        title={item.name}
+        title={eventNameLabel(item.name)}
       >
         <EventName name={item.name} />
       </Link>

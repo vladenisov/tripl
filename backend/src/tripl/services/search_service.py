@@ -429,6 +429,18 @@ async def _apply_demo_search_embeddings(
 #: than a plain constant because bulk callers legitimately want more:
 #: :func:`search_event_ids` passes ``limit=10000`` and must keep retrieving
 #: 10000, not 100.
+#:
+#: AND ONE ROW PAST IT (tripl-wkwv.3)
+#: ----------------------------------
+#: :func:`search_project` asks each leg for ``candidate_limit + 1``. Every leg
+#: and :func:`merge_results` stop at whatever number they are handed, so a leg
+#: that came back exactly full is indistinguishable from one that returned
+#: everything there was — and ``truncated`` exists to tell those two apart. The
+#: probe row is ranked with the rest and then dropped by ``finalize_results``,
+#: which trims to the page size, so it cannot appear in an answer; it only makes
+#: saturation observable instead of guessed. It does not reintroduce the fault
+#: above either: the retrieved window is still the same for every page size
+#: below the cap, and still monotonic in ``limit``.
 CANDIDATE_WINDOW = 100
 
 
@@ -448,7 +460,7 @@ async def search_project(
     # call, and the demo fixture lookup all see the same cleaned string.
     normalized_query = _sanitize_query(query)
     if not normalized_query:
-        return SearchResponse(items=[], total=0, semantic_used=False)
+        return SearchResponse(items=[], total=0, truncated=False, semantic_used=False)
 
     project_id = await get_project_id_by_slug(session, slug)
     resolved_branch_id = await resolve_branch_id(session, project_id, branch_id)
@@ -456,6 +468,10 @@ async def search_project(
 
     capped_limit = _safe_limit(limit)
     candidate_limit = max(capped_limit, CANDIDATE_WINDOW)
+    # One row past the window, so a full window can be told apart from "that was
+    # everything" (tripl-wkwv.3). See CANDIDATE_WINDOW for why the probe cannot
+    # reach an answer.
+    retrieval_limit = candidate_limit + 1
 
     if _is_postgres(session):
         project_is_demo = bool(
@@ -468,7 +484,7 @@ async def search_project(
             query=normalized_query,
             entity_types=entity_types,
             include_archived=include_archived,
-            limit=candidate_limit,
+            limit=retrieval_limit,
             project_is_demo=project_is_demo,
         )
     else:
@@ -479,10 +495,15 @@ async def search_project(
             query=normalized_query,
             entity_types=entity_types,
             include_archived=include_archived,
-            limit=candidate_limit,
+            limit=retrieval_limit,
         )
         semantic_used = False
 
+    # The retrieved set, measured BEFORE the trim: `total` is `len(items)` by
+    # construction and therefore equals `limit` on any full page, so it can never
+    # say whether hits were dropped (tripl-wkwv.3). This count is free — the rows
+    # are already in memory — and answers that.
+    candidate_count = len(items)
     items = _finalize_results(items, capped_limit)
     await _enrich_event_hits(
         session,
@@ -490,7 +511,24 @@ async def search_project(
         project_id=project_id,
         branch_id=resolved_branch_id,
     )
-    return SearchResponse(items=items, total=len(items), semantic_used=semantic_used)
+    return SearchResponse(
+        items=items,
+        total=len(items),
+        # A dropped hit, observed rather than inferred. `retrieval_limit` fetched
+        # one row past the window, so a retrieved set bigger than the page IS a
+        # hit this response does not carry, and a set that fits IS the whole
+        # answer — which is what every consumer of this flag was already told it
+        # means (tripl-wkwv.3).
+        #
+        # There is deliberately no `candidate_count >= candidate_limit` disjunct
+        # beside it. That reads "the window filled", which is a different claim:
+        # at `limit=100` — the maximum `GET /search` accepts — a query matching
+        # exactly 100 documents fills the window while the body carries every hit
+        # either leg can produce, and the flag would have said `true` with no
+        # `limit` left to raise.
+        truncated=candidate_count > len(items),
+        semantic_used=semantic_used,
+    )
 
 
 async def search_event_ids(

@@ -658,6 +658,27 @@ describe('AlertDeliveryRow deep link', () => {
     expect(screen.getByText(/share-for-share, not a raw count drop/)).toBeInTheDocument()
   })
 
+  it('still offers no link in the Link column, however good the event_id looks (tripl-wkwv.12)', async () => {
+    // The asymmetry with the Inbox card is deliberate, and this is where it is
+    // recorded rather than in a comment nobody reads. The card's new "view
+    // event volume" link sits on an identity line, where the reader is being
+    // told WHAT fired; this cell sits immediately right of Actual / Expected /
+    // Abs Δ / % Δ, where the column's whole meaning is "the page that shows
+    // this item" — so a link labelled "event" beside the release numbers is
+    // exactly the second, contradicting link the deny-set exists to suppress.
+    // "—" is the honest answer on this surface, and the reader who wants the
+    // event reaches it from the incident card the message already links to.
+    stubDetail({
+      ...mockDelivery({ status: 'sent', error_message: null }),
+      items: [{ ...releaseRegressionItem, event_id: 'evt-1' }],
+    })
+    renderRow(mockDelivery({ status: 'sent', error_message: null }), 'delivery-1')
+
+    const itemRow = (await screen.findByText('spot:open:wind:')).closest('tr')!
+    expect(itemRow.querySelector('a')).toBeNull()
+    expect(itemRow).toHaveTextContent('—')
+  })
+
   it('leaves the expected count of every other scope unannotated', async () => {
     stubDetail({ ...mockDelivery({ status: 'sent', error_message: null }), items: [mockItem()] })
     renderRow(mockDelivery({ status: 'sent', error_message: null }), 'delivery-1')

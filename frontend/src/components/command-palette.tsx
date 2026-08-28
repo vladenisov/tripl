@@ -43,6 +43,7 @@ import {
   useCommandPalette,
 } from '@/components/command-palette-context'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
+import { eventNameLabel } from '@/lib/eventName'
 import { buildNavGroups } from '@/lib/navigation'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useAiStatus } from '@/hooks/useAiStatus'
@@ -760,10 +761,18 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
                       return (
                         <Group key={entityType} heading={meta.heading}>
                           {results.map(result => {
-                            const eventType =
-                              result.entity_type === 'event'
-                                ? eventTypes.find(item => item.display_name === result.subtitle)
-                                : undefined
+                            const isEvent = result.entity_type === 'event'
+                            const eventType = isEvent
+                              ? eventTypes.find(item => item.display_name === result.subtitle)
+                              : undefined
+                            // Scoped to events on purpose (tripl-wkwv.5): an
+                            // event's search title is its stored name and the
+                            // catalog holds blank ones, so the row rendered as
+                            // an icon and nothing else. Every other entity's
+                            // title is a display_name, a #tag, a ${variable} or
+                            // a scan-config name — non-empty by schema, so
+                            // "(unnamed event)" on one of those would be a lie.
+                            const label = isEvent ? eventNameLabel(result.title) : result.title
                             return (
                               <Item
                                 key={result.id}
@@ -771,7 +780,7 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
                                 onSelect={() => goTo(result.route_path)}
                                 icon={meta.icon}
                                 iconColor={eventType?.color}
-                                label={result.title}
+                                label={label}
                                 hint={result.subtitle || undefined}
                                 description={result.description || result.snippet || undefined}
                                 confidence={result.confidence}
@@ -908,8 +917,18 @@ function Item({
           </span>
         )}
       </span>
+      {/* The narrowed rule (tripl-wkwv.3): the chip marks a row the keyword
+          ranking did not surface, so a row whose name IS what you typed does
+          not carry it. The old wording claimed every hybrid hit.
+          Not "no keyword matched this": the keyword leg is a LIMIT-ed scan, so
+          a weak match displaced from its window re-enters through the meaning
+          leg and would wear that claim while containing the typed word. */}
       {semantic && (
-        <Chip tone="neutral" size="xs" title="Matched by meaning (semantic search)">
+        <Chip
+          tone="neutral"
+          size="xs"
+          title="Found by meaning — the keyword ranking didn't surface this"
+        >
           semantic
         </Chip>
       )}

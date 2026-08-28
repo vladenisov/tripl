@@ -3,6 +3,11 @@ import { describe, expect, it } from 'vitest'
 import type { SystemSettings } from '@/types'
 import { SystemCard } from './SystemCard'
 
+/** A revision-shaped fixture value, deliberately not this repo's real head —
+ *  nothing here should have to change when a migration lands. */
+const APPLIED = 'abc123def456'
+const NEWER = 'fed654cba321'
+
 const HEALTHY: SystemSettings = {
   debug: false,
   database_url_configured: true,
@@ -11,6 +16,9 @@ const HEALTHY: SystemSettings = {
   redis_url_configured: true,
   encryption_key_configured: true,
   openai_api_key_configured: true,
+  alembic_revision: APPLIED,
+  alembic_head_revision: APPLIED,
+  alembic_up_to_date: true,
 }
 
 function renderCard(overrides: Partial<SystemSettings> = {}) {
@@ -79,6 +87,7 @@ describe('Instance System card', () => {
     ['Redis URL', 'Configured'],
     ['Encryption key', 'Configured'],
     ['OpenAI fallback key', 'Configured'],
+    ['Schema revision', APPLIED],
   ])('explains %s on a healthy instance, not just the rows that need action', (label, value) => {
     renderCard()
 
@@ -94,5 +103,91 @@ describe('Instance System card', () => {
 
     expect(screen.getByText(/set the variable where the process gets its environment/i))
       .toBeInTheDocument()
+  })
+
+  /**
+   * A serving app used to only IMPLY that `alembic upgrade head` had run: compose
+   * gates it behind a `migrate` one-shot with `service_completed_successfully`.
+   * That inference holds only while prod uses that compose file, and a
+   * constraint-only migration changes nothing else a probe can see, so a
+   * hand-rolled deploy that skipped migrations looked identical to a correct one
+   * (tripl-wkwv.7).
+   */
+  describe('schema revision', () => {
+    it('reports the revision the database is stamped with when it matches head', () => {
+      renderCard()
+
+      const row = tile('Schema revision')
+      expect(within(row).getByText(APPLIED)).toBeInTheDocument()
+      expect(row).toHaveTextContent(/newest migration this build ships/i)
+      expect(row).not.toHaveTextContent(/Unknown/i)
+    })
+
+    it('shows both numbers on a mismatch without asserting which side is behind', () => {
+      // What the database is at AND what this build wants: either alone leaves
+      // the operator unable to tell how far apart they are.
+      //
+      // What the payload cannot say is WHICH is behind — nothing compares the
+      // applied revision against the build's script directory — and the admin
+      // guide lists two causes for this state. The second is a rollback, where
+      // the migrate step ran and applied something NEWER, so "the migrate step
+      // has not applied it" is false exactly half the time (tripl-wkwv.7).
+      renderCard({ alembic_head_revision: NEWER, alembic_up_to_date: false })
+
+      const row = tile('Schema revision')
+      expect(within(row).getByText(APPLIED)).toBeInTheDocument()
+      expect(row).toHaveTextContent(NEWER)
+      expect(row).toHaveTextContent(/migrations are forward-only/i)
+      expect(row).not.toHaveTextContent(/the migrate step has not applied it/i)
+    })
+
+    it('says Unknown rather than guessing when the revision cannot be read', () => {
+      // Unreadable is not the same as behind. Painting it as behind is exactly
+      // the false alarm this tile exists to avoid.
+      renderCard({ alembic_revision: null, alembic_up_to_date: null })
+
+      const row = tile('Schema revision')
+      expect(within(row).getByText('Unknown')).toBeInTheDocument()
+      expect(row).toHaveTextContent(/Could not read alembic_version/i)
+      expect(row).not.toHaveTextContent(/migrations are forward-only/i)
+    })
+
+    it('still names the applied revision when only this build’s head is unknown', () => {
+      // `alembic_up_to_date` is null for both unknowns, so branching on it alone
+      // printed "Unknown" over a revision the response had carried — and sent
+      // the operator to psql for a number already on the tile (tripl-wkwv.7).
+      renderCard({ alembic_head_revision: null, alembic_up_to_date: null })
+
+      const row = tile('Schema revision')
+      expect(within(row).getByText(APPLIED)).toBeInTheDocument()
+      expect(row).not.toHaveTextContent('Unknown')
+      expect(row).toHaveTextContent(/migration head could not be determined/i)
+      // The comparison genuinely cannot be made, so the tone stays warning — but
+      // that is not a reason to withhold the half that IS known.
+      expect(row).not.toHaveTextContent(/Could not read alembic_version/i)
+    })
+
+    it('still explains itself when neither side could be read', () => {
+      renderCard({
+        alembic_revision: null,
+        alembic_head_revision: null,
+        alembic_up_to_date: null,
+      })
+
+      const row = tile('Schema revision')
+      expect(within(row).getByText('Unknown')).toBeInTheDocument()
+      const explanation = (row.textContent ?? '')
+        .replace('Schema revision', '')
+        .replace('Unknown', '')
+        .trim()
+      expect(explanation).not.toBe('')
+    })
+
+    it('says this one tile is read from the database, not from the environment', () => {
+      renderCard()
+
+      expect(screen.getByText(/read from the database each time this page loads/i))
+        .toBeInTheDocument()
+    })
   })
 })

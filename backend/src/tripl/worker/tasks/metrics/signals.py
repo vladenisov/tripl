@@ -333,7 +333,14 @@ def _get_latest_active_anomalies(
     #
     # The cap still holds: once the scan itself stops collecting,
     # ``scan_latest_bucket`` goes stale, ``_outage_is_still_running`` returns
-    # False and the state closes exactly as before (tripl-l429.26).
+    # False and the state closes exactly as before (tripl-l429.26). So does the
+    # zero-baseline cap: an anchor whose ``expected_count`` is 0 describes a
+    # scope that was never expected to emit, so there is no outage to hold open
+    # and it ages out like any other row (tripl-wkwv.4). This path must pass the
+    # expectation for the same reason it passes the other two — the display
+    # surfaces run the identical predicate, and an alert candidacy set derived
+    # from a different rule than the page is exactly the drift this module has
+    # already had to fix twice.
     return {
         key: anomaly
         for key, anomaly in latest_anomalies.items()
@@ -343,6 +350,7 @@ def _get_latest_active_anomalies(
             interval=interval,
             emission_lag=emission_lag,
             anomaly_actual_count=anomaly.actual_count,
+            anomaly_expected_count=anomaly.expected_count,
             scan_latest_bucket=scan_latest_bucket,
         )
         == "latest_scan"

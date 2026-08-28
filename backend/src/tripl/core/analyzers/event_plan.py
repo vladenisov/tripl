@@ -82,6 +82,24 @@ _FMT_PATTERN = NAME_FORMAT_PATTERN
 _EVENT_NAME_MAX_LEN = 500
 
 
+def unnamed_skip_detail(count: int) -> str:
+    """What ``plan_events`` says about the rows it refused to name (tripl-wkwv.5).
+
+    Reaches the run report through ``generate_events``' ``details.extend`` and
+    the dry-run's ``warnings``, so both surfaces disclose the skip without either
+    of them re-deriving the rule. Agreement is spelled out because this is copy
+    an operator reads, and "1 rows" is the defect tripl-3y7z fixed on the other
+    side of the wire.
+
+    Public because a grouped dry run plans once PER EVENT TYPE and has to sum the
+    per-plan counts into one sentence (``worker.tasks.scan_dry_run``). Summing
+    there and calling back here keeps the pluralised copy in one place; deriving
+    the aggregate string at the call site is how "1 rows" comes back.
+    """
+    noun = "row" if count == 1 else "rows"
+    return f"Skipped {count} {noun} whose derived event name was empty"
+
+
 def event_name_format_columns(event_name_format: str | None) -> set[str]:
     """Columns an ``event_name_format`` builds the event name from.
 
@@ -157,6 +175,11 @@ class EventPlan:
     details: list[str] = field(default_factory=list)
     columns_analyzed: int = 0
     events_grouped: int = 0
+    # Breakdown rows whose derived name came out empty and were therefore not
+    # planned at all (tripl-wkwv.5). Counted rather than silently dropped: the
+    # operator's next question is which rows, and the answer is the name format
+    # or the base query.
+    events_unnamed: int = 0
     # Set only when ``max_events`` was supplied AND hit. ``generate_events``
     # passes no cap and applies its own against the events it actually creates.
     truncated: bool = False
@@ -352,6 +375,7 @@ def plan_events(
     }
     row_width = n_reg + len(analysis.json_names) + len(analysis.json_value_names)
     distinct_names: set[str] = set()
+    unnamed_rows = 0
 
     for row in analysis.rows:
         if max_events is not None and len(distinct_names) >= max_events:
@@ -454,6 +478,32 @@ def plan_events(
                     for fd_id, col_name, value in field_values
                 ]
 
+        # A derived name of exactly "" is not an event, it is a row the rest of
+        # the pipeline already ignores (tripl-wkwv.5). The metric collector gates
+        # on ``if event_name:`` in ``worker.tasks.metrics.chunk_processing`` and
+        # twice in ``metric_rows``, so a catalog row minted under an empty name
+        # can never take a metric point, never be matched and never be
+        # reconciled — it is dead the moment it is written, and it renders as a
+        # zero-width unlabelled link. Skipping here makes the planner and the
+        # collector agree.
+        #
+        # The test is FALSINESS: not ``.strip()``, not "any empty segment", and
+        # widening it in either direction is the bug this comment exists to
+        # prevent. The collector's gate is falsiness too, so a whitespace-only or
+        # ``"::"``-shaped name skipped HERE would still be derived THERE, miss
+        # ``events_by_name``, miss ``archived_identities``, and file real traffic
+        # as an unplanned shadow candidate. ``"::"`` and ``"onboarding:start:"``
+        # are real identities with a purpose-built rendering (the frontend's
+        # ``EventName`` paints each empty piece as ∅) — ugly, not broken.
+        #
+        # Placed AFTER the group rules because a rule may legitimately rescue an
+        # empty derived name into a real one (``_event_generator_merge`` skips
+        # any rule whose own name is blank), and BEFORE ``distinct_names`` so a
+        # skipped row does not consume the dry-run's ``max_events`` budget.
+        if not event_name:
+            unnamed_rows += 1
+            continue
+
         distinct_names.add(event_name)
         plan.events.append(
             PlannedEvent(
@@ -463,6 +513,10 @@ def plan_events(
                 row_count=_row_count(row, row_width),
             )
         )
+
+    if unnamed_rows:
+        plan.events_unnamed = unnamed_rows
+        plan.details.append(unnamed_skip_detail(unnamed_rows))
 
     return plan
 

@@ -23,6 +23,7 @@ import {
 } from '@/lib/statusLexicon'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import { formatCooldown } from './alerting/constants'
+import { InertScopeNotice, inertScopeSentence, type DriftScope } from './alerting/InertScopeNotice'
 import type { AlertDelivery, MonitorDetail } from '@/types'
 
 export default function MonitorDetailPage() {
@@ -146,7 +147,7 @@ export default function MonitorDetailPage() {
 
           <RecencyStrip monitor={monitor} />
 
-          <ConfigPanel monitor={monitor} />
+          <ConfigPanel slug={slug} monitor={monitor} />
 
           <DestinationPanel slug={slug} monitor={monitor} />
 
@@ -367,20 +368,49 @@ function directionLabel(monitor: MonitorDetail): string {
   return parts.length > 0 ? parts.join(' · ') : '—'
 }
 
-function ConfigPanel({ monitor }: { monitor: MonitorDetail }) {
-  const scopes = [
-    monitor.include_project_total ? 'Project total' : null,
-    monitor.include_event_types ? 'Event types' : null,
-    monitor.include_events ? 'Events' : null,
-    monitor.include_schema_drifts ? 'Schema drifts' : null,
-    monitor.include_distribution_drifts ? 'Distribution drifts' : null,
-    monitor.include_release_regressions ? 'Release regressions' : null,
-    monitor.include_variable_value_drifts ? 'Value drifts' : null,
-    monitor.include_metrics ? 'Metrics' : null,
-  ].filter((scope): scope is string => scope !== null)
+interface WatchedScope {
+  label: string
+  /** Set only on a drift scope the project has no source data for. */
+  inert: DriftScope | null
+}
+
+function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail }) {
+  // `=== false` rather than `!`: a response without the block — an older server,
+  // or a fixture that predates it — must read as "no claim", not as an
+  // accusation. A missing fact is not a negative one (tripl-wkwv.1).
+  const distributionIsInert = monitor.scope_readiness?.distribution_drift === false
+  const valueDriftIsInert = monitor.scope_readiness?.variable_value_drift === false
+
+  const scopes: WatchedScope[] = [
+    monitor.include_project_total ? { label: 'Project total', inert: null } : null,
+    monitor.include_event_types ? { label: 'Event types', inert: null } : null,
+    monitor.include_events ? { label: 'Events', inert: null } : null,
+    monitor.include_schema_drifts ? { label: 'Schema drifts', inert: null } : null,
+    monitor.include_distribution_drifts
+      ? { label: 'Distribution drifts', inert: distributionIsInert ? 'distribution_drift' : null }
+      : null,
+    monitor.include_release_regressions ? { label: 'Release regressions', inert: null } : null,
+    monitor.include_variable_value_drifts
+      ? { label: 'Value drifts', inert: valueDriftIsInert ? 'variable_value_drift' : null }
+      : null,
+    monitor.include_metrics ? { label: 'Metrics', inert: null } : null,
+  ].filter((scope): scope is WatchedScope => scope !== null)
+
+  const inertScopes = scopes
+    .map((scope) => scope.inert)
+    .filter((scope): scope is DriftScope => scope !== null)
 
   return (
     <Panel title="Condition" subtitle="When this monitor fires">
+      {/* Which scan's anomalies this rule can see at all — the first thing that
+          narrows it, so it reads before the direction and thresholds that narrow
+          it further. The screen refused to name it before, while the docs told
+          the reader to go and check that scan's own drift settings whenever
+          `scope_readiness` looked healthy (tripl-wkwv.9). "All scans" is the
+          null, spelled out: an empty row would read as a missing value. The
+          wording is the rule editor's own option label, not a third phrasing —
+          the screen that SETS this value is the one worth agreeing with. */}
+      <InfoRow label="Scan" value={monitor.scan_name ?? 'All scans'} mono={false} />
       <InfoRow label="Direction" value={directionLabel(monitor)} mono={false} />
       <InfoRow
         label="Threshold"
@@ -409,18 +439,40 @@ function ConfigPanel({ monitor }: { monitor: MonitorDetail }) {
         <span className="shrink-0 pt-1 text-[12.5px]" style={{ width: 200, color: 'var(--fg-subtle)' }}>
           Watching
         </span>
-        <div className="flex min-w-0 flex-1 flex-wrap gap-1.5">
-          {scopes.length > 0 ? (
-            scopes.map((scope) => (
-              <Chip key={scope} tone="neutral" size="xs">
-                {scope}
-              </Chip>
-            ))
-          ) : (
-            <span className="text-[12.5px]" style={{ color: 'var(--fg-faint)' }}>
-              No scopes selected
-            </span>
-          )}
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <div className="flex min-w-0 flex-wrap gap-1.5">
+            {scopes.length > 0 ? (
+              scopes.map((scope) => (
+                <Chip
+                  key={scope.label}
+                  tone={scope.inert ? 'warning' : 'neutral'}
+                  size="xs"
+                  // A chip alone cannot say why it is marked, and the reader
+                  // hovering it is asking exactly that. The notice below carries
+                  // the same sentence for anyone who never hovers.
+                  title={scope.inert ? inertScopeSentence(scope.inert) : undefined}
+                >
+                  {scope.label}
+                </Chip>
+              ))
+            ) : (
+              <span className="text-[12.5px]" style={{ color: 'var(--fg-faint)' }}>
+                No scopes selected
+              </span>
+            )}
+          </div>
+          {inertScopes.map((scope) => (
+            <InertScopeNotice
+              key={scope}
+              slug={slug}
+              scope={scope}
+              // The verdict above is still the PROJECT's — this only aims the
+              // link at the scan the reader was going to have to find anyway
+              // (tripl-wkwv.9). `?? undefined` because the prop is optional and
+              // a null would defeat its default.
+              scanConfigId={monitor.scan_config_id ?? undefined}
+            />
+          ))}
         </div>
       </div>
     </Panel>

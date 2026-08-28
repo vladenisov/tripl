@@ -13,7 +13,7 @@ vi.mock('@/api/audit', () => ({
   auditApi: { list: listMock, get: getMock },
 }))
 
-import { AuditTab } from './AuditTab'
+import { AuditTab, WorkspaceAuditLog } from './AuditTab'
 
 beforeEach(() => {
   listMock.mockReset()
@@ -30,8 +30,13 @@ function renderTab() {
   )
 }
 
-/** One list row. Carries no payload — the list response does not have one. */
-function auditRow(index: number): AuditEntry {
+/**
+ * One list row. Carries no payload — the list response does not have one.
+ *
+ * `branchName` defaults to '' because that is the common row: a write to main,
+ * or an action with no plan-branch dimension at all.
+ */
+function auditRow(index: number, branchName = ''): AuditEntry {
   return {
     id: `entry-${index}`,
     created_at: '2026-08-17T10:00:00Z',
@@ -39,6 +44,8 @@ function auditRow(index: number): AuditEntry {
     user_email: 'alice@example.com',
     project_id: null,
     project_slug: 'demo',
+    branch_id: branchName ? `branch-${index}` : null,
+    branch_name: branchName,
     action: 'event_type.update',
     target_type: 'event_type',
     target_id: null,
@@ -107,6 +114,11 @@ describe('AuditTab — action filter vocabulary (tripl-jfm3.79)', () => {
       'alert_delivery.retry',
       'project.reset_anomalies',
       'project_tracker_config.update',
+      // Both recorded with a project all along and both absent from the list
+      // until tripl-wkwv.13 — found while auditing the list for one new
+      // action, which is the failure mode this doctrine exists to catch.
+      'alert_destination.test',
+      'project.retire_unused_variables',
     ]) {
       expect(actions).toContain(action)
     }
@@ -117,6 +129,181 @@ describe('AuditTab — action filter vocabulary (tripl-jfm3.79)', () => {
 
     const actions = offeredActions()
     expect(actions).toHaveLength(new Set(actions).size)
+  })
+})
+
+describe('AuditTab — events in the log (tripl-wkwv.10)', () => {
+  // api/v1/events.py called audit_service.record zero times, so the central
+  // object of the product was the one object this filter had nothing to offer
+  // for. Per-event history is not a substitute: it never records creation or
+  // deletion and CASCADEs away with the event it documents.
+  it('offers every event action the backend now records', () => {
+    renderTab()
+
+    const actions = offeredActions()
+
+    for (const action of [
+      'event.create',
+      'event.bulk_create',
+      'event.update',
+      'event.bulk_update',
+      'event.delete',
+      'event.bulk_delete',
+    ]) {
+      expect(actions).toContain(action)
+    }
+    // Reordering permutes Event.order only and is deliberately not recorded —
+    // offering it here would be an action that can never match a row.
+    expect(actions).not.toContain('event.reorder')
+    expect(actions).not.toContain('event.move')
+  })
+
+  it('groups them under their own Events optgroup', () => {
+    renderTab()
+
+    const select = screen.getByLabelText('Action') as HTMLSelectElement
+    const group = Array.from(select.querySelectorAll('optgroup')).find(
+      (candidate) => candidate.label === 'Events',
+    )
+    expect(group).toBeDefined()
+    const grouped = Array.from(group!.querySelectorAll('option')).map((o) => o.value)
+    expect(grouped).toContain('event.delete')
+  })
+
+  it('describes a log that covers events and outlives the event it records', () => {
+    renderTab()
+
+    const help = screen.getByText(/Compliance trail/)
+    // The paragraph scoped itself to "schema and data sources" — true before
+    // this change, and a false promise the moment events started landing here.
+    expect(help.textContent).not.toMatch(/schema and data sources/i)
+    expect(help.textContent).toMatch(/events/i)
+    // Points across to the per-event history instead of pretending this log
+    // carries field-level before/after values, which it deliberately does not.
+    expect(help.textContent).toMatch(/history/i)
+    // The two facts the branch-chip test below also depends on survive the
+    // rewrite; asserting them here too so a copy edit fails in the test that
+    // owns the copy.
+    expect(help.textContent).not.toMatch(/no chip were written on main/i)
+    expect(help.textContent).toMatch(/no branch to name/i)
+  })
+})
+
+describe('WorkspaceAuditLog — the instance-wide feed (tripl-wkwv.17)', () => {
+  function renderWorkspace() {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <WorkspaceAuditLog />
+      </QueryClientProvider>,
+    )
+  }
+
+  it('asks for every project, by sending no project filter at all', async () => {
+    renderWorkspace()
+
+    await waitFor(() => expect(listMock).toHaveBeenCalled())
+    // Not an empty string, not the current project: absent. The endpoint treats
+    // project_slug as a filter rather than a scope, so omitting it is what makes
+    // this the whole instance.
+    expect(listMock.mock.calls[0][0].projectSlug).toBeUndefined()
+  })
+
+  it('offers the actions that carry no project, which the project tab cannot', async () => {
+    renderWorkspace()
+    await waitFor(() => expect(listMock).toHaveBeenCalled())
+
+    const actions = offeredActions()
+
+    // Recorded by the backend and displayed nowhere before this view.
+    // `project.delete` is here for the same reason as the rest: it is written
+    // once its subject is gone, so it carries no project either.
+    for (const action of [
+      'data_source.create',
+      'data_source.update',
+      'data_source.delete',
+      'user.invite',
+      'user.invite_revoke',
+      'user.role_update',
+      'api_key.revoke',
+      'project.delete',
+    ]) {
+      expect(actions).toContain(action)
+    }
+    // Additive, not alternative: this feed is unfiltered, so a project action
+    // matches here too and a filter narrower than its own list would lie.
+    expect(actions).toContain('event.create')
+    // Still exactly once each — `api_key.create` belongs to both halves.
+    expect(actions).toHaveLength(new Set(actions).size)
+  })
+
+  it('names the project each row belongs to, since rows from all of them sit together', async () => {
+    listMock.mockResolvedValue({ items: [auditRow(0)], total: 1 })
+    renderWorkspace()
+
+    expect(await screen.findByTitle('demo')).toBeInTheDocument()
+  })
+
+  it('does not repeat the project chip inside one project', async () => {
+    listMock.mockResolvedValue({ items: [auditRow(0)], total: 1 })
+    renderTab()
+
+    await screen.findByText('checkout_started_0')
+    // Every row on that page belongs to the project whose page it is, so the
+    // chip would restate the heading on every line.
+    expect(screen.queryByTitle('demo')).toBeNull()
+  })
+})
+
+describe('AuditTab — the project itself (tripl-wkwv.19)', () => {
+  it('offers the lifecycle actions a project can still answer for', () => {
+    renderTab()
+
+    const actions = offeredActions()
+
+    for (const action of ['project.create', 'project.update', 'project.reset']) {
+      expect(actions).toContain(action)
+    }
+  })
+
+  it('does not offer the one entry a live project can never match', () => {
+    renderTab()
+
+    // `project.delete` is written after its subject is gone, so it carries no
+    // project id — and this list is filtered by the project a slug resolves to
+    // (tripl-wkwv.18). Offering it here would be an option that can only ever
+    // answer "no entries", which is what the doctrine at the top of the module
+    // forbids. It belongs to the workspace view, tested above.
+    expect(offeredActions()).not.toContain('project.delete')
+  })
+
+  it('groups the rest with the other project actions', () => {
+    renderTab()
+
+    const select = screen.getByLabelText('Action') as HTMLSelectElement
+    const group = Array.from(select.querySelectorAll('optgroup')).find(
+      (candidate) => candidate.label === 'Project',
+    )
+    expect(group).toBeDefined()
+    const grouped = Array.from(group!.querySelectorAll('option')).map((o) => o.value)
+    expect(grouped).toContain('project.create')
+  })
+})
+
+describe('AuditTab — reconciliation resolutions (tripl-wkwv.13)', () => {
+  it('offers the dismissal, and files an acceptance under the create action', () => {
+    renderTab()
+
+    const actions = offeredActions()
+
+    // Dismissing writes observed traffic off for everyone and is terminal
+    // through the API; without an entry here it lands in the unfiltered feed
+    // and can never be isolated.
+    expect(actions).toContain('shadow_event.dismiss')
+    // Accepting deliberately has NO action of its own: a catalog event now
+    // exists, so it files `event.create`. An action of its own would split
+    // "which events did people create?" into two answers, each looking whole.
+    expect(actions).not.toContain('shadow_event.accept')
   })
 })
 
@@ -295,5 +482,45 @@ describe('AuditTab — payload on expand (tripl-5ydt)', () => {
     await waitFor(() => expect(getMock).toHaveBeenCalledWith('entry-0'))
     await waitFor(() => expect(screen.queryByLabelText('Loading payload')).toBeNull())
     expect(container.querySelector('pre')).toBeNull()
+  })
+})
+
+describe('AuditTab — branch chip (tripl-wkwv.6)', () => {
+  it('names the working branch a write was scoped to', async () => {
+    listMock.mockResolvedValue({ items: [auditRow(1, 'redesign-checkout')], total: 1 })
+    renderTab()
+
+    // Before this, two contradictory edits to the same object on two branches
+    // produced two audit rows that read identically.
+    expect(await screen.findByText('redesign-checkout')).toBeInTheDocument()
+    // The chip is capped and truncated, so the full name has to stay reachable.
+    expect(screen.getByTitle('redesign-checkout')).toBeInTheDocument()
+  })
+
+  it('leaves a row with no branch unchipped rather than calling it main', async () => {
+    // An empty branch_name covers BOTH a write to main and an action with no
+    // plan-branch dimension at all (alerting, scans, metrics, API keys — all
+    // listed in this tab's own filter), so labelling it "main" would assert
+    // something false about the second kind.
+    listMock.mockResolvedValue({
+      items: [auditRow(0), auditRow(1, 'redesign-checkout')],
+      total: 2,
+    })
+    renderTab()
+
+    await screen.findByText('checkout_started_0')
+    expect(screen.getByText('checkout_started_1')).toBeInTheDocument()
+    // Both rows rendered; exactly one of them carries a chip.
+    expect(screen.getAllByTitle('redesign-checkout')).toHaveLength(1)
+    expect(screen.queryByText('main')).toBeNull()
+
+    // …and the tab's own help text must not say it for us. The line above
+    // cannot catch that: queryByText matches an element's whole normalized
+    // text exactly, and the help paragraph is a long sentence, so it passed
+    // while the copy read "entries with no chip were written on main" —
+    // false for every alerting, scan, metric and API-key row this tab lists.
+    const help = screen.getByText(/Compliance trail/)
+    expect(help.textContent).not.toMatch(/no chip were written on main/i)
+    expect(help.textContent).toMatch(/no branch to name/i)
   })
 })

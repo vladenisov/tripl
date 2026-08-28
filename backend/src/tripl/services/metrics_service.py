@@ -575,6 +575,7 @@ async def _load_scope_anomalies(
         interval=scan_interval_to_timedelta(interval),
         recent_window=recent_window,
         anomaly_actual_count=anchor.actual_count,
+        anomaly_expected_count=anchor.expected_count,
         scan_latest_bucket=scan_latest_bucket,
     )
     if state is None:
@@ -839,6 +840,7 @@ def _build_metrics_response(
             # Every scope served here is count-shaped and scan-backed, which is
             # exactly the population the re-check is defined for.
             anomaly_actual_count=latest_anomaly.actual_count,
+            anomaly_expected_count=latest_anomaly.expected_count,
             scan_latest_bucket=scan_latest_bucket,
         )
         if state is not None:

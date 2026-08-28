@@ -428,12 +428,37 @@ export interface MonitorSummaryItem {
   muted_until: string | null
 }
 
+/**
+ * Whether each drift-style scope has any source data at all, PROJECT-wide.
+ *
+ * Not a per-rule verdict and not a prediction: it answers "could this scope ever
+ * produce a candidate here", so a screen can tell an enabled-but-inert toggle
+ * from a quiet one (tripl-wkwv.1).
+ */
+export interface AlertScopeReadiness {
+  /**
+   * False when nothing on the MAIN branch documents an allowed-values list —
+   * neither a variable's own list nor a per-event override — for a variable
+   * scans still observe, and no value drift has been collected yet. Collected
+   * rows alone are enough.
+   */
+  variable_value_drift: boolean
+  /**
+   * False when no scan lists distribution drift fields AND no drift has been
+   * collected yet. Collected rows alone are enough.
+   */
+  distribution_drift: boolean
+}
+
 export interface MonitorsSummaryResponse {
   monitors: MonitorSummaryItem[]
   firing_count: number
   warning_count: number
   healthy_count: number
   total: number
+  // On the envelope, never on `MonitorSummaryItem`: one project fact, not N
+  // copies of a value that cannot differ between rules.
+  scope_readiness: AlertScopeReadiness
 }
 
 /** A single monitor with the extra context a drill-in detail view needs. */
@@ -441,6 +466,19 @@ export interface MonitorDetail extends MonitorSummaryItem {
   // Raw enable flags (the summary `enabled` is the AND of these two).
   rule_enabled: boolean
   destination_enabled: boolean
+  /**
+   * Which scan's anomalies this rule can see — same name and same meaning as
+   * `AlertRule.scan_config_id`: null means every scan in the project.
+   * `scan_name` is that scan's display name, null exactly when the id is; the
+   * detail page runs no scans query to resolve an id against.
+   *
+   * NOT an input to `scope_readiness` below, which stays a PROJECT fact. A rule
+   * bound to a scan that feeds nothing can still read ready because a sibling
+   * scan does — the limitation tripl-wkwv.9 names, which these two fields make
+   * visible rather than fix.
+   */
+  scan_config_id: string | null
+  scan_name: string | null
   // Which signal kinds this monitor subscribes to.
   include_project_total: boolean
   include_event_types: boolean
@@ -454,4 +492,7 @@ export interface MonitorDetail extends MonitorSummaryItem {
   total_deliveries: number
   last_delivery_at: string | null
   last_delivery_status: AlertDeliveryStatus | null
+  // The same block the monitors list carries, under the same name: both screens
+  // render the same two toggles and must not disagree about what feeds them.
+  scope_readiness: AlertScopeReadiness
 }

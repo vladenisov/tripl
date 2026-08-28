@@ -30,6 +30,34 @@ def test_alembic_revision_graph_has_single_head() -> None:
     assert len(heads) == 1
 
 
+def test_reported_head_matches_the_migration_graph() -> None:
+    """What the System panel calls "head" must be what ``upgrade head`` reaches.
+
+    The panel derives the script directory package-relatively
+    (``tripl.__file__`` -> backend/alembic) rather than from alembic.ini's
+    cwd-relative ``script_location``, because the serving process does not run
+    from backend/. That derivation is the fragile part of tripl-wkwv.7: if it
+    ever stops resolving, the panel degrades to Unknown silently and stays
+    useless while looking calm. This file already owns revision-graph knowledge,
+    so the cross-check belongs here — and it fails loudly in CI instead.
+    """
+    from tripl.services import migration_status_service
+
+    backend_root = Path(__file__).resolve().parents[3]
+    config = Config(str(backend_root / "alembic.ini"))
+    config.set_main_option("script_location", str(backend_root / "alembic"))
+    heads = ScriptDirectory.from_config(config).get_heads()
+    assert len(heads) == 1
+
+    # No literal revision anywhere: this branch keeps gaining migrations, and a
+    # pinned hash would make every new one a failure here.
+    migration_status_service.head_revision.cache_clear()
+    try:
+        assert migration_status_service.head_revision() == heads[0]
+    finally:
+        migration_status_service.head_revision.cache_clear()
+
+
 def test_project_app_version_retention_migration_backfills_and_mirrors(
     monkeypatch,
 ) -> None:

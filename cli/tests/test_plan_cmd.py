@@ -151,25 +151,92 @@ def test_search_reports_whether_the_semantic_index_answered(
     ranking on ``confidence`` needs to know which one it got. It is the one
     route-level fact any of these verbs reports, and it rides in ``meta``.
     """
-    tripl_api.search("prod", [make_search_result()], semantic_used=True)
+    # Both bodies below carry `truncated`, so a test about `semantic_used` does
+    # not double as a second pin of the older instance that sends no such key —
+    # that one is pinned on its own, further down (tripl-wkwv.11).
+    tripl_api.search("prod", [make_search_result()], semantic_used=True, truncated=True)
     assert main(["plan", "search", "purchase", "--project", "prod", "--limit", "1"]) == 0
     captured = capsys.readouterr()
     assert "event  evt-1  app.screen_view.viewed  Screen View  0.92" in captured.out
     # No "1 of 57": the route's total is computed AFTER the trim, so it can only
-    # ever equal the page. A full page is the only truncation signal search has,
-    # and it cannot say how many were dropped — so it does not pretend to.
+    # ever equal the page. The warning comes from the route's own `truncated`,
+    # which says THAT hits were dropped and never how many — so the line does
+    # not pretend to.
     assert (
         "1 search result shown — the most this page holds, and more may have matched; "
         "raise --limit." in captured.out
     )
 
-    tripl_api.search("prod", [make_search_result()], semantic_used=True)
+    tripl_api.search("prod", [make_search_result()], semantic_used=True, truncated=False)
     assert main(["plan", "search", "purchase", "--project", "prod", "--json"]) == 0
     document = json.loads(capsys.readouterr().out)
     assert document["meta"] == {"semantic_used": True}
     # No offset parameter exists on this route, so advising one would send the
     # operator after a flag that cannot be built.
     assert document["offset"] is None
+
+
+def test_search_prefers_the_routes_truncation_flag_over_a_full_page(
+    tripl_api: FakeInstance, configured_env: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A page that filled exactly is not a page that dropped rows (tripl-wkwv.3).
+
+    ``/search`` retrieves one row past its candidate window, so it KNOWS. The CLI
+    was guessing from ``len(items) >= limit`` and printing "more may have
+    matched" on a query whose matches land exactly on ``--limit`` — while
+    ``tripl-mcp``'s ``search_plan``, reading the same key out of the same body,
+    answered false. Two surfaces of one product, opposite answers about one
+    response, and ``--limit`` raised for nothing.
+    """
+    tripl_api.search("prod", [make_search_result()], truncated=False)
+
+    assert main(["plan", "search", "purchase", "--project", "prod", "--limit", "1"]) == 0
+    out = capsys.readouterr().out
+    assert out.endswith("1 search result.\n")
+    assert "more may have matched" not in out
+
+    assert main(["plan", "search", "purchase", "--project", "prod", "--limit", "1", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["truncated"] is False
+
+
+def test_search_takes_the_routes_flag_even_where_the_page_did_not_fill(
+    tripl_api: FakeInstance, configured_env: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The top rung is the route's ANSWER, not a veto over the guess.
+
+    Seen only against a full page, "prefer ``truncated``" is indistinguishable
+    from the weaker "let ``truncated: false`` silence the guess": the test above
+    still passes if the ladder can only ever turn a True into a False. This pins
+    the other direction — one row against ``--limit 5``, where page fullness
+    says False and the route says True, and the route wins.
+
+    Asserted on the JSON envelope and not on the printed warning, deliberately.
+    Today's ``/search`` cannot send this body: it trims by slicing, so
+    ``truncated: true`` implies the page filled exactly. What is pinned here is
+    the precedence between two rungs of ``PlanRead.truncated``, which holds for
+    whatever fills ``route_truncated`` next — not the wording of a line no real
+    response can trigger, which is the trap ``FakeInstance.search`` refuses a
+    ``total`` parameter to avoid.
+    """
+    tripl_api.search("prod", [make_search_result()], truncated=True)
+    assert main(["plan", "search", "purchase", "--project", "prod", "--limit", "5", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["truncated"] is True
+
+
+def test_search_still_guesses_against_an_instance_that_reports_no_truncation(
+    tripl_api: FakeInstance, configured_env: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Silence is not the route saying nothing was dropped (tripl-wkwv.3).
+
+    ``truncated`` is new and the CLI is installed separately from the instance it
+    talks to, so an older body simply has no key. The page-fullness guess — the
+    only signal that ever existed for this route — has to keep running there, or
+    the fix would turn a warning that is sometimes spurious into a silence that
+    is sometimes wrong.
+    """
+    tripl_api.search("prod", [make_search_result()])
+    assert main(["plan", "search", "purchase", "--project", "prod", "--limit", "1", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["truncated"] is True
 
 
 def test_meta_is_present_and_empty_on_the_verbs_whose_route_reports_nothing(

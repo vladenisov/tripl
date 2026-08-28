@@ -36,6 +36,10 @@ const BASE_MONITOR = {
   muted_until: null,
   rule_enabled: true,
   destination_enabled: true,
+  // Project-wide, the default every rule is created with. The scan-bound case
+  // is its own describe block (tripl-wkwv.9).
+  scan_config_id: null,
+  scan_name: null,
   include_project_total: true,
   include_event_types: true,
   include_events: false,
@@ -45,6 +49,9 @@ const BASE_MONITOR = {
   total_deliveries: 3,
   last_delivery_at: '2026-06-26T10:01:00Z',
   last_delivery_status: 'sent',
+  // Both drift scopes have source data, so the ordinary fixture renders plain
+  // chips. The inert case is its own describe block (tripl-wkwv.1).
+  scope_readiness: { variable_value_drift: true, distribution_drift: true },
 }
 
 const HISTORY = {
@@ -175,6 +182,34 @@ describe('MonitorDetailPage', () => {
       'href',
       '/p/demo/monitors',
     )
+  })
+
+  // The Condition panel described everything that narrows a rule except the
+  // first thing that does. A reader told by the docs to go and check the bound
+  // scan's own drift settings could not learn from this screen which scan that
+  // was — the only scan it ever named was a delivery's (tripl-wkwv.9).
+  it('names the scan a rule is narrowed to', async () => {
+    mockApi({
+      monitor: { ...BASE_MONITOR, scan_config_id: 'scan-7', scan_name: 'ios hourly' },
+    })
+
+    renderDetail()
+
+    await screen.findByRole('heading', { name: RULE })
+    expect(screen.getByText('Scan')).toBeInTheDocument()
+    expect(screen.getByText('ios hourly')).toBeInTheDocument()
+    expect(screen.queryByText('All scans')).toBeNull()
+  })
+
+  it('spells the project-wide default out rather than leaving the row blank', async () => {
+    // A null here means "every scan in the project", not "unknown". An empty
+    // value would read as a missing fact and send the reader looking for one.
+    mockApi()
+
+    renderDetail()
+
+    await screen.findByRole('heading', { name: RULE })
+    expect(screen.getByText('All scans')).toBeInTheDocument()
   })
 
   // Pins the unit agreement from tripl-oxkt.18: this page and the alerting
@@ -380,5 +415,128 @@ describe('MonitorDetailPage', () => {
     // "Rule", not "Monitor": the second noun for one object went with the
     // standalone list it named (tripl-89ps).
     expect(await screen.findByText('Rule unavailable')).toBeInTheDocument()
+  })
+})
+
+/**
+ * A watched scope with nothing behind it (tripl-wkwv.1).
+ *
+ * "Watching: Value drifts" is a promise, and in production it was one the
+ * project could not keep — no variable documented an allowed-values list, so
+ * the scope could never produce a candidate. The chip said the same thing
+ * either way.
+ */
+describe('MonitorDetailPage inert scopes', () => {
+  // Loose on purpose: the exact wording is pinned once, in InertScopeNotice's
+  // own test. Repeating it here only bought a second file to edit whenever the
+  // qualifiers the backend enforces changed (tripl-wkwv.1).
+  const VALUE_DRIFT_SENTENCE = /documents an allowed-values list/
+
+  it('marks a watched scope the project cannot feed, and links to the fix', async () => {
+    mockApi({
+      monitor: {
+        ...BASE_MONITOR,
+        include_variable_value_drifts: true,
+        scope_readiness: { variable_value_drift: false, distribution_drift: true },
+      },
+    })
+
+    renderDetail()
+
+    expect(await screen.findByText(VALUE_DRIFT_SENTENCE)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Variables' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/variables',
+    )
+    // The chip carries the same sentence, so hovering the marked scope answers
+    // the question the marking raises.
+    expect(screen.getByText('Value drifts')).toHaveAttribute(
+      'title',
+      expect.stringContaining('documents an allowed-values list'),
+    )
+  })
+
+  it('opens the fix in this tab, because nothing here is unsaved', async () => {
+    // The rule editor passes `newTab` to protect a draft it holds in state.
+    // This page holds no unsaved anything, so a new tab would only litter the
+    // reader's tab bar for nothing.
+    mockApi({
+      monitor: {
+        ...BASE_MONITOR,
+        include_variable_value_drifts: true,
+        scope_readiness: { variable_value_drift: false, distribution_drift: true },
+      },
+    })
+
+    renderDetail()
+
+    expect(await screen.findByRole('link', { name: 'Variables' })).not.toHaveAttribute('target')
+  })
+
+  it('leaves a fed scope as a plain chip with nothing appended', async () => {
+    mockApi({ monitor: { ...BASE_MONITOR, include_variable_value_drifts: true } })
+
+    renderDetail()
+
+    expect(await screen.findByText('Value drifts')).not.toHaveAttribute('title')
+    expect(screen.queryByText(VALUE_DRIFT_SENTENCE)).toBeNull()
+  })
+
+  it('sends a scan-bound reader to that scan, not to the scan list', async () => {
+    // Note the fixture: distribution_drift readiness is FALSE, so nothing in the
+    // project feeds the scope — this notice cannot render in the case where only
+    // the bound scan is empty, and it is not the answer to that question
+    // (tripl-wkwv.9 ships readiness as a PROJECT verdict; the bound scan is named
+    // separately in the Condition panel). What this pins is narrower and real:
+    // when the notice DOES render for a scan-bound rule, it sends the reader to
+    // that scan's own settings rather than making them find it in the list.
+    mockApi({
+      monitor: {
+        ...BASE_MONITOR,
+        include_distribution_drifts: true,
+        scan_config_id: 'scan-7',
+        scan_name: 'ios hourly',
+        scope_readiness: { variable_value_drift: true, distribution_drift: false },
+      },
+    })
+
+    renderDetail()
+
+    expect(await screen.findByRole('link', { name: 'Scan settings' })).toHaveAttribute(
+      'href',
+      '/p/demo/scans/scan-7',
+    )
+  })
+
+  it('sends a project-wide reader to the scan list, as before', async () => {
+    mockApi({
+      monitor: {
+        ...BASE_MONITOR,
+        include_distribution_drifts: true,
+        scope_readiness: { variable_value_drift: true, distribution_drift: false },
+      },
+    })
+
+    renderDetail()
+
+    expect(await screen.findByRole('link', { name: 'Scan settings' })).toHaveAttribute(
+      'href',
+      '/p/demo/scans',
+    )
+  })
+
+  it('says nothing when the response carries no readiness at all', async () => {
+    // A server or fixture that predates the field must render exactly as
+    // before: a missing fact is not a negative one.
+    const { scope_readiness, ...withoutReadiness } = BASE_MONITOR
+    // Assert the baseline really carries it, so this test is provably removing
+    // something rather than asserting against a fixture that never had it.
+    expect(scope_readiness).toBeDefined()
+    mockApi({ monitor: { ...withoutReadiness, include_variable_value_drifts: true } })
+
+    renderDetail()
+
+    expect(await screen.findByText('Value drifts')).toBeInTheDocument()
+    expect(screen.queryByText(VALUE_DRIFT_SENTENCE)).toBeNull()
   })
 })

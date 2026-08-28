@@ -15,7 +15,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from tripl.core.adapters.base import ColumnInfo
 from tripl.core.analyzers.cardinality import BreakdownAnalysis, CardinalityResult
 from tripl.core.analyzers.event_generator import generate_events
-from tripl.core.analyzers.event_plan import breakdown_row_count, plan_events
+from tripl.core.analyzers.event_plan import (
+    breakdown_row_count,
+    plan_events,
+    unnamed_skip_detail,
+)
 from tripl.models import Base
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
@@ -218,6 +222,155 @@ def test_plan_events_hoists_variables_in_first_seen_order(
     plan = plan_events(_make_analysis(high), {"screen": fds["screen"].id})
     names = [need.name for need in plan.variables_needed]
     assert len(names) == len(set(names)), "variable needs must be de-duplicated"
+
+
+_NULL_ACTION = {
+    "action": CardinalityResult(
+        column=ColumnInfo("action", "String"),
+        count=1,
+        is_low=True,
+        sample_values=[None],
+    ),
+}
+
+
+def test_a_row_whose_name_resolves_to_empty_is_not_planned(project_and_type) -> None:
+    """A NULL naming column used to mint a nameless catalog row (tripl-wkwv.5).
+
+    ``_format_value(None)`` is ``""`` and ``_apply_name_format`` raises only for a
+    placeholder the row cannot supply AT ALL, so ``{action}`` over a NULL
+    ``action`` substituted silently and the run wrote ``Event(name="")`` — a
+    zero-width unlabelled link the user cannot click, and a row the metric
+    collector's ``if event_name:`` gate can never measure, match or reconcile.
+
+    Skipped rather than renamed, and disclosed rather than dropped in silence:
+    the operator's next question is which rows, and the answer is the name format
+    or the base query.
+    """
+    _project, _et, fds = project_and_type
+
+    plan = plan_events(
+        _make_analysis(_NULL_ACTION),
+        {"action": fds["action"].id},
+        event_name_format="{action}",
+    )
+
+    assert plan.events == []
+    assert plan.events_unnamed == 1
+    assert plan.details == ["Skipped 1 row whose derived event name was empty"]
+
+
+def test_the_skip_line_is_the_one_function_every_surface_calls(project_and_type) -> None:
+    """The plural is the reason this helper is a function (tripl-wkwv.5).
+
+    A grouped dry run plans once per event type, so it sums the per-plan counts
+    and asks for ONE sentence covering the total — ``plan_events`` never sees a
+    number bigger than its own rows. Both callers go through the same helper;
+    building the aggregate string at the call site is exactly how "1 rows", the
+    defect tripl-3y7z fixed, comes back.
+    """
+    _project, _et, fds = project_and_type
+
+    # Two screens x one NULL action: two rows, both nameless under ``{action}``.
+    plan = plan_events(
+        _make_analysis(
+            {
+                "screen": CardinalityResult(
+                    column=ColumnInfo("screen", "String"),
+                    count=2,
+                    is_low=True,
+                    sample_values=["/home", "/about"],
+                ),
+                **_NULL_ACTION,
+            }
+        ),
+        {name: fd.id for name, fd in fds.items()},
+        event_name_format="{action}",
+    )
+
+    assert plan.events_unnamed == 2
+    assert plan.details == [unnamed_skip_detail(2)]
+    assert unnamed_skip_detail(1) == "Skipped 1 row whose derived event name was empty"
+    assert unnamed_skip_detail(2) == "Skipped 2 rows whose derived event name was empty"
+
+
+def test_a_name_of_only_empty_segments_is_still_planned(project_and_type) -> None:
+    """The conservative half, pinned so nobody widens the guard (tripl-wkwv.5).
+
+    ``"::"`` and ``"onboarding:start:"`` are non-empty strings: they have a click
+    target, an accessible name and a purpose-built rendering (the frontend paints
+    each empty piece as ∅). They are ugly, not broken — and a trailing empty
+    segment is plainly a real event with an optional last part.
+
+    Skipping them would be actively worse than showing them. The metric
+    collector's gate is falsiness and ``"::"`` is truthy, so it would still derive
+    the name, miss the catalog, miss the archived identities and file real
+    traffic as an unplanned shadow candidate: coverage numerator down,
+    denominator unchanged. Skipping a real event is a far worse bug than showing
+    an ugly one.
+    """
+    _project, _et, fds = project_and_type
+    field_ids = {name: fd.id for name, fd in fds.items()}
+
+    all_null = plan_events(
+        _make_analysis(
+            {
+                "screen": CardinalityResult(
+                    column=ColumnInfo("screen", "String"),
+                    count=1,
+                    is_low=True,
+                    sample_values=[None],
+                ),
+                **_NULL_ACTION,
+            }
+        ),
+        field_ids,
+        event_name_format="{screen}::{action}",
+    )
+    assert [event.name for event in all_null.events] == ["::"]
+    assert all_null.events_unnamed == 0
+
+    trailing_null = plan_events(
+        _make_analysis(
+            {
+                "screen": CardinalityResult(
+                    column=ColumnInfo("screen", "String"),
+                    count=1,
+                    is_low=True,
+                    sample_values=["onboarding"],
+                ),
+                **_NULL_ACTION,
+            }
+        ),
+        field_ids,
+        event_name_format="{screen}:start:{action}",
+    )
+    assert [event.name for event in trailing_null.events] == ["onboarding:start:"]
+    assert trailing_null.events_unnamed == 0
+
+
+def test_a_group_rule_rescues_an_otherwise_empty_name(project_and_type) -> None:
+    """The guard runs AFTER the group rules, and that ordering is behaviour.
+
+    ``_event_generator_merge`` skips any rule whose own name is blank, so a rule
+    can only ever rescue an empty derived name into a real one — never produce
+    one. Guarding before the rules would delete the very rows a scan config was
+    written to salvage (tripl-wkwv.5).
+    """
+    _project, _et, fds = project_and_type
+
+    plan = plan_events(
+        _make_analysis(_NULL_ACTION),
+        {"action": fds["action"].id},
+        event_name_format="{action}",
+        event_group_rules=[
+            {"name": "unnamed_traffic", "conditions": [{"field": "__event_name", "pattern": "^$"}]}
+        ],
+    )
+
+    assert [event.name for event in plan.events] == ["unnamed_traffic"]
+    assert plan.events_unnamed == 0
+    assert plan.events_grouped == 1
 
 
 def test_breakdown_row_count_ignores_rows_that_carry_no_count() -> None:

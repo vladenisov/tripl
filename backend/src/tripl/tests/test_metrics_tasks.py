@@ -3298,6 +3298,7 @@ def _seed_aged_outage(
     *,
     scan_alive: bool,
     actual_count: float = 0,
+    expected_count: float = 10,
 ) -> tuple[ScanConfig, Event]:
     """One scope that went silent five days ago, on a scan that may still be alive.
 
@@ -3307,6 +3308,10 @@ def _seed_aged_outage(
     re-emitted). With ``scan_alive`` the SAME scan keeps collecting for its
     event-type scope right up to the present, so the collector is demonstrably
     alive and the silence belongs to the scope rather than to a switched-off scan.
+
+    ``expected_count`` is what the anchor says the scope normally emits; the
+    default is an ordinary baseline. Seeding it 0 describes a scope that was
+    never expected to emit at all, which is not an outage (tripl-wkwv.4).
     """
     config, event_type, event = _seed_anomaly_scan_state(session, base=_OUTAGE_ANCHOR)
     _seed_alert_rule(session, config)
@@ -3328,6 +3333,7 @@ def _seed_aged_outage(
 
     anomaly = _seed_drop_anomaly(session, config, event, bucket=anchor)
     anomaly.actual_count = actual_count
+    anomaly.expected_count = expected_count
     session.commit()
     return config, event
 
@@ -3394,6 +3400,54 @@ def test_an_aged_spike_is_not_held_open_by_the_outage_recheck(
         active = metrics_signals._get_latest_active_anomalies(session, config)
 
         assert ("event", str(event.id)) not in active
+
+
+def test_a_zero_baseline_anchor_is_not_held_open_by_the_outage_recheck(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The anchor also has to say there was something to LOSE (tripl-wkwv.4).
+
+    A scope expected to emit nothing and emitting nothing is not an incident, and
+    it is the shape this re-check alone can end: an empty scope stores no metric
+    rows, so its head never advances past the anchor and the latest-scan branch
+    stays true for the life of the deployment.
+
+    Pinned on the WORKER path as well as the display one because this is the same
+    predicate reached through a different caller, and the two paths have already
+    drifted twice (tripl-l429.14, tripl-l429.19) — each time by one side gaining
+    an input the other did not.
+    """
+    with sync_session_factory() as session:
+        config, event = _seed_aged_outage(session, scan_alive=True, expected_count=0)
+
+        active = metrics_signals._get_latest_active_anomalies(session, config)
+
+        assert ("event", str(event.id)) not in active
+
+
+def test_a_zero_baseline_spike_that_is_still_live_keeps_alerting(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """And a real move off a zero baseline still reaches dispatch.
+
+    The trap in tripl-wkwv.4: "expected 0" alone must not close anything. A scope
+    that started emitting where it never had is a genuine observation, judged on
+    freshness like any other signal — here on the newest bucket the detector may
+    emit, which is what a live scope carries.
+    """
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session, base=_ANOMALY_BASE)
+        _seed_alert_rule(session, config)
+        head = _ANOMALY_BASE + timedelta(hours=9)
+        anomaly = _seed_drop_anomaly(session, config, event, bucket=head - timedelta(hours=2))
+        anomaly.actual_count = 7
+        anomaly.expected_count = 0
+        anomaly.direction = "spike"
+        session.commit()
+
+        active = metrics_signals._get_latest_active_anomalies(session, config)
+
+        assert ("event", str(event.id)) in active
 
 
 def test_an_aged_ongoing_outage_leaves_the_run_delta_but_not_alerting(

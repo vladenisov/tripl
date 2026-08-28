@@ -267,14 +267,31 @@ Each editable field resolves as **database override → environment value**. The
 defaults come from the environment / `Settings` object; saving a value in the UI
 writes an override row, and a per-section **Reset** removes the override so the
 field falls back to its env value. Most fields carry a small **source badge**
-showing whether the value is currently coming from `env` or an `override`.
+with three states:
+
+- **Override** — a row exists in this instance's settings table. A section
+  **Reset** clears it. An override whose value happens to equal the default
+  still reads *Override*, because there is a row to clear.
+- **Env** — no override, and the value differs from the built-in default, so
+  something delivered it: an environment variable or a `.env` line.
+- **Default** — the value equals the built-in default. That means *either*
+  nothing was delivered for this setting, *or* what was delivered happens to
+  match the default. From inside the process the two are indistinguishable, and
+  a normalising validator can fold a delivered value onto the default the same
+  way (`LOG_LEVEL=info` becomes `INFO`). The badge's tooltip says so.
+
+The asymmetry is the point when you are verifying a deployment: a field badged
+**Env** *is* evidence that a variable reached the container. A field badged
+**Default** is *not* evidence that it did not.
 
 :::note Secrets are write-only
 Secret fields — the AI API key, the search-embedding API key, and the SMTP
 password — are **encrypted at rest** (Fernet) and never returned to the browser.
-The UI shows only a `Configured` / `Not configured` placeholder; leave the field
-blank to keep the existing value, type a new value to replace it, or use
-**Clear** to remove the override. Encryption requires `ENCRYPTION_KEY` to be set
+The UI never shows a stored secret's value: at most a `Configured` /
+`Not configured` placeholder and the same **Override** / **Env** / **Default**
+badge the other rows carry, which says where the secret came from and never what
+it is. Leave the field blank to keep the existing value, type a new value to
+replace it, or use **Clear** to remove the override. Encryption requires `ENCRYPTION_KEY` to be set
 (see [Configuration](../run/configuration.md)).
 :::
 
@@ -365,10 +382,21 @@ enabled.
   prompts — **Describe prompt**, **Ask prompt**, **Alert explanation prompt** —
   which fall back to built-in defaults.
 - **Search embeddings:** toggle (`search_embeddings_enabled`), read-only
+  **Embeddings base URL** (`search_embedding_base_url`, default
+  `https://api.openai.com/v1`, env only), read-only
   **Embedding dimensions** (`search_embedding_dimensions`, default 1536, env
   only), provider (`search_embedding_provider`, default `openai`), model
   (`search_embedding_model`, default `text-embedding-3-small`), and **Embedding
   API key** (`search_embedding_api_key`, secret).
+
+  The base URL is the endpoint every indexed event name, description and field
+  value is POSTed to. It is shown precisely so an operator can confirm where
+  that text is going without reading the source, which is why it carries a
+  source badge like everything else: **Env** means something delivered
+  `SEARCH_EMBEDDING_BASE_URL` to this container. It is reported, never accepted —
+  the vectors already in the index were written against whatever endpoint
+  produced them, and similarity across two embedding spaces is meaningless, so
+  changing it is a re-index and a deploy rather than a setting.
 
 If no key is set on either AI secret field, the server falls back to the
 `OPENAI_API_KEY` environment value when resolving the effective key.
@@ -450,8 +478,38 @@ How tripl reports its own health.
 
 A health/build panel. Each tile shows **Configured** or **Unset** for: Debug
 mode, Database URL, Sync database URL, RabbitMQ URL, Redis URL, Encryption key,
-and the OpenAI fallback key. Nothing here is editable — it reflects the
-process's environment so you can confirm the instance is wired correctly.
+and the OpenAI fallback key. One further tile, **Schema revision**, reports the
+Alembic revision this instance's database is actually stamped with — the
+`version_num` in its `alembic_version` table — in one of four states:
+
+- **the revision string**, in a success tone, when it equals the migration head
+  this build ships. The database is at the newest migration the running image
+  knows about.
+- **the revision string**, in a danger tone, when it does not. The tile names
+  the head this build ships, so you can see both revisions — but not which way
+  round they are. Nothing here compares the applied revision against this
+  build's migration graph, so this one state covers both causes described below:
+  a migrate step that never ran here, and a rollback onto a database a newer
+  release already upgraded.
+- **the revision string**, in a warning tone, when the database is stamped but
+  this build's own migration head could not be determined. The revision is
+  reported as read; only the comparison is missing.
+- **Unknown**, in a warning tone, when `alembic_version` itself could not be
+  read: no such table, no row, or the database was unreachable. The tile still
+  names the head when it has one. Unknown is reported as unknown rather than
+  guessed at, so an instance whose revision merely could not be read is never
+  painted as one whose migrations were skipped.
+
+Nothing here is editable — it reflects the process's environment, plus this one
+value read live from the database each time the page loads — so you can confirm
+the instance is wired correctly and that its schema is where the build expects.
+The comparison is a plain equality, so any mismatch shows the same danger state
+with the build's head named beside it. The usual cause is a database that never
+had `alembic upgrade head` run against it. The other is a rollback: the migrate
+one-shot is **forward-only** and pulling an older image does not revert a schema
+change, so an older build against an already-upgraded database mismatches too —
+see [Migrations are forward-only](../run/runbook.md#rollback--downgrade) in the
+runbook.
 
 ## Related pages
 

@@ -213,7 +213,10 @@ Set the scan's **Event name format** when event identity is assembled from field
 values (for example `{action}:{category}`). The same template governs manual
 creation for that event type: the event form previews the generated name and
 requires every referenced field. This prevents a hand-written event and its
-scan-generated counterpart from becoming two different catalog rows.
+scan-generated counterpart from becoming two different catalog rows. A row whose
+format resolves to nothing — every column it names was NULL for that row — is
+skipped rather than becoming a nameless event, and the run report says how many:
+*Skipped N rows whose derived event name was empty*.
 
 This is the fastest way to turn an existing warehouse into a written plan, and
 it is what populates monitoring later.
@@ -318,6 +321,16 @@ polls it in the background; when Jira reports Done, those events advance to
 is separate from a Jira alert destination, which opens incident tickets from
 monitoring signals.
 
+Each ticket tripl opens carries a label naming the branch it came from
+(`tripl-branch-<id>`), and tripl looks for that label before opening one. Jira's
+create call has no idempotency key, so if a worker dies between opening the issue
+and recording it, that label is the only way the retry can tell the issue already
+exists rather than opening a second one — leave it on the issue. Two caveats
+worth knowing: Jira indexes new issues asynchronously, so a retry within seconds
+of the first attempt can still miss it; and if the search itself fails tripl
+opens the ticket anyway, because a duplicate you can see and close beats a merged
+branch with no ticket at all.
+
 Select the merged branch to reach its ticket: the **Implementation ticket**
 panel on the branch detail shows the ticket key as a link that opens the issue
 in Jira, and a chip that flips from `Open` to `Done` once the background poll
@@ -362,7 +375,9 @@ mistake in a diff than to unwind it afterwards. **Before** a merge, any change o
 a branch can be reverted from the diff (see [Undo one change on a
 branch](#undo-one-change-on-a-branch)). **After** a merge there is no "undo merge"
 button, and deleting an event is permanent: an event and its change history are
-removed outright, and its collected metrics are keyed to the event internally, so
+removed outright — the **Audit log** keeps an `event.delete` row naming who
+deleted it and when, which tells you what happened but does not make the values
+recoverable — and its collected metrics are keyed to the event internally, so
 re-creating an event with the same name produces a **new** event with no prior
 metrics or history. Post-merge recovery is manual.
 :::
@@ -373,9 +388,15 @@ If something lands on main that shouldn't have:
   exactly who changed what and when, then make a follow-up branch that sets the
   values back and merge it through review. An action older than the first page
   is still reachable: page back with **Older** (or narrow the filter first).
-  Each event also has its own
-  field-level change history on its detail page, which helps you work out what
-  the correct values were.
+  An audit row also shows **which branch** the write was made in — a chip naming
+  the working branch, or no chip for a write that was not branch-scoped (main, or
+  an action with no branch to name at all) — which is how you tell a branch edit
+  that arrived through a merge from someone editing main directly while tracing a
+  wrong change. Event creates, edits and deletes are in this log too, with the
+  branch chip like any other plan write. Each event also has its own field-level
+  change history on its detail page, which is where the **before and after
+  values** live and which helps you work out what the correct values were — that
+  history is removed with the event, while the audit row survives it.
 - **A deleted event** — re-create its definition by hand (description, fields,
   tags) and let monitoring start collecting again from the next scan. The
   deleted event's earlier metrics and history are not restored.
@@ -549,8 +570,12 @@ Replaying the rule against recent data is the quickest way to confirm whether it
   to the plan.
 - **Audit log** — every meaningful change, filterable by who, what, and when,
   and paged with **Newer** / **Older** so the list is not limited to the most
-  recent entries. This is also your first stop when recovering from a mistaken
-  change.
+  recent entries. Each entry also names the **branch** it was written in, so two
+  contradictory edits to the same object on two branches are told apart rather
+  than reading as one person changing their mind. Entries with no branch chip
+  were written on main, or are actions that have no branch to name at all
+  (alerting, scans, data sources, users, API keys). This is also your first stop
+  when recovering from a mistaken change.
 - **Roles** — in workspace settings, invite teammates as **viewer** (read-only),
   **editor** (can change the plan, scans, and alerts), or **owner** (full
   control, including people and data sources). Owner is also the only role that
@@ -591,7 +616,7 @@ If you're rolling tripl out on real data, this order tends to work well:
 | A variable value keeps showing as drift | It is outside the effective documented list | Accept it globally or for that event, or resolve/snooze the drift |
 | Alert never arrived | No signal, rule off, threshold/cooldown, or delivery failed | Work the "alert never fired" checklist above |
 | Wrong change merged | — | Use the **Audit log** + a corrective branch through review |
-| Event deleted by mistake | Deletion is permanent | Re-create the definition by hand; earlier metrics/history are not restored |
+| Event deleted by mistake | Deletion is permanent | Check the **Audit log** for who deleted it and when (an `event_type.delete` row, if the whole type went with it); re-create the definition by hand — earlier metrics/history are not restored |
 
 For a wider list of issues, see [Troubleshooting](./troubleshooting).
 

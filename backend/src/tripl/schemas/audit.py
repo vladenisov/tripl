@@ -16,6 +16,11 @@ class AuditEntryResponse(BaseModel):
     with real audit history, ``/p/*/settings/audit`` had the slowest first
     content of the 75 routes in the 2026-08-17 walk. The payload now travels one
     row at a time, as ``AuditEntryDetailResponse`` (tripl-5ydt).
+
+    ``branch_id`` / ``branch_name`` are the plan branch the write was scoped to.
+    Null and empty mean the write was not made through a branch-scoped request —
+    main, or an action with no plan-branch dimension (alerting, scans, users) —
+    so a reader must not render them as "main" (tripl-wkwv.6).
     """
 
     id: uuid.UUID
@@ -24,6 +29,8 @@ class AuditEntryResponse(BaseModel):
     user_email: str
     project_id: uuid.UUID | None
     project_slug: str
+    branch_id: uuid.UUID | None
+    branch_name: str
     action: str
     target_type: str
     target_id: uuid.UUID | None

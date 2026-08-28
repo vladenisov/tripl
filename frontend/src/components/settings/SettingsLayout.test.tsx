@@ -1,6 +1,6 @@
-import { useEffect } from 'react'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { useEffect, type ReactNode } from 'react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { RouterProvider, createMemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import { SettingsLayout } from './SettingsLayout'
 import { WORKSPACE_GROUPS } from './nav'
@@ -26,13 +26,21 @@ vi.mock('@/components/auth-context', () => ({
   }),
 }))
 
+// A DATA router, not MemoryRouter: SettingsLayout guards unsaved drafts with
+// useBlocker, which needs one to exist at all (tripl-l33u.14).
+function dataRouter(element: ReactNode, initialEntries: string[] = ['/settings/general']) {
+  return createMemoryRouter([{ path: '*', element }], { initialEntries })
+}
+
 function renderSettings(activePath: string) {
   return render(
-    <MemoryRouter>
-      <SettingsLayout activePath={activePath} backHref="/">
-        <div>content</div>
-      </SettingsLayout>
-    </MemoryRouter>,
+    <RouterProvider
+      router={dataRouter(
+        <SettingsLayout activePath={activePath} backHref="/">
+          <div>content</div>
+        </SettingsLayout>,
+      )}
+    />,
   )
 }
 
@@ -45,11 +53,13 @@ describe('SettingsLayout signposting', () => {
 
   it('offers a labelled "Back to project" cross-link to the in-app surface', () => {
     render(
-      <MemoryRouter>
-        <SettingsLayout activePath="members" backHref="/p/demo/events">
-          <div>content</div>
-        </SettingsLayout>
-      </MemoryRouter>,
+      <RouterProvider
+        router={dataRouter(
+          <SettingsLayout activePath="members" backHref="/p/demo/events">
+            <div>content</div>
+          </SettingsLayout>,
+        )}
+      />,
     )
 
     const back = screen.getByRole('link', { name: /Back to project/i })
@@ -157,11 +167,14 @@ describe('SettingsLayout unsaved-changes guard', () => {
 
   function draftShell(dirty: boolean) {
     return (
-      <MemoryRouter>
-        <SettingsLayout activePath="instance/ai" backHref="/p/demo/events">
-          <InstanceDraft dirty={dirty} />
-        </SettingsLayout>
-      </MemoryRouter>
+      <RouterProvider
+        router={dataRouter(
+          <SettingsLayout activePath="instance/ai" backHref="/p/demo/events">
+            <InstanceDraft dirty={dirty} />
+          </SettingsLayout>,
+          ['/settings/instance/ai'],
+        )}
+      />
     )
   }
 
@@ -174,6 +187,70 @@ describe('SettingsLayout unsaved-changes guard', () => {
     window.dispatchEvent(event)
     return event
   }
+
+  /**
+   * A router with real history behind the current entry, so `navigate(-1)` is
+   * the browser Back button rather than a fresh navigation.
+   */
+  function backableRouter() {
+    return createMemoryRouter(
+      [
+        {
+          path: '*',
+          element: (
+            <SettingsLayout activePath="instance/ai" backHref="/p/demo/events">
+              <InstanceDraft dirty />
+            </SettingsLayout>
+          ),
+        },
+      ],
+      { initialEntries: ['/p/demo/events', '/settings/instance/ai'], initialIndex: 1 },
+    )
+  }
+
+  // THE POINT OF tripl-l33u.14. Back was the one exit no guard could reach: a
+  // plain BrowserRouter offers no blocker, and the history-parking workaround it
+  // replaces could only react AFTER the browser had already moved. A blocker is
+  // asked first, so the draft is still there to save when the dialog appears.
+  it('warns before the browser Back button discards the draft', async () => {
+    const router = backableRouter()
+    render(<RouterProvider router={router} />)
+
+    await act(async () => {
+      await router.navigate(-1)
+    })
+
+    expect(await screen.findByRole('alertdialog')).toHaveTextContent(
+      'Leave with unsaved changes?',
+    )
+    // Not committed: the reader is still on the section, with the draft intact.
+    expect(router.state.location.pathname).toBe('/settings/instance/ai')
+  })
+
+  it('stays put when the reader cancels a Back press', async () => {
+    const router = backableRouter()
+    render(<RouterProvider router={router} />)
+    await act(async () => {
+      await router.navigate(-1)
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: /cancel/i }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(router.state.location.pathname).toBe('/settings/instance/ai')
+  })
+
+  it('goes back once the reader accepts the loss', async () => {
+    const router = backableRouter()
+    render(<RouterProvider router={router} />)
+    await act(async () => {
+      await router.navigate(-1)
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: /leave/i }))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/p/demo/events'))
+  })
 
   it('warns before a rail link navigates the draft out of existence', async () => {
     renderWithDraft()

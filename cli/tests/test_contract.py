@@ -106,12 +106,16 @@ PATH_LITERAL = re.compile(r'f?"(/(?:projects|auth|data-sources)[^"]*)"')
 
 # Wire keys whose MEANING the shared layer owns, not just their spelling.
 # `items`/`total` are the paged envelope seven routes answer; `semantic_used`
-# says whether search's scores are semantic or substring; `field_definitions` is
-# the array `field_count` exists to replace. Each was read at its own call site
-# in both distributions until tripl-i1dt, and the copies had already diverged -
-# `tripl events list` dropped a non-dict row where the MCP's `list_events` kept
-# it, reading the very same response.
-SHARED_RESPONSE_KEYS = frozenset({"items", "total", "semantic_used", "field_definitions"})
+# says whether search's scores are semantic or substring; `truncated` says
+# whether search dropped ranked hits, which `total` cannot answer because it is
+# `len(items)` (tripl-wkwv.3); `field_definitions` is the array `field_count`
+# exists to replace. Each was read at its own call site in both distributions
+# until tripl-i1dt, and the copies had already diverged - `tripl events list`
+# dropped a non-dict row where the MCP's `list_events` kept it, reading the very
+# same response.
+SHARED_RESPONSE_KEYS = frozenset(
+    {"items", "total", "truncated", "semantic_used", "field_definitions"}
+)
 
 # Where those keys are read, package-relative. `model.py` holds the envelope
 # readers (re-exported through `tripl_cli.api`, see below) and the two `api`
@@ -451,8 +455,8 @@ def test_nothing_outside_the_shared_layer_reads_a_shared_response_fact() -> None
     ] + [f"tripl_mcp: {offender}" for offender in _shared_fact_reads(MCP_PACKAGE, frozenset())]
     assert not offenders, (
         "a module reads a response key the shared layer already answers - call "
-        "api.page_items/page_total, api.search.semantic_used or "
-        "api.event_types.field_count instead of a second `.get`:\n  "
+        "api.page_items/page_total, api.search.semantic_used, api.search.truncated "
+        "or api.event_types.field_count instead of a second `.get`:\n  "
         + "\n  ".join(sorted(offenders))
     )
 

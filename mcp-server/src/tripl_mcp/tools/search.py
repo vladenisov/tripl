@@ -31,6 +31,14 @@ async def search_plan(
     return {
         "items": [trim(item, SEARCH_RESULT_FIELDS) for item in page_items(data)],
         "total": page_total(data),
+        # `total` on THIS route is the size of the response, not a pre-paging
+        # count, so an agent could not tell a complete answer from a clipped one
+        # (tripl-wkwv.3). The route answers it outright, and both surfaces read
+        # that one key through this reader — `tripl plan search` falls back to
+        # its page-fullness guess only against an instance predating the field.
+        # Published as a bool, never null: an envelope key an agent has to test
+        # for existence on is a key it will eventually forget to test for.
+        "truncated": search.truncated(data),
         "semantic_used": search.semantic_used(data),
     }
 
@@ -47,6 +55,9 @@ def register(mcp: FastMCP) -> None:
             "content (event, event_type, field, ...) and project configuration "
             "(scan_config, alert_rule) alike; an unfiltered search shows which kinds "
             "this plan holds. Each hit carries a confidence in [0,1]. "
+            "Results are the top 'limit' of a ranked list, not a page: 'total' is "
+            "how many came back, 'truncated' says ranked hits were dropped, and "
+            "there is no offset — raise 'limit', or threshold on confidence. "
             "Requires a tk_r_ or tk_w_ tripl API key."
         ),
     )(search_plan)

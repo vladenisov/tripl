@@ -184,13 +184,23 @@ export function sourceFor(
   section: SectionKey,
   field: string,
 ) {
-  return settings?.sources[`${section}.${field}`] ?? 'env'
+  // The fallback only fires when the server omitted the key. Of the three,
+  // 'default' is the only one that does not assert something was delivered.
+  return settings?.sources[`${section}.${field}`] ?? 'default'
 }
 
 /**
  * How many of this section's fields are actually overridden on this instance —
  * counted exactly the way the row badges count it, so the two can never
  * disagree in the same viewport.
+ *
+ * That holds only while EVERY field in RESET_FIELDS renders a SourceBadge. The
+ * three stored secrets are in this count because a reset genuinely nulls them,
+ * and they were the one gap: with only an SMTP password stored, the red card
+ * read "Clears the 1 Email override — every field badged Override above"
+ * beside five rows all badged "Default" (tripl-5qp9 / tripl-wkwv.2). The fix is
+ * the badge on the secret row, not a narrower count — a narrower count would
+ * claim "Nothing to clear" next to a reset that does clear the stored key.
  */
 export function overrideCount(
   settings: ServiceSettings | undefined,
@@ -206,16 +216,20 @@ export function overrideCount(
  *
  * This used to interpolate `RESET_FIELDS[section].length` — the number of
  * RESETTABLE fields, not overridden ones — so a fresh instance whose every row
- * was badged "Env" was told in red that it had 6 Email overrides to clear, next
- * to a live button that would have done nothing (tripl-5qp9).
+ * was badged "Env" or "Default" was told in red that it had 6 Email overrides
+ * to clear, next to a live button that would have done nothing (tripl-5qp9).
+ *
+ * The copy names both non-override badges for the same reason: saying every
+ * field "comes from an environment variable" beside rows badged "Default" would
+ * be the same disagreement in a second viewport (tripl-wkwv.2).
  */
 export function resetCardDescription(section: SectionKey, overrides: number): string {
   const label = SECTION_LABELS[section]
   if (overrides === 0) {
-    return `Nothing to clear: every ${label} field on this instance is badged "Env", so it already comes from an environment variable.`
+    return `Nothing to clear: no ${label} field on this instance is badged "Override" — every one already comes from the environment or its built-in default.`
   }
   const noun = overrides === 1 ? 'override' : 'overrides'
-  return `Clears the ${overrides} ${label} ${noun} on this instance at once — every field badged "Override" above falls back to its environment variable.`
+  return `Clears the ${overrides} ${label} ${noun} on this instance at once — every field badged "Override" above falls back to its environment variable, or to its built-in default where none is set.`
 }
 
 export function buildSectionDiff(
@@ -300,7 +314,13 @@ const APPLY_NOTES: Record<SectionKey, string> = {
 }
 
 export function applyNote(section: SectionKey): string {
-  return `${APPLY_NOTES[section]} Unset fields fall back to environment variables.`
+  // "or to the built-in default where none is set" is not hedging: on AI the
+  // three system prompts have no environment variable at all — the backend reads
+  // them off ai_defaults, not off Settings — so this note sat two lines above
+  // three rows badged "Default" promising them a source that cannot exist
+  // (tripl-wkwv.2). It is true of every section: an unset variable falls back to
+  // the pydantic default, not to nothing.
+  return `${APPLY_NOTES[section]} Unset fields fall back to their environment variable, or to the built-in default where none is set.`
 }
 
 /** The highest-consequence fields each section reset nulls, named in the confirm. */
@@ -329,7 +349,10 @@ export function resetConfirm(section: SectionKey, hasSectionDraft = false): Conf
     // "settings", not "overrides": the number is the size of the PATCH — every
     // field this write nulls — and only some of them are overridden right now.
     // The card that opens this dialog counts the real overrides (tripl-5qp9).
-    message: `Clear all ${RESET_FIELDS[section].length} ${label} settings on this instance — ${RESET_STAKES[section]} — so every one of them falls back to its environment variable. This is saved immediately and cannot be undone.${draftStake}`,
+    // Same vocabulary as applyNote and resetCardDescription: this dialog names
+    // "all three system prompts" in its own stakes line, and none of the three
+    // has an environment variable to fall back to (tripl-wkwv.2).
+    message: `Clear all ${RESET_FIELDS[section].length} ${label} settings on this instance — ${RESET_STAKES[section]} — so every one of them falls back to its environment variable, or to its built-in default where none is set. This is saved immediately and cannot be undone.${draftStake}`,
     confirmLabel: 'Reset section',
   }
 }

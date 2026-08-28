@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { RouterProvider, createMemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { projectsApi } from '@/api/projects'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
@@ -66,9 +66,13 @@ function renderArea(section: string) {
   return render(
     <QueryClientProvider client={queryClient}>
       <AuthContext.Provider value={ownerAuthValue()}>
-        <MemoryRouter initialEntries={[`/settings/${section}`]}>
-          <SettingsArea section={section} />
-        </MemoryRouter>
+        {/* A DATA router: the layout's unsaved-work guard uses useBlocker,
+            which has no context under a plain MemoryRouter. */}
+        <RouterProvider
+          router={createMemoryRouter([{ path: '*', element: <SettingsArea section={section} /> }], {
+            initialEntries: [`/settings/${section}`],
+          })}
+        />
       </AuthContext.Provider>
     </QueryClientProvider>,
   )

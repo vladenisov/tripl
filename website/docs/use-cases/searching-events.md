@@ -85,7 +85,7 @@ fields, variables, relations, tags, metrics, fact tables, scans and alert
 rules. A scan is findable by the columns it is wired to and by the
 warehouse SQL it runs, so "which scan reads `checkout_events`" is a search; an
 alert rule is findable by the wording of its message template. The response is
-`{items, total, semantic_used}`.
+`{items, total, truncated, semantic_used}`.
 
 Query parameters:
 
@@ -102,6 +102,12 @@ Each item carries:
   `relation`, `tag`, `metric`, `fact_table`, `scan_config`, `alert_rule`
 - `title`, `subtitle`, `description` (or `snippet`)
 - `confidence` — relevance in `0..1`
+- `semantic_used` — `true` when the **keyword leg did not surface this row inside
+  its candidate window**, so the meaning leg is why it is here. A hit the keyword
+  ladder ranked reads `false`, even when its `confidence` is
+  taken from the meaning leg's cosine. This is provenance ("why am I looking at
+  this row"), not certainty, and it is narrower than the envelope flag of the
+  same name — see [The `semantic_used` flag](#the-semantic_used-flag)
 - `route_path` — where the entity lives in the app
 
 Event hits additionally include `event_id`, `name`, `implemented`, and
@@ -165,6 +171,27 @@ curl -s \
   | jq '[.items[] | select(.confidence >= 0.6)]'
 ```
 
+### `total` and `truncated`
+
+`total` is the number of hits **in this response** — `items | length` — not a
+catalog-wide count of everything that matched. `/search` takes no `offset` and
+cannot be paged, so there is no second page for a catalog-wide count to size:
+to see more hits, raise `limit` (max `100`).
+
+A real pre-paging count is not definable here anyway. The retrieved set is the
+union of the keyword predicate and everything above the vector leg's similarity
+floor, and that second half fills its window for any query — counting it would
+report roughly every embedded entity as a "match". `GET /events` is the endpoint
+whose `total` *is* a real count of everything matching, because it pages.
+
+`truncated: true` means ranked hits exist that this response does not carry. On a
+semantic answer the ranked tail is effectively unbounded, so `truncated` is
+normally `true` and says nothing interesting: **threshold on `confidence`**, as
+in the `jq` example above, rather than reading `truncated` as "something is
+missing". The flag becomes genuinely discriminating on a keyword-only answer
+(`semantic_used: false`), which is where "did I see everything" is a question
+with an answer.
+
 ### Word forms and plurals
 
 Keyword matching is **stemmed**, in English and in Russian, so a query finds the
@@ -200,12 +227,38 @@ plan, search in the language the thing is *named* in.
 
 ### The `semantic_used` flag
 
-`semantic_used` tells you which engine answered:
+There are two flags with this name and they answer two different questions.
+
+**On the envelope**, `semantic_used` tells you which engine answered:
 
 - `true` — embeddings were used (true semantic ranking by meaning).
 - `false` — the instance has no embedding provider configured, so search fell back
   to keyword/substring matching. `/search` still works, but it ranks by word
   overlap (stemmed, as above) rather than by meaning.
+
+**On each item**, `semantic_used` is narrower: it is `true` when the keyword leg
+did not rank that hit inside its candidate window, so the meaning leg is what
+produced it. A document the keyword ladder also found reads
+`false`, because the answer to "why is this row here" is the ladder. The vector
+leg is a nearest-neighbour scan that returns rows for any query, so "the vector
+index also listed this row" is a fact about the window, not about the row.
+
+It is not a claim that no keyword matched. The keyword leg is a capped scan too,
+so a weak match — a stem-only match, which earns no exact-match tier — can be
+crowded out of its window and re-enter through the meaning index, reading `true`
+on a row the keyword index did match. Read the flag as *the keyword ranking did
+not surface this*, never as *the word is not there*.
+
+The two therefore **disagree on the same response all the time, and that is the
+normal case rather than a fault**: an envelope reading `semantic_used: true`
+with every item reading `false` just means the semantic leg ran and the keyword
+leg had already found everything it ranked. Diagnose an instance's embedding
+configuration from the envelope, never from a row.
+
+A per-item `false` also says nothing about where that item's `confidence` came
+from. `confidence` reports the stronger of the two certainties, so a hit found by
+both legs can honestly answer `0.9` to "how sure are you" and "the keyword leg"
+to "how did you find it".
 
 Semantic ranking normally requires an embedding provider. See
 [AI and search configuration](../run/ai-and-search.md) for how to enable it (and what

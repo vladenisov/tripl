@@ -570,8 +570,15 @@ async def _populate_monitoring_signals(
             interval=scan_interval_to_timedelta(scan_interval),
             recent_window=recent_windows.get(project_id),
             # An outage announced once and never re-emitted is re-checked against
-            # the current series rather than its own age (tripl-l429.15).
+            # the current series rather than its own age (tripl-l429.15), and only
+            # while the anchor had volume to lose (tripl-wkwv.4). The magnitude
+            # gate below already hides a zero-versus-zero row from this count, so
+            # the expectation changes no number here today; it is passed because
+            # the badge and the page must reach ``classify_signal_state`` with the
+            # same inputs — classifying by different rules is how these two
+            # surfaces drifted apart twice before.
             anomaly_actual_count=anomaly.actual_count,
+            anomaly_expected_count=anomaly.expected_count,
             scan_latest_bucket=scan_latest_buckets.get(anomaly.scan_config_id),
         )
         if state is None:
@@ -832,9 +839,13 @@ async def purge_project_rows(session: AsyncSession, project: Project) -> None:
 
     Data sources OWNED by this project (a demo's synthetic warehouse) go first,
     so nothing leaks a workspace-wide orphan. Real, workspace-global sources carry
-    project_id IS NULL and are untouched. On Postgres the FK cascade would also
-    remove them, but doing it explicitly keeps behaviour correct under SQLite
-    (tests), where FK cascades are off.
+    project_id IS NULL and are untouched. The FK is ``ondelete="CASCADE"``, so
+    both databases would remove them anyway — this used to claim otherwise, that
+    SQLite has cascades off, which stopped being true when the suite began
+    setting ``PRAGMA foreign_keys=ON`` on every connection (tests/_sqlite.py).
+    Doing it explicitly is still worth the line: it puts the cleanup where a
+    reader of this function can see it, rather than resting on a schema detail
+    two files away.
 
     The flush matters: it forces the DELETE out before any later INSERT, so a
     caller re-creating a project under the same (unique) slug within this same
