@@ -44,6 +44,7 @@ from tripl.schemas.alerting import (
     AlertInboxListResponse,
     AlertInboxRuleRef,
 )
+from tripl.services._celery_dispatch import dispatch
 from tripl.services.project_lookup import get_project_by_slug as _get_project
 
 logger = logging.getLogger(__name__)
@@ -330,7 +331,7 @@ async def retry_delivery(
     import tripl.worker.celery_app  # noqa: F401
     from tripl.worker.tasks.alerts import send_alert_delivery
 
-    send_alert_delivery.delay(str(delivery_id))
+    await dispatch(send_alert_delivery.delay, str(delivery_id))
 
     return await get_delivery(session, slug, delivery_id)
 

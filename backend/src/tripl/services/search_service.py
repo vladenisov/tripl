@@ -31,6 +31,7 @@ from tripl.schemas.search import (
     SearchResult,
 )
 from tripl.services import app_settings_service
+from tripl.services._celery_dispatch import dispatch
 from tripl.services._search_documents import (
     DOCUMENT_BUILDER_VERSION,
     BuiltDocument,
@@ -334,7 +335,7 @@ async def reindex_project_branch(
 
     scheduled = False
     if schedule_embeddings:
-        scheduled = _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
+        scheduled = await _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
     return ReindexOutcome(documents_indexed=count, embeddings_scheduled=scheduled)
 
 
@@ -575,7 +576,7 @@ async def _project_slug(session: AsyncSession, project_id: uuid.UUID) -> str:
 _CHECKED_BRANCH_INDEXES: set[tuple[uuid.UUID, uuid.UUID]] = set()
 
 
-def _queue_branch_reindex(project_id: uuid.UUID, branch_id: uuid.UUID) -> bool:
+async def _queue_branch_reindex(project_id: uuid.UUID, branch_id: uuid.UUID) -> bool:
     """Hand one branch's rebuild to the worker; ``False`` if the broker refused.
 
     Same shape as :func:`_queue_embedding_refresh`: a search GET must not 500
@@ -585,7 +586,8 @@ def _queue_branch_reindex(project_id: uuid.UUID, branch_id: uuid.UUID) -> bool:
     try:
         from tripl.worker.celery_app import celery_app
 
-        celery_app.send_task(
+        await dispatch(
+            celery_app.send_task,
             "tripl.worker.tasks.search.reindex_search_branch",
             args=[str(project_id), str(branch_id)],
         )
@@ -651,7 +653,7 @@ async def _ensure_index_exists(
     # PostgreSQL (see ``config.Settings.database_url``); a SQLite bind keeps the
     # index it gets from mutations and merges, and gets no lazy first build.
     if exists is None and _is_postgres(session):
-        _queue_branch_reindex(project_id, branch_id)
+        await _queue_branch_reindex(project_id, branch_id)
     _CHECKED_BRANCH_INDEXES.add(memo_key)
 
 
@@ -821,7 +823,7 @@ async def _refresh_text_vectors(
     )
 
 
-def _queue_embedding_refresh(
+async def _queue_embedding_refresh(
     project_id: uuid.UUID,
     branch_id: uuid.UUID,
     *,
@@ -832,7 +834,8 @@ def _queue_embedding_refresh(
     try:
         from tripl.worker.celery_app import celery_app
 
-        celery_app.send_task(
+        await dispatch(
+            celery_app.send_task,
             "tripl.worker.tasks.search.embed_search_documents",
             args=[str(project_id), str(branch_id)],
         )

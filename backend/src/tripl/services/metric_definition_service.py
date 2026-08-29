@@ -48,6 +48,7 @@ from tripl.schemas.metric_definition import (
     SqlMetricCreate,
     SqlMetricDefinition,
 )
+from tripl.services._celery_dispatch import dispatch
 from tripl.services.metrics_service import (
     _get_project_recent_signal_window,
     _signal_from_anomaly,
@@ -1001,7 +1002,7 @@ async def delete_metric_definition(session: AsyncSession, slug: str, metric_id: 
     await _refresh_main_search_index(session, project_id, slug)
 
 
-def _dispatch_metric_collection(
+async def _dispatch_metric_collection(
     metric_id: uuid.UUID,
     kind: MetricKind,
     window: tuple[datetime, datetime] | None,
@@ -1028,7 +1029,8 @@ def _dispatch_metric_collection(
     window_to = window[1].isoformat() if window is not None else None
     if kind is MetricKind.fact:
         metric_ids = fact_metric_ids or [metric_id]
-        async_result = collect_fact_metrics_batch.delay(
+        async_result = await dispatch(
+            collect_fact_metrics_batch.delay,
             [str(item) for item in metric_ids],
             window_from,
             window_to,
@@ -1037,8 +1039,8 @@ def _dispatch_metric_collection(
             str(metric_id),
         )
     else:
-        async_result = collect_metric_definitions.delay(
-            str(metric_id), window_from, window_to, True
+        async_result = await dispatch(
+            collect_metric_definitions.delay, str(metric_id), window_from, window_to, True
         )
     return getattr(async_result, "id", None)
 
@@ -1222,7 +1224,7 @@ async def trigger_metric_collection(
     await session.commit()
 
     try:
-        task_id = _dispatch_metric_collection(
+        task_id = await _dispatch_metric_collection(
             metric_id,
             kind,
             window,

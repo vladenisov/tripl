@@ -77,8 +77,12 @@ async def _reindex(slug: str) -> None:
 def _enable_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "search_embeddings_enabled", True)
     monkeypatch.setattr(settings, "search_embedding_api_key", "sk-test")
+
     # Keep the fire-and-forget Celery enqueue out of the test loop.
-    monkeypatch.setattr(search_service, "_queue_embedding_refresh", lambda *args, **kwargs: False)
+    async def _refused(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(search_service, "_queue_embedding_refresh", _refused)
 
 
 @pytest.mark.asyncio
