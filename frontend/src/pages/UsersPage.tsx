@@ -1,9 +1,12 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { invitationsApi, type Invitation, type InvitationCreated } from '@/api/invitations'
 import { usersApi } from '@/api/users'
 import { useAuth } from '@/components/auth-context'
+import { ErrorState } from '@/components/error-state'
+import { Skeleton } from '@/components/ui/skeleton'
+import { useConfirm } from '@/hooks/useConfirm'
 import { Select } from '@/components/settings/kit'
 import { ROLE_OPTIONS, type Role, type UserListItem } from '@/types'
 import { formatIsoDate } from '@/lib/datetime'
@@ -38,7 +41,9 @@ function InviteMemberCard() {
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<Role>('editor')
   const [minted, setMinted] = useState<InvitationCreated | null>(null)
-  const [copied, setCopied] = useState(false)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const linkRef = useRef<HTMLInputElement>(null)
+  const { confirm, dialog } = useConfirm()
 
   const invitesQuery = useQuery({
     queryKey: ['invitations'],
@@ -48,7 +53,7 @@ function InviteMemberCard() {
     mutationFn: () => invitationsApi.create(email.trim(), role),
     onSuccess: (created) => {
       setMinted(created)
-      setCopied(false)
+      setCopyState('idle')
       setEmail('')
       qc.invalidateQueries({ queryKey: ['invitations'] })
     },
@@ -58,6 +63,18 @@ function InviteMemberCard() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['invitations'] }),
   })
 
+  const handleRevoke = async (inv: Invitation) => {
+    const ok = await confirm({
+      title: 'Revoke invitation',
+      message:
+        `Revoke the invitation for ${inv.email}? Their link stops working immediately, and `
+        + 'it cannot be reissued — you would have to create a new invite and send the new link.',
+      confirmLabel: 'Revoke',
+      variant: 'danger',
+    })
+    if (ok) revokeMut.mutate(inv.id)
+  }
+
   const invites = invitesQuery.data ?? []
   const acceptUrl = minted ? `${window.location.origin}${minted.accept_path}` : ''
 
@@ -66,6 +83,8 @@ function InviteMemberCard() {
       className="space-y-3 rounded-xl border p-4"
       style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
     >
+      {dialog}
+
       <div>
         <h3 className="text-[13px] font-semibold">Invite a member</h3>
         <p className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
@@ -145,6 +164,7 @@ function InviteMemberCard() {
           </p>
           <div className="flex items-center gap-2">
             <input
+              ref={linkRef}
               readOnly
               aria-label="Invite link"
               value={acceptUrl}
@@ -155,16 +175,43 @@ function InviteMemberCard() {
             <button
               type="button"
               onClick={() => {
-                void navigator.clipboard?.writeText(acceptUrl)
-                setCopied(true)
+                void (async () => {
+                  try {
+                    if (!navigator.clipboard) throw new Error('clipboard unavailable')
+                    await navigator.clipboard.writeText(acceptUrl)
+                    setCopyState('copied')
+                  } catch {
+                    // No clipboard (a self-hosted instance on plain HTTP has none)
+                    // or the write was refused. This link is shown exactly once,
+                    // so claiming a copy that did not happen loses it outright.
+                    linkRef.current?.select()
+                    setCopyState('failed')
+                  }
+                })()
               }}
               className="h-8 shrink-0 rounded-md border px-3 text-xs"
               style={{ borderColor: 'var(--border)' }}
             >
-              {copied ? 'Copied' : 'Copy'}
+              {copyState === 'copied' ? 'Copied' : 'Copy'}
             </button>
           </div>
+          {copyState === 'failed' && (
+            <p role="alert" className="text-[11px]" style={{ color: 'var(--danger)' }}>
+              Couldn’t reach the clipboard. The link above is selected — press Ctrl/⌘+C to copy it.
+            </p>
+          )}
         </div>
+      )}
+
+      {invitesQuery.isError && (
+        <ErrorState
+          compact
+          title="Couldn't load pending invitations"
+          error={invitesQuery.error}
+          onRetry={() => {
+            void invitesQuery.refetch()
+          }}
+        />
       )}
 
       {invites.length > 0 && (
@@ -190,16 +237,24 @@ function InviteMemberCard() {
               </span>
               <button
                 type="button"
-                onClick={() => revokeMut.mutate(inv.id)}
-                disabled={revokeMut.isPending}
+                onClick={() => {
+                  void handleRevoke(inv)
+                }}
+                disabled={revokeMut.isPending && revokeMut.variables === inv.id}
                 className="h-6 shrink-0 rounded border px-2 text-[10px]"
                 style={{ borderColor: 'var(--border)' }}
               >
-                Revoke
+                {revokeMut.isPending && revokeMut.variables === inv.id ? 'Revoking…' : 'Revoke'}
               </button>
             </div>
           ))}
         </div>
+      )}
+
+      {revokeMut.isError && (
+        <p role="alert" className="text-xs text-destructive">
+          {getErrorMessage(revokeMut.error)}
+        </p>
       )}
     </div>
   )
@@ -239,8 +294,35 @@ export default function UsersPage() {
         style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
       >
         {listQuery.isLoading ? (
-          <div className="px-4 py-6 text-sm" style={{ color: 'var(--fg-subtle)' }}>
-            Loading…
+          <div aria-busy="true" aria-label="Loading users">
+            {[0, 1, 2].map((index) => (
+              <div
+                key={index}
+                className="flex items-center gap-3 border-b px-4 py-2.5 last:border-0"
+                style={{ borderColor: 'var(--border-subtle)' }}
+              >
+                <Skeleton className="h-7 w-7 shrink-0 rounded-full" />
+                <div className="min-w-0 flex-1 space-y-1">
+                  <Skeleton className="h-3 w-32" />
+                  <Skeleton className="h-2.5 w-48" />
+                </div>
+                <Skeleton className="h-5 w-20 shrink-0" />
+              </div>
+            ))}
+          </div>
+        ) : listQuery.isError ? (
+          /* Before the error branch existed, a failed fetch fell through to
+             "No users yet." — a page that always contains at least the reader,
+             claiming to be empty, with nowhere to retry. */
+          <div className="p-4">
+            <ErrorState
+              compact
+              title="Couldn't load users"
+              error={listQuery.error}
+              onRetry={() => {
+                void listQuery.refetch()
+              }}
+            />
           </div>
         ) : users.length === 0 ? (
           <div className="px-4 py-6 text-sm" style={{ color: 'var(--fg-subtle)' }}>

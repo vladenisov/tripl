@@ -223,7 +223,10 @@ export function ScansTab({ slug }: { slug: string }) {
         </Button>
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
+      {/* Collapses before the labels do: "Warehouse rows read · 24h" wraps to
+          three lines in a fixed third of a phone viewport. Same convention as
+          ScanDetail's band one click deeper. */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <StatCard label="Scans" value={scanConfigs.length} />
         <StatCard label="Monitoring" value={monitoringCount} />
         <StatCard

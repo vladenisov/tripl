@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Frame, ImagePlus, Loader2, MessageCircle, Trash2, Upload, X } from 'lucide-react'
 import { formatDateTime } from '@/lib/datetime'
+import { useConfirm } from '@/hooks/useConfirm'
 
 interface Props {
   slug: string
@@ -37,6 +38,7 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
   const [dragOver, setDragOver] = useState(false)
   const [figmaUrl, setFigmaUrl] = useState('')
   const [figmaTitle, setFigmaTitle] = useState('')
+  const { confirm, dialog } = useConfirm()
 
   const photosKey = ['eventPhotos', slug, eventId]
   const photosQuery = useQuery({
@@ -85,6 +87,19 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
       setError(err instanceof Error ? err.message : 'Delete failed')
     },
   })
+
+  const handleDelete = async (photo: EventPhoto) => {
+    const isFigma = photo.kind === 'figma'
+    const ok = await confirm({
+      title: isFigma ? 'Detach Figma spec' : 'Delete photo',
+      message: isFigma
+        ? 'Detach this Figma spec from the event? The file in Figma is not affected.'
+        : `Delete ${photo.original_filename || 'this photo'}? This cannot be undone.`,
+      confirmLabel: isFigma ? 'Detach' : 'Delete',
+      variant: 'danger',
+    })
+    if (ok) deleteMut.mutate(photo.id)
+  }
 
   const handleFiles = (files: FileList | File[] | null) => {
     if (!files) return
@@ -201,11 +216,9 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
                   photo={photo}
                   onOpen={() => setOpened(photo)}
                   onDelete={() => {
-                    if (window.confirm(photo.kind === 'figma' ? 'Detach this Figma spec?' : 'Delete this photo?')) {
-                      deleteMut.mutate(photo.id)
-                    }
+                    void handleDelete(photo)
                   }}
-                  deleting={deleteMut.isPending}
+                  deleting={deleteMut.isPending && deleteMut.variables === photo.id}
                 />
               ))}
             </div>
@@ -218,6 +231,8 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
           </div>
         )}
       </CardContent>
+
+      {dialog}
 
       <Dialog open={opened !== null} onOpenChange={open => !open && setOpened(null)}>
         <DialogContent className="max-w-5xl bg-background p-2">
