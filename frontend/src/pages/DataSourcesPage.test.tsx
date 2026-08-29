@@ -194,6 +194,20 @@ afterEach(() => {
 })
 
 describe('DataSourcesPage', () => {
+  it('shows skeletons, not the empty state, while the list is in flight', async () => {
+    // An unsettled list query used to fall through to `dataSources.length === 0`
+    // and tell an operator who has connections that they have none, with an
+    // "Add connection" CTA — the false-empty class ScanDetail already fixed.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}))
+
+    renderDataSourcesPage('/settings/data-sources')
+
+    expect(await screen.findByLabelText('Loading data sources')).toBeInTheDocument()
+    expect(screen.queryByText('No data sources')).not.toBeInTheDocument()
+    // Nor may the header claim measurements it does not have yet.
+    expect(screen.queryByText('0')).not.toBeInTheDocument()
+  })
+
   it('closes a directly opened edit dialog on cancel', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
       const url =
