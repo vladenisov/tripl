@@ -35,11 +35,19 @@ from tripl.core.adapters.base import (
 )
 from tripl.core.adapters.postgres import PostgresAdapter
 
-_HOST = os.environ.get("TRIPL_LIVE_PG_HOST", "localhost")
-_PORT = int(os.environ.get("TRIPL_LIVE_PG_PORT", "5432"))
-_DB = os.environ.get("TRIPL_LIVE_PG_DB", "tripl_conformance")
-_USER = os.environ.get("TRIPL_LIVE_PG_USER", "tripl")
-_PASSWORD = os.environ.get("TRIPL_LIVE_PG_PASSWORD", "tripl")
+# Connection settings come from the conformance conftest, not from a private
+# TRIPL_LIVE_PG_* block no workflow ever set. That block is how this file came to
+# be collected by nothing: it described a server the CI job did not advertise,
+# and the fixture below skipped rather than failed, so the native-validator gate
+# silently never ran.
+from tripl.tests.conformance.conftest import (  # noqa: E402
+    _PG_DB,
+    _PG_HOST,
+    _PG_PASSWORD,
+    _PG_PORT,
+    _PG_USER,
+    unavailable,
+)
 
 TABLE = "tripl_live_contract_fixture"
 BULK_TABLE = "tripl_live_contract_bulk"
@@ -126,11 +134,11 @@ CONTRACTS: tuple[FieldContractExpectation, ...] = (
 
 def _adapter(**overrides: object) -> PostgresAdapter:
     return PostgresAdapter(
-        host=_HOST,
-        port=_PORT,
-        database=_DB,
-        username=_USER,
-        password=_PASSWORD,
+        host=_PG_HOST,
+        port=_PG_PORT,
+        database=_PG_DB,
+        username=_PG_USER,
+        password=_PG_PASSWORD,
         **overrides,
     )
 
@@ -167,11 +175,11 @@ def _seed(adapter: PostgresAdapter) -> None:
 
 
 @pytest.fixture(scope="module")
-def pg() -> Iterator[PostgresAdapter]:
+def contracts_pg() -> Iterator[PostgresAdapter]:
     try:
         adapter = _adapter()
     except Exception as exc:  # noqa: BLE001 — any connect failure means "not available"
-        pytest.skip(f"live postgres unavailable at {_HOST}:{_PORT}/{_DB}: {exc}")
+        unavailable(f"postgres at {_PG_HOST}:{_PG_PORT}/{_PG_DB}: {exc}")
     try:
         _seed(adapter)
         yield adapter
@@ -202,7 +210,7 @@ def _fallback(adapter: PostgresAdapter, **kwargs: object) -> list[FieldContractV
 
 
 def test_the_native_sql_returns_exactly_what_the_python_fallback_does(
-    pg: PostgresAdapter,
+    contracts_pg: PostgresAdapter,
 ) -> None:
     """Two unrelated implementations, one required answer.
 
@@ -210,11 +218,11 @@ def test_the_native_sql_returns_exactly_what_the_python_fallback_does(
     both denominators, a malformed number, an empty string, a NaN, an infinity, an
     enum miss, a regex miss, and a clean contract that must stay silent.
     """
-    pg.get_columns(BASE)
+    contracts_pg.get_columns(BASE)
     window = {"time_column": "ts", "time_from": FROM_TIME, "time_to": TO_TIME}
 
-    native = _native(pg, **window)
-    fallback = _fallback(pg, **window)
+    native = _native(contracts_pg, **window)
+    fallback = _fallback(contracts_pg, **window)
 
     assert _comparable(native) == _comparable(fallback)
     # ...and the answer is the RIGHT one, not merely a shared one.
@@ -232,11 +240,11 @@ def test_the_native_sql_returns_exactly_what_the_python_fallback_does(
     assert ("group_key", "enum_violation") not in _comparable(native)
 
 
-def test_the_sample_value_is_one_of_the_offending_values(pg: PostgresAdapter) -> None:
-    pg.get_columns(BASE)
+def test_the_sample_value_is_one_of_the_offending_values(contracts_pg: PostgresAdapter) -> None:
+    contracts_pg.get_columns(BASE)
     violations = {
         (v.field_name, v.drift_type): v.sample_value
-        for v in _native(pg, time_column="ts", time_from=FROM_TIME, time_to=TO_TIME)
+        for v in _native(contracts_pg, time_column="ts", time_from=FROM_TIME, time_to=TO_TIME)
     }
     assert violations[("event_name", "enum_violation")] == "buy"
     assert violations[("amount", "range_violation")] in {"-3", "", "99", "inf", "twelve"}
@@ -245,15 +253,15 @@ def test_the_sample_value_is_one_of_the_offending_values(pg: PostgresAdapter) ->
     assert violations[("amount", "required_null_violation")] == "<NULL>"
 
 
-def test_a_malformed_number_does_not_abort_the_query(pg: PostgresAdapter) -> None:
+def test_a_malformed_number_does_not_abort_the_query(contracts_pg: PostgresAdapter) -> None:
     """'twelve'::numeric RAISES in Postgres. The regex guard is what stops it.
 
     Without it, one unparseable row does not merely mis-count its own contract — it
     fails the statement, so EVERY expectation in the UNION returns nothing and the
     scan reports no drift at all.
     """
-    pg.get_columns(BASE)
-    violations = _native(pg, time_column="ts", time_from=FROM_TIME, time_to=TO_TIME)
+    contracts_pg.get_columns(BASE)
+    violations = _native(contracts_pg, time_column="ts", time_from=FROM_TIME, time_to=TO_TIME)
 
     # The query ran (a raised cast would have propagated out of execute()), and the
     # other contracts in the same UNION still produced their answers.
@@ -266,11 +274,11 @@ def test_a_malformed_number_does_not_abort_the_query(pg: PostgresAdapter) -> Non
     assert amount.bad_count == 5
 
 
-def test_the_group_filter_and_the_window_are_honored(pg: PostgresAdapter) -> None:
-    pg.get_columns(BASE)
+def test_the_group_filter_and_the_window_are_honored(contracts_pg: PostgresAdapter) -> None:
+    contracts_pg.get_columns(BASE)
     grouped = _comparable(
         _native(
-            pg,
+            contracts_pg,
             time_column="ts",
             time_from=FROM_TIME,
             time_to=TO_TIME,
@@ -280,7 +288,7 @@ def test_the_group_filter_and_the_window_are_honored(pg: PostgresAdapter) -> Non
     )
     fallback = _comparable(
         _fallback(
-            pg,
+            contracts_pg,
             time_column="ts",
             time_from=FROM_TIME,
             time_to=TO_TIME,
@@ -296,12 +304,12 @@ def test_the_group_filter_and_the_window_are_honored(pg: PostgresAdapter) -> Non
 
 
 def test_a_threshold_the_bad_rate_does_not_clear_is_not_a_violation(
-    pg: PostgresAdapter,
+    contracts_pg: PostgresAdapter,
 ) -> None:
-    pg.get_columns(BASE)
+    contracts_pg.get_columns(BASE)
     # amount's bad_rate is exactly 0.5. The comparison is strict (>), so a threshold
     # OF 0.5 must not fire, and anything below it must.
-    at_the_boundary = pg.validate_field_contracts(
+    at_the_boundary = contracts_pg.validate_field_contracts(
         BASE,
         [
             FieldContractExpectation(
@@ -323,7 +331,7 @@ def test_a_threshold_the_bad_rate_does_not_clear_is_not_a_violation(
 
 
 def test_a_violation_past_the_sampling_limit_is_invisible_to_the_fallback(
-    pg: PostgresAdapter,
+    contracts_pg: PostgresAdapter,
 ) -> None:
     """The bug tripl-64n8.5 exists to close, stated as a test.
 
@@ -331,7 +339,7 @@ def test_a_violation_past_the_sampling_limit_is_invisible_to_the_fallback(
     ``limit`` (50,000) rows and counts them in Python, so it never sees row 50,001:
     it reports NO drift on a table that has drift. This is the "before".
     """
-    pg.get_columns(BULK_BASE)
+    contracts_pg.get_columns(BULK_BASE)
     contract = [
         FieldContractExpectation(
             field_name="status",
@@ -340,7 +348,7 @@ def test_a_violation_past_the_sampling_limit_is_invisible_to_the_fallback(
             enum_options=("active",),
         )
     ]
-    fallback = BaseAdapter.validate_field_contracts(pg, BULK_BASE, contract)
+    fallback = BaseAdapter.validate_field_contracts(contracts_pg, BULK_BASE, contract)
     assert fallback == [], (
         "the sampled fallback was expected to MISS the violation past row 50,000 — "
         "if it now finds it, this test no longer proves anything"
@@ -348,11 +356,11 @@ def test_a_violation_past_the_sampling_limit_is_invisible_to_the_fallback(
 
 
 def test_a_violation_past_the_sampling_limit_is_found_warehouse_side(
-    pg: PostgresAdapter,
+    contracts_pg: PostgresAdapter,
 ) -> None:
     """...and this is the "after". Same table, same contract, aggregated in Postgres."""
-    pg.get_columns(BULK_BASE)
-    violations = pg.validate_field_contracts(
+    contracts_pg.get_columns(BULK_BASE)
+    violations = contracts_pg.validate_field_contracts(
         BULK_BASE,
         [
             FieldContractExpectation(
@@ -392,7 +400,7 @@ def test_certificate_pems_are_materialized_0600_and_cleaned_up_on_close() -> Non
     try:
         adapter = _adapter(sslmode="prefer", sslrootcert=ca)
     except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"live postgres unavailable: {exc}")
+        unavailable(f"postgres at {_PG_HOST}:{_PG_PORT}/{_PG_DB}: {exc}")
 
     directory = adapter._tls_dir  # noqa: SLF001
     assert directory is not None

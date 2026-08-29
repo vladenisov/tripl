@@ -676,6 +676,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # backend/openapi.json is gated by test_openapi_contract.py, whose failure
+      # message tells you to run `pnpm gen:api` — but nothing checked that anyone
+      # did. A PR could refresh the snapshot and leave src/types/api.gen.ts
+      # stale, and `tsc -b` only notices when the frontend happens to reference
+      # a field that changed. Regenerate and require the tree to be unchanged.
+      - name: API types match backend/openapi.json
+        run: |
+          pnpm gen:api
+          git diff --exit-code -- src/types/api.gen.ts
+
       - name: Lint
         run: pnpm lint
 
