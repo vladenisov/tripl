@@ -85,7 +85,13 @@
   --accent-foreground: var(--accent-fg);
   --destructive: var(--danger);
   --destructive-foreground: oklch(0.985 0 0);
-  --input: var(--border);
+  /* Form-control boundaries answer to WCAG 1.4.11 (3:1 non-text), not to the
+     hairline --border used for row separators: `border-input` is the ONLY thing
+     marking a `bg-transparent` field, and `bg-input` is the whole of an
+     unchecked Switch track. --border measures 1.20-1.31:1 against the surface
+     scale, so this token is decoupled from it and pinned by measurement in
+     src/theme-contrast.test.ts. */
+  --input: oklch(0.62 0.008 250);
   --ring: var(--accent);
   --chart-1: var(--accent);
   --chart-2: var(--success);
@@ -124,6 +130,8 @@
   --border: oklch(0.26 0.014 250);
   --border-strong: oklch(0.34 0.015 250);
   --border-subtle: oklch(0.21 0.012 250);
+  /* See the light-theme note: pinned to the 1.4.11 floor, not to --border. */
+  --input: oklch(0.53 0.008 250);
 
   --accent: oklch(0.72 0.122 192);
   --accent-hover: oklch(0.76 0.129 192);

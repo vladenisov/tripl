@@ -1,14 +1,12 @@
 import type { ChipTone } from '@/components/primitives/chip'
 import type { DotTone } from '@/components/primitives/dot'
+import type { components } from '@/types/api.gen'
 
-export type EventStatus =
-  | 'draft'
-  | 'in_review'
-  | 'ready_for_dev'
-  | 'implemented'
-  | 'live'
-  | 'deprecated'
-  | 'archived'
+// Derived from the OpenAPI-generated types rather than retyped, so a status
+// added or renamed on the backend becomes a compile error here — every Record
+// below is keyed by this union and stops being exhaustive. Retyping it is how
+// `Event.status` came to be a plain `string` in the first place.
+export type EventStatus = components['schemas']['EventStatus']
 
 export const EVENT_STATUSES: EventStatus[] = [
   'draft',

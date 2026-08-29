@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-query'
 
 import { eventsApi } from '@/api/events'
+import type { EventStatus } from '@/lib/eventStatus'
 import type { EventListItem, EventListResponse } from '@/types'
 
 // Both shapes coexist under the `['events', slug, ...]` prefix: the main
@@ -89,7 +90,7 @@ export function useEventMutations({
       ...patch
     }: {
       eventIds: string[]
-      status?: string
+      status?: EventStatus
       sunset_at?: string | null
       reviewed?: boolean
       owner_id?: string | null
@@ -112,7 +113,7 @@ export function useEventMutations({
   // server confirms; skipping invalidate avoids a 200×N-row refetch on every
   // status chip click. Filter-driven exits reconcile on the next natural refetch.
   const setStatusMut = useMutation({
-    mutationFn: ({ id, status, sunset_at }: { id: string; status: string; sunset_at?: string | null }) =>
+    mutationFn: ({ id, status, sunset_at }: { id: string; status: EventStatus; sunset_at?: string | null }) =>
       eventsApi.update(slug!, id, { status, sunset_at }, branchId),
     onMutate: async ({ id, status, sunset_at }) => {
       await qc.cancelQueries({ queryKey: eventsKey })
