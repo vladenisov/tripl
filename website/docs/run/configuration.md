@@ -344,7 +344,6 @@ one `.env` covers the whole stack.
 | `RABBITMQ_PASSWORD` | — (required) | Compose | Builds `RABBITMQ_URL`; broker user is `tripl`. |
 | `TRIPL_IMAGE` | `ghcr.io/vladenisov/tripl` | Compose | Published image to run. |
 | `TRIPL_VERSION` | `latest` | Compose | Image tag — pin to a released tag in production. |
-| `API_PORT` | `8000` | Dev tooling | Backend port for local/dev runs (the production `compose.yaml` hardcodes `8000:8000`). |
 | `VITE_API_URL` | `http://127.0.0.1:8000` | Frontend build | Base URL the SPA calls; baked in at build time. |
 
 :::warning Compose enforces required secrets too

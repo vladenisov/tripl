@@ -145,6 +145,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # The api runs `alembic upgrade head` before uvicorn, and its
+      # healthcheck only passes afterwards. Without this a fresh clone
+      # boots the worker against an unmigrated schema, where
+      # apply_startup_service_overrides degrades to warn-and-skip and
+      # that worker silently ignores persisted settings until restarted.
+      api:
+        condition: service_healthy
     mem_limit: 1g
     mem_reservation: 512m
     develop:
@@ -173,6 +180,9 @@ services:
     environment: *backend-environment
     depends_on:
       rabbitmq:
+        condition: service_healthy
+      # Same reason as celery-worker: wait for the api's inline migration.
+      api:
         condition: service_healthy
     mem_limit: 256m
     mem_reservation: 128m
@@ -274,4 +284,3 @@ services:
 
 volumes:
   pgdata18:
-  chdata:
