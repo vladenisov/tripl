@@ -57,6 +57,7 @@ import {
   type DestinationFormState,
 } from './alerting/constants'
 import { getErrorMessage } from '@/lib/utils'
+import { projectEventTypesKey } from '@/lib/queryKeys'
 
 // The page does four jobs — triage incidents, tune what routes, configure the
 // channels it routes to, audit delivery — and stacking them on one scroll made
@@ -242,7 +243,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     queryFn: () => projectsApi.get(slug),
   })
   const { data: eventTypes = [] } = useQuery({
-    queryKey: ['eventTypes', slug],
+    queryKey: projectEventTypesKey(slug),
     queryFn: () => eventTypesApi.list(slug),
     // Read only by the rule editor's filter rows, which moved to Monitors with
     // the rest of the rule form (tripl-89ps).

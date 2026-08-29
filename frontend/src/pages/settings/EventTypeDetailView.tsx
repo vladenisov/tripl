@@ -15,6 +15,7 @@ import { EVENT_STATUSES } from '@/lib/eventStatus'
 import { getErrorMessage } from '@/lib/utils'
 import { describeEventTypeDeletionImpact } from './eventTypeDeletionImpact'
 import EventsPage from '@/pages/EventsPage'
+import { eventTypesKey, projectEventTypesKey } from '@/lib/queryKeys'
 import {
   ColorPicker,
   FieldsEditor,
@@ -45,7 +46,7 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
   const [tab, setTab] = useState<DetailTab>('summary')
 
   const { data: eventTypes = [], isSuccess } = useQuery({
-    queryKey: ['eventTypes', slug, branchId],
+    queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug, branchId),
   })
 
@@ -296,7 +297,7 @@ function GeneralCard({
         { display_name: displayName, description, color },
         branchId,
       ),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) }),
   })
 
   return (
@@ -346,7 +347,7 @@ function DangerZoneCard({
   const deleteMut = useMutation({
     mutationFn: () => eventTypesApi.del(slug, eventType.id, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
+      qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) })
       onDeleted()
     },
   })

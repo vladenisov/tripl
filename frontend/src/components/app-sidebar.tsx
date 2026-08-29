@@ -33,6 +33,7 @@ import { useActiveBranchId } from '@/hooks/useBranch'
 import { buildNavGroups, type NavGroup, type NavItem, type NavTone } from '@/lib/navigation'
 import { commandPaletteShortcutLabel } from '@/lib/platform'
 import type { EventType, Project } from '@/types'
+import { eventTypesKey } from '@/lib/queryKeys'
 
 const SIDEBAR_STORAGE_KEY = 'tripl-sidebar-collapsed'
 const LAST_SLUG_STORAGE_KEY = 'tripl-last-project-slug'
@@ -177,7 +178,7 @@ export function AppSidebar() {
       }))
     : [WORKSPACE_NAV_GROUP]
   const eventTypesQuery = useQuery({
-    queryKey: ['eventTypes', slug, branchId],
+    queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug!, branchId),
     enabled: !!slug,
   })

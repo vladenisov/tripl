@@ -7,6 +7,7 @@ import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { getErrorMessage } from '@/lib/utils'
+import { projectEventTypesKey } from '@/lib/queryKeys'
 
 const DRIFT_LABEL: Record<string, string> = {
   new_field: 'new',
@@ -65,7 +66,7 @@ export function EventDriftBadge({
     },
     onSuccess: (_data, { action }) => {
       qc.invalidateQueries({ queryKey: ['eventTypeDrifts', slug, eventTypeId] })
-      qc.invalidateQueries({ queryKey: ['eventTypes', slug] })
+      qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) })
       qc.invalidateQueries({ queryKey: ['events', slug] })
       // Accepting a schema drift lands the reconcile chapter's last step —
       // inert outside the demo scenario (the reducer drops other steps).

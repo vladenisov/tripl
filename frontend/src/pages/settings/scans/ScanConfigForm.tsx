@@ -19,7 +19,7 @@ import {
   ScanEssentialsSection,
 } from './ScanFormSections'
 import { scanFormBlocker, useScanForm } from './useScanForm'
-import { dataSourcesKey } from '@/lib/queryKeys'
+import { dataSourcesKey, eventTypesKey } from '@/lib/queryKeys'
 
 // ─── Configuration tab (page-style edit, each SCard has its own Save footer) ───
 export function ScanConfigurationTab({
@@ -42,7 +42,7 @@ export function ScanConfigurationTab({
     queryFn: () => dataSourcesApi.list(),
   })
   const { data: eventTypes = [] } = useQuery({
-    queryKey: ['eventTypes', slug, branchId],
+    queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug, branchId),
   })
 
@@ -179,7 +179,7 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
     queryFn: () => dataSourcesApi.list(),
   })
   const { data: eventTypes = [] } = useQuery({
-    queryKey: ['eventTypes', slug, branchId],
+    queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug, branchId),
   })
 

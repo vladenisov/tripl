@@ -101,7 +101,7 @@ describe('ScanDetail', () => {
 
     render(
       <QueryClientProvider client={queryClient}>
-        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
       </QueryClientProvider>,
     )
 
@@ -131,7 +131,7 @@ describe('ScanDetail', () => {
 
     render(
       <QueryClientProvider client={queryClient}>
-        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
       </QueryClientProvider>,
     )
 
@@ -180,7 +180,7 @@ describe('ScanDetail', () => {
 
     render(
       <QueryClientProvider client={queryClient}>
-        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
       </QueryClientProvider>,
     )
 
@@ -236,7 +236,7 @@ describe('ScanDetail', () => {
 
     render(
       <QueryClientProvider client={queryClient}>
-        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
       </QueryClientProvider>,
     )
 
@@ -280,7 +280,7 @@ describe('ScanDetail', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={queryClient}>
-        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
       </QueryClientProvider>,
     )
 
@@ -327,7 +327,7 @@ describe('ScanDetail', () => {
     render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/p/demo/scans/scan-1']}>
-          <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+          <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
         </MemoryRouter>
       </QueryClientProvider>,
     )
@@ -392,7 +392,7 @@ describe('ScanDetail', () => {
 
     render(
       <QueryClientProvider client={queryClient}>
-        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
       </QueryClientProvider>,
     )
 
@@ -431,7 +431,7 @@ describe('ScanDetail', () => {
 
     render(
       <QueryClientProvider client={queryClient}>
-        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
       </QueryClientProvider>,
     )
 
@@ -469,7 +469,7 @@ describe('ScanDetail', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={queryClient}>
-        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
       </QueryClientProvider>,
     )
 
@@ -543,7 +543,7 @@ describe('ScanDetail — coached demo scenario', () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={[`/p/${SLUG}/scans/scan-1`]}>
           <DemoScenarioProvider project={project} pollIntervalMs={10}>
-            <ScanDetail slug={SLUG} scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+            <ScanDetail slug={SLUG} scanConfig={scanConfig} eventTypes={[]} />
           </DemoScenarioProvider>
         </MemoryRouter>
       </QueryClientProvider>,

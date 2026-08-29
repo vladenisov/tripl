@@ -53,6 +53,7 @@ import { Chip } from '@/components/primitives/chip'
 import { Kbd } from '@/components/primitives/kbd'
 import type { AiAskResponse } from '@/api/ai'
 import type { SearchEntityType, SearchResult } from '@/types'
+import { eventTypesKey } from '@/lib/queryKeys'
 
 export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   const [open, setOpenState] = useState(false)
@@ -337,7 +338,7 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
   const activeProject = projects.find(p => p.slug === routeSlug) ?? null
 
   const eventTypesQuery = useQuery({
-    queryKey: ['eventTypes', activeProject?.slug, branchId],
+    queryKey: eventTypesKey(activeProject?.slug, branchId),
     queryFn: () => eventTypesApi.list(activeProject!.slug, branchId),
     enabled: open && !!activeProject,
     staleTime: 60_000,

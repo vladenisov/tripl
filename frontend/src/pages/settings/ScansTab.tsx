@@ -25,7 +25,7 @@ import { useAdaptiveRefetchIntervalFn } from "@/realtime/streamContext"
 import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
 import { countOf, pluralize } from "@/lib/plural"
-import { dataSourcesKey } from '@/lib/queryKeys'
+import { dataSourcesKey, projectEventTypesKey } from '@/lib/queryKeys'
 
 interface RecentRun {
   jobId: string
@@ -73,7 +73,7 @@ export function ScansTab({ slug }: { slug: string }) {
   // that type's pending-review queue; scans with no fixed type (or a per-row
   // event_type_column) fall back to the whole review tab.
   const { data: eventTypes = [] } = useQuery({
-    queryKey: ['eventTypes', slug],
+    queryKey: projectEventTypesKey(slug),
     queryFn: () => eventTypesApi.list(slug),
   })
   const eventTypeNameById = useMemo(

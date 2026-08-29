@@ -29,6 +29,7 @@ import { Chip } from '@/components/primitives/chip'
 import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
+import { eventTypesKey, projectEventTypesKey } from '@/lib/queryKeys'
 
 const FIELD_TYPES = ['string', 'number', 'boolean', 'json', 'enum', 'url']
 const DEFAULT_COLOR = '#6366f1'
@@ -76,7 +77,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
   const [creating, setCreating] = useState(false)
 
   const { data: eventTypes = [] } = useQuery({
-    queryKey: ['eventTypes', slug, branchId],
+    queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug, branchId),
   })
 
@@ -247,7 +248,7 @@ function CreateEventTypeView({ slug, branchId, onDone }: CreateEventTypeViewProp
         branchId,
       ),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
+      qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) })
       onDone()
     },
   })
@@ -386,7 +387,7 @@ export function FieldsEditor({
   const { confirm, dialog } = useConfirm()
 
   const sortedFields = [...eventType.field_definitions].sort((a, b) => a.order - b.order)
-  const invalidate = () => qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
+  const invalidate = () => qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) })
 
   const createMut = useMutation({
     mutationFn: (draft: FieldDraft) =>
