@@ -694,3 +694,97 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+  image-scope:
+    name: Detect image-definition changes
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.scope.outputs.images }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Both sides of the PR are needed to diff it; the default shallow fetch
+          # has neither.
+          fetch-depth: 0
+
+      - id: scope
+        name: Decide whether the images must be built
+        env:
+          # Via env, not inline `${{ }}` in the script body: the values land as
+          # data instead of being pasted into the shell.
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "images=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$EVENT_NAME: building the images unconditionally."
+            exit 0
+          fi
+          merge_base=$(git merge-base "$BASE_SHA" HEAD || true)
+          if [ -z "$merge_base" ]; then
+            # Fail TOWARDS building, same as migration-scope: a detection bug
+            # must cost minutes, not retire the only gate that compiles an image.
+            echo "images=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::no merge base with $BASE_SHA; building the images anyway."
+            exit 0
+          fi
+          # Build DEFINITIONS only. Application source is already gated by the
+          # backend and frontend jobs, and the root Dockerfile COPYs frontend/
+          # and backend/src wholesale — probing those would fire on nearly every
+          # PR and turn this into an always-on cost. A source deletion that
+          # breaks a COPY is still caught by the unconditional run on push to
+          # main, hours before a tag rather than during the release.
+          changed=$(git diff --name-only "$merge_base" HEAD -- \
+            Dockerfile .dockerignore mcp-server/Dockerfile \
+            backend/pyproject.toml backend/uv.lock backend/.python-version \
+            frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml \
+            cli/pyproject.toml mcp-server/pyproject.toml mcp-server/uv.lock \
+            .github/workflows/ci.yml)
+          if [ -n "$changed" ]; then
+            echo "images=true" >> "$GITHUB_OUTPUT"
+            echo "image-relevant changes:"
+            echo "$changed"
+          else
+            echo "images=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no image-definition changes; skipping the build."
+          fi
+
+  images:
+    name: Build the published images (no push)
+    needs: image-scope
+    if: needs.image-scope.outputs.images == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Until this job existed, nothing built an image before a v* tag did:
+      # release.yml was the FIRST place the Dockerfiles ran, so a break in them,
+      # in .dockerignore, or in a lockfile surfaced while cutting a release,
+      # after every other gate had gone green. amd64 only and push: false — this
+      # gate is about whether the images still build, not about publishing them;
+      # release.yml keeps the arm64 leg and the registry credentials.
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build the app image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Build the MCP image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./mcp-server/Dockerfile
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
