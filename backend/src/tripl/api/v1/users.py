@@ -3,18 +3,17 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from tripl.api.deps import CurrentUserDep, OwnerUserDep, SessionDep
 from tripl.models.user import User
-from tripl.models.user_session import UserSession
 from tripl.schemas.auth import UserListItem, UserRoleUpdate
 from tripl.schemas.invitation import (
     InvitationCreate,
     InvitationCreatedResponse,
     InvitationResponse,
 )
-from tripl.services import audit_service, auth_service, invitation_service
+from tripl.services import audit_service, invitation_service, user_service
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -110,40 +109,17 @@ async def update_user_role(
     data: UserRoleUpdate,
     current_user: OwnerUserDep,
 ) -> User:
-    # Before the target is read, not just before the guard: the same constant-key
-    # advisory lock that serialises the first-owner decision on the way in also
-    # serialises demotion on the way out. Without it the check below is a plain
-    # check-then-write, and two concurrent demotions of the last two owners each
-    # see the other as the survivor, both pass, and the instance is left with no
-    # owner at all — recoverable only from the database.
-    await auth_service.acquire_owner_set_xact_lock(session)
-    target = await session.scalar(select(User).where(User.id == user_id))
-    if target is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    # Guard against the only owner demoting themselves and locking the instance.
-    if target.role == "owner" and data.role != "owner":
-        other_owners = await session.scalar(
-            select(User).where(User.role == "owner", User.id != target.id)
-        )
-        if other_owners is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot demote the last remaining owner",
-            )
-    old_role = target.role
-    target.role = data.role
-    if data.role != old_role:
-        # A role change must take effect immediately, so drop every active
-        # session for this user: auth dependencies read user.role off the
-        # session-loaded instance, and a stale (e.g. demoted) session would
-        # otherwise keep the old permissions until it expired. Deleting in the
-        # same transaction forces the next request to re-authenticate with the
-        # fresh role.
-        #
-        # Residual staleness window: an in-flight request that already passed
-        # the auth dependency still completes with the old role; only the next
-        # request is affected.
-        await session.execute(delete(UserSession).where(UserSession.user_id == target.id))
+    try:
+        target, old_role = await user_service.update_role(session, user_id, data.role)
+    except LookupError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        ) from None
+    except user_service.LastOwnerError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot demote the last remaining owner",
+        ) from None
     await session.commit()
     await session.refresh(target)
     await audit_service.record(

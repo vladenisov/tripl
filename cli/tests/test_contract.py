@@ -661,8 +661,8 @@ def test_every_finding_code_is_documented() -> None:
     website/docs/run/cli.md carries a table of every code with its evidence keys,
     and an operator writing a cron check selects on those codes. A code that
     ships undocumented is a contract the user cannot rely on, and this is the
-    repo's most-repeated review finding (AGENTS.md:467) - so it is a test rather
-    than a habit.
+    repo's most-repeated review finding (AGENTS.md, "Practical Coding
+    Guidance") - so it is a test rather than a habit.
     """
     assert DOCS_PATH.exists(), f"the CLI docs page is missing at {DOCS_PATH}"
     documented = set(re.findall(r"`([a-z_]+)`", DOCS_PATH.read_text(encoding="utf-8")))
@@ -946,8 +946,9 @@ def test_every_command_and_verb_has_its_own_section() -> None:
     """Derived from the real parser, so a new verb fails until it is written up.
 
     tripl-ey6j.5 shipped six verbs with no page at all — the docs rule
-    (AGENTS.md:467) is a habit, and a habit does not fail CI. A literal list of
-    expected headings would not help: it would be edited by the same person who
+    (AGENTS.md, "Practical Coding Guidance") is a habit, and a habit does not
+    fail CI. A literal list of expected headings would not help: it would be
+    edited by the same person who
     forgot the docs. Walking ``build_parser`` means the only way to add a
     command is to add its section.
     """
@@ -1166,6 +1167,35 @@ def test_the_packaged_compose_matches_the_repo_compose() -> None:
         "update MCP_BUILD_BLOCK and re-copy the packaged asset"
     )
     assert packaged("compose.yaml") == expected.replace(MCP_BUILD_BLOCK, "")
+
+
+def test_env_example_documents_every_variable_compose_forwards() -> None:
+    """The other direction: a forwarded variable nobody documents is undiscoverable.
+
+    The sibling test below catches a documented setting that reaches nothing.
+    This catches its mirror image — a knob the stacks pass through that the
+    template never names, so the only way to learn it exists is to read
+    config.py. That is how REGISTRATION_MODE, the switch deciding whether
+    strangers can create Editor accounts, went unmentioned in `.env.example`
+    while compose forwarded it faithfully.
+
+    Derived from compose rather than a hand-kept list, so the next variable
+    added to the anchor and forgotten in the template fails here.
+    """
+    compose = (REPO_ROOT / "compose.yaml").read_text(encoding="utf-8")
+    template = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+
+    # Commented entries count as documented: the template ships most optional
+    # settings commented out so `cp .env.example .env` does not set them.
+    documented = set(re.findall(r"^\s*#?\s*([A-Z][A-Z0-9_]*)=", template, re.MULTILINE))
+    forwarded = _forwarded_variables(compose)
+    assert forwarded, "no forwarded variables found; the anchor shape must have changed"
+
+    missing = sorted(forwarded - documented)
+    assert not missing, (
+        f"compose.yaml forwards {missing} but .env.example never names them, so an "
+        "operator cannot discover the setting without reading config.py"
+    )
 
 
 def _forwarded_variables(compose: str) -> set[str]:

@@ -69,7 +69,10 @@ Services started: `postgres` (pgvector, pg18), `rabbitmq`, `redis`, `api`,
 Useful facts about the dev stack:
 
 - The `api` service runs `alembic upgrade head` before launching `uvicorn`, so
-  the schema is migrated on startup.
+  the schema is migrated on startup. `celery-worker` and `celery-beat` wait for
+  the `api` healthcheck for that reason: started earlier, they would boot
+  against an unmigrated schema, where the settings-override load degrades to a
+  warning and that worker silently ignores persisted overrides until restarted.
 - `DEBUG=true` is set for the dev `api`, which relaxes the production-readiness
   checks (see [Common dev failures](#common-dev-failures)).
 - `celery-beat` polls for due metrics every 5 minutes (the `check-metrics-due`
