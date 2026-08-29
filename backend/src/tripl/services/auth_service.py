@@ -56,7 +56,7 @@ _PASSWORD_RESET_INVALID_MESSAGE = "This password reset link is invalid or has ex
 # users table empty?" check. Derived from a fixed 8-byte tag so it is stable
 # across releases and unlikely to collide with the per-project locks (which
 # derive their keys from UUID bytes, see demo_runtime._acquire_project_xact_lock).
-_FIRST_OWNER_LOCK_KEY = int.from_bytes(b"trplown1", "big", signed=True)
+OWNER_SET_LOCK_KEY = int.from_bytes(b"trplown1", "big", signed=True)
 
 
 def _normalize_name(value: str | None) -> str | None:
@@ -109,12 +109,18 @@ async def create_session_for_user(session: AsyncSession, user_id: uuid.UUID) -> 
     return await _create_user_session(session, user_id)
 
 
-async def _acquire_first_owner_xact_lock(session: AsyncSession) -> None:
-    """Serialise the first-user-becomes-owner decision across concurrent registrations.
+async def acquire_owner_set_xact_lock(session: AsyncSession) -> None:
+    """Serialise every change to who is an owner: entry to the set, and exit.
 
     Takes a constant-key transaction advisory lock BEFORE the ``has_any_users``
     check so two concurrent first registrations can't both observe an empty
-    users table and both become owner (TOCTOU). PostgreSQL-only, same idiom as
+    users table and both become owner (TOCTOU). The same key guards the demotion
+    side in ``api/v1/users.update_user_role``, where two concurrent demotions of
+    the last two owners would otherwise each see the other as the survivor and
+    leave the instance with none. One global invariant, one lock — and a
+    constant-key advisory lock cannot deadlock against itself.
+
+    PostgreSQL-only, same idiom as
     ``demo_runtime._acquire_project_xact_lock``: SQLite (tests) has no advisory
     locks, so this is a no-op there — the suite runs on a single in-memory
     connection where the race cannot occur, so tests are unaffected. The lock
@@ -125,7 +131,7 @@ async def _acquire_first_owner_xact_lock(session: AsyncSession) -> None:
         return
     await session.execute(
         text("SELECT pg_advisory_xact_lock(:key)"),
-        {"key": _FIRST_OWNER_LOCK_KEY},
+        {"key": OWNER_SET_LOCK_KEY},
     )
 
 
@@ -150,7 +156,7 @@ async def register_user(session: AsyncSession, data: RegisterRequest) -> tuple[U
     # The advisory lock closes the TOCTOU window: taken before the empty-table
     # check and held until this registration's commit, so a concurrent first
     # registration waits and then observes this user — exactly one owner.
-    await _acquire_first_owner_xact_lock(session)
+    await acquire_owner_set_xact_lock(session)
     is_first_user = not await has_any_users(session)
 
     # Checked BEFORE the duplicate-email lookup on purpose: on a closed instance

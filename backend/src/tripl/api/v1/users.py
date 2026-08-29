@@ -14,7 +14,7 @@ from tripl.schemas.invitation import (
     InvitationCreatedResponse,
     InvitationResponse,
 )
-from tripl.services import audit_service, invitation_service
+from tripl.services import audit_service, auth_service, invitation_service
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -110,6 +110,13 @@ async def update_user_role(
     data: UserRoleUpdate,
     current_user: OwnerUserDep,
 ) -> User:
+    # Before the target is read, not just before the guard: the same constant-key
+    # advisory lock that serialises the first-owner decision on the way in also
+    # serialises demotion on the way out. Without it the check below is a plain
+    # check-then-write, and two concurrent demotions of the last two owners each
+    # see the other as the survivor, both pass, and the instance is left with no
+    # owner at all — recoverable only from the database.
+    await auth_service.acquire_owner_set_xact_lock(session)
     target = await session.scalar(select(User).where(User.id == user_id))
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")

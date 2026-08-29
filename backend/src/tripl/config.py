@@ -88,16 +88,18 @@ class Settings(BaseSettings):
     # roster, AND edit any shared project. A data source's connection details
     # (host, port, username) are owner-only; the password is never returned to
     # anybody. Note the write half: "can read X" alone understates it. It is the
-    # default only because there is currently NO other way to onboard a person:
-    # /api/v1/users has no create route, there is no invite flow, and SMTP is
-    # optional, so defaulting to "disabled" left real instances unable to add
-    # anybody at all (tripl-jfm3.80).
+    # default for historical reasons (tripl-jfm3.80): it was once the only way to
+    # onboard anyone, since /api/v1/users had no create route, there was no
+    # invite flow, and SMTP is optional — so "disabled" left real instances
+    # unable to add anybody at all. That is no longer true. An owner can invite
+    # a named person at a chosen role (POST /api/v1/users/invitations, redeemed
+    # via POST /api/v1/auth/invitations/{token}/accept), and that path works
+    # while registration is "disabled" and needs no SMTP.
     #
-    # An operator deploying publicly is expected to close it — REGISTRATION_MODE
-    # env var, or Settings -> Instance -> Security & access, which takes effect on
-    # the very next request with no redeploy. Close it only once the team already
-    # has accounts: until an owner-initiated account-create/invite endpoint
-    # exists, "disabled" also means nobody new can be added. See
+    # So the default is now a compatibility choice, not a necessity, and closing
+    # registration is the right end state for a publicly reachable instance —
+    # REGISTRATION_MODE env var, or Settings -> Instance -> Security & access,
+    # which takes effect on the very next request with no redeploy. See
     # website/docs/run/security.md.
     registration_mode: str = REGISTRATION_OPEN
 

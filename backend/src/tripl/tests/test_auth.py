@@ -112,7 +112,7 @@ async def test_first_owner_lock_is_noop_off_postgres():
     # behavioural race itself is untestable here: the suite runs on a single
     # in-memory connection, so two registrations can never interleave.
     async with TestSessionLocal() as session:
-        await auth_service._acquire_first_owner_xact_lock(session)
+        await auth_service.acquire_owner_set_xact_lock(session)
 
 
 @pytest.mark.asyncio

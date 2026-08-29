@@ -140,9 +140,13 @@ async def list_events(
     field_value: FreeTextFilter | None = None,
     meta_value: FreeTextFilter | None = None,
     offset: int = Query(0, ge=0),
-    # NOTE: ceiling kept at 10000 (not lowered to 1000) because the frontend
-    # ProjectAlertingTab.tsx fetches the full event roster with limit=10000;
-    # lowering it would 422 that caller. See deferred note in Lane E.
+    # Ceiling is 10000 because frontend/src/pages/events/useEventsQuery.ts pages
+    # the whole match set at EVENTS_ID_FETCH_PAGE_SIZE = 10000 for bulk "select
+    # all matching" and CSV export. That constant is hardcoded to this value, so
+    # LOWERING THIS CAP 422s the export unless the frontend changes in the same
+    # commit. The rows must stay full EventListItemResponse too: the CSV writes
+    # tags, field values and meta values. (The old note here named
+    # ProjectAlertingTab.tsx, which no longer fetches the roster at all.)
     limit: int = Query(200, ge=1, le=10000),
     # Review-queue ordering: "catalog" keeps the manual/creation order; "volume"
     # sorts busiest-first by 24h EventMetric volume. Literal → FastAPI 422s any
