@@ -59,7 +59,7 @@ function makeEvent(overrides: Partial<EventListItem> = {}): EventListItem {
     name: 'checkout_completed',
     description: '',
     order: 0,
-    status: 'active',
+    status: 'implemented',
     sunset_at: null,
     last_seen_at: null,
     owner_id: null,

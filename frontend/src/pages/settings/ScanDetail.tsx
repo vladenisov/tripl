@@ -26,6 +26,7 @@ import { jobRowsReadTitle } from './scans/runReport'
 import { SCAN_MODE_DETAIL_LABEL, type ScanMode, scanModeOf } from './scans/scanMode'
 import { consecutiveFailedRuns, jobDurationSeconds, jobMetricPoints, jobRowsScanned, scanJobsHaveActiveWork } from './scans/scanUtils'
 import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
+import { projectEventTypesKey } from '@/lib/queryKeys'
 
 function chipList(values: string[]) {
   if (values.length === 0) return <NoneTag />
@@ -114,13 +115,11 @@ export function ScanDetail({
   slug,
   scanConfig,
   eventTypes,
-  branchId,
   dataSource,
 }: {
   slug: string
   scanConfig: ScanConfig
   eventTypes: EventType[]
-  branchId: string | null
   dataSource?: DataSource | null
 }) {
   const qc = useQueryClient()
@@ -159,7 +158,7 @@ export function ScanDetail({
       qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] })
       qc.invalidateQueries({ queryKey: ['scans', slug] })
       qc.invalidateQueries({ queryKey: ['events', slug] })
-      qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
+      qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) })
     },
   })
 

@@ -25,7 +25,7 @@ import { useAdaptiveRefetchIntervalFn } from "@/realtime/streamContext"
 import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
 import { countOf, pluralize } from "@/lib/plural"
-import { dataSourcesKey } from '@/lib/queryKeys'
+import { dataSourcesKey, projectEventTypesKey } from '@/lib/queryKeys'
 
 interface RecentRun {
   jobId: string
@@ -73,7 +73,7 @@ export function ScansTab({ slug }: { slug: string }) {
   // that type's pending-review queue; scans with no fixed type (or a per-row
   // event_type_column) fall back to the whole review tab.
   const { data: eventTypes = [] } = useQuery({
-    queryKey: ['eventTypes', slug],
+    queryKey: projectEventTypesKey(slug),
     queryFn: () => eventTypesApi.list(slug),
   })
   const eventTypeNameById = useMemo(
@@ -223,7 +223,10 @@ export function ScansTab({ slug }: { slug: string }) {
         </Button>
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
+      {/* Collapses before the labels do: "Warehouse rows read · 24h" wraps to
+          three lines in a fixed third of a phone viewport. Same convention as
+          ScanDetail's band one click deeper. */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <StatCard label="Scans" value={scanConfigs.length} />
         <StatCard label="Monitoring" value={monitoringCount} />
         <StatCard

@@ -26,7 +26,16 @@ class ScanJobStatus(enum.StrEnum):
 
 class ScanJob(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "scan_jobs"
-    __table_args__ = (Index("ix_scan_job_config", "scan_config_id"),)
+    __table_args__ = (
+        # Every read of this table is one config's history, newest first,
+        # under a LIMIT: the dispatcher's three lookbacks in
+        # worker/tasks/metrics/schedule.py and the Scans tab's job list.
+        # With only the leading column indexed each of those is a top-N sort
+        # over all of that config's rows. Supersedes the standalone
+        # ix_scan_job_config, whose one column is this index's prefix, so the
+        # ON DELETE CASCADE from scan_configs is still served.
+        Index("ix_scan_job_config_created", "scan_config_id", "created_at"),
+    )
 
     scan_config_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("scan_configs.id", ondelete="CASCADE")

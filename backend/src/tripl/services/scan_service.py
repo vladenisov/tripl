@@ -21,6 +21,7 @@ from tripl.schemas.scan_config import (
     check_replay_chunk_against_interval,
     check_scalar_columns_unreserved,
 )
+from tripl.services._celery_dispatch import dispatch
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_lookup import get_project_id_by_slug
 from tripl.services.search_service import reindex_project_branch
@@ -192,7 +193,7 @@ async def trigger_event_groups_apply(
     from tripl.worker.tasks.scan import apply_event_groups
 
     try:
-        apply_event_groups.delay(str(config.id), str(job.id))
+        await dispatch(apply_event_groups.delay, str(config.id), str(job.id))
     except Exception:
         job.status = ScanJobStatus.failed.value
         job.error_message = "Failed to dispatch task to worker (broker unavailable)"
@@ -232,7 +233,7 @@ async def trigger_preview(
     from tripl.worker.tasks.scan import preview_scan_config_async
 
     try:
-        preview_scan_config_async.delay(str(job.id))
+        await dispatch(preview_scan_config_async.delay, str(job.id))
     except Exception:
         job.status = ScanJobStatus.failed.value
         job.error_message = "Failed to dispatch task to worker (broker unavailable)"
@@ -318,7 +319,7 @@ async def trigger_dry_run(
     from tripl.worker.tasks.scan_dry_run import dry_run_scan_config_async
 
     try:
-        dry_run_scan_config_async.delay(str(job.id))
+        await dispatch(dry_run_scan_config_async.delay, str(job.id))
     except Exception:
         job.status = ScanJobStatus.failed.value
         job.error_message = "Failed to dispatch task to worker (broker unavailable)"
@@ -411,7 +412,7 @@ async def trigger_scan(session: AsyncSession, slug: str, scan_id: uuid.UUID) -> 
     from tripl.worker.tasks.scan import run_scan
 
     try:
-        run_scan.delay(str(config.id), str(job.id))
+        await dispatch(run_scan.delay, str(config.id), str(job.id))
     except Exception:
         job.status = ScanJobStatus.failed.value
         job.error_message = "Failed to dispatch task to worker (broker unavailable)"
@@ -445,7 +446,8 @@ async def trigger_metrics_replay(
     from tripl.worker.tasks.metrics import collect_metrics
 
     try:
-        collect_metrics.delay(
+        await dispatch(
+            collect_metrics.delay,
             str(config.id),
             str(job.id),
             data.time_from.isoformat(),

@@ -178,7 +178,7 @@ async def test_index_maintenance_runs_once_per_branch_not_once_per_search(
     queued: list[uuid.UUID] = []
     queue_succeeds = True
 
-    def fake_queue(_project_id: uuid.UUID, branch_id: uuid.UUID) -> bool:
+    async def fake_queue(_project_id: uuid.UUID, branch_id: uuid.UUID) -> bool:
         queued.append(branch_id)
         return queue_succeeds
 
@@ -303,12 +303,18 @@ async def test_reindex_reports_whether_the_refresh_was_really_queued(
     """
     await client.post("/api/v1/projects", json={"name": "Queue", "slug": "search-queue"})
 
-    monkeypatch.setattr(search_service, "_queue_embedding_refresh", lambda *_a, **_k: True)
+    async def _queued(*_a: object, **_k: object) -> bool:
+        return True
+
+    monkeypatch.setattr(search_service, "_queue_embedding_refresh", _queued)
     queued = await client.post("/api/v1/projects/search-queue/search/reindex")
     assert queued.status_code == 200
     assert queued.json()["embeddings_scheduled"] is True
 
-    monkeypatch.setattr(search_service, "_queue_embedding_refresh", lambda *_a, **_k: False)
+    async def _refused(*_a: object, **_k: object) -> bool:
+        return False
+
+    monkeypatch.setattr(search_service, "_queue_embedding_refresh", _refused)
     broker_down = await client.post("/api/v1/projects/search-queue/search/reindex")
     assert broker_down.status_code == 200
     assert broker_down.json()["embeddings_scheduled"] is False
@@ -1708,7 +1714,8 @@ async def test_deleting_a_destination_takes_its_rules_out_of_the_index(
     assert await _search_titles(client, "fresh-dest", "okapirule", "alert_rule") == []
 
 
-def test_the_read_path_enqueues_the_task_name_the_worker_registers(
+@pytest.mark.asyncio
+async def test_the_read_path_enqueues_the_task_name_the_worker_registers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``send_task`` routes by NAME, so a typo there is a silently dead feature.
@@ -1729,11 +1736,14 @@ def test_the_read_path_enqueues_the_task_name_the_worker_registers(
     )
     project_id, branch_id = uuid.uuid4(), uuid.uuid4()
 
-    assert search_service._queue_branch_reindex(project_id, branch_id) is True
+    assert await search_service._queue_branch_reindex(project_id, branch_id) is True
     assert sent == [(search_tasks.reindex_search_branch.name, [str(project_id), str(branch_id)])]
 
 
-def test_a_broker_failure_is_reported_not_raised(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_a_broker_failure_is_reported_not_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A search GET must answer even when the broker is gone."""
 
     def boom(*_args: object, **_kwargs: object) -> None:
@@ -1743,4 +1753,4 @@ def test_a_broker_failure_is_reported_not_raised(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(celery_module.celery_app, "send_task", boom)
 
-    assert search_service._queue_branch_reindex(uuid.uuid4(), uuid.uuid4()) is False
+    assert await search_service._queue_branch_reindex(uuid.uuid4(), uuid.uuid4()) is False

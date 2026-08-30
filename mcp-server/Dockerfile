@@ -10,7 +10,9 @@
 # ../cli path recorded in uv.lock resolves unchanged.
 FROM python:3.13-slim
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# Pinned on purpose: :latest makes the image non-reproducible, and uv.lock
+# declares revision = 3, which needs uv >= 0.8. Bump deliberately.
+COPY --from=ghcr.io/astral-sh/uv:0.11.21 /uv /usr/local/bin/uv
 
 WORKDIR /app/mcp-server
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
@@ -23,6 +25,13 @@ COPY mcp-server/src ./src
 RUN uv sync --frozen --no-dev
 
 ENV PATH="/app/mcp-server/.venv/bin:$PATH"
+
+# Drop privileges, matching backend/Dockerfile and the root Dockerfile. The
+# venv is built as root and stays read-only to this user; UV_COMPILE_BYTECODE
+# above already wrote the .pyc files, so nothing needs to write at runtime.
+RUN groupadd --system --gid 1000 app \
+    && useradd --system --uid 1000 --gid 1000 --no-create-home app
+USER app
 
 # stdio by default; compose sidecars override the command with flags only
 # (the ENTRYPOINT below already provides the `tripl-mcp` executable):

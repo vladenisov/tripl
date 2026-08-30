@@ -17,7 +17,14 @@ if TYPE_CHECKING:
 
 class AlertDeliveryItem(UUIDMixin, Base):
     __tablename__ = "alert_delivery_items"
-    __table_args__ = (Index("ix_alert_delivery_item_delivery", "delivery_id"),)
+    __table_args__ = (
+        Index("ix_alert_delivery_item_delivery", "delivery_id"),
+        # The alerting inbox and every per-incident view filter on the
+        # correlation group; _alerting_deliveries.list_deliveries has no other
+        # predicate to fall back on. The table has no retention, so an
+        # unindexed scan here grows for the life of the deployment.
+        Index("ix_alert_delivery_item_correlation_group", "correlation_group_id"),
+    )
 
     delivery_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("alert_deliveries.id", ondelete="CASCADE"),

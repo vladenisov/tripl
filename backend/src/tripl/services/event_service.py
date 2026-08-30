@@ -568,7 +568,7 @@ async def create_event(
     await session.commit()
     # Fire the async embedding refresh only after the commit succeeds, so a
     # rolled-back transaction never enqueues a stale refresh.
-    _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
+    await _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
     await session.refresh(event)
     await attach_event_field_variable_values(session, [event])
     await _attach_template_warnings(session, event)
@@ -670,7 +670,7 @@ async def update_event(
         slug=slug,
     )
     await session.commit()
-    _queue_embedding_refresh(event_project_id, event_branch_id, ai_config=ai_config)
+    await _queue_embedding_refresh(event_project_id, event_branch_id, ai_config=ai_config)
     await session.refresh(event)
     await attach_event_field_variable_values(session, [event])
     await _attach_template_warnings(session, event)
@@ -717,7 +717,7 @@ async def delete_event(
         slug=slug,
     )
     await session.commit()
-    _queue_embedding_refresh(project_id, resolved_branch_id, ai_config=ai_config)
+    await _queue_embedding_refresh(project_id, resolved_branch_id, ai_config=ai_config)
     if is_main:
         await cache.delete_prefix(cache.prefix_projects())
     return event_name
@@ -775,7 +775,7 @@ async def bulk_delete_events(
         session, project_id=project_id, branch_id=branch_id, slug=slug
     )
     await session.commit()
-    _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
+    await _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
     if is_main:
         await cache.delete_prefix(cache.prefix_projects())
     return deleted
@@ -841,7 +841,7 @@ async def bulk_update_events(
         session, project_id=project_id, branch_id=branch_id, slug=slug
     )
     await session.commit()
-    _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
+    await _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
     if is_main:
         await cache.delete_prefix(cache.prefix_projects())
 
@@ -1009,7 +1009,7 @@ async def bulk_create_events(
         session, project_id=project_id, branch_id=branch_id, slug=slug
     )
     await session.commit()
-    _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
+    await _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
     # One round-trip with selectin relations instead of N×refresh after commit.
     event_ids = [event.id for event in events]
     refreshed = await session.execute(select(Event).where(Event.id.in_(event_ids)))

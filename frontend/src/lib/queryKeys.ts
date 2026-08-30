@@ -65,3 +65,23 @@ export const projectVariablesKey = (slug: string | undefined) => ['variables', s
  */
 export const variablesPageKey = (slug: string | undefined, branchId?: string | null) =>
   [...variablesKey(slug, branchId), 'page'] as const
+
+/**
+ * EVERY event-type cache for a project, across all branches.
+ *
+ * The fifth drift, and the same prefix trap as {@link projectVariablesKey}: two
+ * readers hold a project but no branch — the Scans tab, which maps type ids to
+ * names for its "Review events" deep links, and the alert-rule editor's filter
+ * rows — so they fetched `['eventTypes', slug]`. Every mutation invalidated the
+ * branch-scoped `['eventTypes', slug, branchId]`, and a three-element filter is
+ * never a prefix of a two-element key, so renaming or deleting a type left both
+ * of those surfaces pointing at a name that no longer existed.
+ *
+ * Invalidate THIS one after a write: it is a strict prefix of
+ * {@link eventTypesKey}, so it refreshes the branch-scoped caches too.
+ */
+export const projectEventTypesKey = (slug: string | undefined) => ['eventTypes', slug] as const
+
+/** Event types for one project on one branch — `eventTypesApi.list(slug, branchId)`. */
+export const eventTypesKey = (slug: string | undefined, branchId?: string | null) =>
+  [...projectEventTypesKey(slug), branchId] as const

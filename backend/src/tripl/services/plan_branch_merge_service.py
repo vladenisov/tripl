@@ -32,6 +32,7 @@ from tripl.models.project_tracker_config import ProjectTrackerConfig
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.schemas.plan_branch import PlanBranchDetailResponse
+from tripl.services._celery_dispatch import dispatch
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services.event_type_owner_service import load_owner_user_ids
 from tripl.services.plan_branch_conflicts import (
@@ -1131,7 +1132,13 @@ async def _enqueue_implementation_ticket(
         # async request path shouldn't import at module load (cycle avoidance).
         from tripl.worker.tasks.implementation_tickets import create_implementation_ticket
 
-        create_implementation_ticket.delay(str(project_id), str(branch_id), event_ids, summary)
+        await dispatch(
+            create_implementation_ticket.delay,
+            str(project_id),
+            str(branch_id),
+            event_ids,
+            summary,
+        )
     except Exception:  # noqa: BLE001 — tracker automation must never break a merge
         logger.exception("Failed to enqueue implementation ticket for branch %s", branch_id)
 

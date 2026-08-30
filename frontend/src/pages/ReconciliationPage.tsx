@@ -26,6 +26,7 @@ import { formatRelativeTime } from '@/lib/datetime'
 import { eventNameLabel } from '@/lib/eventName'
 import { getMonitoringPath } from '@/lib/monitoring'
 import { coverageTone, toneVar } from '@/lib/statusLexicon'
+import { eventTypesKey } from '@/lib/queryKeys'
 
 const COVERAGE_DAYS = 14 as const
 // Deliberately NOT COVERAGE_DAYS. Dead events answer a different question than
@@ -120,7 +121,7 @@ export default function ReconciliationPage() {
   })
 
   const eventTypesQuery = useQuery({
-    queryKey: ['eventTypes', slug, branchId],
+    queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug!, branchId),
     enabled: !!slug,
     staleTime: 60_000,

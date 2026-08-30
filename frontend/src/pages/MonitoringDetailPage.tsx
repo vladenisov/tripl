@@ -76,6 +76,7 @@ import { useConfirm } from '@/hooks/useConfirm'
 import { useMetricCollectionWatcher } from '@/hooks/useMetricCollectionWatcher'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useDemoScenarioActions, useScenarioArtifacts } from '@/demo/demoScenarioContext'
+import { eventTypesKey } from '@/lib/queryKeys'
 
 /**
  * Everything a manual collect needs, captured when the button is pressed and
@@ -338,7 +339,7 @@ export default function MonitoringDetailPage() {
   const eventHistory = historyQuery.data ?? []
 
   const eventTypesQuery = useQuery({
-    queryKey: ['eventTypes', slug, branchId],
+    queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug!, branchId),
     enabled: !!slug,
   })

@@ -354,6 +354,21 @@ def check_metrics_due() -> dict[str, int]:
         configs = [row[0] for row in config_rows]
         is_demo_by_config = {row[0].id: bool(row[1]) for row in config_rows}
 
+        # One grouped aggregate instead of one max() per config per beat tick.
+        # Safe to snapshot before the loop: collection is dispatched asynchronously
+        # and each config's buckets are independent, so no config's watermark can
+        # be advanced by an earlier iteration of this same loop.
+        last_bucket_by_config: dict[uuid.UUID, datetime] = {}
+        if configs:
+            last_bucket_by_config = {
+                config_id: bucket
+                for config_id, bucket in session.execute(
+                    select(EventMetric.scan_config_id, sa_func.max(EventMetric.bucket))
+                    .where(EventMetric.scan_config_id.in_([config.id for config in configs]))
+                    .group_by(EventMetric.scan_config_id)
+                ).all()
+            }
+
         dispatched = 0
         for config in configs:
             now = datetime.now(UTC)
@@ -381,12 +396,8 @@ def check_metrics_due() -> dict[str, int]:
             interval_spec = get_interval(config.interval)
             delta = interval_spec.delta
 
-            # Check last metric bucket for this config
-            last_bucket = session.execute(
-                select(sa_func.max(EventMetric.bucket)).where(
-                    EventMetric.scan_config_id == config.id,
-                )
-            ).scalar()
+            # Last metric bucket for this config, from the grouped read above.
+            last_bucket = last_bucket_by_config.get(config.id)
 
             should_run = _scan_config_collection_due(
                 session,

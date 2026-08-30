@@ -13,6 +13,7 @@
  */
 
 import type { QueryClient, QueryKey } from '@tanstack/react-query'
+import { projectEventTypesKey } from '@/lib/queryKeys'
 
 export const PROJECT_EVENT_TYPES = [
   'scan_job.updated',
@@ -44,7 +45,7 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
         ['scans', slug],
         ['scanJobs', slug],
         ['events', slug],
-        ['eventTypes', slug],
+        projectEventTypesKey(slug),
         ['eventsMetrics', slug],
         ['overview'],
         ...activityKeys(slug),

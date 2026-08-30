@@ -1,4 +1,8 @@
+import type { components } from './api.gen'
 import type { EventTypeBrief } from './eventTypes'
+
+/** The backend's 7-value EventStatus, not a free-form string. */
+export type EventStatus = components['schemas']['EventStatus']
 
 export type VariableValueKind = 'low' | 'high'
 
@@ -38,7 +42,7 @@ export interface Event {
   name: string
   description: string
   order: number
-  status: string
+  status: EventStatus
   sunset_at: string | null
   last_seen_at: string | null
   owner_id: string | null

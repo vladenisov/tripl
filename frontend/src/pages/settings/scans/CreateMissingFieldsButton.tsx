@@ -3,6 +3,7 @@ import { fieldsApi } from '@/api/fields'
 import type { EventType, ScanConfigPreview } from '@/types'
 import { Button } from '@/components/ui/button'
 import { isJsonPreviewType } from './scanUtils'
+import { projectEventTypesKey } from '@/lib/queryKeys'
 
 /**
  * Declares the columns a run would skip as fields on the scan's event type.
@@ -43,7 +44,7 @@ export function CreateMissingFieldsButton({
   const mutation = useMutation({
     mutationFn: (fields: { name: string; display_name: string; field_type: string }[]) =>
       fieldsApi.bulkCreate(slug, eventType!.id, fields, branchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) }),
   })
 
   if (!eventType || !preview || unmappedColumns.length === 0) return null

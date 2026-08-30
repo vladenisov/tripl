@@ -13,6 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { EmptyState } from "@/components/empty-state"
 import { Panel } from "@/components/settings/kit"
 import { getErrorMessage } from '@/lib/utils'
+import { eventTypesKey } from '@/lib/queryKeys'
 
 export function RelationsTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
@@ -30,7 +31,7 @@ export function RelationsTab({ slug }: { slug: string }) {
   const tgtFieldLabelId = useId()
 
   const { data: eventTypes = [] } = useQuery({
-    queryKey: ['eventTypes', slug, branchId],
+    queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug, branchId),
   })
   const { data: relations = [] } = useQuery({

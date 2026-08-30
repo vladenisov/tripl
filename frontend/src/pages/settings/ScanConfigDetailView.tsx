@@ -23,7 +23,7 @@ import { ScanBadges } from './scans/ScanConfigRow'
 import { BackLink, SrcIcon } from './scans/scanLayout'
 import { INTERVAL_LABEL, SCAN_STATUS_LABEL, STATUS_META } from './scans/scanLayoutConstants'
 import { deriveScanRunInfo } from './scans/scanUtils'
-import { dataSourcesKey } from '@/lib/queryKeys'
+import { dataSourcesKey, eventTypesKey } from '@/lib/queryKeys'
 
 type DetailTab = 'overview' | 'configuration'
 
@@ -49,7 +49,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
     queryFn: () => dataSourcesApi.list(),
   })
   const { data: eventTypes = [] } = useQuery({
-    queryKey: ['eventTypes', slug, branchId],
+    queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug, branchId),
   })
 
@@ -211,7 +211,6 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
             slug={slug}
             scanConfig={sc as ScanConfig}
             eventTypes={eventTypes}
-            branchId={branchId}
             dataSource={dataSource}
           />
         </div>

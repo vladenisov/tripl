@@ -26,6 +26,10 @@ class EventMetric(UUIDMixin, Base):
         ),
         Index("ix_event_metric_event_bucket", "event_id", "bucket"),
         Index("ix_event_metric_type_bucket", "event_type_id", "bucket"),
+        # The beat dispatcher asks each config for its newest bucket. Neither
+        # unique constraint can serve that: event_id/event_type_id sits
+        # between the two columns it reads.
+        Index("ix_event_metric_config_bucket", "scan_config_id", "bucket"),
     )
 
     scan_config_id: Mapped[uuid.UUID] = mapped_column(

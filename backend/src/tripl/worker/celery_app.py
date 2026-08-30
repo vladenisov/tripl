@@ -26,6 +26,21 @@ celery_app.conf.accept_content = ["json"]
 celery_app.conf.timezone = "UTC"
 celery_app.conf.broker_connection_retry_on_startup = True
 
+# A request-path publish must fail fast. Most dispatches happen inside async API
+# handlers — services/_celery_dispatch.py keeps them off the event loop, but a
+# caller still waits for the thread — and Celery's defaults (a 4s connect
+# timeout against 1+3 publish attempts) let one unreachable broker hold that
+# caller for ~19s. These bounds cut the worst case to ~7s. The worker's own
+# startup connect is unaffected: broker_connection_retry_on_startup keeps
+# retrying it.
+celery_app.conf.broker_connection_timeout = 2.0
+celery_app.conf.task_publish_retry_policy = {
+    "max_retries": 2,
+    "interval_start": 0,
+    "interval_step": 0.2,
+    "interval_max": 0.5,
+}
+
 # Reliability: only ack tasks after successful completion so a crashed worker
 # re-queues them. Combined with reject_on_worker_lost for hard kills (OOM, SIGKILL).
 celery_app.conf.task_acks_late = True

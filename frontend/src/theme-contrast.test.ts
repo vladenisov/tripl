@@ -28,6 +28,12 @@ import { describe, expect, it } from 'vitest'
 // everything else here (tripl-yx0k).
 const AA_BODY = 4.5
 
+// WCAG 2.x SC 1.4.11: the boundary of a user-interface component needs 3:1. It
+// is a lower bar than body text and it applies to things carrying no text at
+// all — which is exactly `--input`, the only mark on an unfocused, transparent
+// form field and the whole of an unchecked Switch track.
+const AA_NON_TEXT = 3
+
 // Surfaces that body copy is actually painted on. `--surface-active` is a
 // momentary pressed state that never hosts small text, so it is excluded.
 const TEXT_SURFACES = [
@@ -184,6 +190,21 @@ describe.each(THEMES)('$name theme text tokens', ({ body }) => {
         ratio,
         `${token} on ${surface} measured ${ratio.toFixed(2)}:1`,
       ).toBeGreaterThanOrEqual(AA_BODY)
+    }
+  })
+
+  it('keeps --input at the non-text floor, so a field has a findable edge', () => {
+    // --input used to alias --border, the row-separator hairline, which measures
+    // ~1.2-1.3:1: every text field, textarea and select was drawn with an edge
+    // a low-vision reader could not locate. Nothing in this file measured a
+    // border token, so nothing would have caught it.
+    const input = oklchToken(body, '--input')
+    for (const surface of TEXT_SURFACES) {
+      const ratio = contrastRatio(input, oklchToken(body, surface))
+      expect(
+        ratio,
+        `--input on ${surface} measured ${ratio.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(AA_NON_TEXT)
     }
   })
 

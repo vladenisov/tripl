@@ -2,7 +2,14 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { dataSourcesKey, planBranchesKey, variablesKey, variablesPageKey } from './queryKeys'
+import {
+  dataSourcesKey,
+  eventTypesKey,
+  planBranchesKey,
+  projectEventTypesKey,
+  variablesKey,
+  variablesPageKey,
+} from './queryKeys'
 
 const SRC = join(import.meta.dirname, '..')
 
@@ -35,6 +42,15 @@ describe('shared query keys (tripl-jfm3.115, tripl-jfm3.116)', () => {
     expect(variablesPageKey('demo', 'branch-1').slice(0, items.length)).toEqual([...items])
   })
 
+  it('keeps the project-wide event-type key a strict prefix of the branch one', () => {
+    // Mutations invalidate the project-wide form; readers on the Scans tab and
+    // the alert-rule editor hold only a slug. If these two ever stop nesting,
+    // renaming an event type goes back to leaving those surfaces stale.
+    const project = projectEventTypesKey('demo')
+    expect(eventTypesKey('demo', 'branch-1')).toEqual(['eventTypes', 'demo', 'branch-1'])
+    expect(eventTypesKey('demo', 'branch-1').slice(0, project.length)).toEqual([...project])
+  })
+
   it('is the only place these keys are written', () => {
     // Two spellings of one cache is invisible at runtime — the reader and the
     // writer just stop seeing each other and the screen goes quietly stale. It
@@ -54,6 +70,10 @@ describe('shared query keys (tripl-jfm3.115, tripl-jfm3.116)', () => {
           // is an ordinary word that appears in unrelated tuples elsewhere.
           || /queryKey:\s*\[\s*'variables'/.test(text)
           || /invalidateQueries\(\{\s*queryKey:\s*\[\s*'variables'/.test(text)
+          // Same scoping for 'eventTypes': the bare ['eventTypes'] root in
+          // ProjectGeneralSection is deliberately project-agnostic and stays.
+          || /queryKey:\s*\[\s*'eventTypes'/.test(text)
+          || /invalidateQueries\(\{\s*queryKey:\s*\[\s*'eventTypes'/.test(text)
         )
       })
       .map((path) => path.slice(SRC.length + 1))

@@ -33,6 +33,7 @@ import {
 } from '@/components/data-sources/connection-settings'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { Skeleton } from '@/components/ui/skeleton'
 import { SyntheticSourceBadge } from '@/demo/capabilityBadges'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
@@ -250,6 +251,11 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     (ds) => ds.last_test_status === 'success' && !isHealthCheckStale(ds),
   ).length
   const warningCount = dataSources.filter((ds) => ds.last_test_status === 'failed').length
+  /* Nothing numeric is claimed before the fetch settles: `dataSources` defaults
+     to [], so a cold load would otherwise report "Connections 0 / Healthy 0" as
+     if those were measurements. ScansTab holds its 24h KPI at "—" for the same
+     reason (tripl-jfm3.28). */
+  const statsPending = dataSourcesQuery.isLoading
 
   return (
     <div className="space-y-5">
@@ -258,20 +264,20 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       {/* Compact stats header (page title comes from the Settings tab bar) */}
       <div className="flex items-end justify-end gap-6">
         <div className="flex items-center gap-4">
-          <MiniStat label="Connections" value={String(dataSources.length)} />
+          <MiniStat label="Connections" value={statsPending ? '—' : String(dataSources.length)} />
           <MiniStatDivider />
           <MiniStat
             label="Healthy"
-            value={String(healthyCount)}
-            delta={healthyCount > 0 ? 'up' : undefined}
+            value={statsPending ? '—' : String(healthyCount)}
+            delta={!statsPending && healthyCount > 0 ? 'up' : undefined}
             tone="success"
-            pulse={healthyCount > 0}
+            pulse={!statsPending && healthyCount > 0}
           />
           <MiniStatDivider />
           <MiniStat
             label="Warnings"
-            value={String(warningCount)}
-            tone={warningCount > 0 ? 'danger' : 'neutral'}
+            value={statsPending ? '—' : String(warningCount)}
+            tone={!statsPending && warningCount > 0 ? 'danger' : 'neutral'}
           />
           {canManageDataSources && (
             <Button onClick={() => setShowForm(true)} size="sm">
@@ -382,6 +388,14 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
         </DialogContent>
       </Dialog>
 
+      {dataSourcesQuery.isLoading && (
+        <div className="grid gap-3" aria-busy="true" aria-label="Loading data sources">
+          {[0, 1, 2].map((index) => (
+            <Skeleton key={index} className="h-[132px] rounded-lg" />
+          ))}
+        </div>
+      )}
+
       {dataSourcesQuery.isError && (
         <ErrorState
           title="Failed to load data sources"
@@ -391,7 +405,10 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
         />
       )}
 
-      {!dataSourcesQuery.isError && dataSources.length === 0 && (
+      {/* isSuccess, not !isError: an in-flight fetch also has zero rows, and
+          offering "Add a database connection" to someone who already has
+          connections is a claim the page cannot yet make. */}
+      {dataSourcesQuery.isSuccess && dataSources.length === 0 && (
         <EmptyState
           icon={Database}
           title="No data sources"

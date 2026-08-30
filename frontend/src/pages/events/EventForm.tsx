@@ -21,13 +21,14 @@ import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useDemoScenario, useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES } from '@/lib/eventStatus'
+import type { EventStatus } from '@/lib/eventStatus'
 import { META_FIELD_LINK_PLACEHOLDER } from '@/lib/metaFields'
 import { ErrorState } from '@/components/error-state'
 import { JsonEditor } from './JsonEditor'
 import { VariableInput, type VariableSuggestion } from './VariableInput'
 import { applyEventNameFormat, resolveTemplateTokens } from './utils'
 import { ChevronDown, ChevronLeft, Loader2, Plus, Save, Sparkles, X } from 'lucide-react'
-import { variablesKey } from '@/lib/queryKeys'
+import { eventTypesKey, variablesKey } from '@/lib/queryKeys'
 
 const EMPTY_EVENT_TYPES: EventType[] = []
 const EMPTY_META_FIELDS: MetaFieldDefinition[] = []
@@ -548,7 +549,7 @@ export function EventForm({
           </EvField>
 
           <EvField label="Status" htmlFor="form-status" last={status !== 'deprecated'}>
-            <SelectControl id="form-status" value={status} onChange={setStatus} maxWidth={240}>
+            <SelectControl id="form-status" value={status} onChange={v => setStatus(v as EventStatus)} maxWidth={240}>
               {EVENT_STATUSES.map(s => <option key={s} value={s}>{EVENT_STATUS_LABELS[s]}</option>)}
             </SelectControl>
           </EvField>
@@ -762,7 +763,7 @@ export default function EventEditPage() {
   }
 
   const eventTypesQuery = useQuery({
-    queryKey: ['eventTypes', slug, branchId],
+    queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug!, branchId),
     enabled: !!slug,
   })

@@ -145,6 +145,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # The api runs `alembic upgrade head` before uvicorn, and its
+      # healthcheck only passes afterwards. Without this a fresh clone
+      # boots the worker against an unmigrated schema, where
+      # apply_startup_service_overrides degrades to warn-and-skip and
+      # that worker silently ignores persisted settings until restarted.
+      api:
+        condition: service_healthy
     mem_limit: 1g
     mem_reservation: 512m
     develop:
@@ -173,6 +180,9 @@ services:
     environment: *backend-environment
     depends_on:
       rabbitmq:
+        condition: service_healthy
+      # Same reason as celery-worker: wait for the api's inline migration.
+      api:
         condition: service_healthy
     mem_limit: 256m
     mem_reservation: 128m
@@ -260,6 +270,16 @@ services:
     # The image ENTRYPOINT is already `tripl-mcp`, so command holds flags only.
     # --host 0.0.0.0 is required for the published port to be reachable.
     command: ["--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8765"]
+    # A TCP connect, not an HTTP GET: FastMCP's /mcp endpoint rejects a bare GET,
+    # so an HTTP probe would report a healthy server as unhealthy. Without this
+    # the sidecar could only be depended on with service_started, which says
+    # nothing about whether it is listening.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8765), timeout=3).close()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     profiles: [mcp]
     ports:
       - "8765:8765"
@@ -274,4 +294,3 @@ services:
 
 volumes:
   pgdata18:
-  chdata:
