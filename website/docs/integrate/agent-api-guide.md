@@ -195,9 +195,12 @@ alphabetical, capped at 20 — `event_count` carries the untruncated total).
 
 `/variables/{variable_id}/values` returns the full per-event observed contexts
 for one variable: low-cardinality contexts list all observed values, while
-high-cardinality contexts list bounded samples and an observed count. Reach for
-it only when the inline previews are not enough. Event overrides replace the
-global documented list for their event.
+high-cardinality contexts list bounded samples and an observed count. A context
+over a plain column takes its kind and its count from a `COUNT(DISTINCT)` over
+the scanned window, but one over a JSON-path binding is always high-cardinality
+and counts only what a capped sample turned up — report "at least N", never N.
+Reach for it only when the inline previews are not enough. Event overrides
+replace the global documented list for their event.
 
 The catalog is not append-only. Every catalog scan run retires the scan-created
 variables nothing refers to any more — no `${token}` in any stored event field

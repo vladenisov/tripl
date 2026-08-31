@@ -41,7 +41,27 @@ tripl deliberately keeps two kinds of value list separate:
   Scans never rewrite them.
 - **Observed values** and counts are evidence collected from the warehouse.
   Low-cardinality contexts retain the observed list; high-cardinality contexts
-  show bounded examples and the total observation count.
+  show bounded examples and an observation count. A plain column's count is an
+  exact distinct count over the scanned window, but a JSON path's comes from a
+  capped sample and is a floor — read it as "at least this many", and expect a
+  JSON path to be high-cardinality however few values it returned.
+
+A **context** is one (variable, event, field) pairing — the record that this
+event's field refers to this variable through that binding. The context and the
+values are separate facts, and the context comes first: it exists as soon as
+something matches the variable to the field, whether or not any value has been
+stored into it. So an empty context is a real state, not a missing one, and the
+UI names it rather than showing a blank. The Variables table says **No values
+stored** for a variable that has contexts but no samples, and an event's value
+popover distinguishes a context that holds no value from one whose values were
+counted without an example being kept. Each popover line speaks for its own
+event and field, not for every context of the same binding.
+
+An empty context is not by itself a fault. A binding pointed at a column that is
+genuinely empty stays empty however often it is looked at. A JSON-path binding
+has a second, temporary reason to be empty: a run samples only a slice of the
+paths still waiting for their first values, so a newly discovered path can take
+a few runs to fill.
 
 The global documented list applies everywhere unless an event has an override.
 A per-event override **replaces** the global list for that event; it is not
@@ -104,6 +124,11 @@ After a scan, tripl compares observed values with the effective documented list
 for each event. Novel values create a **variable value drift**. Open drift counts
 appear on the Variables table, and the same review panel is available on the
 affected event's detail page.
+
+The comparison has nothing to say about a context holding no values. No drift on
+a variable therefore means either "everything seen was documented" or "nothing
+was seen" — read the variable's observed column to tell those apart, because
+only the first is evidence that the contract holds.
 
 Available actions:
 

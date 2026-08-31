@@ -222,8 +222,11 @@ dotted JSON paths. A per-event override replaces the global documented list for
 that event.
 
 The table shows documented/observed samples, binding paths, usage counts, and
-open value drift. Drift can be accepted globally or for one event, snoozed,
-marked false-positive, or reopened; resolved rows sit behind a **Show N
+open value drift. The observed column distinguishes two silences: it reads **No
+values stored** when the variable has contexts but none of them holds a value,
+and shows a dash only when no context exists at all. Drift can be accepted
+globally or for one event, snoozed, marked false-positive, or reopened;
+resolved rows sit behind a **Show N
 resolved** toggle in both panels, and a scan reopens an accepted row on its own
 once it observes a value outside the accepted set. The event detail repeats the
 affected event's review panel. Selection enables bulk type/description/value changes and

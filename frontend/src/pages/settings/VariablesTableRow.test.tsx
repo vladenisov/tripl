@@ -1,0 +1,102 @@
+import { render, screen } from '@testing-library/react'
+import { describe, expect, it } from 'vitest'
+import type { Variable } from '@/types'
+import { VariablesTableRow } from './VariablesTableRow'
+
+// The list-row shape VariablesTab.test.tsx seeds: everything the row draws
+// arrives on the list response, so a fixture is a plain Variable.
+function makeVariable(overrides: Partial<Variable> & { id: string; name: string }): Variable {
+  return {
+    project_id: 'project-1',
+    source_name: null,
+    variable_type: 'string',
+    allowed_values: [],
+    bindings: [],
+    description: '',
+    ...overrides,
+  }
+}
+
+/**
+ * A variable whose OTHER em-dash-capable cells all speak.
+ *
+ * Three columns render a bare em-dash when they have nothing to say. Filling the
+ * events and documented-values columns leaves the Observed values cell as the
+ * only one that can, so a single `getByText('—')` — which throws on a second
+ * match — is a claim about that cell and no other.
+ */
+function makeSpeakingVariable(overrides: Partial<Variable>): Variable {
+  return makeVariable({
+    id: 'var-1',
+    name: 'variant',
+    event_names: ['checkout_completed'],
+    event_count: 1,
+    allowed_values: ['documented'],
+    ...overrides,
+  })
+}
+
+function renderRow(variable: Variable) {
+  // memo() and <td>s both: the row must be mounted in a real table body or the
+  // cells are invalid DOM and React warns.
+  return render(
+    <table>
+      <tbody>
+        <VariablesTableRow
+          variable={variable}
+          typeLabel="string"
+          selected={false}
+          focused={false}
+          onToggleSelect={() => {}}
+          onEdit={() => {}}
+          onExclude={() => {}}
+          onDelete={() => {}}
+        />
+      </tbody>
+    </table>,
+  )
+}
+
+// tripl-xv77.4: two unrelated silences used to print the same em-dash — nothing
+// references the variable at all, versus every context that does came back
+// empty. Only the second is a fact about the scan, and only the second is worth
+// an operator's attention.
+describe('VariablesTableRow observed values cell', () => {
+  it('renders a chip per observed value', () => {
+    renderRow(makeSpeakingVariable({ sample_values: ['/checkout', '/cart'], context_count: 2 }))
+
+    expect(screen.getByText('/checkout')).toBeInTheDocument()
+    expect(screen.getByText('/cart')).toBeInTheDocument()
+    expect(screen.queryByText('No values stored')).not.toBeInTheDocument()
+  })
+
+  it('names the silence when the variable has contexts but no stored values', () => {
+    renderRow(makeSpeakingVariable({ sample_values: [], context_count: 2 }))
+
+    expect(screen.getByText('No values stored')).toHaveAttribute(
+      'title',
+      '2 value contexts, none holding a value',
+    )
+    expect(screen.queryByText('—')).not.toBeInTheDocument()
+  })
+
+  it('counts a lone value context in the singular', () => {
+    renderRow(makeSpeakingVariable({ sample_values: [], context_count: 1 }))
+
+    expect(screen.getByText('No values stored')).toHaveAttribute(
+      'title',
+      '1 value context, none holding a value',
+    )
+  })
+
+  it('keeps the em-dash when no context references the variable at all', () => {
+    renderRow(makeSpeakingVariable({ sample_values: [], context_count: 0 }))
+
+    expect(screen.queryByText('No values stored')).not.toBeInTheDocument()
+    // The other two dash-capable cells are populated, so this dash is the
+    // Observed values cell's.
+    expect(screen.getByText('documented')).toBeInTheDocument()
+    expect(screen.getByText('checkout_completed')).toBeInTheDocument()
+    expect(screen.getByText('—')).toBeInTheDocument()
+  })
+})
