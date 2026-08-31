@@ -25,6 +25,8 @@ from tripl.models.project_tracker_config import ProjectTrackerConfig
 from tripl.models.user import User
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
+from tripl.models.variable_value import VariableValue
+from tripl.services._plan_branch_renames import pair_renames
 from tripl.services.plan_revision_service import (
     build_plan_snapshot,
     plan_snapshot_hash,
@@ -2086,6 +2088,378 @@ async def test_deep_copy_carries_event_source_name_so_merge_preserves_it(
         )
         # Merge must not have written None over main's good source_name.
         assert merged_main_event.source_name == "purchase_success_raw"
+
+
+# --- merge: a branch rename is a rename, not a delete plus an add (tripl-25sv)
+
+
+async def _main_branch_id() -> uuid.UUID:
+    async with TestSessionLocal() as session:
+        main_branch = (
+            (await session.execute(select(PlanBranch).where(PlanBranch.name == "main")))
+            .scalars()
+            .first()
+        )
+        return main_branch.id
+
+
+@pytest.mark.asyncio
+async def test_merge_of_a_renamed_event_keeps_its_id_and_its_variable_values(
+    client: AsyncClient,
+) -> None:
+    """A branch rename must move main's event, not replace it.
+
+    Upsert-by-natural-key keys events on (event type, name), and Event has no
+    display_name — its machine name is the displayed one — so renaming one used
+    to read as a removal plus an unrelated addition. Main's row was deleted, a
+    fresh uuid inserted, and the FK cascade took ``variable_values`` with it.
+    Nothing diffed the loss: VariableValue is not in the plan snapshot.
+    """
+    await _seed_plan(client, "merge-rename-event")
+    main_branch_id = await _main_branch_id()
+
+    async with TestSessionLocal() as session:
+        main_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.branch_id == main_branch_id, Event.name == "purchase:success"
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        # The scan identity a rename does not touch, stamped as a scan would.
+        main_event.source_name = "purchase_success_raw"
+        main_event_id = main_event.id
+        project_id = main_event.project_id
+        field = (
+            (
+                await session.execute(
+                    select(FieldDefinition).where(
+                        FieldDefinition.event_type_id == main_event.event_type_id
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        variable = Variable(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            branch_id=main_branch_id,
+            name="cart_total",
+            source_name="cart_total",
+        )
+        session.add(variable)
+        session.add(
+            VariableValue(
+                id=uuid.uuid4(),
+                project_id=project_id,
+                branch_id=main_branch_id,
+                variable_id=variable.id,
+                event_id=main_event_id,
+                field_definition_id=field.id,
+                source_column="properties.cart_total",
+                observed_count=7,
+                values=["1999"],
+            )
+        )
+        await session.commit()
+
+    branch_id = await _create_branch(client, "merge-rename-event")
+    branch_uuid = uuid.UUID(branch_id)
+
+    async with TestSessionLocal() as session:
+        branch_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.branch_id == branch_uuid, Event.name == "purchase:success"
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        branch_event.name = "purchase:completed"
+        await session.commit()
+
+    resp = await _approve_and_merge(client, "merge-rename-event", branch_id)
+    assert resp.status_code == 200, resp.text
+
+    async with TestSessionLocal() as session:
+        main_event_rows = (
+            (await session.execute(select(Event).where(Event.branch_id == main_branch_id)))
+            .scalars()
+            .all()
+        )
+        main_events = {e.name: e for e in main_event_rows}
+        assert "purchase:success" not in main_events
+        renamed = main_events["purchase:completed"]
+        assert renamed.id == main_event_id
+        assert renamed.source_name == "purchase_success_raw"
+
+        contexts = (
+            (
+                await session.execute(
+                    select(VariableValue).where(VariableValue.branch_id == main_branch_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(contexts) == 1
+        assert contexts[0].event_id == main_event_id
+        assert contexts[0].observed_count == 7
+        assert contexts[0].values == ["1999"]
+
+
+@pytest.mark.asyncio
+async def test_merge_of_a_renamed_variable_succeeds_and_keeps_its_contexts(
+    client: AsyncClient,
+) -> None:
+    """A renamed branch variable used to fail the merge outright.
+
+    ``uq_variable_project_source_name`` is unique on (project, branch,
+    source_name) and no rename writes source_name, so the insert arm added a
+    main variable carrying main's own source_name while the delete of the row it
+    replaced was still pending in the same flush — SQLAlchemy runs a mapper's
+    saves before its deletes — and the merge raised IntegrityError. Renaming in
+    place removes both the failure and the id churn under ``variable_values``.
+    """
+    await _seed_plan(client, "merge-rename-variable")
+    main_branch_id = await _main_branch_id()
+
+    async with TestSessionLocal() as session:
+        main_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.branch_id == main_branch_id, Event.name == "purchase:success"
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        project_id = main_event.project_id
+        field = (
+            (
+                await session.execute(
+                    select(FieldDefinition).where(
+                        FieldDefinition.event_type_id == main_event.event_type_id
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        variable = Variable(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            branch_id=main_branch_id,
+            name="cart_total",
+            source_name="cart_total_raw",
+        )
+        session.add(variable)
+        main_variable_id = variable.id
+        session.add(
+            VariableValue(
+                id=uuid.uuid4(),
+                project_id=project_id,
+                branch_id=main_branch_id,
+                variable_id=main_variable_id,
+                event_id=main_event.id,
+                field_definition_id=field.id,
+                source_column="properties.cart_total",
+                observed_count=3,
+                values=["1999"],
+            )
+        )
+        await session.commit()
+
+    branch_id = await _create_branch(client, "merge-rename-variable")
+    branch_uuid = uuid.UUID(branch_id)
+
+    async with TestSessionLocal() as session:
+        branch_variable = (
+            (
+                await session.execute(
+                    select(Variable).where(
+                        Variable.branch_id == branch_uuid, Variable.name == "cart_total"
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        # The deep copy carries main's source_name onto the branch row, which is
+        # what makes the collision below reachable.
+        assert branch_variable.source_name == "cart_total_raw"
+        branch_variable.name = "basket_total"
+        await session.commit()
+
+    resp = await _approve_and_merge(client, "merge-rename-variable", branch_id)
+    assert resp.status_code == 200, resp.text
+
+    async with TestSessionLocal() as session:
+        main_variables = (
+            (await session.execute(select(Variable).where(Variable.branch_id == main_branch_id)))
+            .scalars()
+            .all()
+        )
+        assert len(main_variables) == 1
+        assert main_variables[0].id == main_variable_id
+        assert main_variables[0].name == "basket_total"
+        assert main_variables[0].source_name == "cart_total_raw"
+
+        contexts = (
+            (
+                await session.execute(
+                    select(VariableValue).where(VariableValue.branch_id == main_branch_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(contexts) == 1
+        assert contexts[0].variable_id == main_variable_id
+        assert contexts[0].observed_count == 3
+
+
+@pytest.mark.asyncio
+async def test_merge_still_removes_a_deleted_event_beside_an_unrelated_addition(
+    client: AsyncClient,
+) -> None:
+    """Pairing must not fuse a real removal with a real addition.
+
+    Both rows carry a source_name and sit in the same event type, so this is the
+    exact shape a rename presents — minus the shared identity that proves the two
+    are one row. The removal has to stay a removal and the addition an addition.
+    """
+    await _seed_plan(client, "merge-remove-event")
+    main_branch_id = await _main_branch_id()
+
+    async with TestSessionLocal() as session:
+        main_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.branch_id == main_branch_id, Event.name == "purchase:success"
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        main_event.source_name = "purchase_success_raw"
+        await session.commit()
+
+    branch_id = await _create_branch(client, "merge-remove-event")
+    branch_uuid = uuid.UUID(branch_id)
+
+    async with TestSessionLocal() as session:
+        branch_et = (
+            (
+                await session.execute(
+                    select(EventType).where(
+                        EventType.name == "track", EventType.branch_id == branch_uuid
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        branch_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.branch_id == branch_uuid, Event.name == "purchase:success"
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        await session.delete(branch_event)
+        session.add(
+            Event(
+                id=uuid.uuid4(),
+                project_id=branch_et.project_id,
+                branch_id=branch_uuid,
+                event_type_id=branch_et.id,
+                name="signup:done",
+                source_name="signup_done_raw",
+            )
+        )
+        await session.commit()
+
+    resp = await _approve_and_merge(client, "merge-remove-event", branch_id)
+    assert resp.status_code == 200, resp.text
+
+    async with TestSessionLocal() as session:
+        main_event_rows = (
+            (await session.execute(select(Event).where(Event.branch_id == main_branch_id)))
+            .scalars()
+            .all()
+        )
+        assert sorted(e.name for e in main_event_rows) == ["signup:done"]
+
+
+# --- pair_renames: the shapes that must stay a delete plus an add ------------
+
+
+def test_pair_renames_matches_the_would_insert_sharing_a_would_deletes_source_name() -> None:
+    renames = pair_renames(
+        {("track", "purchase:success"): "purchase_success_raw"},
+        {("track", "purchase:success"): "purchase_success_raw"},
+        {("track", "purchase:completed"): "purchase_success_raw"},
+    )
+    assert renames == {("track", "purchase:success"): ("track", "purchase:completed")}
+
+
+def test_pair_renames_leaves_rows_without_a_source_name_unpaired() -> None:
+    """source_name is nullable by design, so absence identifies nothing."""
+    renames = pair_renames(
+        {("track", "purchase:success"): None},
+        {("track", "purchase:success"): None},
+        {("track", "purchase:completed"): None},
+    )
+    assert renames == {}
+
+
+def test_pair_renames_leaves_a_source_name_shared_by_two_candidates_unpaired() -> None:
+    """Only Variable constrains source_name to be unique; events merely index it."""
+    two_could_have_been_renamed = pair_renames(
+        {("track", "one"): "shared_raw", ("track", "two"): "shared_raw"},
+        {("track", "one"): "shared_raw", ("track", "two"): "shared_raw"},
+        {("track", "three"): "shared_raw"},
+    )
+    assert two_could_have_been_renamed == {}
+
+    two_could_be_the_new_name = pair_renames(
+        {("track", "one"): "shared_raw"},
+        {("track", "one"): "shared_raw"},
+        {("track", "two"): "shared_raw", ("track", "three"): "shared_raw"},
+    )
+    assert two_could_be_the_new_name == {}
+
+
+def test_pair_renames_leaves_a_would_insert_with_no_would_delete_unpaired() -> None:
+    """A genuinely added event has to keep merging as an addition."""
+    assert pair_renames({}, {}, {("track", "signup:done"): "signup_done_raw"}) == {}
+
+
+def test_pair_renames_reads_a_move_to_another_event_type_as_what_it_is() -> None:
+    """The renameable component is the last one; the scope above it may not move."""
+    renames = pair_renames(
+        {("track", "purchase:success"): "purchase_success_raw"},
+        {("track", "purchase:success"): "purchase_success_raw"},
+        {("identify", "purchase:success"): "purchase_success_raw"},
+    )
+    assert renames == {}
 
 
 # --- merge policy: min approvals + self-approval guard (tripl-s8t0) ---------

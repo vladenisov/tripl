@@ -362,10 +362,21 @@ back before the event type it belongs to, so restore the event type first.
   the live plan is never half-finished or broken.
 - **Keep main releasable.** Treat main as the version analysts and alerts rely
   on; do experimental work on branches.
-- **Don't rename to "fix" things.** Because a merge matches events by name,
-  renaming an event reads as deleting one and adding another, which can strand
-  the metrics and history attached to the original. Edit the description,
-  fields, or tags instead of renaming when you can.
+- **Know which renames a merge understands.** A merge matches rows by name, so a
+  rename can read as deleting one row and adding another — which strands
+  everything attached to the original: its metrics, photos, change history, and
+  the variable values observed against it.
+  - **Events and variables survive it.** tripl remembers the name a row arrived
+    under when a scan first saw it, and a merge uses that to recognise a rename
+    and move the existing row instead of replacing it. Renaming an event or a
+    variable on a branch is safe.
+  - **Everything else still reads as delete-plus-add.** That covers renaming an
+    **event type**, a **field**, or a **meta field**; moving an event to a
+    different event type, which is a move rather than a rename and is applied as
+    one; and renaming a row tripl has no remembered name for, which is typically
+    a variable you created by hand rather than one a scan discovered.
+  - For those, edit the description, fields, or tags instead of renaming when you
+    can; when you cannot, expect to re-attach anything the old row carried.
 
 ### Recovering from a mistake
 

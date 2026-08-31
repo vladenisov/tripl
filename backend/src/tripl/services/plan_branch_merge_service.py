@@ -34,6 +34,7 @@ from tripl.models.variable_event_value_override import VariableEventValueOverrid
 from tripl.schemas.plan_branch import PlanBranchDetailResponse
 from tripl.services._celery_dispatch import dispatch
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
+from tripl.services._plan_branch_renames import pair_renames
 from tripl.services.event_type_owner_service import load_owner_user_ids
 from tripl.services.plan_branch_conflicts import (
     _ET_CHANGE_KEYS,
@@ -480,6 +481,26 @@ async def _apply_merge(
     main_var_by_name = {v.name: v for v in main_vars}
     branch_var_by_name = {v.name: v for v in branch_vars}
     base_var_by_name = {v["name"]: v for v in (base_payload or {}).get("variables", [])}
+    # A rename is one row, not a removal plus an addition. Unpaired, the arms
+    # below add a Variable carrying main's own ``source_name`` to main while the
+    # delete of the row it replaces is still pending in the same flush —
+    # SQLAlchemy orders a mapper's saves ahead of its deletes — so
+    # ``uq_variable_project_source_name`` fails the whole merge with an
+    # IntegrityError. Renaming main's row instead settles that and keeps the
+    # variable's id, which every ``variable_values`` row hangs off.
+    for (old_var_name,), (new_var_name,) in pair_renames(
+        {(name,): variable.get("source_name") for name, variable in base_var_by_name.items()},
+        {(name,): variable.source_name for name, variable in main_var_by_name.items()},
+        {(name,): variable.source_name for name, variable in branch_var_by_name.items()},
+    ).items():
+        renamed_var = main_var_by_name.pop(old_var_name)
+        renamed_var.name = new_var_name
+        main_var_by_name[new_var_name] = renamed_var
+        # The base entry has to move with it. Every comparison downstream reads
+        # ``base_var_by_name.get(name)`` and falls back to branch-wins when the
+        # entry is missing, so a base left under the old name would silently
+        # overwrite main-only edits on the row that was renamed.
+        base_var_by_name[new_var_name] = base_var_by_name.pop(old_var_name)
     variable_attrs = (
         "source_name",
         "variable_type",
@@ -571,6 +592,24 @@ async def _apply_merge(
         (event["event_type_name"], event["name"]): event
         for event in branch_snapshot_payload.get("events", [])
     }
+
+    # Same move as the variables above, and here it is the destructive one.
+    # Event has no ``display_name`` — its machine name is the one on screen, so
+    # renaming an event is routine editing — and replacing the row would take
+    # its ``variable_values``, metrics, photos and ``event_changes`` with it
+    # through the FK cascade. None of those are in ``build_plan_snapshot``, so
+    # no diff would have shown the loss and no arm below would carry them over.
+    for old_event_key, new_event_key in pair_renames(
+        {key: event.get("source_name") for key, event in base_event_by_key.items()},
+        {key: event.source_name for key, event in main_event_by_key.items()},
+        {key: event.source_name for key, event in branch_event_by_key.items()},
+    ).items():
+        renamed_event = main_event_by_key.pop(old_event_key)
+        # Only the last component of the key can differ: the pairing refuses to
+        # cross event types, so the row keeps its parent.
+        renamed_event.name = new_event_key[-1]
+        main_event_by_key[new_event_key] = renamed_event
+        base_event_by_key[new_event_key] = base_event_by_key.pop(old_event_key)
 
     for key, b_ev in branch_event_by_key.items():
         et_name, _ev_name = key
