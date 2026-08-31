@@ -96,10 +96,24 @@ def apply_event_group_rules(
         if not rule_matched:
             continue
 
+        # A DOTTED condition builds no override: it may only ever MATCH. Both
+        # sinks key this dict by TOP-LEVEL column name — ``plan_events`` by
+        # ``col_meta`` key, ``_create_group_event_from_source`` by
+        # FieldDefinition name — so the only way ``payload.action`` could reach
+        # one is by reducing it to ``payload``, the way ``name_format_base_columns``
+        # reduces a dotted placeholder. That reduction is right there and wrong
+        # here, and not by a little: ``payload``'s value is the JSON template
+        # ``build_json_value`` produced, so writing the regex literal over it
+        # removes every ``${payload.path}`` token at once, and
+        # ``_move_variable_contexts`` below then deletes each context whose target
+        # value no longer names its variable. One grouped scan, and the column's
+        # entire observed-value surface is gone. ``reserved_catalog_columns``
+        # refuses the same reduction on its own side; the two key spaces are one
+        # rule, and fixing either alone is worse than fixing neither.
         overrides = {
             field_name: f"/{pattern}/"
             for field_name, pattern, matched in condition_results
-            if matched and field_name != "__event_name"
+            if matched and field_name != "__event_name" and "." not in field_name
         }
         if len(group_name) > 500:
             group_name = group_name[:497] + "..."

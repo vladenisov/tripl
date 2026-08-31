@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.core.adapters.base import ColumnInfo
 from tripl.core.analyzers.cardinality import BreakdownAnalysis, CardinalityResult
-from tripl.core.analyzers.event_generator import generate_events
+from tripl.core.analyzers.event_generator import apply_event_group_rules, generate_events
 from tripl.core.analyzers.event_plan import (
     breakdown_row_count,
     plan_events,
@@ -371,6 +371,135 @@ def test_a_group_rule_rescues_an_otherwise_empty_name(project_and_type) -> None:
     assert [event.name for event in plan.events] == ["unnamed_traffic"]
     assert plan.events_unnamed == 0
     assert plan.events_grouped == 1
+
+
+def _payload_analysis() -> BreakdownAnalysis:
+    """One JSON column whose two paths split the way the rule needs them to.
+
+    ``payload.action`` is a passthrough — the scan's ``json_value_paths`` name it,
+    so the row carries its VALUE and ``_raw_values_from_row`` offers it to a group
+    rule under its dotted name. That is the only kind of path a dotted condition
+    can ever be matched against. ``payload.screen`` is not named, so it becomes a
+    variable and ``build_json_value`` writes its ``${payload.screen}`` token into
+    the field value — which is the thing an override keyed on ``payload`` would
+    destroy. One column, both roles, so a single blob shows the whole trade.
+    """
+    return BreakdownAnalysis(
+        results={
+            "payload": CardinalityResult(
+                column=ColumnInfo("payload", "JSON"),
+                count=1,
+                is_low=False,
+                json_path_combos=[("action", "screen")],
+            )
+        },
+        rows=[(["action", "screen"], "checkout", 7)],
+        reg_names=[],
+        json_names=["payload"],
+        json_value_names=["payload.action"],
+    )
+
+
+_DOTTED_RULE = [
+    {"name": "Checkout", "conditions": [{"field": "payload.action", "pattern": "^checkout$"}]}
+]
+
+
+def test_a_dotted_condition_reserves_nothing_not_even_its_base_column() -> None:
+    """The reduction that is correct for a name format is destructive here.
+
+    ``name_format_base_columns`` reduces ``{event.category}`` to ``event`` because
+    it feeds a SUBTRACTION, where over-reducing costs one spare FieldDefinition.
+    The reserved set is built by ADDITION. Reserving ``payload`` for a rule on
+    ``payload.action`` denies that column a FieldDefinition, ``plan_column_meta``
+    drops it from ``col_meta``, and every JSON-path variable under it goes too —
+    on production, where every variable is JSON-path derived, that is a column's
+    entire variable surface, deleted without a word.
+    """
+    from tripl.worker.utils.reserved_columns import reserved_catalog_columns
+
+    config = ScanConfig(time_column="time", event_group_rules=_DOTTED_RULE)
+    reserved = reserved_catalog_columns(config)
+    assert reserved == {"time"}, "a dotted condition names no column to reserve"
+
+    plan = plan_events(
+        _payload_analysis(),
+        {"payload": uuid.uuid4()},
+        event_group_rules=_DOTTED_RULE,
+        reserved_columns=reserved,
+    )
+    assert "payload" in plan.col_meta
+    assert [need.name for need in plan.variables_needed] == ["payload.screen"]
+
+    # The cost of the reduction cannot be shown from here, and pretending
+    # otherwise would be worse than not showing it: this layer is handed
+    # ``field_ids`` outright, and a reserved column only loses its "no matching
+    # field definition" message. What the reduction actually takes is one layer
+    # up — ``_ensure_event_type_with_fields`` skips a reserved column, so no
+    # FieldDefinition exists, no id reaches ``field_ids``, and only THEN does
+    # ``plan_column_meta`` drop the column and every variable under it. The
+    # assertion that guards against that is the one above: ``payload`` must
+    # never enter the reserved set in the first place.
+    assert "payload" not in reserved
+
+
+def test_a_dotted_condition_still_groups_and_leaves_the_json_blob_alone() -> None:
+    """Matching is the whole of what a dotted condition may do.
+
+    The override half moves with the reserved half or the pair stops cancelling.
+    An override keyed on ``payload`` would write the regex literal over the JSON
+    template, taking every ``${payload.path}`` token with it — and
+    ``_move_variable_contexts`` deletes any VariableValue whose target value no
+    longer names it, so the blob and the observations go in one step. The literal
+    blob is asserted, not just its length, so base-keying the override fails here.
+    """
+    match = apply_event_group_rules("raw name", {"payload.action": "checkout"}, _DOTTED_RULE)
+    assert match.event_name == "Checkout"
+    assert match.field_value_overrides == {}
+
+    plan = plan_events(
+        _payload_analysis(),
+        {"payload": uuid.uuid4()},
+        event_group_rules=_DOTTED_RULE,
+    )
+    assert [event.name for event in plan.events] == ["Checkout"]
+    assert plan.events_grouped == 1
+
+    ((_fd_id, col_name, value),) = plan.events[0].field_values
+    assert col_name == "payload"
+    assert value == '{"action": "checkout", "screen": "${payload.screen}"}'
+
+
+def test_a_scalar_condition_still_reserves_and_still_overrides(project_and_type) -> None:
+    """The narrowing is only about dotted fields; a plain column is untouched.
+
+    A scalar condition column is reserved, which normally means no FieldDefinition
+    and so nothing for the override to land on. The override path stays live for a
+    project that declared the field BEFORE the column became a rule column — that
+    is the case ``plan_column_meta`` deliberately lets fall through — and there the
+    grouped event must still show the rule's own pattern rather than one arbitrary
+    source row's value (tripl-jfm3.57).
+    """
+    from tripl.worker.utils.reserved_columns import reserved_catalog_columns
+
+    _project, _et, fds = project_and_type
+    rules = [{"name": "Home", "conditions": [{"field": "screen", "pattern": "^/home$"}]}]
+
+    config = ScanConfig(time_column="time", event_group_rules=rules)
+    assert reserved_catalog_columns(config) == {"time", "screen"}
+
+    plan = plan_events(
+        _make_analysis(_LOW_CARDINALITY),
+        {name: fd.id for name, fd in fds.items()},
+        event_group_rules=rules,
+    )
+
+    grouped = [event for event in plan.events if event.name == "Home"]
+    assert len(grouped) == 2, "/home pairs with each action value"
+    for event in grouped:
+        values = {col_name: value for _fd_id, col_name, value in event.field_values}
+        assert values["screen"] == "/^/home$/"
+        assert values["action"] in {"click", "view"}
 
 
 def test_breakdown_row_count_ignores_rows_that_carry_no_count() -> None:

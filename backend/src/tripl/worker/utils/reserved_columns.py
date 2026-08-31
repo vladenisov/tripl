@@ -46,8 +46,30 @@ def _event_group_rule_columns(config: ScanConfig) -> set[str]:
             if not isinstance(field, str):
                 continue
             name = field.strip()
-            if name:
-                columns.add(name)
+            if not name:
+                continue
+            if "." in name:
+                # A DOTTED condition reserves NOTHING — not the path, not the base
+                # column. ``name_format_base_columns`` next door DOES reduce
+                # ``{event.category}`` to ``event``, and copying that here is the
+                # trap: that reduction runs in the SUBTRACTIVE direction, where a
+                # wrong answer costs one unnecessary FieldDefinition. This set is
+                # ADDITIVE. Reserving ``event`` for a rule on ``event.category``
+                # denies that column its FieldDefinition, ``plan_column_meta``
+                # drops it from ``col_meta`` entirely, and every JSON-path variable
+                # under it goes with it — tripl-lpin's mechanism reached from the
+                # other side, and silent where lpin at least raised. On production
+                # every variable is JSON-path derived, so that is a column's whole
+                # variable surface for one reserved name.
+                #
+                # Dropping it whole is the cheap direction of the same trade: a
+                # warehouse column that really is named with a dot (a ClickHouse
+                # Nested member) now gets a FieldDefinition it did not need, which
+                # is the failure this set is allowed to have. ``field_value_overrides``
+                # refuses the same reduction for the same reason — the two key
+                # spaces are one rule, and a dotted condition may only ever MATCH.
+                continue
+            columns.add(name)
     return columns
 
 
@@ -92,6 +114,13 @@ def reserved_catalog_columns(config: ScanConfig) -> set[str]:
     config whose ``platform_column`` is ``event`` kept ``event`` reserved and
     reproduced tripl-lpin from the other direction: same outage, same message,
     reached through a placeholder shape the subtraction could not see.
+
+    That base reduction belongs to the SUBTRACTION and nowhere else. A dotted
+    group-rule condition is dropped whole rather than reduced, because reducing on
+    the additive side reserves a column nobody asked to reserve; the argument is at
+    the guard in ``_event_group_rule_columns``. What both halves buy is one
+    invariant: every key in the returned set is a top-level warehouse column name,
+    which is the only key space its two consumers ever test against.
     """
     reserved = (
         config.event_type_column,
