@@ -321,11 +321,21 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   })
 
   const handleExclude = useStableCallback(async (v: Variable) => {
+    // Describes a flag, because that is now all this is: the exclusion is what
+    // every scan-side guard reads, and nothing is deleted to enforce it. The
+    // old copy promised the reverse of the truth in both directions — it said
+    // observed values "are removed" (they are not) and that documented values
+    // "stay for restore", which read as a guarantee for everything the sentence
+    // before it had just destroyed. Naming the three things that stop is more
+    // useful anyway: "excluded from scans" does not say on its own whether an
+    // already-open drift keeps firing.
     const ok = await confirm({
       title: 'Exclude from scans',
-      message: `Exclude "${v.name}" from scans? Observed values and drift are removed, and future scans will NOT re-create it. Documented values stay for restore.`,
+      message: `Exclude "${v.name}" from scans? Nothing is deleted — the values and drift already recorded stay, and Restore puts it back — but future scans will NOT re-create it, sample new values for it, or raise drift on it.`,
       confirmLabel: 'Exclude',
-      variant: 'danger',
+      // Not 'danger': a reversible flag with no data loss behind it should not
+      // wear the same red confirm as Delete, which really does drop the rows.
+      variant: 'primary',
     })
     if (ok) excludeMut.mutate({ id: v.id, excluded: true })
   })

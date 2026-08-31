@@ -6355,6 +6355,11 @@
       },
       "EventFieldVariableValueResponse": {
         "properties": {
+          "excluded_from_scans": {
+            "default": false,
+            "title": "Excluded From Scans",
+            "type": "boolean"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",

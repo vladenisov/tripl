@@ -1,13 +1,25 @@
 import uuid
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
+from typing import Any, NamedTuple
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
+from tripl.models import Base
+from tripl.models.data_source import DataSource
 from tripl.models.event import Event
+from tripl.models.event_type import EventType
+from tripl.models.project import Project
+from tripl.models.scan_config import ScanConfig
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
+from tripl.models.variable_value_drift import VariableValueDrift
 from tripl.services import variable_service
 from tripl.tests.conftest import TestSessionLocal
+from tripl.worker.tasks.metrics.signals import _get_active_variable_value_drift_candidates
 
 
 async def _setup_project(client: AsyncClient, slug: str = "var-proj"):
@@ -500,76 +512,289 @@ async def test_bulk_delete_variables(client: AsyncClient):
     assert remaining["total"] == 1
 
 
-@pytest.mark.asyncio
-async def test_exclude_from_scans_purges_observed_data_keeps_documentation(
-    client: AsyncClient,
-):
-    from tripl.models.variable_value_drift import VariableValueDrift
+class _VariableHistory(NamedTuple):
+    """Handles for the variable the exclusion tests act on."""
 
-    await _setup_project(client, "var-excl")
+    slug: str
+    variable_id: uuid.UUID
+
+
+@pytest.fixture
+async def variable_history(client: AsyncClient) -> _VariableHistory:
+    """A variable carrying everything an exclude must now leave alone.
+
+    Two observed contexts over two events, and one drift per verdict — the
+    resolved verdicts included, because an accepted or dismissed drift records a
+    decision somebody made and is worth more than an open one, not less. Drift
+    rows are unique per (variable, event), so each verdict needs its own event.
+    """
+    slug = "var-excl"
+    await _setup_project(client, slug)
     et = await client.post(
-        "/api/v1/projects/var-excl/event-types",
+        f"/api/v1/projects/{slug}/event-types",
         json={"name": "pv", "display_name": "Page View"},
     )
     field = await client.post(
-        f"/api/v1/projects/var-excl/event-types/{et.json()['id']}/fields",
+        f"/api/v1/projects/{slug}/event-types/{et.json()['id']}/fields",
         json={"name": "screen", "display_name": "Screen", "field_type": "string"},
     )
-    event = await client.post(
-        "/api/v1/projects/var-excl/events",
-        json={"event_type_id": et.json()["id"], "name": "Onboarding"},
-    )
+    event_ids: dict[str, uuid.UUID] = {}
+    for event_name in ("Onboarding", "Checkout", "Signup", "Settings"):
+        created_event = await client.post(
+            f"/api/v1/projects/{slug}/events",
+            json={"event_type_id": et.json()["id"], "name": event_name},
+        )
+        event_ids[event_name] = uuid.UUID(created_event.json()["id"])
     created = await client.post(
-        "/api/v1/projects/var-excl/variables",
+        f"/api/v1/projects/{slug}/variables",
         json={"name": "variant", "allowed_values": ["a"], "bindings": ["screen"]},
     )
-    var_id = uuid.UUID(created.json()["id"])
-    event_id = uuid.UUID(event.json()["id"])
+    variable_id = uuid.UUID(created.json()["id"])
 
     async with TestSessionLocal() as session, session.begin():
-        variable = await session.get(Variable, var_id)
-        session.add(
-            VariableValue(
-                project_id=variable.project_id,
-                branch_id=variable.branch_id,
-                variable_id=var_id,
-                event_id=event_id,
-                field_definition_id=uuid.UUID(field.json()["id"]),
-                source_column="screen",
-                value_kind="low",
-                observed_count=2,
-                values=["x"],
+        variable = await session.get(Variable, variable_id)
+        for event_name, kind, observed_count, values in (
+            ("Onboarding", "low", 2, ["a", "b"]),
+            ("Checkout", "high", 9, ["c"]),
+        ):
+            session.add(
+                VariableValue(
+                    project_id=variable.project_id,
+                    branch_id=variable.branch_id,
+                    variable_id=variable_id,
+                    event_id=event_ids[event_name],
+                    field_definition_id=uuid.UUID(field.json()["id"]),
+                    source_column="screen",
+                    value_kind=kind,
+                    observed_count=observed_count,
+                    values=values,
+                )
             )
-        )
-        session.add(
-            VariableValueDrift(
-                project_id=variable.project_id,
-                variable_id=var_id,
-                event_id=event_id,
-                observed_values=["x"],
+        for event_name, status in (
+            ("Onboarding", "open"),
+            ("Checkout", "accepted"),
+            ("Signup", "false_positive"),
+            ("Settings", "snoozed"),
+        ):
+            session.add(
+                VariableValueDrift(
+                    project_id=variable.project_id,
+                    variable_id=variable_id,
+                    event_id=event_ids[event_name],
+                    observed_values=["b"],
+                    status=status,
+                    # Snoozed past the horizon so the open row is the only active
+                    # one, which gives the badge test a count of exactly 1 to
+                    # watch fall to 0.
+                    snoozed_until=(
+                        datetime.now(UTC) + timedelta(days=30) if status == "snoozed" else None
+                    ),
+                )
             )
-        )
+
+    return _VariableHistory(slug=slug, variable_id=variable_id)
+
+
+async def _variable_row(client: AsyncClient, slug: str) -> dict[str, Any]:
+    listed = await client.get(f"/api/v1/projects/{slug}/variables")
+    assert listed.status_code == 200
+    return listed.json()["items"][0]
+
+
+@pytest.mark.asyncio
+async def test_excluding_a_variable_keeps_its_values_and_every_drift_verdict(
+    client: AsyncClient, variable_history: _VariableHistory
+):
+    """Excluding sets a flag and deletes nothing (tripl-95pu).
+
+    It used to purge every VariableValue and VariableValueDrift for the
+    variable, behind a control the UI offers as reversible: Restore handed back
+    an emptied variable, and the resolved drifts — the record of what somebody
+    already decided — were gone with nothing that could rebuild them.
+    """
+    slug, variable_id = variable_history
 
     resp = await client.patch(
-        f"/api/v1/projects/var-excl/variables/{var_id}",
+        f"/api/v1/projects/{slug}/variables/{variable_id}",
         json={"excluded_from_scans": True},
     )
     assert resp.status_code == 200
     assert resp.json()["excluded_from_scans"] is True
-    # Documentation survives; observed contexts and drift are purged.
     assert resp.json()["allowed_values"] == ["a"]
 
-    listed = await client.get("/api/v1/projects/var-excl/variables")
-    row = listed.json()["items"][0]
-    assert row["excluded_from_scans"] is True
-    assert row["context_count"] == 0
-    assert row["sample_values"] == []
-    assert row["event_names"] == []
-    assert row["open_drift_count"] == 0
+    values = await client.get(f"/api/v1/projects/{slug}/variables/{variable_id}/values")
+    assert values.status_code == 200
+    assert [(c["event_name"], c["values"]) for c in values.json()] == [
+        ("Checkout", ["c"]),
+        ("Onboarding", ["a", "b"]),
+    ]
 
-    # Restore clears the tombstone.
+    drifts = await client.get(f"/api/v1/projects/{slug}/variables/drifts?variable_id={variable_id}")
+    assert drifts.status_code == 200
+    assert {(d["event_name"], d["status"]) for d in drifts.json()["items"]} == {
+        ("Onboarding", "open"),
+        ("Checkout", "accepted"),
+        ("Signup", "false_positive"),
+        ("Settings", "snoozed"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_excluding_zeroes_the_drift_badge_and_no_other_count(
+    client: AsyncClient, variable_history: _VariableHistory
+):
+    """The badge counts work; the rest count facts (tripl-95pu).
+
+    Nothing refreshes or reopens an excluded variable's drifts and the worker
+    raises no alerts for them, so a badge would send the operator to a queue
+    with nothing actionable in it. The counts beside it describe rows that are
+    still there, and zeroing those would print absence as zero — the reading
+    this branch removed everywhere else.
+    """
+    slug, variable_id = variable_history
+
+    before = await _variable_row(client, slug)
+    assert before["open_drift_count"] == 1
+
+    resp = await client.patch(
+        f"/api/v1/projects/{slug}/variables/{variable_id}",
+        json={"excluded_from_scans": True},
+    )
+    assert resp.status_code == 200
+
+    after = await _variable_row(client, slug)
+    assert after["excluded_from_scans"] is True
+    assert after["open_drift_count"] == 0
+    for counted in ("event_count", "context_count", "low_context_count", "high_context_count"):
+        assert after[counted] == before[counted] > 0
+    assert sorted(after["sample_values"]) == ["a", "b", "c"]
+    assert after["event_names"] == ["Checkout", "Onboarding"]
+
+
+@pytest.mark.asyncio
+async def test_un_excluding_restores_the_variable_without_a_rescan(
+    client: AsyncClient, variable_history: _VariableHistory
+):
+    """Restore is immediate because nothing was ever taken away (tripl-95pu).
+
+    No scan runs here, and that is the assertion. When excluding purged the
+    rows, Restore returned a variable with no observed values and no history,
+    and only the next scheduled scan could refill the part of it that a scan can
+    see at all.
+    """
+    slug, variable_id = variable_history
+
+    excluded = await client.patch(
+        f"/api/v1/projects/{slug}/variables/{variable_id}",
+        json={"excluded_from_scans": True},
+    )
+    assert excluded.status_code == 200
     restored = await client.patch(
-        f"/api/v1/projects/var-excl/variables/{var_id}",
+        f"/api/v1/projects/{slug}/variables/{variable_id}",
         json={"excluded_from_scans": False},
     )
+    assert restored.status_code == 200
     assert restored.json()["excluded_from_scans"] is False
+
+    row = await _variable_row(client, slug)
+    assert row["context_count"] == 2
+    assert sorted(row["sample_values"]) == ["a", "b", "c"]
+    # The badge comes back with it, because the drift it counts never left.
+    assert row["open_drift_count"] == 1
+
+    values = await client.get(f"/api/v1/projects/{slug}/variables/{variable_id}/values")
+    assert [c["values"] for c in values.json()] == [["c"], ["a", "b"]]
+
+
+@pytest.fixture
+def sync_session() -> Iterator[Session]:
+    """The worker-side harness, as ``test_variable_value_drift_alerts`` builds it.
+
+    ``_get_active_variable_value_drift_candidates`` runs in the Celery worker
+    against a sync Session, so the AsyncClient tests above cannot reach it.
+    """
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    session = factory()
+    try:
+        yield session
+    finally:
+        session.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_excluded_variable_raises_no_drift_alert_candidate(sync_session: Session):
+    """The guard that replaced the purge, and reaches where it never did.
+
+    Deleting the drift rows on exclude silenced alerts for the one variable the
+    endpoint touched. Retirement, branch merge and branch revert all carry
+    ``excluded_from_scans`` across without deleting anything, so a variable
+    excluded through any of those doors kept paging an operator who had taken it
+    out of scanning. Asking the flag here covers all of them (tripl-95pu).
+    """
+    project = Project(id=uuid.uuid4(), name="P", slug="vvd-excluded", description="")
+    sync_session.add(project)
+    sync_session.flush()
+    data_source = DataSource(
+        id=uuid.uuid4(),
+        name="wh",
+        db_type="clickhouse",
+        host="localhost",
+        port=9000,
+        database_name="db",
+        username="u",
+        password_encrypted="x",
+    )
+    sync_session.add(data_source)
+    sync_session.flush()
+    config = ScanConfig(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        data_source_id=data_source.id,
+        name="scan",
+        base_query="SELECT * FROM events",
+    )
+    event_type = EventType(
+        id=uuid.uuid4(), project_id=project.id, name="pv", display_name="PV", description=""
+    )
+    sync_session.add_all([config, event_type])
+    sync_session.flush()
+    event = Event(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        event_type_id=event_type.id,
+        name="Onboarding",
+        description="",
+        order=0,
+    )
+    variable = Variable(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        name="variant",
+        variable_type="string",
+        description="",
+        excluded_from_scans=True,
+    )
+    sync_session.add_all([event, variable])
+    sync_session.flush()
+    sync_session.add(
+        VariableValueDrift(
+            project_id=project.id,
+            variable_id=variable.id,
+            event_id=event.id,
+            scan_config_id=config.id,
+            observed_values=["x"],
+            detected_at=datetime.now(UTC),
+        )
+    )
+    sync_session.commit()
+
+    assert _get_active_variable_value_drift_candidates(sync_session, config) == {}
+
+    # The row was alertable the whole time; only the flag stood in front of it.
+    variable.excluded_from_scans = False
+    sync_session.commit()
+    candidates = _get_active_variable_value_drift_candidates(sync_session, config)
+    assert [candidate.drift_field for candidate in candidates.values()] == ["variant"]

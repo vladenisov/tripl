@@ -87,6 +87,67 @@ describe('VariableValueContextTrigger', () => {
     ).not.toBeInTheDocument()
   })
 
+  it('marks an excluded context as frozen without hiding what it froze', async () => {
+    // Excluding stopped deleting the observed rows, so this reading is real,
+    // correct, and never going to change again. Showing it exactly like a live
+    // one would put a stale value on screen as current.
+    render(
+      <VariableValueContextTrigger
+        contexts={[
+          context({
+            value_kind: 'low',
+            observed_count: 2,
+            values: ['u1', 'u2'],
+            excluded_from_scans: true,
+          }),
+        ]}
+      />,
+    )
+
+    openPopover()
+
+    expect(await screen.findByText('Excluded')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Last seen before this variable was excluded from scans — scans no longer refresh it.',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByText('u1')).toBeInTheDocument()
+    // The kind badge still describes the stored values truthfully; losing it
+    // would make a complete frozen set read as a sample.
+    expect(screen.getByText('All values')).toBeInTheDocument()
+  })
+
+  it('says nothing about exclusion for a variable still being scanned', async () => {
+    render(
+      <VariableValueContextTrigger
+        contexts={[context({ value_kind: 'low', observed_count: 2, values: ['u1', 'u2'] })]}
+      />,
+    )
+
+    openPopover()
+
+    expect(await screen.findByText('All values')).toBeInTheDocument()
+    expect(screen.queryByText('Excluded')).not.toBeInTheDocument()
+    expect(screen.queryByText(/excluded from scans/i)).not.toBeInTheDocument()
+  })
+
+  it('claims nothing was last seen when the excluded context stored no value', async () => {
+    render(<VariableValueContextTrigger contexts={[context({ excluded_from_scans: true })]} />)
+
+    openPopover()
+
+    expect(await screen.findByText('Excluded')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'This variable is excluded from scans — scans no longer record values for it.',
+      ),
+    ).toBeInTheDocument()
+    // There is no value to date, so "last seen" would name one that never was.
+    expect(screen.queryByText(/last seen/i)).not.toBeInTheDocument()
+    expect(screen.getByText('No value recorded for this field on this event')).toBeInTheDocument()
+  })
+
   it('renders nothing when the field references no variable', () => {
     // The overwhelming majority of event fields are literals. A marker on every
     // one of them would bury the fields that do carry a variable.

@@ -2,7 +2,7 @@ import re
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -10,8 +10,6 @@ from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
-from tripl.models.variable_value import VariableValue
-from tripl.models.variable_value_drift import VariableValueDrift
 from tripl.schemas.variable import (
     VariableBulkDelete,
     VariableBulkUpdate,
@@ -223,13 +221,21 @@ async def update_variable(
         for fv in fv_result.scalars().all():
             fv.value = fv.value.replace(old_ref, new_ref)
 
-    if update_data.get("excluded_from_scans") and not var.excluded_from_scans:
-        # Excluding purges the scan-observed side (contexts + drift) but keeps
-        # the user-owned documentation (allowed_values, overrides) for restore.
-        await session.execute(delete(VariableValue).where(VariableValue.variable_id == var.id))
-        await session.execute(
-            delete(VariableValueDrift).where(VariableValueDrift.variable_id == var.id)
-        )
+    # ``excluded_from_scans`` lands here like any other field, with no purge
+    # beside it. Every scan-side guard asks the FLAG, never the rows —
+    # ``_event_generator_variables.record_variable_contexts`` and
+    # ``normalize_variable_tokens``, ``catalog_sync._unfilled_json_path_candidates``
+    # and both replay accumulators in ``metrics.generation`` — so deleting the
+    # observations bought no extra silence and cost the operator the only copy of
+    # the history, under a button the UI advertises as reversible. It was also
+    # the only setter of this flag that deleted anything: the retirement sweep,
+    # branch merge and branch revert all carry the flag across untouched, so the
+    # same variable could be excluded destructively or harmlessly depending on
+    # which door it came through.
+    #
+    # Readers that must not ACT on an excluded variable filter on the flag too:
+    # ``variable_value_service.attach_variable_summaries`` for the drift badge,
+    # ``worker.tasks.metrics.signals`` for alert candidates.
     for key, value in update_data.items():
         setattr(var, key, value)
     await session.commit()

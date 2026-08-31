@@ -35,23 +35,41 @@ export function VariableValueContextTrigger({
           // this event's field and nothing wider, names no mechanism, and
           // promises no later fill.
           const nothingStored = context.observed_count === 0 && context.values.length === 0
+          // The third fact this popover has to keep apart from the other two.
+          // Excluding a variable stops scans sampling it but deletes nothing, so
+          // a context can hold a real, correct, and permanently frozen reading.
+          // Rendering it exactly like a live one would be the same defect as the
+          // collapsed empty state: one appearance for two things a reader has to
+          // act on differently.
+          const isExcluded = context.excluded_from_scans === true
           return (
             <div key={context.id} className="space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <code className="min-w-0 truncate rounded bg-muted px-1.5 py-0.5 font-mono">
                   {`\${${context.variable_name}}`}
                 </code>
-                {/* With nothing counted there is no sample for "Examples" to
-                    name, so that case gets its own label. The counted-but-none-
-                    kept case keeps "Examples": there the observation is real and
-                    only the sample under the badge is missing. */}
-                <Badge variant="outline" className="shrink-0 text-[10px]">
-                  {nothingStored
-                    ? 'No values'
-                    : context.value_kind === 'low'
-                      ? 'All values'
-                      : 'Examples'}
-                </Badge>
+                <div className="flex shrink-0 items-center gap-1">
+                  {/* Its own badge rather than a replacement for the kind badge:
+                      the kind still describes the stored values truthfully, and
+                      losing "All values" would make a complete frozen set look
+                      like a sample of one. */}
+                  {isExcluded && (
+                    <Badge variant="secondary" className="text-[10px]">
+                      Excluded
+                    </Badge>
+                  )}
+                  {/* With nothing counted there is no sample for "Examples" to
+                      name, so that case gets its own label. The counted-but-none-
+                      kept case keeps "Examples": there the observation is real and
+                      only the sample under the badge is missing. */}
+                  <Badge variant="outline" className="text-[10px]">
+                    {nothingStored
+                      ? 'No values'
+                      : context.value_kind === 'low'
+                        ? 'All values'
+                        : 'Examples'}
+                  </Badge>
+                </div>
               </div>
               <div className="text-muted-foreground">
                 {context.source_column} - {context.observed_count} observed
@@ -74,6 +92,19 @@ export function VariableValueContextTrigger({
                 </div>
               ) : (
                 <div className="text-muted-foreground">No examples stored</div>
+              )}
+              {/* Two sentences, because the line above them means two different
+                  things. With values on screen the reader needs to know they are
+                  last-seen and not current; with none, there is no value to date
+                  and the honest statement is only that none will arrive. Neither
+                  claims the values will be kept forever — Delete still removes
+                  the variable and its rows with it. */}
+              {isExcluded && (
+                <div className="text-muted-foreground">
+                  {context.values.length > 0
+                    ? 'Last seen before this variable was excluded from scans — scans no longer refresh it.'
+                    : 'This variable is excluded from scans — scans no longer record values for it.'}
+                </div>
               )}
             </div>
           )

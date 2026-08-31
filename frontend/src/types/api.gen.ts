@@ -5541,6 +5541,11 @@ export interface components {
         /** EventFieldVariableValueResponse */
         EventFieldVariableValueResponse: {
             /**
+             * Excluded From Scans
+             * @default false
+             */
+            excluded_from_scans: boolean;
+            /**
              * Id
              * Format: uuid
              */

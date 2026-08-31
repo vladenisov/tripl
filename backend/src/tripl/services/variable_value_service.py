@@ -74,13 +74,31 @@ async def attach_variable_summaries(
 
     drift_counts = await get_open_drift_counts(session, variable_ids)
 
+    # Where ``excluded_from_scans`` bites on this row, and where it must not.
+    #
+    # A count of FACT reports what is stored: context_count, the context-kind
+    # split, sample_values, event_names and event_count all stay true for an
+    # excluded variable, because the rows ARE there. Exclusion stopped being a
+    # delete, so zeroing them would print absence as zero — the exact confusion
+    # this branch removed everywhere else, and the one that makes an operator
+    # believe a variable was never observed when its whole history is one click
+    # of Restore away.
+    #
+    # A count of WORK reports what somebody still has to act on, and there is no
+    # work on a variable taken out of scanning: nothing will refresh or reopen
+    # its drifts, and ``worker.tasks.metrics.signals`` no longer raises alerts
+    # for them, so a badge here would send the operator to a queue with nothing
+    # actionable in it. The drift rows survive and the drift LIST still shows
+    # them; only the "needs attention" count stands down.
     for variable in variables:
         variable.event_count = len(event_ids_by_variable.get(variable.id, set()))  # type: ignore[attr-defined]
         variable.context_count = context_counts.get(variable.id, 0)  # type: ignore[attr-defined]
         variable.low_context_count = low_counts.get(variable.id, 0)  # type: ignore[attr-defined]
         variable.high_context_count = high_counts.get(variable.id, 0)  # type: ignore[attr-defined]
         variable.sample_values = sample_values.get(variable.id, [])  # type: ignore[attr-defined]
-        variable.open_drift_count = drift_counts.get(variable.id, 0)  # type: ignore[attr-defined]
+        variable.open_drift_count = (  # type: ignore[attr-defined]
+            0 if variable.excluded_from_scans else drift_counts.get(variable.id, 0)
+        )
         event_names = sorted(event_names_by_variable.get(variable.id, set()))
         variable.event_names = event_names[:SUMMARY_EVENT_LIMIT]  # type: ignore[attr-defined]
 
@@ -137,6 +155,11 @@ async def attach_event_field_variable_values(
     )
     contexts_by_field: dict[tuple[uuid.UUID, uuid.UUID], list[VariableValue]] = defaultdict(list)
     for context in rows.scalars().all():
+        # Stamped onto the row because the popover renders CONTEXTS, and the flag
+        # it needs lives one hop away on the Variable — a hop Pydantic's
+        # ``from_attributes`` will not take on its own. The eager load above is
+        # already paid for ``variable_name``, so this costs no extra query.
+        context.excluded_from_scans = context.variable.excluded_from_scans  # type: ignore[attr-defined]
         contexts_by_field[(context.event_id, context.field_definition_id)].append(context)
 
     for event in events:

@@ -14,6 +14,8 @@ export interface EventFieldVariableValue {
   value_kind: VariableValueKind
   observed_count: number
   values: string[]
+  /** Optional to mirror the backend default: an older response omits it. */
+  excluded_from_scans?: boolean
 }
 
 export interface EventFieldValue {

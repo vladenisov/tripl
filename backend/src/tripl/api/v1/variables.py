@@ -253,6 +253,14 @@ async def update_variable(
     branch_id: BranchIdDep,
 ) -> Variable:
     v = await variable_service.update_variable(session, slug, variable_id, data, branch_id)
+    # The submitted fields ARE the whole operation, which is why the raw patch
+    # body is an honest payload here. It was not always: while excluding also
+    # deleted every observed context and drift row for the variable, a record
+    # reading ``{"excluded_from_scans": true}`` under a generic "variable.update"
+    # was the only trace of an irreversible bulk delete. Anything added to
+    # ``update_variable`` that touches rows this body does not name puts the
+    # audit trail back to under-describing what happened, and needs its own
+    # action or its own payload key.
     await audit_service.record(
         session,
         user=current_user,
