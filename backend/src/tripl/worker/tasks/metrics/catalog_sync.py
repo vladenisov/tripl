@@ -4,6 +4,11 @@ Extracted verbatim from ``collect_metrics`` in ``tasks.py``.  The cardinality
 analyzers and ``generate_events`` are passed in as callables so that tests
 monkey-patching them on the ``tasks`` module keep taking effect (``tasks``
 forwards its module globals at call time).
+
+Phase 1 also samples the observed values of JSON-path variables, which is not
+the scan pipeline's own work but has to happen here: it is the one point in a
+collection job that runs ONCE, before the per-chunk metric loop, so a replay's
+hundreds of chunks cannot multiply it. See ``_collect_json_path_samples``.
 """
 
 from __future__ import annotations
@@ -12,20 +17,28 @@ import logging
 import uuid
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
 
+from sqlalchemy import func as sa_func
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, lazyload
 
 from tripl.core.adapters.base import BaseAdapter, ColumnInfo
-from tripl.core.analyzers.cardinality import BreakdownAnalysis
+from tripl.core.analyzers._event_generator_variables import (
+    VARIABLE_VALUE_SAMPLE_LIMIT,
+    VariableIndex,
+)
+from tripl.core.analyzers.cardinality import BreakdownAnalysis, _is_json_type
 from tripl.core.analyzers.event_generator import GenerationResult
+from tripl.core.intervals import INTERVALS
+from tripl.json_paths import format_json_path_value
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.scan_config import ScanConfig
 from tripl.models.variable import Variable
+from tripl.models.variable_value import VariableValue
 from tripl.worker.plan_scope import main_branch_id
 from tripl.worker.tasks._errors import NO_EVENT_NAMING_MSG, ScanError
 from tripl.worker.tasks.metrics.generation import (
@@ -43,6 +56,32 @@ if TYPE_CHECKING:
     from tripl.worker.utils.query_windows import TimeWindow
 
 logger = logging.getLogger(__name__)
+
+# Source rows the observed-value sampler reads. A FLAT limit, so the cost of a
+# run does not grow with the number of paths sampled, with the project's size or
+# with the collection window — unlike the breakdown and bucketed queries, which
+# it must stay a rounding error beside. 500 is a small fraction of what one tick
+# already scans on the largest config here, and ample for a 20-value sample: a
+# value that shows up in none of 500 rows is not one the plan needs listed.
+_SAMPLE_ROW_LIMIT = 500
+
+# Distinct values kept per path. Imported rather than restated because
+# ``sample_variable_values`` truncates the stored list to exactly this — asking
+# the warehouse for more would buy rows that are thrown away on arrival.
+_SAMPLE_VALUES_PER_PATH = VARIABLE_VALUE_SAMPLE_LIMIT
+
+# Paths one run will try to fill. The candidate set is self-extinguishing — a
+# path leaves it once every context it hangs off holds an observation — so this
+# only decides how fast a project converges, not whether it does: the largest
+# project here (~1.8k JSON-path variables) is done in about nine ticks, after
+# which the whole sampler costs the two candidate queries per run and stops
+# there until a new event, or a newly referenced field, reopens a path.
+_SAMPLED_PATHS_PER_RUN = 200
+
+# Paths the adapter may enumerate while looking for the ones we asked about.
+# Matches the replay sampler's limit in ``tasks``; both are a guard against a
+# pathological document, not a tuning knob.
+_PATH_DISCOVERY_LIMIT = 2000
 
 
 class _AnalyzeCardinalityFn(Protocol):
@@ -94,6 +133,7 @@ class _GenerateEventsFn(Protocol):
         reserved_columns: Collection[str] | None = None,
         max_events: int = 10000,
         scan_config_id: uuid.UUID | None = None,
+        json_path_samples: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
     ) -> GenerationResult: ...
 
 
@@ -103,8 +143,254 @@ class CatalogSyncResult:
     single_result: GenerationResult | None = None
     contract_violations_detected: int = 0
     replay_branch_id: uuid.UUID | None = None
-    replay_variables_by_token: dict[str, Variable] = field(default_factory=dict)
+    # A VariableIndex, not a name-keyed dict: replay has to match a field
+    # value's token through bindings and source_name too, since a scan-created
+    # variable's display name is no longer its warehouse path.
+    replay_variables_by_token: VariableIndex = field(default_factory=VariableIndex)
     replay_events: list[Event] = field(default_factory=list)
+
+
+def _unfilled_json_path_candidates(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+    json_columns: Collection[str],
+) -> list[tuple[str, str]]:
+    """``(column, path)`` pairs whose variable still has a context to fill.
+
+    A variable is a candidate when one of its warehouse identities splits as
+    ``<column>.<path>`` over a JSON column of this query — ``source_tokens_of``,
+    so ``source_name`` and the user-editable bindings lead and the shortened
+    display name (``property.Aalter`` -> ``aalter``) cannot be mistaken for a
+    path — and at least one context row for it still holds no observation.
+
+    The unit is the CONTEXT, not the variable, because the context is what the
+    fill writes: ``variable_values`` is keyed on (variable, event, field), while
+    ONE variable covers every event that references the path — across scan
+    configs too, since a Variable is unique on (project, branch, source_name)
+    and this query is project/branch-scoped with no config in it. Retiring a
+    variable on its first observation anywhere therefore stranded every context
+    minted after it: a new event on the path, an existing event that later gained
+    the field or the token, a context ``delete_variable_contexts_for_event_type``
+    dropped and a later run re-created, and a sibling config's events whenever
+    another config sampled the shared path first. Each was written with
+    ``observed_count=0`` and could never be asked about again — the production
+    symptom this sampler exists to fix, back for everything but the first event.
+
+    "Holds no observation" is tested on ``observed_count``, an Integer column, and
+    deliberately NOT on ``values``: that column is ``sa.JSON`` and not JSONB, so
+    on PostgreSQL ``json = json`` has no operator and a ``!= '[]'`` comparison
+    fails outright — the trap ``services._alerting_scope_readiness`` documents at
+    length. The two questions have the same answer anyway, because every writer
+    of a context sets the count to at least ``len(values)``.
+
+    The sampling stays self-extinguishing, one context later than it used to be:
+    a variable leaves the candidate set once every context it has is observed, so
+    a project that has converged pays the two indexed queries below and issues no
+    warehouse call at all.
+    """
+    # ``lazyload`` because ``Variable.value_contexts`` is ``lazy="selectin"``, and
+    # each of those rows then selectin-loads its FieldDefinition: hydrating the
+    # entities plainly would pull a project's entire context table into memory to
+    # answer a question about NAMES. The contexts are answered by the grouped
+    # aggregate below instead, which stays one indexed read whatever the size.
+    variable_query = (
+        select(Variable)
+        .where(Variable.project_id == project_id)
+        .options(lazyload(Variable.value_contexts))
+    )
+    if branch_id is not None:
+        variable_query = variable_query.where(Variable.branch_id == branch_id)
+    variables = list(session.execute(variable_query).scalars())
+    if not variables:
+        return []
+
+    # MIN over a variable's contexts: 0 means at least one of them is still
+    # unfilled. A variable with no contexts at all is absent from the map and
+    # stays a candidate — that is the state a variable this run's predecessor
+    # minted is in, and the state the sampler was written for.
+    lowest_observed_query = (
+        select(VariableValue.variable_id, sa_func.min(VariableValue.observed_count))
+        .where(VariableValue.project_id == project_id)
+        .group_by(VariableValue.variable_id)
+    )
+    if branch_id is not None:
+        lowest_observed_query = lowest_observed_query.where(VariableValue.branch_id == branch_id)
+    lowest_observed: dict[uuid.UUID, int] = {
+        variable_id: lowest for variable_id, lowest in session.execute(lowest_observed_query)
+    }
+
+    candidates: set[tuple[str, str]] = set()
+    for variable in variables:
+        lowest = lowest_observed.get(variable.id)
+        if variable.excluded_from_scans or (lowest is not None and lowest > 0):
+            continue
+        for token in VariableIndex.source_tokens_of(variable):
+            column, _, path = token.partition(".")
+            if path and column in json_columns:
+                candidates.add((column, path))
+    return sorted(candidates)
+
+
+def _scheduled_tick(config: ScanConfig, *, fallback: timedelta) -> timedelta:
+    """How much wall clock one scheduled run of this config covers.
+
+    ``collect_metrics`` refuses to run a config whose ``interval`` is unset, so
+    in production the spec is always there; the fallback is for the callers that
+    reach the sampler without one — a direct call from a test, a future one-off —
+    and keeps them on the collection window they used to rotate by.
+    """
+    spec = INTERVALS.get(config.interval or "")
+    return spec.delta if spec is not None else fallback
+
+
+def _rotating_window(
+    candidates: Sequence[tuple[str, str]],
+    *,
+    size: int,
+    window_end: datetime,
+    tick: timedelta,
+) -> list[tuple[str, str]]:
+    """A deterministic slice of ``candidates`` that moves on by one each run.
+
+    A project with thousands of unfilled paths must not try to fill them all in
+    one run, and must not spend every run on the same alphabetical prefix either
+    — a path whose values never appear in the sampled rows stays a candidate
+    forever, and a fixed window would let it block everything behind it.
+
+    The ordinal is the window end floored to the config's SCHEDULED INTERVAL,
+    which is the only quantity in reach that counts RUNS. Two near misses are
+    worth writing down. ``variable_values.updated_at`` looks like the obvious key
+    and orders nothing: catalog sync deletes and re-inserts every context it
+    touches on every run, so the column reads "now" for the whole table. The
+    collection window's own span looks like the next one and is not a run count
+    at all — ``_resolve_collection_window`` starts it at the last stored bucket,
+    which is about three intervals back on a config that is keeping up and thirty
+    on one with no metrics yet, so dividing by it would move the slice once every
+    few runs and jump it somewhere unrelated the moment the backlog changed
+    length.
+
+    ``collect_metrics`` floors the window end onto the interval grid, so this
+    ordinal steps by exactly one per scheduled tick and repeats for a retry of
+    the same window — a retry re-samples what it was doing rather than skipping a
+    slice.
+    """
+    if len(candidates) <= size:
+        return list(candidates)
+    tick_seconds = max(int(tick.total_seconds()), 1)
+    start = (int(window_end.timestamp()) // tick_seconds) % len(candidates)
+    return [candidates[(start + offset) % len(candidates)] for offset in range(size)]
+
+
+def _formatted_samples(values: Sequence[object]) -> list[str]:
+    """Warehouse sample values as the strings a variable context stores.
+
+    Through ``format_json_path_value``, which is what the replay sampler uses on
+    the very same adapter output. Two renderings of one value would be two values
+    to the drift detector: a tick that stored ``42`` and a replay that stored
+    ``"42"`` would accuse each other of drift forever.
+    """
+    seen: set[str] = set()
+    formatted: list[str] = []
+    for value in values:
+        text = format_json_path_value(value)
+        if text in seen:
+            continue
+        seen.add(text)
+        formatted.append(text)
+    return formatted[:_SAMPLE_VALUES_PER_PATH]
+
+
+def _collect_json_path_samples(
+    session: Session,
+    *,
+    adapter: BaseAdapter,
+    config: ScanConfig,
+    columns: list[ColumnInfo],
+    catalog_scan_window: TimeWindow | None,
+    time_from_dt: datetime,
+    time_to_dt: datetime,
+) -> dict[str, dict[str, list[str]]]:
+    """Observed values for the JSON-path variables that have none yet.
+
+    Answers the question the breakdown rows cannot: a JSON path becomes a
+    variable precisely when the scan config does NOT list it as a kept value, so
+    the rows the catalog scan already fetched hold a value for every path except
+    the ones that need one (``plan_column_meta`` argues this out in full). One
+    extra bounded query per run closes that gap; widening the existing ones
+    cannot.
+
+    Called once per job, outside the per-chunk loop, and never on a replay —
+    replay has its own sampler in ``tasks``, over the events it replayed.
+
+    The adapter is asked for the COLUMNS that carry a candidate, and the answer is
+    then narrowed to the paths this run actually wants. Narrowing on the way in
+    would be better — an explicit path list is the one thing that would let
+    ClickHouse skip its discovery query entirely — but ``get_json_path_samples``
+    takes columns and not paths on every adapter today. Until that parameter
+    exists the filter below is what stops a run from minting observations for
+    paths no variable references.
+    """
+    json_columns = {column.name for column in columns if _is_json_type(column.type_name)}
+    if not json_columns:
+        return {}
+
+    candidates = _unfilled_json_path_candidates(
+        session,
+        project_id=config.project_id,
+        branch_id=main_branch_id(session, config.project_id),
+        json_columns=json_columns,
+    )
+    if not candidates:
+        return {}
+
+    wanted: dict[str, set[str]] = {}
+    for column, path in _rotating_window(
+        candidates,
+        size=_SAMPLED_PATHS_PER_RUN,
+        window_end=time_to_dt,
+        tick=_scheduled_tick(config, fallback=time_to_dt - time_from_dt),
+    ):
+        wanted.setdefault(column, set()).add(path)
+
+    try:
+        discovered = adapter.get_json_path_samples(
+            config.base_query,
+            sorted(wanted),
+            time_column=config.time_column if catalog_scan_window else None,
+            time_from=catalog_scan_window[0] if catalog_scan_window else None,
+            time_to=catalog_scan_window[1] if catalog_scan_window else None,
+            path_limit=_PATH_DISCOVERY_LIMIT,
+            sample_limit=_SAMPLE_VALUES_PER_PATH,
+            sample_row_limit=_SAMPLE_ROW_LIMIT,
+        )
+    except Exception:
+        # Caught here rather than left to the caller because the caller is
+        # ``collect_metrics``' single try: an adapter timeout, a column dropped
+        # since the last run, or one unaddressable path would otherwise fail the
+        # whole ScanJob and stop metrics collection for this config. Observed
+        # values are an enrichment — everything below plans correctly without
+        # them, and the next tick asks again.
+        logger.warning(
+            "Observed-value sampling failed for scan config %s; continuing without samples",
+            config.id,
+            exc_info=True,
+        )
+        return {}
+
+    samples: dict[str, dict[str, list[str]]] = {}
+    for column, path_samples in discovered.items():
+        paths = wanted.get(column)
+        if not paths:
+            continue
+        for path, values in path_samples.items():
+            if path not in paths:
+                continue
+            formatted = _formatted_samples(values)
+            if formatted:
+                samples.setdefault(column, {})[path] = formatted
+    return samples
 
 
 def sync_catalog(
@@ -126,6 +412,46 @@ def sync_catalog(
     generate_events_fn: _GenerateEventsFn,
 ) -> CatalogSyncResult:
     out = CatalogSyncResult()
+    # Fetched before the generation calls below because both of them consume it,
+    # and ONCE for the whole config — the grouped branch included, where every
+    # group is then handed the same map. That makes JSON paths the one
+    # observation in this function that is not group-scoped, and the asymmetry is
+    # chosen rather than overlooked, so it is written down here: a regular
+    # column's ``sample_values`` reaches ``plan_column_meta`` inside that group's
+    # own BreakdownAnalysis and means "values THIS GROUP emitted", while a JSON
+    # path's sampled values mean "values this path carried anywhere in the
+    # config's rows over the collection window", and nothing narrower.
+    #
+    # Per-group sampling would need a predicate ``get_json_path_samples`` takes on
+    # no adapter — it takes a base query and columns; only
+    # ``validate_field_contracts`` carries the group_column/group_value pair —
+    # and it would multiply the warehouse cost by the group count on every tick
+    # (twice over on ClickHouse, whose override discovers the paths before
+    # sampling them), for good rather than until convergence: a group that never
+    # emits the path leaves that context at zero, so it would keep asking
+    # forever. The variable the values hang off is config-wide regardless. It is
+    # unique on (project, branch, source_name): one row shared by every group,
+    # every event and every scan config that references the path.
+    #
+    # What that costs, stated plainly: the values are examples and never a
+    # group's enumeration — ``plan_column_meta`` marks them ``high`` for exactly
+    # this kind of reason — and where a variable documents ``allowed_values``, a
+    # drift can be raised against an event whose group never emitted the value.
+    # The value did occur in the config's rows; only the event it is attributed
+    # to is the wrong one.
+    json_path_samples: dict[str, dict[str, list[str]]] = (
+        {}
+        if is_replay
+        else _collect_json_path_samples(
+            session,
+            adapter=adapter,
+            config=config,
+            columns=columns,
+            catalog_scan_window=catalog_scan_window,
+            time_from_dt=time_from_dt,
+            time_to_dt=time_to_dt,
+        )
+    )
 
     if is_replay:
         (
@@ -240,6 +566,7 @@ def sync_catalog(
                 # Alert dispatch filters drifts by scan config, so an unstamped
                 # row is detected but can never be alerted on (tripl-l33u.1).
                 scan_config_id=config.id,
+                json_path_samples=json_path_samples,
             )
             out.gen_results[et_name] = result
             logger.info(
@@ -306,6 +633,7 @@ def sync_catalog(
             event_group_rules=config.event_group_rules,
             reserved_columns=skip_cols,
             scan_config_id=config.id,
+            json_path_samples=json_path_samples,
         )
         logger.info(
             f"Single scan: {out.single_result.events_created} created, "

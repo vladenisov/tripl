@@ -152,6 +152,7 @@ def generate_events(
     reserved_columns: Collection[str] | None = None,
     max_events: int = DEFAULT_MAX_EVENTS,
     scan_config_id: uuid.UUID | None = None,
+    json_path_samples: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
 ) -> GenerationResult:
     """Generate events from breakdown analysis.
 
@@ -164,6 +165,12 @@ def generate_events(
     ``event_plan.plan_events`` — the same function the dry-run calls, so a
     preview cannot promise names a run would not produce. Everything below the
     plan is persistence.
+
+    ``json_path_samples`` carries observed values for JSON-path variables, which
+    the breakdown rows structurally cannot (see ``plan_column_meta``). It is the
+    caller's job to fetch them because only the caller has the adapter, and only
+    the caller can decide the sampling is affordable this run; omitting it plans
+    the same zero-observation contexts as before.
     """
     result = GenerationResult()
     # The scan writes to the project's main branch (Variable inserts default
@@ -184,6 +191,7 @@ def generate_events(
         event_name_format=event_name_format,
         event_group_rules=event_group_rules,
         reserved_columns=reserved_columns,
+        json_path_samples=json_path_samples,
         # Deliberately uncapped. ``max_events`` bounds the events this function
         # CREATES; the planner can only bound distinct names, and a re-scan whose
         # names all exist already creates none of them. Capping in the planner
