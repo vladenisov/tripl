@@ -277,18 +277,37 @@ def preserve_existing_variable_context_values(
         if not context_values and existing_values:
             context["values"] = sample_variable_values(existing_values, existing.value_kind)
 
-        # This is where a "do not report a first observation as drift" guard wants
-        # to live — a stored ``observed_count`` of 0 means the values arriving now
-        # are the backlog, every value the path has ever carried surfacing at once
-        # because something finally sampled it, and a variable with a documented
-        # list reports the lot as novel. It cannot work from here. Marking the
-        # context only defers the report by a tick: the row is then filled, so the
-        # sampler skips it, the observation arrives empty, and the restore above
-        # hands the detector exactly those values on the next run. Suppressing
-        # RESTORED values instead would silence replay-enriched ones, which reach
-        # the detector by no other route. Telling a backlog from a change needs
-        # the row to remember that its first observation was one, which the
-        # payload cannot carry and the model does not store.
+        # A first observation IS reported as drift. That is the settled decision,
+        # not an omission. A stored ``observed_count`` of 0 means the values
+        # arriving now are the backlog — every value the path has ever carried
+        # surfacing at once because something finally sampled it — and a variable
+        # with a documented list reports the lot as novel. No guard here can tell
+        # that from a change: marking the context only defers the report by a tick
+        # (the row is then filled, so the sampler skips it, the observation
+        # arrives empty, and the restore above hands the detector exactly those
+        # values on the next run), and suppressing RESTORED values instead would
+        # silence replay-enriched ones, which reach the detector by no other
+        # route.
+        #
+        # No durable column rescues it either. ``first_observed_at`` decides
+        # nothing alone — "was the list documented before we looked" has to be
+        # compared against when ``allowed_values`` was written, and ``Variable``
+        # carries no timestamps at all (``VariableValue`` and the event overrides
+        # do); adding them would still not answer it, because a row timestamp
+        # moves when a description is edited and the question is about one
+        # column. A baseline BOOLEAN is the in-memory marker made durable:
+        # cleared on the second observation it defers by that same tick, and
+        # never cleared it silences genuinely new values arriving later on this
+        # row — strictly worse than reporting the backlog. Only a stored copy of
+        # the values present at the first observation could exempt a backlog and
+        # still report a later arrival, and it silences the case that must not be
+        # silenced: documenting a list on day 30 is exactly a request to hear
+        # about everything already observed outside it, which a baseline written
+        # on day 1 buries. Only the detector knows whether a contract existed when
+        # the values were seen, and it reads these rows without ever writing them.
+        #
+        # So the backlog surfaces, and the variables guide tells operators to
+        # expect a batch the first time they document a list.
 
         context["observed_count"] = max(
             int(context.get("observed_count") or 0),

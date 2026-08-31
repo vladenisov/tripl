@@ -130,6 +130,17 @@ a variable therefore means either "everything seen was documented" or "nothing
 was seen" — read the variable's observed column to tell those apart, because
 only the first is evidence that the contract holds.
 
+It also has no sense of when a value first appeared: it weighs everything the
+context currently holds, not only what arrived since the last scan. So the first
+scan after you document a list on a variable that has been observed for a while
+reports every value already seen that falls outside it, usually as one batch.
+That is intended, not a fault. Until the list existed there was no contract, so
+none of those values had ever been judged, and passing over them silently would
+hide the very history you wrote the list to rule on. Work the batch as ordinary
+drift: **Accept globally** on each row that turns out to be legitimate folds its
+values into the documented list, and what stays open is the part worth
+investigating.
+
 Available actions:
 
 - **Accept globally** — add the novel values to the variable's global
