@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.core.adapters.base import ColumnInfo, FieldContractViolation
+from tripl.core.analyzers._event_generator_variables import VariableIndex
 from tripl.core.analyzers.event_generator import GenerationResult
 from tripl.models import Base
 from tripl.models.alert_delivery import AlertDelivery
@@ -38,6 +39,7 @@ from tripl.models.variable_value import VariableValue, VariableValueKind
 from tripl.worker.tasks._errors import ScanError, user_facing_error
 from tripl.worker.tasks.metrics import collect as metrics_collect
 from tripl.worker.tasks.metrics import dispatch as metrics_dispatch
+from tripl.worker.tasks.metrics import generation as metrics_generation
 from tripl.worker.tasks.metrics import schedule as metrics_schedule
 from tripl.worker.tasks.metrics import schema_drift as metrics_schema_drift
 from tripl.worker.tasks.metrics import signals as metrics_signals
@@ -5588,9 +5590,261 @@ def test_replay_greedily_adds_json_paths_from_variable_tokens() -> None:
         json_value_path_map={"payload": ["existing.path"]},
         json_columns=["payload"],
         replay_events=[event],
+        variable_index=VariableIndex(),
     )
 
     assert out["payload"] == ["existing.path", "user.id", "user.name"]
+
+
+def _replay_event_with_value(value: str) -> tuple[Event, uuid.UUID]:
+    """An unsaved replay event carrying one field value, plus that field's id."""
+    event = Event(
+        id=uuid.uuid4(),
+        project_id=uuid.uuid4(),
+        event_type_id=uuid.uuid4(),
+        name="demo",
+    )
+    field_definition_id = uuid.uuid4()
+    event.field_values = [
+        EventFieldValue(
+            id=uuid.uuid4(),
+            event_id=event.id,
+            field_definition_id=field_definition_id,
+            value=value,
+        )
+    ]
+    return event, field_definition_id
+
+
+def _replay_variable(
+    name: str,
+    *,
+    source_name: str | None = None,
+    bindings: list[str] | None = None,
+    excluded_from_scans: bool = False,
+) -> Variable:
+    return Variable(
+        id=uuid.uuid4(),
+        project_id=uuid.uuid4(),
+        name=name,
+        source_name=source_name,
+        variable_type="string",
+        description="",
+        bindings=bindings or [],
+        excluded_from_scans=excluded_from_scans,
+    )
+
+
+def _shortened_scan_variable(*, excluded_from_scans: bool = False) -> Variable:
+    """The shape the scan writes: short display name, raw path on source_name."""
+    return _replay_variable(
+        "aalter",
+        source_name="property.Aalter",
+        bindings=["property.Aalter"],
+        excluded_from_scans=excluded_from_scans,
+    )
+
+
+def test_replay_adds_json_paths_for_shortened_variable_names() -> None:
+    variable = _shortened_scan_variable()
+    event, _ = _replay_event_with_value("${aalter}")
+
+    out = metrics._augment_json_value_paths_for_replay_tokens(
+        json_value_path_map={},
+        json_columns=["property"],
+        replay_events=[event],
+        variable_index=VariableIndex([variable]),
+    )
+
+    assert out["property"] == ["Aalter"]
+
+
+def test_replay_json_path_admission_still_rejects_a_hostile_source_name() -> None:
+    hostile = _replay_variable(
+        "hostile",
+        source_name="payload.user-id) OR 1=1",
+        bindings=["payload.drop; --"],
+    )
+    event, _ = _replay_event_with_value("${hostile}")
+
+    out = metrics._augment_json_value_paths_for_replay_tokens(
+        json_value_path_map={"payload": ["existing.path"]},
+        json_columns=["payload"],
+        replay_events=[event],
+        variable_index=VariableIndex([hostile]),
+    )
+
+    assert out["payload"] == ["existing.path"]
+
+
+def test_replay_json_path_augmentation_caps_paths_per_column() -> None:
+    over_cap = metrics_generation._MAX_REPLAY_JSON_PATHS_PER_COLUMN + 5
+    event, _ = _replay_event_with_value(
+        " ".join(f"${{payload.p{index}}}" for index in range(over_cap))
+    )
+
+    out = metrics._augment_json_value_paths_for_replay_tokens(
+        json_value_path_map={},
+        json_columns=["payload"],
+        replay_events=[event],
+        variable_index=VariableIndex(),
+    )
+
+    assert len(out["payload"]) == metrics_generation._MAX_REPLAY_JSON_PATHS_PER_COLUMN
+    assert out["payload"][0] == "p0"
+    assert f"p{over_cap - 1}" not in out["payload"]
+
+
+def test_replay_samples_a_shortened_variable_from_its_json_source_path() -> None:
+    variable = _shortened_scan_variable()
+    event, field_definition_id = _replay_event_with_value("${aalter}")
+
+    accum: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, object]] = {}
+    metrics_generation._accumulate_replay_variable_samples(
+        accum,
+        event=event,
+        data_row=("Login", ["Aalter"], "42"),
+        reg_index={"event_name": 0},
+        n_reg=1,
+        n_json=1,
+        json_value_names=["property.Aalter"],
+        variable_index=VariableIndex([variable]),
+    )
+
+    entry = accum[(variable.id, event.id, field_definition_id)]
+    assert entry["values"] == ["42"]
+    # The row's address, not the token that led to it.
+    assert entry["source_column"] == "property.Aalter"
+
+
+def test_replay_samples_a_dotted_display_name_from_its_regular_source_column() -> None:
+    # source_name has no dot, the display name does — the reverse of the scan's
+    # own shape, and reachable by hand-editing a variable.
+    variable = _replay_variable("payload.user.id", source_name="user_id")
+    event, field_definition_id = _replay_event_with_value("${payload.user.id}")
+
+    accum: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, object]] = {}
+    metrics_generation._accumulate_replay_variable_samples(
+        accum,
+        event=event,
+        data_row=("Login", "u77"),
+        reg_index={"event_name": 0, "user_id": 1},
+        n_reg=2,
+        n_json=0,
+        json_value_names=[],
+        variable_index=VariableIndex([variable]),
+    )
+
+    entry = accum[(variable.id, event.id, field_definition_id)]
+    assert entry["values"] == ["u77"]
+    assert entry["source_column"] == "user_id"
+
+
+def test_replay_falls_back_to_a_binding_when_the_source_column_is_absent() -> None:
+    variable = _replay_variable(
+        "id",
+        source_name="payload.retired_id",
+        bindings=["payload.user.id"],
+    )
+    event, field_definition_id = _replay_event_with_value("${id}")
+
+    accum: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, object]] = {}
+    metrics_generation._accumulate_replay_variable_samples(
+        accum,
+        event=event,
+        data_row=("Login", ["user.id"], "u77"),
+        reg_index={"event_name": 0},
+        n_reg=1,
+        n_json=1,
+        json_value_names=["payload.user.id"],
+        variable_index=VariableIndex([variable]),
+    )
+
+    entry = accum[(variable.id, event.id, field_definition_id)]
+    assert entry["values"] == ["u77"]
+    assert entry["source_column"] == "payload.user.id"
+
+
+def test_replay_samples_both_variables_that_share_a_source_token() -> None:
+    scanned = _replay_variable("id", source_name="payload.user.id", bindings=["payload.user.id"])
+    hand_authored = _replay_variable("user", bindings=["payload.user.id"])
+    event, field_definition_id = _replay_event_with_value("${id} and ${user}")
+
+    accum: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, object]] = {}
+    metrics_generation._accumulate_replay_variable_samples(
+        accum,
+        event=event,
+        data_row=("Login", ["user.id"], "u77"),
+        reg_index={"event_name": 0},
+        n_reg=1,
+        n_json=1,
+        json_value_names=["payload.user.id"],
+        variable_index=VariableIndex([scanned, hand_authored]),
+    )
+
+    # One warehouse path, two variables, two contexts: the accumulator is keyed
+    # by variable, so a shared source token is a fan-out, never a collision.
+    assert accum[(scanned.id, event.id, field_definition_id)]["values"] == ["u77"]
+    assert accum[(hand_authored.id, event.id, field_definition_id)]["values"] == ["u77"]
+
+
+def test_replay_json_samples_attribute_to_a_shortened_variable() -> None:
+    variable = _shortened_scan_variable()
+    event, field_definition_id = _replay_event_with_value("${aalter}")
+
+    accum: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, object]] = {}
+    metrics_generation._accumulate_replay_json_samples_from_events(
+        accum,
+        events=[event],
+        json_path_samples={"property": {"Aalter": ["a", "b"]}},
+        variable_index=VariableIndex([variable]),
+    )
+
+    entry = accum[(variable.id, event.id, field_definition_id)]
+    assert entry["values"] == ["a", "b"]
+    assert entry["source_column"] == "property.Aalter"
+
+
+def test_replay_row_walk_skips_a_variable_excluded_from_scans() -> None:
+    """Excluding purges a variable's observed values; replay must not refill them.
+
+    The shortened shape is the whole point: resolving through ``source_name``
+    is what put this variable within replay's reach in the first place, so it
+    is also the shape that can resurrect what exclusion deleted.
+    """
+    variable = _shortened_scan_variable(excluded_from_scans=True)
+    event, _ = _replay_event_with_value("${aalter}")
+
+    accum: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, object]] = {}
+    metrics_generation._accumulate_replay_variable_samples(
+        accum,
+        event=event,
+        data_row=("Login", ["Aalter"], "42"),
+        reg_index={"event_name": 0},
+        n_reg=1,
+        n_json=1,
+        json_value_names=["property.Aalter"],
+        variable_index=VariableIndex([variable]),
+    )
+
+    # The accumulator's only effect is this dict, and the merge writes a row for
+    # every key in it — so an empty one is "no context created, none updated".
+    assert accum == {}
+
+
+def test_replay_json_samples_skip_a_variable_excluded_from_scans() -> None:
+    variable = _shortened_scan_variable(excluded_from_scans=True)
+    event, _ = _replay_event_with_value("${aalter}")
+
+    accum: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, object]] = {}
+    metrics_generation._accumulate_replay_json_samples_from_events(
+        accum,
+        events=[event],
+        json_path_samples={"property": {"Aalter": ["a", "b"]}},
+        variable_index=VariableIndex([variable]),
+    )
+
+    assert accum == {}
 
 
 def test_replay_enriches_existing_high_context_values(
@@ -5740,6 +5994,517 @@ def test_replay_enriches_existing_high_context_values(
         context = session.execute(select(VariableValue)).scalar_one()
         assert context.value_kind == VariableValueKind.high.value
         assert context.values == ["u77", "u88"]
+
+
+def test_replay_enriches_high_context_values_for_a_shortened_variable_name(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The same replay as above, for the population the scan actually creates.
+
+    ``test_replay_enriches_existing_high_context_values`` gives its variable a
+    display name EQUAL to its source_name, which is the one shape that never
+    needed resolving. Here the name is shortened and the raw path lives on
+    ``source_name``/``bindings``, exactly as ``derive_display_name`` writes it —
+    so the field value carries ``${id}`` and nothing in the row or the sample
+    map is keyed by that (tripl-xv77.3).
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.event_type_id is not None
+
+        fd_event_name = FieldDefinition(
+            id=uuid.uuid4(),
+            event_type_id=config.event_type_id,
+            name="event_name",
+            display_name="Event name",
+            field_type="string",
+            is_required=False,
+            description="",
+        )
+        fd_payload = FieldDefinition(
+            id=uuid.uuid4(),
+            event_type_id=config.event_type_id,
+            name="payload",
+            display_name="Payload",
+            field_type="json",
+            is_required=False,
+            description="",
+        )
+        session.add_all([fd_event_name, fd_payload])
+
+        event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Login | payload.user.id=${id}",
+            source_name="event_name=Login | payload.user.id=${id}",
+            description="",
+            status="implemented",
+        )
+        session.add(event)
+        session.flush()
+        session.add_all(
+            [
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=event.id,
+                    field_definition_id=fd_event_name.id,
+                    value="Login",
+                ),
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=event.id,
+                    field_definition_id=fd_payload.id,
+                    value='{"user": {"id": "${id}"}}',
+                ),
+            ]
+        )
+
+        variable = Variable(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            name="id",
+            source_name="payload.user.id",
+            bindings=["payload.user.id"],
+            variable_type="string",
+            description="",
+        )
+        session.add(variable)
+        session.flush()
+
+        session.add(
+            VariableValue(
+                id=uuid.uuid4(),
+                project_id=config.project_id,
+                branch_id=event.branch_id,
+                variable_id=variable.id,
+                event_id=event.id,
+                field_definition_id=fd_payload.id,
+                source_column="payload.user.id",
+                value_kind=VariableValueKind.high.value,
+                observed_count=0,
+                values=[],
+            )
+        )
+        session.commit()
+        config_id = str(config.id)
+
+    class FakeAdapter:
+        seen_json_value_paths: dict[str, list[str]] | None = None
+
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+                ColumnInfo(name="payload", type_name="JSON"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            self.seen_json_value_paths = json_value_paths
+            return (
+                ["event_name", "payload"],
+                ["payload.user.id"],
+                [
+                    (datetime(2026, 1, 1, 8), "Login", ["user.id"], '"u77"', 5),
+                ],
+            )
+
+        def get_json_path_samples(
+            self,
+            base_query: str,
+            json_columns: list[str],
+            *,
+            time_column: str | None = None,
+            time_from: datetime | None = None,
+            time_to: datetime | None = None,
+            path_limit: int = 1000,
+            sample_limit: int = 3,
+            sample_row_limit: int = 1000,
+        ) -> dict[str, dict[str, list[object]]]:
+            return {"payload": {"user.id": ["u77", "u88"]}}
+
+        def close(self) -> None:
+            return None
+
+    adapter = FakeAdapter()
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: adapter)
+    monkeypatch.setattr(
+        metrics,
+        "_resolve_collection_window",
+        lambda *args, **kwargs: (datetime(2026, 1, 1, 8), datetime(2026, 1, 1, 9), True),
+    )
+
+    result = metrics.collect_metrics.run(config_id)
+    assert result["variable_values_touched"] == 1
+
+    # The greedy path map has to reach the warehouse keyed by the JSON path the
+    # variable lives at; keyed by its display name the query asks for nothing.
+    assert (adapter.seen_json_value_paths or {}).get("payload") == ["user.id"]
+
+    with sync_session_factory() as session:
+        context = session.execute(select(VariableValue)).scalar_one()
+        assert context.value_kind == VariableValueKind.high.value
+        assert context.values == ["u77", "u88"]
+
+
+def _seed_replay_value_context(
+    session: Session,
+    *,
+    value_kind: str,
+    values: list[str],
+    observed_count: int | None = None,
+) -> VariableValue:
+    """One stored variable-value context for a direct merge call to land on.
+
+    The merge keys on four columns, but the rows behind them are seeded too so
+    the context is addressable the way production addresses it — project and
+    branch included, since the branch is part of the lookup.
+
+    ``observed_count`` defaults to the length of ``values``, the consistent case;
+    passing it explicitly is how a caller reproduces a row whose stored count and
+    stored list disagree, which the scan path can write.
+    """
+    config = _create_scan_config(session, with_event_type=True)
+    assert config.event_type_id is not None
+
+    field_definition = FieldDefinition(
+        id=uuid.uuid4(),
+        event_type_id=config.event_type_id,
+        name="user_id",
+        display_name="User ID",
+        field_type="string",
+        is_required=False,
+        description="",
+    )
+    event = Event(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        event_type_id=config.event_type_id,
+        name="event_name=Login | user_id=${user_id}",
+        description="",
+        status="implemented",
+    )
+    variable = Variable(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        name="user_id",
+        source_name="user_id",
+        variable_type="string",
+        description="",
+    )
+    session.add_all([field_definition, event, variable])
+    session.flush()
+
+    context = VariableValue(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        branch_id=event.branch_id,
+        variable_id=variable.id,
+        event_id=event.id,
+        field_definition_id=field_definition.id,
+        source_column="user_id",
+        value_kind=value_kind,
+        observed_count=len(values) if observed_count is None else observed_count,
+        values=list(values),
+    )
+    session.add(context)
+    session.commit()
+    return context
+
+
+def _merge_replay_values(
+    session: Session,
+    context: VariableValue,
+    *,
+    cardinality_threshold: int,
+    values: list[str],
+) -> int:
+    """Merge ``values`` into ``context`` at a threshold the caller chooses.
+
+    Called directly rather than through ``collect_metrics`` because the
+    interesting boundary is the threshold, and a scan config's default one is
+    far above any sample a fake adapter would hand back.
+    """
+    key = (context.variable_id, context.event_id, context.field_definition_id)
+    return metrics_generation._merge_replay_variable_samples(
+        session,
+        project_id=context.project_id,
+        branch_id=context.branch_id,
+        cardinality_threshold=cardinality_threshold,
+        accumulated={
+            key: {
+                "variable_id": context.variable_id,
+                "event_id": context.event_id,
+                "field_definition_id": context.field_definition_id,
+                "source_column": context.source_column,
+                "values": values,
+            }
+        },
+    )
+
+
+def _stored_value_context(factory: sessionmaker[Session]) -> VariableValue:
+    """Re-read the merged row, so an in-place edit that never persisted fails."""
+    with factory() as session:
+        return session.execute(select(VariableValue)).scalar_one()
+
+
+def test_replay_merge_keeps_a_low_context_whole_past_the_sample_cap(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    cap = metrics_generation.VARIABLE_VALUE_SAMPLE_LIMIT
+    stored = [f"u{index}" for index in range(cap - 2)]
+    arriving = [f"u{index}" for index in range(cap - 2, cap + 2)]
+
+    with sync_session_factory() as session:
+        context = _seed_replay_value_context(
+            session,
+            value_kind=VariableValueKind.low.value,
+            values=stored,
+        )
+        touched = _merge_replay_values(
+            session,
+            context,
+            # Above the sample cap, so a list that outgrows the cap is still
+            # inside the threshold — the only arrangement where "low is not
+            # sampled" is observable at all.
+            cardinality_threshold=cap + 5,
+            values=arriving,
+        )
+        session.commit()
+
+    assert touched == 1
+    merged = _stored_value_context(sync_session_factory)
+    assert merged.value_kind == VariableValueKind.low.value
+    assert merged.values == stored + arriving
+    assert merged.observed_count == cap + 2
+
+
+def test_replay_merge_demotes_a_low_context_that_outgrows_the_threshold(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    cap = metrics_generation.VARIABLE_VALUE_SAMPLE_LIMIT
+    distinct_total = cap + 5
+    arriving = [f"u{index}" for index in range(1, distinct_total)]
+
+    with sync_session_factory() as session:
+        context = _seed_replay_value_context(
+            session,
+            value_kind=VariableValueKind.low.value,
+            values=["u0"],
+        )
+        touched = _merge_replay_values(
+            session,
+            context,
+            cardinality_threshold=3,
+            values=arriving,
+        )
+        session.commit()
+
+    assert touched == 1
+    merged = _stored_value_context(sync_session_factory)
+    assert merged.value_kind == VariableValueKind.high.value
+    assert merged.values == [f"u{index}" for index in range(cap)]
+    # What was seen, not what can be shown: the sample cap bounds the list and
+    # must not bound the measurement.
+    assert merged.observed_count == distinct_total
+
+
+def test_replay_merge_records_a_demotion_that_changes_no_visible_value(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    cap = metrics_generation.VARIABLE_VALUE_SAMPLE_LIMIT
+    stored = [f"u{index}" for index in range(cap)]
+
+    with sync_session_factory() as session:
+        context = _seed_replay_value_context(
+            session,
+            value_kind=VariableValueKind.low.value,
+            values=stored,
+        )
+        touched = _merge_replay_values(
+            session,
+            context,
+            # At the threshold the stored list is legitimately low; one more
+            # value crosses it, and truncating back to the cap hands over the
+            # identical list.
+            cardinality_threshold=cap,
+            values=["u_late"],
+        )
+        session.commit()
+
+    assert touched == 1
+    merged = _stored_value_context(sync_session_factory)
+    assert merged.values == stored
+    assert merged.value_kind == VariableValueKind.high.value
+    assert merged.observed_count == cap + 1
+
+
+def test_replay_merge_counts_every_distinct_value_a_high_context_saw(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    cap = metrics_generation.VARIABLE_VALUE_SAMPLE_LIMIT
+    distinct_total = cap + 5
+    arriving = [f"u{index}" for index in range(distinct_total)]
+
+    with sync_session_factory() as session:
+        context = _seed_replay_value_context(
+            session,
+            value_kind=VariableValueKind.high.value,
+            values=[],
+        )
+        touched = _merge_replay_values(
+            session,
+            context,
+            cardinality_threshold=3,
+            values=arriving,
+        )
+        session.commit()
+
+    assert touched == 1
+    merged = _stored_value_context(sync_session_factory)
+    assert merged.value_kind == VariableValueKind.high.value
+    assert merged.values == arriving[:cap]
+    assert merged.observed_count == distinct_total
+
+
+def test_replay_merge_counts_new_values_a_full_high_context_cannot_show(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A row already holding the cap still has to keep counting.
+
+    Once the sample is full the truncated list is identical on every later
+    merge, so a write gated only on the values changing never fires again and
+    ``observed_count`` freezes at the moment the row filled up — the exact
+    number the count-before-truncation split exists to keep honest.
+    """
+    cap = metrics_generation.VARIABLE_VALUE_SAMPLE_LIMIT
+    stored = [f"u{index}" for index in range(cap)]
+    arriving = [f"v{index}" for index in range(cap)]
+
+    with sync_session_factory() as session:
+        context = _seed_replay_value_context(
+            session,
+            value_kind=VariableValueKind.high.value,
+            values=stored,
+        )
+        touched = _merge_replay_values(
+            session,
+            context,
+            cardinality_threshold=3,
+            values=arriving,
+        )
+        session.commit()
+
+    assert touched == 1
+    merged = _stored_value_context(sync_session_factory)
+    # Nothing new can be shown — the sample was already full — and that is
+    # precisely why the count is the only evidence the run happened.
+    assert merged.values == stored
+    assert merged.observed_count == cap * 2
+
+
+def test_replay_merge_leaves_a_full_high_context_that_saw_nothing_new(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The other half of the pair: ``touched`` counts changes, not visits."""
+    cap = metrics_generation.VARIABLE_VALUE_SAMPLE_LIMIT
+    stored = [f"u{index}" for index in range(cap)]
+
+    with sync_session_factory() as session:
+        context = _seed_replay_value_context(
+            session,
+            value_kind=VariableValueKind.high.value,
+            values=stored,
+        )
+        touched = _merge_replay_values(
+            session,
+            context,
+            cardinality_threshold=3,
+            values=stored[:3],
+        )
+        session.commit()
+
+    assert touched == 0
+    merged = _stored_value_context(sync_session_factory)
+    assert merged.values == stored
+    assert merged.observed_count == cap
+
+
+def test_replay_merge_repairs_a_low_context_counting_fewer_than_it_holds(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The low branch's version of the same miss, and the same second reason.
+
+    ``record_variable_contexts`` maxes two observations' counts while unioning
+    their values, so a low row can arrive holding more distinct values than it
+    claims to have seen. A merge that shows it nothing new changes neither the
+    kind nor the list, so only the count can carry the correction.
+    """
+    stored = ["u0", "u1", "u2"]
+
+    with sync_session_factory() as session:
+        context = _seed_replay_value_context(
+            session,
+            value_kind=VariableValueKind.low.value,
+            values=stored,
+            observed_count=1,
+        )
+        touched = _merge_replay_values(
+            session,
+            context,
+            cardinality_threshold=100,
+            values=["u0"],
+        )
+        session.commit()
+
+    assert touched == 1
+    merged = _stored_value_context(sync_session_factory)
+    assert merged.value_kind == VariableValueKind.low.value
+    assert merged.values == stored
+    assert merged.observed_count == len(stored)
+
+
+def test_replay_merge_keeps_a_low_context_sitting_exactly_on_the_threshold(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    with sync_session_factory() as session:
+        context = _seed_replay_value_context(
+            session,
+            value_kind=VariableValueKind.low.value,
+            values=["u1"],
+        )
+        touched = _merge_replay_values(
+            session,
+            context,
+            cardinality_threshold=3,
+            values=["u2", "u3"],
+        )
+        session.commit()
+
+    assert touched == 1
+    merged = _stored_value_context(sync_session_factory)
+    # Reaching the threshold is not passing it: a column with exactly this many
+    # distinct values is the one the low badge was written for.
+    assert merged.value_kind == VariableValueKind.low.value
+    assert merged.values == ["u1", "u2", "u3"]
+    assert merged.observed_count == 3
 
 
 def test_collect_metrics_uses_configured_metrics_row_limit(

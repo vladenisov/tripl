@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,18 +51,43 @@ class VariableIndex:
             self.add(variable)
 
     @staticmethod
-    def tokens_of(variable: Variable) -> list[str]:
-        tokens = [variable.name]
-        if variable.source_name:
-            tokens.append(variable.source_name)
-        tokens.extend(variable.bindings or [])
+    def _unique(values: Iterable[str | None]) -> list[str]:
         seen: set[str] = set()
         unique: list[str] = []
-        for token in tokens:
-            if token and token not in seen:
-                seen.add(token)
-                unique.append(token)
+        for value in values:
+            if value and value not in seen:
+                seen.add(value)
+                unique.append(value)
         return unique
+
+    @staticmethod
+    def tokens_of(variable: Variable) -> list[str]:
+        """Which tokens NAME this variable, most likely first.
+
+        The display name leads because that is what a field value carries once
+        the scan has normalized its tokens.
+        """
+        return VariableIndex._unique(
+            [variable.name, variable.source_name, *(variable.bindings or [])]
+        )
+
+    @staticmethod
+    def source_tokens_of(variable: Variable) -> list[str]:
+        """Where this variable's value LIVES in the warehouse, most authoritative first.
+
+        The mirror of :meth:`tokens_of`, and the order is inverted on purpose.
+        ``tokens_of`` answers "which token names this variable", so it leads with
+        the editable display name; this answers "which warehouse column or JSON
+        path holds it", so it leads with ``source_name``, the identity the scan
+        wrote. Since ``derive_display_name`` began shortening scan-created names
+        (``property.Aalter`` -> ``aalter``), the two answers differ for most
+        variables, and code that needs the second must not reach for the first.
+        Same three fields and the same dedup as ``tokens_of`` -- only the
+        precedence changes, which is what keeps the pair consistent.
+        """
+        return VariableIndex._unique(
+            [variable.source_name, *(variable.bindings or []), variable.name]
+        )
 
     def add(self, variable: Variable) -> None:
         for token in self.tokens_of(variable):
@@ -70,6 +95,12 @@ class VariableIndex:
 
     def resolve(self, token: str) -> Variable | None:
         return self._by_token.get(token)
+
+    def __len__(self) -> int:
+        # Callers gate work on ``if index and ...`` meaning "there are variables
+        # to match". A bare object is always truthy, so this has to exist for
+        # that reading to survive the index replacing a plain dict.
+        return len(self._by_token)
 
 
 def build_variable_index(
@@ -245,6 +276,19 @@ def preserve_existing_variable_context_values(
         existing_values = list(existing.values or [])
         if not context_values and existing_values:
             context["values"] = sample_variable_values(existing_values, existing.value_kind)
+
+        # This is where a "do not report a first observation as drift" guard wants
+        # to live — a stored ``observed_count`` of 0 means the values arriving now
+        # are the backlog, every value the path has ever carried surfacing at once
+        # because something finally sampled it, and a variable with a documented
+        # list reports the lot as novel. It cannot work from here. Marking the
+        # context only defers the report by a tick: the row is then filled, so the
+        # sampler skips it, the observation arrives empty, and the restore above
+        # hands the detector exactly those values on the next run. Suppressing
+        # RESTORED values instead would silence replay-enriched ones, which reach
+        # the detector by no other route. Telling a backlog from a change needs
+        # the row to remember that its first observation was one, which the
+        # payload cannot carry and the model does not store.
 
         context["observed_count"] = max(
             int(context.get("observed_count") or 0),

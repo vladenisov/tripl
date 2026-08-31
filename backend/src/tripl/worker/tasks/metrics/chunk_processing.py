@@ -18,13 +18,13 @@ from typing import Protocol, cast
 from sqlalchemy.orm import Session
 
 from tripl.core.adapters.base import BaseAdapter
+from tripl.core.analyzers._event_generator_variables import VariableIndex
 from tripl.core.analyzers.event_generator import GenerationResult
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
 from tripl.models.shadow_event_candidate import SHADOW_STATUS_NEW
-from tripl.models.variable import Variable
 from tripl.worker.tasks._errors import ScanError
 from tripl.worker.tasks.metrics.collect import _bump_event_last_seen
 from tripl.worker.tasks.metrics.generation import (
@@ -130,7 +130,7 @@ def process_chunk(
     reg_index: dict[str, int],
     json_index: dict[str, int],
     n_reg: int,
-    replay_variables_by_token: dict[str, Variable],
+    replay_variables_by_token: VariableIndex,
     replay_variable_samples: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, object]],
     chunk_from: datetime,
     chunk_to: datetime,
@@ -268,7 +268,7 @@ def process_chunk(
                         n_reg=n_reg,
                         n_json=len(json_cols),
                         json_value_names=json_value_names,
-                        variable_by_token=replay_variables_by_token,
+                        variable_index=replay_variables_by_token,
                     )
             elif event_name in archived_identities:
                 # Archived, not unplanned. The identity IS in the plan — the user
