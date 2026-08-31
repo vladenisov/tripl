@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from tripl.core.analyzers.event_generator import name_format_base_columns
+from tripl.json_paths import normalize_json_value_paths
 from tripl.models.scan_config import ScanConfig
 
 
@@ -28,6 +29,15 @@ def _event_group_rule_columns(config: ScanConfig) -> set[str]:
     Read defensively: ``event_group_rules`` is a JSON column, so a row written
     by an older release (or by hand) may not match the current shape.
     """
+    # The config's own list of the dotted names that are JSON paths rather than
+    # columns. A DOT is not that test and never was: a warehouse column really can
+    # be named with one — a ClickHouse ``Nested`` member comes back from
+    # ``SELECT *`` as ``params.key``, which is the idiom for event parameters on
+    # the warehouse this product is mostly pointed at — and a rule reading one is
+    # a rule column like any other. (BigQuery cannot produce one at all: its
+    # result field names hold no dot, which is why that adapter returns nested
+    # paths separately from columns.)
+    json_value_paths = frozenset(normalize_json_value_paths(config.json_value_paths))
     columns: set[str] = set()
     for rule in config.event_group_rules or ():
         if not isinstance(rule, Mapping):
@@ -48,9 +58,9 @@ def _event_group_rule_columns(config: ScanConfig) -> set[str]:
             name = field.strip()
             if not name:
                 continue
-            if "." in name:
-                # A DOTTED condition reserves NOTHING — not the path, not the base
-                # column. ``name_format_base_columns`` next door DOES reduce
+            if name in json_value_paths:
+                # A DECLARED JSON path reserves NOTHING — not the path, not the
+                # base column. ``name_format_base_columns`` next door DOES reduce
                 # ``{event.category}`` to ``event``, and copying that here is the
                 # trap: that reduction runs in the SUBTRACTIVE direction, where a
                 # wrong answer costs one unnecessary FieldDefinition. This set is
@@ -61,14 +71,18 @@ def _event_group_rule_columns(config: ScanConfig) -> set[str]:
                 # other side, and silent where lpin at least raised. On production
                 # every variable is JSON-path derived, so that is a column's whole
                 # variable surface for one reserved name.
-                #
-                # Dropping it whole is the cheap direction of the same trade: a
-                # warehouse column that really is named with a dot (a ClickHouse
-                # Nested member) now gets a FieldDefinition it did not need, which
-                # is the failure this set is allowed to have. ``field_value_overrides``
-                # refuses the same reduction for the same reason — the two key
-                # spaces are one rule, and a dotted condition may only ever MATCH.
                 continue
+            # Everything else passes through verbatim, dot or no dot. The two
+            # wrong answers are not the same size. Reserving a name no column
+            # carries costs one line in the dry-run's ``reserved_columns`` list and
+            # nothing else — every consumer only ever tests membership against
+            # real column names. NOT reserving a real dotted column hands it back
+            # to ``catalog_sync``, which auto-creates its FieldDefinition, and the
+            # merge then paints the rule's own regex into it: jfm3.57 again, on a
+            # column the scan groups BY. So an ambiguous dotted name reserves. What
+            # this half must never do is INVENT a name — it passes a condition field
+            # through or drops it whole, and the base reduction lives in the
+            # subtraction below.
             columns.add(name)
     return columns
 
@@ -115,12 +129,14 @@ def reserved_catalog_columns(config: ScanConfig) -> set[str]:
     reproduced tripl-lpin from the other direction: same outage, same message,
     reached through a placeholder shape the subtraction could not see.
 
-    That base reduction belongs to the SUBTRACTION and nowhere else. A dotted
-    group-rule condition is dropped whole rather than reduced, because reducing on
-    the additive side reserves a column nobody asked to reserve; the argument is at
-    the guard in ``_event_group_rule_columns``. What both halves buy is one
-    invariant: every key in the returned set is a top-level warehouse column name,
-    which is the only key space its two consumers ever test against.
+    That base reduction belongs to the SUBTRACTION and nowhere else. A group-rule
+    condition the config declares to be a JSON value path is dropped WHOLE rather
+    than reduced, because reducing on the additive side reserves a column nobody
+    asked to reserve; the argument is at the guard in ``_event_group_rule_columns``.
+    What both halves buy is one invariant: this function never invents a name the
+    config did not write. Every key it returns is either a column the config names
+    or a rule's condition field verbatim — a dotted one included, since a dotted
+    warehouse column is real — and never a base column derived from a longer key.
     """
     reserved = (
         config.event_type_column,

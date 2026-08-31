@@ -23,6 +23,7 @@ import { VariablesBulkBar } from "./VariablesBulkBar"
 import { VariablesTableRow } from "./VariablesTableRow"
 import { getErrorMessage } from '@/lib/utils'
 import { eventNameLabel } from '@/lib/eventName'
+import { countOf, pluralize } from '@/lib/plural'
 import { variablesKey, variablesPageKey } from '@/lib/queryKeys'
 import { DRIFT_STATUS_LABEL, isResolvedDrift } from '@/lib/variableDrift'
 
@@ -302,12 +303,37 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   })
 
   const handleDelete = useStableCallback(async (v: Variable) => {
-    const rescanNote = v.source_name || (v.bindings ?? []).length > 0
-      ? ' The next scan will likely re-create it — use Exclude to keep it out.'
-      : ''
+    // Delete is the one variable action that really does drop rows, and the copy
+    // named only the field text that SURVIVES it. What goes is the part a reader
+    // misses afterwards and cannot rebuild: the value contexts held against this
+    // variable and the drift raised on them, both cascaded off the id. Naming
+    // them in the row's own vocabulary costs no request — the list row already
+    // carries both counts, for the drift badge and the observed-values cell.
+    const contextCount = v.context_count ?? 0
+    const driftCount = v.open_drift_count ?? 0
+    const recorded = [
+      contextCount > 0 ? countOf(contextCount, 'value context', 'value contexts') : null,
+      driftCount > 0 ? countOf(driftCount, 'open drift', 'open drifts') : null,
+    ].filter((part): part is string => part !== null)
+    // The verb agrees with the total, not the phrase count: "1 value context and
+    // 1 open drift GO with it", but "1 open drift GOES with it".
+    const recordedNote =
+      recorded.length > 0
+        ? ` Its ${recorded.join(' and ')} ${pluralize(contextCount + driftCount, 'goes', 'go')} with it.`
+        : ''
+    // A scan-managed variable comes back, and it comes back WITHOUT the
+    // exclusion, because the flag was a column on the row just deleted.
+    // Suggesting Exclude to someone already looking at an excluded variable is
+    // advice they have taken; what they need instead is that deleting undoes
+    // it.
+    const rescanNote = !(v.source_name || (v.bindings ?? []).length > 0)
+      ? ''
+      : v.excluded_from_scans
+        ? ' The next scan will likely re-create it, un-excluded — the exclusion is a flag on the row you are deleting.'
+        : ' The next scan will likely re-create it — use Exclude to keep it out.'
     const ok = await confirm({
       title: 'Delete variable',
-      message: `Delete "${v.name}"? Any event fields referencing \${${v.name}} will keep the literal text.${rescanNote}`,
+      message: `Delete "${v.name}"?${recordedNote} Any event fields referencing \${${v.name}} will keep the literal text.${rescanNote}`,
       confirmLabel: 'Delete',
       variant: 'danger',
     })
@@ -322,16 +348,19 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
 
   const handleExclude = useStableCallback(async (v: Variable) => {
     // Describes a flag, because that is now all this is: the exclusion is what
-    // every scan-side guard reads, and nothing is deleted to enforce it. The
-    // old copy promised the reverse of the truth in both directions — it said
-    // observed values "are removed" (they are not) and that documented values
-    // "stay for restore", which read as a guarantee for everything the sentence
-    // before it had just destroyed. Naming the three things that stop is more
-    // useful anyway: "excluded from scans" does not say on its own whether an
-    // already-open drift keeps firing.
+    // every scan-side guard reads, and nothing is deleted to enforce it. Naming
+    // the three things that stop is the useful half — "excluded from scans"
+    // does not say on its own whether an already-open drift keeps firing.
+    //
+    // The other half is scoped to THIS act on purpose. Excluding deletes
+    // nothing, which is a fact about the button the reader is about to press;
+    // that the records then survive every later scan is not this dialog's to
+    // promise, so it does not. Nor does it say Restore brings the values back —
+    // Restore clears the flag, and what it restores is the variable's place in
+    // scans.
     const ok = await confirm({
       title: 'Exclude from scans',
-      message: `Exclude "${v.name}" from scans? Nothing is deleted — the values and drift already recorded stay, and Restore puts it back — but future scans will NOT re-create it, sample new values for it, or raise drift on it.`,
+      message: `Exclude "${v.name}" from scans? Excluding itself deletes nothing — the values and drift already recorded are left where they are — but future scans will NOT re-create it, sample new values for it, or raise drift on it. Restore puts the variable back in scans.`,
       confirmLabel: 'Exclude',
       // Not 'danger': a reversible flag with no data loss behind it should not
       // wear the same red confirm as Delete, which really does drop the rows.

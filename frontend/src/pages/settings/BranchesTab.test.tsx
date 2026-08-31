@@ -873,6 +873,101 @@ describe('BranchesTab', () => {
     await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
   })
 
+  /** A branch that renames a variable produces a removal AND an addition in the
+   * diff, but the merge pairs them on `source_name` and renames main's row in
+   * place — nothing is deleted, so nothing may be warned about. */
+  function mockRenamedVariableDiff(
+    options: { behindBase?: boolean; addedSourceName?: string | null } = {},
+  ) {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: options.behindBase ?? false,
+      summary: { added: 1, removed: 1, changed: 0 },
+      entries: [
+        {
+          entity_type: 'variable',
+          kind: 'removed',
+          name: 'variant',
+          parent: null,
+          changes: [],
+          before: { name: 'variant', source_name: 'payload.variant' },
+        },
+        {
+          entity_type: 'variable',
+          kind: 'added',
+          name: 'experiment_variant',
+          parent: null,
+          changes: [],
+          after: {
+            name: 'experiment_variant',
+            source_name:
+              options.addedSourceName === undefined ? 'payload.variant' : options.addedSourceName,
+          },
+        },
+      ],
+    })
+    vi.mocked(planBranchesApi.merge).mockResolvedValue({} as never)
+  }
+
+  it('does not warn about a variable the merge will rename rather than delete', async () => {
+    mockRenamedVariableDiff()
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+
+    // Merging goes straight through: the paired row keeps its id, and with it
+    // the observed values, overrides and drift history the warning is about.
+    await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
+    expect(screen.queryByText('Merge deletes variables from main')).not.toBeInTheDocument()
+  })
+
+  it('warns about a removal whose replacement carries a different scan identity', async () => {
+    mockRenamedVariableDiff({ addedSourceName: 'payload.experiment' })
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+
+    // Two unrelated rows, not one renamed row: `variant` really is deleted.
+    expect(await screen.findByText('Merge deletes variables from main')).toBeInTheDocument()
+    expect(screen.getByText(/removes 1 variable from main: variant/)).toBeInTheDocument()
+    expect(planBranchesApi.merge).not.toHaveBeenCalled()
+  })
+
+  it('warns about a removal the merge cannot pair, when neither side has a scan identity', async () => {
+    mockRenamedVariableDiff({ addedSourceName: null })
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+
+    // A hand-created variable has no remembered scan name, so nothing identifies
+    // it across the rename and the merge really does delete plus add.
+    expect(await screen.findByText('Merge deletes variables from main')).toBeInTheDocument()
+    expect(planBranchesApi.merge).not.toHaveBeenCalled()
+  })
+
+  it('warns about every removal once main has moved past the branch base', async () => {
+    mockRenamedVariableDiff({ behindBase: true })
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+
+    // The pairing also needs the new name to be absent from MAIN, which this
+    // base-to-branch diff cannot show once main has its own changes. Over-warn
+    // rather than hide a deletion.
+    expect(await screen.findByText('Merge deletes variables from main')).toBeInTheDocument()
+    expect(planBranchesApi.merge).not.toHaveBeenCalled()
+  })
+
   it('links a merged branch to the tracker ticket the merge opened', async () => {
     mockBranchDetailQueries([MAIN, MERGED])
     vi.mocked(planBranchesApi.listImplementationTickets).mockResolvedValue([makeTicket()])

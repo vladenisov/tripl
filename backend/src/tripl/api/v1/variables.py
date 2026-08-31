@@ -253,14 +253,19 @@ async def update_variable(
     branch_id: BranchIdDep,
 ) -> Variable:
     v = await variable_service.update_variable(session, slug, variable_id, data, branch_id)
-    # The submitted fields ARE the whole operation, which is why the raw patch
-    # body is an honest payload here. It was not always: while excluding also
-    # deleted every observed context and drift row for the variable, a record
-    # reading ``{"excluded_from_scans": true}`` under a generic "variable.update"
-    # was the only trace of an irreversible bulk delete. Anything added to
-    # ``update_variable`` that touches rows this body does not name puts the
-    # audit trail back to under-describing what happened, and needs its own
-    # action or its own payload key.
+    # The raw patch body is an honest payload for every field but one. A
+    # ``name`` change is not confined to this row: ``update_variable`` also
+    # rewrites ``${old}`` to ``${new}`` in every event field value on the
+    # branch, and the record below carries only the new name — target_name too
+    # — so the token that was replaced is not recoverable from the trail.
+    #
+    # That is the survivor of a larger miss. While excluding a variable also
+    # deleted every observed context and drift row for it, a record reading
+    # ``{"excluded_from_scans": true}`` under a generic "variable.update" was
+    # the only trace of an irreversible bulk delete; the delete is gone, the
+    # rename fan-out is not. Anything else added to ``update_variable`` that
+    # touches rows this body does not name needs its own action or its own
+    # payload key, and the rename is the one already owed one.
     await audit_service.record(
         session,
         user=current_user,

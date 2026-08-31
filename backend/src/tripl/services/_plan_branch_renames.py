@@ -26,10 +26,14 @@ def pair_renames[KeyT: NaturalKey](
     the very name the user edited — Event has no ``display_name``, so its
     machine name IS the displayed one and editing it is routine. A rename
     therefore reads as a removal plus an unrelated addition: main's row is
-    deleted, a fresh uuid inserted, and the FK cascade takes
-    ``variable_values.event_id``, metrics, photos, alerts and ``event_changes``
-    with it. None of those are in ``build_plan_snapshot``, so no diff shows the
-    loss and no arm of the merge carries them across.
+    deleted, a fresh uuid inserted, the FK cascade takes
+    ``variable_values.event_id``, their drift rows and ``event_changes`` with
+    it, and the ``event_metrics`` series is left holding a NULL ``event_id``.
+    None of those are in ``build_plan_snapshot``, so no diff shows the loss and
+    no arm of the merge carries them across. Photos cascade as well but do not
+    belong on that list — they are snapshotted and the merge has an arm that
+    re-creates them — and alerting holds no FK to an event at all; what makes
+    the losses above worth a rename is that nothing sees them go.
 
     ``source_name`` is what survives a rename, and that is the repo's own rule
     rather than a marker invented here: ``update_event`` and ``update_variable``

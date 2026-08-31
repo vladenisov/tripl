@@ -596,9 +596,21 @@ async def _apply_merge(
     # Same move as the variables above, and here it is the destructive one.
     # Event has no ``display_name`` — its machine name is the one on screen, so
     # renaming an event is routine editing — and replacing the row would take
-    # its ``variable_values``, metrics, photos and ``event_changes`` with it
-    # through the FK cascade. None of those are in ``build_plan_snapshot``, so
-    # no diff would have shown the loss and no arm below would carry them over.
+    # its ``variable_values``, their drift rows and its ``event_changes`` with
+    # it through the FK cascade, and leave the ``event_metrics`` series behind
+    # holding a NULL ``event_id`` (that FK is SET NULL), which to anything that
+    # asks by event is the same loss. None of those are in
+    # ``build_plan_snapshot``, so no diff would have shown it and no arm below
+    # would carry them over.
+    #
+    # Photos are NOT on that list, though the cascade takes them too: they are
+    # in the snapshot and the photos arm re-creates them on whichever main row
+    # now holds the key. Alerting is not either — nothing alerting holds an FK
+    # to an event — but it is no safer for it: the filters and detections
+    # naming the old row are dropped on purpose by
+    # ``drop_dangling_event_references`` further down, which is right for the
+    # removal it thinks it is looking at and wrong only because a rename is not
+    # one.
     for old_event_key, new_event_key in pair_renames(
         {key: event.get("source_name") for key, event in base_event_by_key.items()},
         {key: event.source_name for key, event in main_event_by_key.items()},

@@ -345,7 +345,10 @@ main, and a variable excluded from scans never drifts however full its list is.
 Collected drift counts on its own for the same reason it does for distribution
 drift — candidates are built from the drift rows, so an open or snoozed row from
 the last 30 days keeps the scope live even after the documented list that
-produced it is emptied.
+produced it is emptied. The exclusion rule reaches those rows too: excluding a
+variable from scans keeps the drift it already had, but alerts skip that drift,
+so it no longer counts towards readiness either. A project whose only surviving
+value drift sits on excluded variables reads as a scope that cannot fire.
 
 **Distribution drift** needs a scan that names the columns to watch (**Scan
 settings → Metric breakdowns and drift → Distribution drift**), *or* drift

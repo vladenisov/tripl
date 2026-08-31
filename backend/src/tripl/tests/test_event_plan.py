@@ -14,7 +14,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.core.adapters.base import ColumnInfo
 from tripl.core.analyzers.cardinality import BreakdownAnalysis, CardinalityResult
-from tripl.core.analyzers.event_generator import apply_event_group_rules, generate_events
+from tripl.core.analyzers.event_generator import (
+    apply_event_group_rules,
+    generate_events,
+    merge_existing_events_for_group_rules,
+)
 from tripl.core.analyzers.event_plan import (
     breakdown_row_count,
     plan_events,
@@ -22,6 +26,7 @@ from tripl.core.analyzers.event_plan import (
 )
 from tripl.models import Base
 from tripl.models.event import Event
+from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.project import Project
@@ -383,6 +388,11 @@ def _payload_analysis() -> BreakdownAnalysis:
     variable and ``build_json_value`` writes its ``${payload.screen}`` token into
     the field value — which is the thing an override keyed on ``payload`` would
     destroy. One column, both roles, so a single blob shows the whole trade.
+
+    Every config paired with this analysis therefore has to declare
+    ``payload.action`` in ``json_value_paths`` as well: that declaration is what
+    makes the name a path rather than a column, and ``reserved_catalog_columns``
+    now reads it instead of guessing from the dot.
     """
     return BreakdownAnalysis(
         results={
@@ -405,7 +415,7 @@ _DOTTED_RULE = [
 ]
 
 
-def test_a_dotted_condition_reserves_nothing_not_even_its_base_column() -> None:
+def test_a_declared_json_path_condition_reserves_nothing_not_even_its_base_column() -> None:
     """The reduction that is correct for a name format is destructive here.
 
     ``name_format_base_columns`` reduces ``{event.category}`` to ``event`` because
@@ -415,12 +425,21 @@ def test_a_dotted_condition_reserves_nothing_not_even_its_base_column() -> None:
     drops it from ``col_meta``, and every JSON-path variable under it goes too —
     on production, where every variable is JSON-path derived, that is a column's
     entire variable surface, deleted without a word.
+
+    The config now has to SAY that ``payload.action`` is a path, which is the
+    premise that changed: this asserted the drop for any dotted name, and a dot
+    does not make a name a path — ``params.key`` is a column on ClickHouse. The
+    sibling below pins the other half of that split.
     """
     from tripl.worker.utils.reserved_columns import reserved_catalog_columns
 
-    config = ScanConfig(time_column="time", event_group_rules=_DOTTED_RULE)
+    config = ScanConfig(
+        time_column="time",
+        json_value_paths=["payload.action"],
+        event_group_rules=_DOTTED_RULE,
+    )
     reserved = reserved_catalog_columns(config)
-    assert reserved == {"time"}, "a dotted condition names no column to reserve"
+    assert reserved == {"time"}, "a declared JSON path names no column to reserve"
 
     plan = plan_events(
         _payload_analysis(),
@@ -443,19 +462,25 @@ def test_a_dotted_condition_reserves_nothing_not_even_its_base_column() -> None:
     assert "payload" not in reserved
 
 
-def test_a_dotted_condition_still_groups_and_leaves_the_json_blob_alone() -> None:
-    """Matching is the whole of what a dotted condition may do.
+def test_a_declared_json_path_condition_groups_and_leaves_the_blob_alone() -> None:
+    """A path's override is carried under the path's own key, and lands nowhere.
 
-    The override half moves with the reserved half or the pair stops cancelling.
-    An override keyed on ``payload`` would write the regex literal over the JSON
-    template, taking every ``${payload.path}`` token with it — and
+    The premise that changed: this asserted an EMPTY override dict, on the reading
+    that a dotted key could reach no sink. It reaches one —
+    ``_create_group_event_from_source`` looks the override up by FieldDefinition
+    name, and a FieldDefinition can be named ``params.key`` — so the key is kept
+    and the sinks decide, each by exact lookup into its own key space. Nothing
+    holds ``payload.action``, so the blob survives untouched.
+
+    What would destroy it is the base key ``payload``: the regex literal over the
+    JSON template takes every ``${payload.path}`` token with it, and
     ``_move_variable_contexts`` deletes any VariableValue whose target value no
     longer names it, so the blob and the observations go in one step. The literal
     blob is asserted, not just its length, so base-keying the override fails here.
     """
     match = apply_event_group_rules("raw name", {"payload.action": "checkout"}, _DOTTED_RULE)
     assert match.event_name == "Checkout"
-    assert match.field_value_overrides == {}
+    assert match.field_value_overrides == {"payload.action": "/^checkout$/"}
 
     plan = plan_events(
         _payload_analysis(),
@@ -500,6 +525,141 @@ def test_a_scalar_condition_still_reserves_and_still_overrides(project_and_type)
         values = {col_name: value for _fd_id, col_name, value in event.field_values}
         assert values["screen"] == "/^/home$/"
         assert values["action"] in {"click", "view"}
+
+
+def test_a_dotted_warehouse_column_is_reserved_like_any_other_rule_column() -> None:
+    """A dot does not make a name a path — ClickHouse hands out ``params.key``.
+
+    A ``Nested(key String, value String)`` column comes back from the adapter's
+    ``SELECT *`` as two columns literally named ``params.key`` and
+    ``params.value``, the event-parameter idiom on the warehouse most of these
+    scans point at. Reading the dot as "this must be a JSON path" dropped such a
+    column out of the reserved set, so ``catalog_sync`` auto-created a
+    FieldDefinition for a column the scan GROUPS BY and the merge then wrote the
+    rule's own regex into it — tripl-jfm3.57 again, one warehouse over. Which
+    names are paths is the config's to declare and nothing else's to guess.
+    """
+    from tripl.worker.utils.reserved_columns import reserved_catalog_columns
+
+    config = ScanConfig(
+        time_column="time",
+        # A different dotted name IS declared, so this asserts the guard reads the
+        # config rather than waving every dotted name through.
+        json_value_paths=["payload.action"],
+        event_group_rules=[
+            {"name": "Checkout", "conditions": [{"field": "params.key", "pattern": "^checkout$"}]}
+        ],
+    )
+    reserved = reserved_catalog_columns(config)
+    assert reserved == {"time", "params.key"}
+    assert "params" not in reserved, "the base column is never reserved, dotted rule column or not"
+
+    # The reservation is also what keeps the planner quiet about that column
+    # having no FieldDefinition — the plan-gap line that had a fresh demo's first
+    # scan reporting six missing fields when one was missing (tripl-jfm3.90).
+    plan = plan_events(
+        _make_analysis(
+            {
+                "screen": _LOW_CARDINALITY["screen"],
+                "params.key": CardinalityResult(
+                    column=ColumnInfo("params.key", "String"),
+                    count=2,
+                    is_low=True,
+                    sample_values=["checkout", "home"],
+                ),
+            }
+        ),
+        {"screen": uuid.uuid4()},
+        reserved_columns=reserved,
+    )
+    assert "params.key" not in plan.col_meta
+    assert not any("params.key" in detail for detail in plan.details), (
+        "a reserved column must not be reported as a missing field definition"
+    )
+
+
+def test_a_dotted_field_definition_still_gets_its_override_when_a_rule_groups_it(
+    sync_session: Session, project_and_type
+) -> None:
+    """The sink a dotted key does reach, and the reason suppressing it lost something.
+
+    ``_event_values_for_group_matching`` offers the merge path its values under
+    FIELD DEFINITION names, and ``_create_group_event_from_source`` looks the
+    override up in that same key space — so a field named ``params.key`` both
+    matches the condition and takes its override, and always did. Dropping the
+    override on the dot left exactly that field showing one arbitrary source row's
+    value on an event the rule grouped BY it, which is the misreading
+    tripl-jfm3.57 fixed for plain columns.
+    """
+    project, et, fds = project_and_type
+    dotted = FieldDefinition(
+        id=uuid.uuid4(),
+        event_type_id=et.id,
+        name="params.key",
+        display_name="params.key",
+        field_type="string",
+        order=2,
+    )
+    sync_session.add(dotted)
+    sync_session.flush()
+
+    event = Event(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        event_type_id=et.id,
+        name="checkout:one",
+        source_name="checkout:one",
+        order=0,
+        status="implemented",
+    )
+    sync_session.add(event)
+    sync_session.flush()
+    sync_session.add(
+        EventFieldValue(
+            id=uuid.uuid4(),
+            event_id=event.id,
+            field_definition_id=dotted.id,
+            value="checkout",
+            is_authored=True,
+        )
+    )
+    # A field the rule does not read, so the assertions below tell "the override
+    # landed" apart from "the merge rewrote whatever it copied".
+    sync_session.add(
+        EventFieldValue(
+            id=uuid.uuid4(),
+            event_id=event.id,
+            field_definition_id=fds["screen"].id,
+            value="${variant}",
+            is_authored=True,
+        )
+    )
+    sync_session.commit()
+
+    merged = merge_existing_events_for_group_rules(
+        sync_session,
+        project_id=project.id,
+        event_type_ids=[et.id],
+        event_group_rules=[
+            {"name": "Checkout", "conditions": [{"field": "params.key", "pattern": "^checkout$"}]}
+        ],
+    )
+    sync_session.commit()
+    assert merged == 1
+
+    grouped_event = sync_session.execute(
+        select(Event).where(Event.project_id == project.id)
+    ).scalar_one()
+    assert grouped_event.name == "Checkout"
+    values = {
+        fv.field_definition_id: fv
+        for fv in sync_session.execute(
+            select(EventFieldValue).where(EventFieldValue.event_id == grouped_event.id)
+        ).scalars()
+    }
+    assert values[dotted.id].value == "/^checkout$/"
+    assert values[dotted.id].is_authored is False, "the rule's pattern is not the user's text"
+    assert values[fds["screen"].id].value == "${variant}", "an unread field is untouched"
 
 
 def test_breakdown_row_count_ignores_rows_that_carry_no_count() -> None:

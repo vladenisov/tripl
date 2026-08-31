@@ -349,13 +349,19 @@ def _accumulate_replay_variable_samples(
             # Two questions, two lookups: the index answers which variable this
             # token MEANS, the row walk answers where that variable LIVES.
             variable = variable_index.resolve(token)
-            # Excluding a variable DELETES its observed values (see
-            # ``variable_service.update_variable``), so sampling one here would
-            # hand the operator back, one collection tick later, exactly the rows
-            # they asked to be rid of. The scan path skips excluded variables in
-            # ``record_variable_contexts`` and the JSON-path sampler skips them
-            # in ``_unfilled_json_path_candidates``; replay is the third door and
-            # was the one left open.
+            # Excluding a variable FREEZES its observed values; it no longer
+            # deletes them (``variable_service.update_variable`` sets the flag
+            # and purges nothing). So the rows this sampler would reach are the
+            # ones the popover badges "Excluded" and presents as a finished
+            # reading — a low context there still promises "All values" — and
+            # what these entries feed, ``_merge_replay_variable_samples``, grows
+            # exactly that: it unions new values in and raises
+            # ``observed_count``. Sampling an excluded variable would
+            # therefore keep enlarging a surface the UI calls frozen, after the
+            # operator asked scanning to stop. The scan path asks the same flag
+            # in ``record_variable_contexts`` and the JSON-path sampler asks it
+            # in ``_unfilled_json_path_candidates``; replay is the third door
+            # and was the one left open.
             if variable is None or variable.excluded_from_scans:
                 continue
 
@@ -574,9 +580,10 @@ def _accumulate_replay_json_samples_from_events(
                 continue
             for token in tokens:
                 variable = variable_index.resolve(token)
-                # Same tombstone the row-walk accumulator honours: an excluded
-                # variable's values were purged on purpose, and the cheaper
-                # sampling route must not be the one that brings them back.
+                # Same flag the row-walk accumulator honours, for the same
+                # reason: an excluded variable's values are frozen, not gone,
+                # and the cheaper sampling route must not be the one that keeps
+                # growing them.
                 if variable is None or variable.excluded_from_scans:
                     continue
                 sampled = _sampled_values_for_variable(variable, values_by_token)

@@ -363,20 +363,28 @@ back before the event type it belongs to, so restore the event type first.
 - **Keep main releasable.** Treat main as the version analysts and alerts rely
   on; do experimental work on branches.
 - **Know which renames a merge understands.** A merge matches rows by name, so a
-  rename can read as deleting one row and adding another — which strands
-  everything attached to the original: its metrics, photos, change history, and
-  the variable values observed against it.
-  - **Events and variables survive it.** tripl remembers the name a row arrived
-    under when a scan first saw it, and a merge uses that to recognise a rename
-    and move the existing row instead of replacing it. Renaming an event or a
-    variable on a branch is safe.
-  - **Everything else still reads as delete-plus-add.** That covers renaming an
-    **event type**, a **field**, or a **meta field**; moving an event to a
+  rename can read as deleting one row and adding another — which strands what
+  hung off the original: its metrics, its change history, the variable values
+  observed against it, and any alert filter that named it. Spec **photos** are
+  the exception, because they travel in the plan snapshot: the merge re-attaches
+  them to whichever row ends up holding the name.
+  - **A row a scan discovered survives it.** tripl remembers the name such a row
+    arrived under, and a merge uses that remembered name to recognise a rename
+    and move the existing row instead of replacing it. Renaming a scanned
+    **event** or a scanned **variable** on a branch is safe.
+  - **A row with no remembered name does not.** An event written into the plan by
+    hand and a variable you added yourself have no scanned name behind them, so
+    nothing identifies them across a rename and they still merge as a delete plus
+    an add. Neither does a rename tripl cannot pin to one row — two events under
+    the same event type sharing a remembered name are left alone rather than
+    guessed between.
+  - **Everything else reads as delete-plus-add whatever its history:** renaming
+    an **event type**, a **field**, or a **meta field**, and moving an event to a
     different event type, which is a move rather than a rename and is applied as
-    one; and renaming a row tripl has no remembered name for, which is typically
-    a variable you created by hand rather than one a scan discovered.
-  - For those, edit the description, fields, or tags instead of renaming when you
-    can; when you cannot, expect to re-attach anything the old row carried.
+    one.
+  - For the renames that do not survive, edit the description, fields, or tags
+    instead of renaming when you can; when you cannot, expect to re-attach
+    anything the old row carried.
 
 ### Recovering from a mistake
 

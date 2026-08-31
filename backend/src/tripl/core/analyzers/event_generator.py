@@ -335,6 +335,10 @@ def generate_events(
         event_type_id=event_type_id,
         contexts=variable_contexts,
         rewritten_fields=rewritten_fields,
+        # Read off the same index the run adopted and normalized through, so
+        # "excluded" means one thing for the whole run. A rewrite must not
+        # invalidate a row ``_record_variable_contexts`` refused to re-record.
+        excluded_variable_ids=variable_index.excluded_ids(),
     )
     _insert_variable_contexts(
         session,
@@ -383,8 +387,10 @@ def _upsert_field_values(
 
     Returns the ``(event_id, field_definition_id)`` pairs this call actually
     changed or newly created — an authored value, or one that already reads the
-    same, is NOT reported. Callers use that to scope what the run invalidated:
-    see ``delete_variable_contexts_for_event_type``.
+    same, is NOT reported. Callers use that to scope what the run invalidated,
+    which is a NECESSARY condition there and not a sufficient one: a rewrite
+    cannot invalidate the context of a variable the run is barred from observing.
+    See ``delete_variable_contexts_for_event_type``.
     """
     rewritten: set[tuple[uuid.UUID, uuid.UUID]] = set()
     fv_by_fd = {fv.field_definition_id: fv for fv in event.field_values}

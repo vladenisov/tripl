@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -96,6 +96,17 @@ class VariableIndex:
     def resolve(self, token: str) -> Variable | None:
         return self._by_token.get(token)
 
+    def excluded_ids(self) -> set[uuid.UUID]:
+        """Ids of the variables this run must not observe.
+
+        Every scan-side WRITER already skips these one at a time — creation,
+        normalization, context recording — so the set is what a scan-side
+        DELETER needs: no run can re-record a row it takes from an excluded
+        variable. Read by ``delete_variable_contexts_for_event_type``, which
+        decides per row rather than per token and so cannot ask ``resolve``.
+        """
+        return {variable.id for variable in self._by_token.values() if variable.excluded_from_scans}
+
     def __len__(self) -> int:
         # Callers gate work on ``if index and ...`` meaning "there are variables
         # to match". A bare object is always truthy, so this has to exist for
@@ -171,18 +182,20 @@ def delete_variable_contexts_for_event_type(
     event_type_id: uuid.UUID,
     contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]],
     rewritten_fields: set[tuple[uuid.UUID, uuid.UUID]],
+    excluded_variable_ids: Collection[uuid.UUID],
 ) -> None:
-    """Drop the contexts this run replaces or invalidated — and nothing else.
+    """Drop the contexts this run replaces or invalidated — never one it cannot restate.
 
     Two disjoint reasons to delete a row:
 
     * its ``(variable, event, field)`` key is in ``contexts``, so
       ``insert_variable_contexts`` is about to re-add it and the old row has to
       go first (``uq_variable_value_context``);
-    * this run REWROTE the field value the row describes. A context means "this
-      event field's value references ``${variable}``", so it stops being true
-      exactly when ``_upsert_field_values`` changes (or newly writes) that
-      ``(event, field)`` value — which is what ``rewritten_fields`` carries.
+    * this run REWROTE the field value the row describes AND the row's variable
+      is one this run is allowed to observe. A context means "this event field's
+      value references ``${variable}``", so it stops being true exactly when
+      ``_upsert_field_values`` changes (or newly writes) that ``(event, field)``
+      value — which is what ``rewritten_fields`` carries.
 
     Everything else is left alone. This used to delete every context for the
     event type unconditionally, which also wiped rows the run had no opinion
@@ -192,10 +205,31 @@ def delete_variable_contexts_for_event_type(
     "Variables & value drift" story (bd tripl-jfm3.56). The scheduled metrics
     path already merges into existing rows rather than replacing them
     (``_merge_replay_variable_samples``); this brings the scan path in line.
+
+    ``excluded_variable_ids`` is the second arm's limit, and it is what makes the
+    two arms one rule: INVALIDATE only what you could state afresh. That held
+    implicitly while every row on a rewritten field was re-recorded by the same
+    run, so the second arm never needed to name the variable. It stopped holding
+    when excluding a variable became a tombstone instead of a purge (bd
+    tripl-95pu): ``record_variable_contexts`` skips an excluded variable, so its
+    rows reach ``insert_variable_contexts`` by no route at all, and a rewrite
+    here destroyed observations permanently — silently, inside the scan, which is
+    the deletion that change was supposed to have removed.
+
+    Excluding is also what CAUSES the rewrite, which is why no guard upstream
+    fixes this. ``normalize_variable_tokens`` stops resolving an excluded
+    variable's token, so the stored value reverts from the display name a
+    previous scan wrote (``${locale}``) to the raw path the planner emits
+    (``${payload.locale}``). Suppressing that rewrite would still not be enough:
+    this arm keys on ``(event, field)`` and never on the variable, so any other
+    reason the field's value changes — a new JSON path appearing beside the old
+    one — takes the excluded row with it just the same.
     """
     # Nothing was re-recorded and nothing was rewritten -> no row can be stale.
     if not contexts and not rewritten_fields:
         return
+
+    excluded = frozenset(excluded_variable_ids)
 
     # A row can only be stale if BOTH its event and its field appear in one of
     # the two key sets, so pre-filter on those in SQL. Both are necessary (not
@@ -236,7 +270,7 @@ def delete_variable_contexts_for_event_type(
         row_id
         for row_id, variable_id, event_id, field_definition_id in session.execute(query)
         if (variable_id, event_id, field_definition_id) in contexts
-        or (event_id, field_definition_id) in rewritten_fields
+        or ((event_id, field_definition_id) in rewritten_fields and variable_id not in excluded)
     ]
     if not stale_ids:
         return

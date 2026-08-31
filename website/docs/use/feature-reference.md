@@ -961,7 +961,10 @@ columns that carried data but had no matching field in the plan — a real
 coverage gap worth fixing. It stays quiet about columns that were empty for
 those rows, and about reserved role columns (event type, time, version,
 platform, and any column an event-group rule matches on), which tripl already
-uses elsewhere and never expects to have a plan field. The same list reports
+uses elsewhere and never expects to have a plan field. A rule condition reserves
+a column only when it names one outright: a dotted condition such as
+`payload.action` reaches inside a column's JSON rather than claiming the column,
+so it reserves nothing and `payload` keeps its field. The same list reports
 variables the run retired — *Retired N unused variables no event refers to*,
 see [Variables](#variables) — and says nothing when there were none. It also
 reports rows the run refused to name: *Skipped N rows whose derived event name

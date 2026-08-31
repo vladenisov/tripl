@@ -563,6 +563,62 @@ class TestEventGeneration:
         ).scalar_one()
         assert field_value.value == "/home"
 
+    def test_rescan_spares_an_excluded_variables_context_on_the_same_rewritten_field(
+        self, sync_session: Session, project_and_type
+    ):
+        """A rewrite invalidates per VARIABLE, not per field.
+
+        The two rows here sit on one ``(event, field)`` and one rewrite, and only
+        the live one may go. ``record_variable_contexts`` skips an excluded
+        variable, so nothing in this run — or any later one — re-inserts its row;
+        invalidating it is a permanent delete, performed silently inside a scan,
+        which is exactly what excluding a variable stopped meaning (bd
+        tripl-95pu). The live row going in the same breath is what keeps the
+        exemption from being read as "a rewrite invalidates nothing".
+        """
+        project, et, fds = project_and_type
+        live = self._seed_curated_event_with_context(
+            sync_session, project, et, fds, screen_is_authored=False
+        )
+        excluded = Variable(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name="retired",
+            source_name="retired",
+            variable_type="string",
+            excluded_from_scans=True,
+        )
+        sync_session.add(excluded)
+        sync_session.flush()
+        tombstoned = VariableValue(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            variable_id=excluded.id,
+            event_id=live.event_id,
+            field_definition_id=live.field_definition_id,
+            source_column="screen",
+            value_kind="low",
+            observed_count=7,
+            values=["seen_before_exclusion"],
+        )
+        sync_session.add(tombstoned)
+        sync_session.commit()
+        live_id, tombstoned_id = live.id, tombstoned.id
+
+        generate_events(sync_session, project.id, et.id, self._low_card_analysis(), fds)
+        sync_session.commit()
+
+        assert sync_session.get(VariableValue, live_id) is None
+        # Columns, not the entity: a row read back through the identity map would
+        # look intact after the delete this test exists to catch.
+        survived = sync_session.execute(
+            select(VariableValue.observed_count, VariableValue.values).where(
+                VariableValue.id == tombstoned_id
+            )
+        ).one_or_none()
+        assert survived is not None, "a scan must not delete what no scan can re-record"
+        assert survived == (7, ["seen_before_exclusion"])
+
     def test_event_name_column_enumerated_despite_high_cardinality(
         self, sync_session: Session, project_and_type
     ):
@@ -3338,6 +3394,65 @@ def test_excluded_variable_is_not_recreated_or_attributed(sync_session: Session,
     assert contexts == []
     # ...and the scan-written value keeps the raw token (no normalization to
     # an excluded variable's display name).
+    payload_value = sync_session.execute(
+        select(EventFieldValue.value).where(
+            EventFieldValue.field_definition_id == fds["payload"].id
+        )
+    ).scalar_one()
+    assert payload_value == '{"locale": "${payload.locale}"}'
+
+
+def test_excluding_a_variable_keeps_the_values_it_already_observed(
+    sync_session: Session, project_and_type
+):
+    """One Exclude click, one scan, and the observations have to still be there.
+
+    The whole path, unmocked, because the defect only exists end to end: moving
+    the purge out of the endpoint left it in the SCAN. Excluding is itself what
+    makes the value change — ``normalize_variable_tokens`` stops resolving the
+    token, so the stored ``${locale}`` reverts to the raw ``${payload.locale}``
+    the planner emits — and a changed value is what
+    ``delete_variable_contexts_for_event_type`` used to read as "this context is
+    no longer true" (bd tripl-95pu).
+
+    The trigger is the display name differing from the emitted token, so this is
+    NOT confined to dotted paths: a manually-created variable adopted through a
+    binding reverts the same way.
+    """
+    project, et, fds = project_and_type
+    analysis = _payload_locale_analysis()
+
+    generate_events(sync_session, project.id, et.id, analysis, fds)
+    sync_session.commit()
+
+    variable = sync_session.execute(
+        select(Variable).where(Variable.project_id == project.id)
+    ).scalar_one()
+    assert (variable.name, variable.source_name) == ("locale", "payload.locale")
+
+    # A replay filled the context in; the scan path never had these values, and
+    # nothing but this row remembers them.
+    context = sync_session.execute(select(VariableValue)).scalar_one()
+    context.observed_count = 2
+    context.values = ["en", "fr"]
+    variable.excluded_from_scans = True
+    sync_session.commit()
+    context_id = context.id
+
+    generate_events(sync_session, project.id, et.id, analysis, fds)
+    sync_session.commit()
+
+    # Columns, not the entity: a row read back through the identity map would
+    # look intact after the delete this test exists to catch.
+    survived = sync_session.execute(
+        select(VariableValue.observed_count, VariableValue.values).where(
+            VariableValue.id == context_id
+        )
+    ).one_or_none()
+    assert survived is not None, "excluding a variable must not destroy its observations"
+    assert survived == (2, ["en", "fr"])
+    # The rewrite that used to take the row still happens — the row is spared
+    # because of WHOSE it is, not because the scan left the value alone.
     payload_value = sync_session.execute(
         select(EventFieldValue.value).where(
             EventFieldValue.field_definition_id == fds["payload"].id

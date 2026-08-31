@@ -128,20 +128,27 @@ async def load_scope_readiness(
     #
     # Mirrors that builder's filters rather than probing rows blindly, because a
     # row it could never select is not readiness: the status set, the 30-day
-    # window, and the scan_config_id link (``ondelete="SET NULL"`` leaves rows
-    # behind whose scan is gone, and the demo seeds rows with no scan at all).
-    # The builder's snooze-EXPIRY clause is deliberately NOT mirrored: a row
-    # snoozed until next week is a candidate this scope will produce, just not
-    # today, and the question here is "ever", not "now".
+    # window, the scan_config_id link (``ondelete="SET NULL"`` leaves rows behind
+    # whose scan is gone, and the demo seeds rows with no scan at all), and the
+    # exclusion flag on the ROW's variable — excluding no longer deletes the
+    # drift a variable already had, so the builder asks the flag instead, and a
+    # row it will skip is no more readiness than a resolved one. That is the
+    # same flag the documented disjuncts above apply, which is what keeps a
+    # project of excluded variables inert on every source of this scope.
+    # The builder's snooze-EXPIRY clause is deliberately NOT mirrored: a
+    # row snoozed until next week is a candidate this scope will produce, just
+    # not today, and the question here is "ever", not "now".
     retention_cutoff = datetime.now(UTC) - timedelta(days=_DRIFT_RETENTION_DAYS)
     value_drift_collected = (
         sa.select(sa.literal(1))
         .select_from(VariableValueDrift)
+        .join(Variable, Variable.id == VariableValueDrift.variable_id)
         .where(
             VariableValueDrift.project_id == project_id,
             VariableValueDrift.scan_config_id.in_(
                 sa.select(ScanConfig.id).where(ScanConfig.project_id == project_id)
             ),
+            Variable.excluded_from_scans.is_(False),
             VariableValueDrift.status.in_(_ACTIVE_DRIFT_STATUSES),
             VariableValueDrift.detected_at >= retention_cutoff,
         )

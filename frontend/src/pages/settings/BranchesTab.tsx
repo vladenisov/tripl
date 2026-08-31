@@ -140,6 +140,65 @@ function aheadCount(diff: PlanBranchDiffSummary | undefined): number {
 }
 
 
+/** The scan identity carried on one side of a diff entry — `before` for a
+ * removal, `after` for an addition. Empty is not an identity: `source_name` is
+ * nullable by design for rows created outside a scan, and two of those would
+ * otherwise look alike. */
+function entrySourceName(state: Record<string, unknown> | null | undefined): string | null {
+  const value = state?.source_name
+  return typeof value === 'string' && value !== '' ? value : null
+}
+
+/**
+ * The variables a merge really deletes from main: the ones the branch removed,
+ * minus the ones it merely renamed.
+ *
+ * `_plan_branch_renames.pair_renames` reads a would-delete and a would-insert
+ * that share a non-empty `source_name` within one scope as a single row the
+ * branch renamed, and renames main's row in place instead of replacing it — so
+ * the id survives, and the observed values, per-event overrides and drift
+ * history hanging off that id survive with it. Warning about those would scare
+ * a reviewer out of a merge that deletes nothing. Variables are one flat scope
+ * (their natural key is just the name), so a shared `source_name` is the whole
+ * test here, and the diff carries it because it is a variable change key.
+ *
+ * Ambiguity keeps its warning, exactly as the backend leaves it unpaired: no
+ * `source_name` identifies nothing, and two candidates on either side make the
+ * pairing a guess.
+ *
+ * `behindBase` stands in for the half of the rule this diff cannot see. The
+ * pairing also requires the new name to be absent from MAIN, and this diff
+ * compares the base with the branch. While the branch is not behind, main still
+ * equals that base and base-side absence IS main-side absence. Once main has
+ * moved, a name the branch added may already exist there — the removal would
+ * then go through as a removal — so every removal is warned about rather than
+ * risk hiding a real deletion.
+ */
+function variablesDeletedByMerge(entries: PlanDiffEntry[], behindBase: boolean): string[] {
+  const removed = entries.filter((e) => e.entity_type === 'variable' && e.kind === 'removed')
+  if (behindBase) return removed.map((e) => e.name)
+
+  const added = entries.filter((e) => e.entity_type === 'variable' && e.kind === 'added')
+  const tally = (list: PlanDiffEntry[], read: (entry: PlanDiffEntry) => string | null) => {
+    const counts = new Map<string, number>()
+    for (const entry of list) {
+      const identity = read(entry)
+      if (identity) counts.set(identity, (counts.get(identity) ?? 0) + 1)
+    }
+    return counts
+  }
+  const removedBySource = tally(removed, (e) => entrySourceName(e.before))
+  const addedBySource = tally(added, (e) => entrySourceName(e.after))
+
+  return removed
+    .filter((entry) => {
+      const identity = entrySourceName(entry.before)
+      if (identity === null) return true
+      return !(removedBySource.get(identity) === 1 && addedBySource.get(identity) === 1)
+    })
+    .map((entry) => entry.name)
+}
+
 function diffEntryDetail(entry: PlanDiffEntry): string {
   if (entry.changes.length > 0) return entry.changes.join(', ')
   return entry.parent ? `${entry.entity_type} · ${entry.parent}` : entry.entity_type
@@ -612,11 +671,11 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
   }
 
   const entries = diff?.entries ?? []
-  // A variable removed relative to the branch base is an intentional deletion;
-  // warn because its documented values, overrides and drift history cascade.
-  const removedVariables = entries
-    .filter((entry) => entry.entity_type === 'variable' && entry.kind === 'removed')
-    .map((entry) => entry.name)
+  // A variable removed relative to the branch base and not paired with an
+  // addition is an intentional deletion; warn because its observed values,
+  // overrides and drift history cascade. A rename is paired away — it keeps
+  // all three.
+  const removedVariables = variablesDeletedByMerge(entries, diff?.behind_base ?? true)
 
   const handleMerge = async () => {
     if (removedVariables.length > 0) {
