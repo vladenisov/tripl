@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from 'react'
 
 import type {
+  EventFieldValue,
   EventListItem,
   EventType,
   EventTypeBrief,
@@ -16,27 +17,62 @@ function normalizeFieldValue(value: string): string {
 }
 
 /**
+ * The one of this row's field values that answers a field column, or undefined.
+ *
+ * The ROW is the primitive, not the string: the cell renders the value AND the
+ * observed-values popover hanging off the same `EventFieldValue`. Answering
+ * "which value is this?" twice — once for the text, once for the contexts — is
+ * what let the two answers disagree, and the popover was the one that lost
+ * (tripl-xv77.1).
+ *
+ * The name pass exists for the "All" tab, where columns are deduped by name and
+ * keep whichever event type came first; a row of any other type carries a
+ * different FieldDefinition id for the same field, so an id-only lookup finds
+ * nothing on it.
+ *
+ * Ties, when two event types share a field name: both passes scan
+ * `ev.field_values`, this row's OWN values, so whichever wins, its contexts were
+ * recorded against THIS event — no tie-break can borrow another event's. Within
+ * a row a tie is near-impossible to begin with: `uq_field_def_event_type_name`
+ * makes a name unique inside an event type and `uq_event_field_value_event_field`
+ * stops one definition appearing twice, so two same-named candidates require a
+ * row still holding a value left behind by an event type it no longer belongs
+ * to. That case resolves to the first match in `ev.field_values` order — the
+ * array exactly as the API returned it, walked once per response, so every cell
+ * of the row and every re-render pick the same value and the row cannot
+ * contradict itself. The id pass runs to completion first, so an exact id match
+ * always outranks any name match.
+ */
+export function resolveFieldValueRow(
+  ev: EventListItem,
+  col: FieldDefinition,
+  fieldDefsById: Map<string, FieldDefinition>,
+): EventFieldValue | undefined {
+  for (const fv of ev.field_values) {
+    if (fv.field_definition_id === col.id) return fv
+  }
+  for (const fv of ev.field_values) {
+    const def = fieldDefsById.get(fv.field_definition_id)
+    if (def && def.name === col.name) return fv
+  }
+  return undefined
+}
+
+/**
  * A row's value for a field column, resolved straight off the row.
  *
- * The table renders through a memoized per-row map (below); CSV export walks
- * rows that were never rendered and has no such map, so the lookup rules live
- * here in one place.
+ * The table renders through a memoized per-row index (below); CSV export walks
+ * rows that were never rendered and has no such index, so the lookup rules live
+ * here in one place — as `resolveFieldValueRow`, of which this is the string
+ * projection.
  */
 export function resolveFieldValue(
   ev: EventListItem,
   col: FieldDefinition,
   fieldDefsById: Map<string, FieldDefinition>,
 ): string {
-  for (const fv of ev.field_values) {
-    if (fv.field_definition_id === col.id) return normalizeFieldValue(fv.value)
-  }
-  // Fallback for when the row's field_values reference a different
-  // FieldDefinition row (e.g., another event-type with the same `name`).
-  for (const fv of ev.field_values) {
-    const def = fieldDefsById.get(fv.field_definition_id)
-    if (def && def.name === col.name) return normalizeFieldValue(fv.value)
-  }
-  return ''
+  const fv = resolveFieldValueRow(ev, col, fieldDefsById)
+  return fv ? normalizeFieldValue(fv.value) : ''
 }
 
 /** A row's value for a meta column, resolved straight off the row. */
@@ -45,6 +81,12 @@ export function resolveMetaValue(ev: EventListItem, mf: MetaFieldDefinition): st
     if (mv.meta_field_definition_id === mf.id) return mv.value
   }
   return ''
+}
+
+/** One event's field values, addressable by FieldDefinition id and by name. */
+type EventFieldValueIndex = {
+  byId: Map<string, EventFieldValue>
+  byName: Map<string, EventFieldValue>
 }
 
 export type ColumnFilterContext = {
@@ -164,18 +206,32 @@ export function useEventsFiltering({
     return map
   }, [fieldColumns])
 
-  // One Map<eventId, Map<fieldDefId, value>> built once per events list, instead
-  // of re-building Object.fromEntries(...) inside every filter check and every
-  // <TableCell> render (was O(N · F²) per render on the 2000-event path).
-  const fieldValuesByEvent = useMemo(() => {
-    const map = new Map<string, Map<string, string>>()
+  // One index per events list, instead of re-building Object.fromEntries(...)
+  // inside every filter check and every <TableCell> render (was O(N · F²) per
+  // render on the 2000-event path).
+  //
+  // It carries the name key as well as the id, so `resolveFieldValueRow`'s "All"
+  // tab fallback stays off the hot render path: this table virtualizes over
+  // thousands of rows, and on that tab the fallback is the COMMON case, not the
+  // rare one — an O(fields) rescan per cell would be a per-frame cost.
+  //
+  // Ids and names get their own map rather than sharing one, so a field whose
+  // name happens to look like a FieldDefinition id cannot answer for it.
+  const fieldValueIndexByEvent = useMemo(() => {
+    const map = new Map<string, EventFieldValueIndex>()
     for (const ev of rawEvents) {
-      const fvMap = new Map<string, string>()
-      for (const fv of ev.field_values) fvMap.set(fv.field_definition_id, fv.value)
-      map.set(ev.id, fvMap)
+      const byId = new Map<string, EventFieldValue>()
+      const byName = new Map<string, EventFieldValue>()
+      for (const fv of ev.field_values) {
+        byId.set(fv.field_definition_id, fv)
+        const def = allFieldDefs.get(fv.field_definition_id)
+        // First write wins, matching the scan's first-match tie-break.
+        if (def && !byName.has(def.name)) byName.set(def.name, fv)
+      }
+      map.set(ev.id, { byId, byName })
     }
     return map
-  }, [rawEvents])
+  }, [allFieldDefs, rawEvents])
 
   const metaValuesByEvent = useMemo(() => {
     const map = new Map<string, Map<string, string>>()
@@ -187,11 +243,23 @@ export function useEventsFiltering({
     return map
   }, [rawEvents])
 
-  const getFieldValue = useCallback((ev: EventListItem, col: FieldDefinition) => {
-    const direct = fieldValuesByEvent.get(ev.id)?.get(col.id)
-    if (direct !== undefined) return normalizeFieldValue(direct)
-    return resolveFieldValue(ev, col, allFieldDefs)
-  }, [allFieldDefs, fieldValuesByEvent])
+  const getFieldValueRow = useCallback(
+    (ev: EventListItem, col: FieldDefinition): EventFieldValue | undefined => {
+      const index = fieldValueIndexByEvent.get(ev.id)
+      // A row the memo never saw still resolves, just without the index.
+      if (!index) return resolveFieldValueRow(ev, col, allFieldDefs)
+      return index.byId.get(col.id) ?? index.byName.get(col.name)
+    },
+    [allFieldDefs, fieldValueIndexByEvent],
+  )
+
+  const getFieldValue = useCallback(
+    (ev: EventListItem, col: FieldDefinition) => {
+      const fv = getFieldValueRow(ev, col)
+      return fv ? normalizeFieldValue(fv.value) : ''
+    },
+    [getFieldValueRow],
+  )
 
   const getMetaValue = useCallback(
     (ev: EventListItem, mf: MetaFieldDefinition) => metaValuesByEvent.get(ev.id)?.get(mf.id) ?? '',
@@ -223,8 +291,8 @@ export function useEventsFiltering({
     allFieldDefs,
     eventTypesById,
     fieldEnumOptions,
-    fieldValuesByEvent,
     metaValuesByEvent,
+    getFieldValueRow,
     getFieldValue,
     getMetaValue,
     events,

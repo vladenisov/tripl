@@ -29,6 +29,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { Dot } from '@/components/primitives/dot'
 import { EmptyState } from '@/components/empty-state'
 import type {
+  EventFieldValue,
   EventListItem,
   EventType,
   EventTypeBrief,
@@ -105,6 +106,7 @@ export type EventsTableProps = {
   slug: string
   selectedSet: Set<string>
   getFieldValue: (ev: EventListItem, col: FieldDefinition) => string
+  getFieldValueRow: (ev: EventListItem, col: FieldDefinition) => EventFieldValue | undefined
   toggleEventSelected: (id: string, checked: boolean) => void
   onToggleExpandedCell: (cellKey: string | null) => void
   onRowAction: (action: RowAction, ev: EventListItem) => void
@@ -159,6 +161,7 @@ export function EventsTable({
   slug,
   selectedSet,
   getFieldValue,
+  getFieldValueRow,
   toggleEventSelected,
   onToggleExpandedCell,
   onRowAction,
@@ -251,6 +254,7 @@ export function EventsTable({
         metaValueMap={metaValuesByEvent.get(ev.id)}
         eventType={eventTypesById.get(ev.event_type_id)}
         getFieldValue={getFieldValue}
+        getFieldValueRow={getFieldValueRow}
         onToggleSelected={toggleEventSelected}
         onToggleExpanded={onToggleExpandedCell}
         onRowAction={onRowAction}
