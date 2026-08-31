@@ -138,6 +138,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     eventTypesById,
     fieldEnumOptions,
     metaValuesByEvent,
+    getFieldValueRow,
     getFieldValue,
     events,
   } = useEventsFiltering({
@@ -561,6 +562,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
               slug={slug!}
               selectedSet={selectedSet}
               getFieldValue={getFieldValue}
+              getFieldValueRow={getFieldValueRow}
               toggleEventSelected={toggleEventSelected}
               onToggleExpandedCell={onToggleExpandedCell}
               onRowAction={onRowAction}

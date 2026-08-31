@@ -96,6 +96,28 @@ def apply_event_group_rules(
         if not rule_matched:
             continue
 
+        # The override keeps the condition's OWN key, dotted or not, because both
+        # sinks apply it by exact lookup into their own key space —
+        # ``plan_events`` by ``col_meta`` key, ``_create_group_event_from_source``
+        # by FieldDefinition name — and that makes a dotted key self-limiting. It
+        # lands only where a column or a field is named exactly that, which is
+        # where it belongs: a ClickHouse ``Nested`` member arrives as
+        # ``params.key``, gets a FieldDefinition under that name, and is offered to
+        # the conditions above under the same name by
+        # ``_event_values_for_group_matching``. That field must show the pattern it
+        # was grouped by, like every other matched field. Against a JSON PATH the
+        # same key is simply inert: nothing is named ``payload.action``, so no
+        # lookup ever finds it.
+        #
+        # What must never happen is the reduction ``name_format_base_columns``
+        # performs next door. ``payload`` IS a key, and its value is the JSON
+        # template ``build_json_value`` produced, so writing the regex literal
+        # there strips every ``${payload.path}`` token at once and
+        # ``_move_variable_contexts`` below then deletes each context whose target
+        # value no longer names its variable — a column's whole observed-value
+        # surface for one grouped scan. ``reserved_catalog_columns`` refuses the
+        # same reduction on its own side: the two key spaces are one rule, and
+        # matching a dotted key is not a licence to shorten it.
         overrides = {
             field_name: f"/{pattern}/"
             for field_name, pattern, matched in condition_results

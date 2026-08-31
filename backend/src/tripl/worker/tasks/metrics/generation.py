@@ -20,6 +20,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from tripl.core.adapters.base import ColumnInfo
+from tripl.core.analyzers._event_generator_variables import (
+    VARIABLE_VALUE_SAMPLE_LIMIT,
+    VariableIndex,
+    build_variable_index,
+)
 from tripl.core.analyzers.cardinality import _is_json_type
 from tripl.core.analyzers.event_generator import GenerationResult, event_name_format_columns
 from tripl.core.intervals import get_interval
@@ -142,42 +147,118 @@ def _field_template(values: list[str]) -> str | None:
     return templates[0] if len(templates) == 1 else None
 
 
+def _warehouse_token_candidates(token: str, variable_index: VariableIndex) -> list[str]:
+    """Strings that might name where ``${token}``'s value lives, best first.
+
+    The token itself leads: a field value still carrying a raw ``${column.path}``
+    needs no lookup at all, and that population is the one replay has always been
+    able to sample. Everything after it comes from the variable the token
+    resolves to — ``source_name``, then bindings, then the display name — because
+    a token is a LABEL, not an address. Since the scan began shortening
+    scan-created names (``property.Aalter`` -> ``aalter``, identity kept on
+    ``source_name``), the two answers differ for almost every variable, and
+    reading the label as an address is why a shortened variable could never be
+    sampled (tripl-xv77.3).
+    """
+    variable = variable_index.resolve(token)
+    if variable is None:
+        return [token]
+    source_tokens = VariableIndex.source_tokens_of(variable)
+    return [token, *(other for other in source_tokens if other != token)]
+
+
+# How many JSON paths replay is willing to let one column carry. Each path
+# becomes its own extract expression in the bucketed-counts SELECT and its own
+# cell in every row that comes back, so the map's width is a warehouse cost paid
+# once per row of the whole replay window.
+#
+# The augmentation below used to be bounded by accident: only a field value
+# still holding a raw ``${column.path}`` could contribute, and after names were
+# shortened almost none did. Resolving tokens through the variable index removes
+# that accident — on the project this was measured against, a single JSON column
+# backs over a thousand derived variables — so the bound has to be stated
+# instead of assumed. Paths the scan config asked for are counted but never
+# dropped: the cap only ever refuses a NEW path.
+_MAX_REPLAY_JSON_PATHS_PER_COLUMN = 200
+
+
+class _ReplayJsonPathMap:
+    """The one gate a JSON path passes through on its way into replay's map.
+
+    Validation lives here rather than at the call site because these strings are
+    interpolated into the adapter's JSON-path expression and the candidates now
+    reaching it include ``bindings`` — user-editable text — not just tokens the
+    scan itself wrote. Dedup and the per-column cap sit in the same place for the
+    same reason: one object to reason about what the map can end up containing.
+    """
+
+    def __init__(self, base: dict[str, list[str]], *, json_columns: list[str]) -> None:
+        self._json_columns = set(json_columns)
+        self.paths = {column: list(values) for column, values in base.items()}
+        self._seen = {column: set(values) for column, values in self.paths.items()}
+        self.capped_columns: set[str] = set()
+
+    def admit(self, token: str) -> bool:
+        """Add ``column.path`` if admissible; True once the map carries it.
+
+        A path that was already there also answers True, so a caller walking a
+        variable's source tokens stops at the first one that lands instead of
+        also admitting a stale binding's path for a variable already covered.
+        """
+        column, _, path = token.partition(".")
+        if not path or column not in self._json_columns:
+            return False
+        if any(not _JSON_PATH_PART_PATTERN.match(part) for part in path.split(".")):
+            return False
+
+        seen = self._seen.setdefault(column, set())
+        if path in seen:
+            return True
+        if len(seen) >= _MAX_REPLAY_JSON_PATHS_PER_COLUMN:
+            self.capped_columns.add(column)
+            return False
+        seen.add(path)
+        self.paths.setdefault(column, []).append(path)
+        return True
+
+
 def _augment_json_value_paths_for_replay_tokens(
     *,
     json_value_path_map: dict[str, list[str]],
     json_columns: list[str],
     replay_events: list[Event],
+    variable_index: VariableIndex,
 ) -> dict[str, list[str]]:
-    """Greedy replay mode: include JSON paths referenced by ${json.path} tokens.
+    """Greedy replay mode: include JSON paths referenced by ${token} tokens.
 
     This lets replay collect concrete values for JSON-bound variables even if the
-    scan config's json_value_paths does not list those paths explicitly.
+    scan config's json_value_paths does not list those paths explicitly. Each
+    token is resolved to its variable's warehouse home first (see
+    ``_warehouse_token_candidates``); only the first candidate that lands is
+    admitted, so a variable widens the query by one path, not by one per binding.
     """
     if not json_columns or not replay_events:
         return json_value_path_map
 
-    json_cols = set(json_columns)
-    out: dict[str, list[str]] = {key: list(values) for key, values in json_value_path_map.items()}
-    seen_by_column: dict[str, set[str]] = {column: set(values) for column, values in out.items()}
-
+    path_map = _ReplayJsonPathMap(json_value_path_map, json_columns=json_columns)
     for event in replay_events:
         for field_value in event.field_values:
             for token in _VARIABLE_NAME_PATTERN.findall(field_value.value):
-                if "." not in token:
-                    continue
-                column, path = token.split(".", 1)
-                if column not in json_cols or not path:
-                    continue
-                if any(not _JSON_PATH_PART_PATTERN.match(part) for part in path.split(".")):
-                    # Keep adapter-side JSON path expression safe.
-                    continue
-                seen = seen_by_column.setdefault(column, set())
-                if path in seen:
-                    continue
-                seen.add(path)
-                out.setdefault(column, []).append(path)
+                for candidate in _warehouse_token_candidates(token, variable_index):
+                    if path_map.admit(candidate):
+                        break
 
-    return out
+    for column in sorted(path_map.capped_columns):
+        # The operator-facing half of the cap: without this, a project past it
+        # sees the same "no observed values" symptom this ticket started from,
+        # with nothing in the log to distinguish it from a resolution failure.
+        logger.warning(
+            "Replay JSON path cap reached for column %r (%s paths); "
+            "variables beyond it collect no sample values this run",
+            column,
+            _MAX_REPLAY_JSON_PATHS_PER_COLUMN,
+        )
+    return path_map.paths
 
 
 def _extend_unique_values(existing: list[str], incoming: list[str]) -> list[str]:
@@ -196,12 +277,56 @@ def _build_variable_lookup(
     *,
     project_id: uuid.UUID,
     branch_id: uuid.UUID | None,
-) -> dict[str, Variable]:
-    query = select(Variable).where(Variable.project_id == project_id)
-    if branch_id is not None:
-        query = query.where(Variable.branch_id == branch_id)
-    variables = session.execute(query).scalars().all()
-    return {variable.name: variable for variable in variables}
+) -> VariableIndex:
+    """Everything replay may have to resolve a ``${token}`` back to.
+
+    Delegating to ``build_variable_index`` instead of keeping a name-keyed dict
+    is strictly wider in the one direction that matters: the scan writes a
+    shortened display name and keeps the raw path on ``source_name``/
+    ``bindings``, so a name-only lookup could only answer for the tokens the
+    scan has stopped writing. The index also adopts a hand-authored
+    ``${variant}`` through the binding its author attached to it, which the dict
+    never could. Kept as a named step of the replay path — ``catalog_sync``
+    calls it — even though the body is now one delegation.
+    """
+    return build_variable_index(session, project_id=project_id, branch_id=branch_id)
+
+
+def _row_value_for_variable(
+    variable: Variable,
+    *,
+    data_row: tuple[object, ...],
+    reg_index: dict[str, int],
+    json_value_index: dict[str, int],
+) -> tuple[str, str] | None:
+    """Locate this variable's value in one warehouse row: (source token, value).
+
+    Walks the variable's source tokens most-authoritative first and takes the
+    first that ADDRESSES a cell in this row — ``source_name``, then a binding,
+    then the display name. Addressing, not "has a value", is the test for a
+    regular column: an existing column that is NULL in this row is a real
+    observation (recorded as ``""``, as it always was), and treating it as a miss
+    would let a stale binding answer for a column that is present and empty. A
+    JSON extract does not get that benefit because a null extract and an absent
+    path are indistinguishable at this point, so it falls through to the next
+    candidate.
+
+    A binding therefore only ever answers when ``source_name`` cannot, which is
+    what makes a binding that points at a different column safe: it is a
+    fallback address, not a competing one.
+    """
+    for token in VariableIndex.source_tokens_of(variable):
+        reg_idx = reg_index.get(token)
+        if reg_idx is not None and reg_idx < len(data_row):
+            cell = data_row[reg_idx]
+            return token, str(cell) if cell is not None else ""
+
+        json_idx = json_value_index.get(token)
+        if json_idx is not None and json_idx < len(data_row):
+            cell = data_row[json_idx]
+            if cell is not None:
+                return token, str(cell)
+    return None
 
 
 def _accumulate_replay_variable_samples(
@@ -213,7 +338,7 @@ def _accumulate_replay_variable_samples(
     n_reg: int,
     n_json: int,
     json_value_names: list[str],
-    variable_by_token: dict[str, Variable],
+    variable_index: VariableIndex,
 ) -> None:
     json_value_index = {name: n_reg + n_json + idx for idx, name in enumerate(json_value_names)}
     for field_value in event.field_values:
@@ -221,23 +346,34 @@ def _accumulate_replay_variable_samples(
         if not tokens:
             continue
         for token in tokens:
-            variable = variable_by_token.get(token)
-            if variable is None:
+            # Two questions, two lookups: the index answers which variable this
+            # token MEANS, the row walk answers where that variable LIVES.
+            variable = variable_index.resolve(token)
+            # Excluding a variable FREEZES its observed values; it no longer
+            # deletes them (``variable_service.update_variable`` sets the flag
+            # and purges nothing). So the rows this sampler would reach are the
+            # ones the popover badges "Excluded" and presents as a finished
+            # reading — a low context there still promises "All values" — and
+            # what these entries feed, ``_merge_replay_variable_samples``, grows
+            # exactly that: it unions new values in and raises
+            # ``observed_count``. Sampling an excluded variable would
+            # therefore keep enlarging a surface the UI calls frozen, after the
+            # operator asked scanning to stop. The scan path asks the same flag
+            # in ``record_variable_contexts`` and the JSON-path sampler asks it
+            # in ``_unfilled_json_path_candidates``; replay is the third door
+            # and was the one left open.
+            if variable is None or variable.excluded_from_scans:
                 continue
 
-            raw_value: str | None = None
-            reg_idx = reg_index.get(token)
-            if reg_idx is not None and reg_idx < len(data_row):
-                raw_value = str(data_row[reg_idx]) if data_row[reg_idx] is not None else ""
-            else:
-                json_idx = json_value_index.get(token)
-                if json_idx is not None and json_idx < len(data_row):
-                    json_val = data_row[json_idx]
-                    if json_val is not None:
-                        raw_value = str(json_val)
-
-            if raw_value is None:
+            located = _row_value_for_variable(
+                variable,
+                data_row=data_row,
+                reg_index=reg_index,
+                json_value_index=json_value_index,
+            )
+            if located is None:
                 continue
+            source_token, raw_value = located
 
             key = (variable.id, event.id, field_value.field_definition_id)
             entry = accum.setdefault(
@@ -246,7 +382,10 @@ def _accumulate_replay_variable_samples(
                     "variable_id": variable.id,
                     "event_id": event.id,
                     "field_definition_id": field_value.field_definition_id,
-                    "source_column": token,
+                    # The warehouse address the value actually came from, not
+                    # the token that led here — for a shortened variable those
+                    # are different strings and only the former names a column.
+                    "source_column": source_token,
                     "values": [],
                 },
             )
@@ -308,7 +447,11 @@ def _merge_replay_variable_samples(
                 source_column=cast(str, payload["source_column"]),
                 value_kind=kind,
                 observed_count=len(values),
-                values=values if kind == VariableValueKind.low.value else values[:20],
+                values=(
+                    values
+                    if kind == VariableValueKind.low.value
+                    else values[:VARIABLE_VALUE_SAMPLE_LIMIT]
+                ),
             )
             if branch_id is not None:
                 new_row.branch_id = branch_id
@@ -317,21 +460,85 @@ def _merge_replay_variable_samples(
             continue
 
         if current.value_kind == VariableValueKind.low.value:
+            # A low context promises the reader "All values" — the popover says
+            # exactly that — so this list must not be trimmed to a sample the
+            # way the high branch is, or the badge starts lying. What it can do
+            # is stop being low: the kind means "fewer distinct values than the
+            # threshold", and merging window after window is precisely how a
+            # column that once looked low grows past it. So the threshold, not
+            # a sample size, is the bound here; crossing it demotes the row and
+            # the sample cap then applies — the same rule the new-row branch
+            # above uses on first write. Without this the list grew forever.
             merged = _extend_unique_values(current.values or [], values)
-            if merged != (current.values or []):
+            # Counted BEFORE any truncation, because the two columns answer
+            # different questions: ``values`` is what we can show, and
+            # ``observed_count`` is how many distinct values were seen. Taking
+            # the count off the truncated list makes a row that has just seen
+            # its 101st value report 100 — the sample size masquerading as a
+            # measurement.
+            distinct_seen = len(merged)
+            # The demotion is its own reason to write, not a rider on the values
+            # changing: a row holding 20 values that this merge grows past the
+            # threshold truncates straight back to the same 20, so comparing
+            # lists alone would report "nothing happened" about a row whose kind
+            # just changed — and leave it out of the run's touched count.
+            demoted = distinct_seen > cardinality_threshold
+            if demoted:
+                merged = merged[:VARIABLE_VALUE_SAMPLE_LIMIT]
+            # And the count is a third reason, for the same reason the demotion
+            # is a second one: a row whose stored count sits below the distinct
+            # values it already holds — the scan path can write one, since it
+            # maxes two observations' counts while unioning their values — would
+            # otherwise never be corrected by a merge that shows it nothing new.
+            count_grew = distinct_seen > current.observed_count
+            if demoted or count_grew or merged != (current.values or []):
+                if demoted:
+                    current.value_kind = VariableValueKind.high.value
                 current.values = merged
-                current.observed_count = max(current.observed_count, len(merged))
+                current.observed_count = max(current.observed_count, distinct_seen)
                 touched += 1
         else:
             # Existing high-cardinality contexts still benefit from sampled
             # examples in replay results (bounded list for UI visibility).
-            merged = _extend_unique_values(current.values or [], values)[:20]
-            if merged != (current.values or []):
+            # Same split as the low branch: count every distinct value seen,
+            # store only the sample.
+            merged = _extend_unique_values(current.values or [], values)
+            distinct_seen = len(merged)
+            merged = merged[:VARIABLE_VALUE_SAMPLE_LIMIT]
+            # The count growing is this branch's own reason to write, and here it
+            # is the ONLY one that can ever fire again on a row already holding
+            # the sample cap: from that moment the truncated list is identical
+            # every run, so a values-only test freezes ``observed_count`` at
+            # whatever it was when the row filled up — which is the one number
+            # counting before truncation exists to keep honest, and fixing one
+            # sibling and not the other is how the pair drifts apart. Both
+            # conditions together are exactly "this write would change the row",
+            # so ``touched`` still counts changes rather than visits.
+            count_grew = distinct_seen > current.observed_count
+            if count_grew or merged != (current.values or []):
                 current.values = merged
-                current.observed_count = max(current.observed_count, len(merged))
+                current.observed_count = max(current.observed_count, distinct_seen)
                 touched += 1
 
     return touched
+
+
+def _sampled_values_for_variable(
+    variable: Variable,
+    values_by_token: dict[str, list[str]],
+) -> tuple[str, list[str]] | None:
+    """First of this variable's source tokens the sampler found values for.
+
+    The ``json_path_samples`` twin of ``_row_value_for_variable``: same
+    most-authoritative-first walk, a different table to look in. Kept separate
+    rather than generalized — folding two lookups this small into one shape
+    would hide which of them the caller is actually asking about.
+    """
+    for token in VariableIndex.source_tokens_of(variable):
+        values = values_by_token.get(token)
+        if values:
+            return token, values
+    return None
 
 
 def _accumulate_replay_json_samples_from_events(
@@ -339,8 +546,16 @@ def _accumulate_replay_json_samples_from_events(
     *,
     events: list[Event],
     json_path_samples: dict[str, dict[str, list[object]]],
-    variable_by_token: dict[str, Variable],
+    variable_index: VariableIndex,
 ) -> None:
+    """Sample from paths the warehouse volunteered, without a second query.
+
+    The cheaper of the two replay sampling routes: ``get_json_path_samples``
+    already walked the JSON columns, so this only has to attribute what came
+    back. It is keyed by warehouse address for the same reason
+    ``_accumulate_replay_variable_samples`` is, and was broken for the same
+    reason — a shortened token never matched a ``column.path`` key.
+    """
     if not json_path_samples:
         return
 
@@ -364,10 +579,17 @@ def _accumulate_replay_json_samples_from_events(
             if not tokens:
                 continue
             for token in tokens:
-                variable = variable_by_token.get(token)
-                token_values = values_by_token.get(token)
-                if variable is None or not token_values:
+                variable = variable_index.resolve(token)
+                # Same flag the row-walk accumulator honours, for the same
+                # reason: an excluded variable's values are frozen, not gone,
+                # and the cheaper sampling route must not be the one that keeps
+                # growing them.
+                if variable is None or variable.excluded_from_scans:
                     continue
+                sampled = _sampled_values_for_variable(variable, values_by_token)
+                if sampled is None:
+                    continue
+                source_token, token_values = sampled
                 key = (variable.id, event.id, field_value.field_definition_id)
                 entry = accum.setdefault(
                     key,
@@ -375,7 +597,7 @@ def _accumulate_replay_json_samples_from_events(
                         "variable_id": variable.id,
                         "event_id": event.id,
                         "field_definition_id": field_value.field_definition_id,
-                        "source_column": token,
+                        "source_column": source_token,
                         "values": [],
                     },
                 )

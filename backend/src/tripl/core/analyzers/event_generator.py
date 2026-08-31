@@ -152,6 +152,7 @@ def generate_events(
     reserved_columns: Collection[str] | None = None,
     max_events: int = DEFAULT_MAX_EVENTS,
     scan_config_id: uuid.UUID | None = None,
+    json_path_samples: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
 ) -> GenerationResult:
     """Generate events from breakdown analysis.
 
@@ -164,6 +165,12 @@ def generate_events(
     ``event_plan.plan_events`` — the same function the dry-run calls, so a
     preview cannot promise names a run would not produce. Everything below the
     plan is persistence.
+
+    ``json_path_samples`` carries observed values for JSON-path variables, which
+    the breakdown rows structurally cannot (see ``plan_column_meta``). It is the
+    caller's job to fetch them because only the caller has the adapter, and only
+    the caller can decide the sampling is affordable this run; omitting it plans
+    the same zero-observation contexts as before.
     """
     result = GenerationResult()
     # The scan writes to the project's main branch (Variable inserts default
@@ -184,6 +191,7 @@ def generate_events(
         event_name_format=event_name_format,
         event_group_rules=event_group_rules,
         reserved_columns=reserved_columns,
+        json_path_samples=json_path_samples,
         # Deliberately uncapped. ``max_events`` bounds the events this function
         # CREATES; the planner can only bound distinct names, and a re-scan whose
         # names all exist already creates none of them. Capping in the planner
@@ -327,6 +335,10 @@ def generate_events(
         event_type_id=event_type_id,
         contexts=variable_contexts,
         rewritten_fields=rewritten_fields,
+        # Read off the same index the run adopted and normalized through, so
+        # "excluded" means one thing for the whole run. A rewrite must not
+        # invalidate a row ``_record_variable_contexts`` refused to re-record.
+        excluded_variable_ids=variable_index.excluded_ids(),
     )
     _insert_variable_contexts(
         session,
@@ -375,8 +387,10 @@ def _upsert_field_values(
 
     Returns the ``(event_id, field_definition_id)`` pairs this call actually
     changed or newly created — an authored value, or one that already reads the
-    same, is NOT reported. Callers use that to scope what the run invalidated:
-    see ``delete_variable_contexts_for_event_type``.
+    same, is NOT reported. Callers use that to scope what the run invalidated,
+    which is a NECESSARY condition there and not a sufficient one: a rewrite
+    cannot invalidate the context of a variable the run is barred from observing.
+    See ``delete_variable_contexts_for_event_type``.
     """
     rewritten: set[tuple[uuid.UUID, uuid.UUID]] = set()
     fv_by_fd = {fv.field_definition_id: fv for fv in event.field_values}

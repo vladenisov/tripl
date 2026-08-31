@@ -5,6 +5,7 @@ import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { Check, GripVertical, Pencil } from 'lucide-react'
 import type {
+  EventFieldValue,
   EventListItem,
   EventMetricPoint,
   EventTypeBrief,
@@ -103,6 +104,8 @@ export type EventRowProps = {
   windowData: EventMetricPoint[]
   metaValueMap: Map<string, string> | undefined
   getFieldValue: (ev: EventListItem, f: FieldDefinition) => string
+  /** The value row behind `getFieldValue` — same lookup, carrying the contexts. */
+  getFieldValueRow: (ev: EventListItem, f: FieldDefinition) => EventFieldValue | undefined
   onToggleSelected: (id: string, checked: boolean) => void
   onToggleExpanded: (cellKey: string | null) => void
   onRowAction: (action: RowAction, ev: EventListItem) => void
@@ -131,6 +134,7 @@ export const EventRow = memo(function EventRow({
   windowData,
   metaValueMap,
   getFieldValue,
+  getFieldValueRow,
   onToggleSelected,
   onToggleExpanded,
   onRowAction,
@@ -409,7 +413,11 @@ export const EventRow = memo(function EventRow({
         </TableCell>
       )}
       {fieldColumns.map((f) => {
-        const fieldValue = ev.field_values.find((fv) => fv.field_definition_id === f.id)
+        // The text and the popover must name the SAME value row, so both come
+        // from the one lookup (useEventsFiltering). Re-deriving the row here by
+        // id alone silently dropped the popover on the "All" tab, where a column
+        // belongs to whichever event type was deduped first (tripl-xv77.1).
+        const fieldValue = getFieldValueRow(ev, f)
         const val = getFieldValue(ev, f)
         const cellKey = `${ev.id}-${f.id}`
         const isExpanded = expandedFieldId === f.id

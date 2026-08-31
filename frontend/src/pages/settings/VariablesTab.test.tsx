@@ -666,4 +666,81 @@ describe('VariablesTab', () => {
       ),
     )
   })
+
+  it('scopes the exclude promise to the act, not to a permanence it cannot enforce', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant', source_name: 'payload.variant' })])
+
+    renderVariablesTab()
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Exclude variable variant from scans' }),
+    )
+
+    // What excluding does is a fact about this button; what every later scan
+    // does to the records is not this dialog's to guarantee.
+    expect(await screen.findByText(/Excluding itself deletes nothing/)).toBeInTheDocument()
+    expect(screen.queryByText(/already recorded stay/)).not.toBeInTheDocument()
+    // Restore clears the flag — it does not put the values back.
+    expect(screen.getByText(/Restore puts the variable back in scans/)).toBeInTheDocument()
+  })
+
+  it('names the contexts and drifts a delete destroys, not just the field text', async () => {
+    mockList([
+      makeVariable({
+        id: 'var-1',
+        name: 'variant',
+        source_name: 'payload.variant',
+        context_count: 3,
+        open_drift_count: 1,
+      }),
+    ])
+
+    renderVariablesTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete variable variant' }))
+
+    // Both counts ride along on the list row, so saying this costs no request —
+    // and they are the part of a delete a reader cannot rebuild afterwards.
+    expect(
+      await screen.findByText(/Its 3 value contexts and 1 open drift go with it/),
+    ).toBeInTheDocument()
+  })
+
+  it('agrees the verb with a single doomed record', async () => {
+    mockList([
+      makeVariable({
+        id: 'var-1',
+        name: 'variant',
+        source_name: 'payload.variant',
+        context_count: 0,
+        open_drift_count: 1,
+      }),
+    ])
+
+    renderVariablesTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete variable variant' }))
+
+    expect(await screen.findByText(/Its 1 open drift goes with it/)).toBeInTheDocument()
+  })
+
+  it('drops the "use Exclude instead" advice for a variable already excluded', async () => {
+    mockList([
+      makeVariable({
+        id: 'var-2',
+        name: 'old_junk',
+        source_name: 'old.junk',
+        excluded_from_scans: true,
+      }),
+    ])
+
+    renderVariablesTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete variable old_junk' }))
+
+    // The reader took that route already. What they cannot see is that the
+    // exclusion is a column on the row they are deleting.
+    expect(await screen.findByText(/re-create it, un-excluded/)).toBeInTheDocument()
+    expect(screen.queryByText(/use Exclude to keep it out/)).not.toBeInTheDocument()
+  })
 })

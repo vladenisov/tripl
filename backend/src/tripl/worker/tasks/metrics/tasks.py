@@ -561,6 +561,7 @@ def collect_metrics(
                 json_value_path_map=json_value_path_map,
                 json_columns=json_cols,
                 replay_events=replay_events,
+                variable_index=replay_variables_by_token,
             )
 
         if (
@@ -584,7 +585,7 @@ def collect_metrics(
                 replay_variable_samples,
                 events=replay_events,
                 json_path_samples=replay_json_samples,
-                variable_by_token=replay_variables_by_token,
+                variable_index=replay_variables_by_token,
             )
 
         # Build indices for row navigation (same layout as BreakdownAnalysis).

@@ -381,6 +381,51 @@ async def test_scope_readiness_ignores_value_drifts_the_dispatcher_would_skip(
     assert readiness["variable_value_drift"] is False
 
 
+@pytest.mark.asyncio
+async def test_scope_readiness_ignores_a_value_drift_on_an_excluded_variable(
+    client: AsyncClient,
+) -> None:
+    """Excluding a variable stops its surviving rows counting, as it stops them alerting.
+
+    The rows outlive the exclusion — excluding no longer deletes them — so the
+    candidate builder asks the flag about each row's variable, and the probe has
+    to ask it too or it promises a scope that the dispatcher will then filter
+    down to nothing. The second act is not decoration: it proves this fixture
+    can reach True at all, so the first assertion cannot pass on a mistyped
+    scan or project id.
+    """
+    # Arrange — both lists empty, so only the collected row can carry readiness.
+    project_id = await _make_project(client, "readiness-excluded-row")
+    branch_id = await _main_branch_id(project_id)
+    scan_config_id = await _make_scan(
+        client, "readiness-excluded-row", distribution_drift_fields=[]
+    )
+    event_id = await _make_event(client, "readiness-excluded-row")
+    excluded = _variable(
+        project_id,
+        branch_id,
+        name="retired_variant",
+        allowed_values=[],
+        excluded_from_scans=True,
+    )
+    await _add(excluded)
+    await _add(_value_drift_row(project_id, excluded.id, event_id, scan_config_id=scan_config_id))
+
+    # Act
+    readiness = await _readiness(client, "readiness-excluded-row")
+
+    # Assert — an open, in-window, scan-linked row the dispatcher will never pick up.
+    assert readiness["variable_value_drift"] is False
+
+    # Act again — the same row shape on a variable scans still observe.
+    scanned = _variable(project_id, branch_id, name="variant", allowed_values=[])
+    await _add(scanned)
+    await _add(_value_drift_row(project_id, scanned.id, event_id, scan_config_id=scan_config_id))
+
+    # Assert
+    assert (await _readiness(client, "readiness-excluded-row"))["variable_value_drift"] is True
+
+
 def test_the_readiness_probe_and_the_drift_service_agree_on_active_and_stale() -> None:
     """The probe restates the window and the status set; nothing checks that but this.
 

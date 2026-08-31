@@ -821,6 +821,17 @@ count, and **Plan → Variables** has an **Unused** filter that shows exactly wh
 a run would take. See
 [Variables & templates](./variables-and-templates.md#unreferenced-scan-created-variables-are-retired-automatically).
 
+**A variable's observed values read "No values stored". What is it telling me?**
+That the variable has contexts — some event field does refer to it — and not one
+of them holds a value. It is a different state from the dash on neighbouring
+rows, which means no context exists at all. Open the event's value popover to see
+which contexts are empty and what each one binds to. An empty context is not by
+itself a fault: a binding pointed at a column that is genuinely empty has nothing
+to store. Note also that a variable with no stored values raises no value drift,
+so an empty drift count says nothing about whether the documented contract holds.
+See
+[Variables & templates](./variables-and-templates.md#documented-observed-and-effective-values).
+
 **Why does a variable show value drift?**
 The scan observed values outside the effective documented list (the event
 override when present, otherwise the global list). Review it from Variables or

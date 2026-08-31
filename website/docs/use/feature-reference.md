@@ -222,8 +222,11 @@ dotted JSON paths. A per-event override replaces the global documented list for
 that event.
 
 The table shows documented/observed samples, binding paths, usage counts, and
-open value drift. Drift can be accepted globally or for one event, snoozed,
-marked false-positive, or reopened; resolved rows sit behind a **Show N
+open value drift. The observed column distinguishes two silences: it reads **No
+values stored** when the variable has contexts but none of them holds a value,
+and shows a dash only when no context exists at all. Drift can be accepted
+globally or for one event, snoozed, marked false-positive, or reopened;
+resolved rows sit behind a **Show N
 resolved** toggle in both panels, and a scan reopens an accepted row on its own
 once it observes a value outside the accepted set. The event detail repeats the
 affected event's review panel. Selection enables bulk type/description/value changes and
@@ -958,7 +961,10 @@ columns that carried data but had no matching field in the plan — a real
 coverage gap worth fixing. It stays quiet about columns that were empty for
 those rows, and about reserved role columns (event type, time, version,
 platform, and any column an event-group rule matches on), which tripl already
-uses elsewhere and never expects to have a plan field. The same list reports
+uses elsewhere and never expects to have a plan field. A rule condition reserves
+a column only when it names one outright: a dotted condition such as
+`payload.action` reaches inside a column's JSON rather than claiming the column,
+so it reserves nothing and `payload` keeps its field. The same list reports
 variables the run retired — *Retired N unused variables no event refers to*,
 see [Variables](#variables) — and says nothing when there were none. It also
 reports rows the run refused to name: *Skipped N rows whose derived event name

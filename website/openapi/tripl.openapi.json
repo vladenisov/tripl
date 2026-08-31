@@ -20089,6 +20089,11 @@
             "type": "array",
             "title": "Values",
             "default": []
+          },
+          "excluded_from_scans": {
+            "type": "boolean",
+            "title": "Excluded From Scans",
+            "default": false
           }
         },
         "type": "object",

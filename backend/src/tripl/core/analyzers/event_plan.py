@@ -185,6 +185,23 @@ class EventPlan:
     truncated: bool = False
 
 
+def _value_kind_for(observed_count: int, cardinality_threshold: int) -> str:
+    """Enumerable, or too many to list?
+
+    Zero observations is ``high`` — "nothing seen" is not "an empty enumeration".
+
+    Takes a COUNTED number of distinct values, and only a counted one. The JSON
+    path branch deliberately does not call this and hardcodes ``high`` instead:
+    its number comes from a capped sample, which can say "at least n" but never
+    "exactly n", and ``low`` is rendered to the reader as "All values". A future
+    caller holding a real COUNT(DISTINCT) is welcome here; one holding a sample
+    is not.
+    """
+    if 0 < observed_count <= cardinality_threshold:
+        return VariableValueKind.low.value
+    return VariableValueKind.high.value
+
+
 def plan_column_meta(
     analysis: BreakdownAnalysis,
     field_ids: Mapping[str, uuid.UUID],
@@ -194,10 +211,39 @@ def plan_column_meta(
     time_column: str | None = None,
     event_name_format: str | None = None,
     reserved_columns: Collection[str] | None = None,
+    json_path_samples: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[VariableNeed], list[str], int]:
     """Per-column metadata: is it JSON, is it enumerated, or is it templated.
 
     Returns ``(col_meta, variables_needed, details, columns_analyzed)``.
+
+    ``json_path_samples`` (``column -> path -> values``) is how a caller supplies
+    the observed values of a JSON-path variable. It is optional and defaults to
+    supplying none, in which case every such variable is planned exactly as this
+    function used to plan all of them — ``high``, zero observations, no values —
+    which is still what the dry-run and any caller without a sampler want.
+
+    Its SCOPE is not the scope of anything else here, which the code cannot show
+    and a reader will otherwise assume: a grouped scan calls this once per group
+    with that group's own ``BreakdownAnalysis``, so ``card_result.sample_values``
+    and every regular-column variable derived from it belong to the group —
+    while ``sync_catalog`` samples the JSON paths once for the whole scan config
+    and hands each group the same map (it argues out why at the call site). So a
+    JSON path's values are examples drawn from the config's rows, not an
+    enumeration of what this group emitted, and the ``high`` kind below is the
+    only claim they support.
+
+    The values have to be handed IN because they cannot be read off the rows this
+    function is given, and that is worth stating because reaching for the rows is
+    the obvious mistake. A JSON path mints a variable only when it is ABSENT from
+    ``json_value_index``, and that index is exactly the scan config's
+    ``json_value_paths`` — so the paths whose values the breakdown row carries and
+    the paths that become variables are complements, and the row can never hold a
+    value for a path that needs one. Widening the query to close the gap is worse
+    than useless: ``get_time_bucketed_counts`` groups by ALL selected columns, so
+    every added path becomes a grouping key that multiplies the result grain, and
+    overflowing ``metrics_row_limit`` raises rather than degrades — it would trade
+    missing values for a failed collection job.
     """
     col_meta: dict[str, dict[str, Any]] = {}
     variables_needed: list[VariableNeed] = []
@@ -261,6 +307,9 @@ def plan_column_meta(
             all_paths: set[str] = set()
             passthrough_paths: list[str] = []
             variable_observations: list[VariableObservation] = []
+            path_samples: Mapping[str, Sequence[str]] = {}
+            if json_path_samples is not None:
+                path_samples = json_path_samples.get(col_name) or {}
             for combo in card_result.json_path_combos:
                 for path in combo:
                     all_paths.add(path)
@@ -270,13 +319,34 @@ def plan_column_meta(
                     passthrough_paths.append(full_path)
                     continue
                 need_variable(full_path, "string")
+                # ``observed_count`` is "distinct values this SAMPLE showed", not
+                # a warehouse-wide count — the sampler stops at its own limit, so
+                # the kind it implies is a floor. An honest floor still beats the
+                # ``high``/0/``[]`` this used to hardcode, which was the single
+                # reason a scheduled scan could never show a JSON path's values.
+                # Nothing regresses on a thin sample either:
+                # ``preserve_existing_variable_context_values`` max()es the count
+                # and keeps an existing ``high`` row high.
+                # Sampled values are ALWAYS ``high``, however few come back, and
+                # this is the one place the JSON branch must NOT borrow the
+                # regular column's rule. ``low`` is a claim of exhaustive
+                # enumeration — the popover renders it as "All values" — and a
+                # regular column earns it from ``var.distinct_count``, a real
+                # COUNT(DISTINCT) over the window. The sampler has no such
+                # number: it reports the distinct values seen in a capped handful
+                # of rows, capped again at the sample limit, so three values back
+                # means "at least three", never "exactly three". Calling that
+                # ``low`` would make the badge promise a complete list nothing
+                # ever counted. "Examples" is what these are.
+                sampled = list(path_samples.get(path) or ())
+                value_kind = VariableValueKind.high.value
                 variable_observations.append(
                     VariableObservation(
                         name=full_path,
                         source_column=full_path,
-                        value_kind=VariableValueKind.high.value,
-                        observed_count=0,
-                        values=[],
+                        value_kind=value_kind,
+                        observed_count=len(sampled),
+                        values=sample_variable_values(sampled, value_kind),
                     )
                 )
             meta["json_passthrough_paths"] = passthrough_paths
@@ -304,11 +374,7 @@ def plan_column_meta(
                 for var in pattern.variables:
                     need_variable(var.name, var.inferred_type)
                     observed_count = var.distinct_count or len(var.values)
-                    value_kind = (
-                        VariableValueKind.low.value
-                        if observed_count > 0 and observed_count <= cardinality_threshold
-                        else VariableValueKind.high.value
-                    )
+                    value_kind = _value_kind_for(observed_count, cardinality_threshold)
                     regular_variable_observations.append(
                         VariableObservation(
                             name=var.name,
@@ -337,6 +403,7 @@ def plan_events(
     event_group_rules: Sequence[Mapping[str, object]] | None = None,
     reserved_columns: Collection[str] | None = None,
     max_events: int | None = None,
+    json_path_samples: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
 ) -> EventPlan:
     """Resolve breakdown rows into event identities. Writes nothing.
 
@@ -355,6 +422,7 @@ def plan_events(
         time_column=time_column,
         event_name_format=event_name_format,
         reserved_columns=reserved_columns,
+        json_path_samples=json_path_samples,
     )
     plan = EventPlan(
         col_meta=col_meta,

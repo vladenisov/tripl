@@ -115,6 +115,13 @@ class EventFieldVariableValueResponse(BaseModel):
     value_kind: VariableValueKind
     observed_count: int
     values: list[str] = []
+    # Excluding a variable no longer deletes its contexts, so this row can now
+    # outlive the scanning that produced it. The values below are then the last
+    # ones seen and not a live reading, and the client has to be able to say
+    # which it is holding: one rendering standing for two unrelated facts is the
+    # defect tripl-xv77.4 fixed for the empty context, and a stale value shown as
+    # current is the same mistake with more consequences.
+    excluded_from_scans: bool = False
 
     model_config = {"from_attributes": True}
 

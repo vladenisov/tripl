@@ -500,6 +500,14 @@ def _get_active_variable_value_drift_candidates(
     Rides the shared drift fields: variable display name -> drift_field,
     "value_drift" -> drift_type, sampled novel values -> sample_value. The
     per-event anchor flows through ``event_id`` so event filters apply.
+
+    The join to Variable is not only for the name: excluding a variable from
+    scans stops new drift being detected, but the rows it already had outlive
+    the exclusion, so the flag has to be asked here too or the operator keeps
+    being paged about a variable they took out of scanning. This used to be
+    covered by the exclude ENDPOINT deleting those rows, which fixed one caller
+    and left the branch-merge and branch-revert paths — both of which carry
+    ``excluded_from_scans`` across without a purge — still alerting.
     """
     retention_cutoff = datetime.now(UTC) - timedelta(days=30)
     candidates: dict[tuple[str, str], DriftAlertCandidate] = {}
@@ -509,6 +517,7 @@ def _get_active_variable_value_drift_candidates(
         .where(
             VariableValueDrift.project_id == config.project_id,
             VariableValueDrift.scan_config_id == config.id,
+            Variable.excluded_from_scans.is_(False),
             VariableValueDrift.detected_at >= retention_cutoff,
             VariableValueDrift.status.in_(("open", "snoozed")),
             (VariableValueDrift.status != "snoozed")

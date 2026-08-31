@@ -4,6 +4,8 @@ import { MemoryRouter } from 'react-router-dom'
 import { DndContext } from '@dnd-kit/core'
 import { SortableContext } from '@dnd-kit/sortable'
 import type {
+  EventFieldValue,
+  EventFieldVariableValue,
   EventListItem,
   EventMetricPoint,
   EventTypeBrief,
@@ -13,6 +15,7 @@ import type {
 } from '@/types'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { EventRow } from './EventRow'
+import { resolveFieldValue, resolveFieldValueRow } from './useEventsFiltering'
 
 const HOUR_MS = 60 * 60 * 1000
 const LATEST = Date.parse('2026-06-10T23:00:00Z')
@@ -103,10 +106,12 @@ function renderRow(
     variables = [] as Variable[],
     fieldColumns = [] as FieldDefinition[],
     getFieldValue = () => '',
+    getFieldValueRow = () => undefined,
   }: {
     variables?: Variable[]
     fieldColumns?: FieldDefinition[]
     getFieldValue?: (event: EventListItem, field: FieldDefinition) => string
+    getFieldValueRow?: (event: EventListItem, field: FieldDefinition) => EventFieldValue | undefined
   } = {},
 ) {
   return render(
@@ -139,6 +144,7 @@ function renderRow(
                   windowData={windowData}
                   metaValueMap={undefined}
                   getFieldValue={getFieldValue}
+                  getFieldValueRow={getFieldValueRow}
                   onToggleSelected={() => {}}
                   onToggleExpanded={() => {}}
                   onRowAction={() => {}}
@@ -285,6 +291,103 @@ describe('EventRow template token rendering', () => {
 
     expect(screen.getByText('${variant}')).not.toHaveClass('text-warning')
     expect(screen.getByText('${missing}')).toHaveClass('text-warning')
+  })
+})
+
+// Two event types that each define a field called `page`. FieldDefinition is
+// unique per (event_type_id, name), so these are genuinely different rows — the
+// exact shape the "All" tab's name-deduped columns produce.
+const PAGE_FIELD_PV: FieldDefinition = {
+  id: 'field-pv-page',
+  event_type_id: 'et-1',
+  name: 'page',
+  display_name: 'Page',
+  field_type: 'string',
+  is_required: false,
+  enum_options: null,
+  description: '',
+  order: 0,
+  sensitivity: 'none',
+}
+
+const PAGE_FIELD_SE: FieldDefinition = {
+  ...PAGE_FIELD_PV,
+  id: 'field-se-page',
+  event_type_id: 'et-2',
+}
+
+const OBSERVED_PAGES: EventFieldVariableValue = {
+  id: 'vv-page',
+  variable_id: 'var-page',
+  variable_name: 'page',
+  source_column: 'payload.page',
+  value_kind: 'low',
+  observed_count: 4820,
+  values: ['/checkout', '/cart'],
+}
+
+// tripl-xv77.1: on the default "All" tab the column a row renders under often
+// belongs to a DIFFERENT event type — whichever type was deduped first. The cell
+// resolved its text through the name fallback and its contexts through a second,
+// id-only lookup, so on windy-ios the majority of context-carrying values printed
+// a value with no way to see what had been observed behind it.
+describe('EventRow observed-values popover', () => {
+  const ALL_FIELD_DEFS = new Map([
+    [PAGE_FIELD_PV.id, PAGE_FIELD_PV],
+    [PAGE_FIELD_SE.id, PAGE_FIELD_SE],
+  ])
+
+  // Renders the row under page-view's `page` column — the one the All tab keeps.
+  function renderUnderWinningColumn(ev: EventListItem) {
+    return renderRow(ev, windowSeries(10, 20), undefined, {
+      fieldColumns: [PAGE_FIELD_PV],
+      getFieldValue: (event, col) => resolveFieldValue(event, col, ALL_FIELD_DEFS),
+      getFieldValueRow: (event, col) => resolveFieldValueRow(event, col, ALL_FIELD_DEFS),
+    })
+  }
+
+  function pageValue(fieldDefinitionId: string, contexts?: EventFieldVariableValue[]) {
+    return {
+      id: 'fv-page',
+      field_definition_id: fieldDefinitionId,
+      value: '/checkout',
+      variable_values: contexts,
+    }
+  }
+
+  it('offers the popover on a row whose event type did not win the column', () => {
+    renderUnderWinningColumn(
+      makeEvent({
+        event_type_id: 'et-2',
+        field_values: [pageValue(PAGE_FIELD_SE.id, [OBSERVED_PAGES])],
+      }),
+    )
+
+    // The value itself always rendered — the name fallback found it. Only the
+    // trigger beside it went missing, which is what made the loss invisible.
+    expect(screen.getByText('/checkout')).toBeInTheDocument()
+    expect(screen.getByLabelText('Observed variable values')).toBeInTheDocument()
+  })
+
+  // A control, not the guard: the id lookup already matched here, so this passed
+  // before the fix too. It holds the case the fix must not have cost.
+  it("offers the popover on a row of the column's own event type", () => {
+    renderUnderWinningColumn(
+      makeEvent({ field_values: [pageValue(PAGE_FIELD_PV.id, [OBSERVED_PAGES])] }),
+    )
+
+    expect(screen.getByLabelText('Observed variable values')).toBeInTheDocument()
+  })
+
+  // The negative control, and likewise green before the fix: the trigger appears
+  // because the resolved row HAS contexts, not because every value now gets one.
+  it('offers no popover when the matched value carries no observed contexts', () => {
+    renderUnderWinningColumn(
+      makeEvent({ event_type_id: 'et-2', field_values: [pageValue(PAGE_FIELD_SE.id)] }),
+    )
+
+    expect(screen.getByText('/checkout')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Observed variable values')).not.toBeInTheDocument()
   })
 })
 

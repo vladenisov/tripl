@@ -42,6 +42,7 @@ function VariablesTableRowImpl({
   const eventCount = variable.event_count ?? eventNames.length
   const hiddenEvents = Math.max(0, eventCount - eventNames.length)
   const observedValues = variable.sample_values ?? []
+  const contextCount = variable.context_count ?? 0
   const documentedValues = variable.allowed_values ?? []
   const bindings = variable.bindings ?? []
   const driftCount = variable.open_drift_count ?? 0
@@ -129,6 +130,12 @@ function VariablesTableRowImpl({
         )}
       </TableCell>
       <TableCell>
+        {/* Two unrelated silences used to render the same em-dash: no event
+            references this variable at all, and every context that does
+            reference it came back with nothing in it. Only the second is worth
+            an operator's attention, and this page is where they look — so the
+            cell names which one it is. `context_count` already rides along on
+            the list row, so saying it costs no request (tripl-xv77.4). */}
         {observedValues.length > 0 ? (
           <div className="flex max-w-sm flex-wrap gap-1">
             {observedValues.slice(0, MAX_CHIPS).map(value => (
@@ -138,6 +145,13 @@ function VariablesTableRowImpl({
               <span className="text-[10px] text-muted-foreground">+{observedValues.length - MAX_CHIPS}</span>
             )}
           </div>
+        ) : contextCount > 0 ? (
+          <span
+            className="text-xs text-muted-foreground"
+            title={`${contextCount} value context${contextCount === 1 ? '' : 's'}, none holding a value`}
+          >
+            No values stored
+          </span>
         ) : (
           <span className="text-xs text-muted-foreground">—</span>
         )}

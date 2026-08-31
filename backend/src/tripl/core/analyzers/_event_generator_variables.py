@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from collections.abc import Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,18 +51,43 @@ class VariableIndex:
             self.add(variable)
 
     @staticmethod
-    def tokens_of(variable: Variable) -> list[str]:
-        tokens = [variable.name]
-        if variable.source_name:
-            tokens.append(variable.source_name)
-        tokens.extend(variable.bindings or [])
+    def _unique(values: Iterable[str | None]) -> list[str]:
         seen: set[str] = set()
         unique: list[str] = []
-        for token in tokens:
-            if token and token not in seen:
-                seen.add(token)
-                unique.append(token)
+        for value in values:
+            if value and value not in seen:
+                seen.add(value)
+                unique.append(value)
         return unique
+
+    @staticmethod
+    def tokens_of(variable: Variable) -> list[str]:
+        """Which tokens NAME this variable, most likely first.
+
+        The display name leads because that is what a field value carries once
+        the scan has normalized its tokens.
+        """
+        return VariableIndex._unique(
+            [variable.name, variable.source_name, *(variable.bindings or [])]
+        )
+
+    @staticmethod
+    def source_tokens_of(variable: Variable) -> list[str]:
+        """Where this variable's value LIVES in the warehouse, most authoritative first.
+
+        The mirror of :meth:`tokens_of`, and the order is inverted on purpose.
+        ``tokens_of`` answers "which token names this variable", so it leads with
+        the editable display name; this answers "which warehouse column or JSON
+        path holds it", so it leads with ``source_name``, the identity the scan
+        wrote. Since ``derive_display_name`` began shortening scan-created names
+        (``property.Aalter`` -> ``aalter``), the two answers differ for most
+        variables, and code that needs the second must not reach for the first.
+        Same three fields and the same dedup as ``tokens_of`` -- only the
+        precedence changes, which is what keeps the pair consistent.
+        """
+        return VariableIndex._unique(
+            [variable.source_name, *(variable.bindings or []), variable.name]
+        )
 
     def add(self, variable: Variable) -> None:
         for token in self.tokens_of(variable):
@@ -70,6 +95,23 @@ class VariableIndex:
 
     def resolve(self, token: str) -> Variable | None:
         return self._by_token.get(token)
+
+    def excluded_ids(self) -> set[uuid.UUID]:
+        """Ids of the variables this run must not observe.
+
+        Every scan-side WRITER already skips these one at a time — creation,
+        normalization, context recording — so the set is what a scan-side
+        DELETER needs: no run can re-record a row it takes from an excluded
+        variable. Read by ``delete_variable_contexts_for_event_type``, which
+        decides per row rather than per token and so cannot ask ``resolve``.
+        """
+        return {variable.id for variable in self._by_token.values() if variable.excluded_from_scans}
+
+    def __len__(self) -> int:
+        # Callers gate work on ``if index and ...`` meaning "there are variables
+        # to match". A bare object is always truthy, so this has to exist for
+        # that reading to survive the index replacing a plain dict.
+        return len(self._by_token)
 
 
 def build_variable_index(
@@ -140,18 +182,20 @@ def delete_variable_contexts_for_event_type(
     event_type_id: uuid.UUID,
     contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]],
     rewritten_fields: set[tuple[uuid.UUID, uuid.UUID]],
+    excluded_variable_ids: Collection[uuid.UUID],
 ) -> None:
-    """Drop the contexts this run replaces or invalidated — and nothing else.
+    """Drop the contexts this run replaces or invalidated — never one it cannot restate.
 
     Two disjoint reasons to delete a row:
 
     * its ``(variable, event, field)`` key is in ``contexts``, so
       ``insert_variable_contexts`` is about to re-add it and the old row has to
       go first (``uq_variable_value_context``);
-    * this run REWROTE the field value the row describes. A context means "this
-      event field's value references ``${variable}``", so it stops being true
-      exactly when ``_upsert_field_values`` changes (or newly writes) that
-      ``(event, field)`` value — which is what ``rewritten_fields`` carries.
+    * this run REWROTE the field value the row describes AND the row's variable
+      is one this run is allowed to observe. A context means "this event field's
+      value references ``${variable}``", so it stops being true exactly when
+      ``_upsert_field_values`` changes (or newly writes) that ``(event, field)``
+      value — which is what ``rewritten_fields`` carries.
 
     Everything else is left alone. This used to delete every context for the
     event type unconditionally, which also wiped rows the run had no opinion
@@ -161,10 +205,31 @@ def delete_variable_contexts_for_event_type(
     "Variables & value drift" story (bd tripl-jfm3.56). The scheduled metrics
     path already merges into existing rows rather than replacing them
     (``_merge_replay_variable_samples``); this brings the scan path in line.
+
+    ``excluded_variable_ids`` is the second arm's limit, and it is what makes the
+    two arms one rule: INVALIDATE only what you could state afresh. That held
+    implicitly while every row on a rewritten field was re-recorded by the same
+    run, so the second arm never needed to name the variable. It stopped holding
+    when excluding a variable became a tombstone instead of a purge (bd
+    tripl-95pu): ``record_variable_contexts`` skips an excluded variable, so its
+    rows reach ``insert_variable_contexts`` by no route at all, and a rewrite
+    here destroyed observations permanently — silently, inside the scan, which is
+    the deletion that change was supposed to have removed.
+
+    Excluding is also what CAUSES the rewrite, which is why no guard upstream
+    fixes this. ``normalize_variable_tokens`` stops resolving an excluded
+    variable's token, so the stored value reverts from the display name a
+    previous scan wrote (``${locale}``) to the raw path the planner emits
+    (``${payload.locale}``). Suppressing that rewrite would still not be enough:
+    this arm keys on ``(event, field)`` and never on the variable, so any other
+    reason the field's value changes — a new JSON path appearing beside the old
+    one — takes the excluded row with it just the same.
     """
     # Nothing was re-recorded and nothing was rewritten -> no row can be stale.
     if not contexts and not rewritten_fields:
         return
+
+    excluded = frozenset(excluded_variable_ids)
 
     # A row can only be stale if BOTH its event and its field appear in one of
     # the two key sets, so pre-filter on those in SQL. Both are necessary (not
@@ -205,7 +270,7 @@ def delete_variable_contexts_for_event_type(
         row_id
         for row_id, variable_id, event_id, field_definition_id in session.execute(query)
         if (variable_id, event_id, field_definition_id) in contexts
-        or (event_id, field_definition_id) in rewritten_fields
+        or ((event_id, field_definition_id) in rewritten_fields and variable_id not in excluded)
     ]
     if not stale_ids:
         return
@@ -245,6 +310,38 @@ def preserve_existing_variable_context_values(
         existing_values = list(existing.values or [])
         if not context_values and existing_values:
             context["values"] = sample_variable_values(existing_values, existing.value_kind)
+
+        # A first observation IS reported as drift. That is the settled decision,
+        # not an omission. A stored ``observed_count`` of 0 means the values
+        # arriving now are the backlog — every value the path has ever carried
+        # surfacing at once because something finally sampled it — and a variable
+        # with a documented list reports the lot as novel. No guard here can tell
+        # that from a change: marking the context only defers the report by a tick
+        # (the row is then filled, so the sampler skips it, the observation
+        # arrives empty, and the restore above hands the detector exactly those
+        # values on the next run), and suppressing RESTORED values instead would
+        # silence replay-enriched ones, which reach the detector by no other
+        # route.
+        #
+        # No durable column rescues it either. ``first_observed_at`` decides
+        # nothing alone — "was the list documented before we looked" has to be
+        # compared against when ``allowed_values`` was written, and ``Variable``
+        # carries no timestamps at all (``VariableValue`` and the event overrides
+        # do); adding them would still not answer it, because a row timestamp
+        # moves when a description is edited and the question is about one
+        # column. A baseline BOOLEAN is the in-memory marker made durable:
+        # cleared on the second observation it defers by that same tick, and
+        # never cleared it silences genuinely new values arriving later on this
+        # row — strictly worse than reporting the backlog. Only a stored copy of
+        # the values present at the first observation could exempt a backlog and
+        # still report a later arrival, and it silences the case that must not be
+        # silenced: documenting a list on day 30 is exactly a request to hear
+        # about everything already observed outside it, which a baseline written
+        # on day 1 buries. Only the detector knows whether a contract existed when
+        # the values were seen, and it reads these rows without ever writing them.
+        #
+        # So the backlog surfaces, and the variables guide tells operators to
+        # expect a batch the first time they document a list.
 
         context["observed_count"] = max(
             int(context.get("observed_count") or 0),
