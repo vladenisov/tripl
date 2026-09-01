@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -283,9 +283,15 @@ def preserve_existing_variable_context_values(
     project_id: uuid.UUID,
     branch_id: uuid.UUID | None,
     contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]],
-) -> None:
+) -> dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], list[str]]:
+    """Fold every stored row into the planned context about to replace it.
+
+    Returns the stored ``values`` per context key, snapshotted before any
+    merging, so ``insert_variable_contexts`` can tell a rewrite that changed a
+    row from one that restored it byte-for-byte.
+    """
     if not contexts:
-        return
+        return {}
 
     variable_ids = {variable_id for variable_id, _, _ in contexts}
     event_ids = {event_id for _, event_id, _ in contexts}
@@ -300,6 +306,7 @@ def preserve_existing_variable_context_values(
         query = query.where(VariableValue.branch_id == branch_id)
 
     existing_contexts = session.execute(query).scalars().all()
+    prior_values: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], list[str]] = {}
     for existing in existing_contexts:
         key = (existing.variable_id, existing.event_id, existing.field_definition_id)
         context = contexts.get(key)
@@ -308,6 +315,7 @@ def preserve_existing_variable_context_values(
 
         context_values = list(context.get("values") or [])
         existing_values = list(existing.values or [])
+        prior_values[key] = existing_values
         if not context_values and existing_values:
             context["values"] = sample_variable_values(existing_values, existing.value_kind)
 
@@ -343,6 +351,36 @@ def preserve_existing_variable_context_values(
         # So the backlog surfaces, and the variables guide tells operators to
         # expect a batch the first time they document a list.
 
+        if context_values and existing_values:
+            # A non-empty payload is a WINDOW, not a census: the rotating
+            # sampler reads 1-3h of traffic, so a stored value absent from the
+            # window is still real. Replacing the list with the window dropped
+            # one historical value per context per scheduled cycle on
+            # production (2026-08-31); union instead, existing values first so
+            # the stored order — and the chips rendered from it — stays
+            # stable. Same order as ``_extend_unique_values`` on the metrics
+            # sink, this write path's sibling.
+            merged = sample_variable_values(
+                # ``low`` means "no cap" here: the union has to be measured
+                # before any trimming, like ``distinct_seen`` on the sink.
+                [*existing_values, *context_values],
+                VariableValueKind.low.value,
+            )
+            distinct_seen = len(merged)
+            # Outgrowing the sample cap is itself a demotion — a capped list
+            # cannot claim "All values" — and it has to be decided BEFORE the
+            # cap, because ``sample_variable_values`` trims only high rows.
+            if (
+                distinct_seen > VARIABLE_VALUE_SAMPLE_LIMIT
+                or existing.value_kind == VariableValueKind.high.value
+            ):
+                context["value_kind"] = VariableValueKind.high.value
+            context["values"] = sample_variable_values(merged, context["value_kind"])
+            context["observed_count"] = max(
+                int(context.get("observed_count") or 0),
+                distinct_seen,
+            )
+
         context["observed_count"] = max(
             int(context.get("observed_count") or 0),
             existing.observed_count,
@@ -350,6 +388,7 @@ def preserve_existing_variable_context_values(
         )
         if existing.value_kind == VariableValueKind.high.value:
             context["value_kind"] = VariableValueKind.high.value
+    return prior_values
 
 
 def record_variable_contexts(
@@ -408,8 +447,21 @@ def insert_variable_contexts(
     project_id: uuid.UUID,
     branch_id: uuid.UUID | None,
     contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]],
-) -> None:
-    for context in contexts.values():
+    prior_values: Mapping[tuple[uuid.UUID, uuid.UUID, uuid.UUID], list[str]] | None = None,
+) -> int:
+    """Write one row per planned context; count the writes a reader can see.
+
+    The return value is the number of rows this call left holding a NON-EMPTY
+    values list that is new or changed — a row restored to exactly its stored
+    values does not count, and neither does one created empty. ``prior_values``
+    is the pre-merge snapshot ``preserve_existing_variable_context_values``
+    took of the rows this run deletes and re-inserts; without it every insert
+    looks new. The semantics are a pinned contract: the scan task publishes
+    the sum in ``result_summary`` under ``variable_values_written``.
+    """
+    prior = prior_values or {}
+    variable_values_written = 0
+    for key, context in contexts.items():
         payload = {
             "id": uuid.uuid4(),
             "project_id": project_id,
@@ -424,6 +476,10 @@ def insert_variable_contexts(
         if branch_id is not None:
             payload["branch_id"] = branch_id
         session.add(VariableValue(**payload))
+        values = list(context["values"] or [])
+        if values and values != prior.get(key):
+            variable_values_written += 1
+    return variable_values_written
 
 
 def resolve_main_branch_id(session: Session, project_id: uuid.UUID) -> uuid.UUID | None:

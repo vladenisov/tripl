@@ -615,8 +615,16 @@ count so "wired up and nothing routes here" is still visible.
 
 Each match creates a **delivery** that moves through `pending → sent` or
 `pending → failed`. Sending is idempotent, and a background reaper requeues
-deliveries that get stuck (roughly every 5 minutes, up to a few attempts). You can
-**retry** failed deliveries manually from the UI.
+deliveries that get stuck (roughly every 5 minutes, up to a few attempts). The
+same reaper also retries a delivery that **failed on a transient network
+error** — destination unreachable, connection refused, a timeout — for up to
+six hours after the failure, within that same attempt budget. Between attempts
+the row keeps status **failed** and its last error, so the Inbox always shows
+the latest real outcome; a retry that succeeds flips it to **sent**. Every
+other failure — bad credentials, a rejected payload — is never retried
+automatically: fix the cause and press **Retry** in the UI, which also resets
+the attempt budget, so a delivery you retry by hand starts with a fresh set of
+attempts.
 
 A Telegram delivery carrying more than **8 matched items** is split into several
 deliveries, because Telegram rejects a message over 4,096 characters outright.

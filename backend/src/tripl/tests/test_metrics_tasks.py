@@ -37,6 +37,7 @@ from tripl.models.schema_drift import SchemaDrift
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue, VariableValueKind
 from tripl.worker.tasks._errors import ScanError, user_facing_error
+from tripl.worker.tasks.metrics import catalog_sync as metrics_catalog_sync
 from tripl.worker.tasks.metrics import collect as metrics_collect
 from tripl.worker.tasks.metrics import dispatch as metrics_dispatch
 from tripl.worker.tasks.metrics import generation as metrics_generation
@@ -8932,3 +8933,307 @@ def test_an_unbound_composition_metric_stays_due_so_it_can_report(
         assert metrics_schedule._event_composition_due(session, unbound) is True
         # ...and a properly bound metric with no newer source bucket is not.
         assert metrics_schedule._event_composition_due(session, bound) is False
+
+
+# --- sampler ring + rotation pace (tripl-81p5), sampler observability (tripl-d1rd)
+
+
+def _seed_json_path_variable(
+    session: Session,
+    config: ScanConfig,
+    *,
+    source_name: str = "payload.user.plan",
+    excluded: bool = False,
+) -> Variable:
+    variable = Variable(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        name=source_name.rpartition(".")[2],
+        source_name=source_name,
+        variable_type="string",
+        bindings=[source_name],
+        excluded_from_scans=excluded,
+    )
+    session.add(variable)
+    session.commit()
+    return variable
+
+
+def _seed_variable_context(
+    session: Session,
+    config: ScanConfig,
+    variable: Variable,
+    *,
+    observed_count: int,
+    values: list[str],
+) -> VariableValue:
+    """A stored context row; its observation count is what makes a candidate."""
+    assert config.event_type_id is not None
+    fd = FieldDefinition(
+        id=uuid.uuid4(),
+        event_type_id=config.event_type_id,
+        name="payload",
+        display_name="Payload",
+        field_type="json",
+        is_required=False,
+        description="",
+    )
+    event = Event(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        event_type_id=config.event_type_id,
+        name="Signup",
+        description="",
+        status="implemented",
+    )
+    row = VariableValue(
+        id=uuid.uuid4(),
+        project_id=variable.project_id,
+        branch_id=variable.branch_id,
+        variable_id=variable.id,
+        event_id=event.id,
+        field_definition_id=fd.id,
+        source_column="payload",
+        value_kind="high",
+        observed_count=observed_count,
+        values=list(values),
+    )
+    session.add_all([fd, event, row])
+    session.commit()
+    return row
+
+
+def _candidates(session: Session, config: ScanConfig) -> list[tuple[str, str]]:
+    return metrics_catalog_sync._unfilled_json_path_candidates(
+        session,
+        project_id=config.project_id,
+        branch_id=None,
+        json_columns={"payload"},
+    )
+
+
+def test_a_variable_with_no_context_rows_is_not_a_candidate(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The ring-bloat half of tripl-81p5.
+
+    A contextless variable is an unused one — no event field references its
+    token, so a sampled value would have no row to land in. Keeping these as
+    permanent candidates ran the production ring at ~10x its fillable size
+    (1545 of 1777 variables) and starved the paths a sample could actually fill.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        _seed_json_path_variable(session, config)
+
+        assert _candidates(session, config) == []
+
+
+def test_a_variable_with_an_unfilled_context_is_a_candidate(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        variable = _seed_json_path_variable(session, config)
+        _seed_variable_context(session, config, variable, observed_count=0, values=[])
+
+        assert _candidates(session, config) == [("payload", "user.plan")]
+
+
+def test_a_fully_observed_variable_is_not_a_candidate(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        variable = _seed_json_path_variable(session, config)
+        _seed_variable_context(session, config, variable, observed_count=2, values=["pro"])
+
+        assert _candidates(session, config) == []
+
+
+def test_an_excluded_variable_is_not_a_candidate_even_with_an_unfilled_context(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The tombstone must silence sampling too, or exclusion still costs queries."""
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        variable = _seed_json_path_variable(session, config, excluded=True)
+        _seed_variable_context(session, config, variable, observed_count=0, values=[])
+
+        assert _candidates(session, config) == []
+
+
+_STRIDE_TICK = timedelta(hours=1)
+_STRIDE_END = datetime(2026, 8, 30, 12, tzinfo=UTC)
+
+
+def test_rotating_window_strides_by_its_own_size_between_ticks() -> None:
+    """The rotation-pace half of tripl-81p5.
+
+    Under the pre-fix one-candidate stride this test FAILS: consecutive slices
+    would overlap on all but one element (``second[:-1] == first[1:]``), which
+    on production meant 199/200 of each run's budget re-sampled the previous
+    run's paths and the last candidates waited ~67 days for a first attempt.
+    """
+    candidates = [("payload", f"user.p{index}") for index in range(10)]
+
+    first = metrics_catalog_sync._rotating_window(
+        candidates, size=4, window_end=_STRIDE_END, tick=_STRIDE_TICK
+    )
+    second = metrics_catalog_sync._rotating_window(
+        candidates, size=4, window_end=_STRIDE_END + _STRIDE_TICK, tick=_STRIDE_TICK
+    )
+
+    start = candidates.index(first[0])
+    assert second == [candidates[(start + 4 + offset) % 10] for offset in range(4)], (
+        "the next tick's slice must start exactly one slice-width further on"
+    )
+    assert set(first).isdisjoint(second), "with 2*size <= len, consecutive slices cannot overlap"
+
+
+def test_rotating_window_repeats_the_slice_for_a_retry_of_the_same_window() -> None:
+    """A retry re-samples what the failed attempt was doing, not the next slice."""
+    candidates = [("payload", f"user.p{index}") for index in range(10)]
+
+    attempt = metrics_catalog_sync._rotating_window(
+        candidates, size=4, window_end=_STRIDE_END, tick=_STRIDE_TICK
+    )
+    retry = metrics_catalog_sync._rotating_window(
+        candidates, size=4, window_end=_STRIDE_END, tick=_STRIDE_TICK
+    )
+
+    assert retry == attempt
+
+
+def test_rotating_window_returns_everything_when_the_ring_fits() -> None:
+    candidates = [("payload", f"user.p{index}") for index in range(3)]
+
+    window = metrics_catalog_sync._rotating_window(
+        candidates, size=200, window_end=_STRIDE_END, tick=_STRIDE_TICK
+    )
+
+    assert window == candidates
+
+
+class _SamplingFakeAdapter:
+    """The scheduled collector's warehouse surface, JSON column included."""
+
+    def test_connection(self) -> bool:
+        return True
+
+    def get_columns(self, base_query: str) -> list[ColumnInfo]:
+        return [
+            ColumnInfo(name="time", type_name="DateTime"),
+            ColumnInfo(name="event_name", type_name="String"),
+            ColumnInfo(name="payload", type_name="JSON"),
+        ]
+
+    def get_json_path_samples(self, *args: object, **kwargs: object):
+        return {"payload": {"user.plan": ['"pro"', '"free"']}}
+
+    def get_time_bucketed_counts(
+        self,
+        base_query: str,
+        time_column: str,
+        interval: str,
+        regular_columns: list[str],
+        json_columns: list[str],
+        json_value_paths: dict[str, list[str]] | None,
+        time_from: datetime,
+        time_to: datetime,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+        return (["event_name"], [], [])
+
+    def close(self) -> None:
+        return None
+
+
+def test_scheduled_run_reports_sampler_progress_in_result_summary(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """tripl-d1rd: a scheduled run must say what its sampler did.
+
+    ``variable_values_touched`` is bound to the replay path and reads 0 on every
+    scheduled run, so before these keys the 2026-08-31 production stall (whole
+    cycles moving zero contexts from empty to filled) was invisible in the job
+    summaries an operator actually looks at.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        variable = _seed_json_path_variable(session, config)
+        _seed_variable_context(session, config, variable, observed_count=0, values=[])
+        config_id = str(config.id)
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: _SamplingFakeAdapter())
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        metrics,
+        "generate_events",
+        lambda *args, **kwargs: GenerationResult(columns_analyzed=1, variable_values_written=2),
+    )
+
+    result = metrics.collect_metrics.run(config_id)
+
+    assert result["mode"] == "metrics_collection"
+    # One candidate ring entry, sampled this run, and the adapter had values.
+    assert result["json_path_ring_size"] == 1
+    assert result["json_paths_sampled"] == 1
+    assert result["json_paths_with_samples"] == 1
+    # The generator's own write count, summed across this run's generate calls.
+    assert result["variable_values_written"] == 2
+    # The seeded context stays unfilled (generate_events is stubbed), so the
+    # post-sync aggregate an operator watches for convergence reads exactly it.
+    assert result["variable_contexts_unfilled"] == 1
+
+
+def test_replay_run_summary_does_not_gain_the_scheduled_sampler_keys(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Replay reports through ``variable_values_touched`` and its own sampler;
+    the scheduled-run keys would read as zeros there and imply a stalled ring."""
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        job = ScanJob(
+            id=uuid.uuid4(),
+            scan_config_id=config.id,
+            status=ScanJobStatus.pending.value,
+        )
+        session.add(job)
+        session.commit()
+        config_id = str(config.id)
+        job_id = str(job.id)
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: _SamplingFakeAdapter())
+    monkeypatch.setattr(
+        metrics,
+        "analyze_cardinality",
+        lambda *args, **kwargs: pytest.fail("replay must not run cardinality analysis"),
+    )
+    monkeypatch.setattr(
+        metrics,
+        "generate_events",
+        lambda *args, **kwargs: pytest.fail("replay must not sync catalog events"),
+    )
+
+    result = metrics.collect_metrics.run(
+        config_id,
+        job_id,
+        time_from="2026-01-01T08:00:00+00:00",
+        time_to="2026-01-01T10:00:00+00:00",
+    )
+
+    assert result["mode"] == "metrics_replay"
+    assert result["variable_values_touched"] == 0
+    for key in (
+        "json_path_ring_size",
+        "json_paths_sampled",
+        "json_paths_with_samples",
+        "variable_values_written",
+        "variable_contexts_unfilled",
+    ):
+        assert key not in result

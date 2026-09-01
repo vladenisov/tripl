@@ -123,6 +123,11 @@ class GenerationResult:
     events_grouped: int = 0
     events_merged: int = 0
     variables_created: int = 0
+    # VariableValue rows this run left holding a non-empty values list that is
+    # new or changed; a row restored byte-for-byte does not count. Pinned
+    # contract: the scan task publishes it in ``result_summary`` under
+    # ``variable_values_written`` — do not rename.
+    variable_values_written: int = 0
     value_drifts_detected: int = 0
     columns_analyzed: int = 0
     details: list[str] = field(default_factory=list)
@@ -322,7 +327,7 @@ def generate_events(
         field_definitions=field_definitions,
         next_event_order=next_event_order,
     )
-    _preserve_existing_variable_context_values(
+    prior_context_values = _preserve_existing_variable_context_values(
         session,
         project_id=project_id,
         branch_id=main_branch_id,
@@ -340,11 +345,14 @@ def generate_events(
         # invalidate a row ``_record_variable_contexts`` refused to re-record.
         excluded_variable_ids=variable_index.excluded_ids(),
     )
-    _insert_variable_contexts(
+    result.variable_values_written = _insert_variable_contexts(
         session,
         project_id=project_id,
         branch_id=main_branch_id,
         contexts=variable_contexts,
+        # The pre-merge snapshot: without it a steady-state cycle that merely
+        # restores every row would report each one as written.
+        prior_values=prior_context_values,
     )
     result.value_drifts_detected = _detect_variable_value_drifts(
         session,

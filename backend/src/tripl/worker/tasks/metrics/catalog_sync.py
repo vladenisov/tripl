@@ -137,12 +137,40 @@ class _GenerateEventsFn(Protocol):
     ) -> GenerationResult: ...
 
 
+@dataclass(frozen=True)
+class JsonPathSampling:
+    """One run's observed-value samples, with the counters that make it visible.
+
+    The counters exist because a scheduled run used to surface NOTHING about
+    this sampler: the only sampler counter in ``result_summary``
+    (``variable_values_touched``) is bound to the replay path and reads 0 on
+    every scheduled run, which is how a production stall (2026-08-31: whole
+    cycles moving zero contexts from empty to filled) stayed invisible in weeks
+    of job summaries.
+
+    ``ring_size`` is the whole candidate ring, ``paths_sampled`` the slice of
+    it this run actually sent to the adapter, ``paths_with_samples`` how many
+    of those came back with at least one value — so ring far above sampled
+    means backlog, and sampled far above with-samples means paths the sampled
+    rows currently carry no values for.
+    """
+
+    samples: dict[str, dict[str, list[str]]] = field(default_factory=dict)
+    ring_size: int = 0
+    paths_sampled: int = 0
+    paths_with_samples: int = 0
+
+
 @dataclass
 class CatalogSyncResult:
     gen_results: dict[str, GenerationResult] = field(default_factory=dict)
     single_result: GenerationResult | None = None
     contract_violations_detected: int = 0
     replay_branch_id: uuid.UUID | None = None
+    # Stays at its zero default on replay: replay has its own sampler in
+    # ``tasks`` and reports through ``variable_values_touched``; only scheduled
+    # runs fill this, and only scheduled summaries surface it.
+    json_path_sampling: JsonPathSampling = field(default_factory=JsonPathSampling)
     # A VariableIndex, not a name-keyed dict: replay has to match a field
     # value's token through bindings and source_name too, since a scan-created
     # variable's display name is no longer its warehouse path.
@@ -178,6 +206,20 @@ def _unfilled_json_path_candidates(
     ``observed_count=0`` and could never be asked about again — the production
     symptom this sampler exists to fix, back for everything but the first event.
 
+    "At least one context row" is a requirement, not shorthand for "nothing
+    observed yet": a variable with NO context rows is not a candidate. Context
+    rows are minted for the event fields that reference the variable's token, so
+    a contextless variable is an unused one — nothing in the plan points at it,
+    and a sampled value would have no row to land in. An earlier version kept
+    such variables as permanent candidates for the just-minted case, and that
+    starved the fillable paths: on windy-ios 1545 of 1777 JSON-path variables
+    are unused, so the ring ran ~10x its fillable size and a scheduled cycle
+    measured on 2026-08-31 moved ZERO contexts from empty to filled while the
+    same four already-filled paths were resampled run after run. The just-minted
+    case needs no such allowance — ``generate_events`` writes a variable's
+    (empty) context rows in the same pass that creates the variable, so it joins
+    the ring one run later, the same one-context delay accepted below.
+
     "Holds no observation" is tested on ``observed_count``, an Integer column, and
     deliberately NOT on ``values``: that column is ``sa.JSON`` and not JSONB, so
     on PostgreSQL ``json = json`` has no operator and a ``!= '[]'`` comparison
@@ -186,9 +228,10 @@ def _unfilled_json_path_candidates(
     of a context sets the count to at least ``len(values)``.
 
     The sampling stays self-extinguishing, one context later than it used to be:
-    a variable leaves the candidate set once every context it has is observed, so
-    a project that has converged pays the two indexed queries below and issues no
-    warehouse call at all.
+    a variable enters the candidate set once its first (empty) context exists and
+    leaves it once every context it has is observed, so a project that has
+    converged pays the two indexed queries below and issues no warehouse call at
+    all.
     """
     # ``lazyload`` because ``Variable.value_contexts`` is ``lazy="selectin"``, and
     # each of those rows then selectin-loads its FieldDefinition: hydrating the
@@ -207,9 +250,9 @@ def _unfilled_json_path_candidates(
         return []
 
     # MIN over a variable's contexts: 0 means at least one of them is still
-    # unfilled. A variable with no contexts at all is absent from the map and
-    # stays a candidate — that is the state a variable this run's predecessor
-    # minted is in, and the state the sampler was written for.
+    # unfilled. A variable with no contexts at all is absent from the map and is
+    # NOT a candidate — no event field references its token, so there is no row
+    # a sample could fill (the ring-bloat measurement in the docstring).
     lowest_observed_query = (
         select(VariableValue.variable_id, sa_func.min(VariableValue.observed_count))
         .where(VariableValue.project_id == project_id)
@@ -224,7 +267,7 @@ def _unfilled_json_path_candidates(
     candidates: set[tuple[str, str]] = set()
     for variable in variables:
         lowest = lowest_observed.get(variable.id)
-        if variable.excluded_from_scans or (lowest is not None and lowest > 0):
+        if variable.excluded_from_scans or lowest is None or lowest > 0:
             continue
         for token in VariableIndex.source_tokens_of(variable):
             column, _, path = token.partition(".")
@@ -252,12 +295,25 @@ def _rotating_window(
     window_end: datetime,
     tick: timedelta,
 ) -> list[tuple[str, str]]:
-    """A deterministic slice of ``candidates`` that moves on by one each run.
+    """A deterministic slice of ``candidates`` that strides by its own size each run.
 
     A project with thousands of unfilled paths must not try to fill them all in
     one run, and must not spend every run on the same alphabetical prefix either
     — a path whose values never appear in the sampled rows stays a candidate
     forever, and a fixed window would let it block everything behind it.
+
+    The stride is the slice's own SIZE, not one. Advancing one candidate per run
+    looked like rotation and was not: consecutive slices overlapped on all but
+    one of their 200 paths, so on windy-ios's ~1800-candidate ring a full lap
+    took ~75 days and candidate #1600 waited ~67 days for its first attempt —
+    the production stall of 2026-08-31, where whole cycles resampled the same
+    already-filled prefix and moved nothing from empty to filled. Striding by
+    ``size`` covers the ring instead: consecutive starts differ by ``size mod
+    len``, so the reachable starts are exactly the multiples of
+    ``gcd(size, len)``; adjacent distinct starts sit ``gcd`` apart and
+    ``gcd <= size``, so every candidate falls inside some slice within
+    ``len // gcd`` runs — full coverage every few runs rather than a 200-wide
+    burst once a lap.
 
     The ordinal is the window end floored to the config's SCHEDULED INTERVAL,
     which is the only quantity in reach that counts RUNS. Two near misses are
@@ -273,13 +329,14 @@ def _rotating_window(
 
     ``collect_metrics`` floors the window end onto the interval grid, so this
     ordinal steps by exactly one per scheduled tick and repeats for a retry of
-    the same window — a retry re-samples what it was doing rather than skipping a
-    slice.
+    the same window — a retry re-samples the same slice rather than skipping
+    one.
     """
     if len(candidates) <= size:
         return list(candidates)
     tick_seconds = max(int(tick.total_seconds()), 1)
-    start = (int(window_end.timestamp()) // tick_seconds) % len(candidates)
+    ordinal = int(window_end.timestamp()) // tick_seconds
+    start = (ordinal * size) % len(candidates)
     return [candidates[(start + offset) % len(candidates)] for offset in range(size)]
 
 
@@ -311,7 +368,7 @@ def _collect_json_path_samples(
     catalog_scan_window: TimeWindow | None,
     time_from_dt: datetime,
     time_to_dt: datetime,
-) -> dict[str, dict[str, list[str]]]:
+) -> JsonPathSampling:
     """Observed values for the JSON-path variables that have none yet.
 
     Answers the question the breakdown rows cannot: a JSON path becomes a
@@ -324,6 +381,10 @@ def _collect_json_path_samples(
     Called once per job, outside the per-chunk loop, and never on a replay —
     replay has its own sampler in ``tasks``, over the events it replayed.
 
+    The samples come back wrapped in a ``JsonPathSampling`` with the run's
+    counters, which ``collect_metrics`` copies into ``result_summary`` — the
+    class docstring explains why the counters have to exist.
+
     The adapter is asked for the COLUMNS that carry a candidate, and the answer is
     then narrowed to the paths this run actually wants. Narrowing on the way in
     would be better — an explicit path list is the one thing that would let
@@ -334,7 +395,7 @@ def _collect_json_path_samples(
     """
     json_columns = {column.name for column in columns if _is_json_type(column.type_name)}
     if not json_columns:
-        return {}
+        return JsonPathSampling()
 
     candidates = _unfilled_json_path_candidates(
         session,
@@ -343,7 +404,7 @@ def _collect_json_path_samples(
         json_columns=json_columns,
     )
     if not candidates:
-        return {}
+        return JsonPathSampling()
 
     wanted: dict[str, set[str]] = {}
     for column, path in _rotating_window(
@@ -353,6 +414,7 @@ def _collect_json_path_samples(
         tick=_scheduled_tick(config, fallback=time_to_dt - time_from_dt),
     ):
         wanted.setdefault(column, set()).add(path)
+    paths_sampled = sum(len(paths) for paths in wanted.values())
 
     try:
         discovered = adapter.get_json_path_samples(
@@ -377,7 +439,10 @@ def _collect_json_path_samples(
             config.id,
             exc_info=True,
         )
-        return {}
+        # The counters still report what was attempted: a summary showing paths
+        # sampled but none coming back is the signature of a failing adapter, and
+        # all-zeros would hide that behind "nothing to do".
+        return JsonPathSampling(ring_size=len(candidates), paths_sampled=paths_sampled)
 
     samples: dict[str, dict[str, list[str]]] = {}
     for column, path_samples in discovered.items():
@@ -390,7 +455,14 @@ def _collect_json_path_samples(
             formatted = _formatted_samples(values)
             if formatted:
                 samples.setdefault(column, {})[path] = formatted
-    return samples
+    return JsonPathSampling(
+        samples=samples,
+        ring_size=len(candidates),
+        paths_sampled=paths_sampled,
+        # Only non-empty formatted lists are stored, so this is exactly "came
+        # back with at least one value".
+        paths_with_samples=sum(len(column_samples) for column_samples in samples.values()),
+    )
 
 
 def sync_catalog(
@@ -439,10 +511,8 @@ def sync_catalog(
     # drift can be raised against an event whose group never emitted the value.
     # The value did occur in the config's rows; only the event it is attributed
     # to is the wrong one.
-    json_path_samples: dict[str, dict[str, list[str]]] = (
-        {}
-        if is_replay
-        else _collect_json_path_samples(
+    if not is_replay:
+        out.json_path_sampling = _collect_json_path_samples(
             session,
             adapter=adapter,
             config=config,
@@ -451,7 +521,7 @@ def sync_catalog(
             time_from_dt=time_from_dt,
             time_to_dt=time_to_dt,
         )
-    )
+    json_path_samples: dict[str, dict[str, list[str]]] = out.json_path_sampling.samples
 
     if is_replay:
         (

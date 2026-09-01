@@ -10,6 +10,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.core.adapters.base import ColumnInfo
+from tripl.core.analyzers._event_generator_variables import (
+    VARIABLE_VALUE_SAMPLE_LIMIT,
+    preserve_existing_variable_context_values,
+)
 from tripl.core.analyzers.cardinality import BreakdownAnalysis, CardinalityResult
 from tripl.core.analyzers.event_generator import (
     _ensure_variable,
@@ -285,9 +289,17 @@ class TestEventGeneration:
         assert contexts[0].observed_count == 12
         assert contexts[0].values == sorted(f"cat{i}" for i in range(12))
 
-    def test_variable_contexts_are_replaced_on_rescan(
+    def test_variable_contexts_survive_a_disjoint_sample_window_on_rescan(
         self, sync_session: Session, project_and_type
     ):
+        """A rescan whose sample shares nothing with the stored list evicts nothing.
+
+        This test used to pin the opposite — a rescan REPLACED the stored list —
+        which is the semantics that cost production one distinct value per
+        context per scheduled cycle (2026-08-31). Existing values lead the
+        union and the sample cap applies after, so the stored sample keeps the
+        earliest values while ``observed_count`` keeps counting.
+        """
         project, et, fds = project_and_type
 
         first = {
@@ -313,8 +325,9 @@ class TestEventGeneration:
         sync_session.commit()
 
         context = sync_session.execute(select(VariableValue)).scalar_one()
-        assert all(value.startswith("secondvalue") for value in context.values)
-        assert not any(value.startswith("firstvalue") for value in context.values)
+        assert len(context.values) == VARIABLE_VALUE_SAMPLE_LIMIT
+        assert all(value.startswith("firstvalue") for value in context.values)
+        assert context.observed_count == 150
 
     def test_rescan_preserves_replay_enriched_empty_variable_context_values(
         self, sync_session: Session, project_and_type
@@ -422,6 +435,166 @@ class TestEventGeneration:
         assert context.value_kind == "high"
         assert context.observed_count == 0
         assert context.values == []
+
+    def test_resampling_a_json_path_merges_into_stored_values(
+        self, sync_session: Session, project_and_type
+    ):
+        """A fresh non-empty sample UNIONS into the stored list, never replaces it.
+
+        The rotating sampler reads a 1-3h window, so a fresh payload carries
+        only the values that happened to occur in that window — on production
+        (2026-08-31) one scheduled cycle made ten contexts each lose exactly
+        one historical value this way. With the pre-fix replace semantics this
+        test fails with values == ["b", "e"].
+        """
+        project, et, fds = project_and_type
+        analysis = self._json_path_analysis("user.plan")
+
+        generate_events(
+            sync_session,
+            project.id,
+            et.id,
+            analysis,
+            fds,
+            json_path_samples={"payload": {"user.plan": ["a", "b", "c", "d"]}},
+        )
+        sync_session.commit()
+
+        generate_events(
+            sync_session,
+            project.id,
+            et.id,
+            analysis,
+            fds,
+            json_path_samples={"payload": {"user.plan": ["b", "e"]}},
+        )
+        sync_session.commit()
+
+        context = sync_session.execute(select(VariableValue)).scalar_one()
+        # Existing values lead, incoming append unique — the same order the
+        # metrics sink writes, so the rendered chip order stays stable.
+        assert context.values == ["a", "b", "c", "d", "e"]
+        assert context.observed_count == 5
+        assert context.value_kind == "high"
+
+    def test_merge_past_the_sample_cap_trims_values_but_not_the_count(
+        self, sync_session: Session, project_and_type
+    ):
+        """Outgrowing the sample cap demotes the context; the count stays uncapped.
+
+        ``values`` is what the UI can show, ``observed_count`` is how many
+        distinct values were seen — the same split the metrics sink keeps. A
+        capped list can no longer claim "All values", so the row leaves ``low``
+        even though neither side alone was anywhere near the cap.
+        """
+        project, et, fds = project_and_type
+        variable = Variable(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name="plan_group",
+            source_name="plan_group",
+            variable_type="string",
+        )
+        event = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name="Merged",
+            source_name="Merged",
+            order=0,
+        )
+        sync_session.add_all([variable, event])
+        sync_session.flush()
+        existing_values = [f"v{i:02d}" for i in range(VARIABLE_VALUE_SAMPLE_LIMIT - 2)]
+        sync_session.add(
+            VariableValue(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                variable_id=variable.id,
+                event_id=event.id,
+                field_definition_id=fds["screen"].id,
+                source_column="screen",
+                value_kind="low",
+                observed_count=len(existing_values),
+                values=existing_values,
+            )
+        )
+        sync_session.commit()
+
+        key = (variable.id, event.id, fds["screen"].id)
+        # Two values re-observed, three new: the union holds cap + 1 distinct.
+        incoming = [*existing_values[-2:], "w0", "w1", "w2"]
+        contexts = {
+            key: {
+                "variable_id": variable.id,
+                "event_id": event.id,
+                "field_definition_id": fds["screen"].id,
+                "source_column": "screen",
+                "value_kind": "low",
+                "observed_count": len(incoming),
+                "values": incoming,
+            }
+        }
+
+        prior = preserve_existing_variable_context_values(
+            sync_session,
+            project_id=project.id,
+            branch_id=None,
+            contexts=contexts,
+        )
+
+        context = contexts[key]
+        assert context["values"] == [*existing_values, "w0", "w1"]
+        assert len(context["values"]) == VARIABLE_VALUE_SAMPLE_LIMIT
+        assert context["observed_count"] == VARIABLE_VALUE_SAMPLE_LIMIT + 1
+        assert context["value_kind"] == "high"
+        # The snapshot is the PRE-merge stored list — what the write counter
+        # compares the re-inserted row against.
+        assert prior == {key: existing_values}
+
+    def test_variable_values_written_counts_only_new_or_changed_rows(
+        self, sync_session: Session, project_and_type
+    ):
+        """Only a row left holding a NEW or CHANGED non-empty list counts.
+
+        The scan task publishes this number in its ``result_summary``, so a
+        steady-state cycle that merely restores every row must report zero —
+        otherwise the count reads as churn that never happened.
+        """
+        project, et, fds = project_and_type
+        analysis = self._json_path_analysis("user.plan")
+
+        def _generate(samples: list[str] | None):
+            return generate_events(
+                sync_session,
+                project.id,
+                et.id,
+                analysis,
+                fds,
+                json_path_samples=(
+                    None if samples is None else {"payload": {"user.plan": samples}}
+                ),
+            )
+
+        minted = _generate(None)
+        sync_session.commit()
+        assert minted.variable_values_written == 0, "created empty: nothing to read back"
+
+        filled = _generate(["free", "pro"])
+        sync_session.commit()
+        assert filled.variable_values_written == 1, "a newly filled row counts"
+
+        resampled = _generate(["free", "pro"])
+        sync_session.commit()
+        assert resampled.variable_values_written == 0, "a byte-identical rewrite does not"
+
+        restored = _generate(None)
+        sync_session.commit()
+        assert restored.variable_values_written == 0, "an untouched restore does not"
+
+        changed = _generate(["enterprise"])
+        sync_session.commit()
+        assert changed.variable_values_written == 1, "a changed row counts"
 
     def _seed_curated_event_with_context(
         self,
@@ -2169,8 +2342,11 @@ def test_json_path_sampling_collects_only_the_paths_that_need_values(
     """
     from tripl.worker.tasks.metrics.catalog_sync import _collect_json_path_samples
 
-    project, _, _ = project_and_type
+    project, et, fds = project_and_type
     config = _sampling_fixtures(sync_session, project, source_name="payload.user.plan")
+    variable = sync_session.execute(select(Variable)).scalar_one()
+    event = _seed_event(sync_session, project, et, "Signup")
+    _seed_context_row(sync_session, variable, event, fds["payload"], observed_count=0, values=[])
 
     class _Adapter:
         def get_json_path_samples(self, *args: object, **kwargs: object):
@@ -2193,7 +2369,10 @@ def test_json_path_sampling_collects_only_the_paths_that_need_values(
         time_to_dt=datetime(2026, 8, 30, 1, tzinfo=UTC),
     )
 
-    assert samples == {"payload": {"user.plan": ["pro", "free"]}}
+    assert samples.samples == {"payload": {"user.plan": ["pro", "free"]}}
+    assert samples.ring_size == 1
+    assert samples.paths_sampled == 1
+    assert samples.paths_with_samples == 1
 
 
 def _seed_event(sync_session: Session, project, et, name: str, *, order: int = 0) -> Event:
@@ -2260,7 +2439,8 @@ def test_json_path_sampling_skips_a_variable_whose_every_context_is_observed(
         time_to_dt=datetime(2026, 8, 30, 1, tzinfo=UTC),
     )
 
-    assert samples == {}
+    assert samples.samples == {}
+    assert samples.ring_size == 0
     # Recorded rather than raised: the collector swallows adapter exceptions on
     # purpose, so an assert inside the double would be caught and pass silently.
     assert calls == [], "a filled path must not cost a warehouse query"
@@ -2309,7 +2489,7 @@ def test_json_path_sampling_asks_again_while_one_context_is_still_empty(
         time_to_dt=datetime(2026, 8, 30, 1, tzinfo=UTC),
     )
 
-    assert samples == {"payload": {"user.plan": ["pro", "free"]}}
+    assert samples.samples == {"payload": {"user.plan": ["pro", "free"]}}
     # Recorded out here for the same reason as above: the collector swallows
     # adapter exceptions, so an assert inside the double would pass silently.
     assert len(calls) == 1, "an unobserved context must still be worth one query"
@@ -2326,8 +2506,11 @@ def test_json_path_sampling_degrades_to_empty_when_the_adapter_raises(
     """
     from tripl.worker.tasks.metrics.catalog_sync import _collect_json_path_samples
 
-    project, _, _ = project_and_type
+    project, et, fds = project_and_type
     config = _sampling_fixtures(sync_session, project, source_name="payload.user.plan")
+    variable = sync_session.execute(select(Variable)).scalar_one()
+    event = _seed_event(sync_session, project, et, "Signup")
+    _seed_context_row(sync_session, variable, event, fds["payload"], observed_count=0, values=[])
 
     class _RaisingAdapter:
         def get_json_path_samples(self, *args: object, **kwargs: object):
@@ -2343,7 +2526,13 @@ def test_json_path_sampling_degrades_to_empty_when_the_adapter_raises(
         time_to_dt=datetime(2026, 8, 30, 1, tzinfo=UTC),
     )
 
-    assert samples == {}
+    assert samples.samples == {}
+    # The counters still say what was attempted: sampled-but-nothing-back is
+    # the signature of a failing adapter, and all-zeros would hide it behind
+    # "nothing to do".
+    assert samples.ring_size == 1
+    assert samples.paths_sampled == 1
+    assert samples.paths_with_samples == 0
 
 
 def test_json_path_sampling_bounds_the_adapter_query_by_the_collection_window(
@@ -2364,10 +2553,13 @@ def test_json_path_sampling_bounds_the_adapter_query_by_the_collection_window(
         _collect_json_path_samples,
     )
 
-    project, _, _ = project_and_type
+    project, et, fds = project_and_type
     config = _sampling_fixtures(
         sync_session, project, source_name="payload.user.plan", time_column="ts"
     )
+    variable = sync_session.execute(select(Variable)).scalar_one()
+    event = _seed_event(sync_session, project, et, "Signup")
+    _seed_context_row(sync_session, variable, event, fds["payload"], observed_count=0, values=[])
     window_from = datetime(2026, 8, 30, tzinfo=UTC)
     window_to = datetime(2026, 8, 30, 1, tzinfo=UTC)
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
@@ -2387,7 +2579,7 @@ def test_json_path_sampling_bounds_the_adapter_query_by_the_collection_window(
         time_to_dt=window_to,
     )
 
-    assert samples == {"payload": {"user.plan": ["pro"]}}
+    assert samples.samples == {"payload": {"user.plan": ["pro"]}}
     # Recorded and asserted out here: the collector swallows adapter exceptions,
     # so an assert raised inside the double would be logged and the test pass.
     assert len(calls) == 1
@@ -2438,8 +2630,8 @@ def test_rotating_window_hands_back_one_windows_worth_of_distinct_candidates():
 def test_rotating_window_wraps_past_the_end_of_the_candidate_list():
     """A start near the end continues from the front instead of coming up short.
 
-    Every start is covered by stepping one tick per candidate, so this does not
-    depend on where the epoch arithmetic happens to begin.
+    Size 3 and ring 4 are coprime, so four consecutive ticks reach every start
+    regardless of where the epoch arithmetic happens to begin.
     """
     from tripl.worker.tasks.metrics.catalog_sync import _rotating_window
 
@@ -2461,14 +2653,18 @@ def test_rotating_window_wraps_past_the_end_of_the_candidate_list():
     )
 
 
-def test_rotating_window_advances_by_one_candidate_per_scheduled_tick():
-    """The starvation guard: a path the sampler cannot fill must not block the rest.
+def test_rotating_window_strides_a_whole_slice_per_scheduled_tick():
+    """The starvation guard: consecutive runs must sample DIFFERENT paths.
 
-    A project with more unfilled paths than one run may sample keeps them all
-    forever if the window never moves — the paths behind a stuck alphabetical
-    prefix would never be asked about again. One tick here is one SCHEDULED
-    interval, which is what the collector passes; see the collector-level test
-    below for why that is not the collection window.
+    Advancing one candidate per tick looked like rotation and was not:
+    consecutive slices shared all but one element, so the ring's tail waited
+    months for its first attempt (the 2026-08-31 production stall, where whole
+    cycles resampled the same already-filled prefix). Striding by the slice's
+    own size makes consecutive windows disjoint whenever the ring holds at
+    least two slices' worth — under the pre-fix +1 stride the two windows
+    below overlap on three of four paths and this test fails. One tick here is
+    one SCHEDULED interval, which is what the collector passes; see the
+    collector-level test below for why that is not the collection window.
     """
     from tripl.worker.tasks.metrics.catalog_sync import _rotating_window
 
@@ -2482,8 +2678,10 @@ def test_rotating_window_advances_by_one_candidate_per_scheduled_tick():
         tick=_ROTATION_TICK,
     )
 
-    assert second[:-1] == first[1:]
-    assert second[-1] not in first
+    assert set(second).isdisjoint(first)
+    # The stride is exactly one slice: the second window begins on the ring
+    # right where the first one ended.
+    assert second[0] == candidates[(candidates.index(first[-1]) + 1) % len(candidates)]
 
 
 def test_rotating_window_repeats_itself_for_a_retried_run():
@@ -2517,12 +2715,20 @@ def test_json_path_sampling_rotates_on_the_scheduled_interval_not_the_window(
     from tripl.worker.tasks.metrics import catalog_sync
     from tripl.worker.tasks.metrics.catalog_sync import _collect_json_path_samples
 
-    project, _, _ = project_and_type
+    project, et, fds = project_and_type
     config = _sampling_fixtures(
         sync_session, project, source_name="payload.user.plan", time_column="ts"
     )
     config.interval = "1h"
-    _add_path_variable(sync_session, project, "payload.user.tier")
+    plan_variable = sync_session.execute(select(Variable)).scalar_one()
+    tier_variable = _add_path_variable(sync_session, project, "payload.user.tier")
+    event = _seed_event(sync_session, project, et, "Signup")
+    _seed_context_row(
+        sync_session, plan_variable, event, fds["payload"], observed_count=0, values=[]
+    )
+    _seed_context_row(
+        sync_session, tier_variable, event, fds["payload"], observed_count=0, values=[]
+    )
     sync_session.commit()
     # One path per run, so which one this run picked is visible in what it returns.
     monkeypatch.setattr(catalog_sync, "_SAMPLED_PATHS_PER_RUN", 1)
@@ -2531,7 +2737,7 @@ def test_json_path_sampling_rotates_on_the_scheduled_interval_not_the_window(
         def get_json_path_samples(self, *args: object, **kwargs: object):
             return {"payload": {"user.plan": ['"pro"'], "user.tier": ['"gold"']}}
 
-    def _sample(window_end: datetime) -> dict[str, dict[str, list[str]]]:
+    def _sample(window_end: datetime):
         window_from = window_end - timedelta(hours=6)
         return _collect_json_path_samples(
             sync_session,
@@ -2549,9 +2755,11 @@ def test_json_path_sampling_rotates_on_the_scheduled_interval_not_the_window(
     first = _sample(datetime(2026, 8, 30, 12, tzinfo=UTC))
     second = _sample(datetime(2026, 8, 30, 13, tzinfo=UTC))
 
-    assert len(first["payload"]) == 1
-    assert len(second["payload"]) == 1
-    assert first != second, "one scheduled tick must move the rotation on by one path"
+    assert len(first.samples["payload"]) == 1
+    assert len(second.samples["payload"]) == 1
+    assert first.samples != second.samples, (
+        "one scheduled tick must move the rotation on to the other path"
+    )
 
 
 # --- the collector's own wiring, end to end (tripl-xv77.2) -------------------

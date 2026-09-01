@@ -4422,9 +4422,15 @@ def _seed_alert_delivery(
     status: str,
     created_at: datetime,
     dispatch_attempts: int = 0,
+    error_message: str | None = None,
+    updated_at: datetime | None = None,
 ) -> uuid.UUID:
     """Create the minimal Project/ScanConfig/Destination/Rule graph plus one
-    AlertDelivery, returning the delivery id. Used by the reaper tests."""
+    AlertDelivery, returning the delivery id. Used by the reaper tests.
+
+    ``error_message`` and ``updated_at`` are what the reaper's failed arm
+    selects on; when ``updated_at`` is omitted the column keeps its server
+    default rather than being inserted as an explicit NULL."""
     suffix = uuid.uuid4().hex[:8]
     project = Project(
         id=uuid.uuid4(), name=f"Reaper Project {suffix}", slug=f"reaper-{suffix}", description=""
@@ -4463,6 +4469,11 @@ def _seed_alert_delivery(
         name="Reaper Rule",
         enabled=True,
     )
+    optional_fields: dict[str, object] = {}
+    if error_message is not None:
+        optional_fields["error_message"] = error_message
+    if updated_at is not None:
+        optional_fields["updated_at"] = updated_at
     delivery = AlertDelivery(
         id=uuid.uuid4(),
         project_id=project.id,
@@ -4474,6 +4485,7 @@ def _seed_alert_delivery(
         matched_count=1,
         dispatch_attempts=dispatch_attempts,
         created_at=created_at,
+        **optional_fields,
     )
     session.add_all([project, data_source, scan_config, destination, rule, delivery])
     session.commit()
@@ -4540,6 +4552,150 @@ def test_requeue_stranded_alert_deliveries_redispatches_and_bounds_attempts(
 
     Base.metadata.drop_all(engine)
     engine.dispose()
+
+
+# The exact error text of the production failure this arm exists for
+# (2026-08-31: one egress blip lost the only alert of the run).
+_TRANSIENT_SEND_ERROR = "urlopen error [Errno 101] Network is unreachable"
+
+
+def test_requeue_auto_retries_recent_transient_failed_delivery(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from tripl.worker.tasks import maintenance
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'reaper.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+
+    now = datetime.now(UTC)
+    with sync_session_factory() as session:
+        failed_id = _seed_alert_delivery(
+            session,
+            status="failed",
+            created_at=now - timedelta(hours=1),
+            dispatch_attempts=0,
+            error_message=_TRANSIENT_SEND_ERROR,
+            updated_at=now,
+        )
+
+    monkeypatch.setattr(maintenance, "_get_sync_session", sync_session_factory)
+
+    enqueued: list[str] = []
+    from tripl.worker.tasks import alerts as alerts_module
+
+    monkeypatch.setattr(
+        alerts_module.send_alert_delivery,
+        "delay",
+        lambda delivery_id: enqueued.append(delivery_id),
+    )
+
+    result = maintenance.requeue_stranded_alert_deliveries.run()
+
+    assert result["auto_retried"] == 1
+    assert enqueued == [str(failed_id)]
+
+    with sync_session_factory() as session:
+        delivery = session.get(AlertDelivery, failed_id)
+        assert delivery is not None
+        # The attempt is recorded, but the row stays honest about its last
+        # failure: status and error text only change once the send succeeds.
+        assert delivery.dispatch_attempts == 1
+        assert delivery.status == AlertDeliveryStatus.failed.value
+        assert delivery.error_message == _TRANSIENT_SEND_ERROR
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+def test_requeue_auto_retry_skips_non_transient_stale_and_exhausted_failures(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from tripl.worker.tasks import maintenance
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'reaper.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+
+    now = datetime.now(UTC)
+    beyond_horizon = maintenance.AUTO_RETRY_FAILED_HORIZON + timedelta(minutes=5)
+    with sync_session_factory() as session:
+        # Not a network blip: the destination rejected the message.
+        non_transient_id = _seed_alert_delivery(
+            session,
+            status="failed",
+            created_at=now - timedelta(hours=1),
+            error_message="chat not found",
+            updated_at=now,
+        )
+        # Transient, but past the horizon: belongs to the human Retry button.
+        stale_id = _seed_alert_delivery(
+            session,
+            status="failed",
+            created_at=now - timedelta(days=1),
+            error_message=_TRANSIENT_SEND_ERROR,
+            updated_at=now - beyond_horizon,
+        )
+        # Transient and recent, but out of attempts.
+        maxed_id = _seed_alert_delivery(
+            session,
+            status="failed",
+            created_at=now - timedelta(hours=1),
+            dispatch_attempts=maintenance.MAX_DISPATCH_ATTEMPTS,
+            error_message=_TRANSIENT_SEND_ERROR,
+            updated_at=now,
+        )
+
+    monkeypatch.setattr(maintenance, "_get_sync_session", sync_session_factory)
+
+    enqueued: list[str] = []
+    from tripl.worker.tasks import alerts as alerts_module
+
+    monkeypatch.setattr(
+        alerts_module.send_alert_delivery,
+        "delay",
+        lambda delivery_id: enqueued.append(delivery_id),
+    )
+
+    result = maintenance.requeue_stranded_alert_deliveries.run()
+
+    assert result["auto_retried"] == 0
+    assert enqueued == []
+
+    with sync_session_factory() as session:
+        non_transient = session.get(AlertDelivery, non_transient_id)
+        assert non_transient is not None
+        assert non_transient.dispatch_attempts == 0
+        assert non_transient.error_message == "chat not found"
+
+        stale = session.get(AlertDelivery, stale_id)
+        assert stale is not None
+        assert stale.dispatch_attempts == 0
+        assert stale.error_message == _TRANSIENT_SEND_ERROR
+
+        maxed = session.get(AlertDelivery, maxed_id)
+        assert maxed is not None
+        assert maxed.dispatch_attempts == maintenance.MAX_DISPATCH_ATTEMPTS
+        assert maxed.status == AlertDeliveryStatus.failed.value
+        # Its real error is kept — the "exhausted redispatch attempts" relabel
+        # belongs to the pending arm and would lie about why this one failed.
+        assert maxed.error_message == _TRANSIENT_SEND_ERROR
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+def test_is_transient_send_error_classifies_persisted_error_text() -> None:
+    from tripl.worker.tasks._errors import is_transient_send_error
+
+    assert is_transient_send_error(_TRANSIENT_SEND_ERROR)
+    # Case-insensitive: the hint tuples are lowercase, urllib is not.
+    assert is_transient_send_error("Connection Refused by peer")
+    assert is_transient_send_error("read timed out")
+    assert not is_transient_send_error("chat not found")
+    assert not is_transient_send_error(None)
 
 
 # --- SSRF guard on destination URLs (tripl-3h1) ------------------------------

@@ -43,6 +43,7 @@ from tripl.models.project_anomaly_settings import (
 )
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
+from tripl.models.variable_value import VariableValue
 from tripl.services import app_settings_service
 from tripl.worker.celery_app import celery_app
 from tripl.worker.plan_scope import main_branch_id
@@ -903,6 +904,41 @@ def collect_metrics(
                     completed_chunks=len(chunks),
                     phase="completed",
                 )
+            )
+        else:
+            # A scheduled run's sampler was invisible: ``variable_values_touched``
+            # above is bound to the replay path and reads 0 on every scheduled
+            # run, which is how the 2026-08-31 stall (whole cycles moving zero
+            # contexts from empty to filled) hid in weeks of job summaries.
+            # ``variable_values_written`` is the write-side half — contexts this
+            # run's generate calls left holding a new or changed values list.
+            variable_values_written = sum(gr.variable_values_written for gr in gen_results.values())
+            if single_result is not None:
+                variable_values_written += single_result.variable_values_written
+            # Counted AFTER the sync so it reads what this run left behind: one
+            # aggregate on ix_variable_values_project_branch, falling run over
+            # run as the project converges. Flat while the ring is non-empty is
+            # the stall the sampler counters make diagnosable. Scoped like the
+            # candidate query: the main plan, which is all catalog sync writes
+            # (``main_branch_id`` may be None only while no branch exists, and
+            # then no context rows exist either).
+            variable_contexts_unfilled = session.execute(
+                select(sa_func.count())
+                .select_from(VariableValue)
+                .where(
+                    VariableValue.project_id == config.project_id,
+                    VariableValue.branch_id == main_branch_id(session, config.project_id),
+                    VariableValue.observed_count == 0,
+                )
+            ).scalar_one()
+            result_summary.update(
+                {
+                    "json_path_ring_size": catalog.json_path_sampling.ring_size,
+                    "json_paths_sampled": catalog.json_path_sampling.paths_sampled,
+                    "json_paths_with_samples": catalog.json_path_sampling.paths_with_samples,
+                    "variable_values_written": variable_values_written,
+                    "variable_contexts_unfilled": variable_contexts_unfilled,
+                }
             )
 
         if job:

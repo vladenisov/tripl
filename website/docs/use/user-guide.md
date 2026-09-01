@@ -241,7 +241,10 @@ variables, documented values, and warnings for unknown tokens. A JSON field
 must be valid JSON; tripl saves its canonical JSON form while preserving complete
 template values such as `${variable_name}`.
 
-Scans keep observed samples separate from the documented list. If a new value
+Scans keep observed samples separate from the documented list, and the samples
+accumulate — a re-scan merges what it saw into the stored evidence instead of
+replacing it, so a value observed once does not vanish when later scan windows
+stop carrying it. If a new value
 appears, review the drift from the Variables table or the affected event: accept
 it globally, accept a complete override for that event, snooze it, or mark it a
 false positive. If a scan-created variable should stay out of the plan, choose
@@ -570,7 +573,10 @@ Inbox says *"No correlated alert groups"*, work through this checklist:
 4. **Is the cooldown swallowing it?** A recent delivery for the same problem can
    suppress the next one until the cooldown elapses.
 5. **Did delivery fail?** Set the Deliveries status filter to **Failed** to see
-   transport errors (a bad Slack URL, an SMTP problem, etc.).
+   transport errors (a bad Slack URL, an SMTP problem, etc.). A failure from a
+   transient network error — unreachable host, refused connection, a timeout —
+   retries itself for up to six hours; any other failure waits for the row's
+   **Retry** button.
 6. **Did you silence it yourself?** An incident you acknowledged, resolved, muted
    or marked a false positive stops delivering — and **acknowledged** counts,
    which is the one people do not expect. Handled incidents sort below open ones,

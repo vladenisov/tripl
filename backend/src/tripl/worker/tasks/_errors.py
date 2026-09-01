@@ -105,6 +105,22 @@ _CONNECTION_HINTS = (
 )
 
 
+def is_transient_send_error(text: str | None) -> bool:
+    """Whether persisted error text describes a transient network failure.
+
+    Classifies a stored ``error_message`` for retry eligibility: the alert
+    delivery reaper auto-retries a failed delivery only when its recorded
+    failure looks like an egress blip that a later attempt can outlive.
+    Deliberately matches the same substrings that categorize scan failures
+    above — a delivery send and a scan reach the outside world through the
+    same egress, so the texts describing its momentary absence are the same.
+    """
+    if text is None:
+        return False
+    lowered = text.lower()
+    return any(hint in lowered for hint in _TIMEOUT_HINTS + _CONNECTION_HINTS)
+
+
 def _as_scan_failure(message: str) -> str:
     """A curated message, carrying ``SCAN_FAILED_PREFIX`` whether or not it said so.
 

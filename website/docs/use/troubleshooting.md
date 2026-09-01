@@ -190,8 +190,16 @@ sends. A break anywhere in that chain produces silence.
    `pending` delivery and dispatching it, or the broker was down at dispatch, a
    maintenance task (`requeue_stranded_alert_deliveries`, every 5 minutes)
    re-enqueues deliveries still `pending` after 15 minutes, up to 5 attempts,
-   then marks them `failed`. A permanently failing delivery will eventually stop
-   cycling and show as failed.
+   then marks them `failed`. The same task retries a delivery that already
+   `failed` when its stored error is a transient network failure — destination
+   unreachable, connection refused, a timeout — for up to six hours after the
+   failure, within the same attempt budget. Between attempts the row stays
+   `failed` and keeps its last error, so what you read on the delivery is
+   always the latest real outcome; a retry that succeeds flips it to `sent`.
+   Any other failure (bad credentials, a rejected payload) is never retried
+   automatically: fix the cause and press **Retry**, which also resets the
+   attempt budget. A permanently failing delivery will eventually stop cycling
+   and show as failed.
 8. **A drift scope is on but nothing feeds it.** The two drift scopes act on
    signals another part of the project has to produce first, so a rule can have
    one enabled and be structurally unable to fire. **Variable value drift**
@@ -775,7 +783,9 @@ full exception is in the worker logs:
 Walk the delivery chain in [Alerts never fire](#alerts-never-fire): destination
 enabled? rule enabled and matching? cooldown/mute? (email) SMTP set? Then check
 the worker logs for `Failed to send alert delivery` — the failure reason is
-persisted on the delivery.
+persisted on the delivery. If that reason is a transient network error, the
+maintenance reaper retries the delivery on its own for up to six hours; any
+other failure waits for **Retry** in the UI.
 
 **I acknowledged an incident and wrote down why, and it alerted again. Do I need
 to mute it?**
@@ -795,8 +805,10 @@ failed` bullet list in the logs and set each missing secret/origin. See
 **Can I retry a failed scan automatically?**
 No. Scan, metrics, and connection-test tasks use `max_retries=0` — a failure is
 final for that run. Fix the underlying cause (connection, row limit, query) and
-click **Run again**. Stranded *alert deliveries* are the exception: those are
-re-enqueued automatically by the maintenance reaper.
+click **Run again**. *Alert deliveries* are the exception: stranded ones are
+re-enqueued automatically by the maintenance reaper, and one that failed on a
+transient network error is retried the same way for up to six hours. Other
+delivery failures wait for the manual **Retry**.
 
 **Why did a deleted variable come back after the next scan?**
 The scan rediscovered its warehouse column or JSON-path binding. Delete removes
@@ -827,7 +839,13 @@ of them holds a value. It is a different state from the dash on neighbouring
 rows, which means no context exists at all. Open the event's value popover to see
 which contexts are empty and what each one binds to. An empty context is not by
 itself a fault: a binding pointed at a column that is genuinely empty has nothing
-to store. Note also that a variable with no stored values raises no value drift,
+to store. A JSON-path context that is merely new fills on its own — scheduled
+runs attempt every path still waiting for a first value every few runs, so
+expect first samples within hours on a regularly collecting scan; a context
+still empty after days means the path genuinely is not arriving. Once stored,
+samples accumulate across runs, so a value does not drop off the list because
+recent scan windows stopped carrying it.
+Note also that a variable with no stored values raises no value drift,
 so an empty drift count says nothing about whether the documented contract holds.
 See
 [Variables & templates](./variables-and-templates.md#documented-observed-and-effective-values).

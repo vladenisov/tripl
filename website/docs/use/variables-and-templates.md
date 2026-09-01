@@ -44,7 +44,12 @@ tripl deliberately keeps two kinds of value list separate:
   show bounded examples and an observation count. A plain column's count is an
   exact distinct count over the scanned window, but a JSON path's comes from a
   capped sample and is a floor — read it as "at least this many", and expect a
-  JSON path to be high-cardinality however few values it returned.
+  JSON path to be high-cardinality however few values it returned. Samples
+  **accumulate**: re-sampling a path merges what the run saw into the stored
+  list instead of replacing it, so a value observed once stays on record even
+  when later scan windows no longer contain it. The stored list is capped — a
+  context whose merged list outgrows the cap stops keeping the full list and
+  behaves as high-cardinality from then on.
 
 A **context** is one (variable, event, field) pairing — the record that this
 event's field refers to this variable through that binding. The context and the
@@ -59,9 +64,14 @@ event and field, not for every context of the same binding.
 
 An empty context is not by itself a fault. A binding pointed at a column that is
 genuinely empty stays empty however often it is looked at. A JSON-path binding
-has a second, temporary reason to be empty: a run samples only a slice of the
-paths still waiting for their first values, so a newly discovered path can take
-a few runs to fill.
+has a second, temporary reason to be empty: a scheduled run samples the paths
+still waiting for their first values a slice at a time, and the rotation reaches
+every waiting path every few runs — so on a regularly collecting scan, a newly
+referenced path normally shows its first values within hours. Only paths with a
+context to fill are in that rotation: a variable whose token no event value
+references has no context row for a sample to land in and is not sampled at
+all, and a variable a scan has just created becomes sampleable one scheduled
+run after something references it.
 
 The global documented list applies everywhere unless an event has an override.
 A per-event override **replaces** the global list for that event; it is not

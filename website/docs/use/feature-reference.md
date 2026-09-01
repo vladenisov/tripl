@@ -222,7 +222,10 @@ dotted JSON paths. A per-event override replaces the global documented list for
 that event.
 
 The table shows documented/observed samples, binding paths, usage counts, and
-open value drift. The observed column distinguishes two silences: it reads **No
+open value drift. Observed samples accumulate across runs — re-sampling merges
+new values into the stored list, under a cap, instead of replacing it — so the
+observed column is a history of what has been seen, not a mirror of the latest
+scan window. It also distinguishes two silences: it reads **No
 values stored** when the variable has contexts but none of them holds a value,
 and shows a dash only when no context exists at all. Drift can be accepted
 globally or for one event, snoozed, marked false-positive, or reopened;
@@ -1025,7 +1028,10 @@ a scan card.
 Every counter the run reported is still there, verbatim, behind **Show raw
 counters**: *Events created*, *Variables created*, *Events skipped*, *Columns
 analyzed*, *Event breakdowns*, *Distribution rows*, *Signals added*, *Alerts
-queued*. Nothing was removed — the sentences lead, the counters follow.
+queued*. Nothing was removed — the sentences lead, the counters follow. A
+scheduled run's raw job details also record its variable-value sampling sweep —
+how many still-unobserved paths it attempted this run — operator-facing job
+data rather than a report sentence.
 
 ### Audit log
 

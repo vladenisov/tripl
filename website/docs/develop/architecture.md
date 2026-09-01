@@ -42,7 +42,8 @@ tripl is three cooperating processes plus a database and a message broker:
 - **celery-beat** — the scheduler. Triggers due metric-collection checks — for
   both event counts and the **metric catalog** (a ~300 s due-check) — and the
   schema-drift retention cleanup. It also polls implementation tickets, chases
-  stranded search embeddings, reaps stuck alert deliveries, and runs periodic
+  stranded search embeddings, reaps stuck alert deliveries (retrying
+  transiently-failed ones for a bounded window), and runs periodic
   alert/maintenance tasks.
 - **PostgreSQL** — the system of record for the plan, metrics, anomalies, audit
   log, and alert deliveries.
