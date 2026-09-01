@@ -4,10 +4,12 @@ import uuid
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import lazyload
 from sqlalchemy.sql.elements import ColumnElement
 
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
+from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.schemas.variable import (
@@ -48,8 +50,16 @@ async def _check_binding_conflicts(
     """
     if not bindings:
         return
+    # ``lazyload`` because ``Variable.value_contexts`` is ``lazy="selectin"`` and
+    # each context then selectin-loads its FieldDefinition: hydrating the
+    # entities plainly pulls the project's whole context table into memory to
+    # answer a question about NAMES, on a statement that runs on every create
+    # and on every update that touches bindings (tripl-xkbb). The same option
+    # for the same reason as ``worker.tasks.metrics.catalog_sync``.
     result = await session.execute(
-        select(Variable).where(Variable.project_id == project_id, Variable.branch_id == branch_id)
+        select(Variable)
+        .where(Variable.project_id == project_id, Variable.branch_id == branch_id)
+        .options(lazyload(Variable.value_contexts))
     )
     wanted = set(bindings)
     for other in result.scalars().all():
@@ -202,13 +212,26 @@ async def update_variable(
         if dup.scalar_one_or_none():
             raise HTTPException(status_code=409, detail="Variable with this name already exists")
 
-        # Replace ${old_name} → ${new_name} in all event field values for this project
+        # Replace ${old_name} → ${new_name} in every stored value of this
+        # project that names the variable.
         old_name = var.name
         new_name = update_data["name"]
         old_ref = f"${{{old_name}}}"
         new_ref = f"${{{new_name}}}"
 
-        # Get all event_field_values for events in this project that contain the old ref
+        # BOTH value tables, for the reason ``variable_retirement_service``
+        # spells out on the read side: a ``${token}`` is legal in an event's
+        # field values and in its META values, and this rewrite is what a rename
+        # is advertised on — it exists so the name change carries through the
+        # values that reference it. Field values alone left the meta half
+        # holding a literal ``${old_name}`` that names nothing anybody can now
+        # find by the variable's name (tripl-mpw3).
+        #
+        # No ``is_authored`` test on either pass, and none to add: the column
+        # exists only on ``EventFieldValue``, to mark the values a scan may
+        # overwrite, and a rename rewrites a reference rather than replacing a
+        # value. ``EventMetaValue`` carries no such column because no scan
+        # writes the table at all.
         fv_result = await session.execute(
             select(EventFieldValue)
             .join(Event, EventFieldValue.event_id == Event.id)
@@ -220,6 +243,18 @@ async def update_variable(
         )
         for fv in fv_result.scalars().all():
             fv.value = fv.value.replace(old_ref, new_ref)
+
+        mv_result = await session.execute(
+            select(EventMetaValue)
+            .join(Event, EventMetaValue.event_id == Event.id)
+            .where(
+                Event.project_id == project_id,
+                Event.branch_id == branch_id,
+                EventMetaValue.value.contains(old_ref),
+            )
+        )
+        for mv in mv_result.scalars().all():
+            mv.value = mv.value.replace(old_ref, new_ref)
 
     # ``excluded_from_scans`` lands here like any other field, with no purge
     # beside it. Every scan-side guard asks the FLAG, never the rows —

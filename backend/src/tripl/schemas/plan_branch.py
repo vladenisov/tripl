@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from tripl.models.domain_enums import MergeResolutionChoice
 from tripl.models.plan_branch import BranchKind, BranchStatus
@@ -121,12 +121,40 @@ class BranchCommentResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PlanDiffRename(BaseModel):
+    """One removed entry and one added entry that are really a single renamed row.
+
+    The diff keys entities by NAME, so a rename splits into a removal of the old
+    name and an addition of the new one. The merge does not see it that way: it
+    pairs the two by ``source_name`` and UPDATEs main's row in place, keeping the
+    id and everything hanging off it. Stating the pairing here is what stops the
+    UI having to re-derive it, which it cannot do correctly — the pairing also
+    depends on main, and the diff the UI holds compares the base with the branch
+    (tripl-amnn).
+
+    ``removed_name`` and ``added_name`` are the two entries' ``name``, and
+    ``entity_type`` / ``parent`` are shared by both, so the pair addresses its
+    halves exactly the way ``BranchRevertRequest`` addresses a change.
+    """
+
+    entity_type: PlanEntityType
+    parent: str | None = None
+    removed_name: str
+    added_name: str
+
+
 class PlanBranchDiff(BaseModel):
     entries: list[PlanDiffEntry]
     summary: dict[str, int]
     # True when main advanced since the branch's base snapshot — the branch is
     # behind and should be rebased before merge (Phase 4).
     behind_base: bool
+    # The renames hiding inside ``entries`` as a removal plus an addition. Empty
+    # is the honest answer for a diff nothing pairs, and also the answer a caller
+    # gets from a build that has not filled it in yet — which is why every reader
+    # must treat an absent pairing as "these really are two unrelated changes"
+    # rather than as an error (tripl-amnn).
+    renames: list[PlanDiffRename] = Field(default_factory=list)
 
 
 class BranchRevertRequest(BaseModel):

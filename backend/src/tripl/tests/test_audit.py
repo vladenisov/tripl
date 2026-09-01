@@ -1058,3 +1058,223 @@ def test_the_scan_pipeline_cannot_write_audit_rows() -> None:
                     offenders.append(str(path.relative_to(package)))
 
     assert offenders == []
+
+
+# --- audit_log indexes: the model, the migrations, and the queries (tripl-1iic) ---
+
+# Every index ``audit_log`` is supposed to carry, and the exact column order that
+# makes it useful. Each entry is earned by a live access path, so a row removed
+# here should mean a query removed too:
+#
+#   project_created      ``audit_service.list_entries`` scoped to one project,
+#                        whose predicate is the resolved ``project_id``
+#                        (tripl-wkwv.18) — and, as a prefix, the
+#                        ``ON DELETE SET NULL`` cascade a project delete runs;
+#   project_slug_created the fallback for a slug no live project answers to, the
+#                        only route back to a deleted project's rows;
+#   created              the workspace-wide feed, which filters by nothing at all
+#                        (tripl-wkwv.17);
+#   branch               the ``SET NULL`` cascade a branch delete runs.
+#
+# All three read indexes trail ``created_at, id`` because every one of those
+# queries ends in ``ORDER BY created_at DESC, id DESC`` with a LIMIT, and
+# ``created_at`` alone is not a total order (tripl-5ydt).
+_AUDIT_LOG_INDEXES = {
+    "ix_audit_log_project_created": ("project_id", "created_at", "id"),
+    "ix_audit_log_project_slug_created": ("project_slug", "created_at", "id"),
+    "ix_audit_log_created": ("created_at", "id"),
+    "ix_audit_log_branch": ("branch_id",),
+}
+
+
+def _declared_audit_log_indexes() -> dict[str, tuple[str, ...]]:
+    return {
+        index.name: tuple(column.name for column in index.columns)
+        for index in AuditLog.__table__.indexes
+        if index.name is not None
+    }
+
+
+def test_audit_log_declares_exactly_the_indexes_its_access_paths_need() -> None:
+    """The model's index set is the one the queries above justify — no more.
+
+    An EXTRA index is not free and not harmless: it is written on every insert
+    into an append-only table, and it is how the ORM metadata drifted away from
+    the migrated schema in the first place. ``ix_audit_log_project`` on
+    ``project_id`` alone lived here for one revision after e7a1c04b62d8 dropped
+    it as superseded by ``ix_audit_log_project_created``, whose leading column it
+    is (tripl-1iic).
+
+    A MISSING one is the older failure this guards against just as tightly: when
+    tripl-wkwv.18 moved the project predicate from the slug to the id, the index
+    bought for the slug stopped covering the query it was bought for and the
+    audit tab quietly went back to a top-N sort per page. Pinning the exact
+    column tuples means the next predicate change has to come here and say so.
+    """
+    assert _declared_audit_log_indexes() == _AUDIT_LOG_INDEXES
+
+
+def _module_level_strings(tree: ast.Module) -> dict[str, str]:
+    """Module-level ``NAME = "literal"`` bindings.
+
+    The audit migrations name their indexes through constants rather than inline
+    literals, so replaying their calls means resolving those names first.
+    """
+    bound: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            target, value = node.target, node.value
+        else:
+            continue
+        if (
+            isinstance(target, ast.Name)
+            and isinstance(value, ast.Constant)
+            and isinstance(value.value, str)
+        ):
+            bound[target.id] = value.value
+    return bound
+
+
+def _revision_ids(tree: ast.Module) -> tuple[str | None, str | None]:
+    """``(revision, down_revision)``; the base's ``down_revision`` is ``None``."""
+    revision: str | None = None
+    down: str | None = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            target, value = node.target, node.value
+        else:
+            continue
+        if not isinstance(target, ast.Name) or not isinstance(value, ast.Constant):
+            continue
+        resolved = value.value if isinstance(value.value, str) else None
+        if target.id == "revision":
+            revision = resolved
+        elif target.id == "down_revision":
+            down = resolved
+    return revision, down
+
+
+def _as_string(node: ast.expr | None, bound: dict[str, str]) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return bound.get(node.id)
+    return None
+
+
+_CREATE_INDEX_PARAMS = ("index_name", "table_name", "columns")
+_DROP_INDEX_PARAMS = ("index_name", "table_name")
+
+
+def _audit_log_index_ops(source: str) -> list[tuple[str, str, tuple[str, ...]]]:
+    """``(create_index|drop_index, name, columns)`` for one migration's ``upgrade``.
+
+    Only ``upgrade`` is read. Every one of these migrations mirrors its work in
+    ``downgrade``, so walking the whole module would replay each change and its
+    own undo and net out to nothing.
+    """
+    tree = ast.parse(source)
+    bound = _module_level_strings(tree)
+    upgrade = next(
+        (n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "upgrade"),
+        None,
+    )
+    if upgrade is None:
+        return []
+
+    ops: list[tuple[str, str, tuple[str, ...]]] = []
+    for node in ast.walk(upgrade):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        call = node.func
+        if not isinstance(call.value, ast.Name) or call.value.id != "op":
+            continue
+        if call.attr not in ("create_index", "drop_index"):
+            continue
+
+        params = _CREATE_INDEX_PARAMS if call.attr == "create_index" else _DROP_INDEX_PARAMS
+        args: dict[str, ast.expr] = dict(zip(params, node.args, strict=False))
+        args.update({kw.arg: kw.value for kw in node.keywords if kw.arg in params})
+        if _as_string(args.get("table_name"), bound) != "audit_log":
+            continue
+
+        name = _as_string(args.get("index_name"), bound)
+        # An index this replay cannot name is an index it would silently skip,
+        # which would let the drift it exists to catch through.
+        assert name is not None, ast.dump(node)
+
+        columns: tuple[str, ...] = ()
+        if call.attr == "create_index":
+            listed = args.get("columns")
+            assert isinstance(listed, ast.List), ast.dump(node)
+            resolved = [_as_string(element, bound) for element in listed.elts]
+            assert all(column is not None for column in resolved), ast.dump(node)
+            columns = tuple(column for column in resolved if column is not None)
+        ops.append((call.attr, name, columns))
+    return ops
+
+
+def _audit_log_indexes_after_migrations() -> dict[str, tuple[str, ...]]:
+    """The indexes a fully migrated ``audit_log`` actually ends up with."""
+    versions = Path(__file__).resolve().parents[3] / "alembic" / "versions"
+    # A moved or renamed directory would make the glob find nothing and leave
+    # this comparing two empty sets.
+    assert versions.is_dir(), versions
+
+    sources: dict[str, str] = {}
+    parent_of: dict[str, str | None] = {}
+    for path in sorted(versions.glob("*.py")):
+        source = path.read_text()
+        revision, down = _revision_ids(ast.parse(source))
+        assert revision is not None, path
+        assert revision not in sources, f"duplicate revision {revision} at {path}"
+        sources[revision] = source
+        parent_of[revision] = down
+
+    children: dict[str | None, list[str]] = {}
+    for revision, down in parent_of.items():
+        children.setdefault(down, []).append(revision)
+    # The replay walks one line of descent, so a fork would make "the migrated
+    # index set" ambiguous rather than merely wrong. Exactly one base and one
+    # child per revision keeps the answer single-valued.
+    assert all(len(kids) == 1 for kids in children.values()), children
+    # The base is the one revision with no parent; without it there is no place
+    # to start the walk and the whole replay is vacuous.
+    assert children.get(None), "no base revision"
+
+    order: list[str] = []
+    cursor: str | None = children[None][0]
+    while cursor is not None:
+        order.append(cursor)
+        following = children.get(cursor)
+        cursor = following[0] if following else None
+    # A cycle, or a revision hanging off nothing, would otherwise replay a subset
+    # of history and compare that against the model.
+    assert len(order) == len(sources), (len(order), len(sources))
+
+    live: dict[str, tuple[str, ...]] = {}
+    for revision in order:
+        for kind, name, columns in _audit_log_index_ops(sources[revision]):
+            if kind == "create_index":
+                live[name] = columns
+            else:
+                live.pop(name, None)
+    return live
+
+
+def test_audit_log_model_indexes_match_what_the_migrations_leave_behind() -> None:
+    """ORM metadata and the migrated schema describe the same table.
+
+    Nothing else in the suite can catch this. ``conftest`` builds the test schema
+    from ``Base.metadata.create_all``, so every test sees the MODEL's indexes and
+    never the migrations' — a stale declaration survives a green run untouched,
+    and only ``alembic check`` against a real migrated database notices
+    (tripl-1iic). This replays the chain's ``audit_log`` index work and compares
+    the result to the model, so the two halves are held together in a plain unit
+    test instead of by a database nobody runs against.
+    """
+    assert _audit_log_indexes_after_migrations() == _declared_audit_log_indexes()

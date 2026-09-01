@@ -129,6 +129,11 @@ Placeholders are a documentation contract, not a runtime expression language:
 tripl stores the template and uses it to relate plan values to observed variable
 contexts. It does not substitute a single global value into the event.
 
+Renaming a variable brings its references with it. Every `${old_name}` stored on
+an event in the same branch is rewritten to `${new_name}` as the rename is
+saved, and both `${token}` sites are covered: an event's **field values** and
+its **meta values**.
+
 Hand-authored event field values are protected from scheduled scans. A scan can
 still add a missing value, but it will not overwrite a value that a user saved
 through the event API or UI.

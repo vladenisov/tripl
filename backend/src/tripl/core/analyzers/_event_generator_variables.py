@@ -56,6 +56,12 @@ class VariableIndex:
 
     def __init__(self, variables: Sequence[Variable] = ()) -> None:
         self._by_token: dict[str, Variable] = {}
+        # Excluded ids are accumulated here rather than read back off
+        # ``_by_token``, because the two answer different questions and only this
+        # one is about variables: the map holds the WINNER of each token, so a
+        # variable whose every token an earlier-sorted sibling already claimed is
+        # absent from its values entirely. See ``excluded_ids`` (tripl-cef2).
+        self._excluded_ids: set[uuid.UUID] = set()
         for variable in sorted(variables, key=lambda v: v.name):
             self.add(variable)
 
@@ -101,6 +107,10 @@ class VariableIndex:
     def add(self, variable: Variable) -> None:
         for token in self.tokens_of(variable):
             self._by_token.setdefault(token, variable)
+        # Recorded whether or not the variable won a single token: it is in the
+        # index, so this run has seen it, and that is the whole test (tripl-cef2).
+        if variable.excluded_from_scans:
+            self._excluded_ids.add(variable.id)
 
     def resolve(self, token: str) -> Variable | None:
         return self._by_token.get(token)
@@ -113,8 +123,23 @@ class VariableIndex:
         DELETER needs: no run can re-record a row it takes from an excluded
         variable. Read by ``delete_variable_contexts_for_event_type``, which
         decides per row rather than per token and so cannot ask ``resolve``.
+
+        EVERY excluded variable the index was built from, not the excluded
+        subset of the token winners. Those differ whenever an earlier-sorted
+        sibling already claims every token an excluded variable names — a live
+        variable bound to the excluded one's display name is enough, and the API
+        accepts that binding because ``_check_binding_conflicts`` compares
+        against other variables' ``bindings`` and ``source_name`` and never
+        their ``name``. Reading the winners left such a variable out of the set,
+        and the deleter then took its rows on the next rewrite of their
+        ``(event, field)`` — the permanent, silent loss the set exists to
+        prevent, reappearing for exactly the variables hardest to notice
+        (tripl-cef2). Being shadowed is a fact about which variable answers a
+        token; it says nothing about whether a stored row can be restated, and
+        it cannot, because ``resolve`` hands ``record_variable_contexts`` the
+        shadowing sibling instead.
         """
-        return {variable.id for variable in self._by_token.values() if variable.excluded_from_scans}
+        return set(self._excluded_ids)
 
     def __len__(self) -> int:
         # Callers gate work on ``if index and ...`` meaning "there are variables

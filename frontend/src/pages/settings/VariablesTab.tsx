@@ -26,7 +26,12 @@ import { getErrorMessage } from '@/lib/utils'
 import { eventNameLabel } from '@/lib/eventName'
 import { countOf, pluralize } from '@/lib/plural'
 import { variablesKey, variablesPageKey } from '@/lib/queryKeys'
-import { DRIFT_STATUS_LABEL, isResolvedDrift } from '@/lib/variableDrift'
+import {
+  collapsedDriftLabel,
+  DRIFT_REVIVE_LABEL,
+  driftReviewState,
+  driftStatusNote,
+} from '@/lib/variableDrift'
 
 // Warehouse column or dotted JSON path, e.g. "variant" or "page_data.extra.variant".
 const BINDING_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$/
@@ -141,6 +146,9 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
   const focusRef = useRef<HTMLTableRowElement | null>(null)
+  // The excluded panel renders <li>s, not table rows, so the focused variable
+  // there needs its own ref — see the scroll effect below (tripl-acp2).
+  const excludedFocusRef = useRef<HTMLLIElement | null>(null)
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
   const [varType, setVarType] = useState<VariableType>('string')
@@ -165,7 +173,9 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const [overrideEvent, setOverrideEvent] = useState<{ id: string; name: string } | null>(null)
   const [overrideEventSearch, setOverrideEventSearch] = useState('')
   const [overrideValues, setOverrideValues] = useState<string[]>([])
-  const [showResolvedDrifts, setShowResolvedDrifts] = useState(false)
+  // Covers everything the backend does not count as open right now — snoozed
+  // into the future as well as resolved (tripl-lh61).
+  const [showQuietDrifts, setShowQuietDrifts] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   // BranchSwitcher is mounted permanently in the app sidebar, so it is reachable
   // whenever a selection exists — and switching re-keys the variables query and
@@ -303,12 +313,24 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     enabled: !!editingVar,
   })
   const driftItems = driftList?.items ?? []
-  const activeDrifts = driftItems.filter(drift => !isResolvedDrift(drift.status))
+  // One `now` for the whole render, so a drift cannot be classified against one
+  // instant here and a different one further down.
+  const driftNow = Date.now()
+  const activeDrifts = driftItems.filter(drift => driftReviewState(drift, driftNow) === 'active')
+  // Snoozed rows sit with the resolved ones, not with the active ones. The row's
+  // drift badge comes from `get_open_drift_counts`, which drops a future-snoozed
+  // row, so this dialog used to present as needing attention exactly the drift
+  // the table beside it had just counted as zero (tripl-lh61).
+  const snoozedDrifts = driftItems.filter(drift => driftReviewState(drift, driftNow) === 'snoozed')
   // Kept reachable rather than filtered away: a scan only reopens an accepted
   // row for values outside the accepted set, so undoing the acceptance itself
   // has to be possible from here.
-  const resolvedDrifts = driftItems.filter(drift => isResolvedDrift(drift.status))
-  const visibleDrifts = showResolvedDrifts ? [...activeDrifts, ...resolvedDrifts] : activeDrifts
+  const resolvedDrifts = driftItems.filter(drift => driftReviewState(drift, driftNow) === 'resolved')
+  const quietDrifts = [...snoozedDrifts, ...resolvedDrifts]
+  // Paired with the state the row was sorted by, so the pill and the action
+  // group cannot disagree with the list the row was put in.
+  const visibleDrifts = (showQuietDrifts ? [...activeDrifts, ...quietDrifts] : activeDrifts)
+    .map(drift => ({ drift, state: driftReviewState(drift, driftNow) }))
 
   const driftActionMut = useMutation({
     mutationFn: ({ driftId, action, scope, snoozedUntil }: {
@@ -495,7 +517,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     // last one would silently narrow this variable's roster too.
     setOverrideEventSearch('')
     setOverrideValues([])
-    setShowResolvedDrifts(false)
+    setShowQuietDrifts(false)
   })
 
   const activeVariables = useMemo(
@@ -619,6 +641,16 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     goToPage(0)
   }
 
+  // `excluded_from_scans` is a tracked plan-diff key, so a branch diff can carry
+  // a "variable X — excluded from scans" row whose link lands here. X is exactly
+  // the variable `activeVariables` filters OUT of the table, so `findIndex`
+  // returned -1, `focusPage` fell back to 0, and the reviewer arrived on page 1
+  // of an unrelated list with nothing marked — while X sat, unmarked, in the
+  // "Excluded from scans" panel further down (tripl-acp2). Following the link
+  // now marks the row wherever it renders.
+  const focusedExcludedVisible =
+    focusIndex < 0 && focusId !== undefined && excludedVariables.some(v => v.id === focusId)
+
   // Scroll the linked row into view once it is on screen. Keyed on focusId too,
   // so following a second link — to a variable already visible — scrolls to it
   // instead of leaving the reviewer where the first one landed.
@@ -626,8 +658,10 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   useEffect(() => {
     if (focusedRowVisible) {
       focusRef.current?.scrollIntoView({ block: 'center' })
+    } else if (focusedExcludedVisible) {
+      excludedFocusRef.current?.scrollIntoView({ block: 'center' })
     }
-  }, [focusId, focusedRowVisible])
+  }, [focusId, focusedRowVisible, focusedExcludedVisible])
 
   // Per-event contexts are fetched for the ONE variable being edited, never for
   // the list — the dialog is the only place that needs the full breakdown.
@@ -735,14 +769,21 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                   </div>
                   {visibleDrifts.length > 0 && (
                     <ul className="space-y-1.5">
-                      {visibleDrifts.map((drift, driftIndex) => (
+                      {visibleDrifts.map(({ drift, state }, driftIndex) => (
                         <li key={drift.id} className="rounded border bg-background px-2 py-1.5">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="min-w-0">
                               <div className="text-xs font-medium">
                                 {eventNameLabel(drift.event_name)}
-                                {drift.status !== 'open' && (
-                                  <span className="ml-1.5 rounded border px-1 py-0.5 text-[10px] text-muted-foreground">{DRIFT_STATUS_LABEL[drift.status]}</span>
+                                {/* Keyed on the review state, not on the raw
+                                    status: a snooze whose time has passed is
+                                    active again, and labelling that row
+                                    "snoozed" would tell the reader the opposite
+                                    of what the badge counts. The note carries
+                                    the expiry, so a deferral says when it comes
+                                    back (tripl-lh61). */}
+                                {state !== 'active' && (
+                                  <span className="ml-1.5 rounded border px-1 py-0.5 text-[10px] text-muted-foreground">{driftStatusNote(drift, driftNow)}</span>
                                 )}
                               </div>
                               <div className="mt-0.5 flex flex-wrap gap-1">
@@ -755,15 +796,19 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                               step="variables/see-drift"
                               // The action group is the useful target; anchoring the
                               // whole row makes the callout cover the form above it.
-                              // Never a resolved row: its only action is Reopen.
-                              when={driftIndex === 0 && !isResolvedDrift(drift.status) && editingVar?.name === SCENARIO_SEEDED.driftVariableName}
+                              // Only an ACTIVE row: a collapsed one — snoozed or
+                              // resolved — offers nothing but the button that puts
+                              // it back on the open list.
+                              when={driftIndex === 0 && state === 'active' && editingVar?.name === SCENARIO_SEEDED.driftVariableName}
                             >
+                              {/* The review row belongs to an ACTIVE drift. A
+                                  collapsed row gets the single action that puts it
+                                  back on the open list, because acting on a drift
+                                  the dialog has just said needs no attention should
+                                  start by saying it does (tripl-lh61). Both
+                                  readings post the same `reopen`. */}
                               <div className="flex shrink-0 flex-wrap gap-1">
-                                {isResolvedDrift(drift.status) ? (
-                                  <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'reopen' })}>
-                                    Reopen
-                                  </Button>
-                                ) : (
+                                {state === 'active' ? (
                                   <>
                                     <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'global' })}>
                                       Accept
@@ -778,6 +823,10 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                                       False positive
                                     </Button>
                                   </>
+                                ) : (
+                                  <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'reopen' })}>
+                                    {DRIFT_REVIVE_LABEL[state]}
+                                  </Button>
                                 )}
                               </div>
                             </ScenarioCoachMark>
@@ -786,9 +835,10 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                       ))}
                     </ul>
                   )}
-                  {resolvedDrifts.length > 0 && (
-                    <Button type="button" size="sm" variant="ghost" className="mt-1.5 h-6 px-2 text-[11px] text-muted-foreground" onClick={() => setShowResolvedDrifts(value => !value)}>
-                      {showResolvedDrifts ? 'Hide' : 'Show'} {resolvedDrifts.length} resolved
+                  {quietDrifts.length > 0 && (
+                    <Button type="button" size="sm" variant="ghost" className="mt-1.5 h-6 px-2 text-[11px] text-muted-foreground" onClick={() => setShowQuietDrifts(value => !value)}>
+                      {showQuietDrifts ? 'Hide' : 'Show'} {quietDrifts.length}{' '}
+                      {collapsedDriftLabel({ snoozed: snoozedDrifts.length, resolved: resolvedDrifts.length })}
                     </Button>
                   )}
                   {driftActionMut.isError && (
@@ -1114,7 +1164,15 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
         >
           <ul className="divide-y">
             {excludedVariables.map(v => (
-              <li key={v.id} className="flex items-center justify-between gap-2 px-4 py-2">
+              <li
+                key={v.id}
+                // The same marking the table row carries, because the diff link
+                // that brought the reviewer here neither knows nor cares which
+                // of the two lists the variable ended up in (tripl-acp2).
+                ref={v.id === focusId ? excludedFocusRef : undefined}
+                data-focused={v.id === focusId || undefined}
+                className={`flex items-center justify-between gap-2 px-4 py-2${v.id === focusId ? ' bg-primary/5 outline outline-1 outline-primary/40' : ''}`}
+              >
                 <div className="min-w-0">
                   <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{`\${${v.name}}`}</code>
                   {(v.bindings ?? []).length > 0 && (

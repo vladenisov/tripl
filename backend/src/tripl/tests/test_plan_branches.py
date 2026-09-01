@@ -26,7 +26,11 @@ from tripl.models.user import User
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.models.variable_value import VariableValue
-from tripl.services._plan_branch_renames import pair_renames, rekey_in_place
+from tripl.services._plan_branch_renames import (
+    pair_renames,
+    rekey_in_place,
+    snapshot_rename_pairs,
+)
 from tripl.services.plan_branch_merge_service import _RENAME_STAGING_PREFIX
 from tripl.services.plan_revision_service import (
     build_plan_snapshot,
@@ -3475,3 +3479,246 @@ async def test_branch_round_trip_carries_variable_exclusion_flag(client: AsyncCl
     async with TestSessionLocal() as session:
         main_var = await session.get(Variable, main_var_id)
         assert main_var.excluded_from_scans is True
+
+
+# --- reverting the removed half of a rename (tripl-hjxy) ---------------------
+
+
+@pytest.mark.asyncio
+async def test_revert_of_a_renamed_variable_moves_the_name_back(client: AsyncClient) -> None:
+    """Reverting the "removed" entry of a rename must not 500, and must not insert.
+
+    The diff keys variables by name, so renaming one on a branch reads as a
+    removal of the old name plus an addition of the new one. Rebuilding the
+    removed row from the base snapshot puts a SECOND row on the branch carrying
+    ``source_name``, which ``uq_variable_project_source_name`` rejects at commit
+    — and with no handler anywhere the reviewer got a bare 500 (tripl-hjxy).
+
+    The row is moved, not replaced, so its id survives; the observed values,
+    per-event overrides and drift history hanging off that id survive with it.
+    """
+    slug = "revert-var-rename"
+    await _seed_plan(client, slug)
+    created = await client.post(f"/api/v1/projects/{slug}/variables", json={"name": "plan_tier"})
+    assert created.status_code == 201
+
+    async with TestSessionLocal() as session:
+        main_var = (
+            (await session.execute(select(Variable).where(Variable.name == "plan_tier")))
+            .scalars()
+            .one()
+        )
+        # As a scan would have stamped it: the identity a rename cannot move.
+        main_var.source_name = "plan_tier_raw"
+        await session.commit()
+
+    branch_id = await _create_branch(client, slug)
+    branch_uuid = uuid.UUID(branch_id)
+
+    async with TestSessionLocal() as session:
+        branch_var = (
+            (
+                await session.execute(
+                    select(Variable).where(
+                        Variable.branch_id == branch_uuid, Variable.name == "plan_tier"
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        branch_var_id = branch_var.id
+        # The deep copy carried the identity across, which is what makes the row
+        # recognisable as the same one after the rename.
+        assert branch_var.source_name == "plan_tier_raw"
+
+    renamed = await client.patch(
+        f"/api/v1/projects/{slug}/variables/{branch_var_id}?branch={branch_id}",
+        json={"name": "subscription_tier"},
+    )
+    assert renamed.status_code == 200, renamed.text
+
+    diff = await client.get(f"/api/v1/projects/{slug}/branches/{branch_id}/diff")
+    split = {
+        (e["kind"], e["name"]) for e in diff.json()["entries"] if e["entity_type"] == "variable"
+    }
+    assert ("removed", "plan_tier") in split
+    assert ("added", "subscription_tier") in split
+
+    reverted = await client.post(
+        f"/api/v1/projects/{slug}/branches/{branch_id}/revert",
+        json={"entity_type": "variable", "name": "plan_tier"},
+    )
+    assert reverted.status_code == 200, reverted.text
+    # The rename is gone from the diff entirely — not replaced by a removal of
+    # the new name, which is what a delete-and-rebuild would have left behind.
+    assert [e for e in reverted.json()["entries"] if e["entity_type"] == "variable"] == []
+
+    async with TestSessionLocal() as session:
+        branch_vars = (
+            (await session.execute(select(Variable).where(Variable.branch_id == branch_uuid)))
+            .scalars()
+            .all()
+        )
+        assert [(v.id, v.name, v.source_name) for v in branch_vars] == [
+            (branch_var_id, "plan_tier", "plan_tier_raw")
+        ]
+
+
+@pytest.mark.asyncio
+async def test_revert_of_a_renamed_event_does_not_duplicate_the_scan_identity(
+    client: AsyncClient,
+) -> None:
+    """The same revert on an event, where nothing in the database says no.
+
+    Events carry only an index on ``(project, event_type, source_name)``, so
+    rebuilding the removed half of a rename succeeded and left the branch with
+    two events claiming one scan identity: the next scan matches warehouse data
+    onto whichever it finds, and ``pair_renames`` refuses that identity for ever
+    after because two candidates make the pairing a guess. No error, no diff
+    entry, nothing to see — which is why it is tested (tripl-hjxy).
+    """
+    slug = "revert-event-rename"
+    await _seed_plan(client, slug)
+
+    async with TestSessionLocal() as session:
+        main_event = (
+            (await session.execute(select(Event).where(Event.name == "purchase:success")))
+            .scalars()
+            .one()
+        )
+        main_event.source_name = "purchase_success_raw"
+        await session.commit()
+
+    branch_id = await _create_branch(client, slug)
+    branch_uuid = uuid.UUID(branch_id)
+
+    async with TestSessionLocal() as session:
+        branch_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.branch_id == branch_uuid, Event.name == "purchase:success"
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        branch_event_id = branch_event.id
+
+    renamed = await client.patch(
+        f"/api/v1/projects/{slug}/events/{branch_event_id}?branch={branch_id}",
+        json={"name": "purchase:completed"},
+    )
+    assert renamed.status_code == 200, renamed.text
+
+    reverted = await client.post(
+        f"/api/v1/projects/{slug}/branches/{branch_id}/revert",
+        json={"entity_type": "event", "name": "purchase:success", "parent": "track"},
+    )
+    assert reverted.status_code == 200, reverted.text
+
+    async with TestSessionLocal() as session:
+        branch_events = (
+            (await session.execute(select(Event).where(Event.branch_id == branch_uuid)))
+            .scalars()
+            .all()
+        )
+        # One row, and the SAME row: a second one here is the silent corruption.
+        assert [(e.id, e.name, e.source_name) for e in branch_events] == [
+            (branch_event_id, "purchase:success", "purchase_success_raw")
+        ]
+
+
+# --- the diff states which renames a merge will pair (tripl-amnn) ------------
+
+
+def test_snapshot_rename_pairs_reports_only_the_renames_the_diff_split() -> None:
+    """``snapshot_rename_pairs`` joins up the two entries a rename is split into.
+
+    Pure by construction — three snapshot payloads in, the pairing out — because
+    it must answer exactly what ``pair_renames`` answers and no more, and that
+    needs no database to check.
+    """
+    base = {
+        "variables": [{"name": "plan_tier", "source_name": "plan_tier_raw"}],
+        "events": [
+            {"event_type_name": "track", "name": "purchase:success", "source_name": "purchase_raw"}
+        ],
+    }
+    branch = {
+        "variables": [{"name": "subscription_tier", "source_name": "plan_tier_raw"}],
+        "events": [
+            {
+                "event_type_name": "track",
+                "name": "purchase:completed",
+                "source_name": "purchase_raw",
+            }
+        ],
+    }
+    assert [pair.model_dump() for pair in snapshot_rename_pairs(base, base, branch)] == [
+        {
+            "entity_type": "event",
+            "parent": "track",
+            "removed_name": "purchase:success",
+            "added_name": "purchase:completed",
+        },
+        {
+            "entity_type": "variable",
+            "parent": None,
+            "removed_name": "plan_tier",
+            "added_name": "subscription_tier",
+        },
+    ]
+
+
+def test_snapshot_rename_pairs_is_silent_where_the_diff_shows_no_removal() -> None:
+    """A swap is a pair the merge makes and the diff never splits.
+
+    Both names are present on both sides, so the diff reports two ``changed``
+    entries and there is no removal or addition to join up. Naming the pair
+    anyway would point the UI at entries that are not in the response.
+    """
+    base = {
+        "variables": [
+            {"name": "plan_tier", "source_name": "s1"},
+            {"name": "billing_tier", "source_name": "s2"},
+        ]
+    }
+    branch = {
+        "variables": [
+            {"name": "billing_tier", "source_name": "s1"},
+            {"name": "plan_tier", "source_name": "s2"},
+        ]
+    }
+    assert pair_renames(
+        {("plan_tier",): "s1", ("billing_tier",): "s2"},
+        {("plan_tier",): "s1", ("billing_tier",): "s2"},
+        {("billing_tier",): "s1", ("plan_tier",): "s2"},
+    ) == {("plan_tier",): ("billing_tier",), ("billing_tier",): ("plan_tier",)}
+    assert snapshot_rename_pairs(base, base, branch) == []
+
+
+def test_snapshot_rename_pairs_follows_main_not_the_base() -> None:
+    """The pairing the MERGE will make, which the base-vs-branch diff cannot see.
+
+    Main independently grew a row on the name the branch's rename is moving to,
+    so the merge refuses the move and performs a removal plus an addition. The
+    diff still shows those two entries; reporting them as one rename would
+    promise the reviewer an id — and the observed values hanging off it — that
+    the merge is about to delete.
+    """
+    base = {"variables": [{"name": "plan_tier", "source_name": "plan_tier_raw"}]}
+    main = {
+        "variables": [
+            {"name": "plan_tier", "source_name": "plan_tier_raw"},
+            {"name": "subscription_tier", "source_name": "unrelated_raw"},
+        ]
+    }
+    branch = {"variables": [{"name": "subscription_tier", "source_name": "plan_tier_raw"}]}
+
+    assert snapshot_rename_pairs(base, main, branch) == []
+    # Same branch, main untouched: now it is a rename the merge will pair.
+    paired = snapshot_rename_pairs(base, base, branch)
+    assert [pair.removed_name for pair in paired] == ["plan_tier"]

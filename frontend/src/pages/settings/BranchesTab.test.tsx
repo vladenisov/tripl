@@ -12,7 +12,7 @@ import type {
   ProjectBranchSettings,
   UserListItem,
 } from '@/types'
-import { BranchesTab } from './BranchesTab'
+import { BranchesTab, type BranchDiffWithRenames } from './BranchesTab'
 
 vi.mock('@/api/planBranches', () => ({
   planBranchesApi: {
@@ -956,15 +956,19 @@ describe('BranchesTab', () => {
   })
 
   /** A branch that renames a variable produces a removal AND an addition in the
-   * diff, but the merge pairs them on `source_name` and renames main's row in
-   * place — nothing is deleted, so nothing may be warned about. */
-  function mockRenamedVariableDiff(
-    options: { behindBase?: boolean; addedSourceName?: string | null } = {},
-  ) {
+   * diff, but the merge pairs them and renames main's row in place — nothing is
+   * deleted, so nothing may be warned about and the two rows are one change.
+   *
+   * `paired` is the backend's `renames`, and it is the ONLY thing that decides:
+   * the entries below deliberately keep a matching `source_name` on both sides
+   * whether or not the pair is stated, because that is what this screen used to
+   * pair on for itself. It cannot: the real rule also refuses a move onto a name
+   * a staying main row holds, which a base-to-branch diff cannot see (tripl-amnn). */
+  function mockRenamedVariableDiff(options: { behindBase?: boolean; paired?: boolean } = {}) {
     vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
     vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
     vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
-    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+    const diff: BranchDiffWithRenames = {
       behind_base: options.behindBase ?? false,
       summary: { added: 1, removed: 1, changed: 0 },
       entries: [
@@ -982,16 +986,69 @@ describe('BranchesTab', () => {
           name: 'experiment_variant',
           parent: null,
           changes: [],
-          after: {
-            name: 'experiment_variant',
-            source_name:
-              options.addedSourceName === undefined ? 'payload.variant' : options.addedSourceName,
-          },
+          after: { name: 'experiment_variant', source_name: 'payload.variant' },
         },
       ],
-    })
+      renames: (options.paired ?? true)
+        ? [
+            {
+              entity_type: 'variable',
+              parent: null,
+              removed_name: 'variant',
+              added_name: 'experiment_variant',
+            },
+          ]
+        : [],
+    }
+    vi.mocked(planBranchesApi.diff).mockResolvedValue(diff)
     vi.mocked(planBranchesApi.merge).mockResolvedValue({} as never)
   }
+
+  it('shows a rename the backend paired as one row, not a removal and an addition', async () => {
+    mockRenamedVariableDiff()
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    await waitFor(() => expect(planBranchesApi.diff).toHaveBeenCalledWith('demo', 'feat-1'))
+
+    // One row, named for the row that survives, pointing at the name it took.
+    expect(await screen.findByText('1 change')).toBeInTheDocument()
+    expect(screen.getByText('Renamed')).toBeInTheDocument()
+    expect(screen.getByText('→ experiment_variant')).toBeInTheDocument()
+    // The scary half and the misleading half are both gone: nothing was removed
+    // from the branch and nothing was created on it.
+    expect(screen.queryByText('Removed')).not.toBeInTheDocument()
+    expect(screen.queryByText('Added')).not.toBeInTheDocument()
+  })
+
+  it('reverts a paired rename through its removed half, so the row is kept', async () => {
+    mockRenamedVariableDiff()
+    vi.mocked(planBranchesApi.revert).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    fireEvent.click(await screen.findByText('variant'))
+    fireEvent.click(await screen.findByRole('button', { name: /Undo this rename/i }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Undo rename' }))
+
+    // The REMOVED half: that is the request the backend answers by moving the
+    // name back onto the row. Sending the added half would delete the row and
+    // cascade the observed values away (tripl-hjxy).
+    await waitFor(() =>
+      expect(planBranchesApi.revert).toHaveBeenCalledWith('demo', 'feat-1', {
+        entity_type: 'variable',
+        name: 'variant',
+        parent: null,
+        field: null,
+      }),
+    )
+  })
 
   it('does not warn about a variable the merge will rename rather than delete', async () => {
     mockRenamedVariableDiff()
@@ -1007,35 +1064,24 @@ describe('BranchesTab', () => {
     expect(screen.queryByText('Merge deletes variables from main')).not.toBeInTheDocument()
   })
 
-  it('warns about a removal whose replacement carries a different scan identity', async () => {
-    mockRenamedVariableDiff({ addedSourceName: 'payload.experiment' })
+  it('warns about a removal the backend did not pair, matching identities or not', async () => {
+    mockRenamedVariableDiff({ paired: false })
 
     renderTab()
 
     fireEvent.click(await screen.findByText('checkout-v2'))
     fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
 
-    // Two unrelated rows, not one renamed row: `variant` really is deleted.
+    // Both entries carry `payload.variant`, which is exactly the shape this
+    // screen used to pair for itself. The merge refuses the move — main already
+    // holds `experiment_variant` — so `variant` really is deleted, and only the
+    // backend can know that.
     expect(await screen.findByText('Merge deletes variables from main')).toBeInTheDocument()
     expect(screen.getByText(/removes 1 variable from main: variant/)).toBeInTheDocument()
     expect(planBranchesApi.merge).not.toHaveBeenCalled()
   })
 
-  it('warns about a removal the merge cannot pair, when neither side has a scan identity', async () => {
-    mockRenamedVariableDiff({ addedSourceName: null })
-
-    renderTab()
-
-    fireEvent.click(await screen.findByText('checkout-v2'))
-    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
-
-    // A hand-created variable has no remembered scan name, so nothing identifies
-    // it across the rename and the merge really does delete plus add.
-    expect(await screen.findByText('Merge deletes variables from main')).toBeInTheDocument()
-    expect(planBranchesApi.merge).not.toHaveBeenCalled()
-  })
-
-  it('warns about every removal once main has moved past the branch base', async () => {
+  it('trusts a stated pairing even while the branch is behind its base', async () => {
     mockRenamedVariableDiff({ behindBase: true })
 
     renderTab()
@@ -1043,11 +1089,11 @@ describe('BranchesTab', () => {
     fireEvent.click(await screen.findByText('checkout-v2'))
     fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
 
-    // The pairing also needs the new name to be absent from MAIN, which this
-    // base-to-branch diff cannot show once main has its own changes. Over-warn
-    // rather than hide a deletion.
-    expect(await screen.findByText('Merge deletes variables from main')).toBeInTheDocument()
-    expect(planBranchesApi.merge).not.toHaveBeenCalled()
+    // Being behind used to force the warning on every removal, because the
+    // pairing was inferred from a diff that cannot see main. The backend's
+    // pairing already read main, so there is nothing left to be cautious about.
+    await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
+    expect(screen.queryByText('Merge deletes variables from main')).not.toBeInTheDocument()
   })
 
   it('links a merged branch to the tracker ticket the merge opened', async () => {

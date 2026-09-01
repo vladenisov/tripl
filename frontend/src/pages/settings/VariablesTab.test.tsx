@@ -6,6 +6,7 @@ import { eventsApi } from '@/api/events'
 import { variablesApi } from '@/api/variables'
 import { variableDriftsApi } from '@/api/variableDrifts'
 import { variableOverridesApi } from '@/api/variableOverrides'
+import { formatDateTime } from '@/lib/datetime'
 import type { Variable } from '@/types'
 import { VariablesTab } from './VariablesTab'
 
@@ -1078,5 +1079,99 @@ describe('VariablesTab', () => {
     // Save still submits: the guard is on the keystroke, not on the form.
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(variablesApi.update).toHaveBeenCalled())
+  })
+
+  it('reads a future-snoozed drift the way the badge counts it (tripl-lh61)', async () => {
+    // `open_drift_count` is `get_open_drift_counts`, and its predicate drops a
+    // snooze whose time has not come — so the row carries NO badge. The dialog
+    // used to disagree with the table beside it: same drift, warning tone, full
+    // Accept / Snooze / False positive row, and a "Show N resolved" toggle that
+    // counted only resolutions, so the row could never be collapsed away.
+    const snoozedUntil = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+    mockList([
+      makeVariable({ id: 'var-1', name: 'variant', allowed_values: ['a'], open_drift_count: 0 }),
+    ])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    vi.mocked(variableOverridesApi.list).mockResolvedValue([])
+    vi.mocked(eventsApi.list).mockResolvedValue({ items: [] as never, total: 0 })
+    vi.mocked(variableDriftsApi.list).mockResolvedValue({
+      items: [
+        {
+          id: 'drift-1',
+          variable_id: 'var-1',
+          variable_name: 'variant',
+          event_id: 'ev-1',
+          event_name: 'Onboarding',
+          scan_config_id: null,
+          observed_values: ['x'],
+          status: 'snoozed',
+          resolution_note: null,
+          snoozed_until: snoozedUntil,
+          resolved_at: null,
+          resolved_by: null,
+          detected_at: '2026-07-09T00:00:00Z',
+        },
+      ],
+      total: 1,
+    })
+    vi.mocked(variableDriftsApi.action).mockResolvedValue({} as never)
+
+    renderVariablesTab()
+
+    // What the table says: nothing open.
+    expect(await screen.findByText('${variant}')).toBeInTheDocument()
+    expect(screen.queryByText('1 drift')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit variable variant' }))
+    await screen.findByText(/value drift — observed values outside/i)
+
+    // The dialog now says the same thing: the row is not on the active list, so
+    // the review actions it used to offer are not there.
+    expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Snooze 7d' })).not.toBeInTheDocument()
+
+    // Collapsible at last, and the toggle does not call a snooze a resolution.
+    fireEvent.click(await screen.findByRole('button', { name: 'Show 1 snoozed' }))
+    expect(
+      await screen.findByText(`snoozed until ${formatDateTime(snoozedUntil)}`),
+    ).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Un-snooze' }))
+    await waitFor(() =>
+      expect(variableDriftsApi.action).toHaveBeenCalledWith(
+        'demo',
+        'drift-1',
+        { action: 'reopen', scope: undefined, snoozed_until: undefined },
+        null,
+      ),
+    )
+  })
+
+  it('marks the excluded variable a branch-diff link points at (tripl-acp2)', async () => {
+    // `excluded_from_scans` is a tracked plan-diff key, so a diff can carry a
+    // "variable X — excluded from scans" row linking here with X's id. X is
+    // exactly the variable the table filters out, so `findIndex` returned -1,
+    // the page fell back to 0, and the reviewer landed on an unrelated list with
+    // nothing marked while X sat unmarked in the panel below.
+    const scrollIntoView = vi
+      .spyOn(Element.prototype, 'scrollIntoView')
+      .mockImplementation(() => {})
+    mockList([
+      makeVariable({ id: 'var-1', name: 'still_scanned' }),
+      makeVariable({ id: 'var-2', name: 'old_junk', excluded_from_scans: true }),
+    ])
+
+    renderVariablesTab({ focusId: 'var-2' })
+
+    const excludedRow = (await screen.findByText('${old_junk}')).closest('li')
+    expect(excludedRow).toHaveAttribute('data-focused', 'true')
+    // Marked AND reached: the link's whole job is to put the reviewer in front
+    // of that row.
+    expect(scrollIntoView).toHaveBeenCalled()
+
+    // The unrelated row the reviewer used to land on is left alone.
+    expect(screen.getByText('${still_scanned}').closest('tr')).not.toHaveAttribute('data-focused')
+
+    scrollIntoView.mockRestore()
   })
 })

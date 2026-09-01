@@ -104,6 +104,16 @@ const KIND_META: Record<PlanDiffKind, { tone: ChipTone; sym: string; label: stri
   removed: { tone: 'danger', sym: '−', label: 'Removed' },
 }
 
+// A rename has no diff kind of its own — it arrives as a removal plus an
+// addition — but it is not a deletion, and a red "Removed" row sitting beside an
+// unrelated green "Added" one says it is. This is what the paired row wears
+// instead (tripl-amnn).
+const RENAMED_META: { tone: ChipTone; sym: string; label: string } = {
+  tone: 'warning',
+  sym: '→',
+  label: 'Renamed',
+}
+
 // Human-readable entity labels for the expanded change detail.
 const ENTITY_LABEL: Record<PlanDiffEntityType, string> = {
   event_type: 'event type',
@@ -140,63 +150,72 @@ function aheadCount(diff: PlanBranchDiffSummary | undefined): number {
 }
 
 
-/** The scan identity carried on one side of a diff entry — `before` for a
- * removal, `after` for an addition. Empty is not an identity: `source_name` is
- * nullable by design for rows created outside a scan, and two of those would
- * otherwise look alike. */
-function entrySourceName(state: Record<string, unknown> | null | undefined): string | null {
-  const value = state?.source_name
-  return typeof value === 'string' && value !== '' ? value : null
+/**
+ * Two diff entries the merge will treat as one renamed row, as the backend
+ * states them in `PlanBranchDiff.renames` (tripl-amnn).
+ *
+ * The diff keys entities by name, so a rename arrives split into a removal of
+ * the old name and an addition of the new one. Only the backend can join them
+ * back up: the rule pairs the two by `source_name` AND consults main, and this
+ * screen holds a base-vs-branch diff. It used to guess anyway — see
+ * `variablesDeletedByMerge` — and the guess was wrong in the direction of
+ * frightening the reviewer.
+ */
+export interface PlanDiffRename {
+  entity_type: PlanDiffEntityType
+  parent: string | null
+  removed_name: string
+  added_name: string
+}
+
+/** The diff plus the field above. The shared mirror in `types/branches.ts` is
+ * hand-maintained and gains `renames` when the API client is regenerated; until
+ * then it is read structurally, so this screen compiles and behaves against a
+ * response with or without it. */
+export type BranchDiffWithRenames = PlanBranchDiffSummary & { renames?: PlanDiffRename[] }
+
+function diffRenames(diff: PlanBranchDiffSummary | undefined): PlanDiffRename[] {
+  return (diff as BranchDiffWithRenames | undefined)?.renames ?? []
+}
+
+/** How a diff entry and a rename half address the same change — the same triple
+ * `BranchRevertRequest` uses, so a row and its pairing always agree. */
+function entryKey(entityType: PlanDiffEntityType, parent: string | null, name: string): string {
+  // JSON and not a separator: an event name has no character class at all
+  // (``EventUpdate`` bounds only its length), so any joiner could occur inside
+  // one and fuse two different changes into one key.
+  return JSON.stringify([entityType, parent, name])
 }
 
 /**
  * The variables a merge really deletes from main: the ones the branch removed,
  * minus the ones it merely renamed.
  *
- * `_plan_branch_renames.pair_renames` reads a would-delete and a would-insert
- * that share a non-empty `source_name` within one scope as a single row the
- * branch renamed, and renames main's row in place instead of replacing it — so
- * the id survives, and the observed values, per-event overrides and drift
- * history hanging off that id survive with it. Warning about those would scare
- * a reviewer out of a merge that deletes nothing. Variables are one flat scope
- * (their natural key is just the name), so a shared `source_name` is the whole
- * test here, and the diff carries it because it is a variable change key.
+ * A rename is paired away by `_plan_branch_renames.pair_renames`, which renames
+ * main's row in place instead of replacing it — so the id survives, and the
+ * observed values, per-event overrides and drift history hanging off that id
+ * survive with it. Warning about those would scare a reviewer out of a merge
+ * that deletes nothing.
  *
- * Ambiguity keeps its warning, exactly as the backend leaves it unpaired: no
- * `source_name` identifies nothing, and two candidates on either side make the
- * pairing a guess.
+ * This used to re-derive the pairing here by tallying `source_name` across the
+ * removals and the additions, and it could not be made correct: the real rule
+ * also refuses a move onto a name a STAYING MAIN row holds, and this diff
+ * compares the base with the branch. The stand-in was to warn about every
+ * removal whenever the branch was behind its base — safe, and wrong often
+ * enough to be noise. The backend now states the pairing it will actually
+ * perform, so this reads it (tripl-amnn).
  *
- * `behindBase` stands in for the half of the rule this diff cannot see. The
- * pairing also requires the new name to be absent from MAIN, and this diff
- * compares the base with the branch. While the branch is not behind, main still
- * equals that base and base-side absence IS main-side absence. Once main has
- * moved, a name the branch added may already exist there — the removal would
- * then go through as a removal — so every removal is warned about rather than
- * risk hiding a real deletion.
+ * An empty pairing means "no removal here is a rename", which is also what a
+ * response without the field says. That errs towards warning, which is the
+ * direction a warning about deleted history should err in.
  */
-function variablesDeletedByMerge(entries: PlanDiffEntry[], behindBase: boolean): string[] {
-  const removed = entries.filter((e) => e.entity_type === 'variable' && e.kind === 'removed')
-  if (behindBase) return removed.map((e) => e.name)
-
-  const added = entries.filter((e) => e.entity_type === 'variable' && e.kind === 'added')
-  const tally = (list: PlanDiffEntry[], read: (entry: PlanDiffEntry) => string | null) => {
-    const counts = new Map<string, number>()
-    for (const entry of list) {
-      const identity = read(entry)
-      if (identity) counts.set(identity, (counts.get(identity) ?? 0) + 1)
-    }
-    return counts
-  }
-  const removedBySource = tally(removed, (e) => entrySourceName(e.before))
-  const addedBySource = tally(added, (e) => entrySourceName(e.after))
-
-  return removed
-    .filter((entry) => {
-      const identity = entrySourceName(entry.before)
-      if (identity === null) return true
-      return !(removedBySource.get(identity) === 1 && addedBySource.get(identity) === 1)
-    })
-    .map((entry) => entry.name)
+function variablesDeletedByMerge(entries: PlanDiffEntry[], renames: PlanDiffRename[]): string[] {
+  const paired = new Set(
+    renames.filter((r) => r.entity_type === 'variable').map((r) => r.removed_name),
+  )
+  return entries
+    .filter((e) => e.entity_type === 'variable' && e.kind === 'removed' && !paired.has(e.name))
+    .map((e) => e.name)
 }
 
 function diffEntryDetail(entry: PlanDiffEntry): string {
@@ -664,12 +683,24 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
   }
 
   const handleRevert = async (entry: PlanDiffEntry, field?: string) => {
+    // Undoing a rename moves the name back onto the row that is still there, so
+    // it promises none of the loss the plain "Restore" wording warns about — and
+    // the reviewer should not be told to expect any (tripl-amnn).
+    const newName = field
+      ? undefined
+      : renamedTo.get(entryKey(entry.entity_type, entry.parent, entry.name))
     const ok = await confirm({
-      title: field ? 'Revert field' : 'Revert change',
-      message: field
-        ? `Revert the change to "${field}" on ${entry.name}, back to the value it had when this branch was opened? Main is untouched.`
-        : `${REVERT_PROMPT[entry.kind](entry.name)} Main is untouched.`,
-      confirmLabel: entry.kind === 'removed' && !field ? 'Restore' : 'Revert',
+      title: newName ? 'Undo rename' : field ? 'Revert field' : 'Revert change',
+      message: newName
+        ? `Undo the rename of ${entry.name} to ${newName}? The row stays on this branch and takes its old name back; its documented values and history are untouched. Main is untouched.`
+        : field
+          ? `Revert the change to "${field}" on ${entry.name}, back to the value it had when this branch was opened? Main is untouched.`
+          : `${REVERT_PROMPT[entry.kind](entry.name)} Main is untouched.`,
+      confirmLabel: newName
+        ? 'Undo rename'
+        : entry.kind === 'removed' && !field
+          ? 'Restore'
+          : 'Revert',
       variant: 'danger',
     })
     if (ok) revertMut.mutate({ entry, field })
@@ -686,11 +717,27 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
   }
 
   const entries = diff?.entries ?? []
+  const renames = diffRenames(diff)
+  // A rename's two entries, joined back up by the backend: the removal carries
+  // the row (and the revert that undoes the rename), so it is the half that
+  // stays, wearing the new name; the addition is dropped rather than shown as an
+  // unrelated creation of a row that already existed (tripl-amnn).
+  const renamedTo = new Map(
+    renames.map((r) => [entryKey(r.entity_type, r.parent, r.removed_name), r.added_name] as const),
+  )
+  const pairedAdditions = new Set(
+    renames.map((r) => entryKey(r.entity_type, r.parent, r.added_name)),
+  )
+  const visibleEntries = entries.filter(
+    (entry) =>
+      entry.kind !== 'added' ||
+      !pairedAdditions.has(entryKey(entry.entity_type, entry.parent, entry.name)),
+  )
   // A variable removed relative to the branch base and not paired with an
   // addition is an intentional deletion; warn because its observed values,
   // overrides and drift history cascade. A rename is paired away — it keeps
   // all three.
-  const removedVariables = variablesDeletedByMerge(entries, diff?.behind_base ?? true)
+  const removedVariables = variablesDeletedByMerge(entries, renames)
 
   const handleMerge = async () => {
     if (removedVariables.length > 0) {
@@ -841,19 +888,20 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
 
       <ImplementationTicketsPanel slug={slug} branch={branch} />
 
-      <Panel title="Changes" subtitle={countOf(entries.length, 'change', 'changes')}>
-        {entries.length === 0 ? (
+      <Panel title="Changes" subtitle={countOf(visibleEntries.length, 'change', 'changes')}>
+        {visibleEntries.length === 0 ? (
           <p className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
             No changes in this branch.
           </p>
         ) : (
           <div>
-            {entries.map((entry, idx) => (
+            {visibleEntries.map((entry, idx) => (
               <ChangeRow
                 key={`${entry.entity_type}-${entry.name}-${idx}`}
                 slug={slug}
                 branchId={branch.id}
                 entry={entry}
+                renamedTo={renamedTo.get(entryKey(entry.entity_type, entry.parent, entry.name))}
                 onRevert={handleRevert}
                 reverting={revertMut.isPending}
               />
@@ -1002,16 +1050,20 @@ interface ChangeRowProps {
   slug: string
   branchId: string
   entry: PlanDiffEntry
+  /** Set when the backend paired this removal with an addition: the name the
+   * row now wears on the branch. The row then reads as the rename it is, and
+   * its revert undoes the rename rather than restoring a deletion. */
+  renamedTo?: string
   onRevert: (entry: PlanDiffEntry, field?: string) => void
   reverting: boolean
 }
 
-function ChangeRow({ slug, branchId, entry, onRevert, reverting }: ChangeRowProps) {
+function ChangeRow({ slug, branchId, entry, renamedTo, onRevert, reverting }: ChangeRowProps) {
   const [open, setOpen] = useState(false)
   const detailId = useId()
   const branchLink = useBranchLinkProps()
   const { notifyStepCompleted } = useDemoScenarioActions()
-  const meta = KIND_META[entry.kind]
+  const meta = renamedTo ? RENAMED_META : KIND_META[entry.kind]
   // Removed entities only exist on the base side; everything else shows the
   // branch-side (current) state.
   const fullState = (entry.kind === 'removed' ? entry.before : entry.after) ?? null
@@ -1019,7 +1071,9 @@ function ChangeRow({ slug, branchId, entry, onRevert, reverting }: ChangeRowProp
   const fieldChanges = entry.field_changes ?? []
   const hasFieldChanges = fieldChanges.length > 0
   const path = entityPath(slug, entry)
-  // A removed entity is gone from the branch — only main still has it.
+  // A removed entity is gone from the branch — only main still has it. A renamed
+  // one has not gone anywhere, but the id on a removed entry is the base-side
+  // one, so main is still where that id resolves.
   const link = path ? branchLink(path, entry.kind === 'removed' ? null : branchId) : null
   const REVERT_LABEL: Record<PlanDiffKind, string> = {
     added: 'Discard this addition',
@@ -1075,7 +1129,7 @@ function ChangeRow({ slug, branchId, entry, onRevert, reverting }: ChangeRowProp
           className="min-w-0 flex-1 truncate text-right text-[11.5px]"
           style={{ color: 'var(--fg-subtle)' }}
         >
-          {diffEntryDetail(entry)}
+          {renamedTo ? `→ ${renamedTo}` : diffEntryDetail(entry)}
         </span>
         <Chip tone={meta.tone} size="xs">
           {meta.label}
@@ -1109,7 +1163,7 @@ function ChangeRow({ slug, branchId, entry, onRevert, reverting }: ChangeRowProp
                 style={{ color: 'var(--fg-muted)' }}
               >
                 <Undo2 className="size-3" aria-hidden="true" />
-                {REVERT_LABEL[entry.kind]}
+                {renamedTo ? 'Undo this rename' : REVERT_LABEL[entry.kind]}
               </button>
               {link ? (
                 <Link
@@ -1135,7 +1189,15 @@ function ChangeRow({ slug, branchId, entry, onRevert, reverting }: ChangeRowProp
             </DetailSection>
           ) : null}
           {hasState ? (
-            <DetailSection title={entry.kind === 'removed' ? 'Removed state' : 'Full state'}>
+            <DetailSection
+              title={
+                renamedTo
+                  ? 'State before the rename'
+                  : entry.kind === 'removed'
+                    ? 'Removed state'
+                    : 'Full state'
+              }
+            >
               <StateView state={fullState} />
             </DetailSection>
           ) : null}

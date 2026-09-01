@@ -13,18 +13,25 @@ from tripl.models.event import Event
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue, VariableValueKind
+from tripl.schemas.variable import SUMMARY_EVENT_LIMIT, SUMMARY_VALUE_LIMIT
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.variable_value_drift_service import get_open_drift_counts
 
-SUMMARY_VALUE_LIMIT = 20
-# Event names shipped inline on the list row. The row only renders a preview
-# list (``event_count`` carries the true total), so a cap keeps a variable used
-# by hundreds of events from dominating the paged payload.
-SUMMARY_EVENT_LIMIT = 20
-
 
 def _extend_unique(target: list[str], values: Iterable[str], *, limit: int) -> None:
+    """Append the novel entries of *values* to *target*, holding it at *limit*.
+
+    The cap has to survive being entered again, because this runs once per
+    CONTEXT row against the one accumulator its variable shares. Checking the
+    length only after an append let every re-entry add one more novel value
+    before breaking, so a variable whose first context already supplied twenty
+    distinct values left a hundred contexts later with 119 of them — against a
+    cap the response schema states as hard (tripl-x050). The early return is
+    what makes the limit a property of the accumulator rather than of one call.
+    """
+    if len(target) >= limit:
+        return
     seen = set(target)
     for value in values:
         if value in seen:

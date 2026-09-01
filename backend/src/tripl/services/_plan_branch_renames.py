@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
+
+from tripl.schemas.plan_branch import PlanDiffRename
+from tripl.schemas.plan_revision import PlanEntityType
 
 # A natural key is the row's rename scope followed by its name:
 # ``("track", "purchase:success")`` for an event, ``("variant",)`` for a
@@ -141,6 +145,94 @@ def pair_renames[KeyT: NaturalKey](
         for old in blocked:
             del moves[old]
     return moves
+
+
+def _variable_identities(payload: Mapping[str, Any]) -> dict[tuple[str, ...], str | None]:
+    """A plan snapshot's variables as ``pair_renames`` wants them."""
+    return {(item["name"],): item.get("source_name") for item in payload.get("variables", [])}
+
+
+def _event_identities(payload: Mapping[str, Any]) -> dict[tuple[str, ...], str | None]:
+    return {
+        (item["event_type_name"], item["name"]): item.get("source_name")
+        for item in payload.get("events", [])
+    }
+
+
+# The two entity kinds the merge pairs, and only those: ``_apply_merge`` calls
+# ``pair_renames`` for variables and for events and for nothing else, because
+# ``source_name`` is the only identity a rename cannot move and it is the only
+# thing ``build_plan_snapshot`` records it on. Event types, fields, meta fields
+# and relations therefore keep merging — and keep reporting — as a removal plus
+# an addition, which is what they are.
+#
+# The keys built above are the keys ``compute_plan_diff_entries`` uses for the
+# same two sets (``item["name"]`` for a variable, ``(event_type_name, name)`` for
+# an event). That correspondence is load-bearing: the membership tests in
+# ``snapshot_rename_pairs`` decide whether a diff ENTRY exists, so a key shaped
+# differently here would answer about a row the diff never split.
+_PAIRED_ENTITY_TYPES: tuple[
+    tuple[PlanEntityType, Callable[[Mapping[str, Any]], dict[tuple[str, ...], str | None]]], ...
+] = (
+    ("variable", _variable_identities),
+    ("event", _event_identities),
+)
+
+
+def snapshot_rename_pairs(
+    base_payload: Mapping[str, Any],
+    main_payload: Mapping[str, Any],
+    branch_payload: Mapping[str, Any],
+) -> list[PlanDiffRename]:
+    """The renames a merge of this branch will pair, named the way the diff names them.
+
+    A branch diff compares the base snapshot with the branch, and keys entities
+    by name, so a rename arrives as a removal of the old name plus an addition of
+    the new one — two rows that look like a deletion and an unrelated creation.
+    The merge knows better, and this says what the merge knows, from the same
+    ``pair_renames`` the merge itself calls (tripl-amnn). A second implementation
+    would be free to drift, and the cost of drift here is a UI that promises a
+    rename the merge then performs as a delete-plus-insert, cascading the
+    variable's observed values and drift rows on the way through.
+
+    Only pairs the diff actually SPLIT are returned. ``pair_renames`` also pairs
+    a swap and a longer rotation, where every name is present on both sides and
+    the diff shows two ``changed`` entries instead — there is no removal and no
+    addition to join up, so reporting one would name entries that do not exist.
+    Hence the two membership tests: a removal exists only for an old key absent
+    from the branch, an addition only for a new key absent from the base.
+
+    Three payloads and not two, because the merge's pairing reads main: a move
+    onto a name a staying main row still holds is refused, and a row main grew
+    after the branch was cut can never be a rename source. Passing the base twice
+    would answer a question nobody asked and would promise pairings the merge
+    would then refuse. Callers already hold all three — ``diff_branch`` builds
+    the main and branch snapshots to compute the diff at all.
+
+    The answer is as fresh as ``main_payload``: main can move between this call
+    and the merge, and then the merge pairs what main says at that moment. That
+    is the same staleness ``behind_base`` already reports, not a new one.
+    """
+    pairs: list[PlanDiffRename] = []
+    for entity_type, identities_of in _PAIRED_ENTITY_TYPES:
+        base = identities_of(base_payload)
+        branch = identities_of(branch_payload)
+        for old_key, new_key in pair_renames(base, identities_of(main_payload), branch).items():
+            if old_key in branch or new_key in base:
+                continue
+            pairs.append(
+                PlanDiffRename(
+                    entity_type=entity_type,
+                    # ``pair_renames`` never crosses ``key[:-1]``, so both halves
+                    # share a parent and either one names it.
+                    parent=old_key[0] if len(old_key) > 1 else None,
+                    removed_name=old_key[-1],
+                    added_name=new_key[-1],
+                )
+            )
+    # Sorted so the response does not reorder between two identical requests
+    # merely because a dict was built in a different order.
+    return sorted(pairs, key=lambda pair: (pair.entity_type, pair.parent or "", pair.removed_name))
 
 
 def rekey_in_place[KeyT, ValueT](mapping: dict[KeyT, ValueT], renames: Mapping[KeyT, KeyT]) -> None:

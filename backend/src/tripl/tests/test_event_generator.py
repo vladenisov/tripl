@@ -849,6 +849,74 @@ class TestEventGeneration:
         assert survived is not None, "a scan must not delete what no scan can re-record"
         assert survived == (7, ["seen_before_exclusion"])
 
+    def test_rescan_spares_an_excluded_variable_whose_only_token_a_sibling_claims(
+        self, sync_session: Session, project_and_type
+    ):
+        """Losing a token race does not make an excluded variable's rows collectable.
+
+        Same exemption as the test above, but the excluded variable names exactly
+        one token and an earlier-sorted sibling already claims it — ``myvar``
+        bound to ``retired``, a binding the API accepts because
+        ``_check_binding_conflicts`` compares against other variables'
+        ``bindings`` and ``source_name`` and never their ``name``. The excluded
+        variable is then absent from the index's token map, and reading the
+        exemption set off that map left it out, so the rewrite below took its
+        rows (bd tripl-cef2). Nothing restates them: ``resolve`` answers that
+        token with the sibling, so ``record_variable_contexts`` never reaches the
+        excluded one at all — the delete is permanent, and silent.
+
+        The assertion is on the stored row, not on ``excluded_ids()``: a set the
+        deleter had stopped reading would still satisfy the second.
+        """
+        project, et, fds = project_and_type
+        live = self._seed_curated_event_with_context(
+            sync_session, project, et, fds, screen_is_authored=False
+        )
+        shadowing = sync_session.get(Variable, live.variable_id)
+        assert shadowing is not None
+        shadowing.bindings = ["retired"]
+        excluded = Variable(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name="retired",
+            # NULL on purpose: the replay path writes ``VariableValue`` rows
+            # without backfilling ``source_name``, so a hand-made variable really
+            # does reach a scan owning rows and nothing but its display name.
+            source_name=None,
+            variable_type="string",
+            excluded_from_scans=True,
+        )
+        sync_session.add(excluded)
+        sync_session.flush()
+        tombstoned = VariableValue(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            variable_id=excluded.id,
+            event_id=live.event_id,
+            field_definition_id=live.field_definition_id,
+            source_column="screen",
+            value_kind="low",
+            observed_count=7,
+            values=["seen_before_exclusion"],
+        )
+        sync_session.add(tombstoned)
+        sync_session.commit()
+        live_id, tombstoned_id = live.id, tombstoned.id
+
+        generate_events(sync_session, project.id, et.id, self._low_card_analysis(), fds)
+        sync_session.commit()
+
+        assert sync_session.get(VariableValue, live_id) is None
+        # Columns, not the entity: a row read back through the identity map would
+        # look intact after the delete this test exists to catch.
+        survived = sync_session.execute(
+            select(VariableValue.observed_count, VariableValue.values).where(
+                VariableValue.id == tombstoned_id
+            )
+        ).one_or_none()
+        assert survived is not None, "a shadowed exclusion is still an exclusion"
+        assert survived == (7, ["seen_before_exclusion"])
+
     def test_event_name_column_enumerated_despite_high_cardinality(
         self, sync_session: Session, project_and_type
     ):
