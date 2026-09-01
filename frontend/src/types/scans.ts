@@ -17,6 +17,7 @@ export interface ScanJobResultSummary {
   json_paths_with_samples?: number
   variable_values_written?: number
   variable_contexts_unfilled?: number
+  variables_retired?: number
   columns_analyzed?: number
   event_metrics?: number
   type_metrics?: number

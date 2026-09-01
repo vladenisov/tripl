@@ -469,6 +469,11 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             project_id=config.project_id,
             event_type_ids=event_type_ids,
             event_group_rules=config.event_group_rules,
+            # The fold that combines two stored contexts demotes on this bound,
+            # so it has to be the project's own. The parameter defaults to the
+            # column default, which would silently be right for everyone who
+            # never moved it and wrong for everyone who did (tripl-3rex).
+            cardinality_threshold=config.cardinality_threshold,
         )
         session.commit()
         # AFTER the commit, exactly as run_scan does and for the same reason:

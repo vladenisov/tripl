@@ -82,7 +82,10 @@ allow `control` and `treatment`, while one legacy event documents a different
 set.
 
 To add an override, edit the variable, choose an event under **Per-event
-overrides**, enter the complete effective list for that event, and save it.
+overrides**, enter the complete effective list for that event, and save it. The
+event list is one searched page rather than the whole catalog, so on a large
+project type into the search box above it to reach the event you want — the note
+under the list says how many events it is not currently showing.
 
 ## Bind a variable to warehouse data
 

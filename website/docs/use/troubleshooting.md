@@ -722,9 +722,11 @@ Four are always shown — *Events created*, *Variables created*, *Events skipped
 *Columns analyzed*. The rest appear only when that run produced them, so the
 panel is shorter for a catalog-only scan than for a scheduled collection:
 *Event breakdowns*, *Distribution rows*, *Paths sampled*, *Paths with samples*,
-*Values written*, *Contexts unfilled*, *Signals added*, *Alerts queued*. Nothing
-was removed; it is one click further down. The four sampling counters in that
-second group are the ones the empty-observed-values answer below sends you to.
+*Values written*, *Contexts unfilled*, *Variables retired*, *Signals added*,
+*Alerts queued*. Nothing was removed; it is one click further down. The four
+sampling counters in that second group are the ones the empty-observed-values
+answer below sends you to, and *Variables retired* read against *Variables
+created* is how you tell a growing catalog from one holding steady.
 
 **The run says it raised 2 signals but Anomalies shows a different number. Which
 is wrong?**

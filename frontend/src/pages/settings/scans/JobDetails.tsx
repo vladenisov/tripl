@@ -200,6 +200,12 @@ export function JobDetails({
               {summary.variable_contexts_unfilled != null && (
                 <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.variable_contexts_unfilled}</div><div className="text-muted-foreground">Contexts unfilled</div></Card>
               )}
+              {/* Reads next to Variables created on purpose: a scheduled run now
+                  both mints and retires, and the pair is the only way to tell a
+                  catalog that is growing from one holding steady (tripl-bh1q). */}
+              {summary.variables_retired != null && (
+                <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.variables_retired}</div><div className="text-muted-foreground">Variables retired</div></Card>
+              )}
               {summary.signals_added != null && (
                 <Card className="p-3 text-center">
                   <div>
