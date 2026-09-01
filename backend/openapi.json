@@ -12933,6 +12933,13 @@
             "title": "Entries",
             "type": "array"
           },
+          "renames": {
+            "items": {
+              "$ref": "#/components/schemas/PlanDiffRename"
+            },
+            "title": "Renames",
+            "type": "array"
+          },
           "summary": {
             "additionalProperties": {
               "type": "integer"
@@ -13224,6 +13231,49 @@
           "name"
         ],
         "title": "PlanDiffEntry",
+        "type": "object"
+      },
+      "PlanDiffRename": {
+        "description": "One removed entry and one added entry that are really a single renamed row.\n\nThe diff keys entities by NAME, so a rename splits into a removal of the old\nname and an addition of the new one. The merge does not see it that way: it\npairs the two by ``source_name`` and UPDATEs main's row in place, keeping the\nid and everything hanging off it. Stating the pairing here is what stops the\nUI having to re-derive it, which it cannot do correctly \u2014 the pairing also\ndepends on main, and the diff the UI holds compares the base with the branch\n(tripl-amnn).\n\n``removed_name`` and ``added_name`` are the two entries' ``name``, and\n``entity_type`` / ``parent`` are shared by both, so the pair addresses its\nhalves exactly the way ``BranchRevertRequest`` addresses a change.",
+        "properties": {
+          "added_name": {
+            "title": "Added Name",
+            "type": "string"
+          },
+          "entity_type": {
+            "enum": [
+              "event_type",
+              "field_definition",
+              "event",
+              "variable",
+              "meta_field",
+              "relation"
+            ],
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          },
+          "removed_name": {
+            "title": "Removed Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_type",
+          "removed_name",
+          "added_name"
+        ],
+        "title": "PlanDiffRename",
         "type": "object"
       },
       "PlanFieldChange": {
@@ -18770,6 +18820,7 @@
             "items": {
               "type": "string"
             },
+            "maxItems": 20,
             "title": "Event Names",
             "type": "array"
           },
@@ -18813,6 +18864,7 @@
             "items": {
               "type": "string"
             },
+            "maxItems": 20,
             "title": "Sample Values",
             "type": "array"
           },

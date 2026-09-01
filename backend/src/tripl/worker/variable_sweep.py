@@ -51,7 +51,7 @@ import logging
 import uuid
 
 from sqlalchemy import Select, delete, select
-from sqlalchemy.orm import InstrumentedAttribute, Session
+from sqlalchemy.orm import InstrumentedAttribute, Session, lazyload
 
 from tripl.core.variable_retirement import plan_retirement, referenced_tokens
 from tripl.models.event import Event
@@ -128,7 +128,17 @@ def retire_unused_variables(
         scope.append(Variable.branch_id == branch_id)
         value_scope.append(Event.branch_id == branch_id)
 
-    variables = list(session.execute(select(Variable).where(*scope)).scalars())
+    # ``lazyload`` for the same reason as ``catalog_sync`` and the two request-path
+    # selects: ``Variable.value_contexts`` is ``lazy="selectin"`` and each context
+    # then selectin-loads its FieldDefinition, so hydrating these plainly pulls the
+    # project's entire context table into a sweep that only ever reads ids, names
+    # and provenance. The contexts are answered by the anti-join below instead
+    # (tripl-xkbb).
+    variables = list(
+        session.execute(
+            select(Variable).where(*scope).options(lazyload(Variable.value_contexts))
+        ).scalars()
+    )
     if not variables:
         return 0
 

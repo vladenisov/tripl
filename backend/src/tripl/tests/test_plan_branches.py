@@ -3722,3 +3722,68 @@ def test_snapshot_rename_pairs_follows_main_not_the_base() -> None:
     # Same branch, main untouched: now it is a rename the merge will pair.
     paired = snapshot_rename_pairs(base, base, branch)
     assert [pair.removed_name for pair in paired] == ["plan_tier"]
+
+
+@pytest.mark.asyncio
+async def test_branch_diff_names_the_rename_the_merge_will_pair(client: AsyncClient) -> None:
+    """The endpoint carries the pairing, not just the pure function.
+
+    ``snapshot_rename_pairs`` is unit-tested above against three payloads. This
+    asserts the wiring: that ``diff_branch`` actually calls it with the base,
+    main and branch snapshots, and that the pair survives serialisation. Without
+    the call the field is a well-typed empty list and the UI is back to guessing
+    (tripl-amnn).
+    """
+    slug = "diff-rename-pair"
+    await _seed_plan(client, slug)
+    created = await client.post(f"/api/v1/projects/{slug}/variables", json={"name": "plan_tier"})
+    assert created.status_code == 201
+    # Only a SCAN stamps ``source_name``; the API never accepts it, and it is the
+    # identity the pairing joins on, so the row has to be given one by hand.
+    async with TestSessionLocal() as session:
+        var = (
+            (await session.execute(select(Variable).where(Variable.name == "plan_tier")))
+            .scalars()
+            .one()
+        )
+        var.source_name = "plan_tier_raw"
+        await session.commit()
+
+    branch_id = await _create_branch(client, slug)
+    async with TestSessionLocal() as session:
+        branch_var = (
+            (
+                await session.execute(
+                    select(Variable).where(
+                        Variable.branch_id == uuid.UUID(branch_id),
+                        Variable.name == "plan_tier",
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        branch_var_id = branch_var.id
+
+    renamed = await client.patch(
+        f"/api/v1/projects/{slug}/variables/{branch_var_id}?branch={branch_id}",
+        json={"name": "subscription_tier"},
+    )
+    assert renamed.status_code == 200, renamed.text
+
+    diff = await client.get(f"/api/v1/projects/{slug}/branches/{branch_id}/diff")
+    assert diff.status_code == 200, diff.text
+    body = diff.json()
+    assert body["renames"] == [
+        {
+            "entity_type": "variable",
+            "parent": None,
+            "removed_name": "plan_tier",
+            "added_name": "subscription_tier",
+        }
+    ]
+    # The entries themselves are unchanged: the pairing REPORTS, it does not
+    # rewrite the diff the reviewer reads.
+    kinds = {(entry["kind"], entry["name"]) for entry in body["entries"]}
+    assert ("removed", "plan_tier") in kinds
+    assert ("added", "subscription_tier") in kinds

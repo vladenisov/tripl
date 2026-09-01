@@ -315,7 +315,10 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const driftItems = driftList?.items ?? []
   // One `now` for the whole render, so a drift cannot be classified against one
   // instant here and a different one further down.
-  const driftNow = Date.now()
+  // Lazy `useState` rather than a bare call: `react-hooks/purity` refuses
+  // `Date.now()` during render, and this is the repo's idiom for a render clock
+  // (ScansTab.tsx). One instant for every row in this dialog.
+  const [driftNow] = useState(() => Date.now())
   const activeDrifts = driftItems.filter(drift => driftReviewState(drift, driftNow) === 'active')
   // Snoozed rows sit with the resolved ones, not with the active ones. The row's
   // drift badge comes from `get_open_drift_counts`, which drops a future-snoozed
