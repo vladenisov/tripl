@@ -4507,12 +4507,22 @@ def test_requeue_stranded_alert_deliveries_redispatches_and_bounds_attempts(
     now = datetime.now(UTC)
     stale = timedelta(minutes=maintenance.STRANDED_DELIVERY_MINUTES + 5)
     with sync_session_factory() as session:
-        # Stranded: pending, old, attempts left → should be re-enqueued.
+        # Stranded: pending, old and untouched, attempts left → re-enqueued.
+        # ``updated_at`` is seeded old too: a genuinely stranded row has not
+        # been touched since creation, and the arm now checks both so it never
+        # races a row a retry path just flipped back to pending.
         stranded_id = _seed_alert_delivery(
-            session, status="pending", created_at=now - stale, dispatch_attempts=1
+            session,
+            status="pending",
+            created_at=now - stale,
+            dispatch_attempts=1,
+            updated_at=now - stale,
         )
         # Fresh pending (within horizon) → likely still in flight, skip.
         _seed_alert_delivery(session, status="pending", created_at=now)
+        # Old row RECENTLY flipped back to pending (a manual Retry or the
+        # failed arm's auto-retry) → its send is queued or in flight, skip.
+        _seed_alert_delivery(session, status="pending", created_at=now - stale)
         # Already sent → ignore.
         _seed_alert_delivery(session, status="sent", created_at=now - stale)
         # Exhausted: pending, old, attempts maxed → mark failed, do not requeue.
@@ -4521,6 +4531,7 @@ def test_requeue_stranded_alert_deliveries_redispatches_and_bounds_attempts(
             status="pending",
             created_at=now - stale,
             dispatch_attempts=maintenance.MAX_DISPATCH_ATTEMPTS,
+            updated_at=now - stale,
         )
 
     monkeypatch.setattr(maintenance, "_get_sync_session", sync_session_factory)

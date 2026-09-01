@@ -319,6 +319,12 @@ def preserve_existing_variable_context_values(
         prior_values[key] = existing_values
         if not context_values and existing_values:
             context["values"] = sample_variable_values(existing_values, existing.value_kind)
+            # The KIND is restored with the values: a planned JSON-path
+            # observation is always ``high``, and letting it stand over a
+            # restored low enumeration would flip the row to high with its
+            # full list — after which the next merge trims it to the sample
+            # cap. Restoring both keeps the row exactly what it was.
+            context["value_kind"] = existing.value_kind
 
         # A first observation IS reported as drift. That is the settled decision,
         # not an omission. A stored ``observed_count`` of 0 means the values
@@ -381,6 +387,16 @@ def preserve_existing_variable_context_values(
                 or existing.value_kind == VariableValueKind.high.value
             ):
                 context["value_kind"] = VariableValueKind.high.value
+            else:
+                # The union of two observed-value sets below the threshold is
+                # still an exact enumeration, whatever the incoming side
+                # claimed: a sampled JSON-path observation always arrives
+                # ``high`` (event_plan plans it that way), and inheriting that
+                # kind here would trim a stored low enumeration to the sample
+                # cap — the destruction this arm exists to remove, back
+                # through the side door. The replay sink keeps low the same
+                # way.
+                context["value_kind"] = VariableValueKind.low.value
             context["values"] = sample_variable_values(merged, context["value_kind"])
             context["observed_count"] = max(
                 int(context.get("observed_count") or 0),

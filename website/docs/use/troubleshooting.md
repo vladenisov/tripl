@@ -845,8 +845,12 @@ which contexts are empty and what each one binds to. An empty context is not by
 itself a fault: a binding pointed at a column that is genuinely empty has nothing
 to store. A JSON-path context that is merely new fills on its own — scheduled
 runs attempt every path still waiting for a first value every few runs, so
-expect first samples within hours on a regularly collecting scan; a context
-still empty after days means the path genuinely is not arriving. Once stored,
+expect first samples within hours on a regularly collecting scan. A context
+still empty after days usually means the path is not arriving — but rule out
+two other causes first: a variable excluded from scans is never sampled at
+all, and a sampling query that fails (a permission change, a dropped column)
+degrades silently so the run still completes — the run details' raw counters
+show it as paths sampled with none coming back with samples. Once stored,
 samples accumulate across runs, so a value does not drop off the list because
 recent scan windows stopped carrying it.
 Note also that a variable with no stored values raises no value drift,

@@ -33,9 +33,13 @@ from tripl.worker.tasks._errors import is_transient_send_error
 
 logger = logging.getLogger(__name__)
 
-# A delivery still `pending` this long after creation was almost certainly
-# never dispatched (a real send completes in seconds). Comfortably above any
-# normal send latency so we don't race a delivery that's actively in flight.
+# A delivery still `pending` this long after it was created AND last touched
+# was almost certainly never dispatched (a real send completes in seconds).
+# Comfortably above any normal send latency so we don't race a delivery that's
+# actively in flight — which is why the query below also checks ``updated_at``:
+# a manual Retry or the failed arm's auto-retry flips an OLD row back to
+# pending, and measuring only from creation would let this arm re-enqueue it
+# on the very next tick, racing the send those paths just dispatched.
 STRANDED_DELIVERY_MINUTES = 15
 # Cap re-enqueues so a delivery that keeps failing to dispatch (e.g. a
 # permanently unreachable broker target) is eventually marked failed instead
@@ -104,6 +108,7 @@ def requeue_stranded_alert_deliveries() -> dict[str, object]:
                 select(AlertDelivery).where(
                     AlertDelivery.status == AlertDeliveryStatus.pending.value,
                     AlertDelivery.created_at < cutoff,
+                    AlertDelivery.updated_at < cutoff,
                 )
             )
             .scalars()

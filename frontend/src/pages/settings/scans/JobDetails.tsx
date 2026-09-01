@@ -93,9 +93,11 @@ function RunReportSentence({
  * The expanded body of one scan run.
  *
  * It leads with "What this run did" — plain sentences about the user's data —
- * and keeps every raw counter behind "Show raw counters" for the operator who
- * wants them. Nothing is lost, it is demoted: the eight cards below are the same
- * eight cards, with the same labels, that used to BE this panel. Eight internal
+ * and keeps the raw counters behind "Show raw counters" for the operator who
+ * wants them: the eight cards that used to BE this panel, plus the scheduled
+ * sampler sweep (paths sampled / with samples, values written, contexts
+ * unfilled). Only json_path_ring_size stays summary-only — the ring is an
+ * internal pacing detail the unfilled count already narrates. Internal
  * counters answered no question anyone had; "did my events arrive, and which
  * ones" is the question, and it now has an answer above the fold.
  */
@@ -185,6 +187,12 @@ export function JobDetails({
               )}
               {summary.json_paths_sampled != null && (
                 <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.json_paths_sampled}</div><div className="text-muted-foreground">Paths sampled</div></Card>
+              )}
+              {/* Sampled high with zero coming back is the signature of a
+                  failing adapter (the sampler swallows its errors so the run
+                  still completes) — the pair has to be visible together. */}
+              {summary.json_paths_with_samples != null && (
+                <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.json_paths_with_samples}</div><div className="text-muted-foreground">Paths with samples</div></Card>
               )}
               {summary.variable_values_written != null && (
                 <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.variable_values_written}</div><div className="text-muted-foreground">Values written</div></Card>

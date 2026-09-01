@@ -614,8 +614,13 @@ count so "wired up and nothing routes here" is still visible.
 ## Deliveries and the Inbox
 
 Each match creates a **delivery** that moves through `pending → sent` or
-`pending → failed`. Sending is idempotent, and a background reaper requeues
-deliveries that get stuck (roughly every 5 minutes, up to a few attempts). The
+`pending → failed`. Sending is idempotent for ticket and multi-part channels
+(created issue ids and delivered parts are recorded mid-flight, so a re-run
+does not repeat them); a plain message channel can, in the rare case where the
+receiver accepted a send whose response then timed out, deliver twice — the
+trade the pipeline prefers over a silently lost alert. A background reaper
+requeues deliveries that get stuck (roughly every 5 minutes, up to a few
+attempts). The
 same reaper also retries a delivery that **failed on a transient network
 error** — destination unreachable, connection refused, a timeout — a few
 times, minutes apart, within that same attempt budget (only failures from the

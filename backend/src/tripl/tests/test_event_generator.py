@@ -526,6 +526,9 @@ class TestEventGeneration:
 
         key = (variable.id, event.id, fds["screen"].id)
         # Two values re-observed, three new: the union holds cap + 1 distinct.
+        # The incoming kind is HIGH on purpose — a sampled JSON-path
+        # observation always arrives high — and must not decide the merged
+        # row's kind: the union below the threshold is still an enumeration.
         incoming = [*existing_values[-2:], "w0", "w1", "w2"]
         contexts = {
             key: {
@@ -533,7 +536,7 @@ class TestEventGeneration:
                 "event_id": event.id,
                 "field_definition_id": fds["screen"].id,
                 "source_column": "screen",
-                "value_kind": "low",
+                "value_kind": "high",
                 "observed_count": len(incoming),
                 "values": incoming,
             }
@@ -582,6 +585,29 @@ class TestEventGeneration:
         assert len(demoted["values"]) == VARIABLE_VALUE_SAMPLE_LIMIT
         assert demoted["observed_count"] == VARIABLE_VALUE_SAMPLE_LIMIT + 1
         assert demoted["value_kind"] == "high"
+
+        # And the RESTORE arm restores the kind with the values: an empty
+        # planned-high observation over the stored low row must hand back the
+        # untrimmed enumeration as ``low``, or the next merge trims it.
+        contexts[key] = {
+            "variable_id": variable.id,
+            "event_id": event.id,
+            "field_definition_id": fds["screen"].id,
+            "source_column": "screen",
+            "value_kind": "high",
+            "observed_count": 0,
+            "values": [],
+        }
+        preserve_existing_variable_context_values(
+            sync_session,
+            project_id=project.id,
+            branch_id=None,
+            contexts=contexts,
+        )
+        restored = contexts[key]
+        assert restored["values"] == existing_values
+        assert restored["value_kind"] == "low"
+        assert restored["observed_count"] == len(existing_values)
 
     def test_variable_values_written_counts_only_new_or_changed_rows(
         self, sync_session: Session, project_and_type

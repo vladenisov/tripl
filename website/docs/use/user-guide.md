@@ -576,7 +576,8 @@ Inbox says *"No correlated alert groups"*, work through this checklist:
    transport errors (a bad Slack URL, an SMTP problem, etc.). A failure from a
    transient network error — unreachable host, refused connection, a timeout —
    retries itself a few times over the following minutes; any other failure,
-   and every Jira or Linear delivery, waits for the row's **Retry** button.
+   every Jira or Linear delivery, and a delivery whose destination was
+   disabled at the time, waits for the row's **Retry** button.
 6. **Did you silence it yourself?** An incident you acknowledged, resolved, muted
    or marked a false positive stops delivering — and **acknowledged** counts,
    which is the one people do not expect. Handled incidents sort below open ones,
