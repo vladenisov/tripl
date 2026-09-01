@@ -717,10 +717,14 @@ whether anything it produced raised a signal or queued an alert. A catalog-only
 scan says outright that it collects no metric points, so nothing downstream can
 fire.
 
-Every raw counter the run reported is still there under **Show raw counters** —
-*Events created*, *Variables created*, *Events skipped*, *Columns analyzed*,
-*Event breakdowns*, *Distribution rows*, *Signals added*, *Alerts queued*.
-Nothing was removed; it is one click further down.
+Every raw counter the run reported is still there under **Show raw counters**.
+Four are always shown — *Events created*, *Variables created*, *Events skipped*,
+*Columns analyzed*. The rest appear only when that run produced them, so the
+panel is shorter for a catalog-only scan than for a scheduled collection:
+*Event breakdowns*, *Distribution rows*, *Paths sampled*, *Paths with samples*,
+*Values written*, *Contexts unfilled*, *Signals added*, *Alerts queued*. Nothing
+was removed; it is one click further down. The four sampling counters in that
+second group are the ones the empty-observed-values answer below sends you to.
 
 **The run says it raised 2 signals but Anomalies shows a different number. Which
 is wrong?**
