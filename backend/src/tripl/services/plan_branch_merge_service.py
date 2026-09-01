@@ -216,10 +216,17 @@ async def _rename_main_variables(
     ``pair_renames`` can hand back a permutation — a plain two-variable swap, or
     a longer rotation — and then at least one row is moving onto a name another
     main row still holds. ``uq_variable_project_name`` is UNIQUE and NOT
-    DEFERRABLE (``d4f5e6a7b8c9`` creates it in that form), so there is no order
+    DEFERRABLE — ``Variable`` declares it as a plain ``UniqueConstraint``
+    (``models/variable.py``), which is the immediate form — so there is no order
     of the UPDATEs that avoids a duplicate existing between two of them: only a
     third value does. Park every mover on one, flush that, then write the real
     names (tripl-htcz).
+
+    ``4e5f60718293`` is the migration that gave the constraint its current
+    ``(project_id, branch_id, name)`` shape, not ``d4f5e6a7b8c9``: that later
+    revision only re-asserts both variable constraints ``IF NOT EXISTS`` for
+    drifted environments, and on a database built by running the chain in order
+    it creates nothing at all — its own downgrade comment says so.
 
     Parking ALL of them rather than only the ones that look blocked is what
     makes the second pass safe in any order, which matters because the order is
@@ -552,23 +559,6 @@ async def _apply_merge(
         # entry is missing, so a base left under the old name would silently
         # overwrite main-only edits on the row that was renamed.
         rekey_in_place(base_var_by_name, var_renames)
-    # Removals go out BEFORE the writes, and this reordering is the other half of
-    # the same ordering complaint the block above makes: SQLAlchemy runs a
-    # mapper's saves ahead of its deletes, so a name or a ``source_name`` that a
-    # row on its way out still holds is not free when the row taking it is
-    # written. The two arms are disjoint by construction — this one only touches
-    # main names the branch no longer lists, the upsert below only names it does
-    # — so running it first changes nothing except which values are free
-    # (tripl-htcz).
-    removed_any = False
-    for name, m_v in list(main_var_by_name.items()):
-        if name in base_var_by_name and name not in branch_var_by_name:
-            await session.delete(m_v)
-            del main_var_by_name[name]
-            removed_any = True
-    if removed_any:
-        await session.flush()
-
     variable_attrs = (
         "source_name",
         "variable_type",
@@ -604,6 +594,34 @@ async def _apply_merge(
                     excluded_from_scans=b_v.excluded_from_scans,
                 )
             )
+
+    # Removals go out AFTER the writes above, in the same flush, and that is
+    # deliberate rather than left over. SQLAlchemy runs a mapper's saves ahead of
+    # its deletes, so a name or a ``source_name`` still held by a row on its way
+    # out is NOT free for the row taking it — and when the two arms disagree
+    # about one identity, the flush raises and ``_commit_merged_plan`` turns that
+    # into a 409 that loses nothing.
+    #
+    # Deleting first would make that collision succeed instead, which is worse
+    # than it sounds. Base and main both hold ``a``/S1 and ``b``/S2; the branch
+    # deletes ``b`` and renames ``a`` to ``b``. ``pair_renames`` proposes a -> b
+    # and then drops it, because main's own ``b`` is not itself moving away — so
+    # no rename is applied. Removing first would then delete main's ``a`` with
+    # its ``variable_values``, ``variable_value_drifts`` and
+    # ``variable_event_value_overrides``, and the upsert would write S1 onto
+    # main's surviving ``b``: the row the user KEPT gone with all its observed
+    # values and drift triage, the row the user DELETED left wearing the kept
+    # row's scan identity, and the next scan matching warehouse data onto the
+    # wrong history. Nothing in ``build_plan_snapshot`` would show it.
+    #
+    # A merge that genuinely wants both — the deletion and the move onto the
+    # freed name — is ambiguous, and 409 asking the user to rename the clashing
+    # entity is the honest answer. Cycles do NOT rely on this order: the parking
+    # pass in ``_rename_main_variables`` is what makes a swap or a rotation work,
+    # and it operates on names before either arm runs (tripl-htcz).
+    for name, m_v in list(main_var_by_name.items()):
+        if name in base_var_by_name and name not in branch_var_by_name:
+            await session.delete(m_v)
 
     # --- events: upsert by (event_type_name, name); preserve ids + remap children
     main_events = list(
@@ -1326,12 +1344,25 @@ async def _commit_merged_plan(
     where an operator can read it against the request id, rather than in a
     response body that would leak the schema.
     """
+    # Bound to plain locals BEFORE the first write, and that ordering is the
+    # whole point. A failed flush rolls back to the ROOT transaction, and
+    # ``SessionTransaction._restore_snapshot(dirty_only=False)`` expires EVERY
+    # state in the identity map on the way — ``branch`` included, and ``_expire``
+    # takes all of its mapped attributes out of ``__dict__``, the primary key
+    # among them. ``expire_on_commit=False`` (``database.py``) does not save us:
+    # that flag guards only the COMMIT path. So reading ``branch.id`` in the
+    # except arm below would trigger an expired-attribute reload — implicit IO on
+    # the sync Session from plain async code, outside ``greenlet_spawn``, i.e.
+    # ``MissingGreenlet`` — and the caller would get back exactly the bare 500
+    # this function exists to replace (tripl-htcz).
+    branch_id = branch.id
+    branch_name = branch.name
     try:
         await _apply_merge(
             session,
             project_id,
             main_branch_id,
-            branch.id,
+            branch_id,
             resolutions=resolutions,
             base_payload=base_payload,
         )
@@ -1341,7 +1372,7 @@ async def _commit_merged_plan(
             PlanRevision(
                 project_id=project_id,
                 created_by=user_id,
-                summary=f"Merged branch '{branch.name}'",
+                summary=f"Merged branch '{branch_name}'",
                 payload=post_payload,
             )
         )
@@ -1354,7 +1385,8 @@ async def _commit_merged_plan(
         # this leaves the session usable and drops the ``FOR UPDATE`` lock on the
         # branch at the point of failure rather than at the edge of the request.
         await session.rollback()
-        logger.exception("Merge of branch %s was rejected by a database constraint", branch.id)
+        # ``branch_id``, never ``branch.id`` — see the note above the try.
+        logger.exception("Merge of branch %s was rejected by a database constraint", branch_id)
         raise HTTPException(
             status_code=409,
             detail={
@@ -1486,5 +1518,11 @@ async def merge_branch(
             session, project_id=project.id, branch_id=main_branch_id, slug=slug
         )
     except Exception:  # noqa: BLE001 — search staleness must never break a merge
-        logger.exception("Failed to reindex search after merging branch %s", branch.id)
+        # The plain parameter and not ``branch.id``, for the reason spelled out
+        # above ``_commit_merged_plan``'s try: whatever failed in there may have
+        # rolled the session back and expired ``branch``, and an
+        # expired-attribute reload inside this handler would turn a logged,
+        # swallowed search failure into a ``MissingGreenlet`` 500 on a merge that
+        # is already committed (tripl-htcz).
+        logger.exception("Failed to reindex search after merging branch %s", branch_id)
     return await _to_detail(session, branch)

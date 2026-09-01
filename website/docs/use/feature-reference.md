@@ -239,14 +239,18 @@ display name and description **and** its scan source path and bindings, so a
 variable whose display name was shortened from a dotted path is still findable
 by the data path it binds to.
 
-Every catalog run ends by **retiring the scan-created variables nothing refers
+A catalog run can end by **retiring the scan-created variables nothing refers
 to any more** — no `${token}` in any stored event field or meta value, no
 observed context, no value drift, no per-event override — so a catalog stops
-accumulating rows minted from a JSON column keyed by free text. This covers a
-scan you start by hand **and** a scheduled monitoring collection, which syncs
-the catalog and creates variables the same way. A **metrics replay** is the one
-run that does not sweep: it syncs no catalog, so it has no current view of which
-paths your rows carry and never judges a variable unused.
+accumulating rows minted from a JSON column keyed by free text. A scan you start
+by hand always does this. A **scheduled monitoring collection** does it only when
+the config sets **Limits → Lookback (hours)**: with the field blank the run
+judges the catalog through the slice it is collecting, often a single hour, and
+one quiet hour is not evidence that a variable is dead. A **metrics replay**
+never does it: it syncs no catalog, so it has no current view of which paths your
+rows carry at all. See [Variables &
+templates](./variables-and-templates.md#unreferenced-scan-created-variables-are-retired-automatically)
+for what a too-narrow view actually costs.
 
 The pass is deliberately narrow: an edited description, a hand-added binding,
 documented values, an override, drift triage, or an **Exclude from scans**
@@ -346,7 +350,9 @@ limited to a selected historical period and cannot be undone.
 
 **Retire unused variables** applies the same retirement rule a catalog run
 applies (see [Variables](#variables)) across a whole plan branch in one pass —
-for the backlog that accumulated before runs started sweeping. It is **two
+for the backlog that accumulated before runs started sweeping, and for a
+**Catalog + monitoring** config that sets no **Limits → Lookback (hours)**, whose
+scheduled runs never sweep. It is **two
 buttons, not one**: **Preview** commits nothing and reports what the pass would
 take, and **Retire** stays disabled until a preview says there is something to
 take. Either way the row reports the same breakdown — how many rows can be or

@@ -846,6 +846,88 @@ describe('BranchesTab', () => {
     ).toBeInTheDocument()
   })
 
+  // The decoder knew five payload shapes by key and fell through on anything
+  // else. api/client.ts promotes only a STRING `detail` into ApiError.message,
+  // so an object one leaves the message as the literal "409 Conflict" and parks
+  // the body on `error.detail` — a reviewer got a status line and no
+  // instruction. Both payloads below carry the backend's own wording in
+  // `message` and neither had an arm: `merge_constraint_violation` is new
+  // (tripl-htcz) and `incomplete_base_snapshot` had been in the same hole all
+  // along.
+  const undecoded409s: Array<[string, Record<string, unknown>, RegExp]> = [
+    [
+      'a constraint the merge would break on main',
+      {
+        merge_constraint_violation: true,
+        message:
+          'Merging this branch would break a uniqueness rule on main — most often ' +
+          'two rows ending up with the same name or the same scan identity. Rename ' +
+          'the clashing entity on the branch and merge again.',
+      },
+      /uniqueness rule on main/,
+    ],
+    [
+      'a branch predating the complete merge baseline',
+      {
+        incomplete_base_snapshot: true,
+        message:
+          'This branch predates the complete merge baseline. Recreate it from ' +
+          'current main before merging.',
+      },
+      /predates the complete merge baseline/,
+    ],
+  ]
+
+  it.each(undecoded409s)('reads the merge gate its own words for %s', async (_label, detail, expected) => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+    const error = new ApiError('409 Conflict', 409)
+    error.detail = detail
+    vi.mocked(planBranchesApi.merge).mockRejectedValue(error)
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+
+    expect(await screen.findByText(expected)).toBeInTheDocument()
+    // The bare status line is what the reviewer used to be left holding.
+    expect(screen.queryByText('409 Conflict')).not.toBeInTheDocument()
+  })
+
+  it('keeps the hand-written wording for a shape that has one, message or not', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: true,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+    // Pins the ORDER the generic arm has to sit in. A `message` also travels on
+    // payloads the five arms above already word for this page's own vocabulary;
+    // reading it first would silently replace all five with backend prose.
+    const error = new ApiError('409 Conflict', 409)
+    error.detail = { branch_behind_base: true, message: 'Raw backend prose.' }
+    vi.mocked(planBranchesApi.merge).mockRejectedValue(error)
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+
+    expect(
+      await screen.findByText(/plan entities on main changed.*recreate the branch/i),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Raw backend prose.')).not.toBeInTheDocument()
+  })
+
   it('warns before merging when the diff removes variables from main', async () => {
     vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
     vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })

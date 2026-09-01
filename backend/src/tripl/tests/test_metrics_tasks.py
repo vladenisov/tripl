@@ -39,6 +39,7 @@ from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.schema_drift import SchemaDrift
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue, VariableValueKind
+from tripl.worker import variable_sweep
 from tripl.worker.tasks._errors import ScanError, user_facing_error
 from tripl.worker.tasks.metrics import catalog_sync as metrics_catalog_sync
 from tripl.worker.tasks.metrics import collect as metrics_collect
@@ -9318,9 +9319,17 @@ def test_scheduled_collection_retires_the_variables_nothing_refers_to(
     Both variables here carry the scan's provenance description, so the only
     thing separating them is USE: ``plan`` still has its ``${token}`` in a stored
     event field value, ``adana`` is the fossil of a key that stopped arriving.
+
+    ``scan_lookback_hours`` is set because the sweep now refuses to judge
+    "unused" from a catalog window the collector picked for itself — see
+    ``test_scheduled_run_does_not_sweep_a_window_it_chose_for_itself`` for what
+    that gate is protecting. A week is the operator saying which window
+    represents their tracking plan.
     """
     with sync_session_factory() as session:
         config = _create_scan_config(session, with_event_type=True)
+        config.scan_lookback_hours = 168
+        session.commit()
         fossil = _seed_scan_created_variable(session, config, source_name="payload.user.adana")
         live = _seed_scan_created_variable(session, config, source_name="payload.user.plan")
         _seed_event_value_naming(session, config, token="plan")
@@ -9411,3 +9420,226 @@ def test_replay_does_not_retire_variables(
     # than "did not sweep" — precisely how ``variable_values_touched`` reading 0
     # on every scheduled run hid the 2026-08-31 stall for weeks.
     assert "variables_retired" not in result
+
+
+def test_the_sweep_reports_the_rows_it_deleted_not_the_rows_it_planned(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A run that lost the race deleted nothing and must not claim otherwise.
+
+    The sweep is PROJECT-wide but ``collect_metrics`` is per-config, and
+    ``check_metrics_due`` dispatches every due config as an independent Celery
+    task: its advisory lock serialises the dispatch LOOP, and the "an active job
+    is still in progress" check is ``_get_active_scan_jobs(session, config.id)``
+    — per config. Two configs of one project on the same interval therefore run
+    in parallel, both compute the same retirable set, and only one ``DELETE``
+    matches anything. Returning ``len(plan.retirable)`` had both of them report
+    the full count in the summary an operator reads and in the log line an
+    operator greps.
+
+    The rival's commit is modelled by removing the rows through the task's own
+    session between the plan and the ``DELETE``. What is under test is that a
+    statement matching nothing contributes nothing — not SQLite's locking — and
+    driving a second connection into a write lock mid-transaction would be
+    testing the harness instead.
+
+    DISABLE-THE-FIX: restore ``return len(plan.retirable)`` and the first
+    assertion reads 1.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        fossil = _seed_scan_created_variable(session, config, source_name="payload.user.adana")
+        project_id = config.project_id
+        fossil_id = fossil.id
+
+    real_plan_retirement = variable_sweep.plan_retirement
+
+    with sync_session_factory() as session:
+
+        def plan_then_lose_the_race(*args: object, **kwargs: object):
+            plan = real_plan_retirement(*args, **kwargs)
+            session.execute(delete(Variable).where(Variable.id.in_(plan.retirable)))
+            return plan
+
+        monkeypatch.setattr(variable_sweep, "plan_retirement", plan_then_lose_the_race)
+
+        retired = variable_sweep.retire_unused_variables(
+            session, project_id=project_id, branch_id=None
+        )
+
+    assert retired == 0, "the count must come from the statements' rowcounts, not from the plan"
+    # The row is gone all the same — this run simply is not the one that took it.
+    with sync_session_factory() as session:
+        assert session.get(Variable, fossil_id) is None
+
+
+def test_scheduled_run_records_the_sweep_before_a_later_failure_can_hide_it(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A run that dies after the delete must still say what it destroyed.
+
+    In ``run_scan`` the sweep is the last work before the summary commit. In
+    ``collect_metrics`` it sits at the HEAD of the run: the ``DELETE`` commits,
+    then the reindex, every chunk's warehouse query under a 24h soft limit,
+    anomaly recalculation and alert preparation all follow before
+    ``result_summary`` is assembled. Anything raising in that span used to leave
+    the deletions durable while ``variables_retired`` and the details sentence
+    were never written — the job reported failure and said nothing at all about
+    the rows it had removed.
+
+    The reindex stands in for "anything after the delete" because it is the very
+    next statement; the point is the ORDER, not which later stage fails.
+
+    DISABLE-THE-FIX: delete the stub block that stamps ``job.result_summary``
+    right after ``retire_unused_variables`` and the summary assertions go red
+    while the variable stays deleted — the exact state this repairs.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        config.scan_lookback_hours = 168
+        session.commit()
+        job = ScanJob(
+            id=uuid.uuid4(),
+            scan_config_id=config.id,
+            status=ScanJobStatus.pending.value,
+            # Exactly what ``check_metrics_due`` stamps at creation.
+            result_summary={"mode": "metrics_collection"},
+        )
+        session.add(job)
+        session.commit()
+        fossil = _seed_scan_created_variable(session, config, source_name="payload.user.adana")
+        config_id = str(config.id)
+        job_id = str(job.id)
+        job_pk = job.id
+        fossil_id = fossil.id
+
+    def exploding_reindex(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("search cluster unreachable")
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: _SamplingFakeAdapter())
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        metrics,
+        "generate_events",
+        lambda *args, **kwargs: GenerationResult(columns_analyzed=1),
+    )
+    monkeypatch.setattr(metrics, "reindex_main_branch_from_worker", exploding_reindex)
+
+    with pytest.raises(RuntimeError):
+        metrics.collect_metrics.run(config_id, job_id)
+
+    with sync_session_factory() as session:
+        # The deletion is durable — it was committed by the sweep itself.
+        assert session.get(Variable, fossil_id) is None
+        failed = session.get(ScanJob, job_pk)
+        assert failed is not None
+        assert failed.status == ScanJobStatus.failed.value
+        summary = failed.result_summary
+        assert isinstance(summary, dict)
+        # …and so is the record of it, on the failed row.
+        assert summary["variables_retired"] == 1
+        assert summary["details"] == ["Retired 1 unused variables no event refers to"]
+        # The dispatcher's mode label is carried over, not clobbered: an
+        # unlabelled failed row is indistinguishable from a failed manual scan,
+        # which is why it is stamped at job creation in the first place.
+        assert summary["mode"] == "metrics_collection"
+
+
+def test_scheduled_run_does_not_sweep_a_window_it_chose_for_itself(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The sweep must never judge "unused" from the one-interval fallback view.
+
+    On this path the catalog is ALWAYS windowed — the task returns early without
+    a ``time_column`` — and with ``scan_lookback_hours`` unset
+    ``resolve_lookback_window`` returns ``None`` and ``collect_metrics`` falls
+    back to the collection window, which ``_resolve_collection_window`` sets to
+    ``last_bucket - delta`` — one or two intervals. ``run_scan`` has no such
+    fallback: it leaves the window ``None`` and sees the whole table.
+
+    Judging cardinality over one hour is how a live variable becomes a fossil.
+    ``plan_column_meta`` sets ``meta['is_low']`` from that narrow view
+    (``event_plan`` L362), ``plan_events`` then emits a LITERAL instead of the
+    ``${token}`` template (L485-491), ``_upsert_field_values`` rewrites the
+    stored value in place, and ``delete_variable_contexts_for_event_type`` drops
+    that field's contexts because the run rewrote it. The variable is left with
+    no stored token and no context — this predicate's definition of a fossil —
+    and the sweep would take it, and its whole observed-value history, on the
+    strength of one quiet hour. The rewrite predates this branch; the deletion
+    behind it does not.
+
+    DISABLE-THE-FIX: remove the ``catalog_window_declared`` gate and the fossil
+    is deleted and ``variables_retired`` reads 0 — both assertions go red.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        # The default, and the state of any config whose operator never typed a
+        # lookback: nullable column, ``None`` in every request schema, blank in
+        # the form.
+        assert config.scan_lookback_hours is None
+        fossil = _seed_scan_created_variable(session, config, source_name="payload.user.adana")
+        config_id = str(config.id)
+        fossil_id = fossil.id
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: _SamplingFakeAdapter())
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        metrics,
+        "generate_events",
+        lambda *args, **kwargs: GenerationResult(columns_analyzed=1),
+    )
+
+    result = metrics.collect_metrics.run(config_id)
+
+    assert result["mode"] == "metrics_collection"
+    with sync_session_factory() as session:
+        assert session.get(Variable, fossil_id) is not None
+    # ABSENT, for the same reason a replay's is: a ``0`` would read as "swept,
+    # found nothing" rather than "did not sweep", and the frontend's "Variables
+    # retired" card is guarded on ``!= null`` so it stays off the run entirely.
+    assert "variables_retired" not in result
+
+
+def test_scheduled_run_still_reindexes_when_it_declined_to_sweep(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The window gate covers the sweep alone — the reindex has no such condition.
+
+    Phase 1 syncs the catalog on every non-replay run whatever the window is, so
+    the search index must be rebuilt on every non-replay run too. Only the
+    DESTRUCTIVE half is gated.
+
+    DISABLE-THE-FIX: pull the reindex inside the ``catalog_window_declared``
+    branch and ``reindexed`` stays empty.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.scan_lookback_hours is None
+        config_id = str(config.id)
+        project_id = config.project_id
+
+    reindexed: list[uuid.UUID] = []
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: _SamplingFakeAdapter())
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        metrics,
+        "generate_events",
+        lambda *args, **kwargs: GenerationResult(columns_analyzed=1),
+    )
+    monkeypatch.setattr(
+        metrics,
+        "reindex_main_branch_from_worker",
+        lambda session, project_id_arg: reindexed.append(project_id_arg),
+    )
+
+    metrics.collect_metrics.run(config_id)
+
+    assert reindexed == [project_id]

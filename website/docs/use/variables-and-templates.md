@@ -235,19 +235,50 @@ Exclusion keeps a lightweight tombstone:
 
 A scan creates a variable for every placeholder it detects. On a JSON column
 whose keys are user-typed text — a map rather than a struct — that once meant a
-permanent plan row per key. Every catalog run now ends by deleting the
-scan-created variables that nothing refers to any more: a scan you start by
-hand and a **scheduled monitoring collection** alike. Both create variables, and
-the catalog that grows a row per free-text key is the one being collected every
-hour rather than the one somebody remembers to scan, so the sweep has to run
-where the growth is.
+permanent plan row per key. A catalog run now ends by deleting the scan-created
+variables that nothing refers to any more. **Which runs do that is a shorter
+list than "all of them":**
 
-A **metrics replay** is the exception, deliberately. A replay does not sync the
-catalog at all — it recomputes counts over a past window and creates no events
-or variables — so it never sees which paths your rows currently carry and is in
-no position to call a variable unused. It leaves every variable alone.
+| Run | Retires unused variables? |
+| --- | --- |
+| A scan you start by hand | Always |
+| A **scheduled monitoring collection** | Only when the config sets **Limits → Lookback (hours)** |
+| A **metrics replay** | Never |
 
-The sweep works on `main`, where scans write; the copies on an open working
+Both exceptions are the same rule seen twice: a run only decides a variable is
+unused from a view it can defend.
+
+A manual scan with no lookback reads everything the base query returns, so
+"nothing refers to this" is a claim about all of your data. A scheduled
+collection has no such view. It always reads through a window, and with
+**Lookback (hours)** left blank that window is the slice it is collecting —
+usually one or two intervals, often a single hour. A column carrying thousands
+of values across your table can carry a handful in one hour, and a run that sees
+a handful stores those values *literally* in place of the `${token}` template
+that named your variable. The reference the retirement rule looks for is then
+gone — and with it, if the run swept, the variable and its whole observed-value
+history. Setting a lookback is you saying which window represents your tracking
+plan; retirement runs behind that statement and not ahead of it.
+
+A **metrics replay** never retires anything, for the older reason: it does not
+sync the catalog at all — it recomputes counts over a past window and creates no
+events or variables — so it never sees which paths your rows currently carry and
+is in no position to call a variable unused.
+
+:::warning A new scan has no lookback, so its schedule never retires
+**Limits → Lookback (hours)** is blank on a new scan, and blank is a legitimate
+setting: each run reads the whole base query. But it also means a
+**Catalog + monitoring** config creates variables on every collection and
+retires none of them, which is exactly the shape — a JSON map keyed by free text,
+collected hourly, scanned by hand approximately never — that grows a permanent
+row per key. If that is your catalog, set a lookback wide enough to contain your
+tracking plan, run the scan by hand, or clear the backlog from the danger zone
+below. *Variables retired* on a [run](./feature-reference.md#scan-runs) is absent
+rather than `0` on a run that did not retire, so you can tell "found nothing"
+from "did not look".
+:::
+
+Retirement works on `main`, where scans write; the copies on an open working
 branch are left alone.
 
 A variable is retired only when **all** of the following are true:

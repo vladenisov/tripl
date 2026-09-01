@@ -8,12 +8,16 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from tripl.core.adapters.base import ColumnInfo
+from tripl.core.analyzers._event_generator_variables import SCAN_PROVENANCE_DESCRIPTION
+from tripl.core.analyzers.event_generator import GenerationResult
 from tripl.core.analyzers.preview import build_json_paths_payload, build_preview_payload
 from tripl.models import Base, DataSource, Project, ScanConfig, ScanJob, ScanPreviewJob
 from tripl.models.event import Event
+from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.scan_job import ScanJobStatus
+from tripl.models.variable import Variable
 from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks import _errors as task_errors
 from tripl.worker.tasks import metrics
@@ -1430,6 +1434,221 @@ class TestScanConfigsCRUD:
                 assert "8123" not in job.error_message
                 assert "clickhouse" not in job.error_message.lower()
                 assert "read timed out" not in job.error_message.lower()
+        finally:
+            engine.dispose()
+
+    @staticmethod
+    def _seed_manual_scan_catalog(
+        sync_session_factory,
+        *,
+        slug: str,
+        with_fossil: bool,
+    ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID | None]:
+        """A project a manual scan can run over, optionally holding one fossil.
+
+        The "fossil" is a variable in exactly the state a scan leaves behind and
+        nothing else — the provenance description is the only marker the model
+        carries, so a row without it reads as ``user_edited`` and can never be
+        swept. The referenced variable beside it is what keeps the assertions
+        about a PREDICATE rather than a blanket delete.
+        """
+        project_id = uuid.uuid4()
+        data_source_id = uuid.uuid4()
+        config_id = uuid.uuid4()
+        job_id = uuid.uuid4()
+        event_type_id = uuid.uuid4()
+        fossil_id = uuid.uuid4() if with_fossil else None
+
+        with sync_session_factory() as session:
+            session.add_all(
+                [
+                    Project(id=project_id, name="P", slug=slug, description=""),
+                    DataSource(
+                        id=data_source_id,
+                        name="DS",
+                        db_type="clickhouse",
+                        host="localhost",
+                        port=8123,
+                        database_name="default",
+                        username="default",
+                        password_encrypted="",
+                    ),
+                    ScanConfig(
+                        id=config_id,
+                        project_id=project_id,
+                        data_source_id=data_source_id,
+                        event_type_id=event_type_id,
+                        name="Daily",
+                        base_query="SELECT * FROM events",
+                    ),
+                    ScanJob(id=job_id, scan_config_id=config_id, status="pending"),
+                    EventType(
+                        id=event_type_id,
+                        project_id=project_id,
+                        name="pv",
+                        display_name="Page View",
+                        description="",
+                    ),
+                ]
+            )
+            session.flush()
+
+            # Referenced: a stored ``${plan}`` keeps this row whatever else runs.
+            field = FieldDefinition(
+                id=uuid.uuid4(),
+                event_type_id=event_type_id,
+                name="tier",
+                display_name="Tier",
+                field_type="string",
+                order=0,
+            )
+            event = Event(
+                id=uuid.uuid4(),
+                project_id=project_id,
+                event_type_id=event_type_id,
+                name="Uses plan",
+                description="",
+                status="implemented",
+            )
+            session.add_all([field, event])
+            session.flush()
+            session.add_all(
+                [
+                    EventFieldValue(
+                        id=uuid.uuid4(),
+                        event_id=event.id,
+                        field_definition_id=field.id,
+                        value="${plan}",
+                    ),
+                    Variable(
+                        id=uuid.uuid4(),
+                        project_id=project_id,
+                        name="plan",
+                        source_name="payload.user.plan",
+                        description=SCAN_PROVENANCE_DESCRIPTION,
+                        variable_type="string",
+                        bindings=["payload.user.plan"],
+                    ),
+                ]
+            )
+            if fossil_id is not None:
+                session.add(
+                    Variable(
+                        id=fossil_id,
+                        project_id=project_id,
+                        name="adana",
+                        source_name="payload.user.adana",
+                        description=SCAN_PROVENANCE_DESCRIPTION,
+                        variable_type="string",
+                        bindings=["payload.user.adana"],
+                    )
+                )
+            session.commit()
+
+        return config_id, job_id, fossil_id
+
+    @staticmethod
+    def _stub_manual_scan_pipeline(monkeypatch, sync_session_factory) -> None:
+        """Everything ``run_scan`` needs except the sweep, which is under test."""
+
+        class _CatalogAdapter:
+            def test_connection(self) -> bool:
+                return True
+
+            def get_columns(self, base_query: str) -> list[ColumnInfo]:
+                return [ColumnInfo(name="event_name", type_name="String")]
+
+            def close(self) -> None:
+                return None
+
+        class _EmptyAnalysis:
+            row_limit_reached = False
+            rows: list[object] = []
+
+        for name, value in (
+            ("_get_sync_session", sync_session_factory),
+            ("_build_adapter", lambda ds: _CatalogAdapter()),
+            ("analyze_cardinality", lambda *a, **k: _EmptyAnalysis()),
+            ("generate_events", lambda *a, **k: GenerationResult(columns_analyzed=1)),
+            ("reindex_main_branch_from_worker", lambda session, project_id: None),
+        ):
+            monkeypatch.setitem(scan_tasks.run_scan.run.__globals__, name, value)
+
+    def test_run_scan_summary_carries_variables_retired_even_when_it_took_nothing(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The manual run's summary must EMIT the count, and 0 is a real answer.
+
+        ``run_scan`` computed ``variables_retired`` and appended the details
+        sentence, but its ``result_summary`` literal never carried the key — so
+        the frontend's "Variables retired" card, guarded on
+        ``summary.variables_retired != null``, was structurally unreachable for
+        the one run type a user triggers deliberately, and the docs telling the
+        reader to read it against "Variables created" silently failed there.
+
+        The key is emitted UNCONDITIONALLY because the manual sweep is itself
+        unconditional: no ``is_replay`` gate, no declared-window gate, so a 0
+        here honestly means "swept, found nothing". That is the opposite of
+        ``collect_metrics``, where the key is ABSENT on a run that did not sweep.
+
+        DISABLE-THE-FIX: drop ``"variables_retired"`` from ``run_scan``'s
+        ``result_summary`` literal and the presence assertion below goes red —
+        the count assertion alone would not, since the key would simply be gone.
+        """
+        engine = create_engine(f"sqlite:///{tmp_path / 'run_scan_sweep_none.db'}")
+        try:
+            Base.metadata.create_all(engine)
+            sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+            config_id, job_id, _ = self._seed_manual_scan_catalog(
+                sync_session_factory, slug="p-sweep-none", with_fossil=False
+            )
+            self._stub_manual_scan_pipeline(monkeypatch, sync_session_factory)
+
+            summary = scan_tasks.run_scan.run(str(config_id), str(job_id))
+
+            assert "variables_retired" in summary, (
+                "a manual scan always sweeps, so it must always report what the sweep took"
+            )
+            assert summary["variables_retired"] == 0
+            # Silent in the details list when there was nothing to say — the
+            # counter is where "swept, found nothing" is stated.
+            details = summary["details"]
+            assert isinstance(details, list)
+            assert not [line for line in details if "Retired" in line]
+        finally:
+            engine.dispose()
+
+    def test_run_scan_summary_reports_the_rows_the_sweep_deleted(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """And the count is the real one, beside ``variables_created`` where it is read.
+
+        DISABLE-THE-FIX: drop ``"variables_retired"`` from ``run_scan``'s
+        ``result_summary`` literal and this raises ``KeyError``.
+        """
+        engine = create_engine(f"sqlite:///{tmp_path / 'run_scan_sweep_one.db'}")
+        try:
+            Base.metadata.create_all(engine)
+            sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+            config_id, job_id, fossil_id = self._seed_manual_scan_catalog(
+                sync_session_factory, slug="p-sweep-one", with_fossil=True
+            )
+            self._stub_manual_scan_pipeline(monkeypatch, sync_session_factory)
+
+            summary = scan_tasks.run_scan.run(str(config_id), str(job_id))
+
+            assert summary["variables_retired"] == 1
+            # The counter and the sentence agree, and both are on the same run.
+            details = summary["details"]
+            assert isinstance(details, list)
+            assert "Retired 1 unused variables no event refers to" in details
+            with sync_session_factory() as session:
+                assert session.get(Variable, fossil_id) is None
+                # The predicate, not a blanket delete: a live ``${token}`` keeps
+                # its row, so "Variables retired" can be read against
+                # "Variables created" without reading as a purge.
+                surviving = set(session.execute(select(Variable.name)).scalars().all())
+            assert surviving == {"plan"}
         finally:
             engine.dispose()
 

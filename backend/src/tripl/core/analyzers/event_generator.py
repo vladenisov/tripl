@@ -246,9 +246,11 @@ def generate_events(
     ).scalar_one()
     next_event_order = 0 if next_event_order is None else int(next_event_order) + 1
     logger.info(f"Loaded {len(existing_by_identity)} existing events for dedup")
-    # Keyed on ``event.id`` before any of those rows exist, which is why the
-    # merge pass below has to be handed it: the ids are the run's own, not the
-    # database's yet.
+    # Keyed on ``event.id``, but nothing is written until the insert far below —
+    # so a context recorded here has no row for ``_move_variable_contexts`` to
+    # re-point if the merge pass deletes the event, which is why that pass has to
+    # be handed the map (tripl-gsum). The event rows themselves ARE flushed by
+    # then; it is the contexts that are not.
     variable_contexts: PendingVariableContexts = {}
     # ``(event_id, field_definition_id)`` pairs whose stored value this run
     # actually rewrote. Only those can invalidate an existing variable context.

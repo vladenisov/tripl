@@ -336,12 +336,45 @@ photos, comments) and merge back via a
 6. The run retires the scan-created variables nothing refers to any more
    (`worker/variable_sweep`), after the commit and before the search reindex, so
    the reindex sees the retired set and a later failure cannot roll the
-   deletions back. **Both** worker call sites do this — `run_scan` and the
-   scheduled `collect_metrics`, whose Phase 1 mints variables through this same
-   pipeline. A metrics **replay** does not: it skips catalog sync entirely, so
-   it holds no fresh evidence about which paths a row still carries and is in no
-   position to call a variable unused. The sweep is gated on the same
-   `is_replay` that already guards the sync and the reindex (tripl-bh1q).
+   deletions back. `run_scan` does this unconditionally. `collect_metrics`,
+   whose Phase 1 mints variables through this same pipeline, does it under **two**
+   gates (tripl-bh1q and its follow-up):
+
+   - **not `is_replay`** — the same flag that already guards the sync and the
+     reindex. A replay skips catalog sync entirely, so it holds no fresh evidence
+     about which paths a row still carries and is in no position to call a
+     variable unused.
+   - **the catalog window was DECLARED** — `resolve_lookback_window` returned a
+     window rather than `None`, i.e. the config sets `scan_lookback_hours`. On
+     this path the catalog view is *always* windowed (the task returns early
+     without a `time_column`) and the fallback is `(time_from_dt, time_to_dt)`,
+     one or two intervals. `run_scan` has no such fallback: an unset lookback
+     leaves its window `None` and it reads the whole table, which is why the
+     manual path needs no gate.
+
+   The second gate exists because a too-narrow view does not merely *mis-report*
+   — it manufactures the fossil it then deletes.
+   `plan_column_meta` sets `meta['is_low']` from the window's cardinality,
+   `plan_events` emits a LITERAL instead of the `${token}` template,
+   `_upsert_field_values` rewrites the stored value in place, and
+   `delete_variable_contexts_for_event_type` drops that field's contexts because
+   the run rewrote it — leaving a live variable with no token and no context,
+   which is exactly `plan_retirement`'s definition of retirable. The rewrite
+   predates the sweep; the deletion behind it did not. The cost of the gate is
+   real and documented for users: `scan_lookback_hours` is nullable, defaults to
+   `None` in every request schema and is blank in the form, so a config that
+   never had one typed into it is never swept on a schedule.
+
+   `collect_metrics` also stamps the count onto `ScanJob.result_summary` the
+   moment the delete commits, ~400 lines before the full summary is assembled.
+   Everything in between — the reindex, per-chunk warehouse queries under a 24h
+   soft limit, anomaly recalculation, alert preparation — can raise, and the
+   deletions survive that; without the stub such a run reported failure and said
+   nothing about what it had destroyed. A successful run overwrites the stub.
+   `variables_retired` is therefore **absent** rather than `0` on any run that
+   did not sweep, so a reader cannot mistake "did not look" for "found nothing";
+   `run_scan` emits it unconditionally, where `0` honestly means "swept, found
+   nothing".
 7. `ScanJob.result_summary` is filled in for the UI.
 
 Steps 4 and 5 are two modules, not one. `core/analyzers/event_plan.plan_events`
@@ -423,8 +456,9 @@ session — so `reserved_catalog_columns` can be reused verbatim on it.
 3. Phase 1 syncs the event catalog through the scan pipeline, so a scheduled
    collection creates events and variables exactly as a manual scan does — and
    for that reason closes the phase with the variable sweep of the scan flow's
-   step 6, then the reindex. A replay skips this whole phase and both of its
-   tails.
+   step 6 (under that step's two gates: not a replay, and a declared catalog
+   window), then the reindex. A replay skips this whole phase and both of its
+   tails; an undeclared window skips only the sweep, never the reindex.
 4. Counts are aggregated into `event_metrics`.
 5. Anomalies are recalculated into `metric_anomalies`.
 6. Matching alert rules enqueue deliveries.

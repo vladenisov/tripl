@@ -20,6 +20,10 @@ def _sole_key_by_identity[KeyT: NaturalKey](
     UniqueConstraint makes ``source_name`` singular within a branch, and only
     Variable carries one (``uq_variable_project_source_name``); events have a
     plain index and rows predating either are live.
+
+    Which rows are "this side" is the caller's decision, and it is not always the
+    whole mapping — see ``pair_renames``, which narrows main to the base first so
+    that a row that could never be a rename source cannot veto one either.
     """
     keys_by_identity: dict[tuple[NaturalKey, str], list[KeyT]] = {}
     for key, source_name in side.items():
@@ -77,7 +81,9 @@ def pair_renames[KeyT: NaturalKey](
     that must keep merging as a delete plus an insert still do:
 
     * **No source_name**, or **two or more candidates on one side** — see
-      ``_sole_key_by_identity``, which drops both.
+      ``_sole_key_by_identity``, which drops both. On main "one side" means the
+      rows that were there when the branch was cut, not every row main holds
+      now; the comment on the narrowing below says why.
     * **An identity only one side carries.** A genuinely added row and a
       genuinely removed one, which must keep merging as an add and a removal.
     * **A row main never had at the base.** A rename moves a row that existed
@@ -97,7 +103,27 @@ def pair_renames[KeyT: NaturalKey](
     the caller is the merge engine, where a wrongly matched id is unrecoverable,
     and every case above therefore deserves a test that needs no database.
     """
-    main_by_identity = _sole_key_by_identity(main)
+    # Main's side is narrowed to the base BEFORE the identities are counted. The
+    # loop below already refuses an ``old_key not in base``, so a row main grew
+    # after the branch was cut can never BE a rename source — but left in the
+    # grouping it can still VETO one, by making an identity look ambiguous.
+    # Grouping whole sides is new here: the previous shape grouped only the
+    # merge's own would-delete and would-insert candidates, so a duplicate that
+    # was not itself a candidate never poisoned anything. Only Variable makes
+    # ``source_name`` unique per branch, so a second Event carrying one is a live
+    # shape, and a rename that used to pair now falls back to delete-plus-insert
+    # — which cascades ``variable_values``, their drift rows and
+    # ``event_changes`` (tripl-htcz).
+    #
+    # The branch side is deliberately NOT narrowed: in a cycle a rename's
+    # destination is a key that main and the base both already hold, and that is
+    # the whole shape this function exists to see. Nor does this narrowing touch
+    # the "is the destination occupied?" test at the end, which reads ``main``
+    # itself — a row main grew after the cut still holds its name and must still
+    # block a move onto it.
+    main_by_identity = _sole_key_by_identity(
+        {key: source_name for key, source_name in main.items() if key in base}
+    )
     branch_by_identity = _sole_key_by_identity(branch)
 
     moves: dict[KeyT, KeyT] = {}

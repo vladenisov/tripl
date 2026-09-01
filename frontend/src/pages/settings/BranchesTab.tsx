@@ -232,6 +232,21 @@ function describeBranchActionError(error: unknown): string {
     if (detail.conflicts) {
       return 'Merge blocked by conflicts with main.'
     }
+    // LAST, so the five hand-written wordings above still win for the shapes
+    // that have them, and this only catches what none of them names. Every
+    // structured 409 the merge gate raises carries its own instruction in
+    // `message`, and api/client.ts promotes only a STRING `detail` into
+    // ApiError.message — an object one is parked on `error.detail` and the
+    // message falls back to the literal "409 Conflict". So an undecoded payload
+    // reaches the reviewer as a status line with no instruction at all: that is
+    // what `_commit_merged_plan`'s new `merge_constraint_violation` would have
+    // done (tripl-htcz), and what the pre-existing `incomplete_base_snapshot`
+    // has been doing all along — verified against plan_branch_merge_service.py,
+    // where both raise `{flag: True, "message": ...}` and neither has an arm
+    // here.
+    if (typeof detail.message === 'string' && detail.message.trim()) {
+      return detail.message
+    }
   }
   return getErrorMessage(error)
 }

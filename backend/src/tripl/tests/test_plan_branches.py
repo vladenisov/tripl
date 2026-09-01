@@ -2488,6 +2488,150 @@ async def test_merge_of_three_variables_rotated_through_each_others_names(
     assert all(not v.name.startswith(_RENAME_STAGING_PREFIX) for v in merged.values())
 
 
+async def _attach_variable_values(slug: str, variable_ids: dict[str, uuid.UUID]) -> None:
+    """Hang one ``variable_values`` row off each of main's variables.
+
+    These are the rows the FK cascade takes when a merge deletes a Variable
+    instead of moving it, and ``build_plan_snapshot`` does not carry them — so
+    counting them afterwards is the only way a test can see the loss at all.
+    """
+    async with TestSessionLocal() as session:
+        project = (
+            (await session.execute(select(Project).where(Project.slug == slug))).scalars().first()
+        )
+        main_branch = (
+            (
+                await session.execute(
+                    select(PlanBranch).where(
+                        PlanBranch.project_id == project.id, PlanBranch.name == "main"
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.project_id == project.id, Event.branch_id == main_branch.id
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        field = (
+            (
+                await session.execute(
+                    select(FieldDefinition).where(
+                        FieldDefinition.event_type_id == event.event_type_id
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        for source_name, variable_id in variable_ids.items():
+            session.add(
+                VariableValue(
+                    id=uuid.uuid4(),
+                    project_id=project.id,
+                    branch_id=main_branch.id,
+                    variable_id=variable_id,
+                    event_id=event.id,
+                    field_definition_id=field.id,
+                    source_column=f"properties.{source_name}",
+                    observed_count=3,
+                    values=["1999"],
+                )
+            )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_merge_moving_a_rename_onto_a_deleted_variables_name_is_a_409(
+    client: AsyncClient,
+) -> None:
+    """The ambiguous shape must fail whole rather than half-succeed.
+
+    Base and main both hold ``cart_total``/``cart_total_raw`` and
+    ``cart_count``/``cart_count_raw``. The branch DELETES ``cart_count`` and
+    RENAMES ``cart_total`` into the name it vacated. ``pair_renames`` proposes
+    that move and then drops it — main's own ``cart_count`` is not itself moving
+    away, and a destination is only free when its occupant is going somewhere —
+    so no rename is applied and the merge's two arms disagree about who owns
+    ``cart_total_raw``. SQLAlchemy runs a mapper's saves ahead of its deletes
+    inside one flush, so the disagreement is an IntegrityError, and losing
+    nothing while telling the user to rename the clashing entity is the answer.
+
+    Two separate failures hide behind this 409 and both are asserted here.
+
+    Run the removals BEFORE the upsert and the merge succeeds instead: main's
+    ``cart_total`` is deleted with its ``variable_values``, and the row the user
+    DELETED survives wearing the kept row's scan identity — which is what the
+    next scan matches warehouse data on. No diff shows either half.
+
+    Log ``branch.id`` rather than a plain local in the handler and the 409 is
+    never built at all: the failed flush has already rolled back to the root
+    transaction and expired every state in the identity map, so reading the
+    primary key back is implicit IO on the sync Session from async code and the
+    client gets the bare 500 the handler exists to replace (tripl-htcz).
+    """
+    await _seed_plan(client, "merge-delete-then-rename")
+    main_ids = await _seed_main_variables(
+        "merge-delete-then-rename",
+        {"cart_total": "cart_total_raw", "cart_count": "cart_count_raw"},
+    )
+    await _attach_variable_values("merge-delete-then-rename", main_ids)
+    main_branch_id = await _main_branch_id()
+
+    branch_id = await _create_branch(client, "merge-delete-then-rename")
+    async with TestSessionLocal() as session:
+        branch_rows = {
+            v.source_name: v
+            for v in (
+                await session.execute(
+                    select(Variable).where(Variable.branch_id == uuid.UUID(branch_id))
+                )
+            )
+            .scalars()
+            .all()
+        }
+        await session.delete(branch_rows["cart_count_raw"])
+        # The delete has to land before the rename: inside the branch the same
+        # non-deferrable ``uq_variable_project_name`` refuses both at once, which
+        # is the constraint the merge is about to run into from the other side.
+        await session.flush()
+        branch_rows["cart_total_raw"].name = "cart_count"
+        await session.commit()
+
+    resp = await _approve_and_merge(client, "merge-delete-then-rename", branch_id)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["merge_constraint_violation"] is True
+
+    merged = await _main_variables_by_source(main_branch_id)
+    # Nothing moved and nothing went: both rows, both names, both ids.
+    assert {source: v.name for source, v in merged.items()} == {
+        "cart_total_raw": "cart_total",
+        "cart_count_raw": "cart_count",
+    }
+    assert {source: v.id for source, v in merged.items()} == main_ids
+
+    async with TestSessionLocal() as session:
+        values = (
+            (
+                await session.execute(
+                    select(VariableValue).where(VariableValue.branch_id == main_branch_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    # The observed values are the half a snapshot diff would never have shown.
+    assert {v.variable_id for v in values} == set(main_ids.values())
+
+
 @pytest.mark.asyncio
 async def test_merge_still_removes_a_deleted_event_beside_an_unrelated_addition(
     client: AsyncClient,
@@ -2670,6 +2814,37 @@ def test_pair_renames_leaves_a_row_missing_from_the_base_unpaired() -> None:
         {("bucket",): "variant_raw"},
     )
     assert renames == {}
+
+
+def test_pair_renames_ignores_a_main_row_the_base_never_had_when_reading_identities() -> None:
+    """A duplicate main grew after the cut must not veto a real rename.
+
+    ``source_name`` is unique within a branch only for Variable — Event carries a
+    plain index — so two live main events can share one, and here only the older
+    of the two was there when the branch was cut. That newer row can never BE the
+    rename source, because the pairing refuses an old key the base does not hold;
+    letting it make the identity look ambiguous therefore costs the pair and
+    nothing else. The rename then falls back to a delete plus an insert, and the
+    cascade takes ``variable_values``, their drift rows and ``event_changes``
+    with it (tripl-htcz).
+    """
+    renames = pair_renames(
+        {("track", "purchase"): "purchase_raw"},
+        {("track", "purchase"): "purchase_raw", ("track", "purchase_copy"): "purchase_raw"},
+        {("track", "checkout"): "purchase_raw"},
+    )
+    assert renames == {("track", "purchase"): ("track", "checkout")}
+
+
+def test_pair_renames_still_refuses_two_base_rows_sharing_one_identity() -> None:
+    """Narrowing main to the base is not the same as trusting main.
+
+    Both candidates were already there when the branch was cut, so either could
+    be the row the branch renamed. A guess renames the wrong one, which is worse
+    than the deletion the pairing set out to avoid.
+    """
+    both = {("track", "purchase"): "purchase_raw", ("track", "purchase_2"): "purchase_raw"}
+    assert pair_renames(both, both, {("track", "checkout"): "purchase_raw"}) == {}
 
 
 def test_rekey_in_place_moves_a_whole_cycle_without_fusing_two_rows() -> None:

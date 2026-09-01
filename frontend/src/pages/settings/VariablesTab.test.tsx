@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { BranchContext } from '@/components/branch-context-internal'
 import { eventsApi } from '@/api/events'
 import { variablesApi } from '@/api/variables'
 import { variableDriftsApi } from '@/api/variableDrifts'
@@ -68,6 +69,27 @@ function renderVariablesTab(props: { focusId?: string } = {}) {
       <VariablesTab slug="demo" {...props} />
     </QueryClientProvider>,
   )
+}
+
+/** Mounts the tab inside a BranchContext the way the app does, and hands back a
+ * `switchBranch` that writes it the way the sidebar's BranchSwitcher does —
+ * without remounting the tab, which is the whole point: the switcher is mounted
+ * permanently beside this page and a selection outlives its click. */
+function renderInBranch(branchId: string | null) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  const tree = (activeBranchId: string | null) => (
+    <QueryClientProvider client={queryClient}>
+      <BranchContext.Provider
+        value={{ branchId: activeBranchId, setBranchId: () => {}, slug: 'demo' }}
+      >
+        <VariablesTab slug="demo" />
+      </BranchContext.Provider>
+    </QueryClientProvider>
+  )
+  const view = render(tree(branchId))
+  return { ...view, switchBranch: (next: string | null) => view.rerender(tree(next)) }
 }
 
 afterEach(() => {
@@ -877,5 +899,184 @@ describe('VariablesTab', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Unused' }))
     expect(screen.queryByLabelText('Clear selection')).not.toBeInTheDocument()
+  })
+
+  /** Three rows and a full selection, for the row-level actions that move ONE of
+   * them out of the match set. The list mock deliberately keeps returning all
+   * three unchanged, so nothing but the one-id removal can move the count — a
+   * prune against the refetched rows would find every id still matching. */
+  function selectAllOfThree() {
+    mockList([
+      makeVariable({ id: 'var-1', name: 'checkout_step', source_name: 'checkout.step' }),
+      makeVariable({ id: 'var-2', name: 'checkout_total', source_name: 'checkout.total' }),
+      makeVariable({ id: 'var-3', name: 'checkout_coupon', source_name: 'checkout.coupon' }),
+    ])
+  }
+
+  it('drops only the excluded row from the selection, keeping the rest of the batch (tripl-42en)', async () => {
+    selectAllOfThree()
+    vi.mocked(variablesApi.update).mockResolvedValue({} as never)
+    vi.mocked(variablesApi.bulkUpdate).mockResolvedValue(undefined)
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByLabelText('Select all variables'))
+    expect(screen.getByText('3')).toBeInTheDocument()
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Exclude variable checkout_total from scans' }),
+    )
+    fireEvent.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Exclude' }),
+    )
+    await waitFor(() => expect(variablesApi.update).toHaveBeenCalled())
+
+    // Excluding moves the row out of the table and into the panel below it. Its
+    // id used to stay ticked, so the bar still said 3 and a bulk Delete took the
+    // tombstone with the rest — which un-excludes the name, because the flag is
+    // a column on the row being deleted, and hands it straight back to the next
+    // scan.
+    expect(await screen.findByText('2')).toBeInTheDocument()
+
+    // ONLY that id. Exclude is a one-row action and does not route through
+    // changeMatchSet, which would clear the whole batch and jump to page 0.
+    fireEvent.change(screen.getByLabelText('Bulk set type'), { target: { value: 'number' } })
+    await waitFor(() =>
+      expect(variablesApi.bulkUpdate).toHaveBeenCalledWith(
+        'demo',
+        { variable_ids: ['var-1', 'var-3'], variable_type: 'number' },
+        null,
+      ),
+    )
+  })
+
+  it('drops a singly-deleted row from the selection before the next bulk confirm (tripl-42en)', async () => {
+    selectAllOfThree()
+    vi.mocked(variablesApi.del).mockResolvedValue(undefined)
+    vi.mocked(variablesApi.bulkDelete).mockResolvedValue(undefined)
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByLabelText('Select all variables'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete variable checkout_total' }))
+    fireEvent.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete' }),
+    )
+    await waitFor(() => expect(variablesApi.del).toHaveBeenCalledWith('demo', 'var-2', null))
+
+    // A stale id inflates the next confirm — "Delete 3 selected variables?" over
+    // two rows — and then takes the bulk call down with it: the service raises
+    // 404 for the whole batch on the first id it cannot load.
+    expect(await screen.findByText('2')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(
+      await screen.findByText(/Delete 2 selected variables\?/),
+    ).toBeInTheDocument()
+    fireEvent.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }),
+    )
+    await waitFor(() =>
+      expect(variablesApi.bulkDelete).toHaveBeenCalledWith('demo', ['var-1', 'var-3'], null),
+    )
+  })
+
+  it('clears the selection when the sidebar switches branch (tripl-42en)', async () => {
+    // The fixture returns the same rows on both branches ON PURPOSE, so the
+    // assertion isolates the branch guard: a prune against the refetched list
+    // would find every selected id still matching and leave the bar up. A branch
+    // switch has to clear regardless of what the branch it lands on happens to
+    // hold — the ids are scoped to the branch they were picked on, and
+    // `_load_variables_by_ids` 404s the whole bulk call on the first one the new
+    // branch cannot show.
+    selectAllOfThree()
+
+    const { switchBranch } = renderInBranch(null)
+    fireEvent.click(await screen.findByLabelText('Select all variables'))
+    expect(screen.getByText('3')).toBeInTheDocument()
+    expect(screen.getByLabelText('Clear selection')).toBeInTheDocument()
+
+    switchBranch('branch-9')
+
+    expect(screen.queryByLabelText('Clear selection')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Bulk set type')).not.toBeInTheDocument()
+    // The rows on screen really are the other branch's now.
+    await waitFor(() =>
+      expect(variablesApi.listPage).toHaveBeenCalledWith('demo', 'branch-9', { usage: 'all' }),
+    )
+  })
+
+  it('prunes a selection its own bulk update moved out of the usage filter (tripl-42en)', async () => {
+    // "Unused" is answered SERVER-side by the retirement predicate, which keeps
+    // any row carrying documented values. Adding values to every selected row is
+    // therefore the edit that empties this filter's own list — the mock moves
+    // with the mutation the way the backend would.
+    let listed = [
+      makeVariable({ id: 'var-1', name: 'legacy_a' }),
+      makeVariable({ id: 'var-2', name: 'legacy_b' }),
+    ]
+    vi.mocked(variablesApi.listPage).mockImplementation(async () => ({
+      items: listed,
+      total: listed.length,
+    }))
+    vi.mocked(variablesApi.bulkUpdate).mockImplementation(async () => {
+      listed = []
+    })
+
+    renderVariablesTab()
+    await screen.findByText('${legacy_a}')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unused' }))
+    fireEvent.click(await screen.findByLabelText('Select all variables'))
+    expect(screen.getByText('2')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Bulk add values'), { target: { value: 'a, b' } })
+    fireEvent.keyDown(screen.getByLabelText('Bulk add values'), { key: 'Enter' })
+    await waitFor(() => expect(variablesApi.bulkUpdate).toHaveBeenCalled())
+
+    // No control moved the boundary here — the operator's own edit did, and
+    // nothing announced it. The bar was left floating "2 selected", with a
+    // Delete button, over the empty state, one click from destroying the two
+    // variables that had just been documented.
+    expect(await screen.findByText('Nothing to retire')).toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.queryByLabelText('Clear selection')).not.toBeInTheDocument(),
+    )
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
+  })
+
+  it('lets Enter search events without submitting the edit form (tripl-46am)', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant', allowed_values: ['a'] })])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    vi.mocked(variableOverridesApi.list).mockResolvedValue([])
+    vi.mocked(variableDriftsApi.list).mockResolvedValue({ items: [], total: 0 })
+    vi.mocked(eventsApi.list).mockResolvedValue({ items: [] as never, total: 0 })
+    vi.mocked(variablesApi.update).mockResolvedValue({} as never)
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+
+    const search = await screen.findByLabelText('Search events')
+    fireEvent.change(search, { target: { value: 'checkout' } })
+
+    // The box sits inside the edit dialog's <form>, one type="submit" Save away
+    // from HTML implicit submission, so Enter — the universal gesture in a
+    // search field — PATCHed the variable with whatever the fields above held
+    // and closed the dialog on the override being written. jsdom does not
+    // implement implicit submission, so the observable that stands in for it is
+    // the default action of the keystroke itself: preventing it is exactly what
+    // stops the browser reaching the submit, and it is what ChipListInput
+    // already does inside this same form.
+    const enter = createEvent.keyDown(search, { key: 'Enter' })
+    fireEvent(search, enter)
+    expect(enter.defaultPrevented).toBe(true)
+
+    // Nothing runs in its place — the search is debounced and applies as you
+    // type — and the dialog is still open with the edit intact.
+    expect(variablesApi.update).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Search events')).toHaveValue('checkout')
+
+    // Save still submits: the guard is on the keystroke, not on the form.
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(variablesApi.update).toHaveBeenCalled())
   })
 })

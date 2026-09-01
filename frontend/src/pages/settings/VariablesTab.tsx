@@ -167,6 +167,26 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const [overrideValues, setOverrideValues] = useState<string[]>([])
   const [showResolvedDrifts, setShowResolvedDrifts] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // BranchSwitcher is mounted permanently in the app sidebar, so it is reachable
+  // whenever a selection exists — and switching re-keys the variables query and
+  // repaints a completely different row set while `selectedIds` sits untouched.
+  // The bar then reads "12 selected" for twelve ids that are not on the branch
+  // now on screen, and every bulk action carries them: `_load_variables_by_ids`
+  // filters by branch and 404s the WHOLE call on the first id it cannot find, so
+  // a bulk edit aimed at the rows in front of the operator fails wholesale
+  // (tripl-42en).
+  //
+  // The reset lives beside the state it guards rather than inside
+  // `changeMatchSet`, because the sidebar switcher has no way to call a helper
+  // in this component. Adjusting during render with an equality guard is how
+  // this repo follows a prop change (see ProjectAlertingTab.tsx); an effect
+  // would let one frame of the new branch paint under the old count, and the
+  // lint rules reject it besides.
+  const [selectionBranchId, setSelectionBranchId] = useState(branchId)
+  if (selectionBranchId !== branchId) {
+    setSelectionBranchId(branchId)
+    setSelectedIds(new Set())
+  }
   const [filterText, setFilterText] = useState('')
   const [usageFilter, setUsageFilter] = useState<UsageFilter>('all')
   // Page the reviewer picked, tagged with the focus target it was picked under
@@ -345,9 +365,36 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     })
   }, [])
 
+  /** Drops ONE id from the selection, for a row-level action that has just moved
+   * that row out of the match set (tripl-42en).
+   *
+   * Deliberately not `changeMatchSet`: clearing the whole selection and jumping
+   * back to page 0 is the right answer when a filter redraws the boundary under
+   * every row at once, and the wrong price for a one-row action — it would throw
+   * away a batch the operator is still assembling as the cost of excluding a
+   * single variable.
+   *
+   * Returns `prev` untouched when the id was not selected, so the common case —
+   * acting on a row while nothing is ticked — does not re-render the table. */
+  const deselect = useCallback((id: string) => {
+    setSelectedIds(prev => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+  }, [])
+
   const deleteMut = useMutation({
     mutationFn: (id: string) => variablesApi.del(slug, id, branchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) }),
+    // The row is gone server-side, so a selection still naming it inflates the
+    // next bulk confirm — "Delete 12 selected variables?" over eleven rows — and
+    // then takes the whole bulk call down with it: `_load_variables_by_ids`
+    // raises 404 for the batch on the first id it cannot load (tripl-42en).
+    onSuccess: (_data, id) => {
+      qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
+      deselect(id)
+    },
   })
 
   const handleDelete = useStableCallback(async (v: Variable) => {
@@ -391,7 +438,21 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const excludeMut = useMutation({
     mutationFn: ({ id, excluded }: { id: string; excluded: boolean }) =>
       variablesApi.update(slug, id, { excluded_from_scans: excluded }, branchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) }),
+    // Excluding moves the row out of the table and into the panel below it, so a
+    // still-selected tombstone rides along on the next bulk Delete — and per the
+    // Delete copy right above, deleting an excluded variable un-excludes the
+    // name, because the flag is a column on the row being dropped. The next scan
+    // then re-creates it and the operator's instruction is silently revoked
+    // (tripl-42en).
+    //
+    // Restore (`excluded: false`) needs no guard and gets none: it only ADDS a
+    // row back to the match set, which can never leave an id naming a row nobody
+    // can see. The excluded panel has no checkbox either, so a restored id can
+    // only ever be one this selection already dropped on the way out.
+    onSuccess: (_data, { id, excluded }) => {
+      qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
+      if (excluded) deselect(id)
+    },
   })
 
   const handleExclude = useStableCallback(async (v: Variable) => {
@@ -454,6 +515,42 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     if (!needle) return activeVariables
     return activeVariables.filter(variable => matchesQuery(variable, needle))
   }, [activeVariables, filterText])
+  const matchingIds = useMemo(
+    () => new Set(matchingVariables.map(variable => variable.id)),
+    [matchingVariables],
+  )
+
+  // The net under the selection invariant, for the match-set changes NO CONTROL
+  // ANNOUNCES. `changeMatchSet` covers the controls a person operates and
+  // `deselect` the row-level ones; this covers the boundary moving on its own. A
+  // bulk "Add values" or "Set description" is the case that bites: usage is
+  // answered SERVER-side by the retirement predicate, which keeps a row for its
+  // documented values or for an edit someone made, so the update makes its own
+  // twelve rows stop being "unused" and the list comes back without them. The
+  // bar was then left floating "12 selected" — with a Delete button — over the
+  // "Nothing to retire" empty state, ready to confirm the destruction of twelve
+  // variables the operator had just documented and could no longer see. A bulk
+  // "Set description" does the same to the filter text box, which matches on
+  // description; a colleague's delete and a retiring scan land here too
+  // (tripl-42en).
+  //
+  // This does NOT re-open the intersection `changeMatchSet` rejects. That
+  // objection is about refining a filter and then broadening it, and a filter
+  // change clears the selection outright before it can ever reach this line.
+  // What is left is data moving under a selection nobody touched, where keeping
+  // an id no row can show has no reading at all.
+  //
+  // Guarded on a resolved page so a first load — or a query with no data — can
+  // never pass for "nothing matches" and wipe a live selection. Pruning during
+  // render converges in one extra render; an effect would leave a window in
+  // which Delete could post ids the page had already decided to forget, the same
+  // reasoning ProjectAlertingTab.tsx gives for its inbox selection.
+  if (variablePage !== undefined && selectedIds.size > 0) {
+    const stillMatching = [...selectedIds].filter(id => matchingIds.has(id))
+    if (stillMatching.length !== selectedIds.size) {
+      setSelectedIds(new Set(stillMatching))
+    }
+  }
 
   // A branch-diff link points at one variable, which may sit on any page. The
   // page is DERIVED rather than synced in an effect: until the reviewer picks a
@@ -495,9 +592,27 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
    * changes which matching rows are painted, not which rows match, and
    * selecting across pages is the reason this table has a select-all at all.
    *
-   * One helper rather than a line repeated per control: the bug was a guard
-   * copy-pasted onto one of two controls, so the invariant lives in one place
-   * where a third control cannot forget it. */
+   * TWO controls route through here and they are the only two that should: the
+   * filter text box and the usage-filter buttons, each of which redraws the
+   * match-set boundary under every row at once. The bug was a guard copy-pasted
+   * onto one of them, so that half of the invariant lives in one place where a
+   * third wholesale control cannot forget it.
+   *
+   * It is only that half, and this docstring used to claim the whole. The rest
+   * of the invariant is held where the rest of the movement happens, because
+   * clearing a whole batch and jumping to page 0 would be the wrong price for
+   * it: row-level Exclude and Delete drop their ONE id through `deselect`, a
+   * branch switch clears the selection beside the state itself (the sidebar
+   * switcher cannot reach a helper in here), and the changes no control
+   * announces — a bulk edit that moves its own rows out of the server-answered
+   * usage filter, a colleague's delete — are caught by the prune next to
+   * `matchingVariables`. That prune is not the intersection rejected above:
+   * refining a filter and then broadening it never reaches it, because the
+   * clearing here happens first, so all it can ever see is data that moved under
+   * a selection nobody touched.
+   *
+   * Adding a control that narrows the match set WHOLESALE means routing it
+   * through here; adding one that moves a single row means `deselect`. */
   const changeMatchSet = (apply: () => void) => {
     apply()
     setSelectedIds(new Set())
@@ -731,6 +846,17 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                         placeholder="Search events…"
                         value={overrideEventSearch}
                         onChange={e => setOverrideEventSearch(e.target.value)}
+                        // Enter is the universal gesture in a search field, and
+                        // this one sits inside the edit dialog's <form>, one
+                        // `type="submit"` Save away from HTML's implicit
+                        // submission: pressing it PATCHed the variable with
+                        // whatever the fields above happened to hold and closed
+                        // the dialog, destroying the override being written
+                        // (tripl-46am). The same guard ChipListInput already
+                        // carries inside this form. Nothing runs in its place,
+                        // because there is nothing to run — the search is
+                        // debounced and applies as you type.
+                        onKeyDown={e => { if (e.key === 'Enter') e.preventDefault() }}
                       />
                       <select
                         aria-label="Override event"
