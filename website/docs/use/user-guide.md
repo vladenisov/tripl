@@ -638,7 +638,7 @@ If you're rolling tripl out on real data, this order tends to work well:
 | Data source card is red | Connection failed | Fix credentials, **Edit** then **Re-test** |
 | "By version" tab missing | Scan has no app-version column | Set the version column on the scan (optional) |
 | A deleted scan variable comes back | Its source binding is still present | Use **Exclude from scans**; restore it later if needed |
-| A scan-created variable disappeared | A run retired it — nothing in the plan referenced it | Expected cleanup; edit, document, or exclude a variable you want kept |
+| A scan-created variable disappeared | A catalog run retired it — nothing in the plan referenced it. Scheduled collections do this too, so it can happen without anyone starting a scan | Expected cleanup; edit, document, or exclude a variable you want kept |
 | A variable value keeps showing as drift | It is outside the effective documented list | Accept it globally or for that event, or resolve/snooze the drift |
 | Alert never arrived | No signal, rule off, threshold/cooldown, or delivery failed | Work the "alert never fired" checklist above |
 | Wrong change merged | — | Use the **Audit log** + a corrective branch through review |

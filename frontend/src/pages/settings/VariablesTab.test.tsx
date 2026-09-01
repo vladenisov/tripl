@@ -743,4 +743,139 @@ describe('VariablesTab', () => {
     expect(await screen.findByText(/re-create it, un-excluded/)).toBeInTheDocument()
     expect(screen.queryByText(/use Exclude to keep it out/)).not.toBeInTheDocument()
   })
+
+  it('searches the override roster server-side instead of taking the endpoint default (tripl-46am)', async () => {
+    // The picker used to fetch the roster with `params` literally undefined, so
+    // no limit was emitted and the endpoint's own default of 200 applied. On a
+    // project with more events than that the dropdown listed the first 200 in
+    // catalog order — no search, no note, and no other route to an override:
+    // "Accept for this event" only reaches events that already carry a drift.
+    mockList([makeVariable({ id: 'var-1', name: 'variant', allowed_values: ['a'] })])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    vi.mocked(variableOverridesApi.list).mockResolvedValue([])
+    vi.mocked(variableDriftsApi.list).mockResolvedValue({ items: [], total: 0 })
+    vi.mocked(eventsApi.list).mockResolvedValue({
+      items: Array.from({ length: 100 }, (_, index) => ({
+        id: `ev-${index}`,
+        name: `Event ${index}`,
+      })) as never,
+      total: 4000,
+    })
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+
+    // A limit this page chose, not one it inherited without knowing.
+    await waitFor(() =>
+      expect(eventsApi.list).toHaveBeenCalledWith(
+        'demo',
+        { search: undefined, limit: 100, offset: 0 },
+        null,
+      ),
+    )
+
+    // And it says what it did NOT show — the same honesty the variables table
+    // directly above already practises for its own truncation.
+    expect(await screen.findByText(/3900 more not listed/)).toBeInTheDocument()
+
+    // Typing reaches the rest of the catalog through the server's own ILIKE
+    // over name/description/source_name, so no event is unreachable.
+    fireEvent.change(screen.getByLabelText('Search events'), { target: { value: 'payment' } })
+    await waitFor(() =>
+      expect(eventsApi.list).toHaveBeenCalledWith(
+        'demo',
+        { search: 'payment', limit: 100, offset: 0 },
+        null,
+      ),
+    )
+  })
+
+  it('shows the event of an override that sits outside the loaded roster (tripl-46am)', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant', allowed_values: ['a'] })])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    vi.mocked(variableDriftsApi.list).mockResolvedValue({ items: [], total: 0 })
+    // The override's event is NOT in the page the picker loaded. Its name still
+    // arrives on the overrides response, so the row renders — but the Edit
+    // pencil set an id no <option> carried and the select painted BLANK while
+    // Save stayed enabled, letting someone overwrite an override without ever
+    // seeing which event they were editing.
+    vi.mocked(variableOverridesApi.list).mockResolvedValue([
+      {
+        id: 'ovr-1',
+        variable_id: 'var-1',
+        event_id: 'ev-far',
+        event_name: 'Checkout Completed',
+        values: ['x'],
+      },
+    ])
+    vi.mocked(eventsApi.list).mockResolvedValue({
+      items: [{ id: 'ev-1', name: 'Onboarding' }] as never,
+      total: 3000,
+    })
+    vi.mocked(variableOverridesApi.upsert).mockResolvedValue({
+      id: 'ovr-1',
+      variable_id: 'var-1',
+      event_id: 'ev-far',
+      event_name: 'Checkout Completed',
+      values: ['x'],
+    })
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Edit override for Checkout Completed' }),
+    )
+
+    const select = screen.getByLabelText('Override event') as HTMLSelectElement
+    expect(select.value).toBe('ev-far')
+    expect(within(select).getByRole('option', { name: 'Checkout Completed' })).toBeInTheDocument()
+
+    // And the save still targets that event, not the roster row above it.
+    fireEvent.click(screen.getByRole('button', { name: 'Save override' }))
+    await waitFor(() =>
+      expect(variableOverridesApi.upsert).toHaveBeenCalledWith('demo', 'var-1', 'ev-far', ['x'], null),
+    )
+  })
+
+  it('drops the selection when the filter text changes, not only on the usage filter (tripl-42en)', async () => {
+    mockList([
+      makeVariable({ id: 'var-1', name: 'checkout_step' }),
+      makeVariable({ id: 'var-2', name: 'checkout_total' }),
+      makeVariable({ id: 'var-3', name: 'checkout_coupon' }),
+      makeVariable({ id: 'var-4', name: 'payment_method' }),
+    ])
+    vi.mocked(variablesApi.bulkUpdate).mockResolvedValue(undefined)
+
+    renderVariablesTab()
+    await screen.findByText('${checkout_step}')
+
+    fireEvent.change(screen.getByLabelText('Filter variables'), { target: { value: 'checkout' } })
+    fireEvent.click(screen.getByLabelText('Select all variables'))
+
+    // Positive control: the bar is up, holding the three checkout rows.
+    expect(screen.getByText('3')).toBeInTheDocument()
+    expect(screen.getByLabelText('Clear selection')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Filter variables'), { target: { value: 'payment' } })
+
+    // Selection spans every MATCHING row rather than the page on screen, so the
+    // three checkout ids used to survive a filter that hid them: the table
+    // showed only payment rows, all unticked, and the bar still said "3
+    // selected". Delete confirmed with a bare count and destroyed three
+    // variables nobody could see or name, cascading their value contexts and
+    // drifts — the ids were still loaded client-side, so nothing 404'd and no
+    // toast fired. Set type, Set description and Add values hit the same rows.
+    expect(await screen.findByText('${payment_method}')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Clear selection')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Bulk set type')).not.toBeInTheDocument()
+
+    // The guard the usage filter already carried, now shared by both controls
+    // rather than copy-pasted onto one of them.
+    fireEvent.change(screen.getByLabelText('Filter variables'), { target: { value: '' } })
+    fireEvent.click(await screen.findByLabelText('Select all variables'))
+    expect(screen.getByLabelText('Clear selection')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unused' }))
+    expect(screen.queryByLabelText('Clear selection')).not.toBeInTheDocument()
+  })
 })

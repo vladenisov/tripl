@@ -830,7 +830,10 @@ arriving again. Exclusion is what makes a removal stick.
 **A scan-created variable vanished from the plan. Where did it go?**
 Every catalog run ends by retiring the scan-created variables nothing refers to
 any more, so a catalog stops growing a permanent row per key of a JSON column
-keyed by free text. A row is removed only when all of this holds: its
+keyed by free text. That is a scan you started as well as a scheduled
+monitoring collection — both sync the catalog and both create variables, so
+both clean up after themselves. A metrics **replay** syncs no catalog and
+retires nothing. A row is removed only when all of this holds: its
 description is still the scan's own, its bindings are still only the source path
 the scan gave it, it documents no values, and it has no per-event override, no
 value drift, no observed context, and no stored event field or meta value naming

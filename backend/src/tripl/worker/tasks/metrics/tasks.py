@@ -83,6 +83,7 @@ from tripl.worker.tasks.metrics.signals import (
 )
 from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 from tripl.worker.utils.reserved_columns import reserved_catalog_columns
+from tripl.worker.variable_sweep import retire_unused_variables
 
 logger = logging.getLogger(__name__)
 
@@ -543,7 +544,24 @@ def collect_metrics(
         ] = {}
 
         session.commit()
+        # The scheduled path mints variables exactly as a manual scan does —
+        # ``variables_created`` in the summary below counts them — but until
+        # tripl-bh1q ``run_scan`` was the sweep's only worker call site, so on
+        # the production shape the sweep was written for (a JSON map column
+        # keyed by user-typed text, collected hourly on a schedule) it never ran
+        # unattended and the catalog only ever grew. Gated on ``is_replay`` for
+        # the same reason the reindex is: a replay skips catalog sync entirely,
+        # so it has no fresh view of which paths a row still carries and must
+        # never be the run that judges a variable unused. Ordered after the
+        # commit and before the reindex like ``run_scan``, so the reindex sees
+        # the retired set and a later failure cannot roll the deletions back.
+        variables_retired = 0
         if not is_replay:
+            variables_retired = retire_unused_variables(
+                session,
+                project_id=config.project_id,
+                branch_id=main_branch_id(session, config.project_id),
+            )
             reindex_main_branch_from_worker(session, config.project_id)
 
         # ---- PHASE 2: Collect time-bucketed metrics ----
@@ -626,6 +644,14 @@ def collect_metrics(
             total_merged += gr.events_merged
             total_cols = max(total_cols, gr.columns_analyzed)
             all_details.extend(gr.details)
+        # Worded verbatim as ``run_scan`` words it: one sentence for one event,
+        # so an operator reading a scheduled run and a manual one is not left
+        # deciding whether two phrasings mean the same thing. Appended here
+        # rather than at the call site because ``all_details`` does not exist
+        # yet at the point the sweep runs, and silent when nothing was retired,
+        # which is the same silence ``run_scan`` keeps.
+        if variables_retired:
+            all_details.append(f"Retired {variables_retired} unused variables no event refers to")
 
         # Per-chunk accumulators. Each chunk runs its own bounded warehouse query,
         # delete, and UPSERT so a long replay never scans the whole range at once.
@@ -948,6 +974,14 @@ def collect_metrics(
                     "json_paths_with_samples": catalog.json_path_sampling.paths_with_samples,
                     "variable_values_written": variable_values_written,
                     "variable_contexts_unfilled": variable_contexts_unfilled,
+                    # Reported on this branch only, not beside
+                    # ``variables_created`` at the top: the sweep does not run
+                    # on a replay, and a top-level ``0`` there would read as
+                    # "swept, found nothing" rather than "did not sweep" —
+                    # exactly the way ``variable_values_touched`` reading 0 on
+                    # every scheduled run hid the 2026-08-31 stall. Absent is
+                    # the honest answer for a run that never asked the question.
+                    "variables_retired": variables_retired,
                 }
             )
 

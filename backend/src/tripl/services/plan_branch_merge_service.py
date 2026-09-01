@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -34,7 +35,7 @@ from tripl.models.variable_event_value_override import VariableEventValueOverrid
 from tripl.schemas.plan_branch import PlanBranchDetailResponse
 from tripl.services._celery_dispatch import dispatch
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
-from tripl.services._plan_branch_renames import pair_renames
+from tripl.services._plan_branch_renames import pair_renames, rekey_in_place
 from tripl.services.event_type_owner_service import load_owner_user_ids
 from tripl.services.plan_branch_conflicts import (
     _ET_CHANGE_KEYS,
@@ -195,6 +196,47 @@ async def _reject_removals_a_scan_names_events_by(
             )
     if blocked:
         raise HTTPException(status_code=409, detail=" ".join(blocked))
+
+
+# A name parked here exists only between the two flushes in
+# ``_rename_main_variables``, inside the merge's own transaction. The prefix is
+# deliberately outside what ``VariableCreate`` admits (``^[a-z][a-z0-9_]*$``),
+# so a value that ever escaped the transaction would be unmistakable rather than
+# look like a variable someone named badly.
+_RENAME_STAGING_PREFIX = "__merge_rename_"
+
+
+async def _rename_main_variables(
+    session: AsyncSession,
+    main_var_by_name: dict[str, Variable],
+    renames: dict[str, str],
+) -> None:
+    """Write the branch's new names onto main's rows, cycles included.
+
+    ``pair_renames`` can hand back a permutation — a plain two-variable swap, or
+    a longer rotation — and then at least one row is moving onto a name another
+    main row still holds. ``uq_variable_project_name`` is UNIQUE and NOT
+    DEFERRABLE (``d4f5e6a7b8c9`` creates it in that form), so there is no order
+    of the UPDATEs that avoids a duplicate existing between two of them: only a
+    third value does. Park every mover on one, flush that, then write the real
+    names (tripl-htcz).
+
+    Parking ALL of them rather than only the ones that look blocked is what
+    makes the second pass safe in any order, which matters because the order is
+    SQLAlchemy's and not ours — the pending names go out on whichever flush
+    comes first, and that is usually an unrelated autoflush further down.
+
+    ``main_var_by_name`` is read here before ``rekey_in_place`` moves it, so its
+    keys are still the OLD names and its membership is still main's pre-rename
+    name set — which is exactly the question "is this destination occupied?".
+    """
+    movers = [(main_var_by_name[old_name], new_name) for old_name, new_name in renames.items()]
+    if any(new_name in main_var_by_name for new_name in renames.values()):
+        for variable, _new_name in movers:
+            variable.name = f"{_RENAME_STAGING_PREFIX}{uuid.uuid4().hex}"
+        await session.flush()
+    for variable, new_name in movers:
+        variable.name = new_name
 
 
 async def _apply_merge(
@@ -488,19 +530,45 @@ async def _apply_merge(
     # ``uq_variable_project_source_name`` fails the whole merge with an
     # IntegrityError. Renaming main's row instead settles that and keeps the
     # variable's id, which every ``variable_values`` row hangs off.
-    for (old_var_name,), (new_var_name,) in pair_renames(
-        {(name,): variable.get("source_name") for name, variable in base_var_by_name.items()},
-        {(name,): variable.source_name for name, variable in main_var_by_name.items()},
-        {(name,): variable.source_name for name, variable in branch_var_by_name.items()},
-    ).items():
-        renamed_var = main_var_by_name.pop(old_var_name)
-        renamed_var.name = new_var_name
-        main_var_by_name[new_var_name] = renamed_var
+    #
+    # A swap or a rotation is several renames at once, so the moves have to be
+    # applied as the permutation they are: the names through a parking value
+    # (``_rename_main_variables``) and the lookups all-at-once
+    # (``rekey_in_place``). Doing either one pair at a time re-creates the very
+    # collision the pairing removes (tripl-htcz).
+    var_renames = {
+        old_key[0]: new_key[0]
+        for old_key, new_key in pair_renames(
+            {(name,): variable.get("source_name") for name, variable in base_var_by_name.items()},
+            {(name,): variable.source_name for name, variable in main_var_by_name.items()},
+            {(name,): variable.source_name for name, variable in branch_var_by_name.items()},
+        ).items()
+    }
+    if var_renames:
+        await _rename_main_variables(session, main_var_by_name, var_renames)
+        rekey_in_place(main_var_by_name, var_renames)
         # The base entry has to move with it. Every comparison downstream reads
         # ``base_var_by_name.get(name)`` and falls back to branch-wins when the
         # entry is missing, so a base left under the old name would silently
         # overwrite main-only edits on the row that was renamed.
-        base_var_by_name[new_var_name] = base_var_by_name.pop(old_var_name)
+        rekey_in_place(base_var_by_name, var_renames)
+    # Removals go out BEFORE the writes, and this reordering is the other half of
+    # the same ordering complaint the block above makes: SQLAlchemy runs a
+    # mapper's saves ahead of its deletes, so a name or a ``source_name`` that a
+    # row on its way out still holds is not free when the row taking it is
+    # written. The two arms are disjoint by construction — this one only touches
+    # main names the branch no longer lists, the upsert below only names it does
+    # — so running it first changes nothing except which values are free
+    # (tripl-htcz).
+    removed_any = False
+    for name, m_v in list(main_var_by_name.items()):
+        if name in base_var_by_name and name not in branch_var_by_name:
+            await session.delete(m_v)
+            del main_var_by_name[name]
+            removed_any = True
+    if removed_any:
+        await session.flush()
+
     variable_attrs = (
         "source_name",
         "variable_type",
@@ -536,9 +604,6 @@ async def _apply_merge(
                     excluded_from_scans=b_v.excluded_from_scans,
                 )
             )
-    for name, m_v in list(main_var_by_name.items()):
-        if name in base_var_by_name and name not in branch_var_by_name:
-            await session.delete(m_v)
 
     # --- events: upsert by (event_type_name, name); preserve ids + remap children
     main_events = list(
@@ -611,17 +676,25 @@ async def _apply_merge(
     # ``drop_dangling_event_references`` further down, which is right for the
     # removal it thinks it is looking at and wrong only because a rename is not
     # one.
-    for old_event_key, new_event_key in pair_renames(
+    event_renames = pair_renames(
         {key: event.get("source_name") for key, event in base_event_by_key.items()},
         {key: event.source_name for key, event in main_event_by_key.items()},
         {key: event.source_name for key, event in branch_event_by_key.items()},
-    ).items():
-        renamed_event = main_event_by_key.pop(old_event_key)
+    )
+    for old_event_key, new_event_key in event_renames.items():
         # Only the last component of the key can differ: the pairing refuses to
         # cross event types, so the row keeps its parent.
-        renamed_event.name = new_event_key[-1]
-        main_event_by_key[new_event_key] = renamed_event
-        base_event_by_key[new_event_key] = base_event_by_key.pop(old_event_key)
+        #
+        # Events need no parking pass of their own — they carry indexes on
+        # ``(project, event_type, source_name)`` and nothing unique on the name —
+        # so a rotation among them costs only the all-at-once re-key below. What
+        # it used to cost instead was silence: keyed by name, a swap paired
+        # nothing and the upsert wrote each branch row's ``source_name`` onto the
+        # main row wearing its new name, mixing up two scan identities with no
+        # constraint to stop it (tripl-htcz).
+        main_event_by_key[old_event_key].name = new_event_key[-1]
+    rekey_in_place(main_event_by_key, event_renames)
+    rekey_in_place(base_event_by_key, event_renames)
 
     for key, b_ev in branch_event_by_key.items():
         et_name, _ev_name = key
@@ -1225,6 +1298,78 @@ async def _lock_branch_for_merge(
     return branch
 
 
+async def _commit_merged_plan(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    main_branch_id: uuid.UUID,
+    branch: PlanBranch,
+    user_id: uuid.UUID,
+    resolutions: dict[tuple[str, str, str], str],
+    base_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply the branch onto main, record the revision, and commit.
+
+    Returns the post-merge snapshot of the live plan.
+
+    Everything that writes lives in here, which makes this the one place a
+    database constraint can reject a merge. It used to have no answer for that:
+    the IntegrityError travelled all the way to ``unhandled_exception_handler``
+    and the caller got a bare 500 naming nothing, on a branch that would keep
+    failing the same way until someone renamed a row by hand (tripl-htcz).
+
+    The known cause — a rename cycle colliding on
+    ``uq_variable_project_name`` / ``uq_variable_project_source_name`` — is
+    settled by the pairing in ``_apply_merge``, so anything still arriving here
+    is a shape we have not modelled. It is still the user's merge that cannot
+    proceed, and 409 says that; the constraint's own text stays in the log,
+    where an operator can read it against the request id, rather than in a
+    response body that would leak the schema.
+    """
+    try:
+        await _apply_merge(
+            session,
+            project_id,
+            main_branch_id,
+            branch.id,
+            resolutions=resolutions,
+            base_payload=base_payload,
+        )
+        # Post-merge snapshot of the live plan.
+        post_payload = await build_plan_snapshot(session, project_id, branch_id=main_branch_id)
+        session.add(
+            PlanRevision(
+                project_id=project_id,
+                created_by=user_id,
+                summary=f"Merged branch '{branch.name}'",
+                payload=post_payload,
+            )
+        )
+        branch.status = BranchStatus.merged.value
+        branch.merged_at = datetime.now(UTC)
+        branch.merged_by = user_id
+        await session.commit()
+    except IntegrityError as exc:
+        # Explicit, though ``get_session`` would also roll back on the way out:
+        # this leaves the session usable and drops the ``FOR UPDATE`` lock on the
+        # branch at the point of failure rather than at the edge of the request.
+        await session.rollback()
+        logger.exception("Merge of branch %s was rejected by a database constraint", branch.id)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "merge_constraint_violation": True,
+                "message": (
+                    "Merging this branch would break a uniqueness rule on main — "
+                    "most often two rows ending up with the same name or the same "
+                    "scan identity. Rename the clashing entity on the branch and "
+                    "merge again."
+                ),
+            },
+        ) from exc
+    return post_payload
+
+
 async def merge_branch(
     session: AsyncSession,
     slug: str,
@@ -1307,31 +1452,15 @@ async def merge_branch(
         current_plan_hash=current_plan_hash,
     )
 
-    await _apply_merge(
+    post_payload = await _commit_merged_plan(
         session,
-        project.id,
-        main_branch_id,
-        branch.id,
+        project_id=project.id,
+        main_branch_id=main_branch_id,
+        branch=branch,
+        user_id=user_id,
         resolutions=resolution_map,
         base_payload=base_payload,
     )
-
-    # Post-merge snapshot of the live plan.
-    post_payload = await build_plan_snapshot(session, project.id, branch_id=main_branch_id)
-    session.add(
-        PlanRevision(
-            project_id=project.id,
-            created_by=user_id,
-            summary=f"Merged branch '{branch.name}'",
-            payload=post_payload,
-        )
-    )
-
-    branch.status = BranchStatus.merged.value
-    branch.merged_at = datetime.now(UTC)
-    branch.merged_by = user_id
-
-    await session.commit()
     await session.refresh(branch)
 
     # Post-merge tracker automation (best-effort; the merge is already committed).

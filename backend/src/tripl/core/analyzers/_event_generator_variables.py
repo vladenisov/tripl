@@ -35,6 +35,15 @@ SCAN_PROVENANCE_DESCRIPTION = "Auto-detected variable from data source scan"
 # one it is deliberately NOT (``core.name_template``).
 _TOKEN_PATTERN = VARIABLE_TOKEN_PATTERN
 
+# The in-memory context map a generation run fills before any ``VariableValue``
+# row exists: ``(variable_id, event_id, field_definition_id)`` -> the payload
+# ``insert_variable_contexts`` will write. Named here, beside the four functions
+# that read and write it, because the merge pass now has to reconcile it too
+# (``_reconcile_pending_variable_contexts``, tripl-gsum) and three modules
+# spelling the raw tuple out by hand is how a key order drifts apart.
+VariableContextKey = tuple[uuid.UUID, uuid.UUID, uuid.UUID]
+PendingVariableContexts = dict[VariableContextKey, dict[str, Any]]
+
 
 class VariableIndex:
     """Token → Variable lookup across ``name``, ``source_name`` and ``bindings``.

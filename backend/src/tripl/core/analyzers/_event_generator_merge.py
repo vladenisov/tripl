@@ -11,7 +11,11 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from tripl.core.analyzers._event_generator_merge_refs import move_dangling_event_references
-from tripl.core.analyzers._event_generator_variables import VariableIndex, sample_variable_values
+from tripl.core.analyzers._event_generator_variables import (
+    PendingVariableContexts,
+    VariableIndex,
+    sample_variable_values,
+)
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.event import Event
 from tripl.models.event import EventStatus as _ES
@@ -28,12 +32,32 @@ from tripl.models.variable_event_value_override import VariableEventValueOverrid
 from tripl.models.variable_value import VariableValue, VariableValueKind
 from tripl.models.variable_value_drift import VariableValueDrift
 
+# Mirrors ``ScanConfig.cardinality_threshold``'s column default and
+# ``generate_events``' own, so a caller that does not know the config's value
+# folds contexts as one passing 100 would. A fallback, never a preference: a
+# caller holding a ``ScanConfig`` should pass ``config.cardinality_threshold``.
+DEFAULT_CARDINALITY_THRESHOLD = 100
+
 
 @dataclass(frozen=True)
 class EventGroupMatch:
     event_name: str
     field_value_overrides: dict[str, str] = field(default_factory=dict)
     matched_rule_name: str | None = None
+
+
+@dataclass(frozen=True)
+class _ContextFacts:
+    """The three columns a variable-context fold has to decide.
+
+    Store-agnostic on purpose: one side can be a ``VariableValue`` row and the
+    other a dict entry only recorded in memory, and the rule that combines them
+    must not care which is which.
+    """
+
+    value_kind: str
+    observed_count: int
+    values: list[str]
 
 
 def _format_value(raw_val: object) -> str:
@@ -140,8 +164,14 @@ def merge_existing_events_for_group_rules(
     project_id: uuid.UUID,
     event_type_ids: Sequence[uuid.UUID],
     event_group_rules: Sequence[Mapping[str, object]] | None,
+    cardinality_threshold: int = DEFAULT_CARDINALITY_THRESHOLD,
 ) -> int:
-    """Apply scan group rules to already-created catalog events."""
+    """Apply scan group rules to already-created catalog events.
+
+    No ``pending_variable_contexts``: nothing is generating here, so every
+    context this can touch is already a row. ``cardinality_threshold`` reaches
+    only the fold that combines two of them.
+    """
     if not event_group_rules:
         return 0
 
@@ -187,6 +217,7 @@ def merge_existing_events_for_group_rules(
             event_group_rules=event_group_rules,
             field_definitions=field_definitions,
             next_event_order=next_event_order,
+            cardinality_threshold=cardinality_threshold,
         )
         next_event_order = session.execute(
             select(func.max(Event.order)).where(Event.project_id == project_id)
@@ -206,7 +237,16 @@ def _merge_existing_grouped_events(
     event_group_rules: Sequence[Mapping[str, object]] | None,
     field_definitions: dict[str, FieldDefinition],
     next_event_order: int,
+    cardinality_threshold: int = DEFAULT_CARDINALITY_THRESHOLD,
+    pending_variable_contexts: PendingVariableContexts | None = None,
 ) -> int:
+    """Merge every event a group rule claims into the event that rule names.
+
+    A caller that has already recorded variable contexts against events this pass
+    can DELETE must hand its ``pending_variable_contexts`` map over, or those
+    entries are written out against a row that no longer exists — see
+    ``_reconcile_pending_variable_contexts``.
+    """
     if not event_group_rules:
         return 0
 
@@ -261,6 +301,8 @@ def _merge_existing_grouped_events(
             session,
             source=source,
             target=target,
+            cardinality_threshold=cardinality_threshold,
+            pending_variable_contexts=pending_variable_contexts,
         )
         for key, event in list(existing_by_identity.items()):
             if event.id == source.id:
@@ -330,7 +372,14 @@ def _create_group_event_from_source(
     return target
 
 
-def _merge_event_into_group(session: Session, *, source: Event, target: Event) -> None:
+def _merge_event_into_group(
+    session: Session,
+    *,
+    source: Event,
+    target: Event,
+    cardinality_threshold: int,
+    pending_variable_contexts: PendingVariableContexts | None = None,
+) -> None:
     if source.last_seen_at is not None and (
         target.last_seen_at is None or source.last_seen_at > target.last_seen_at
     ):
@@ -351,7 +400,20 @@ def _merge_event_into_group(session: Session, *, source: Event, target: Event) -
     _merge_event_metric_rows(session, source_ids=[source.id], target_id=target.id)
     _merge_event_metric_breakdown_rows(session, source_ids=[source.id], target_id=target.id)
     _delete_event_anomalies(session, event_ids=[source.id, target.id])
-    _move_variable_contexts(session, source=source, target=target)
+    _move_variable_contexts(
+        session, source=source, target=target, cardinality_threshold=cardinality_threshold
+    )
+    if pending_variable_contexts is not None:
+        # Runs for EVERY merge, including one into a target minted moments ago by
+        # ``_create_group_event_from_source``: that target is in no plan, so the
+        # contexts moved here are the only ones it will ever carry (tripl-gsum).
+        _reconcile_pending_variable_contexts(
+            session,
+            source=source,
+            target=target,
+            pending=pending_variable_contexts,
+            cardinality_threshold=cardinality_threshold,
+        )
     _move_variable_event_overrides(session, source=source, target=target)
     _move_variable_value_drifts(session, source=source, target=target)
     # Everything above re-points a real foreign key. This carries the references
@@ -392,7 +454,156 @@ def _move_event_meta_values(session: Session, *, source: Event, target: Event) -
         target_meta_ids.add(meta_value.meta_field_definition_id)
 
 
-def _move_variable_contexts(session: Session, *, source: Event, target: Event) -> None:
+def _target_value_names_variable(variable: Variable | None, target_value: str | None) -> bool:
+    """Whether a context carried onto the target would still assert a true reference.
+
+    Group rules can replace a field value wholesale (``field_value_overrides``),
+    and a context migrated onto a literal would claim a reference that is not
+    there. Attribution uses the same "any of the variable's tokens" rule as
+    ``record_variable_contexts``, so a display name that was slugged away from
+    its raw path still matches through ``source_name``/``bindings``.
+    """
+    if variable is None or target_value is None:
+        return False
+    return any(f"${{{token}}}" in target_value for token in VariableIndex.tokens_of(variable))
+
+
+def _fold_context_facts(
+    kept: _ContextFacts,
+    folded: _ContextFacts,
+    *,
+    cardinality_threshold: int,
+) -> _ContextFacts:
+    """Combine two observations of one ``(variable, field)`` pair into one row's worth.
+
+    Neither side is "the incoming one" — these are two records of the same thing
+    about to share a row — so every column is decided from BOTH sides:
+
+    * the union is counted BEFORE trimming, because ``values`` is what we can
+      show and ``observed_count`` is how many distinct values were seen; the
+      count off a trimmed list is the sample size masquerading as a measurement;
+    * the kind demotes on the cardinality THRESHOLD, never on the sample cap. A
+      ``low`` context promises the reader "All values" and legitimately holds up
+      to the threshold's worth of them, so two lows whose union crosses it have
+      stopped being an enumeration. Leaving that fold ``low`` parked an uncapped
+      over-threshold list behind the badge, since only high rows are trimmed;
+    * ``observed_count`` never ends below the values the row holds. A bare
+      ``max`` of the two counts leaves exactly that: two low rows of fifteen
+      values fold to twenty-five values and a count of fifteen.
+
+    The rule ``preserve_existing_variable_context_values`` and
+    ``_merge_replay_variable_samples`` already apply on their own sides; the
+    merge sink was the third and is what tripl-3rex is filed against.
+    """
+    merged = sample_variable_values(
+        [*kept.values, *folded.values],
+        # ``low`` means "no cap" here: the union has to be counted before it is
+        # trimmed, exactly as ``distinct_seen`` is on the other two sinks.
+        VariableValueKind.low.value,
+    )
+    distinct_seen = len(merged)
+    is_high = distinct_seen > cardinality_threshold or VariableValueKind.high.value in (
+        kept.value_kind,
+        folded.value_kind,
+    )
+    value_kind = VariableValueKind.high.value if is_high else VariableValueKind.low.value
+    return _ContextFacts(
+        value_kind=value_kind,
+        observed_count=max(kept.observed_count, folded.observed_count, distinct_seen),
+        values=sample_variable_values(merged, value_kind),
+    )
+
+
+def _reconcile_pending_variable_contexts(
+    session: Session,
+    *,
+    source: Event,
+    target: Event,
+    pending: PendingVariableContexts,
+    cardinality_threshold: int,
+) -> None:
+    """Carry contexts this run has only RECORDED, not yet written, onto the target.
+
+    ``generate_events`` records a context into an in-memory map the moment it
+    materialises a planned event, and inserts the whole map long after this pass
+    has run. A context recorded for an event this pass then deletes has no row
+    for ``_move_variable_contexts`` to re-point — it is a dict entry naming an id
+    that no longer exists — and ``insert_variable_contexts`` wrote
+    ``context["event_id"]`` out unconditionally, so the flush violated
+    ``variable_values_event_id_fkey`` and took the whole ``collect_metrics`` /
+    ``run_scan`` job down with an opaque ``IntegrityError`` (tripl-gsum).
+
+    A trailing catch-all rule is the natural way to provoke it: the planner
+    matches group rules against RAW warehouse values, this pass re-matches the
+    SAME rules against the STORED field values, and those by then hold the group
+    name and the ``/pattern/`` override literal the first match wrote — so a
+    broad ``^/`` or ``.*`` rule re-matches every group event the specific rules
+    just produced.
+
+    Dropping the entries would stop the crash and silently lose the run's
+    observations: the surviving event may have been minted by
+    ``_create_group_event_from_source`` inside this very pass, so it appears in
+    no plan, nothing else records a context for it, and a later scan does not
+    bring the values back either. They are reconciled instead, under the three
+    cases ``_move_variable_contexts`` applies to the rows already stored.
+
+    Doing it BEFORE ``preserve_existing_variable_context_values`` is what keeps
+    the two halves consistent: that reads the database after this pass, so a row
+    ``_move_variable_contexts`` just moved onto the target folds into the entry
+    moved here instead of colliding with it on ``uq_variable_value_context``.
+    """
+    moved = [key for key in pending if key[1] == source.id]
+    if not moved:
+        return
+
+    target_values = {fv.field_definition_id: fv.value for fv in target.field_values}
+    variables = {
+        variable.id: variable
+        for variable in session.execute(
+            select(Variable).where(Variable.id.in_({variable_id for variable_id, _, _ in moved}))
+        ).scalars()
+    }
+
+    for key in moved:
+        variable_id, _, field_definition_id = key
+        context = pending.pop(key)
+        if not _target_value_names_variable(
+            variables.get(variable_id), target_values.get(field_definition_id)
+        ):
+            continue
+
+        target_key = (variable_id, target.id, field_definition_id)
+        prior = pending.get(target_key)
+        if prior is None:
+            context["event_id"] = target.id
+            pending[target_key] = context
+            continue
+
+        folded = _fold_context_facts(
+            _ContextFacts(
+                value_kind=str(prior["value_kind"]),
+                observed_count=int(prior["observed_count"]),
+                values=list(prior["values"] or []),
+            ),
+            _ContextFacts(
+                value_kind=str(context["value_kind"]),
+                observed_count=int(context["observed_count"]),
+                values=list(context["values"] or []),
+            ),
+            cardinality_threshold=cardinality_threshold,
+        )
+        prior["value_kind"] = folded.value_kind
+        prior["observed_count"] = folded.observed_count
+        prior["values"] = folded.values
+
+
+def _move_variable_contexts(
+    session: Session,
+    *,
+    source: Event,
+    target: Event,
+    cardinality_threshold: int,
+) -> None:
     """Carry the source's observed variable contexts onto the surviving event.
 
     A ``VariableValue`` says "this event field's value references ``${var}``, and
@@ -406,24 +617,23 @@ def _move_variable_contexts(session: Session, *, source: Event, target: Event) -
 
     Three cases, in the order the code takes them:
 
-    * **the target's value no longer names the variable** — drop the context.
-      Group rules can replace a field value wholesale
-      (``field_value_overrides``), and a context migrated onto a literal would
-      assert a reference that is not there. Attribution uses the same "any of the
-      variable's tokens" rule as ``record_variable_contexts``, so a display name
-      that was slugged away from its raw path still matches through
-      ``source_name``/``bindings``;
-    * **the target already has a context for that (variable, field)** — fold,
-      then delete the source row. ``uq_variable_value_context`` is the bare
-      ``(variable_id, event_id, field_definition_id)``, so a blanket
-      ``UPDATE ... SET event_id`` would raise on the second row instead. The fold
-      is the one ``record_variable_contexts`` already performs when two rows
-      collapse to one event: keep the larger ``observed_count``, let ``high``
-      win the kind, and union the sampled values under the same cap;
+    * **the target's value no longer names the variable** — drop the context;
+      see ``_target_value_names_variable`` for why a migrated context can stop
+      being true at all;
+    * **the target already has a context for that (variable, field)** — fold
+      through ``_fold_context_facts``, then delete the source row.
+      ``uq_variable_value_context`` is the bare ``(variable_id, event_id,
+      field_definition_id)``, so a blanket ``UPDATE ... SET event_id`` would
+      raise on the second row instead;
     * **otherwise** — re-point it.
 
     Target-wins-then-fold matches ``_move_event_tags`` and
     ``_move_event_meta_values`` directly above.
+
+    This handles only rows that already EXIST. Contexts the current run recorded
+    in memory and has not inserted yet name an event id that is about to
+    disappear and reach no query here at all; those are
+    ``_reconcile_pending_variable_contexts``' job, under the same three cases.
     """
     contexts = list(
         session.execute(select(VariableValue).where(VariableValue.event_id == source.id)).scalars()
@@ -446,10 +656,9 @@ def _move_variable_contexts(session: Session, *, source: Event, target: Event) -
     }
 
     for context in contexts:
-        variable = variables.get(context.variable_id)
-        target_value = target_values.get(context.field_definition_id)
-        tokens = VariableIndex.tokens_of(variable) if variable is not None else []
-        if target_value is None or not any(f"${{{token}}}" in target_value for token in tokens):
+        if not _target_value_names_variable(
+            variables.get(context.variable_id), target_values.get(context.field_definition_id)
+        ):
             session.delete(context)
             continue
 
@@ -459,13 +668,22 @@ def _move_variable_contexts(session: Session, *, source: Event, target: Event) -
             existing[(context.variable_id, context.field_definition_id)] = context
             continue
 
-        prior.observed_count = max(prior.observed_count, context.observed_count)
-        if context.value_kind == VariableValueKind.high.value:
-            prior.value_kind = VariableValueKind.high.value
-        prior.values = sample_variable_values(
-            [*(prior.values or []), *(context.values or [])],
-            prior.value_kind,
+        folded = _fold_context_facts(
+            _ContextFacts(
+                value_kind=prior.value_kind,
+                observed_count=prior.observed_count,
+                values=list(prior.values or []),
+            ),
+            _ContextFacts(
+                value_kind=context.value_kind,
+                observed_count=context.observed_count,
+                values=list(context.values or []),
+            ),
+            cardinality_threshold=cardinality_threshold,
         )
+        prior.value_kind = folded.value_kind
+        prior.observed_count = folded.observed_count
+        prior.values = folded.values
         session.delete(context)
 
 

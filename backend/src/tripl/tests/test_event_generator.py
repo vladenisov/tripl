@@ -3304,9 +3304,11 @@ def test_group_merge_folds_colliding_contexts_instead_of_violating_the_unique_co
 ):
     # uq_variable_value_context is the bare (variable_id, event_id,
     # field_definition_id), so a blanket ``UPDATE ... SET event_id`` would raise
-    # on the second row. The fold is the one record_variable_contexts already
-    # performs when two rows collapse onto one event: larger observed_count,
-    # ``high`` wins the kind, union of the sampled values.
+    # on the second row. This pins the easy half of ``_fold_context_facts``:
+    # ``high`` on either side wins the kind and neither side's samples are
+    # dropped. The columns it decides from BOTH sides — threshold demotion and
+    # the union's size as the count — are pinned by the two tests at the end of
+    # this module, where the lists are long enough for either to bite.
     project, et, fds = project_and_type
     variable = _add_variable(sync_session, project, name="variant", binding="screen")
     # The group event already exists, so it — not a freshly created row — is the
@@ -4173,3 +4175,246 @@ def test_group_merge_repoints_an_open_ticket_and_leaves_a_closed_one(
     closed = sync_session.get(ImplementationTicket, closed_ticket.id)
     assert closed is not None
     assert closed.event_ids == [str(source.id)], "history is not rewritten"
+
+
+# --- contexts recorded before the merge that deletes their event (tripl-gsum) ---
+
+
+_CATCH_ALL_AFTER_SPECIFIC_RULES = [
+    {
+        "name": "Clicks",
+        "condition_logic": "all",
+        "conditions": [{"field": "action", "pattern": "^click$"}],
+    },
+    {
+        # The trailing catch-all every grouped config grows: specific rules
+        # first, then one broad rule for the rest. It matches NO raw warehouse
+        # value here — neither "click" nor "view" starts with "/" — so the
+        # planner never reaches it. What it does match is the "/^click$/"
+        # override literal the first rule wrote, which is what the merge pass
+        # re-reads, and that is the whole non-idempotence.
+        "name": "Everything",
+        "condition_logic": "all",
+        "conditions": [{"field": "action", "pattern": "^/"}],
+    },
+]
+
+
+def test_a_rule_matching_an_earlier_rules_output_keeps_this_runs_observations(
+    sync_session: Session, project_and_type
+):
+    """A merge that deletes an event this run just recorded contexts for.
+
+    ``generate_events`` records contexts into an in-memory map keyed on
+    ``event.id`` and inserts them AFTER the merge pass, which can
+    ``session.delete`` one of those events. Unfixed, the insert writes the dead
+    id and the flush raises ``IntegrityError`` on
+    ``variable_values_event_id_fkey`` — the whole scan job, not one event.
+
+    Dropping the entry instead would be silent loss, which is why the assertion
+    below is about the group event's OBSERVATIONS and not about the absence of an
+    exception: "Everything" is minted inside the merge pass itself, appears in no
+    plan, and is therefore an event nothing else will ever record a context for.
+    """
+    project, et, fds = project_and_type
+    cardinality = {
+        "screen": CardinalityResult(
+            column=ColumnInfo("screen", "String"),
+            count=5000,
+            is_low=False,
+            sample_values=[f"/users/{i}/profile" for i in range(200)],
+        ),
+        "action": CardinalityResult(
+            column=ColumnInfo("action", "String"),
+            count=2,
+            is_low=True,
+            sample_values=["click", "view"],
+        ),
+    }
+    result = generate_events(
+        sync_session,
+        project.id,
+        et.id,
+        _make_analysis(cardinality),
+        fds,
+        event_group_rules=_CATCH_ALL_AFTER_SPECIFIC_RULES,
+    )
+    sync_session.commit()
+
+    # Pinned so the test cannot pass by the second rule quietly ceasing to match:
+    # two events planned, one of them merged away by the catch-all.
+    assert result.events_created == 2
+    assert result.events_merged == 1
+
+    events = list(
+        sync_session.execute(select(Event).where(Event.project_id == project.id)).scalars()
+    )
+    identities = {event.source_name for event in events}
+    assert "Everything" in identities
+    assert "Clicks" not in identities, "the catch-all swallowed the specific group"
+
+    contexts = _contexts(sync_session, project.id)
+    live_event_ids = {event.id for event in events}
+    # THE disable-the-fix assertion. Unfixed this never runs — the flush above
+    # raises first — but it is what stays true if the engine ever stops enforcing
+    # the foreign key: a context naming the deleted "Clicks" row.
+    assert {context.event_id for context in contexts} <= live_event_ids
+
+    group = next(event for event in events if event.source_name == "Everything")
+    group_contexts = [context for context in contexts if context.event_id == group.id]
+    assert len(group_contexts) == 1, "the merged-away event's observation followed its volume"
+    assert group_contexts[0].field_definition_id == fds["screen"].id
+    assert group_contexts[0].value_kind == "high"
+    assert group_contexts[0].observed_count == 200
+    assert len(group_contexts[0].values) == VARIABLE_VALUE_SAMPLE_LIMIT
+    # Both surviving events report a written row; neither is the empty list a
+    # dropped entry would have left behind.
+    assert result.variable_values_written == 2
+
+
+# --- folding two stored contexts decides every column from both sides (tripl-3rex) ---
+
+
+def test_group_merge_demotes_a_fold_that_crosses_the_cardinality_threshold(
+    sync_session: Session, project_and_type
+):
+    """Two ``low`` rows whose union is no longer an enumeration.
+
+    ``low`` means "fewer distinct values than the threshold" and renders as an
+    "All values" badge, so a fold that carries the row past the threshold has to
+    demote it — and only ``high`` rows are trimmed, so leaving it ``low`` parked
+    an uncapped over-threshold list behind that badge.
+    """
+    project, et, fds = project_and_type
+    variable = _add_variable(sync_session, project, name="variant", binding="screen")
+    target = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click events",
+        screen="${variant}",
+        action="/^click:/",
+        order=0,
+    )
+    _add_context(
+        sync_session,
+        project,
+        variable,
+        target,
+        fds["screen"],
+        values=[f"t{i}" for i in range(30)],
+        count=30,
+        kind="low",
+    )
+    source = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click:one",
+        screen="${variant}",
+        action="click:one",
+        order=1,
+    )
+    _add_context(
+        sync_session,
+        project,
+        variable,
+        source,
+        fds["screen"],
+        values=[f"s{i}" for i in range(30)],
+        count=30,
+        kind="low",
+    )
+    sync_session.commit()
+
+    merged = merge_existing_events_for_group_rules(
+        sync_session,
+        project_id=project.id,
+        event_type_ids=[et.id],
+        event_group_rules=_CLICK_GROUP_RULE,
+        # Passed rather than defaulted, so the threading from the caller is under
+        # test too: a project that lowered the bound gets the demotion it asked
+        # for, not the module's fallback of 100.
+        cardinality_threshold=50,
+    )
+    sync_session.commit()
+
+    assert merged == 1
+    (folded,) = _contexts(sync_session, project.id)
+    assert folded.event_id == target.id
+    assert folded.value_kind == "high", "60 distinct values is not an enumeration under 50"
+    assert folded.observed_count == 60, "counted before the trim, not after"
+    assert len(folded.values) == VARIABLE_VALUE_SAMPLE_LIMIT
+
+
+def test_group_merge_counts_the_union_even_when_the_fold_stays_an_enumeration(
+    sync_session: Session, project_and_type
+):
+    """The count is the union's size, not the larger of the two stored counts.
+
+    Same two rows under the default threshold: the fold is still an exact
+    enumeration and keeps every value, so ``observed_count`` is the only column
+    that moves — and a row whose stored count sits below the values it holds is
+    exactly what the replay sink then has to correct on some later tick.
+    """
+    project, et, fds = project_and_type
+    variable = _add_variable(sync_session, project, name="variant", binding="screen")
+    target = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click events",
+        screen="${variant}",
+        action="/^click:/",
+        order=0,
+    )
+    _add_context(
+        sync_session,
+        project,
+        variable,
+        target,
+        fds["screen"],
+        values=[f"t{i}" for i in range(30)],
+        count=30,
+        kind="low",
+    )
+    source = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click:one",
+        screen="${variant}",
+        action="click:one",
+        order=1,
+    )
+    _add_context(
+        sync_session,
+        project,
+        variable,
+        source,
+        fds["screen"],
+        values=[f"s{i}" for i in range(30)],
+        count=30,
+        kind="low",
+    )
+    sync_session.commit()
+
+    merged = merge_existing_events_for_group_rules(
+        sync_session,
+        project_id=project.id,
+        event_type_ids=[et.id],
+        event_group_rules=_CLICK_GROUP_RULE,
+        # Left at DEFAULT_CARDINALITY_THRESHOLD on purpose: 60 distinct values
+        # sit under it, so nothing demotes and the count is the sole change.
+    )
+    sync_session.commit()
+
+    assert merged == 1
+    (folded,) = _contexts(sync_session, project.id)
+    assert folded.value_kind == "low"
+    assert len(folded.values) == 60, "a low row is an exact enumeration and is never trimmed"
+    assert folded.observed_count == 60

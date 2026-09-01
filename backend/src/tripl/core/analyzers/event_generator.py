@@ -34,6 +34,7 @@ from tripl.core.analyzers._event_generator_merge import (
     merge_existing_events_for_group_rules,
 )
 from tripl.core.analyzers._event_generator_variables import (
+    PendingVariableContexts,
     VariableObservation,
 )
 from tripl.core.analyzers._event_generator_variables import (
@@ -245,7 +246,10 @@ def generate_events(
     ).scalar_one()
     next_event_order = 0 if next_event_order is None else int(next_event_order) + 1
     logger.info(f"Loaded {len(existing_by_identity)} existing events for dedup")
-    variable_contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]] = {}
+    # Keyed on ``event.id`` before any of those rows exist, which is why the
+    # merge pass below has to be handed it: the ids are the run's own, not the
+    # database's yet.
+    variable_contexts: PendingVariableContexts = {}
     # ``(event_id, field_definition_id)`` pairs whose stored value this run
     # actually rewrote. Only those can invalidate an existing variable context.
     rewritten_fields: set[tuple[uuid.UUID, uuid.UUID]] = set()
@@ -326,6 +330,15 @@ def generate_events(
         event_group_rules=event_group_rules,
         field_definitions=field_definitions,
         next_event_order=next_event_order,
+        cardinality_threshold=cardinality_threshold,
+        # The merge pass can DELETE an event whose contexts the loop above has
+        # already recorded — rule application is not idempotent across the two
+        # value spaces, so a trailing catch-all rule re-matches the group events
+        # the specific rules just produced. Handing the map over lets the pass
+        # carry those entries onto the surviving event; without it they were
+        # inserted below against a deleted id and the flush killed the job on
+        # ``variable_values_event_id_fkey`` (tripl-gsum).
+        pending_variable_contexts=variable_contexts,
     )
     prior_context_values = _preserve_existing_variable_context_values(
         session,

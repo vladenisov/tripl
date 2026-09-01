@@ -233,8 +233,19 @@ Exclusion keeps a lightweight tombstone:
 A scan creates a variable for every placeholder it detects. On a JSON column
 whose keys are user-typed text — a map rather than a struct — that once meant a
 permanent plan row per key. Every catalog run now ends by deleting the
-scan-created variables that nothing refers to any more. The sweep works on
-`main`, where scans write; the copies on an open working branch are left alone.
+scan-created variables that nothing refers to any more: a scan you start by
+hand and a **scheduled monitoring collection** alike. Both create variables, and
+the catalog that grows a row per free-text key is the one being collected every
+hour rather than the one somebody remembers to scan, so the sweep has to run
+where the growth is.
+
+A **metrics replay** is the exception, deliberately. A replay does not sync the
+catalog at all — it recomputes counts over a past window and creates no events
+or variables — so it never sees which paths your rows currently carry and is in
+no position to call a variable unused. It leaves every variable alone.
+
+The sweep works on `main`, where scans write; the copies on an open working
+branch are left alone.
 
 A variable is retired only when **all** of the following are true:
 

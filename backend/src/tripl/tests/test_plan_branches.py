@@ -26,7 +26,8 @@ from tripl.models.user import User
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.models.variable_value import VariableValue
-from tripl.services._plan_branch_renames import pair_renames
+from tripl.services._plan_branch_renames import pair_renames, rekey_in_place
+from tripl.services.plan_branch_merge_service import _RENAME_STAGING_PREFIX
 from tripl.services.plan_revision_service import (
     build_plan_snapshot,
     plan_snapshot_hash,
@@ -2329,6 +2330,164 @@ async def test_merge_of_a_renamed_variable_succeeds_and_keeps_its_contexts(
         assert contexts[0].observed_count == 3
 
 
+async def _seed_main_variables(slug: str, sources_by_name: dict[str, str]) -> dict[str, uuid.UUID]:
+    """Put one main variable per ``name -> source_name``; return source_name -> id.
+
+    Keying the result by source_name is the point of these tests: it is the one
+    identity a rename does not move, so it is what the assertions can hold on to
+    while every name shifts underneath.
+    """
+    async with TestSessionLocal() as session:
+        project = (
+            (await session.execute(select(Project).where(Project.slug == slug))).scalars().first()
+        )
+        main_branch = (
+            (
+                await session.execute(
+                    select(PlanBranch).where(
+                        PlanBranch.project_id == project.id, PlanBranch.name == "main"
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        for name, source_name in sources_by_name.items():
+            session.add(
+                Variable(
+                    id=uuid.uuid4(),
+                    project_id=project.id,
+                    branch_id=main_branch.id,
+                    name=name,
+                    source_name=source_name,
+                )
+            )
+        await session.commit()
+        rows = (
+            (await session.execute(select(Variable).where(Variable.branch_id == main_branch.id)))
+            .scalars()
+            .all()
+        )
+        return {v.source_name: v.id for v in rows}
+
+
+async def _rename_branch_variables(branch_id: uuid.UUID, names_by_source: dict[str, str]) -> None:
+    """Give each branch variable the name keyed by its source_name.
+
+    A permutation of names needs a parking value even here: the merge trips over
+    ``uq_variable_project_name`` precisely because it is non-deferrable, and the
+    same constraint refuses an in-place exchange in the branch. That the setup
+    has to dodge it is itself the evidence the merge could not.
+    """
+    async with TestSessionLocal() as session:
+        rows = {
+            v.source_name: v
+            for v in (
+                await session.execute(select(Variable).where(Variable.branch_id == branch_id))
+            )
+            .scalars()
+            .all()
+        }
+        for variable in rows.values():
+            variable.name = f"parked_{uuid.uuid4().hex}"
+        await session.flush()
+        for source_name, new_name in names_by_source.items():
+            rows[source_name].name = new_name
+        await session.commit()
+
+
+async def _main_variables_by_source(main_branch_id: uuid.UUID) -> dict[str, Variable]:
+    async with TestSessionLocal() as session:
+        return {
+            v.source_name: v
+            for v in (
+                await session.execute(select(Variable).where(Variable.branch_id == main_branch_id))
+            )
+            .scalars()
+            .all()
+        }
+
+
+@pytest.mark.asyncio
+async def test_merge_of_two_variables_whose_names_were_swapped(client: AsyncClient) -> None:
+    """A swap is two renames, and a name-keyed diff cannot see either of them.
+
+    ``update_variable`` writes ``name`` and never ``source_name`` — ``VariableUpdate``
+    has no such field — while the branch deep copy carries main's ``source_name``
+    onto the branch row. So a branch can legitimately hold two variables whose
+    NAMES are swapped relative to their SOURCE_NAMES, and by name nothing was
+    added and nothing removed: the pairing had no would-delete and no
+    would-insert to work from, and paired nothing. The upsert then matched each
+    branch row to the main row already wearing its new name and wrote that row's
+    ``source_name`` onto it, inside one flush, against a non-deferrable
+    ``UNIQUE (project_id, branch_id, source_name)``. The IntegrityError reached
+    the client as a bare 500 and the branch stayed unmergeable until someone
+    renamed a row by hand (tripl-htcz).
+    """
+    await _seed_plan(client, "merge-swap-variables")
+    main_ids = await _seed_main_variables(
+        "merge-swap-variables",
+        {"cart_total": "cart_total_raw", "cart_count": "cart_count_raw"},
+    )
+
+    branch_id = await _create_branch(client, "merge-swap-variables")
+    await _rename_branch_variables(
+        uuid.UUID(branch_id),
+        {"cart_total_raw": "cart_count", "cart_count_raw": "cart_total"},
+    )
+
+    resp = await _approve_and_merge(client, "merge-swap-variables", branch_id)
+    assert resp.status_code == 200, resp.text
+
+    merged = await _main_variables_by_source(await _main_branch_id())
+    assert len(merged) == 2
+    # The names moved, the scan identities stayed put, and each identity is still
+    # on the row id its ``variable_values`` hang off.
+    assert merged["cart_total_raw"].name == "cart_count"
+    assert merged["cart_total_raw"].id == main_ids["cart_total_raw"]
+    assert merged["cart_count_raw"].name == "cart_total"
+    assert merged["cart_count_raw"].id == main_ids["cart_count_raw"]
+
+
+@pytest.mark.asyncio
+async def test_merge_of_three_variables_rotated_through_each_others_names(
+    client: AsyncClient,
+) -> None:
+    """The longer form of the same shape, and the one a swap-only fix would miss.
+
+    A rotation leaves the branch's set of names identical to main's exactly as a
+    swap does, so it paired nothing either; unlike a swap it cannot be settled by
+    "when two rows collide, exchange them". The moves have to be applied as the
+    permutation they are — through a parking name — or one of the three UPDATEs
+    always lands on a name another main row still holds (tripl-htcz).
+    """
+    await _seed_plan(client, "merge-rotate-variables")
+    main_ids = await _seed_main_variables(
+        "merge-rotate-variables",
+        {"variant": "variant_raw", "bucket": "bucket_raw", "cohort": "cohort_raw"},
+    )
+
+    branch_id = await _create_branch(client, "merge-rotate-variables")
+    await _rename_branch_variables(
+        uuid.UUID(branch_id),
+        {"variant_raw": "bucket", "bucket_raw": "cohort", "cohort_raw": "variant"},
+    )
+
+    resp = await _approve_and_merge(client, "merge-rotate-variables", branch_id)
+    assert resp.status_code == 200, resp.text
+
+    merged = await _main_variables_by_source(await _main_branch_id())
+    assert {source: v.name for source, v in merged.items()} == {
+        "variant_raw": "bucket",
+        "bucket_raw": "cohort",
+        "cohort_raw": "variant",
+    }
+    assert {source: v.id for source, v in merged.items()} == main_ids
+    # The parking name exists only between two flushes inside the merge's own
+    # transaction; a row still wearing one means the second pass never ran.
+    assert all(not v.name.startswith(_RENAME_STAGING_PREFIX) for v in merged.values())
+
+
 @pytest.mark.asyncio
 async def test_merge_still_removes_a_deleted_event_beside_an_unrelated_addition(
     client: AsyncClient,
@@ -2460,6 +2619,64 @@ def test_pair_renames_reads_a_move_to_another_event_type_as_what_it_is() -> None
         {("identify", "purchase:success"): "purchase_success_raw"},
     )
     assert renames == {}
+
+
+# --- pair_renames: the cycles a name-keyed diff could not see (tripl-htcz) ---
+
+
+def test_pair_renames_pairs_a_two_row_swap_as_the_two_renames_it_is() -> None:
+    """No name enters or leaves the branch, so nothing looks moved by name."""
+    unchanged = {("variant",): "variant_raw", ("bucket",): "bucket_raw"}
+    renames = pair_renames(
+        unchanged,
+        unchanged,
+        {("bucket",): "variant_raw", ("variant",): "bucket_raw"},
+    )
+    assert renames == {("variant",): ("bucket",), ("bucket",): ("variant",)}
+
+
+def test_pair_renames_pairs_a_rotation_of_three() -> None:
+    """The result is a permutation, which is why callers re-key all at once."""
+    unchanged = {("a",): "a_raw", ("b",): "b_raw", ("c",): "c_raw"}
+    renames = pair_renames(
+        unchanged,
+        unchanged,
+        {("b",): "a_raw", ("c",): "b_raw", ("a",): "c_raw"},
+    )
+    assert renames == {("a",): ("b",), ("b",): ("c",), ("c",): ("a",)}
+
+
+def test_pair_renames_refuses_a_move_onto_a_name_a_staying_row_still_holds() -> None:
+    """Main grew its own 'bucket' while the branch renamed 'variant' into it.
+
+    Honouring the rename would put two main rows on one name, so this stays a
+    delete plus an insert and conflict detection keeps its say. An occupied
+    destination is only harmless when its occupant is itself moving away, which
+    is exactly what makes the swap above legal and this illegal.
+    """
+    renames = pair_renames(
+        {("variant",): "variant_raw"},
+        {("variant",): "variant_raw", ("bucket",): "bucket_raw"},
+        {("bucket",): "variant_raw"},
+    )
+    assert renames == {}
+
+
+def test_pair_renames_leaves_a_row_missing_from_the_base_unpaired() -> None:
+    """A rename moves a row that existed when the branch was cut, not any row."""
+    renames = pair_renames(
+        {},
+        {("variant",): "variant_raw"},
+        {("bucket",): "variant_raw"},
+    )
+    assert renames == {}
+
+
+def test_rekey_in_place_moves_a_whole_cycle_without_fusing_two_rows() -> None:
+    """One pair at a time, the first move's row is read straight back as the second's."""
+    rows = {"variant": "row_for_variant", "bucket": "row_for_bucket"}
+    rekey_in_place(rows, {"variant": "bucket", "bucket": "variant"})
+    assert rows == {"bucket": "row_for_variant", "variant": "row_for_bucket"}
 
 
 # --- merge policy: min approvals + self-approval guard (tripl-s8t0) ---------

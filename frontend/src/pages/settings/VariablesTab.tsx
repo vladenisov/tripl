@@ -8,6 +8,7 @@ import { variableOverridesApi } from "@/api/variableOverrides"
 import { useActiveBranchId } from "@/hooks/useBranch"
 import type { Variable, VariableType } from "@/types"
 import { useConfirm } from "@/hooks/useConfirm"
+import { useDebouncedValue } from "@/hooks/useDebouncedValue"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
@@ -36,6 +37,17 @@ const isValidBinding = (value: string) => BINDING_PATTERN.test(value)
 // seconds (tripl-jfm3.49) — one page keeps the DOM and every re-render bounded.
 const PAGE_SIZE = 50
 const LOADING_SKELETON_ROWS = 6
+
+// Events offered in the per-event override picker at once. The roster used to
+// be fetched with no params at all, which inherited the endpoint's own default
+// of 200 and left every event past it unreachable — no search, no note, and
+// "Accept for this event" only reaches events that already carry a drift
+// (tripl-46am). The cap is small on purpose now that the search below is
+// server-side: /events returns full list rows (tags, field values, meta
+// values), so pulling thousands into a dialog to avoid typing is the wrong
+// trade. Anything not in the page is one search away, and the count of what is
+// missing is printed rather than hidden.
+const OVERRIDE_EVENT_PAGE_SIZE = 100
 
 const VARIABLE_TYPES: VariableType[] = ['string', 'number', 'boolean', 'date', 'datetime', 'json', 'string_array', 'number_array']
 const TYPE_LABELS: Record<VariableType, string> = {
@@ -141,7 +153,17 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const [editDescription, setEditDescription] = useState('')
   const [editAllowedValues, setEditAllowedValues] = useState<string[]>([])
   const [editBindings, setEditBindings] = useState<string[]>([])
-  const [overrideEventId, setOverrideEventId] = useState('')
+  // The picked event, NOT a bare id. The roster is one searched page of a
+  // catalog that can run to thousands, so an id alone is not enough to render
+  // the selection: Edit on an override whose event sits outside the page set an
+  // id no <option> carried and the select painted BLANK while Save stayed
+  // enabled (tripl-46am). Carrying the name the event was picked under — from
+  // the override row, or from the roster option — means the picker can always
+  // show what is selected, whatever the search is currently narrowed to. The
+  // name is stored RAW; eventNameLabel is applied where it is painted, so a
+  // blank-named event still reads "(unnamed event)" (tripl-wkwv.5).
+  const [overrideEvent, setOverrideEvent] = useState<{ id: string; name: string } | null>(null)
+  const [overrideEventSearch, setOverrideEventSearch] = useState('')
   const [overrideValues, setOverrideValues] = useState<string[]>([])
   const [showResolvedDrifts, setShowResolvedDrifts] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -209,18 +231,44 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     enabled: !!editingVar,
   })
 
+  // Searched SERVER-side, the way the alert-rule event picker already does it
+  // (pages/alerting/FilterEditor.tsx useEventOptions): the backend matches name,
+  // description and source_name with an ILIKE, so any event in the catalog is
+  // reachable by typing part of its name. Narrowing here instead would only
+  // re-filter the page the server already truncated, which is the defect
+  // (tripl-46am). `keepPreviousData` holds the current options while the next
+  // search lands, so the select does not flicker empty on every keystroke.
+  const debouncedOverrideEventSearch = useDebouncedValue(overrideEventSearch)
   const { data: eventsList } = useQuery({
-    queryKey: ['events', slug, branchId, 'override-picker'],
-    queryFn: () => eventsApi.list(slug, undefined, branchId),
+    queryKey: ['events', slug, branchId, 'override-picker', debouncedOverrideEventSearch],
+    queryFn: () => eventsApi.list(
+      slug,
+      { search: debouncedOverrideEventSearch || undefined, limit: OVERRIDE_EVENT_PAGE_SIZE, offset: 0 },
+      branchId,
+    ),
     enabled: !!editingVar,
+    placeholderData: keepPreviousData,
   })
+  const rosterEvents = useMemo(() => eventsList?.items ?? [], [eventsList])
+  // What the search did not return. The variables table above prints exactly
+  // this note for its own truncation; the picker printed nothing at all, so an
+  // operator had no way to tell a short list from a complete one (tripl-46am).
+  const hiddenEventCount = Math.max(0, (eventsList?.total ?? 0) - rosterEvents.length)
+  // The selected event is prepended when the search does not hold it, so Edit on
+  // an out-of-roster override shows that event rather than a blank select — and
+  // a selection survives retyping the search.
+  const pickerEvents = useMemo<{ id: string; name: string }[]>(() => {
+    const roster = rosterEvents.map(event => ({ id: event.id, name: event.name }))
+    if (!overrideEvent || roster.some(event => event.id === overrideEvent.id)) return roster
+    return [overrideEvent, ...roster]
+  }, [overrideEvent, rosterEvents])
 
   const overrideUpsertMut = useMutation({
     mutationFn: ({ eventId, values }: { eventId: string; values: string[] }) =>
       variableOverridesApi.upsert(slug, editingVar!.id, eventId, values, branchId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['variable-overrides', slug, branchId, editingVar?.id] })
-      setOverrideEventId(''); setOverrideValues([])
+      setOverrideEvent(null); setOverrideValues([])
     },
   })
 
@@ -381,7 +429,10 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     setEditDescription(v.description)
     setEditAllowedValues(v.allowed_values ?? [])
     setEditBindings(v.bindings ?? [])
-    setOverrideEventId('')
+    setOverrideEvent(null)
+    // The dialog is reused for every variable, so a search left over from the
+    // last one would silently narrow this variable's roster too.
+    setOverrideEventSearch('')
     setOverrideValues([])
     setShowResolvedDrifts(false)
   })
@@ -422,6 +473,36 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   )
   const goToPage = (next: number) =>
     setPickedPage({ focusId, page: Math.min(Math.max(0, next), pageCount - 1) })
+
+  /** Runs a control that changes WHICH ROWS MATCH, and drops the selection with
+   * it.
+   *
+   * Selection deliberately spans every matching row rather than the page on
+   * screen, so once the match set moves the selected ids can be rows nobody can
+   * see or name. The usage-filter buttons cleared the selection; the filter
+   * text box did not (tripl-42en). Filter "checkout", tick select-all, retype
+   * to "payment": the table showed only payment rows, all unticked, and the
+   * bulk bar still said "12 selected". Delete confirmed with a bare count and
+   * destroyed the twelve checkout variables, cascading their value contexts and
+   * drifts — the ids were still loaded client-side, so nothing 404'd and no
+   * toast fired. Set type, Set description and Add values hit the same
+   * invisible rows.
+   *
+   * CLEARING, not intersecting with the visible rows: an intersection would
+   * make refining a filter and then broadening it silently DROP selections the
+   * operator never deselected, which is the same invisibility defect pointed
+   * the other way. Pagination is deliberately NOT routed through here — it
+   * changes which matching rows are painted, not which rows match, and
+   * selecting across pages is the reason this table has a select-all at all.
+   *
+   * One helper rather than a line repeated per control: the bug was a guard
+   * copy-pasted onto one of two controls, so the invariant lives in one place
+   * where a third control cannot forget it. */
+  const changeMatchSet = (apply: () => void) => {
+    apply()
+    setSelectedIds(new Set())
+    goToPage(0)
+  }
 
   // Scroll the linked row into view once it is on screen. Keyed on focusId too,
   // so following a second link — to a variable already visible — scrolls to it
@@ -624,8 +705,14 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                             {/* Without the placeholder these read "Edit override for " and
                                 "Delete override for " — a trailing space and nothing else,
                                 the same defect EventRow fixed on the events list
-                                (tripl-wkwv.5). */}
-                            <Button type="button" variant="ghost" size="icon" className="h-6 w-6" aria-label={`Edit override for ${eventNameLabel(override.event_name)}`} onClick={() => { setOverrideEventId(override.event_id); setOverrideValues(override.values) }}>
+                                (tripl-wkwv.5).
+
+                                Edit hands the picker the event NAME as well as the id,
+                                both straight off this override row. The event is often
+                                absent from the roster page below — an override outlives
+                                whatever the picker is searched to — and a bare id left
+                                the select blank with Save still enabled (tripl-46am). */}
+                            <Button type="button" variant="ghost" size="icon" className="h-6 w-6" aria-label={`Edit override for ${eventNameLabel(override.event_name)}`} onClick={() => { setOverrideEvent({ id: override.event_id, name: override.event_name }); setOverrideValues(override.values) }}>
                               <Pencil className="h-3 w-3" aria-hidden="true" />
                             </Button>
                             <Button type="button" variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-destructive" aria-label={`Delete override for ${eventNameLabel(override.event_name)}`} onClick={() => overrideDeleteMut.mutate(override.event_id)}>
@@ -637,23 +724,43 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                     </ul>
                   )}
                   <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)_auto] sm:items-start">
-                    <select
-                      aria-label="Override event"
-                      value={overrideEventId}
-                      onChange={e => setOverrideEventId(e.target.value)}
-                      className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
-                    >
-                      <option value="">Select event…</option>
-                      {/* A native <option> takes its accessible name from its text
-                          content, so a blank-named event was a selectable row with
-                          no name at all — indistinguishable from a rendering glitch
-                          in the list, and announced as nothing (tripl-wkwv.5). */}
-                      {(eventsList?.items ?? []).map(event => (
-                        <option key={event.id} value={event.id}>{eventNameLabel(event.name)}</option>
-                      ))}
-                    </select>
+                    <div className="grid gap-1">
+                      <Input
+                        aria-label="Search events"
+                        className="h-8 text-sm"
+                        placeholder="Search events…"
+                        value={overrideEventSearch}
+                        onChange={e => setOverrideEventSearch(e.target.value)}
+                      />
+                      <select
+                        aria-label="Override event"
+                        value={overrideEvent?.id ?? ''}
+                        onChange={e => {
+                          const picked = pickerEvents.find(event => event.id === e.target.value)
+                          setOverrideEvent(picked ?? null)
+                        }}
+                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                      >
+                        <option value="">Select event…</option>
+                        {/* A native <option> takes its accessible name from its text
+                            content, so a blank-named event was a selectable row with
+                            no name at all — indistinguishable from a rendering glitch
+                            in the list, and announced as nothing (tripl-wkwv.5). */}
+                        {pickerEvents.map(event => (
+                          <option key={event.id} value={event.id}>{eventNameLabel(event.name)}</option>
+                        ))}
+                      </select>
+                      {hiddenEventCount > 0 && (
+                        // Say what is missing rather than presenting a truncated
+                        // roster as the whole catalog (tripl-46am) — the same note
+                        // the variables table prints for its own truncation.
+                        <p className="text-[11px] text-muted-foreground">
+                          {hiddenEventCount} more not listed — search to narrow.
+                        </p>
+                      )}
+                    </div>
                     <ChipListInput values={overrideValues} onChange={setOverrideValues} placeholder="Values for this event" ariaLabel="Add override value" />
-                    <Button type="button" size="sm" disabled={!overrideEventId || overrideUpsertMut.isPending} onClick={() => overrideUpsertMut.mutate({ eventId: overrideEventId, values: overrideValues })}>
+                    <Button type="button" size="sm" disabled={!overrideEvent || overrideUpsertMut.isPending} onClick={() => { if (overrideEvent) overrideUpsertMut.mutate({ eventId: overrideEvent.id, values: overrideValues }) }}>
                       Save override
                     </Button>
                   </div>
@@ -747,7 +854,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                   className="h-8 max-w-64"
                   placeholder="Filter by name, path or description…"
                   value={filterText}
-                  onChange={e => { setFilterText(e.target.value); goToPage(0) }}
+                  onChange={e => changeMatchSet(() => setFilterText(e.target.value))}
                 />
                 <div className="flex items-center gap-1" role="group" aria-label="Filter by usage">
                   {USAGE_FILTERS.map(option => (
@@ -758,11 +865,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                       variant={usageFilter === option.value ? 'secondary' : 'ghost'}
                       className="h-7 px-2 text-xs"
                       aria-pressed={usageFilter === option.value}
-                      onClick={() => {
-                        setUsageFilter(option.value)
-                        setSelectedIds(new Set())
-                        goToPage(0)
-                      }}
+                      onClick={() => changeMatchSet(() => setUsageFilter(option.value))}
                     >
                       {option.label}
                     </Button>

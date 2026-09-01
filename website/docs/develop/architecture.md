@@ -336,7 +336,12 @@ photos, comments) and merge back via a
 6. The run retires the scan-created variables nothing refers to any more
    (`worker/variable_sweep`), after the commit and before the search reindex, so
    the reindex sees the retired set and a later failure cannot roll the
-   deletions back.
+   deletions back. **Both** worker call sites do this — `run_scan` and the
+   scheduled `collect_metrics`, whose Phase 1 mints variables through this same
+   pipeline. A metrics **replay** does not: it skips catalog sync entirely, so
+   it holds no fresh evidence about which paths a row still carries and is in no
+   position to call a variable unused. The sweep is gated on the same
+   `is_replay` that already guards the sync and the reindex (tripl-bh1q).
 7. `ScanJob.result_summary` is filled in for the UI.
 
 Steps 4 and 5 are two modules, not one. `core/analyzers/event_plan.plan_events`
@@ -415,9 +420,14 @@ session — so `reserved_catalog_columns` can be reused verbatim on it.
    recorded falls behind the current interval boundary — so a run that found an
    empty window still counts as progress and waits for the next boundary instead
    of being re-dispatched on every 300 s tick.
-3. Counts are aggregated into `event_metrics`.
-4. Anomalies are recalculated into `metric_anomalies`.
-5. Matching alert rules enqueue deliveries.
+3. Phase 1 syncs the event catalog through the scan pipeline, so a scheduled
+   collection creates events and variables exactly as a manual scan does — and
+   for that reason closes the phase with the variable sweep of the scan flow's
+   step 6, then the reindex. A replay skips this whole phase and both of its
+   tails.
+4. Counts are aggregated into `event_metrics`.
+5. Anomalies are recalculated into `metric_anomalies`.
+6. Matching alert rules enqueue deliveries.
 
 ### Catalog metric flow
 

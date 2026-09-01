@@ -242,12 +242,17 @@ by the data path it binds to.
 Every catalog run ends by **retiring the scan-created variables nothing refers
 to any more** — no `${token}` in any stored event field or meta value, no
 observed context, no value drift, no per-event override — so a catalog stops
-accumulating rows minted from a JSON column keyed by free text. The pass is
-deliberately narrow: an edited description, a hand-added binding, documented
-values, an override, drift triage, or an **Exclude from scans** tombstone each
-keep the row, and a variable the run has just created is always still
-referenced by that run's own event values. When a run retires anything it says
-so in its [details list](#scan-runs).
+accumulating rows minted from a JSON column keyed by free text. This covers a
+scan you start by hand **and** a scheduled monitoring collection, which syncs
+the catalog and creates variables the same way. A **metrics replay** is the one
+run that does not sweep: it syncs no catalog, so it has no current view of which
+paths your rows carry and never judges a variable unused.
+
+The pass is deliberately narrow: an edited description, a hand-added binding,
+documented values, an override, drift triage, or an **Exclude from scans**
+tombstone each keep the row, and a variable the run has just created is always
+still referenced by that run's own event values. When a run retires anything it
+says so in its [details list](#scan-runs).
 
 An **All / In use / Unused** control filters the table by that same rule.
 **Unused** is answered by the server with the retirement predicate itself rather

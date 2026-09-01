@@ -9,7 +9,10 @@ from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.core.adapters.base import ColumnInfo, FieldContractViolation
-from tripl.core.analyzers._event_generator_variables import VariableIndex
+from tripl.core.analyzers._event_generator_variables import (
+    SCAN_PROVENANCE_DESCRIPTION,
+    VariableIndex,
+)
 from tripl.core.analyzers.event_generator import GenerationResult
 from tripl.models import Base
 from tripl.models.alert_delivery import AlertDelivery
@@ -9237,3 +9240,174 @@ def test_replay_run_summary_does_not_gain_the_scheduled_sampler_keys(
         "variable_contexts_unfilled",
     ):
         assert key not in result
+
+
+def _seed_scan_created_variable(
+    session: Session,
+    config: ScanConfig,
+    *,
+    source_name: str,
+) -> Variable:
+    """A variable in exactly the state a scan leaves behind, and nothing else.
+
+    The provenance description is the ONLY marker the model carries — there is
+    no ``created_by`` column — so a row without it reads as ``user_edited`` to
+    the retirement predicate and can never be swept. That is why the other
+    variables this module seeds are untouched by the sweep below:
+    ``_seed_json_path_variable`` leaves ``description`` at its ``""`` default.
+    """
+    variable = Variable(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        name=source_name.rpartition(".")[2],
+        source_name=source_name,
+        description=SCAN_PROVENANCE_DESCRIPTION,
+        variable_type="string",
+        bindings=[source_name],
+    )
+    session.add(variable)
+    session.commit()
+    return variable
+
+
+def _seed_event_value_naming(session: Session, config: ScanConfig, *, token: str) -> None:
+    """One stored event field value holding ``${token}`` — the reference check's input."""
+    assert config.event_type_id is not None
+    field = FieldDefinition(
+        id=uuid.uuid4(),
+        event_type_id=config.event_type_id,
+        name=f"field_{token}",
+        display_name="Field",
+        field_type="string",
+        is_required=False,
+        description="",
+    )
+    event = Event(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        event_type_id=config.event_type_id,
+        name=f"Uses {token}",
+        description="",
+        status="implemented",
+    )
+    session.add_all([field, event])
+    session.flush()
+    session.add(
+        EventFieldValue(
+            id=uuid.uuid4(),
+            event_id=event.id,
+            field_definition_id=field.id,
+            value=f"${{{token}}}",
+        )
+    )
+    session.commit()
+
+
+def test_scheduled_collection_retires_the_variables_nothing_refers_to(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """tripl-bh1q: the path that mints variables on a schedule must also sweep them.
+
+    ``run_scan`` — the MANUALLY triggered path — was the sweep's only worker call
+    site, while the production shape the sweep was written for (a JSON map column
+    keyed by user-typed text) is collected hourly by this task and scanned by
+    hand approximately never. So the catalog every user-facing doc promises
+    self-heals only ever grew, one permanent row per key.
+
+    Both variables here carry the scan's provenance description, so the only
+    thing separating them is USE: ``plan`` still has its ``${token}`` in a stored
+    event field value, ``adana`` is the fossil of a key that stopped arriving.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        fossil = _seed_scan_created_variable(session, config, source_name="payload.user.adana")
+        live = _seed_scan_created_variable(session, config, source_name="payload.user.plan")
+        _seed_event_value_naming(session, config, token="plan")
+        config_id = str(config.id)
+        project_id = config.project_id
+        fossil_id = fossil.id
+        live_id = live.id
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: _SamplingFakeAdapter())
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        metrics,
+        "generate_events",
+        lambda *args, **kwargs: GenerationResult(columns_analyzed=1),
+    )
+
+    result = metrics.collect_metrics.run(config_id)
+
+    # DISABLE-THE-FIX: delete the ``retire_unused_variables`` call from
+    # ``collect_metrics`` and this reads 0 and the row below is still there —
+    # which is the state production was found in.
+    assert result["variables_retired"] == 1
+    with sync_session_factory() as session:
+        surviving = set(
+            session.execute(select(Variable.id).where(Variable.project_id == project_id)).scalars()
+        )
+    assert fossil_id not in surviving
+    # The predicate, not a blanket delete: a live ``${token}`` keeps its row.
+    assert live_id in surviving
+    # And the run says so where an operator reads it, in ``run_scan``'s words.
+    details = result["details"]
+    assert isinstance(details, list)
+    assert "Retired 1 unused variables no event refers to" in details
+
+
+def test_replay_does_not_retire_variables(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A replay skips catalog sync, so it must never judge which variables are unused.
+
+    ``sync_catalog`` does not run on a replay — no cardinality analysis, no
+    generation — so the run holds no fresh evidence about which paths a row
+    still carries, and its window is historical by definition. Sweeping there
+    would delete on the strength of a scan that did not happen. The gate is the
+    same ``is_replay`` that already guards the catalog sync and the reindex.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        job = ScanJob(
+            id=uuid.uuid4(),
+            scan_config_id=config.id,
+            status=ScanJobStatus.pending.value,
+        )
+        session.add(job)
+        session.commit()
+        fossil = _seed_scan_created_variable(session, config, source_name="payload.user.adana")
+        config_id = str(config.id)
+        job_id = str(job.id)
+        fossil_id = fossil.id
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: _SamplingFakeAdapter())
+    monkeypatch.setattr(
+        metrics,
+        "analyze_cardinality",
+        lambda *args, **kwargs: pytest.fail("replay must not run cardinality analysis"),
+    )
+    monkeypatch.setattr(
+        metrics,
+        "generate_events",
+        lambda *args, **kwargs: pytest.fail("replay must not sync catalog events"),
+    )
+
+    result = metrics.collect_metrics.run(
+        config_id,
+        job_id,
+        time_from="2026-01-01T08:00:00+00:00",
+        time_to="2026-01-01T10:00:00+00:00",
+    )
+
+    assert result["mode"] == "metrics_replay"
+    # The unreferenced row a scheduled run would take survives a replay.
+    with sync_session_factory() as session:
+        assert session.get(Variable, fossil_id) is not None
+    # ABSENT, not zero. A ``0`` here would read as "swept, found nothing" rather
+    # than "did not sweep" — precisely how ``variable_values_touched`` reading 0
+    # on every scheduled run hid the 2026-08-31 stall for weeks.
+    assert "variables_retired" not in result
