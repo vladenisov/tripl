@@ -332,6 +332,7 @@ def generate_events(
         project_id=project_id,
         branch_id=main_branch_id,
         contexts=variable_contexts,
+        cardinality_threshold=cardinality_threshold,
     )
     _delete_variable_contexts_for_event_type(
         session,

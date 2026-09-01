@@ -183,6 +183,15 @@ export function JobDetails({
               {summary.distribution_drifts != null && (
                 <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.distribution_drifts}</div><div className="text-muted-foreground">Distribution rows</div></Card>
               )}
+              {summary.json_paths_sampled != null && (
+                <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.json_paths_sampled}</div><div className="text-muted-foreground">Paths sampled</div></Card>
+              )}
+              {summary.variable_values_written != null && (
+                <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.variable_values_written}</div><div className="text-muted-foreground">Values written</div></Card>
+              )}
+              {summary.variable_contexts_unfilled != null && (
+                <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.variable_contexts_unfilled}</div><div className="text-muted-foreground">Contexts unfilled</div></Card>
+              )}
               {summary.signals_added != null && (
                 <Card className="p-3 text-center">
                   <div>

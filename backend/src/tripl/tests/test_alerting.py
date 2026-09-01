@@ -4424,6 +4424,8 @@ def _seed_alert_delivery(
     dispatch_attempts: int = 0,
     error_message: str | None = None,
     updated_at: datetime | None = None,
+    channel: str = "webhook",
+    destination_enabled: bool = True,
 ) -> uuid.UUID:
     """Create the minimal Project/ScanConfig/Destination/Rule graph plus one
     AlertDelivery, returning the delivery id. Used by the reaper tests.
@@ -4458,9 +4460,9 @@ def _seed_alert_delivery(
     destination = AlertDestination(
         id=uuid.uuid4(),
         project_id=project.id,
-        type="webhook",
+        type=channel,
         name="Reaper Hook",
-        enabled=True,
+        enabled=destination_enabled,
         target_url_encrypted="https://example.com/hook",
     )
     rule = AlertRule(
@@ -4480,7 +4482,7 @@ def _seed_alert_delivery(
         scan_config_id=scan_config.id,
         destination_id=destination.id,
         rule_id=rule.id,
-        channel="webhook",
+        channel=channel,
         status=status,
         matched_count=1,
         dispatch_attempts=dispatch_attempts,
@@ -4599,11 +4601,80 @@ def test_requeue_auto_retries_recent_transient_failed_delivery(
     with sync_session_factory() as session:
         delivery = session.get(AlertDelivery, failed_id)
         assert delivery is not None
-        # The attempt is recorded, but the row stays honest about its last
-        # failure: status and error text only change once the send succeeds.
+        # The attempt is recorded and the row is handed to the pending arm
+        # (single-flight: this arm's WHERE no longer matches it, and the
+        # manual Retry endpoint 409s on a non-failed row while the attempt is
+        # queued). The error text is KEPT until the queued send resolves.
         assert delivery.dispatch_attempts == 1
-        assert delivery.status == AlertDeliveryStatus.failed.value
+        assert delivery.status == AlertDeliveryStatus.pending.value
         assert delivery.error_message == _TRANSIENT_SEND_ERROR
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+def test_requeue_auto_retry_leaves_ticket_channels_and_disabled_destinations_alone(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Two rows the failed arm must never touch, however transient the error.
+
+    A Jira/Linear create is not idempotent — an after-send timeout leaves no
+    external id in the snapshot, so an automatic re-run would mint a duplicate
+    ticket per attempt; only a human who can check the tracker may retry. And
+    a destination the operator disabled mid-incident has to stay silent, or
+    the reaper re-sends the very rows they watched fail and switched off.
+    """
+    from tripl.worker.tasks import maintenance
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'reaper.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+
+    now = datetime.now(UTC)
+    with sync_session_factory() as session:
+        jira_id = _seed_alert_delivery(
+            session,
+            status="failed",
+            created_at=now - timedelta(hours=1),
+            dispatch_attempts=0,
+            error_message=_TRANSIENT_SEND_ERROR,
+            updated_at=now,
+            channel="jira",
+        )
+        disabled_id = _seed_alert_delivery(
+            session,
+            status="failed",
+            created_at=now - timedelta(hours=1),
+            dispatch_attempts=0,
+            error_message=_TRANSIENT_SEND_ERROR,
+            updated_at=now,
+            destination_enabled=False,
+        )
+
+    monkeypatch.setattr(maintenance, "_get_sync_session", sync_session_factory)
+
+    enqueued: list[str] = []
+    from tripl.worker.tasks import alerts as alerts_module
+
+    monkeypatch.setattr(
+        alerts_module.send_alert_delivery,
+        "delay",
+        lambda delivery_id: enqueued.append(delivery_id),
+    )
+
+    result = maintenance.requeue_stranded_alert_deliveries.run()
+
+    assert result["auto_retried"] == 0
+    assert enqueued == []
+
+    with sync_session_factory() as session:
+        for delivery_id in (jira_id, disabled_id):
+            delivery = session.get(AlertDelivery, delivery_id)
+            assert delivery is not None
+            assert delivery.status == AlertDeliveryStatus.failed.value
+            assert delivery.dispatch_attempts == 0
+            assert delivery.error_message == _TRANSIENT_SEND_ERROR
 
     Base.metadata.drop_all(engine)
     engine.dispose()

@@ -43,6 +43,7 @@ from tripl.models.project_anomaly_settings import (
 )
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
+from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
 from tripl.services import app_settings_service
 from tripl.worker.celery_app import celery_app
@@ -917,18 +918,27 @@ def collect_metrics(
                 variable_values_written += single_result.variable_values_written
             # Counted AFTER the sync so it reads what this run left behind: one
             # aggregate on ix_variable_values_project_branch, falling run over
-            # run as the project converges. Flat while the ring is non-empty is
-            # the stall the sampler counters make diagnosable. Scoped like the
-            # candidate query: the main plan, which is all catalog sync writes
-            # (``main_branch_id`` may be None only while no branch exists, and
-            # then no context rows exist either).
+            # run as the sampler converges. Flat while the ring is non-empty is
+            # the stall these counters make diagnosable. Excluded variables'
+            # stranded contexts are left out — the sampler may never fill them,
+            # so counting them would give the number a permanent floor that
+            # reads as a backlog. The rest is deliberately WIDER than the
+            # candidate ring: the count is project-wide (main plan — the only
+            # plan catalog sync writes; ``main_branch_id`` may be None only
+            # while no branch exists, and then no context rows exist either)
+            # and includes plain-column contexts and sibling configs' columns,
+            # so every config of a project reports the same figure and a
+            # genuinely-empty column keeps it above zero. It is a convergence
+            # gauge, not a promise of reaching zero.
             variable_contexts_unfilled = session.execute(
                 select(sa_func.count())
                 .select_from(VariableValue)
+                .join(Variable, VariableValue.variable_id == Variable.id)
                 .where(
                     VariableValue.project_id == config.project_id,
                     VariableValue.branch_id == main_branch_id(session, config.project_id),
                     VariableValue.observed_count == 0,
+                    Variable.excluded_from_scans.is_(False),
                 )
             ).scalar_one()
             result_summary.update(

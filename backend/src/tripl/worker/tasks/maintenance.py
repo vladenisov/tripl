@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, select
 
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
+from tripl.models.alert_destination import AlertDestination, AlertDestinationType
 from tripl.models.schema_drift import SchemaDrift
 from tripl.services.schema_drift_service import DRIFT_RETENTION_DAYS
 from tripl.worker.celery_app import celery_app
@@ -77,13 +78,15 @@ def requeue_stranded_alert_deliveries() -> dict[str, object]:
     attempts are exhausted the delivery is marked failed so it stops cycling.
 
     Failed arm: a delivery that recently failed on a transient network error
-    (``is_transient_send_error`` over the persisted ``error_message``) is
-    re-enqueued within the same attempt budget, with its status and error
-    left in place. Pacing: this task runs on a 5-minute beat (see
-    ``celery_app.beat_schedule``) and every attempt refreshes ``updated_at``,
-    so a delivery gets roughly one retry per tick — a blip is retried up to
-    ``MAX_DISPATCH_ATTEMPTS`` times about 5 minutes apart, then left failed
-    for the manual Retry button.
+    (``is_transient_send_error`` over the persisted ``error_message``) is sent
+    back to `pending` — keeping its error text — and re-enqueued within the
+    same attempt budget. Ticket channels (Jira/Linear) and disabled
+    destinations are never auto-retried. Pacing: this task runs on a 5-minute
+    beat (see ``celery_app.beat_schedule``), each failure refreshes
+    ``updated_at``, and the pending flip makes every requeue single-flight —
+    a blip is retried up to ``MAX_DISPATCH_ATTEMPTS`` times a few minutes
+    apart, then left failed for the manual Retry button, which resets the
+    budget.
     """
     # Deferred import to avoid a circular import at module load: alerts ->
     # celery_app -> (beat registers tasks) and maintenance both import the app.
@@ -111,10 +114,14 @@ def requeue_stranded_alert_deliveries() -> dict[str, object]:
         for delivery in stranded:
             if delivery.dispatch_attempts >= MAX_DISPATCH_ATTEMPTS:
                 delivery.status = AlertDeliveryStatus.failed.value
-                delivery.error_message = (
-                    f"Stranded in pending: exhausted {MAX_DISPATCH_ATTEMPTS} "
-                    "redispatch attempts without delivery."
-                )
+                # Only when nothing better is known: a row the failed arm
+                # below sent back to pending carries its real send error, and
+                # relabeling it "stranded" would erase the actual cause.
+                if delivery.error_message is None:
+                    delivery.error_message = (
+                        f"Stranded in pending: exhausted {MAX_DISPATCH_ATTEMPTS} "
+                        "redispatch attempts without delivery."
+                    )
                 exhausted.append(str(delivery.id))
                 continue
             delivery.dispatch_attempts += 1
@@ -122,10 +129,28 @@ def requeue_stranded_alert_deliveries() -> dict[str, object]:
 
         recent_failed = (
             session.execute(
-                select(AlertDelivery).where(
+                select(AlertDelivery)
+                .join(AlertDestination, AlertDelivery.destination_id == AlertDestination.id)
+                .where(
                     AlertDelivery.status == AlertDeliveryStatus.failed.value,
                     AlertDelivery.updated_at >= retry_cutoff,
                     AlertDelivery.dispatch_attempts < MAX_DISPATCH_ATTEMPTS,
+                    # Ticket channels are excluded: a Jira/Linear create is not
+                    # idempotent, and a timeout AFTER the tracker accepted the
+                    # request leaves no external id in the snapshot, so an
+                    # automatic re-run would mint a duplicate ticket per
+                    # attempt. A human pressing Retry can check the tracker
+                    # first; this arm cannot.
+                    AlertDelivery.channel.notin_(
+                        (
+                            AlertDestinationType.jira.value,
+                            AlertDestinationType.linear.value,
+                        )
+                    ),
+                    # A destination the operator disabled mid-incident stays
+                    # silent: auto-retrying rows they watched fail and then
+                    # switched off would re-send through a toggle that says off.
+                    AlertDestination.enabled.is_(True),
                 )
             )
             .scalars()
@@ -137,14 +162,18 @@ def requeue_stranded_alert_deliveries() -> dict[str, object]:
             # in Python, so this filter cannot live in the WHERE clause above.
             if not is_transient_send_error(delivery.error_message):
                 continue
-            # Status stays `failed` and ``error_message`` is kept: the row
-            # stays honest about its last failure between attempts, and
-            # ``send_alert_delivery`` only short-circuits on `sent`, so it
-            # processes a failed row and flips it to sent on success. The
-            # manual Retry flips to `pending` instead — it resets the budget
-            # and *wants* the pending reaper as its backstop. This arm IS the
-            # reaper; a pending flip would hand the row to the stranded arm
-            # above, whose exhaustion message would then lie about the cause.
+            # Flipped to `pending` so exactly one arm owns the row at a time:
+            # a row this tick enqueued no longer matches this arm's WHERE on
+            # the next tick (single-flight), and the manual Retry endpoint —
+            # which accepts only `failed` rows — 409s while an automatic
+            # attempt is queued, closing the operator-vs-reaper double-send
+            # race. If the enqueue below is lost, the stranded arm above is
+            # the backstop, exactly as it is for a manual retry. The error
+            # text is deliberately KEPT (the manual path clears it): until the
+            # queued attempt resolves, the last failure is still the truest
+            # thing known about this row, and the exhaustion relabel above
+            # now leaves an existing message alone.
+            delivery.status = AlertDeliveryStatus.pending.value
             delivery.dispatch_attempts += 1
             to_auto_retry.append(str(delivery.id))
 

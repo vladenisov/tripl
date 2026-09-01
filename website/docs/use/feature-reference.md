@@ -1028,10 +1028,11 @@ a scan card.
 Every counter the run reported is still there, verbatim, behind **Show raw
 counters**: *Events created*, *Variables created*, *Events skipped*, *Columns
 analyzed*, *Event breakdowns*, *Distribution rows*, *Signals added*, *Alerts
-queued*. Nothing was removed — the sentences lead, the counters follow. A
-scheduled run's raw job details also record its variable-value sampling sweep —
-how many still-unobserved paths it attempted this run — operator-facing job
-data rather than a report sentence.
+queued* — and, on a scheduled run, the variable-value sampling sweep: *Paths
+sampled* (how many still-unobserved paths this run attempted), *Values
+written* (contexts whose stored values it changed), and *Contexts unfilled*
+(what remains to fill, falling run over run as sampling converges). Nothing
+was removed — the sentences lead, the counters follow.
 
 ### Audit log
 

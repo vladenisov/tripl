@@ -283,6 +283,7 @@ def preserve_existing_variable_context_values(
     project_id: uuid.UUID,
     branch_id: uuid.UUID | None,
     contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]],
+    cardinality_threshold: int = 100,
 ) -> dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], list[str]]:
     """Fold every stored row into the planned context about to replace it.
 
@@ -367,11 +368,16 @@ def preserve_existing_variable_context_values(
                 VariableValueKind.low.value,
             )
             distinct_seen = len(merged)
-            # Outgrowing the sample cap is itself a demotion — a capped list
-            # cannot claim "All values" — and it has to be decided BEFORE the
-            # cap, because ``sample_variable_values`` trims only high rows.
+            # The demotion bound is the cardinality THRESHOLD, not the sample
+            # cap: a low row is an exact enumeration and legitimately holds up
+            # to the threshold's worth of values untrimmed — the replay sink
+            # (generation.py's low branch) spells out why trimming it to the
+            # sample cap makes the "All values" badge lie. Demoting at the cap
+            # here rewrote every 21..100-value enumeration as a 20-value
+            # sample on its first rescan. Decided BEFORE any trim, because
+            # ``sample_variable_values`` trims only high rows.
             if (
-                distinct_seen > VARIABLE_VALUE_SAMPLE_LIMIT
+                distinct_seen > cardinality_threshold
                 or existing.value_kind == VariableValueKind.high.value
             ):
                 context["value_kind"] = VariableValueKind.high.value

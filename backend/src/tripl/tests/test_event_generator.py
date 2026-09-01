@@ -477,15 +477,18 @@ class TestEventGeneration:
         assert context.observed_count == 5
         assert context.value_kind == "high"
 
-    def test_merge_past_the_sample_cap_trims_values_but_not_the_count(
+    def test_merge_past_the_sample_cap_keeps_a_low_enumeration_intact(
         self, sync_session: Session, project_and_type
     ):
-        """Outgrowing the sample cap demotes the context; the count stays uncapped.
+        """A low row is an exact enumeration: the sample cap must not trim it.
 
-        ``values`` is what the UI can show, ``observed_count`` is how many
-        distinct values were seen — the same split the metrics sink keeps. A
-        capped list can no longer claim "All values", so the row leaves ``low``
-        even though neither side alone was anywhere near the cap.
+        Low legitimately holds up to the cardinality threshold's worth of
+        values untrimmed — the popover renders it as "All values", and the
+        replay sink documents why trimming it to the sample cap makes that
+        badge lie. So a merge that outgrows the CAP but not the THRESHOLD
+        keeps every value and stays low; demoting at the cap here rewrote
+        every 21..100-value enumeration as a 20-value sample on its first
+        rescan.
         """
         project, et, fds = project_and_type
         variable = Variable(
@@ -544,13 +547,41 @@ class TestEventGeneration:
         )
 
         context = contexts[key]
-        assert context["values"] == [*existing_values, "w0", "w1"]
-        assert len(context["values"]) == VARIABLE_VALUE_SAMPLE_LIMIT
+        assert context["values"] == [*existing_values, "w0", "w1", "w2"]
+        assert len(context["values"]) == VARIABLE_VALUE_SAMPLE_LIMIT + 1
         assert context["observed_count"] == VARIABLE_VALUE_SAMPLE_LIMIT + 1
-        assert context["value_kind"] == "high"
+        assert context["value_kind"] == "low"
         # The snapshot is the PRE-merge stored list — what the write counter
         # compares the re-inserted row against.
         assert prior == {key: existing_values}
+
+        # Crossing the cardinality THRESHOLD is what demotes: rerun the same
+        # merge with the threshold forced down to the cap — now the union's
+        # 21 distinct values outgrow an exact enumeration, the row leaves
+        # ``low``, the list trims to the sample cap, and the count keeps the
+        # uncapped truth. Same fixtures, so the two boundaries are compared
+        # on identical data.
+        contexts[key] = {
+            "variable_id": variable.id,
+            "event_id": event.id,
+            "field_definition_id": fds["screen"].id,
+            "source_column": "screen",
+            "value_kind": "low",
+            "observed_count": len(incoming),
+            "values": list(incoming),
+        }
+        preserve_existing_variable_context_values(
+            sync_session,
+            project_id=project.id,
+            branch_id=None,
+            contexts=contexts,
+            cardinality_threshold=VARIABLE_VALUE_SAMPLE_LIMIT,
+        )
+        demoted = contexts[key]
+        assert demoted["values"] == [*existing_values, "w0", "w1"]
+        assert len(demoted["values"]) == VARIABLE_VALUE_SAMPLE_LIMIT
+        assert demoted["observed_count"] == VARIABLE_VALUE_SAMPLE_LIMIT + 1
+        assert demoted["value_kind"] == "high"
 
     def test_variable_values_written_counts_only_new_or_changed_rows(
         self, sync_session: Session, project_and_type

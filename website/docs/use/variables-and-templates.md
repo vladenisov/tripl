@@ -47,9 +47,11 @@ tripl deliberately keeps two kinds of value list separate:
   JSON path to be high-cardinality however few values it returned. Samples
   **accumulate**: re-sampling a path merges what the run saw into the stored
   list instead of replacing it, so a value observed once stays on record even
-  when later scan windows no longer contain it. The stored list is capped — a
-  context whose merged list outgrows the cap stops keeping the full list and
-  behaves as high-cardinality from then on.
+  when later scan windows no longer contain it. An exact enumeration stays
+  exact: a low-cardinality context keeps every value through a merge until the
+  union outgrows the cardinality threshold, and only then does it stop keeping
+  the full list and behave as high-cardinality — whose stored list is a capped
+  sample — from then on.
 
 A **context** is one (variable, event, field) pairing — the record that this
 event's field refers to this variable through that binding. The context and the
