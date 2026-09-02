@@ -12,14 +12,17 @@ import inspect
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
+from tripl_cli.api import events, monitoring, search
+from tripl_cli.api import variables as variables_api
 from tripl_cli.api.endpoints import ALL_TEMPLATES
 from tripl_cli.client import API_PREFIX
 
 import tripl_mcp
 from tripl_mcp.contract import TOOL_ENDPOINTS
+from tripl_mcp.enums import EventOrderBy, EventStatus, SearchEntityType
 from tripl_mcp.server import build_server
 
 OPENAPI_PATH = Path(__file__).resolve().parents[2] / "backend" / "openapi.json"
@@ -34,14 +37,69 @@ SHARED_RESPONSE_KEYS = frozenset(
     {"items", "total", "truncated", "semantic_used", "field_definitions"}
 )
 
+# Every tool parameter the backend constrains to a closed set, as
+# (tool, parameter, where the DOCUMENT declares it). The third item is read by
+# ``_document_enum``: a query parameter on one of that tool's own endpoints, or
+# a property of its request body. The paths are ``tripl_cli.api``'s constants,
+# the same ones ``TOOL_ENDPOINTS`` names, so this map cannot point at a route
+# the tool does not call.
+#
+# Adding a row here is what mirroring a new enum LOOKS like; the completeness
+# test below is what makes leaving one out fail (tripl-i0vd).
+CLOSED_SET_PARAMETERS: tuple[tuple[str, str, tuple[str, str, str, str]], ...] = (
+    ("list_events", "status", ("query", "get", events.LIST, "status")),
+    ("list_events", "order_by", ("query", "get", events.LIST, "order_by")),
+    ("search_plan", "types", ("query", "get", search.SEARCH, "types")),
+    ("create_event", "status", ("body", "post", events.LIST, "status")),
+)
+
+# Closed sets that a wrapped route declares and NO tool parameter mirrors, each
+# with the reason. Keyed by (path, kind, name). An entry here is a decision
+# about the tool surface, not a fix for a failing test - and the test asserts
+# every one is still real, because an exemption nobody needs is a hole nobody
+# is watching.
+UNMIRRORED_CLOSED_SETS: dict[tuple[str, str, str], str] = {
+    (variables_api.LIST, "query", "usage"): (
+        "list_variables does not offer `usage` at all - the shared builder cannot spell it, so "
+        "there is no bare string here to type. website/docs/integrate/mcp-server.md says so and "
+        "points at raw REST for `usage=unused`"
+    ),
+    (monitoring.SHADOW_EVENTS, "query", "status"): (
+        "reconciliation_status takes only `slug` and merges three routes; the shadow-event "
+        "triage states belong to the accept/dismiss workflow this toolset deliberately "
+        "withholds (see 'Deliberately not exposed in v1')"
+    ),
+    (events.DETAIL, "body", "status"): (
+        "update_event carries a free-form `patch` object rather than named fields, so no "
+        "parameter exists to annotate. Splitting `patch` into typed arguments is a change to "
+        "the tool surface and to what a partial update MEANS, not a type annotation"
+    ),
+}
+
 
 @pytest.fixture(scope="module")
-def openapi_paths() -> dict[str, Any]:
+def openapi() -> dict[str, Any]:
     assert OPENAPI_PATH.exists(), (
         f"Committed OpenAPI snapshot missing at {OPENAPI_PATH}; the contract test cannot run."
     )
-    spec = json.loads(OPENAPI_PATH.read_text())
-    return dict(spec["paths"])
+    document: dict[str, Any] = json.loads(OPENAPI_PATH.read_text())
+    return document
+
+
+@pytest.fixture(scope="module")
+def openapi_paths(openapi: dict[str, Any]) -> dict[str, Any]:
+    return dict(openapi["paths"])
+
+
+@pytest.fixture(scope="module")
+def tool_schemas() -> dict[str, dict[str, Any]]:
+    """The REAL input schema of every registered tool, as a client receives it.
+
+    Built from ``build_server()`` rather than from the annotations, because the
+    annotation is not the artefact under test: what an agent is held to is the
+    JSON schema FastMCP derives from it.
+    """
+    return {tool.name: dict(tool.inputSchema) for tool in asyncio.run(build_server().list_tools())}
 
 
 def test_every_wrapped_endpoint_exists_in_openapi(
@@ -114,6 +172,214 @@ def test_list_events_exposes_every_filter_the_shared_builder_accepts() -> None:
     assert not missing, (
         "tripl_cli.api.events.list_events can send filters list_events does not expose, "
         f"so no agent can reach them: {missing}"
+    )
+
+
+def _resolve(openapi: dict[str, Any], schema: Any) -> dict[str, Any]:
+    """Follow ``$ref`` into ``components.schemas``; anything else passes through.
+
+    Bounded rather than a ``while True``: a malformed document should fail this
+    test, not hang the job.
+    """
+    for _ in range(8):
+        if not (isinstance(schema, dict) and "$ref" in schema):
+            break
+        prefix, _, name = schema["$ref"].rpartition("/")
+        # The POINTER PREFIX is checked, not discarded. This helper is handed
+        # FastMCP-generated tool schemas as well as the document's own, and
+        # pydantic emits ``#/$defs/X``. Taking only the last segment would resolve
+        # such a ref into the BACKEND's components, so a parameter typed as a real
+        # StrEnum rather than a Literal would have both sides of the comparison
+        # read the same backend schema and the assertion would pass for any code
+        # at all. Fail loudly instead.
+        assert prefix == "#/components/schemas", (
+            f"{schema['$ref']} is not a ref into this document — resolving it here would "
+            "read the backend's own schema for BOTH sides of the comparison"
+        )
+        schema = ((openapi.get("components") or {}).get("schemas") or {}).get(name)
+    return schema if isinstance(schema, dict) else {}
+
+
+def _enum_members(openapi: dict[str, Any], schema: Any) -> tuple[str, ...]:
+    """The closed set a schema pins its value to, or ``()``.
+
+    Reaches through every wrapper either side of this comparison emits, which is
+    the whole reason it exists: an optional parameter arrives as
+    ``anyOf: [X, {"type": "null"}]``, a repeatable one as an array whose
+    ``items`` carry the enum, and the document names ``EventStatus`` by ``$ref``
+    where the tool schema inlines it. A naive lookup finds no ``enum`` on any of
+    those four and the assertion below would pass by reading nothing from both
+    sides at once.
+    """
+    schema = _resolve(openapi, schema)
+    if "enum" in schema:
+        return tuple(schema["enum"])
+    for branch in schema.get("anyOf", []):
+        members = _enum_members(openapi, branch)
+        if members:
+            return members
+    return _enum_members(openapi, schema["items"]) if isinstance(schema.get("items"), dict) else ()
+
+
+def _body_model(openapi: dict[str, Any], operation: dict[str, Any]) -> dict[str, Any]:
+    content = ((operation.get("requestBody") or {}).get("content") or {}).get("application/json")
+    return _resolve(openapi, (content or {}).get("schema") or {})
+
+
+def _document_enum(openapi: dict[str, Any], where: tuple[str, str, str, str]) -> tuple[str, ...]:
+    """The values the ROUTE accepts for one query parameter or body property."""
+    kind, method, path, name = where
+    operation = openapi["paths"][f"{API_PREFIX}{path}"][method]
+    if kind == "query":
+        for parameter in operation.get("parameters", []):
+            if parameter.get("name") == name and parameter.get("in") == "query":
+                return _enum_members(openapi, parameter.get("schema") or {})
+        return ()
+    properties = _body_model(openapi, operation).get("properties") or {}
+    return _enum_members(openapi, properties.get(name) or {})
+
+
+def _closed_sets_on(
+    openapi: dict[str, Any], method: str, path: str
+) -> dict[tuple[str, str], tuple[str, ...]]:
+    """Every ``(kind, name)`` one operation closes to a fixed set of values."""
+    operation = openapi["paths"][f"{API_PREFIX}{path}"][method]
+    found: dict[tuple[str, str], tuple[str, ...]] = {}
+    for parameter in operation.get("parameters", []):
+        if parameter.get("in") != "query":
+            continue
+        members = _enum_members(openapi, parameter.get("schema") or {})
+        if members:
+            found["query", parameter["name"]] = members
+    for name, schema in (_body_model(openapi, operation).get("properties") or {}).items():
+        members = _enum_members(openapi, schema)
+        if members:
+            found["body", name] = members
+    return found
+
+
+def test_every_closed_set_parameter_reaches_the_tool_schema_as_an_enum(
+    openapi: dict[str, Any], tool_schemas: dict[str, dict[str, Any]]
+) -> None:
+    """A constraint carried in prose is a constraint the client cannot enforce.
+
+    Every one of these was annotated ``str`` and described its allowed values in
+    the tool description instead, so the JSON schema said "string" and an agent
+    passing ``order_by="newest"`` paid a request to be told 422 by the route -
+    an error it then has to parse, on a value its own tool schema should never
+    have let it emit. Typed as a ``Literal``, the enum reaches the schema and
+    the rejection happens locally and for free (tripl-i0vd).
+
+    Asserted against the DOCUMENT, never against a list spelled here: a second
+    copy of an enum in a test is the drift it was written to catch. This is the
+    same rule and the same source of truth as the CLI's
+    ``test_the_declared_enums_are_the_openapi_ones``, which holds its
+    ``choices=`` to these very schemas - the argparse mirror has been pinned
+    this way for three releases and this closes the other surface.
+
+    Order-sensitive, deliberately: the tool schema's enum is what a model reads
+    when it picks a value, so it should be the document's list, not a set that
+    happens to agree.
+    """
+    wrong: list[str] = []
+    for tool, parameter, where in CLOSED_SET_PARAMETERS:
+        expected = _document_enum(openapi, where)
+        assert expected, (
+            f"read no enum at all for {tool}.{parameter} from {where} - this walk is broken, "
+            "not the tool; fix the test before trusting it"
+        )
+        properties = tool_schemas[tool].get("properties") or {}
+        assert parameter in properties, (
+            f"{tool} no longer takes a {parameter!r} argument, so this row is stale"
+        )
+        actual = _enum_members(openapi, properties[parameter])
+        if actual != expected:
+            wrong.append(
+                f"{tool}.{parameter}: the tool schema offers "
+                f"{list(actual) if actual else 'no enum at all (a bare string)'}, "
+                f"but the route accepts only {list(expected)}"
+            )
+    assert not wrong, (
+        "MCP tool parameters do not carry the closed set their route enforces, so a bad value "
+        "costs a round trip and comes back as a 422 instead of being refused by the tool "
+        "schema - annotate them with the Literals in tripl_mcp.enums:\n  " + "\n  ".join(wrong)
+    )
+
+
+def test_no_closed_set_on_a_wrapped_route_goes_unmirrored(openapi: dict[str, Any]) -> None:
+    """The map above cannot go stale behind a route that grows a new enum.
+
+    ``order_by`` was the reported symptom and ``status`` the obvious sibling, but
+    the sweep that fixed them found ``search_plan``'s ``types`` as well - eleven
+    entity kinds an agent had to guess at, with the constraint written only in
+    prose that elided most of the list. Trusting whoever adds the next filter to
+    also add it here is the discipline this file exists to replace, so the
+    routes are walked instead.
+
+    A parameter the toolset deliberately does not offer is not a defect: it is
+    named in ``UNMIRRORED_CLOSED_SETS`` with its reason, and this asserts each of
+    those is still real.
+    """
+    mirrored = {(path, kind, name) for _, _, (kind, _, path, name) in CLOSED_SET_PARAMETERS}
+    unmirrored: list[str] = []
+    honoured: set[tuple[str, str, str]] = set()
+    for tool, endpoints in TOOL_ENDPOINTS.items():
+        for method, path in endpoints:
+            for kind, name in _closed_sets_on(openapi, method, path):
+                key = (path, kind, name)
+                if key in mirrored:
+                    continue
+                if key in UNMIRRORED_CLOSED_SETS:
+                    honoured.add(key)
+                    continue
+                unmirrored.append(f"{tool}: {method.upper()} {path} {kind} {name!r}")
+    assert not unmirrored, (
+        "a route a tool wraps closes a value to a fixed set that no tool parameter mirrors - "
+        "add a Literal to tripl_mcp.enums and a row to CLOSED_SET_PARAMETERS, or record why "
+        f"the toolset withholds it in UNMIRRORED_CLOSED_SETS: {sorted(unmirrored)}"
+    )
+    assert honoured == set(UNMIRRORED_CLOSED_SETS), (
+        "an entry in UNMIRRORED_CLOSED_SETS no longer matches any route; delete it: "
+        f"{sorted(set(UNMIRRORED_CLOSED_SETS) - honoured)}"
+    )
+
+
+def test_the_mirrored_enums_are_the_cli_s_own() -> None:
+    """One route, one vocabulary - across both distributions that call it.
+
+    ``tripl_cli.api`` already transcribes these three for the CLI's ``choices=``,
+    and ``tripl_mcp.enums`` transcribes them again because a ``Literal``'s
+    members must be static: ``Literal[*events.STATUSES]`` is not a type, so no
+    import removes the second copy. What CAN be removed is the chance of the two
+    disagreeing, which is this repository's signature defect - one fact, spelled
+    once per caller - aimed at the value set an agent and an operator are held
+    to on the very same route.
+
+    The test above already pins tripl_mcp to the document, and the CLI's suite
+    pins tripl_cli to it; this asserts the two directly, so a half-mirrored
+    widening fails with a message naming both sides rather than as two unrelated
+    failures in two jobs.
+    """
+    disagree = []
+    for name, literal, shared, source in (
+        ("EventStatus", EventStatus, events.STATUSES, "api.events.STATUSES"),
+        ("EventOrderBy", EventOrderBy, events.ORDER_BY, "api.events.ORDER_BY"),
+        (
+            "SearchEntityType",
+            SearchEntityType,
+            search.ENTITY_TYPES,
+            "api.search.ENTITY_TYPES",
+        ),
+    ):
+        mirrored = get_args(literal)
+        if mirrored != tuple(shared):
+            disagree.append(
+                f"tripl_mcp.enums.{name} is {list(mirrored)} but tripl_cli.{source} "
+                f"is {list(shared)}"
+            )
+    assert not disagree, (
+        "the MCP tool schemas and the CLI's argparse choices mirror one route with two "
+        "vocabularies:\n  " + "\n  ".join(disagree)
     )
 
 
@@ -211,3 +477,53 @@ def test_write_tools_are_not_marked_read_only() -> None:
         assert tool.annotations is not None, f"{tool.name} lacks annotations"
         expected_read_only = tool.name not in write_tools
         assert tool.annotations.readOnlyHint is expected_read_only, tool.name
+
+
+DOCS_PATH = Path(__file__).resolve().parents[2] / "website" / "docs" / "integrate" / "mcp-server.md"
+
+# The three rows of the "Enumerated arguments" table, by the argument each names.
+_DOC_ENUM_ROW = re.compile(r"^\|\s*`(status|order_by|types)`\s*\|[^|]*\|(.*)\|\s*$", re.MULTILINE)
+
+
+def _documented_enum_values(argument: str) -> tuple[str, ...]:
+    """The values that table publishes for one argument, in order.
+
+    The cell is prose as well as values — the ``order_by`` row explains what each
+    choice means — so the values are read as the inline-code spans, which is what
+    a reader scans for and the only part that has to match the schema.
+    """
+    doc = DOCS_PATH.read_text(encoding="utf-8")
+    for match in _DOC_ENUM_ROW.finditer(doc):
+        if match.group(1) == argument:
+            return tuple(re.findall(r"`([a-z_0-9]+)`", match.group(2)))
+    raise AssertionError(
+        f"no row for `{argument}` in the Enumerated arguments table of {DOCS_PATH}"
+    )
+
+
+def test_the_published_enum_table_is_the_one_the_tools_carry() -> None:
+    """The docs table says it cannot drift. Nothing was making that true.
+
+    website/docs/integrate/mcp-server.md publishes the seven statuses, the two
+    order_by values and the eleven entity kinds by hand, and then tells the
+    reader they are "checked against backend/openapi.json by the MCP server's
+    contract test rather than kept in step by hand, so they cannot drift". No
+    test read that page. So the day the backend gains a status, the sibling
+    tests here go red and force `enums.py` to be updated, and the table stays
+    behind — still asserting to an integrator that it is current, which is worse
+    than a table making no promise at all.
+
+    This is the promise. The repo pins doc tables this way elsewhere
+    (cli/tests/test_contract.py for the finding codes, test_cli_constant_mirror
+    for the backoff table); the page is now held to the same rule it claims.
+    """
+    for argument, literal in (
+        ("status", EventStatus),
+        ("order_by", EventOrderBy),
+        ("types", SearchEntityType),
+    ):
+        assert _documented_enum_values(argument) == get_args(literal), (
+            f"the `{argument}` row of the Enumerated arguments table in {DOCS_PATH.name} "
+            f"no longer matches tripl_mcp.enums, which the sibling tests hold to "
+            f"backend/openapi.json — update the table"
+        )

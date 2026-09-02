@@ -200,11 +200,14 @@ export function Field({
   label: string
   hint?: string
   /**
-   * The id of the control this row's label names. `false` for a row whose
-   * content is not a labelable element — the Base query row holds a CodeMirror
-   * contenteditable that carries its own `ariaLabel`, the Preview row holds no
-   * control at all — where a `<label htmlFor>` can only dangle. Same escape
-   * hatch as the settings kit's Field (components/settings/kit.tsx).
+   * The id of the control this row's label names. `false` for any row whose
+   * content is not a labelable element, where a `<label htmlFor>` can only
+   * dangle: today the Base query row (a CodeMirror contenteditable carrying its
+   * own `ariaLabel`), the Preview row (a button and an error, no control), and
+   * the Lookback row in its no-time-column form (a sentence explaining why
+   * there is nothing to set). Stated as a rule rather than a list because
+   * tripl-otlv fixed the first two by name and tripl-6h2b then found the third.
+   * Same escape hatch as the settings kit's Field (components/settings/kit.tsx).
    */
   id?: string | false
   children: ReactNode

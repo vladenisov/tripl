@@ -316,7 +316,13 @@ describe('ScanFormSections — the mode choice', () => {
     await screen.findByText('New scan')
     fireEvent.click(screen.getByRole('button', { name: /Limits/ }))
 
-    expect(screen.queryByLabelText('Lookback (hours)')).toBeNull()
+    // Asserted on the CONTROL, not on the accessible name. This line used to read
+    // `queryByLabelText('Lookback (hours)')` and passed only because the caption was
+    // a dangling <label> naming nothing — the defect tripl-6h2b fixed. Once the row
+    // names itself as a group, ByLabelText matches that group and the old proxy
+    // reports the input as present. What the test means is that the number input is
+    // replaced by a sentence, so that is what it now says.
+    expect(screen.queryByRole('spinbutton', { name: 'Lookback (hours)' })).toBeNull()
     expect(
       screen.getByText(
         'Each run reads everything the base query returns. Pick a Time column to bound runs to a window.',
@@ -527,22 +533,32 @@ describe('ScanFormSections — field labelling', () => {
     }
   })
 
-  // Field rendered <label htmlFor={id}> unconditionally, so the two rows that
-  // pass no control id shipped a caption naming nothing: the SQL editor is a
-  // CodeMirror contenteditable that names itself with ariaLabel, and Preview is
-  // a button with no control beside it. `id={false}` exposes the caption as a
+  // Field rendered <label htmlFor={id}> unconditionally, so every row that
+  // passes no control id shipped a caption naming nothing: the SQL editor is a
+  // CodeMirror contenteditable that names itself with ariaLabel, Preview is a
+  // button with no control beside it, and Lookback drops its input entirely
+  // when no time column bounds the run. `id={false}` exposes the caption as a
   // group name instead (tripl-otlv), the same hatch components/settings/kit.tsx
-  // already had.
+  // already had. Lookback is asserted here rather than in a test of its own
+  // because tripl-otlv fixing the first two BY NAME is exactly what let the
+  // third one ship (tripl-6h2b): every row that opts out of a label belongs in
+  // this one list.
   it('names the rows that hold no labelable control as groups, not dangling labels', async () => {
     setupFetch()
     const { container } = renderCreatePage()
 
     await screen.findByText('New scan')
+    // Limits starts collapsed on a fresh draft, and the Lookback row only takes
+    // its no-control form while no time column is set — which is where a fresh
+    // draft starts, so opening the section is all this needs.
+    fireEvent.click(screen.getByRole('button', { name: /Limits/ }))
 
     expect(screen.getByRole('group', { name: 'Base query' })).toBeInTheDocument()
     expect(screen.getByRole('group', { name: 'Preview' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Lookback (hours)' })).toBeInTheDocument()
     const captions = Array.from(container.querySelectorAll('label'), el => el.textContent)
     expect(captions).not.toContain('Base query')
     expect(captions).not.toContain('Preview')
+    expect(captions).not.toContain('Lookback (hours)')
   })
 })

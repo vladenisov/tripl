@@ -5,6 +5,7 @@ import threading
 import uuid
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from httpx import AsyncClient
@@ -1571,6 +1572,21 @@ async def _search_titles(client: AsyncClient, slug: str, query: str, entity_type
     return [item["title"] for item in resp.json()["items"] if item["entity_type"] == entity_type]
 
 
+async def _search_hits(
+    client: AsyncClient, slug: str, query: str, entity_type: str
+) -> list[dict[str, Any]]:
+    """Like :func:`_search_titles`, but keeps the whole hit.
+
+    Some assertions are about a field other than the title — an alert rule's
+    subtitle is the name of the scan it is narrowed to, and that is the field
+    that goes stale when the scan disappears (tripl-9jvz).
+    """
+    resp = await client.get(f"/api/v1/projects/{slug}/search?q={query}&limit=50")
+    assert resp.status_code == 200, resp.text
+    items: list[dict[str, Any]] = resp.json()["items"]
+    return [item for item in items if item["entity_type"] == entity_type]
+
+
 @pytest.mark.asyncio
 async def test_a_scan_config_is_searchable_the_moment_its_service_saves_it(
     client: AsyncClient,
@@ -1712,6 +1728,117 @@ async def test_deleting_a_destination_takes_its_rules_out_of_the_index(
     )
     assert deleted.status_code == 204, deleted.text
     assert await _search_titles(client, "fresh-dest", "okapirule", "alert_rule") == []
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_data_source_takes_its_scans_out_of_the_index(
+    client: AsyncClient,
+) -> None:
+    """``DataSource.scan_configs`` cascades, so the delete removes documents too.
+
+    Exactly the shape of the destination cascade above, one module over: the scan
+    CRUD paths refresh the index themselves, but a source delete removes scan
+    configs without ever calling ``delete_scan_config``, so their documents
+    outlived them and a deleted scan stayed findable in the command palette
+    (tripl-9jvz). No hand reindex anywhere below — the delete is the trigger.
+    """
+    await client.post("/api/v1/projects", json={"name": "Fresh", "slug": "fresh-source"})
+    source = await client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Doomed warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "default",
+        },
+    )
+    assert source.status_code == 201, source.text
+    source_id = source.json()["id"]
+
+    created = await client.post(
+        "/api/v1/projects/fresh-source/scans",
+        json={
+            "data_source_id": source_id,
+            "name": "Narwhalscan nightly",
+            "base_query": "SELECT * FROM warehouse.checkout_events",
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert await _search_titles(client, "fresh-source", "narwhalscan", "scan_config") == [
+        "Narwhalscan nightly"
+    ]
+
+    deleted = await client.delete(f"/api/v1/data-sources/{source_id}")
+    assert deleted.status_code == 204, deleted.text
+    assert await _search_titles(client, "fresh-source", "narwhalscan", "scan_config") == []
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_source_clears_the_scan_name_from_its_rules_subtitle(
+    client: AsyncClient,
+) -> None:
+    """The OTHER document kind the same cascade moves, covered by the SAME call.
+
+    ``_alert_rule_document`` builds its subtitle from the name of the scan the
+    rule is narrowed to, and the cascade unbinds the rule
+    (``disable_rules_bound_to_scan``) without rebuilding its document — so the
+    rule went on advertising a scan that no longer exists. This is why the fix
+    needs no second mechanism: one whole-branch reindex regenerates every kind at
+    once, and this test is what proves the free coverage is real (tripl-9jvz).
+    """
+    await client.post("/api/v1/projects", json={"name": "Fresh", "slug": "fresh-subtitle"})
+    source = await client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Subtitled warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "default",
+        },
+    )
+    assert source.status_code == 201, source.text
+    source_id = source.json()["id"]
+
+    scan = await client.post(
+        "/api/v1/projects/fresh-subtitle/scans",
+        json={
+            "data_source_id": source_id,
+            "name": "Manateescan nightly",
+            "base_query": "SELECT * FROM warehouse.checkout_events",
+        },
+    )
+    assert scan.status_code == 201, scan.text
+
+    destination = await client.post(
+        "/api/v1/projects/fresh-subtitle/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Main Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T000/B000/XXX",
+        },
+    )
+    assert destination.status_code == 201, destination.text
+    rule = await client.post(
+        f"/api/v1/projects/fresh-subtitle/alert-destinations/{destination.json()['id']}/rules",
+        json={"name": "Dugong collapse watch", "scan_config_id": scan.json()["id"]},
+    )
+    assert rule.status_code == 201, rule.text
+
+    before = await _search_hits(client, "fresh-subtitle", "dugong", "alert_rule")
+    assert [hit["subtitle"] for hit in before] == ["Manateescan nightly"]
+
+    deleted = await client.delete(f"/api/v1/data-sources/{source_id}")
+    assert deleted.status_code == 204, deleted.text
+
+    # The rule itself SURVIVES the cascade — unbound and disabled, but still
+    # indexed, because "why am I not getting alerts about X" is exactly when
+    # someone searches for it. Only the scan name it used to carry is gone.
+    after = await _search_hits(client, "fresh-subtitle", "dugong", "alert_rule")
+    assert [hit["title"] for hit in after] == ["Dugong collapse watch"]
+    assert [hit["subtitle"] for hit in after] == [""]
 
 
 @pytest.mark.asyncio

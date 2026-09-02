@@ -150,12 +150,36 @@ The v1 toolset is deliberately curated rather than a 1:1 mirror of the OpenAPI
 contract. Read tools carry the MCP `readOnlyHint` annotation so runtimes can
 treat them as safe to auto-approve.
 
+### Enumerated arguments
+
+Arguments the API constrains to a fixed set are declared as enums in the tool
+schema, not as plain strings. An MCP client refuses a value outside the set
+locally, before any request — so a misspelled filter costs no round trip and
+surfaces as a schema error the agent can correct, rather than as the route's
+`422`.
+
+| Argument | Tools | Accepted values |
+|----------|-------|-----------------|
+| `status` | `list_events` (repeatable), `create_event` | `draft`, `in_review`, `ready_for_dev`, `implemented`, `live`, `deprecated`, `archived` |
+| `order_by` | `list_events` | `catalog` — the authored order, and what omitting the argument gets — or `volume`, busiest-first by ingested volume over the last 24 hours |
+| `types` | `search_plan` (repeatable) | `event`, `event_type`, `field`, `meta_field`, `variable`, `relation`, `tag`, `metric`, `fact_table`, `scan_config`, `alert_rule` |
+
+These lists are the API's own, checked against `backend/openapi.json` by the
+MCP server's contract test rather than kept in step by hand, so they cannot
+drift from what the routes accept — the same guarantee the
+[operator CLI](../run/cli.md)'s `--status`, `--order-by` and `--type` choices
+carry.
+
+`update_event` is the one exception. Its `patch` is a free-form object rather
+than a set of named arguments, so a `status` inside it is validated by the API
+and not by the tool schema.
+
 ### Read tools
 
 | Tool | Arguments | Backed by |
 |------|-----------|-----------|
-| `search_plan` | `slug, q, types?, limit?, branch_id?` | `GET /projects/{slug}/search` |
-| `list_events` | `slug, search?, status?, tag?, field_value?, meta_value?, event_type_id?, silent_since_days?, reviewed?, offset?, limit?, order_by?, branch_id?` | `GET /projects/{slug}/events` |
+| `search_plan` | `slug, q, types?, limit?, branch_id?` | `GET /projects/{slug}/search` — `types` is [enumerated](#enumerated-arguments) |
+| `list_events` | `slug, search?, status?, tag?, field_value?, meta_value?, event_type_id?, silent_since_days?, reviewed?, offset?, limit?, order_by?, branch_id?` | `GET /projects/{slug}/events` — `status` and `order_by` are [enumerated](#enumerated-arguments) |
 | `get_event` | `slug, event_id, branch_id?` | `GET /projects/{slug}/events/{event_id}` |
 | `list_event_types` | `slug` | `GET /projects/{slug}/event-types` |
 | `get_event_type_fields` | `slug, event_type_id` | Event type + its field definitions, merged |
@@ -217,7 +241,7 @@ Every write tool states in its description that it needs a `tk_w_` key; with a
 
 | Tool | Arguments | Backed by |
 |------|-----------|-----------|
-| `create_event` | `slug, branch_id, event_type_id, name, description?, status?, tags?, field_values?, meta_values?` | `POST /projects/{slug}/events` |
+| `create_event` | `slug, branch_id, event_type_id, name, description?, status?, tags?, field_values?, meta_values?` | `POST /projects/{slug}/events` — `status` is [enumerated](#enumerated-arguments) |
 | `update_event` | `slug, event_id, branch_id, patch{...}` | `PATCH /projects/{slug}/events/{event_id}` |
 | `trigger_scan` | `slug, scan_id` | `POST /projects/{slug}/scans/{scan_id}/run` |
 
