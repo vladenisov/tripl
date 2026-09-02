@@ -1,4 +1,4 @@
-import { Download, MoreHorizontal, Plus, Search, X } from 'lucide-react'
+import { Download, ListPlus, MoreHorizontal, Plus, Search, X } from 'lucide-react'
 import type { FieldDefinition, MetaFieldDefinition } from '@/types'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES, type EventStatus } from '@/lib/eventStatus'
 import { Button } from '@/components/ui/button'
@@ -58,6 +58,7 @@ export function EventsToolbar({
   canExport,
   isExporting,
   onNewEvent,
+  onBulkNew,
 }: {
   search: string
   onSearchChange: (value: string) => void
@@ -96,6 +97,7 @@ export function EventsToolbar({
   canExport: boolean
   isExporting: boolean
   onNewEvent: () => void
+  onBulkNew: () => void
 }) {
   const singleStatus = filterStatuses.length === 1 ? filterStatuses[0] : undefined
   return (
@@ -258,6 +260,14 @@ export function EventsToolbar({
             >
               <Download className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
               {isExporting ? 'Exporting…' : 'Export CSV'}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="text-[12.5px]"
+              onSelect={onBulkNew}
+              title="Create a run of events from a pasted list"
+            >
+              <ListPlus className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
+              Add many events…
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

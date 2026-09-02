@@ -130,6 +130,32 @@ identity — collection keeps matching the event it already knew. Once the two
 differ, the event's **Properties** card shows the **Scan identity** row, and
 `source_name` carries it in every event response.
 
+#### Adding many at once
+
+**More › Add many events…** takes a whole run of events from a pasted block.
+What the block carries follows from the event type. Where a scan names its
+events, each line carries the columns the name is built from — separated by a
+tab or a comma, or the whole line where the format needs only one column, so a
+path with commas in it survives. Where no rule governs the type, each line is
+one event name.
+
+Below the box, every line is listed with the event it would create and whether
+it can be: `will be created`, `missing <column>`, `repeated above`, or `already
+in the catalog`. Only the first kind is sent. The check against the catalog
+reads a bounded page of existing events and says so when there were more than it
+read — the server refuses a taken identity regardless, so an unchecked line
+costs a rejected submit rather than a duplicate.
+
+Two event types cannot be filled this way and say so instead: one whose name
+format reads a value *inside* a JSON field, and one with a required field the
+list does not carry. Add those events one at a time.
+
+Behind it is `POST /projects/{slug}/events/bulk`, which applies the naming rule
+per item exactly as the single create does. It is one transaction: if any item
+is refused — a missing required field, a taken identity, or two items claiming
+one identity — nothing is created, and the message names the item by its
+position in the batch.
+
 Setting an event to `archived` takes it out of circulation on both sides:
 `GET /projects/{slug}/events` leaves it out unless the request asks for that
 status explicitly (`?status=archived`), so the CLI, the MCP `list_events` tool and any direct API

@@ -82,7 +82,13 @@ export const eventsApi = {
     slug: string,
     data: {
       event_type_id: string
+      /**
+       * Ignored where a scan rule names this event type: the server generates
+       * the name from the field values, exactly as the single create does, so
+       * both doors author the same event for the same payload.
+       */
       name: string
+      status?: string
       metric_breakdown_columns?: string[]
       field_values?: { field_definition_id: string; value: string }[]
       meta_values?: { meta_field_definition_id: string; value: string }[]
