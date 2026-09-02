@@ -1,6 +1,8 @@
 import ast
 import json
+import textwrap
 import uuid
+from collections.abc import Iterable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -1114,71 +1116,208 @@ def test_audit_log_declares_exactly_the_indexes_its_access_paths_need() -> None:
     assert _declared_audit_log_indexes() == _AUDIT_LOG_INDEXES
 
 
+def _module_level_bindings(tree: ast.Module) -> Iterator[tuple[str, ast.expr]]:
+    """``NAME = <expr>`` and ``NAME: T = <expr>`` at module level, in source order.
+
+    Three readers below want different shapes out of these bindings — a string, a
+    sequence of strings, a revision id — and all three need the same two spellings
+    of an assignment resolved first.
+    """
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            target, value = node.target, node.value
+        else:
+            continue
+        if isinstance(target, ast.Name):
+            yield target.id, value
+
+
 def _module_level_strings(tree: ast.Module) -> dict[str, str]:
     """Module-level ``NAME = "literal"`` bindings.
 
     The audit migrations name their indexes through constants rather than inline
     literals, so replaying their calls means resolving those names first.
     """
-    bound: dict[str, str] = {}
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target, value = node.targets[0], node.value
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            target, value = node.target, node.value
-        else:
-            continue
-        if (
-            isinstance(target, ast.Name)
-            and isinstance(value, ast.Constant)
-            and isinstance(value.value, str)
-        ):
-            bound[target.id] = value.value
-    return bound
+    return {
+        name: value.value
+        for name, value in _module_level_bindings(tree)
+        if isinstance(value, ast.Constant) and isinstance(value.value, str)
+    }
+
+
+def _sequence_of_strings(
+    node: ast.expr, sequences: Mapping[str, tuple[str, ...]]
+) -> tuple[str, ...] | None:
+    """The strings ``node`` is a sequence of, or ``None`` if that cannot be read.
+
+    A partly-literal sequence reads as unreadable rather than as the literals it
+    happens to contain: the elements this cannot resolve are exactly the ones that
+    might be ``audit_log``.
+    """
+    if isinstance(node, ast.Name):
+        return sequences.get(node.id)
+    if isinstance(node, ast.Tuple | ast.List):
+        literals = tuple(
+            element.value
+            for element in node.elts
+            if isinstance(element, ast.Constant) and isinstance(element.value, str)
+        )
+        if literals and len(literals) == len(node.elts):
+            return literals
+    return None
+
+
+def _module_level_string_sequences(tree: ast.Module) -> dict[str, tuple[str, ...]]:
+    """Module-level ``NAME = ("a", "b")`` bindings of string literals.
+
+    A migration that does the same thing to several tables writes the list once
+    and loops over it — 4e5f60718293 adds ``branch_id`` and its index to five
+    tables that way. Reading the list is what lets the replay say "that loop is
+    demonstrably not about audit_log" instead of "I cannot tell", and only the
+    first of those two is a legitimate reason to skip an op (tripl-1iic).
+    """
+    return {
+        name: values
+        for name, value in _module_level_bindings(tree)
+        if (values := _sequence_of_strings(value, {})) is not None
+    }
 
 
 def _revision_ids(tree: ast.Module) -> tuple[str | None, str | None]:
     """``(revision, down_revision)``; the base's ``down_revision`` is ``None``."""
     revision: str | None = None
     down: str | None = None
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target, value = node.targets[0], node.value
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            target, value = node.target, node.value
-        else:
-            continue
-        if not isinstance(target, ast.Name) or not isinstance(value, ast.Constant):
+    for name, value in _module_level_bindings(tree):
+        if name not in ("revision", "down_revision") or not isinstance(value, ast.Constant):
             continue
         resolved = value.value if isinstance(value.value, str) else None
-        if target.id == "revision":
+        if name == "revision":
             revision = resolved
-        elif target.id == "down_revision":
+        else:
             down = resolved
     return revision, down
 
 
-def _as_string(node: ast.expr | None, bound: dict[str, str]) -> str | None:
+def _as_strings(
+    node: ast.expr | None,
+    bound: Mapping[str, str],
+    loop_values: Mapping[str, tuple[str, ...]],
+) -> tuple[str, ...] | None:
+    """Every string ``node`` can evaluate to, or ``None`` when that is unknowable.
+
+    ``None`` is not "no strings"; it is the replay admitting it cannot read the
+    expression, and callers have to treat it as a failure rather than as an
+    answer. A name bound by an enclosing ``for`` resolves to every value the loop
+    gives it, because the call runs once per value.
+    """
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
+        return (node.value,)
     if isinstance(node, ast.Name):
-        return bound.get(node.id)
+        if node.id in loop_values:
+            return loop_values[node.id]
+        if node.id in bound:
+            return (bound[node.id],)
+        return None
+    # ``op.f("ix_x")`` is how autogenerate says "this name is already final, do
+    # not run a naming convention over it", so the literal inside it IS the name.
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "f"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "op"
+        and len(node.args) == 1
+    ):
+        return _as_strings(node.args[0], bound, loop_values)
     return None
+
+
+def _as_string(
+    node: ast.expr | None,
+    bound: Mapping[str, str],
+    loop_values: Mapping[str, tuple[str, ...]],
+) -> str | None:
+    """The one string ``node`` evaluates to, or ``None`` if it is not exactly one."""
+    candidates = _as_strings(node, bound, loop_values)
+    if candidates is None or len(candidates) != 1:
+        return None
+    return candidates[0]
 
 
 _CREATE_INDEX_PARAMS = ("index_name", "table_name", "columns")
 _DROP_INDEX_PARAMS = ("index_name", "table_name")
 
 
-def _audit_log_index_ops(source: str) -> list[tuple[str, str, tuple[str, ...]]]:
-    """``(create_index|drop_index, name, columns)`` for one migration's ``upgrade``.
+def _index_op_kind(node: ast.Call) -> str | None:
+    """``"create_index"``/``"drop_index"`` for alembic's ``op``, else ``None``."""
+    func = node.func
+    if not isinstance(func, ast.Attribute):
+        return None
+    if not isinstance(func.value, ast.Name) or func.value.id != "op":
+        return None
+    return func.attr if func.attr in ("create_index", "drop_index") else None
+
+
+def _loop_bindings(
+    node: ast.For, sequences: Mapping[str, tuple[str, ...]]
+) -> dict[str, tuple[str, ...]]:
+    """What a ``for`` target can be, when every value of the iterable is readable.
+
+    An unreadable iterable binds nothing, which leaves the names it introduces
+    unresolvable — and unresolvable is a hard failure below, not a skip.
+    """
+    if not isinstance(node.target, ast.Name):
+        return {}
+    values = _sequence_of_strings(node.iter, sequences)
+    return {} if values is None else {node.target.id: values}
+
+
+def _index_op_calls(
+    node: ast.AST,
+    sequences: Mapping[str, tuple[str, ...]],
+    loop_values: Mapping[str, tuple[str, ...]],
+) -> Iterator[tuple[str, ast.Call, Mapping[str, tuple[str, ...]]]]:
+    """Index ops in SOURCE order, each with the loop bindings in force at it.
+
+    Source order is the whole point, and ``ast.walk`` cannot supply it: it is
+    breadth-first, so it yields a call nested inside a ``with`` or an ``if``
+    AFTER a call written below it at the top level of the function — the reverse
+    of the order they run in. Replaying a migration that drops an index and
+    recreates it, or the other way round, in that order produces the wrong final
+    set from a chain that is perfectly correct. Depth-first over
+    ``iter_child_nodes``, whose fields are declared in source order, replays what
+    the migration actually does (tripl-1iic).
+    """
+    if isinstance(node, ast.Call):
+        kind = _index_op_kind(node)
+        if kind is not None:
+            yield kind, node, loop_values
+    if isinstance(node, ast.For):
+        loop_values = {**loop_values, **_loop_bindings(node, sequences)}
+    for child in ast.iter_child_nodes(node):
+        yield from _index_op_calls(child, sequences, loop_values)
+
+
+# (create_index|drop_index, index name, columns) — columns empty for a drop.
+_IndexOp = tuple[str, str, tuple[str, ...]]
+
+
+def _audit_log_index_ops(revision: str, source: str) -> list[_IndexOp]:
+    """One migration's ``upgrade`` reduced to its ``audit_log`` index work.
 
     Only ``upgrade`` is read. Every one of these migrations mirrors its work in
     ``downgrade``, so walking the whole module would replay each change and its
     own undo and net out to nothing.
+
+    ``revision`` is carried only to name the file in a failure: an op this cannot
+    read is reported, not skipped, and a report that does not say where to look
+    is most of the way to being ignored.
     """
     tree = ast.parse(source)
     bound = _module_level_strings(tree)
+    sequences = _module_level_string_sequences(tree)
     upgrade = next(
         (n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "upgrade"),
         None,
@@ -1186,36 +1325,63 @@ def _audit_log_index_ops(source: str) -> list[tuple[str, str, tuple[str, ...]]]:
     if upgrade is None:
         return []
 
-    ops: list[tuple[str, str, tuple[str, ...]]] = []
-    for node in ast.walk(upgrade):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-            continue
-        call = node.func
-        if not isinstance(call.value, ast.Name) or call.value.id != "op":
-            continue
-        if call.attr not in ("create_index", "drop_index"):
-            continue
-
-        params = _CREATE_INDEX_PARAMS if call.attr == "create_index" else _DROP_INDEX_PARAMS
+    ops: list[_IndexOp] = []
+    for kind, node, loop_values in _index_op_calls(upgrade, sequences, {}):
+        params = _CREATE_INDEX_PARAMS if kind == "create_index" else _DROP_INDEX_PARAMS
         args: dict[str, ast.expr] = dict(zip(params, node.args, strict=False))
         args.update({kw.arg: kw.value for kw in node.keywords if kw.arg in params})
-        if _as_string(args.get("table_name"), bound) != "audit_log":
+
+        # An op whose table cannot be read is NOT an op about some other table:
+        # it is one this replay cannot attribute at all. Skipping it is how the
+        # next audit_log index would slip past this comparison exactly as the
+        # stale ix_audit_log_project did, so refuse to guess (tripl-1iic).
+        tables = _as_strings(args.get("table_name"), bound, loop_values)
+        assert tables is not None, (
+            f"{revision}: cannot tell which table `{ast.unparse(node)}` indexes. "
+            "Give the table as a literal, a module-level constant, or a loop over "
+            "a module-level sequence of them, so this can either replay the op or "
+            "prove it is not about audit_log."
+        )
+        if "audit_log" not in tables:
             continue
 
-        name = _as_string(args.get("index_name"), bound)
-        # An index this replay cannot name is an index it would silently skip,
-        # which would let the drift it exists to catch through.
-        assert name is not None, ast.dump(node)
+        name = _as_string(args.get("index_name"), bound, loop_values)
+        assert name is not None, (
+            f"{revision}: cannot read the index name in `{ast.unparse(node)}`, so this "
+            "audit_log index would be replayed as no index at all."
+        )
 
         columns: tuple[str, ...] = ()
-        if call.attr == "create_index":
+        if kind == "create_index":
             listed = args.get("columns")
-            assert isinstance(listed, ast.List), ast.dump(node)
-            resolved = [_as_string(element, bound) for element in listed.elts]
-            assert all(column is not None for column in resolved), ast.dump(node)
+            assert isinstance(listed, ast.List | ast.Tuple), (
+                f"{revision}: cannot read the columns in `{ast.unparse(node)}`."
+            )
+            resolved = [_as_string(element, bound, loop_values) for element in listed.elts]
+            assert all(column is not None for column in resolved), (
+                f"{revision}: cannot read every column in `{ast.unparse(node)}`, and a "
+                "partial column tuple would compare unequal to the model for the wrong "
+                "reason."
+            )
             columns = tuple(column for column in resolved if column is not None)
-        ops.append((call.attr, name, columns))
+        ops.append((kind, name, columns))
     return ops
+
+
+def _fold_index_ops(ops: Iterable[_IndexOp]) -> dict[str, tuple[str, ...]]:
+    """Replay ``ops`` in the order given; the last word on a name wins.
+
+    Order is load-bearing here, which is why ``_index_op_calls`` goes to the
+    trouble of preserving it: fold a rebuild backwards and an index that the
+    chain ends without comes out present.
+    """
+    live: dict[str, tuple[str, ...]] = {}
+    for kind, name, columns in ops:
+        if kind == "create_index":
+            live[name] = columns
+        else:
+            live.pop(name, None)
+    return live
 
 
 def _audit_log_indexes_after_migrations() -> dict[str, tuple[str, ...]]:
@@ -1256,14 +1422,10 @@ def _audit_log_indexes_after_migrations() -> dict[str, tuple[str, ...]]:
     # of history and compare that against the model.
     assert len(order) == len(sources), (len(order), len(sources))
 
-    live: dict[str, tuple[str, ...]] = {}
-    for revision in order:
-        for kind, name, columns in _audit_log_index_ops(sources[revision]):
-            if kind == "create_index":
-                live[name] = columns
-            else:
-                live.pop(name, None)
-    return live
+    replayed = (
+        entry for revision in order for entry in _audit_log_index_ops(revision, sources[revision])
+    )
+    return _fold_index_ops(replayed)
 
 
 def test_audit_log_model_indexes_match_what_the_migrations_leave_behind() -> None:
@@ -1278,3 +1440,115 @@ def test_audit_log_model_indexes_match_what_the_migrations_leave_behind() -> Non
     test instead of by a database nobody runs against.
     """
     assert _audit_log_indexes_after_migrations() == _declared_audit_log_indexes()
+
+
+# The replay above is only worth the lines it takes if it fails on the migrations
+# it cannot read, rather than passing over them. These four feed it migrations
+# today's chain does not contain — the shapes a future one plausibly would — and
+# pin what it does with each (tripl-1iic).
+
+_SYNTHETIC_REVISION = "0f0f0f0f0f0f"
+
+
+def test_index_replay_reads_one_upgrade_in_source_order() -> None:
+    """A rebuild replays in the order it is written, not in order of nesting.
+
+    ``ast.walk`` is breadth-first: given this migration it yields the top-level
+    ``drop_index`` BEFORE the ``create_index`` inside the ``with``, because the
+    latter sits one level deeper. Folded in that order the index comes out
+    present, when the migration in fact ends with it gone — the model and the
+    database disagreeing again, reached from the other side.
+
+    Nothing in today's chain nests an index op, so the old traversal got the
+    right answer by luck. This is the migration that would have collected on it.
+    """
+    source = textwrap.dedent(
+        """
+        _NAME = "ix_audit_log_rebuilt"
+
+        def upgrade() -> None:
+            with op.get_context().autocommit_block():
+                op.create_index(_NAME, "audit_log", ["project_id"])
+            op.drop_index(_NAME, table_name="audit_log")
+        """
+    )
+
+    ops = _audit_log_index_ops(_SYNTHETIC_REVISION, source)
+
+    assert ops == [
+        ("create_index", "ix_audit_log_rebuilt", ("project_id",)),
+        ("drop_index", "ix_audit_log_rebuilt", ()),
+    ]
+    # And the order is not a detail: it is the whole difference between "this
+    # migration leaves an index behind" and "it does not".
+    assert _fold_index_ops(ops) == {}
+
+
+def test_index_replay_refuses_an_index_op_whose_table_it_cannot_read() -> None:
+    """An unreadable table name fails the replay instead of being passed over.
+
+    A guard that quietly ignores what it cannot parse is not a guard. This op
+    might well be on ``audit_log``; skipping it would leave the comparison green
+    while the model and the migrated schema drift apart, which is the whole of
+    tripl-1iic.
+    """
+    source = textwrap.dedent(
+        """
+        def upgrade() -> None:
+            table = _resolve_table()
+            op.create_index("ix_audit_log_late", table, ["created_at"])
+        """
+    )
+
+    with pytest.raises(AssertionError) as raised:
+        _audit_log_index_ops(_SYNTHETIC_REVISION, source)
+
+    # A report that does not say which revision and which op is one the next
+    # person dismisses, so the message carries both.
+    assert _SYNTHETIC_REVISION in str(raised.value)
+    assert "op.create_index" in str(raised.value)
+
+
+def test_index_replay_refuses_an_audit_log_index_hidden_in_a_table_loop() -> None:
+    """A loop that includes ``audit_log`` is read as being about ``audit_log``.
+
+    This is the shape 4e5f60718293 already uses, one table longer. The index name
+    is an f-string, so the replay cannot say which index was created — and an
+    audit_log index it cannot name is one it must not silently drop from the
+    comparison.
+    """
+    source = textwrap.dedent(
+        """
+        _BRANCHED_TABLES = ("events", "audit_log")
+
+        def upgrade() -> None:
+            for table in _BRANCHED_TABLES:
+                op.create_index(f"ix_{table}_branch_id", table, ["branch_id"])
+        """
+    )
+
+    with pytest.raises(AssertionError) as raised:
+        _audit_log_index_ops(_SYNTHETIC_REVISION, source)
+
+    assert _SYNTHETIC_REVISION in str(raised.value)
+
+
+def test_index_replay_skips_a_table_loop_that_provably_excludes_audit_log() -> None:
+    """The other half of the rule above: a readable loop over other tables is skipped.
+
+    Refusing what it cannot read is only useful if it can read what the chain
+    actually contains. This is 4e5f60718293's own shape — five tables gaining
+    ``branch_id``, none of them ``audit_log`` — and it has to come back empty
+    rather than fail, or the guard is just noise nobody can keep green.
+    """
+    source = textwrap.dedent(
+        """
+        _BRANCHED_TABLES = ("event_types", "events", "variables")
+
+        def upgrade() -> None:
+            for table in _BRANCHED_TABLES:
+                op.create_index(f"ix_{table}_branch_id", table, ["branch_id"])
+        """
+    )
+
+    assert _audit_log_index_ops(_SYNTHETIC_REVISION, source) == []

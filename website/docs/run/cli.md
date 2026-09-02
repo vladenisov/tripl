@@ -1890,10 +1890,14 @@ This command exists mostly to give you the name to pass to `--branch`.
 :::note What is deliberately not here
 `tripl plan diff` is **not** shipped, though the route exists and the MCP
 server's `get_branch_diff` tool reads it. The diff answers
-`{behind_base, entries, summary}` — not a list — so it does not fit the one
-document shape the seven read verbs share, and `behind_base` is too load-bearing
-to smuggle into an `items` array. A second document shape for one verb is worse
-than not shipping it yet.
+`{behind_base, entries, renames, summary}` — not a list — so it does not fit the
+one document shape the seven read verbs share, and `behind_base` is too
+load-bearing to smuggle into an `items` array. `renames` makes that worse rather
+than better: it is a second top-level key, and one that points *at* `entries` —
+each pair naming the removal and the addition that are really one renamed row,
+which a merge applies as a single in-place update — so flattening the document
+to a list would drop the pairing on the floor. A second document shape for one
+verb is worse than not shipping it yet.
 
 Merging, reverting and branch transitions are not here either, and never will
 be: both surfaces hand that decision back to a human in the tripl app, which is

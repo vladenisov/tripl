@@ -228,10 +228,11 @@ observed column is a history of what has been seen, not a mirror of the latest
 scan window. It also distinguishes two silences: it reads **No
 values stored** when the variable has contexts but none of them holds a value,
 and shows a dash only when no context exists at all. Drift can be accepted
-globally or for one event, snoozed, marked false-positive, or reopened;
-resolved rows sit behind a **Show N
-resolved** toggle in both panels, and a scan reopens an accepted row on its own
-once it observes a value outside the accepted set. The event detail repeats the
+globally or for one event, snoozed, marked false-positive, or reopened; rows
+that are not asking for attention sit in both panels behind a toggle named for
+what it holds — **Show N resolved**, **Show N snoozed**, or **Show N snoozed or
+resolved** — and a scan reopens an accepted row on its own once it observes a
+value outside the accepted set. The event detail repeats the
 affected event's review panel. Selection enables bulk type/description/value changes and
 delete. **Exclude from scans** keeps a restorable tombstone so a deliberately
 removed scan-owned variable is not recreated. Search matches a variable's

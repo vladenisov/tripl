@@ -714,6 +714,78 @@ async def test_retirement_plan_asks_for_contexts_by_id_and_never_loads_them(clie
     assert [s for s in statements if "FROM field_definitions" in s] == []
 
 
+@pytest.mark.asyncio
+async def test_listing_variables_does_not_hydrate_their_observed_contexts(client: AsyncClient):
+    """A page of the list must not drag the project's whole context table with it.
+
+    ``Variable.value_contexts`` is ``lazy="selectin"`` and each context then
+    selectin-loads its FieldDefinition, so the page select hydrated every
+    context of every variable it returned — on the endpoint the frontend calls
+    with VARIABLES_PAGE_LIMIT = 5000, which makes one page the whole project
+    (tripl-xkbb).
+
+    Nothing downstream wants them: ``VariableResponse`` declares no contexts
+    field, and ``attach_variable_summaries`` re-reads what it needs with its own
+    ``select(VariableValue)`` — which is the one read left below.
+    """
+    slug = "var-list-reads"
+    await _setup_project(client, slug)
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "pv", "display_name": "Page View"},
+    )
+    field = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et.json()['id']}/fields",
+        json={"name": "screen", "display_name": "Screen", "field_type": "string"},
+    )
+    created_event = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et.json()["id"], "name": "Profile View"},
+    )
+    created = await client.post(f"/api/v1/projects/{slug}/variables", json={"name": "variant"})
+    variable_id = uuid.UUID(created.json()["id"])
+
+    async with TestSessionLocal() as session, session.begin():
+        variable = await session.get(Variable, variable_id)
+        session.add(
+            VariableValue(
+                project_id=variable.project_id,
+                branch_id=variable.branch_id,
+                variable_id=variable_id,
+                event_id=uuid.UUID(created_event.json()["id"]),
+                field_definition_id=uuid.UUID(field.json()["id"]),
+                source_column="screen",
+                value_kind="low",
+                observed_count=1,
+                values=["a"],
+            )
+        )
+
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany) -> None:
+        statements.append(" ".join(statement.split()))
+
+    # A fresh session, so nothing the fixture loaded is already in the identity
+    # map and able to satisfy a loader without a query.
+    async with TestSessionLocal() as session:
+        sa_event.listen(engine.sync_engine, "before_cursor_execute", _record)
+        try:
+            items, total = await variable_service.list_variables(session, slug)
+        finally:
+            sa_event.remove(engine.sync_engine, "before_cursor_execute", _record)
+        # The page still reads correctly — the summary counts come off the one
+        # read below, not off the collection the option refuses to load.
+        assert [(v.name, v.context_count) for v in items] == [("variant", 1)]
+        assert total == 1
+
+    # Exactly one read of the table, in either shape the selectin loader emits,
+    # and it is the summary's own join to events. The selectin is the second one.
+    context_reads = [s for s in statements if "variable_values" in s]
+    assert len(context_reads) == 1, statements
+    assert "JOIN events" in context_reads[0]
+
+
 class _VariableHistory(NamedTuple):
     """Handles for the variable the exclusion tests act on."""
 

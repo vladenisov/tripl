@@ -31,6 +31,7 @@ import {
   DRIFT_REVIVE_LABEL,
   driftReviewState,
   driftStatusNote,
+  useDriftReviewClock,
 } from '@/lib/variableDrift'
 
 // Warehouse column or dotted JSON path, e.g. "variant" or "page_data.extra.variant".
@@ -314,11 +315,12 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   })
   const driftItems = driftList?.items ?? []
   // One `now` for the whole render, so a drift cannot be classified against one
-  // instant here and a different one further down.
-  // Lazy `useState` rather than a bare call: `react-hooks/purity` refuses
-  // `Date.now()` during render, and this is the repo's idiom for a render clock
-  // (ScansTab.tsx). One instant for every row in this dialog.
-  const [driftNow] = useState(() => Date.now())
+  // instant here and a different one further down — and it advances the moment
+  // the nearest snooze runs out. This tab outlives the dialog by a long way, so
+  // a clock frozen at mount would keep a lapsed snooze collapsed here while the
+  // badge in the row behind it counted the drift as open (tripl-lh61). The hook
+  // carries the timer and the reasoning.
+  const driftNow = useDriftReviewClock(driftItems)
   const activeDrifts = driftItems.filter(drift => driftReviewState(drift, driftNow) === 'active')
   // Snoozed rows sit with the resolved ones, not with the active ones. The row's
   // drift badge comes from `get_open_drift_counts`, which drops a future-snoozed

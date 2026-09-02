@@ -170,10 +170,17 @@ Available actions:
 - **Snooze** — hide the drift until a chosen time while scans continue to
   refresh its evidence.
 - **False positive** — resolve it without changing the documented contract.
-- **Reopen** — return a resolved drift to active review.
+- **Reopen** — return a resolved drift to active review. On a row that is only
+  snoozed the same control reads **Un-snooze**, because a snooze is what the
+  click undoes; both send the same action, which clears the snooze as well as
+  any resolution.
 
-Resolved drift is collapsed, not hidden: both panels carry a **Show N resolved**
-toggle so an acceptance you regret can always be reopened.
+Drift that is not asking for attention is collapsed, not hidden. Both panels
+carry a toggle that names what it is holding — **Show N resolved**, **Show N
+snoozed**, or **Show N snoozed or resolved** when the group has both — so an
+acceptance you regret can always be reopened and a snooze can always be ended
+early. A snooze also comes back on its own once its time is up, whether or not
+the page was reloaded in between.
 
 A later scan **reopens an accepted drift by itself** as soon as it observes a
 value the documented list does not cover. Accepting is what puts the values in

@@ -7,6 +7,7 @@ import {
   DRIFT_REVIVE_LABEL,
   driftReviewState,
   driftStatusNote,
+  useDriftReviewClock,
 } from '@/lib/variableDrift'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { Button } from '@/components/ui/button'
@@ -30,12 +31,11 @@ export function EventValueDriftPanel({ slug, eventId }: { slug: string; eventId:
   })
   const items = data?.items ?? []
   // One `now` for the whole render, so a drift cannot be classified against one
-  // instant here and a different one three lines down. Read through a lazy
-  // `useState` initializer — this repo's idiom for a render clock, see
-  // ScansTab.tsx — because `react-hooks/purity` refuses a bare `Date.now()`
-  // during render. A snooze that lapses while the panel sits open therefore
-  // moves on the next refetch, which is the same latency the badge already has.
-  const [now] = useState(() => Date.now())
+  // instant here and a different one three lines down — and it advances the
+  // moment the nearest snooze runs out, so a snooze lapsing while the panel sits
+  // open moves the row onto the active list by itself rather than waiting for a
+  // remount (tripl-lh61). The hook carries the timer and the reasoning.
+  const now = useDriftReviewClock(items)
   const activeDrifts = items.filter(drift => driftReviewState(drift, now) === 'active')
   // Snoozed rows sit with the resolved ones, not with the active ones: the
   // backend's own count drops a future-snoozed row, so leaving it in the warning

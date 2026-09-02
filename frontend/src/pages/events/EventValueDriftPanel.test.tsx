@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { variableDriftsApi } from '@/api/variableDrifts'
@@ -136,5 +136,46 @@ describe('EventValueDriftPanel', () => {
         null,
       ),
     )
+  })
+
+  it('lets a snooze lapse on a panel left open, without a remount (tripl-lh61)', async () => {
+    // The panel's clock was `useState(() => Date.now())`, and a lazy initializer
+    // runs once per mount. So a snooze that ran out while the panel sat open
+    // went on reading as snoozed here — collapsed, with only Un-snooze on it —
+    // while the variables table badge, which the backend recomputes per request,
+    // had already counted the row as open. That is exactly the badge/panel
+    // disagreement this ticket exists to remove, re-entering through the clock.
+    vi.useFakeTimers()
+    try {
+      const snoozedUntil = new Date(Date.now() + 60_000).toISOString()
+      vi.mocked(variableDriftsApi.list).mockResolvedValue({
+        items: [
+          { ...DRIFT, id: 'drift-4', status: 'snoozed' as const, snoozed_until: snoozedUntil },
+        ],
+        total: 1,
+      })
+
+      renderPanel()
+
+      // `waitFor` cannot drive vitest's fake clock (it only detects jest's), so
+      // the timers are advanced explicitly and the assertions are synchronous.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+      expect(screen.getByRole('button', { name: 'Show 1 snoozed' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Snooze 7d' })).not.toBeInTheDocument()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+
+      // Nothing was clicked, nothing remounted, and the list was never asked
+      // again — only the deadline passed.
+      expect(screen.queryByRole('button', { name: 'Show 1 snoozed' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Snooze 7d' })).toBeInTheDocument()
+      expect(variableDriftsApi.list).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

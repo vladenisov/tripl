@@ -8,9 +8,17 @@ to its base value; an entity the branch deleted is rebuilt from the snapshot,
 child rows and all.
 
 One "deletion" is not one: a rename shows up as a removal of the old name plus
-an addition of the new one, because the diff keys entities by name. Reverting
-that removal moves the name back onto the row that is still there rather than
-inserting a second copy of it — see ``_row_renamed_from`` (tripl-hjxy).
+an addition of the new one, because the diff keys entities by name. Where the
+base row carried a scan identity, reverting that removal moves the name back
+onto the row that is still there rather than inserting a second copy of it —
+see ``_row_renamed_from`` (tripl-hjxy).
+
+That precondition is worth stating rather than implying, because it is the
+common case that fails it: ``source_name`` is NULL for every API-created
+variable (``VariableCreate`` accepts no such field) and for every event whose
+type carries no scan name template, and a removal with no identity to recognise
+is rebuilt from the snapshot like any other — including when it was really a
+rename, which then reverts as a delete plus an insert.
 
 Order matters when a whole subtree was deleted: an event type comes back before
 the fields and events that hang off it, because the snapshot references them by
@@ -49,6 +57,7 @@ from tripl.schemas.plan_revision import PlanDiffEntry
 from tripl.services import plan_branch_service
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services.project_lookup import get_project_by_slug
+from tripl.services.variable_service import rewrite_variable_token_references
 
 logger = logging.getLogger(__name__)
 
@@ -556,12 +565,33 @@ async def _event_type_by_name(
     return event_type
 
 
+def _base_identity_count(
+    base_payload: dict[str, Any], data: BranchRevertRequest, source_name: str
+) -> int:
+    """How many rows in the BASE snapshot claim *source_name* in this scope.
+
+    The scope is ``_sole_key_by_identity``'s ``key[:-1]``: the event type for an
+    event, nothing at all for a variable. Read straight off the payload the
+    caller already holds — ``build_plan_snapshot`` records ``event_type_name``,
+    ``name`` and ``source_name`` on both sets — so asking costs no extra query.
+    """
+    if data.entity_type == "variable":
+        base_variables: list[dict[str, Any]] = base_payload.get("variables", [])
+        return sum(1 for item in base_variables if item.get("source_name") == source_name)
+    return sum(
+        1
+        for item in base_payload.get("events", [])
+        if item.get("source_name") == source_name and item.get("event_type_name") == data.parent
+    )
+
+
 async def _row_renamed_from(
     session: AsyncSession,
     project_id: uuid.UUID,
     branch_id: uuid.UUID,
     data: BranchRevertRequest,
     base_item: dict[str, Any],
+    base_payload: dict[str, Any],
 ) -> Any | None:
     """The branch row that IS this "deleted" entity, still alive under a new name.
 
@@ -589,7 +619,9 @@ async def _row_renamed_from(
     generated name, so a branch row wearing a DIFFERENT name and the base row's
     ``source_name`` can only be that row, renamed. A base row with no
     ``source_name`` identifies nothing and falls through to the plain rebuild,
-    exactly as ``pair_renames`` leaves it unpaired.
+    exactly as ``pair_renames`` leaves it unpaired — and so does an identity
+    that EITHER side names more than once, which is ``_sole_key_by_identity``'s
+    both-sides rule; the two counts below say why each is refused the way it is.
 
     This deliberately does NOT call ``pair_renames``: that answers "will the
     merge pair these?", which also depends on main, and a revert touches only the
@@ -599,13 +631,42 @@ async def _row_renamed_from(
     if not source_name:
         return None
 
+    if data.entity_type not in ("variable", "event"):
+        # No other entity kind carries a scan identity at all — the snapshot
+        # records ``source_name`` on variables and events and nowhere else — so
+        # for them a removal is always a removal.
+        return None
+
+    # Ambiguity is refused on BOTH sides, which is ``_sole_key_by_identity``'s
+    # rule and was only half-applied here: the branch-side count below was
+    # checked and the base-side one was not. Events carry no uniqueness on
+    # ``source_name`` (only ``ix_events_source_identity``) and ``create_event``
+    # stamps it from the generated name, so main can legitimately hold two
+    # events sharing one scan identity under one type — create ``checkout:start``,
+    # rename it to ``checkout:begin``, create ``checkout:start`` again. Cut a
+    # branch, delete ``checkout:begin`` on it, revert that removal: exactly one
+    # branch row carries the identity, nothing below trips, and the revert
+    # renames the LIVE ``checkout:start`` to ``checkout:begin``. The deleted
+    # event is never restored and an unrelated one silently loses its name.
+    #
+    # Declining (rather than the 409 the branch side raises) is the right answer
+    # for this side: two base rows against one branch row means one was really
+    # deleted while the other stayed put, so the plain rebuild restores exactly
+    # what went missing. The variable arm cannot fire today —
+    # ``uq_variable_project_source_name`` makes the identity singular per branch,
+    # and the base IS one branch's snapshot — and is written anyway, because
+    # this reads a stored payload and a payload is data, not a constraint
+    # (tripl-hjxy).
+    if _base_identity_count(base_payload, data, source_name) > 1:
+        return None
+
     if data.entity_type == "variable":
         query: Any = select(Variable).where(
             Variable.project_id == project_id,
             Variable.branch_id == branch_id,
             Variable.source_name == source_name,
         )
-    elif data.entity_type == "event":
+    else:
         # Scoped to the event type, like the identity scope ``pair_renames``
         # uses: two events under different types may share a ``source_name``, and
         # only one under THIS type can be the row that moved.
@@ -619,11 +680,6 @@ async def _row_renamed_from(
                 EventType.name == data.parent,
             )
         )
-    else:
-        # No other entity kind carries a scan identity at all — the snapshot
-        # records ``source_name`` on variables and events and nowhere else — so
-        # for them a removal is always a removal.
-        return None
 
     rows = list((await session.execute(query)).scalars().all())
     if not rows:
@@ -652,9 +708,15 @@ async def _recreate_entity(
 ) -> None:
     """Put back an entity the branch deleted, from its state in the base snapshot.
 
-    Only reached once ``_row_renamed_from`` has ruled out the entity still being
-    on the branch under another name, so every insert below is a genuine rebuild
-    rather than a duplicate of a row that was only renamed (tripl-hjxy).
+    Reached once ``_row_renamed_from`` has declined to call the removal a
+    rename, and it declines in two different shapes. Either it LOOKED and found
+    no branch row still carrying the base row's scan identity, in which case the
+    insert below is a genuine rebuild rather than a duplicate of a renamed row
+    (tripl-hjxy); or the base row carried no ``source_name`` to look for, in
+    which case nothing was ruled out and a rename of such a row does arrive here
+    and revert as a delete plus an insert. The second shape is the common one:
+    ``source_name`` is NULL for every API-created variable and for every event
+    under a type with no scan name template.
 
     Only the entity the diff entry names is recreated, plus the child rows that
     have no diff entry of their own (an event's values and tags, a variable's
@@ -909,8 +971,36 @@ async def _apply_revert(
         # row the branch still has (tripl-hjxy). Every other field the branch
         # edited on that row stays, and surfaces as its own ``changed`` entry
         # once the name no longer hides it.
-        renamed = await _row_renamed_from(session, project_id, branch_id, data, base_item)
+        renamed = await _row_renamed_from(
+            session, project_id, branch_id, data, base_item, base_payload
+        )
         if renamed is not None:
+            if data.entity_type == "variable":
+                # Moving the name back is only half of undoing a rename. Saving
+                # the rename rewrote every ``${old_name}`` in this branch's
+                # stored values to ``${new_name}``
+                # (``variable_service.update_variable``), and leaving that
+                # standing hands the reviewer a variable answering to the base
+                # name while every field and meta value on the branch still
+                # names a token NO variable answers to — which
+                # ``event_service._attach_template_warnings`` renders as
+                # "Unknown variable token" on each affected event, and which a
+                # merge then carries to main. The same helper run in the
+                # opposite direction, and run BEFORE the assignment below,
+                # because it reads the branch name off the row.
+                #
+                # Variables only, and deliberately: a ``${token}`` names a
+                # Variable and nothing else — ``_attach_template_warnings``
+                # resolves tokens against Variable rows alone — so the event arm
+                # of this revert has no references to carry and needs no rewrite
+                # (tripl-hjxy).
+                await rewrite_variable_token_references(
+                    session,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    old_name=renamed.name,
+                    new_name=data.name,
+                )
             renamed.name = data.name
             return
         await _recreate_entity(session, project_id, branch_id, data, base_item)

@@ -877,8 +877,10 @@ positive. See [Variables & templates](./variables-and-templates.md).
 **Why did a value drift I already accepted come back?**
 Because the scan saw a value that was *not* in the set you accepted. An
 acceptance covers exactly the values it documented; anything newer reopens the
-row, and the row then lists only the new values. Use **Show N resolved** in
-either review panel to inspect or reopen a drift you resolved earlier.
+row, and the row then lists only the new values. Use the **Show N …** toggle in
+either review panel to inspect or reopen a drift you resolved earlier — it reads
+**Show N resolved**, **Show N snoozed**, or **Show N snoozed or resolved**,
+depending on what the collapsed group is holding at the time.
 
 **Where do I configure SMTP, encryption keys, and connection URLs?**
 All via environment variables / `.env`. See [Configuration](../run/configuration)

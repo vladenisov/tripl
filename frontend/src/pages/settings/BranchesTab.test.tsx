@@ -8,11 +8,12 @@ import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
 import type {
   ImplementationTicket,
+  PlanBranchDiffSummary,
   PlanBranchSummary,
   ProjectBranchSettings,
   UserListItem,
 } from '@/types'
-import { BranchesTab, type BranchDiffWithRenames } from './BranchesTab'
+import { BranchesTab } from './BranchesTab'
 
 vi.mock('@/api/planBranches', () => ({
   planBranchesApi: {
@@ -963,12 +964,18 @@ describe('BranchesTab', () => {
    * the entries below deliberately keep a matching `source_name` on both sides
    * whether or not the pair is stated, because that is what this screen used to
    * pair on for itself. It cannot: the real rule also refuses a move onto a name
-   * a staying main row holds, which a base-to-branch diff cannot see (tripl-amnn). */
+   * a staying main row holds, which a base-to-branch diff cannot see (tripl-amnn).
+   *
+   * Typed as the shared `PlanBranchDiffSummary` and nothing else: `renames` is a
+   * field of that type, declared once in `types/branches.ts` and mirrored by the
+   * generated client. A local structural twin of it used to live in
+   * BranchesTab.tsx and this mock was typed against that — two exported shapes
+   * with one name, which is the drift this wave argues against. */
   function mockRenamedVariableDiff(options: { behindBase?: boolean; paired?: boolean } = {}) {
     vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
     vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
     vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
-    const diff: BranchDiffWithRenames = {
+    const diff: PlanBranchDiffSummary = {
       behind_base: options.behindBase ?? false,
       summary: { added: 1, removed: 1, changed: 0 },
       entries: [
@@ -1094,6 +1101,241 @@ describe('BranchesTab', () => {
     // pairing already read main, so there is nothing left to be cautious about.
     await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
     expect(screen.queryByText('Merge deletes variables from main')).not.toBeInTheDocument()
+  })
+
+  it('counts a paired rename once in the strip, the ahead badge and the subtitle', async () => {
+    // The three numbers describe one diff, so they have to agree. They did not:
+    // the list dropped the paired addition and re-counted its own subtitle,
+    // while the strip and the ahead badge went on reading the backend's raw
+    // per-kind tally. One branch therefore said "↑2", "+1 added · −1 removed"
+    // and "1 change" over a single Renamed row, all on one screen — and the red
+    // "−1 removed" is exactly the false deletion signal the Renamed row exists
+    // to remove (tripl-amnn).
+    mockRenamedVariableDiff()
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    await waitFor(() => expect(planBranchesApi.diff).toHaveBeenCalledWith('demo', 'feat-1'))
+
+    // The panel subtitle over the single Renamed row.
+    expect(await screen.findByText('1 change')).toBeInTheDocument()
+    // The list row's ahead badge: one change ahead, not two.
+    expect(screen.getByText('↑1 ↓0')).toBeInTheDocument()
+    // The header strip: the rename is subtracted from both halves it was split
+    // into, and named, so the drop is explained rather than silent.
+    expect(screen.getByText('+0')).toBeInTheDocument()
+    expect(screen.getByText('~0')).toBeInTheDocument()
+    expect(screen.getByText('−0')).toBeInTheDocument()
+    expect(screen.getByText('→1')).toBeInTheDocument()
+    expect(screen.getByText('renamed')).toBeInTheDocument()
+    // The counts that made the screen contradict itself.
+    expect(screen.queryByText('+1')).not.toBeInTheDocument()
+    expect(screen.queryByText('−1')).not.toBeInTheDocument()
+    expect(screen.queryByText('↑2 ↓0')).not.toBeInTheDocument()
+  })
+
+  it('leaves the renamed chip off a diff that renamed nothing', async () => {
+    // The three counts are the strip every branch shows; a permanent "→0
+    // renamed" would be noise on all of them. The chip is the explanation for a
+    // drop, so it appears only when there is a drop.
+    mockRenamedVariableDiff({ paired: false })
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    await waitFor(() => expect(planBranchesApi.diff).toHaveBeenCalledWith('demo', 'feat-1'))
+
+    // Nothing paired: the raw counts stand, and so does the "2 ahead".
+    expect(await screen.findByText('+1')).toBeInTheDocument()
+    expect(screen.getByText('−1')).toBeInTheDocument()
+    expect(screen.getByText('↑2 ↓0')).toBeInTheDocument()
+    expect(screen.queryByText('renamed')).not.toBeInTheDocument()
+  })
+
+  it('offers to undo the rename the revert will really perform, not a restore', async () => {
+    // The merge refuses this pairing because main independently grew its own
+    // `experiment_variant` — that is what `renames: []` says here. The REVERT
+    // asks a narrower, main-free question (`_row_renamed_from`), finds the
+    // branch row still carrying `payload.variant`, and moves the name back onto
+    // it: the addition the reviewer was looking at disappears and nothing is
+    // restored. The dialog used to read the merge's "no" and promise a restore
+    // (tripl-amnn).
+    mockRenamedVariableDiff({ paired: false })
+    vi.mocked(planBranchesApi.revert).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    fireEvent.click(await screen.findByText('variant'))
+    // The row still reads the merge's answer — it is a Removed row, because
+    // that is what the merge will do with it — so the reviewer arrives at the
+    // dialog expecting a restore. The dialog is where that is corrected.
+    fireEvent.click(await screen.findByRole('button', { name: /Restore on this branch/i }))
+
+    expect(
+      await screen.findByText(/Undo the rename of variant to experiment_variant/),
+    ).toBeInTheDocument()
+    // The title and the label both change with it. (The title is asserted by
+    // its absence: "Undo rename" is also the confirm label, so matching that
+    // string by text would find two elements.)
+    expect(screen.getByRole('button', { name: 'Undo rename' })).toBeInTheDocument()
+    expect(screen.queryByText('Revert change')).not.toBeInTheDocument()
+    // The promise the button cannot keep.
+    expect(screen.queryByText(/photos are not restored/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo rename' }))
+    await waitFor(() =>
+      expect(planBranchesApi.revert).toHaveBeenCalledWith('demo', 'feat-1', {
+        entity_type: 'variable',
+        name: 'variant',
+        parent: null,
+        field: null,
+      }),
+    )
+  })
+
+  it('keeps the restore wording for a removal no branch row answers to', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 1, removed: 1, changed: 0 },
+      entries: [
+        {
+          entity_type: 'variable',
+          kind: 'removed',
+          name: 'variant',
+          parent: null,
+          changes: [],
+          before: { name: 'variant', source_name: 'payload.variant' },
+        },
+        // A genuine addition: no `source_name` of its own, so it answers to
+        // nothing and `_row_renamed_from` would find no row to move.
+        {
+          entity_type: 'variable',
+          kind: 'added',
+          name: 'cohort',
+          parent: null,
+          changes: [],
+          after: { name: 'cohort', source_name: null },
+        },
+      ],
+    })
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    fireEvent.click(await screen.findByText('variant'))
+    fireEvent.click(await screen.findByRole('button', { name: /Restore on this branch/i }))
+
+    // Nothing on the branch carries the removed row's identity, so this really
+    // is a rebuild — including the photo loss it cannot undo.
+    expect(await screen.findByText('Revert change')).toBeInTheDocument()
+    expect(screen.getByText(/its photos are not restored/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Restore' })).toBeInTheDocument()
+    expect(screen.queryByText(/Undo the rename/)).not.toBeInTheDocument()
+  })
+
+  it('says the revert will be refused when two branch rows claim the identity', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    // Only Event can reach this: `uq_variable_project_source_name` makes two
+    // variables with one `source_name` impossible, while Event has a plain
+    // index. `_row_renamed_from` raises a 409 rather than rename a sibling the
+    // reviewer never looked at, so neither "Restore" nor "Undo rename" is true.
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 2, removed: 1, changed: 0 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'removed',
+          name: 'promo_applied',
+          parent: 'track',
+          changes: [],
+          before: { name: 'promo_applied', source_name: 'promo' },
+        },
+        {
+          entity_type: 'event',
+          kind: 'added',
+          name: 'promo_code_applied',
+          parent: 'track',
+          changes: [],
+          after: { name: 'promo_code_applied', source_name: 'promo' },
+        },
+        {
+          entity_type: 'event',
+          kind: 'added',
+          name: 'promo_banner_applied',
+          parent: 'track',
+          changes: [],
+          after: { name: 'promo_banner_applied', source_name: 'promo' },
+        },
+      ],
+    })
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    fireEvent.click(await screen.findByText('promo_applied'))
+    fireEvent.click(await screen.findByRole('button', { name: /Restore on this branch/i }))
+
+    expect(await screen.findByText('Rename is ambiguous')).toBeInTheDocument()
+    expect(
+      screen.getByText(/promo_banner_applied, promo_code_applied/),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Try anyway' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument()
+  })
+
+  it('scopes the rename check to the parent, like the endpoint scopes its query', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    // Two events under DIFFERENT event types may share a `source_name`; only one
+    // under THIS type can be the row that moved, which is why the endpoint joins
+    // EventType and matches `data.parent`. Ignoring the scope here would call a
+    // deletion under `track` a rename into a row under `screen`.
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 1, removed: 1, changed: 0 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'removed',
+          name: 'promo_applied',
+          parent: 'track',
+          changes: [],
+          before: { name: 'promo_applied', source_name: 'promo' },
+        },
+        {
+          entity_type: 'event',
+          kind: 'added',
+          name: 'promo_viewed',
+          parent: 'screen',
+          changes: [],
+          after: { name: 'promo_viewed', source_name: 'promo' },
+        },
+      ],
+    })
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    fireEvent.click(await screen.findByText('promo_applied'))
+    fireEvent.click(await screen.findByRole('button', { name: /Restore on this branch/i }))
+
+    expect(await screen.findByText('Revert change')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Restore' })).toBeInTheDocument()
+    expect(screen.queryByText(/Undo the rename/)).not.toBeInTheDocument()
   })
 
   it('links a merged branch to the tracker ticket the merge opened', async () => {

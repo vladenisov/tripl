@@ -2,6 +2,7 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import event as sa_event
 from sqlalchemy import select
 
 from tripl.models.event import Event
@@ -36,7 +37,7 @@ from tripl.services.plan_revision_service import (
     build_plan_snapshot,
     plan_snapshot_hash,
 )
-from tripl.tests.conftest import TestSessionLocal
+from tripl.tests.conftest import TestSessionLocal, engine
 from tripl.worker.tasks import implementation_tickets as impl_tasks
 
 
@@ -3629,6 +3630,305 @@ async def test_revert_of_a_renamed_event_does_not_duplicate_the_scan_identity(
         assert [(e.id, e.name, e.source_name) for e in branch_events] == [
             (branch_event_id, "purchase:success", "purchase_success_raw")
         ]
+
+
+async def _stored_event_values(
+    branch_id: uuid.UUID, event_name: str
+) -> tuple[list[str], list[str]]:
+    """One branch's copy of an event, as the values actually stored on it.
+
+    Read out of the database rather than off a response body, because what a
+    revert has to put right is the stored text and a 200 says nothing about it.
+    """
+    async with TestSessionLocal() as session:
+        event = (
+            (
+                await session.execute(
+                    select(Event).where(Event.branch_id == branch_id, Event.name == event_name)
+                )
+            )
+            .scalars()
+            .one()
+        )
+        field_values = (
+            (
+                await session.execute(
+                    select(EventFieldValue.value).where(EventFieldValue.event_id == event.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        meta_values = (
+            (
+                await session.execute(
+                    select(EventMetaValue.value).where(EventMetaValue.event_id == event.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return sorted(field_values), sorted(meta_values)
+
+
+@pytest.mark.asyncio
+async def test_reverting_a_variable_rename_puts_the_token_back_in_the_values(
+    client: AsyncClient,
+) -> None:
+    """Undoing a rename has to undo the reference rewrite the rename performed.
+
+    Saving a rename rewrites every ``${old_name}`` on the branch to
+    ``${new_name}``, in both value tables (``variable_service``). The
+    rename-aware revert wrote only the row's ``name``, so the variable came back
+    answering to the base name while every field and meta value on the branch
+    still said ``${new_name}`` — a token no variable answers to, which
+    ``event_service._attach_template_warnings`` renders as "Unknown variable
+    token" on each affected event and which a merge then carries to main. The
+    dialog offering the revert promises the opposite: that the variable's
+    documented values and history are untouched (tripl-hjxy).
+    """
+    slug = "revert-var-rename-tokens"
+    et_id = await _seed_plan(client, slug)
+    tier_field = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "tier", "display_name": "Tier", "field_type": "string"},
+    )
+    assert tier_field.status_code == 201
+    meta_field = await client.post(
+        f"/api/v1/projects/{slug}/meta-fields",
+        json={"name": "owner_note", "display_name": "Owner note", "field_type": "string"},
+    )
+    assert meta_field.status_code == 201
+    created = await client.post(f"/api/v1/projects/{slug}/variables", json={"name": "plan_tier"})
+    assert created.status_code == 201
+    event = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": et_id,
+            "name": "checkout:start",
+            "field_values": [
+                {"field_definition_id": tier_field.json()["id"], "value": "tier=${plan_tier}"}
+            ],
+            "meta_values": [
+                {
+                    "meta_field_definition_id": meta_field.json()["id"],
+                    "value": "owned while ${plan_tier} is set",
+                }
+            ],
+        },
+    )
+    assert event.status_code == 201, event.text
+
+    main_branch = await _main_branch_id()
+    async with TestSessionLocal() as session:
+        main_var = (
+            (await session.execute(select(Variable).where(Variable.name == "plan_tier")))
+            .scalars()
+            .one()
+        )
+        # As a scan would have stamped it: the identity that makes the branch row
+        # recognisable as the same row once its name has moved.
+        main_var.source_name = "plan_tier_raw"
+        await session.commit()
+
+    branch_id = await _create_branch(client, slug)
+    branch_uuid = uuid.UUID(branch_id)
+    async with TestSessionLocal() as session:
+        branch_var_id = (
+            (
+                await session.execute(
+                    select(Variable).where(
+                        Variable.branch_id == branch_uuid, Variable.name == "plan_tier"
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        ).id
+
+    renamed = await client.patch(
+        f"/api/v1/projects/{slug}/variables/{branch_var_id}?branch={branch_id}",
+        json={"name": "subscription_tier"},
+    )
+    assert renamed.status_code == 200, renamed.text
+    # The state the revert has to undo, asserted so that a change to the SAVE
+    # side cannot quietly empty the assertions below.
+    assert await _stored_event_values(branch_uuid, "checkout:start") == (
+        ["tier=${subscription_tier}"],
+        ["owned while ${subscription_tier} is set"],
+    )
+
+    reverted = await client.post(
+        f"/api/v1/projects/{slug}/branches/{branch_id}/revert",
+        json={"entity_type": "variable", "name": "plan_tier"},
+    )
+    assert reverted.status_code == 200, reverted.text
+    # Nothing of the rename survives in the diff. Undoing only the name left the
+    # EVENT carrying a ``changed`` entry for its field and meta values — a change
+    # nobody made, on its way to main.
+    assert [
+        entry
+        for entry in reverted.json()["entries"]
+        if entry["entity_type"] in ("variable", "event")
+    ] == []
+
+    async with TestSessionLocal() as session:
+        branch_vars = (
+            (await session.execute(select(Variable).where(Variable.branch_id == branch_uuid)))
+            .scalars()
+            .all()
+        )
+        # Still the same row, moved and not rebuilt.
+        assert [(v.id, v.name) for v in branch_vars] == [(branch_var_id, "plan_tier")]
+
+    # The half the revert used to leave behind: BOTH value tables name the
+    # restored variable again, so nothing on the branch renders as an unknown
+    # token and a merge carries no broken template to main.
+    assert await _stored_event_values(branch_uuid, "checkout:start") == (
+        ["tier=${plan_tier}"],
+        ["owned while ${plan_tier} is set"],
+    )
+    # And main never moved either way, which is what makes the rewrite — in both
+    # directions — a branch-scoped write.
+    assert await _stored_event_values(main_branch, "checkout:start") == (
+        ["tier=${plan_tier}"],
+        ["owned while ${plan_tier} is set"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_revert_is_not_a_rename_when_the_base_named_one_identity_twice(
+    client: AsyncClient,
+) -> None:
+    """Ambiguity on the BASE side must stop the rename reading too.
+
+    ``_row_renamed_from`` counted candidates on the branch and never asked what
+    the base held. Events carry no uniqueness on ``source_name`` — only
+    ``ix_events_source_identity`` — and ``create_event`` stamps it from the
+    generated name, so main can legitimately hold two events sharing one scan
+    identity under one type: create ``checkout:start``, rename it, let the scan
+    mint ``checkout:start`` again. Cut a branch, delete one of them on it, and
+    revert that removal: exactly one branch row carries the identity, the
+    branch-side guard sees nothing wrong, and the revert renamed the LIVE event
+    to the deleted one's name. The deleted event never came back and an
+    unrelated one silently lost its name (tripl-hjxy).
+    """
+    slug = "revert-event-shared-identity"
+    et_id = await _seed_plan(client, slug)
+    second = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et_id, "name": "purchase:completed"},
+    )
+    assert second.status_code == 201
+
+    async with TestSessionLocal() as session:
+        for main_event in (await session.execute(select(Event))).scalars().all():
+            main_event.source_name = "purchase_raw"
+        await session.commit()
+
+    branch_id = await _create_branch(client, slug)
+    branch_uuid = uuid.UUID(branch_id)
+    async with TestSessionLocal() as session:
+        branch_ids_by_name = {
+            e.name: e.id
+            for e in (
+                (await session.execute(select(Event).where(Event.branch_id == branch_uuid)))
+                .scalars()
+                .all()
+            )
+        }
+
+    deleted = await client.delete(
+        f"/api/v1/projects/{slug}/events/{branch_ids_by_name['purchase:completed']}"
+        f"?branch={branch_id}"
+    )
+    assert deleted.status_code == 204, deleted.text
+
+    reverted = await client.post(
+        f"/api/v1/projects/{slug}/branches/{branch_id}/revert",
+        json={"entity_type": "event", "name": "purchase:completed", "parent": "track"},
+    )
+    assert reverted.status_code == 200, reverted.text
+
+    async with TestSessionLocal() as session:
+        rows = (
+            (await session.execute(select(Event).where(Event.branch_id == branch_uuid)))
+            .scalars()
+            .all()
+        )
+    by_name = {event.name: event for event in rows}
+    # Both events, not one: the removal is rebuilt from the snapshot and the row
+    # that was never deleted keeps the name and the id it had. Reading this as a
+    # rename left a single event on the branch, wearing the wrong name.
+    assert sorted(by_name) == ["purchase:completed", "purchase:success"]
+    assert by_name["purchase:success"].id == branch_ids_by_name["purchase:success"]
+    # A genuine rebuild, so a new id — the deleted row is gone for good and this
+    # is the snapshot's copy of it.
+    assert by_name["purchase:completed"].id != branch_ids_by_name["purchase:completed"]
+
+
+@pytest.mark.asyncio
+async def test_building_a_plan_snapshot_does_not_hydrate_variable_contexts(
+    client: AsyncClient,
+) -> None:
+    """The snapshot names no observed context, so it must not load any.
+
+    ``Variable.value_contexts`` is ``lazy="selectin"`` and each context then
+    selectin-loads its FieldDefinition, so a bare ``select(Variable)`` here
+    pulled the project's entire context table into memory to serialise eight
+    columns (tripl-xkbb). A snapshot is built on every branch DIFF, not only on
+    a merge, so this is a request path.
+    """
+    slug = "snapshot-no-contexts"
+    await _seed_plan(client, slug)
+    created = await client.post(f"/api/v1/projects/{slug}/variables", json={"name": "plan_tier"})
+    assert created.status_code == 201
+    variable_id = uuid.UUID(created.json()["id"])
+    project_id = uuid.UUID(created.json()["project_id"])
+
+    async with TestSessionLocal() as session, session.begin():
+        event = (
+            (await session.execute(select(Event).where(Event.project_id == project_id)))
+            .scalars()
+            .one()
+        )
+        field = (
+            (await session.execute(select(FieldDefinition).where(FieldDefinition.name == "name")))
+            .scalars()
+            .one()
+        )
+        session.add(
+            VariableValue(
+                project_id=project_id,
+                branch_id=event.branch_id,
+                variable_id=variable_id,
+                event_id=event.id,
+                field_definition_id=field.id,
+                source_column="name",
+                value_kind="low",
+                observed_count=1,
+                values=["a"],
+            )
+        )
+
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany) -> None:
+        statements.append(" ".join(statement.split()))
+
+    # A fresh session, so nothing an earlier load left in the identity map can
+    # satisfy a loader without a query.
+    async with TestSessionLocal() as session:
+        sa_event.listen(engine.sync_engine, "before_cursor_execute", _record)
+        try:
+            payload = await build_plan_snapshot(session, project_id)
+        finally:
+            sa_event.remove(engine.sync_engine, "before_cursor_execute", _record)
+
+    assert [v["name"] for v in payload["variables"]] == ["plan_tier"]
+    # Not one read of the table, in either shape the selectin loader emits. The
+    # readers that DO want contexts issue their own select(VariableValue).
+    assert [s for s in statements if "variable_values" in s] == [], statements
 
 
 # --- the diff states which renames a merge will pair (tripl-amnn) ------------

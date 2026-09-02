@@ -1,4 +1,4 @@
-import { createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BranchContext } from '@/components/branch-context-internal'
@@ -1145,6 +1145,71 @@ describe('VariablesTab', () => {
         null,
       ),
     )
+  })
+
+  it('lets a snooze lapse in a dialog left open, without a remount (tripl-lh61)', async () => {
+    // The dialog's clock was `useState(() => Date.now())`, and a lazy
+    // initializer runs once per mount — of the whole tab, which outlives any one
+    // dialog by a long way. So a snooze that ran out while the tab sat open kept
+    // the row collapsed here, offering only Un-snooze, while the badge in the
+    // table behind it — recomputed by the backend on every request — had already
+    // counted the drift as open again. Same disagreement as the test above, just
+    // arriving through the clock instead of the classification.
+    vi.useFakeTimers()
+    try {
+      const snoozedUntil = new Date(Date.now() + 60_000).toISOString()
+      mockList([
+        makeVariable({ id: 'var-1', name: 'variant', allowed_values: ['a'], open_drift_count: 0 }),
+      ])
+      vi.mocked(variablesApi.values).mockResolvedValue([])
+      vi.mocked(variableOverridesApi.list).mockResolvedValue([])
+      vi.mocked(eventsApi.list).mockResolvedValue({ items: [] as never, total: 0 })
+      vi.mocked(variableDriftsApi.list).mockResolvedValue({
+        items: [
+          {
+            id: 'drift-1',
+            variable_id: 'var-1',
+            variable_name: 'variant',
+            event_id: 'ev-1',
+            event_name: 'Onboarding',
+            scan_config_id: null,
+            observed_values: ['x'],
+            status: 'snoozed',
+            resolution_note: null,
+            snoozed_until: snoozedUntil,
+            resolved_at: null,
+            resolved_by: null,
+            detected_at: '2026-07-09T00:00:00Z',
+          },
+        ],
+        total: 1,
+      })
+
+      renderVariablesTab()
+
+      // `waitFor` cannot drive vitest's fake clock (it only detects jest's), so
+      // the timers are advanced explicitly and the assertions are synchronous.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit variable variant' }))
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+      expect(screen.getByRole('button', { name: 'Show 1 snoozed' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Snooze 7d' })).not.toBeInTheDocument()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+
+      // Nothing was clicked and the dialog was never reopened: only the deadline
+      // passed, and the row is back on the active list with its review actions.
+      expect(screen.queryByRole('button', { name: 'Show 1 snoozed' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Snooze 7d' })).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('marks the excluded variable a branch-diff link points at (tripl-acp2)', async () => {
