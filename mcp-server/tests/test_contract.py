@@ -184,7 +184,18 @@ def _resolve(openapi: dict[str, Any], schema: Any) -> dict[str, Any]:
     for _ in range(8):
         if not (isinstance(schema, dict) and "$ref" in schema):
             break
-        name = schema["$ref"].rsplit("/", 1)[-1]
+        prefix, _, name = schema["$ref"].rpartition("/")
+        # The POINTER PREFIX is checked, not discarded. This helper is handed
+        # FastMCP-generated tool schemas as well as the document's own, and
+        # pydantic emits ``#/$defs/X``. Taking only the last segment would resolve
+        # such a ref into the BACKEND's components, so a parameter typed as a real
+        # StrEnum rather than a Literal would have both sides of the comparison
+        # read the same backend schema and the assertion would pass for any code
+        # at all. Fail loudly instead.
+        assert prefix == "#/components/schemas", (
+            f"{schema['$ref']} is not a ref into this document — resolving it here would "
+            "read the backend's own schema for BOTH sides of the comparison"
+        )
         schema = ((openapi.get("components") or {}).get("schemas") or {}).get(name)
     return schema if isinstance(schema, dict) else {}
 
@@ -466,3 +477,53 @@ def test_write_tools_are_not_marked_read_only() -> None:
         assert tool.annotations is not None, f"{tool.name} lacks annotations"
         expected_read_only = tool.name not in write_tools
         assert tool.annotations.readOnlyHint is expected_read_only, tool.name
+
+
+DOCS_PATH = Path(__file__).resolve().parents[2] / "website" / "docs" / "integrate" / "mcp-server.md"
+
+# The three rows of the "Enumerated arguments" table, by the argument each names.
+_DOC_ENUM_ROW = re.compile(r"^\|\s*`(status|order_by|types)`\s*\|[^|]*\|(.*)\|\s*$", re.MULTILINE)
+
+
+def _documented_enum_values(argument: str) -> tuple[str, ...]:
+    """The values that table publishes for one argument, in order.
+
+    The cell is prose as well as values — the ``order_by`` row explains what each
+    choice means — so the values are read as the inline-code spans, which is what
+    a reader scans for and the only part that has to match the schema.
+    """
+    doc = DOCS_PATH.read_text(encoding="utf-8")
+    for match in _DOC_ENUM_ROW.finditer(doc):
+        if match.group(1) == argument:
+            return tuple(re.findall(r"`([a-z_0-9]+)`", match.group(2)))
+    raise AssertionError(
+        f"no row for `{argument}` in the Enumerated arguments table of {DOCS_PATH}"
+    )
+
+
+def test_the_published_enum_table_is_the_one_the_tools_carry() -> None:
+    """The docs table says it cannot drift. Nothing was making that true.
+
+    website/docs/integrate/mcp-server.md publishes the seven statuses, the two
+    order_by values and the eleven entity kinds by hand, and then tells the
+    reader they are "checked against backend/openapi.json by the MCP server's
+    contract test rather than kept in step by hand, so they cannot drift". No
+    test read that page. So the day the backend gains a status, the sibling
+    tests here go red and force `enums.py` to be updated, and the table stays
+    behind — still asserting to an integrator that it is current, which is worse
+    than a table making no promise at all.
+
+    This is the promise. The repo pins doc tables this way elsewhere
+    (cli/tests/test_contract.py for the finding codes, test_cli_constant_mirror
+    for the backoff table); the page is now held to the same rule it claims.
+    """
+    for argument, literal in (
+        ("status", EventStatus),
+        ("order_by", EventOrderBy),
+        ("types", SearchEntityType),
+    ):
+        assert _documented_enum_values(argument) == get_args(literal), (
+            f"the `{argument}` row of the Enumerated arguments table in {DOCS_PATH.name} "
+            f"no longer matches tripl_mcp.enums, which the sibling tests hold to "
+            f"backend/openapi.json — update the table"
+        )

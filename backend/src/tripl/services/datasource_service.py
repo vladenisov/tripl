@@ -204,8 +204,20 @@ async def _refresh_main_search_indexes(session: AsyncSession, project_ids: list[
     ``scan_service`` does.
     """
     for project_id in project_ids:
-        main_branch_id = await resolve_branch_id(session, project_id, None)
-        await reindex_project_branch(session, project_id=project_id, branch_id=main_branch_id)
+        try:
+            main_branch_id = await resolve_branch_id(session, project_id, None)
+            await reindex_project_branch(session, project_id=project_id, branch_id=main_branch_id)
+        except Exception:
+            # Fault-isolated per project, because this runs AFTER the destructive
+            # commit: the source is already gone, nothing will retry, and one
+            # project's rebuild failing must not strand the projects behind it in
+            # the loop nor turn a delete that already succeeded into a 500. Same
+            # treatment the worker path gives this call (worker/search_reindex.py).
+            # A stale index is a search result that 404s on click; a swallowed
+            # delete would be worse.
+            logger.exception(
+                "Search reindex failed for project %s after a data-source delete", project_id
+            )
 
 
 async def delete_data_source(session: AsyncSession, ds_id: uuid.UUID) -> None:
@@ -221,8 +233,13 @@ async def delete_data_source(session: AsyncSession, ds_id: uuid.UUID) -> None:
     doomed_configs = list(ds.scan_configs)
     for config in doomed_configs:
         await disable_rules_bound_to_scan(session, config.id)
-    # Read the owning projects BEFORE the delete: once the cascade has committed
-    # these rows are gone and their attributes are no longer loadable.
+    # Read the owning projects BEFORE the delete: the delete evicts these instances
+    # from the identity map and marks them deleted, so afterwards they no longer
+    # stand for live rows and must not be read. NOT because the read would raise —
+    # both session factories are ``expire_on_commit=False`` (database.py,
+    # tests/conftest.py), so ``project_id`` would in fact still answer off the
+    # loaded ``__dict__``, exactly as ``event_service`` spells out one door over.
+    # The ordering is the discipline, and it survives a flip of that flag.
     affected_projects = list(dict.fromkeys(config.project_id for config in doomed_configs))
     await session.delete(ds)
     await session.commit()
