@@ -7,6 +7,7 @@ from typing import Any
 from mcp.server.fastmcp import Context, FastMCP
 from tripl_cli.api import page_items, page_total, search, send
 
+from tripl_mcp.enums import SearchEntityType, as_strings
 from tripl_mcp.runtime import client_for
 from tripl_mcp.tools._common import READ_ONLY, SEARCH_RESULT_FIELDS, trim
 
@@ -15,13 +16,17 @@ async def search_plan(
     slug: str,
     q: str,
     ctx: Context,  # type: ignore[type-arg]
-    types: list[str] | None = None,
+    types: list[SearchEntityType] | None = None,
     limit: int | None = None,
     branch_id: str | None = None,
 ) -> dict[str, Any]:
     client = client_for(ctx)
+    # A list of Literals so the tool schema enumerates the eleven kinds and a
+    # misspelt one is refused before the request, widened for the shared
+    # builder's invariant `list[str]` exactly as list_events does (tripl-i0vd).
     data = await send(
-        client, search.search_plan(slug, q, types=types, limit=limit, branch=branch_id)
+        client,
+        search.search_plan(slug, q, types=as_strings(types), limit=limit, branch=branch_id),
     )
     # Same split as list_events: the trim is an agent context budget and stays,
     # the envelope belongs to the route. `semantic_used` moved with it — both

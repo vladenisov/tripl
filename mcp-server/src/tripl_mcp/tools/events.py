@@ -7,6 +7,7 @@ from typing import Any
 from mcp.server.fastmcp import Context, FastMCP
 from tripl_cli.api import events, page_items, page_total, send
 
+from tripl_mcp.enums import EventOrderBy, EventStatus, as_strings
 from tripl_mcp.runtime import client_for, ensure_branch_not_main, require_branch_id
 from tripl_mcp.tools._common import (
     EVENT_LIST_FIELDS,
@@ -22,7 +23,7 @@ async def list_events(
     slug: str,
     ctx: Context,  # type: ignore[type-arg]
     search: str | None = None,
-    status: list[str] | None = None,
+    status: list[EventStatus] | None = None,
     tag: str | None = None,
     field_value: str | None = None,
     meta_value: str | None = None,
@@ -31,7 +32,7 @@ async def list_events(
     reviewed: bool | None = None,
     offset: int | None = None,
     limit: int | None = None,
-    order_by: str | None = None,
+    order_by: EventOrderBy | None = None,
     branch_id: str | None = None,
 ) -> dict[str, Any]:
     client = client_for(ctx)
@@ -40,7 +41,10 @@ async def list_events(
         events.list_events(
             slug,
             search=search,
-            status=status,
+            # Widened because the shared builder takes an invariant `list[str]`;
+            # the scalar `order_by` needs no such call, since a Literal member
+            # already IS a str (tripl-i0vd).
+            status=as_strings(status),
             tag=tag,
             field_value=field_value,
             meta_value=meta_value,
@@ -82,7 +86,7 @@ async def create_event(
     name: str,
     ctx: Context,  # type: ignore[type-arg]
     description: str | None = None,
-    status: str | None = None,
+    status: EventStatus | None = None,
     tags: list[str] | None = None,
     field_values: list[dict[str, Any]] | None = None,
     meta_values: list[dict[str, Any]] | None = None,

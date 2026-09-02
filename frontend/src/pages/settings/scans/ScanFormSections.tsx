@@ -732,7 +732,9 @@ export function LimitsSection({ form, footerFor }: SectionProps) {
           />
         </Field>
       ) : (
-        <Field label="Lookback (hours)">
+        /* id={false}: this branch replaces the input with a sentence, so there is
+           nothing here for a `<label htmlFor>` to point at (tripl-6h2b). */
+        <Field label="Lookback (hours)" id={false}>
           <p className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
             {NO_LOOKBACK_WITHOUT_TIME_COLUMN}
           </p>

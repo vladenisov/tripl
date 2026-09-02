@@ -31,6 +31,18 @@ from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks import scan as scan_tasks
 
 
+async def _scan_titles(client: AsyncClient, slug: str, query: str) -> list[str]:
+    """The scan configs a project's own search surface still returns for ``query``.
+
+    Deliberately the HTTP search endpoint rather than a ``SearchDocument`` row
+    count: the index is only worth anything if the palette and /search stop
+    offering a scan that no longer exists (tripl-9jvz).
+    """
+    resp = await client.get(f"/api/v1/projects/{slug}/search?q={query}&limit=50")
+    assert resp.status_code == 200, resp.text
+    return [item["title"] for item in resp.json()["items"] if item["entity_type"] == "scan_config"]
+
+
 class TestDataSourcesCRUD:
     async def test_create_data_source(self, client: AsyncClient):
         resp = await client.post(
@@ -207,6 +219,53 @@ class TestDataSourcesCRUD:
 
         resp = await client.get(f"/api/v1/data-sources/{ds_id}")
         assert resp.status_code == 404
+
+    async def test_delete_clears_the_scans_from_every_project_that_used_the_source(
+        self, client: AsyncClient
+    ):
+        """One delete can empty SEVERAL project indexes, and the source names none.
+
+        A data source is workspace-global by default — ``DataSource.project_id``
+        is NULL for a shared source — so the projects whose search index has to be
+        refreshed can only be read off the scan configs that cascade away with it.
+        Two projects scanning one warehouse is the case that makes reindexing
+        ``ds.project_id`` alone (or at all) visibly wrong (tripl-9jvz).
+
+        Nothing below reindexes by hand: deleting the source is the only trigger.
+        """
+        for slug in ("shared-scan-a", "shared-scan-b"):
+            await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+
+        create_resp = await client.post(
+            "/api/v1/data-sources",
+            json={
+                "name": "Shared warehouse",
+                "db_type": "clickhouse",
+                "host": "h",
+                "port": 8123,
+                "database_name": "d",
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        ds_id = create_resp.json()["id"]
+
+        for slug in ("shared-scan-a", "shared-scan-b"):
+            scan = await client.post(
+                f"/api/v1/projects/{slug}/scans",
+                json={
+                    "data_source_id": ds_id,
+                    "name": f"Pangolinscan {slug}",
+                    "base_query": "SELECT * FROM warehouse.events",
+                },
+            )
+            assert scan.status_code == 201, scan.text
+            assert await _scan_titles(client, slug, "pangolinscan") == [f"Pangolinscan {slug}"]
+
+        resp = await client.delete(f"/api/v1/data-sources/{ds_id}")
+        assert resp.status_code == 204, resp.text
+
+        for slug in ("shared-scan-a", "shared-scan-b"):
+            assert await _scan_titles(client, slug, "pangolinscan") == []
 
     async def test_duplicate_name_conflict(self, client: AsyncClient):
         payload = {
