@@ -23,7 +23,7 @@ import uuid
 
 from sqlalchemy import Select, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import InstrumentedAttribute
+from sqlalchemy.orm import InstrumentedAttribute, lazyload
 
 from tripl.core.variable_retirement import RetirementPlan, plan_retirement, referenced_tokens
 from tripl.models.event import Event
@@ -76,15 +76,33 @@ async def plan_project_retirement(
 ) -> RetirementPlan:
     """Compute the retirement plan for one project branch, writing nothing.
 
-    Five reads, all bounded by the project: the variables, every stored field
-    value, and three anti-join id sets. The value pass is the expensive one and
-    it is deliberately a single streaming scan — the alternative, a
-    ``LIKE '%${name}%'`` per variable, is one full pass per row of the catalog,
-    which on the project this was written for is 1517 of them.
+    Six reads, all bounded by the project: the variables, every stored field
+    value, every stored meta value, and three anti-join id sets. The two value
+    passes are the expensive ones and they are deliberately single streaming
+    scans — the alternative, a ``LIKE '%${name}%'`` per variable, is one full
+    pass per row of the catalog, which on the project this was written for is
+    1517 of them.
+
+    Six is the whole count only because the variable read declares its loader.
+    ``Variable.value_contexts`` is ``lazy="selectin"`` and each context then
+    selectin-loads its FieldDefinition, so the plain statement was two further
+    reads that nothing here asked for and that no ``LIMIT`` bounds — the
+    project's entire context table, hydrated to answer a question the indexed
+    ``with_contexts`` anti-join below already answers by id (tripl-xkbb). This
+    runs on every ``GET /variables?usage=used|unused``, so it is a request path
+    and not only the danger-zone one.
     """
     branch_id = await resolve_branch_id(session, project_id, branch_id)
     scope = (Variable.project_id == project_id, Variable.branch_id == branch_id)
-    variables = list((await session.execute(select(Variable).where(*scope))).scalars().all())
+    variables = list(
+        (
+            await session.execute(
+                select(Variable).where(*scope).options(lazyload(Variable.value_contexts))
+            )
+        )
+        .scalars()
+        .all()
+    )
     if not variables:
         return RetirementPlan()
 

@@ -34,6 +34,7 @@ from tripl.core.analyzers._event_generator_merge import (
     merge_existing_events_for_group_rules,
 )
 from tripl.core.analyzers._event_generator_variables import (
+    PendingVariableContexts,
     VariableObservation,
 )
 from tripl.core.analyzers._event_generator_variables import (
@@ -123,6 +124,11 @@ class GenerationResult:
     events_grouped: int = 0
     events_merged: int = 0
     variables_created: int = 0
+    # VariableValue rows this run left holding a non-empty values list that is
+    # new or changed; a row restored byte-for-byte does not count. Pinned
+    # contract: the scan task publishes it in ``result_summary`` under
+    # ``variable_values_written`` — do not rename.
+    variable_values_written: int = 0
     value_drifts_detected: int = 0
     columns_analyzed: int = 0
     details: list[str] = field(default_factory=list)
@@ -240,7 +246,12 @@ def generate_events(
     ).scalar_one()
     next_event_order = 0 if next_event_order is None else int(next_event_order) + 1
     logger.info(f"Loaded {len(existing_by_identity)} existing events for dedup")
-    variable_contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]] = {}
+    # Keyed on ``event.id``, but nothing is written until the insert far below —
+    # so a context recorded here has no row for ``_move_variable_contexts`` to
+    # re-point if the merge pass deletes the event, which is why that pass has to
+    # be handed the map (tripl-gsum). The event rows themselves ARE flushed by
+    # then; it is the contexts that are not.
+    variable_contexts: PendingVariableContexts = {}
     # ``(event_id, field_definition_id)`` pairs whose stored value this run
     # actually rewrote. Only those can invalidate an existing variable context.
     rewritten_fields: set[tuple[uuid.UUID, uuid.UUID]] = set()
@@ -321,12 +332,22 @@ def generate_events(
         event_group_rules=event_group_rules,
         field_definitions=field_definitions,
         next_event_order=next_event_order,
+        cardinality_threshold=cardinality_threshold,
+        # The merge pass can DELETE an event whose contexts the loop above has
+        # already recorded — rule application is not idempotent across the two
+        # value spaces, so a trailing catch-all rule re-matches the group events
+        # the specific rules just produced. Handing the map over lets the pass
+        # carry those entries onto the surviving event; without it they were
+        # inserted below against a deleted id and the flush killed the job on
+        # ``variable_values_event_id_fkey`` (tripl-gsum).
+        pending_variable_contexts=variable_contexts,
     )
-    _preserve_existing_variable_context_values(
+    prior_context_values = _preserve_existing_variable_context_values(
         session,
         project_id=project_id,
         branch_id=main_branch_id,
         contexts=variable_contexts,
+        cardinality_threshold=cardinality_threshold,
     )
     _delete_variable_contexts_for_event_type(
         session,
@@ -340,11 +361,14 @@ def generate_events(
         # invalidate a row ``_record_variable_contexts`` refused to re-record.
         excluded_variable_ids=variable_index.excluded_ids(),
     )
-    _insert_variable_contexts(
+    result.variable_values_written = _insert_variable_contexts(
         session,
         project_id=project_id,
         branch_id=main_branch_id,
         contexts=variable_contexts,
+        # The pre-merge snapshot: without it a steady-state cycle that merely
+        # restores every row would report each one as written.
+        prior_values=prior_context_values,
     )
     result.value_drifts_detected = _detect_variable_value_drifts(
         session,

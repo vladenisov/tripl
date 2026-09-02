@@ -4,10 +4,12 @@ import uuid
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import lazyload
 from sqlalchemy.sql.elements import ColumnElement
 
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
+from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.schemas.variable import (
@@ -48,8 +50,22 @@ async def _check_binding_conflicts(
     """
     if not bindings:
         return
+    # ``lazyload`` because ``Variable.value_contexts`` is ``lazy="selectin"`` and
+    # each context then selectin-loads its FieldDefinition: hydrating the
+    # entities plainly pulls the project's whole context table into memory to
+    # answer a question about NAMES, on a statement that runs on every create
+    # and on every update that touches bindings (tripl-xkbb). The same option
+    # for the same reason as ``worker.tasks.metrics.catalog_sync``.
+    #
+    # One of TWO whole-project selects the same request makes: ``create_variable``
+    # and ``update_variable`` both call ``reindex_project_branch`` a few lines
+    # below, whose ``_search_documents`` pass selects every Variable of the branch
+    # as well. That one now carries the same option, so the hydration is gone
+    # rather than merely halved — the two belong together if either ever moves.
     result = await session.execute(
-        select(Variable).where(Variable.project_id == project_id, Variable.branch_id == branch_id)
+        select(Variable)
+        .where(Variable.project_id == project_id, Variable.branch_id == branch_id)
+        .options(lazyload(Variable.value_contexts))
     )
     wanted = set(bindings)
     for other in result.scalars().all():
@@ -121,8 +137,21 @@ async def list_variables(
         )
 
     total = await session.scalar(select(func.count(Variable.id)).where(*scope)) or 0
+    # ``lazyload`` for the reason ``_check_binding_conflicts`` gives, on the very
+    # endpoint the retirement docstring above names as a request path. Nothing
+    # downstream touches the collection: ``VariableResponse`` declares no
+    # contexts field, and ``attach_variable_summaries`` re-reads what it needs
+    # with its own ``select(VariableValue)`` rather than walking this
+    # relationship. The frontend pins its page size to VARIABLES_PAGE_LIMIT =
+    # 5000 and routes every list caller through it, so without the option one
+    # page IS the whole-project select tripl-xkbb exists to remove.
     result = await session.execute(
-        select(Variable).where(*scope).order_by(Variable.name).offset(offset).limit(limit)
+        select(Variable)
+        .where(*scope)
+        .options(lazyload(Variable.value_contexts))
+        .order_by(Variable.name)
+        .offset(offset)
+        .limit(limit)
     )
     variables = list(result.scalars().all())
     await attach_variable_summaries(session, variables)
@@ -155,6 +184,76 @@ async def create_variable(
     await session.refresh(var)
     await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
     return var
+
+
+async def rewrite_variable_token_references(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+    old_name: str,
+    new_name: str,
+) -> None:
+    """Re-point every stored ``${old_name}`` in this branch at ``${new_name}``.
+
+    Renaming a variable is advertised as carrying through the values that
+    reference it, so this rewrite has to travel with the name wherever the name
+    moves. Two callers move it: ``update_variable`` below, and
+    ``plan_branch_revert_service``'s rename-aware revert, which moves the name
+    BACK. That second direction is why this is a module-level coroutine instead
+    of a few lines inside the update: the revert wrote only ``renamed.name`` and
+    left every value on the branch naming ``${new_name}``, a token no variable
+    answers to, so ``event_service._attach_template_warnings`` stamped "Unknown
+    variable token" on each affected event and a merge carried the broken
+    templates to main — under a confirm dialog promising the variable's
+    "documented values and history are untouched" (tripl-hjxy). One
+    implementation for both directions, because two cannot drift.
+
+    BOTH value tables, for the reason ``variable_retirement_service`` spells out
+    on the read side: a ``${token}`` is legal in an event's field values and in
+    its META values. Field values alone left the meta half holding a literal
+    ``${old_name}`` naming nothing anybody can now find by the variable's name
+    (tripl-mpw3).
+
+    No ``is_authored`` test on either pass, and none to add. The column lives
+    only on ``EventFieldValue``, where TRUE marks a value a PERSON typed and a
+    scan must therefore leave alone — ``core.analyzers.event_generator`` only
+    overwrites a value whose flag is false. A rename is not a scan and replaces
+    no value: it re-points a reference inside whatever value is already there,
+    so an authored value must be carried across exactly like a harvested one,
+    and skipping the authored rows is precisely how a hand-typed template would
+    be left naming the old name. ``EventMetaValue`` carries no such column at
+    all, because no scan writes that table.
+
+    Scoped to one branch, like both callers: a branch's rename must not reach
+    main's values.
+    """
+    old_ref = f"${{{old_name}}}"
+    new_ref = f"${{{new_name}}}"
+
+    fv_result = await session.execute(
+        select(EventFieldValue)
+        .join(Event, EventFieldValue.event_id == Event.id)
+        .where(
+            Event.project_id == project_id,
+            Event.branch_id == branch_id,
+            EventFieldValue.value.contains(old_ref),
+        )
+    )
+    for fv in fv_result.scalars().all():
+        fv.value = fv.value.replace(old_ref, new_ref)
+
+    mv_result = await session.execute(
+        select(EventMetaValue)
+        .join(Event, EventMetaValue.event_id == Event.id)
+        .where(
+            Event.project_id == project_id,
+            Event.branch_id == branch_id,
+            EventMetaValue.value.contains(old_ref),
+        )
+    )
+    for mv in mv_result.scalars().all():
+        mv.value = mv.value.replace(old_ref, new_ref)
 
 
 async def update_variable(
@@ -202,24 +301,18 @@ async def update_variable(
         if dup.scalar_one_or_none():
             raise HTTPException(status_code=409, detail="Variable with this name already exists")
 
-        # Replace ${old_name} → ${new_name} in all event field values for this project
-        old_name = var.name
-        new_name = update_data["name"]
-        old_ref = f"${{{old_name}}}"
-        new_ref = f"${{{new_name}}}"
-
-        # Get all event_field_values for events in this project that contain the old ref
-        fv_result = await session.execute(
-            select(EventFieldValue)
-            .join(Event, EventFieldValue.event_id == Event.id)
-            .where(
-                Event.project_id == project_id,
-                Event.branch_id == branch_id,
-                EventFieldValue.value.contains(old_ref),
-            )
+        # Carry the name change through every stored ``${old_name}``. Called
+        # HERE, before the ``setattr`` loop below writes the new name, because
+        # the helper reads the branch's values against the name the row still
+        # holds — the same ordering ``plan_branch_revert_service`` keeps when it
+        # moves the name back.
+        await rewrite_variable_token_references(
+            session,
+            project_id=project_id,
+            branch_id=branch_id,
+            old_name=var.name,
+            new_name=update_data["name"],
         )
-        for fv in fv_result.scalars().all():
-            fv.value = fv.value.replace(old_ref, new_ref)
 
     # ``excluded_from_scans`` lands here like any other field, with no purge
     # beside it. Every scan-side guard asks the FLAG, never the rows —

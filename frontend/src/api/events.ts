@@ -11,6 +11,16 @@ type ListParams = {
   reviewed?: boolean
   order_by?: 'catalog' | 'volume'
   offset?: number
+  /**
+   * Omitting this does NOT mean "every event". No limit is emitted, so the
+   * server's own default applies — `limit: int = Query(200, ge=1, le=10000)` in
+   * backend/src/tripl/api/v1/events.py — and the caller gets a silently
+   * truncated page with no signal that anything was left behind. That is
+   * exactly how the variables tab's override picker came to offer only the
+   * first 200 events of a larger project (tripl-46am). A caller that renders a
+   * roster must pass a limit it chose and read `total` to say what it did not
+   * show.
+   */
   limit?: number
 }
 

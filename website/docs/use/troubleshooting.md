@@ -190,8 +190,18 @@ sends. A break anywhere in that chain produces silence.
    `pending` delivery and dispatching it, or the broker was down at dispatch, a
    maintenance task (`requeue_stranded_alert_deliveries`, every 5 minutes)
    re-enqueues deliveries still `pending` after 15 minutes, up to 5 attempts,
-   then marks them `failed`. A permanently failing delivery will eventually stop
-   cycling and show as failed.
+   then marks them `failed`. The same task retries a delivery that already
+   `failed` when its stored error is a transient network failure — destination
+   unreachable, connection refused, a timeout — a few times, minutes apart,
+   within the same attempt budget; only failures from the last six hours are
+   picked up. While an attempt is queued the row shows `pending` but keeps its
+   last error; a failed attempt returns it to `failed` with the fresh error,
+   and a success flips it to `sent`. Jira and Linear deliveries and disabled
+   destinations are never auto-retried.
+   Any other failure (bad credentials, a rejected payload) is never retried
+   automatically: fix the cause and press **Retry**, which also resets the
+   attempt budget. A permanently failing delivery will eventually stop cycling
+   and show as failed.
 8. **A drift scope is on but nothing feeds it.** The two drift scopes act on
    signals another part of the project has to produce first, so a rule can have
    one enabled and be structurally unable to fire. **Variable value drift**
@@ -707,10 +717,16 @@ whether anything it produced raised a signal or queued an alert. A catalog-only
 scan says outright that it collects no metric points, so nothing downstream can
 fire.
 
-Every raw counter the run reported is still there under **Show raw counters** —
-*Events created*, *Variables created*, *Events skipped*, *Columns analyzed*,
-*Event breakdowns*, *Distribution rows*, *Signals added*, *Alerts queued*.
-Nothing was removed; it is one click further down.
+Every raw counter the run reported is still there under **Show raw counters**.
+Four are always shown — *Events created*, *Variables created*, *Events skipped*,
+*Columns analyzed*. The rest appear only when that run produced them, so the
+panel is shorter for a catalog-only scan than for a scheduled collection:
+*Event breakdowns*, *Distribution rows*, *Paths sampled*, *Paths with samples*,
+*Values written*, *Contexts unfilled*, *Variables retired*, *Signals added*,
+*Alerts queued*. Nothing was removed; it is one click further down. The four
+sampling counters in that second group are the ones the empty-observed-values
+answer below sends you to, and *Variables retired* read against *Variables
+created* is how you tell a growing catalog from one holding steady.
 
 **The run says it raised 2 signals but Anomalies shows a different number. Which
 is wrong?**
@@ -775,7 +791,10 @@ full exception is in the worker logs:
 Walk the delivery chain in [Alerts never fire](#alerts-never-fire): destination
 enabled? rule enabled and matching? cooldown/mute? (email) SMTP set? Then check
 the worker logs for `Failed to send alert delivery` — the failure reason is
-persisted on the delivery.
+persisted on the delivery. If that reason is a transient network error, the
+maintenance reaper retries the delivery on its own a few times, minutes apart;
+any other failure — and every Jira/Linear delivery — waits for **Retry** in
+the UI.
 
 **I acknowledged an incident and wrote down why, and it alerted again. Do I need
 to mute it?**
@@ -795,8 +814,11 @@ failed` bullet list in the logs and set each missing secret/origin. See
 **Can I retry a failed scan automatically?**
 No. Scan, metrics, and connection-test tasks use `max_retries=0` — a failure is
 final for that run. Fix the underlying cause (connection, row limit, query) and
-click **Run again**. Stranded *alert deliveries* are the exception: those are
-re-enqueued automatically by the maintenance reaper.
+click **Run again**. *Alert deliveries* are the exception: stranded ones are
+re-enqueued automatically by the maintenance reaper, and one that failed on a
+transient network error is retried the same way a few times, minutes apart.
+Other delivery failures — and every Jira/Linear delivery — wait for the manual
+**Retry**.
 
 **Why did a deleted variable come back after the next scan?**
 The scan rediscovered its warehouse column or JSON-path binding. Delete removes
@@ -808,9 +830,13 @@ a tombstone — so a retired variable reappears if its source path starts
 arriving again. Exclusion is what makes a removal stick.
 
 **A scan-created variable vanished from the plan. Where did it go?**
-Every catalog run ends by retiring the scan-created variables nothing refers to
-any more, so a catalog stops growing a permanent row per key of a JSON column
-keyed by free text. A row is removed only when all of this holds: its
+A catalog run retired it, so a catalog stops growing a permanent row per key of
+a JSON column keyed by free text. A scan you started always retires. A scheduled
+monitoring collection retires only when the scan sets **Limits → Lookback
+(hours)** — with the field blank it judges the catalog through the slice it is
+collecting, often a single hour, and one quiet hour is not evidence a variable is
+dead. A metrics **replay** syncs no catalog and retires nothing. A row is
+removed only when all of this holds: its
 description is still the scan's own, its bindings are still only the source path
 the scan gave it, it documents no values, and it has no per-event override, no
 value drift, no observed context, and no stored event field or meta value naming
@@ -827,7 +853,17 @@ of them holds a value. It is a different state from the dash on neighbouring
 rows, which means no context exists at all. Open the event's value popover to see
 which contexts are empty and what each one binds to. An empty context is not by
 itself a fault: a binding pointed at a column that is genuinely empty has nothing
-to store. Note also that a variable with no stored values raises no value drift,
+to store. A JSON-path context that is merely new fills on its own — scheduled
+runs attempt every path still waiting for a first value every few runs, so
+expect first samples within hours on a regularly collecting scan. A context
+still empty after days usually means the path is not arriving — but rule out
+two other causes first: a variable excluded from scans is never sampled at
+all, and a sampling query that fails (a permission change, a dropped column)
+degrades silently so the run still completes — the run details' raw counters
+show it as paths sampled with none coming back with samples. Once stored,
+samples accumulate across runs, so a value does not drop off the list because
+recent scan windows stopped carrying it.
+Note also that a variable with no stored values raises no value drift,
 so an empty drift count says nothing about whether the documented contract holds.
 See
 [Variables & templates](./variables-and-templates.md#documented-observed-and-effective-values).
@@ -841,8 +877,10 @@ positive. See [Variables & templates](./variables-and-templates.md).
 **Why did a value drift I already accepted come back?**
 Because the scan saw a value that was *not* in the set you accepted. An
 acceptance covers exactly the values it documented; anything newer reopens the
-row, and the row then lists only the new values. Use **Show N resolved** in
-either review panel to inspect or reopen a drift you resolved earlier.
+row, and the row then lists only the new values. Use the **Show N …** toggle in
+either review panel to inspect or reopen a drift you resolved earlier — it reads
+**Show N resolved**, **Show N snoozed**, or **Show N snoozed or resolved**,
+depending on what the collapsed group is holding at the time.
 
 **Where do I configure SMTP, encryption keys, and connection URLs?**
 All via environment variables / `.env`. See [Configuration](../run/configuration)

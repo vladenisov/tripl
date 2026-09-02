@@ -47,7 +47,14 @@ class AuditLog(UUIDMixin, Base):
         # table on every load — the same failure as the others, with no predicate
         # to narrow it first.
         Index("ix_audit_log_created", "created_at", "id"),
-        Index("ix_audit_log_project", "project_id"),
+        # There is deliberately NO standalone ``ix_audit_log_project`` on
+        # ``project_id`` alone. It existed for one revision, and e7a1c04b62d8
+        # dropped it as superseded once the composite above claimed the same
+        # leading column — a btree on ``(project_id, created_at, id)`` serves
+        # every predicate a btree on ``(project_id)`` could. The declaration
+        # outlived that migration here and made the ORM metadata disagree with
+        # the migrated schema, which is what ``alembic check`` reports and what
+        # ``create_all``-built test schemas hid (tripl-1iic). Do not restore it.
     )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import lazyload, selectinload
 
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
@@ -241,10 +241,20 @@ async def build_documents(
 
     variables = list(
         await session.scalars(
-            select(Variable).where(
+            select(Variable)
+            .where(
                 Variable.project_id == project_id,
                 Variable.branch_id == branch_id,
             )
+            # ``Variable.value_contexts`` is ``lazy="selectin"`` and each context
+            # then selectin-loads its FieldDefinition, so without this the reindex
+            # pulls the project's whole context table plus every referenced field
+            # definition — to build text it assembles from its OWN
+            # ``select(VariableValue)`` below. Every variable create, every
+            # variable update and every event write reaches this through
+            # ``reindex_project_branch``, which makes it the hottest of the
+            # tripl-xkbb sites.
+            .options(lazyload(Variable.value_contexts))
         )
     )
     # Sorted deterministically: the demo embedding fixture keys documents by

@@ -222,13 +222,17 @@ dotted JSON paths. A per-event override replaces the global documented list for
 that event.
 
 The table shows documented/observed samples, binding paths, usage counts, and
-open value drift. The observed column distinguishes two silences: it reads **No
+open value drift. Observed samples accumulate across runs — re-sampling merges
+new values into the stored list, under a cap, instead of replacing it — so the
+observed column is a history of what has been seen, not a mirror of the latest
+scan window. It also distinguishes two silences: it reads **No
 values stored** when the variable has contexts but none of them holds a value,
 and shows a dash only when no context exists at all. Drift can be accepted
-globally or for one event, snoozed, marked false-positive, or reopened;
-resolved rows sit behind a **Show N
-resolved** toggle in both panels, and a scan reopens an accepted row on its own
-once it observes a value outside the accepted set. The event detail repeats the
+globally or for one event, snoozed, marked false-positive, or reopened; rows
+that are not asking for attention sit in both panels behind a toggle named for
+what it holds — **Show N resolved**, **Show N snoozed**, or **Show N snoozed or
+resolved** — and a scan reopens an accepted row on its own once it observes a
+value outside the accepted set. The event detail repeats the
 affected event's review panel. Selection enables bulk type/description/value changes and
 delete. **Exclude from scans** keeps a restorable tombstone so a deliberately
 removed scan-owned variable is not recreated. Search matches a variable's
@@ -236,15 +240,24 @@ display name and description **and** its scan source path and bindings, so a
 variable whose display name was shortened from a dotted path is still findable
 by the data path it binds to.
 
-Every catalog run ends by **retiring the scan-created variables nothing refers
+A catalog run can end by **retiring the scan-created variables nothing refers
 to any more** — no `${token}` in any stored event field or meta value, no
 observed context, no value drift, no per-event override — so a catalog stops
-accumulating rows minted from a JSON column keyed by free text. The pass is
-deliberately narrow: an edited description, a hand-added binding, documented
-values, an override, drift triage, or an **Exclude from scans** tombstone each
-keep the row, and a variable the run has just created is always still
-referenced by that run's own event values. When a run retires anything it says
-so in its [details list](#scan-runs).
+accumulating rows minted from a JSON column keyed by free text. A scan you start
+by hand always does this. A **scheduled monitoring collection** does it only when
+the config sets **Limits → Lookback (hours)**: with the field blank the run
+judges the catalog through the slice it is collecting, often a single hour, and
+one quiet hour is not evidence that a variable is dead. A **metrics replay**
+never does it: it syncs no catalog, so it has no current view of which paths your
+rows carry at all. See [Variables &
+templates](./variables-and-templates.md#unreferenced-scan-created-variables-are-retired-automatically)
+for what a too-narrow view actually costs.
+
+The pass is deliberately narrow: an edited description, a hand-added binding,
+documented values, an override, drift triage, or an **Exclude from scans**
+tombstone each keep the row, and a variable the run has just created is always
+still referenced by that run's own event values. When a run retires anything it
+says so in its [details list](#scan-runs).
 
 An **All / In use / Unused** control filters the table by that same rule.
 **Unused** is answered by the server with the retirement predicate itself rather
@@ -338,7 +351,9 @@ limited to a selected historical period and cannot be undone.
 
 **Retire unused variables** applies the same retirement rule a catalog run
 applies (see [Variables](#variables)) across a whole plan branch in one pass —
-for the backlog that accumulated before runs started sweeping. It is **two
+for the backlog that accumulated before runs started sweeping, and for a
+**Catalog + monitoring** config that sets no **Limits → Lookback (hours)**, whose
+scheduled runs never sweep. It is **two
 buttons, not one**: **Preview** commits nothing and reports what the pass would
 take, and **Retire** stays disabled until a preview says there is something to
 take. Either way the row reports the same breakdown — how many rows can be or
@@ -1025,7 +1040,13 @@ a scan card.
 Every counter the run reported is still there, verbatim, behind **Show raw
 counters**: *Events created*, *Variables created*, *Events skipped*, *Columns
 analyzed*, *Event breakdowns*, *Distribution rows*, *Signals added*, *Alerts
-queued*. Nothing was removed — the sentences lead, the counters follow.
+queued* — and, on a scheduled run, the variable-value sampling sweep: *Paths
+sampled* (how many still-unobserved paths this run attempted), *Paths with
+samples* (how many of those came back with a value — sampled high with zero
+back is the signature of a failing sampling query), *Values written* (contexts
+whose stored values it changed), and *Contexts unfilled* (what remains to
+fill, falling run over run as sampling converges). Nothing was removed — the
+sentences lead, the counters follow.
 
 ### Audit log
 

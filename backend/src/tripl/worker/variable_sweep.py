@@ -25,6 +25,24 @@ the token is never written and nothing live refers to the variable.
 Runs after the scan's ``session.commit()`` and before the search reindex, so the
 reindex sees the retired set and the deletions cannot be rolled back by a later
 failure in the same task.
+
+**The caller must have judged cardinality over a view it can defend.** "Nothing
+refers to this" is a claim about the whole project, and the run that answers it
+reads the field values its own catalog pass has just rewritten. Rewrite them
+from a view that is too narrow and the sweep destroys the evidence it is reading:
+``event_plan.plan_column_meta`` sets ``meta['is_low']`` from the cardinality of
+the window it was given, ``plan_events`` then emits a LITERAL instead of the
+``${token}`` template (``event_plan`` L485-491), ``_upsert_field_values``
+rewrites the stored value in place, and
+``delete_variable_contexts_for_event_type`` drops that field's contexts because
+the run rewrote it. The variable is left with no stored token and no context —
+retirable by this predicate — and its whole observed-value history goes with the
+row. ``run_scan`` is safe because an unset ``scan_lookback_hours`` leaves its
+window ``None`` and it sees the whole table; ``collect_metrics`` is not, because
+it falls back to the collection window (one or two intervals) and a column that
+is high-cardinality over the table can read low over one hour. So the scheduled
+caller sweeps only when the operator DECLARED the catalog window (tripl-bh1q
+follow-up); see ``collect_metrics`` for the gate itself.
 """
 
 from __future__ import annotations
@@ -33,7 +51,7 @@ import logging
 import uuid
 
 from sqlalchemy import Select, delete, select
-from sqlalchemy.orm import InstrumentedAttribute, Session
+from sqlalchemy.orm import InstrumentedAttribute, Session, lazyload
 
 from tripl.core.variable_retirement import plan_retirement, referenced_tokens
 from tripl.models.event import Event
@@ -50,6 +68,18 @@ logger = logging.getLogger(__name__)
 # statement at 65535 bind parameters and the retirable set is unbounded by
 # construction — it is the population this code exists because nothing bounded.
 _DELETE_BATCH = 1000
+
+
+def retired_details_line(count: int) -> str:
+    """The one sentence both worker call sites report a sweep with.
+
+    Lives here rather than at either call site because ``collect_metrics`` now
+    says it TWICE — once on the stub it stamps the moment the delete is durable,
+    once in the full summary it assembles ~400 lines later — and ``run_scan``
+    says it a third time. An operator comparing a scheduled run against a manual
+    one must not be left deciding whether two phrasings mean the same thing.
+    """
+    return f"Retired {count} unused variables no event refers to"
 
 
 def _ids_with_rows(
@@ -77,9 +107,20 @@ def retire_unused_variables(
 ) -> int:
     """Delete the project branch's unreferenced scan-created variables.
 
-    Returns the number retired, for the scan's own report. Commits only when it
-    deleted something, so a scan over a healthy catalog costs four reads and no
-    write at all.
+    Returns the number of rows this call ACTUALLY deleted, for the scan's own
+    report — summed from the statements' rowcounts, not from the length of the
+    plan. The two differ whenever a concurrent run got there first, and that is
+    not a rare shape: the sweep is project-wide but this task is per-config, and
+    ``check_metrics_due`` dispatches every due config as an independent Celery
+    task with no project-level lock (its advisory lock serialises the DISPATCH
+    loop, and ``_get_active_scan_jobs`` is checked per config). Two configs of
+    one project on the same interval therefore run in parallel, both compute the
+    same retirable set, and the second ``DELETE`` matches zero rows — so
+    reporting ``len(plan.retirable)`` had both runs claim the full count, in the
+    summary and in the log.
+
+    Commits only when it had something to delete, so a scan over a healthy
+    catalog costs four reads and no write at all.
     """
     scope = [Variable.project_id == project_id]
     value_scope = [Event.project_id == project_id]
@@ -87,7 +128,17 @@ def retire_unused_variables(
         scope.append(Variable.branch_id == branch_id)
         value_scope.append(Event.branch_id == branch_id)
 
-    variables = list(session.execute(select(Variable).where(*scope)).scalars())
+    # ``lazyload`` for the same reason as ``catalog_sync`` and the two request-path
+    # selects: ``Variable.value_contexts`` is ``lazy="selectin"`` and each context
+    # then selectin-loads its FieldDefinition, so hydrating these plainly pulls the
+    # project's entire context table into a sweep that only ever reads ids, names
+    # and provenance. The contexts are answered by the anti-join below instead
+    # (tripl-xkbb).
+    variables = list(
+        session.execute(
+            select(Variable).where(*scope).options(lazyload(Variable.value_contexts))
+        ).scalars()
+    )
     if not variables:
         return 0
 
@@ -119,20 +170,31 @@ def retire_unused_variables(
     if not plan.retirable:
         return 0
 
+    # Batching is unchanged — PostgreSQL's 65535-bind-parameter ceiling is the
+    # reason for it and that has not moved. What changed is that each statement's
+    # rowcount is now read and summed, so a batch that raced another run and
+    # matched nothing contributes nothing.
+    retired = 0
     for start in range(0, len(plan.retirable), _DELETE_BATCH):
         batch = plan.retirable[start : start + _DELETE_BATCH]
-        session.execute(
+        result = session.execute(
             delete(Variable)
             .where(Variable.id.in_(batch))
             .execution_options(synchronize_session=False)
         )
+        rowcount = getattr(result, "rowcount", 0)
+        retired += int(rowcount or 0)
     session.commit()
+    # Both numbers, always: ``planned`` short of ``retired`` is the signature of
+    # the concurrent sibling config described in the docstring, and a log line
+    # carrying only one of them cannot tell that apart from a quiet catalog.
     logger.info(
         "Retired unreferenced scan-created variables",
         extra={
             "project_id": str(project_id),
-            "retired": len(plan.retirable),
+            "retired": retired,
+            "planned": len(plan.retirable),
             "scanned": plan.scanned,
         },
     )
-    return len(plan.retirable)
+    return retired

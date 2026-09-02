@@ -48,8 +48,10 @@ from tripl.schemas.plan_branch import (
     PlanBranchDiff,
     PlanBranchList,
     PlanBranchResponse,
+    PlanDiffRename,
 )
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
+from tripl.services._plan_branch_renames import snapshot_rename_pairs
 from tripl.services.plan_revision_service import (
     build_plan_snapshot,
     compute_plan_diff_entries,
@@ -964,6 +966,7 @@ async def diff_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) ->
     main_snapshot = await build_plan_snapshot(session, project_id, branch_id=main_branch_id)
     branch_snapshot = await build_plan_snapshot(session, project_id, branch_id=branch.id)
     entries: list[Any] = []
+    renames: list[PlanDiffRename] = []
     behind_base = False
     if branch.base_revision_id is not None:
         base_revision = await session.get(PlanRevision, branch.base_revision_id)
@@ -974,13 +977,21 @@ async def diff_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) ->
             entries = compute_plan_diff_entries(base_payload, branch_snapshot)
             behind_entries = compute_plan_diff_entries(base_payload, main_snapshot)
             behind_base = len(behind_entries) > 0
+            # The MERGE's own pairing, read through the same function the merge
+            # applies, so a rename reads as one change instead of a deletion
+            # beside an unrelated addition. A second implementation here would
+            # be free to drift from what the merge then actually does
+            # (tripl-amnn).
+            renames = snapshot_rename_pairs(base_payload, main_snapshot, branch_snapshot)
     else:
         # Legacy working branches without a base snapshot cannot distinguish
-        # branch-authored changes from later main changes.
+        # branch-authored changes from later main changes — and with no third
+        # side to read, the pairing has nothing to say either.
         entries = compute_plan_diff_entries(main_snapshot, branch_snapshot)
 
     return PlanBranchDiff(
         entries=entries,
         summary=_summary_counts(entries),
         behind_base=behind_base,
+        renames=renames,
     )

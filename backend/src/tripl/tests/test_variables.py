@@ -6,6 +6,7 @@ from typing import Any, NamedTuple
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import create_engine
+from sqlalchemy import event as sa_event
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.models import Base
@@ -17,8 +18,10 @@ from tripl.models.scan_config import ScanConfig
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
 from tripl.models.variable_value_drift import VariableValueDrift
-from tripl.services import variable_service
-from tripl.tests.conftest import TestSessionLocal
+from tripl.schemas.variable import SUMMARY_VALUE_LIMIT
+from tripl.services import variable_retirement_service, variable_service
+from tripl.services.variable_value_service import attach_variable_summaries
+from tripl.tests.conftest import TestSessionLocal, engine
 from tripl.worker.tasks.metrics.signals import _get_active_variable_value_drift_candidates
 
 
@@ -179,6 +182,71 @@ async def test_variable_responses_include_observed_value_summary(client: AsyncCl
     assert contexts[0]["event_name"] == "Profile View"
     assert contexts[0]["field_name"] == "screen"
     assert contexts[0]["values"] == ["u1", "u2"]
+
+
+@pytest.mark.asyncio
+async def test_sample_values_stay_capped_however_many_contexts_feed_them(client: AsyncClient):
+    """The cap belongs to the variable, not to one context row (tripl-x050).
+
+    The accumulator is shared across a variable's contexts and was entered once
+    per context, so every context past the first slipped one more novel value in
+    before the length was tested: three full contexts here, and on production a
+    variable with a hundred of them shipped 119 values under a schema that calls
+    the cap hard. The row is a preview — ``/variables/{id}/values`` is where the
+    full list lives — and this is the endpoint whose paging exists to keep
+    clients off a multi-hundred-KB payload.
+    """
+    slug = "var-cap"
+    await _setup_project(client, slug)
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "pv", "display_name": "Page View"},
+    )
+    field = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et.json()['id']}/fields",
+        json={"name": "screen", "display_name": "Screen", "field_type": "string"},
+    )
+    created = await client.post(f"/api/v1/projects/{slug}/variables", json={"name": "variant"})
+    variable_id = uuid.UUID(created.json()["id"])
+
+    # Three contexts, each on its own event because a context is unique per
+    # (variable, event, field), and each holding a full cap's worth of values
+    # nothing else has seen.
+    event_ids = []
+    for index in range(3):
+        event = await client.post(
+            f"/api/v1/projects/{slug}/events",
+            json={"event_type_id": et.json()["id"], "name": f"Event {index}"},
+        )
+        event_ids.append(uuid.UUID(event.json()["id"]))
+
+    async with TestSessionLocal() as session, session.begin():
+        variable = await session.get(Variable, variable_id)
+        for index, event_id in enumerate(event_ids):
+            session.add(
+                VariableValue(
+                    project_id=variable.project_id,
+                    branch_id=variable.branch_id,
+                    variable_id=variable_id,
+                    event_id=event_id,
+                    field_definition_id=uuid.UUID(field.json()["id"]),
+                    source_column="screen",
+                    value_kind="high",
+                    observed_count=SUMMARY_VALUE_LIMIT,
+                    values=[f"e{index}-v{n:02d}" for n in range(SUMMARY_VALUE_LIMIT)],
+                )
+            )
+
+    async with TestSessionLocal() as session:
+        variable = await session.get(Variable, variable_id)
+        await attach_variable_summaries(session, [variable])
+        # Before the fix this is SUMMARY_VALUE_LIMIT + 2 — one extra value for
+        # each context that re-entered an already-full accumulator.
+        assert len(variable.sample_values) == SUMMARY_VALUE_LIMIT
+
+    listed = await client.get(f"/api/v1/projects/{slug}/variables")
+    assert listed.status_code == 200
+    assert len(listed.json()["items"][0]["sample_values"]) == SUMMARY_VALUE_LIMIT
 
 
 @pytest.mark.asyncio
@@ -362,6 +430,68 @@ async def test_rename_to_dotted_name_rejected_but_legacy_editable(client: AsyncC
     assert resp.json()["description"] == "still editable"
 
 
+@pytest.mark.asyncio
+async def test_renaming_rewrites_the_token_in_meta_values_as_well_as_field_values(
+    client: AsyncClient,
+):
+    """A rename carries through both surfaces that store a ``${token}``.
+
+    An event's field values and its meta values are equally legal homes for a
+    reference — the retirement predicate reads both for exactly that reason —
+    and the rename rewrite only ever visited the first, so a ``${old_name}``
+    parked in a meta value came out of the rename as a literal naming the old
+    name (tripl-mpw3).
+    """
+    slug = "var-rename-meta"
+    await _setup_project(client, slug)
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "pv", "display_name": "Page View"},
+    )
+    field = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et.json()['id']}/fields",
+        json={"name": "screen", "display_name": "Screen", "field_type": "string"},
+    )
+    meta_field = await client.post(
+        f"/api/v1/projects/{slug}/meta-fields",
+        json={"name": "owner_note", "display_name": "Owner note", "field_type": "string"},
+    )
+    created = await client.post(f"/api/v1/projects/{slug}/variables", json={"name": "old_name"})
+    var_id = created.json()["id"]
+
+    event = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": et.json()["id"],
+            "name": "Profile View",
+            "field_values": [
+                {"field_definition_id": field.json()["id"], "value": "screen=${old_name}"}
+            ],
+            "meta_values": [
+                {
+                    "meta_field_definition_id": meta_field.json()["id"],
+                    "value": "owned while ${old_name} is set",
+                }
+            ],
+        },
+    )
+    assert event.status_code == 201
+    event_id = event.json()["id"]
+
+    renamed = await client.patch(
+        f"/api/v1/projects/{slug}/variables/{var_id}",
+        json={"name": "new_name"},
+    )
+    assert renamed.status_code == 200
+
+    reloaded = await client.get(f"/api/v1/projects/{slug}/events/{event_id}")
+    assert reloaded.status_code == 200
+    # The field value was already rewritten; the meta value is the half that was
+    # left holding "${old_name}".
+    assert reloaded.json()["field_values"][0]["value"] == "screen=${new_name}"
+    assert reloaded.json()["meta_values"][0]["value"] == "owned while ${new_name} is set"
+
+
 async def _setup_event(client: AsyncClient, slug: str) -> tuple[str, str]:
     et = await client.post(
         f"/api/v1/projects/{slug}/event-types",
@@ -510,6 +640,150 @@ async def test_bulk_delete_variables(client: AsyncClient):
     remaining = (await client.get("/api/v1/projects/var-bulk-del/variables")).json()
     assert [v["name"] for v in remaining["items"]] == ["del_keep"]
     assert remaining["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_retirement_plan_asks_for_contexts_by_id_and_never_loads_them(client: AsyncClient):
+    """The plan answers "has contexts?" with an anti-join, so it must not hydrate
+    them (tripl-xkbb).
+
+    ``Variable.value_contexts`` is ``lazy="selectin"`` and every context then
+    selectin-loads its FieldDefinition, so a bare whole-project
+    ``select(Variable)`` pulled the project's entire context table and every
+    field definition it references into memory — to answer a question the
+    indexed ``with_contexts`` id set below already answers. This runs on every
+    ``GET /variables?usage=used|unused``, not only in the danger zone.
+    """
+    slug = "var-plan-reads"
+    await _setup_project(client, slug)
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "pv", "display_name": "Page View"},
+    )
+    field = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et.json()['id']}/fields",
+        json={"name": "screen", "display_name": "Screen", "field_type": "string"},
+    )
+    created_event = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et.json()["id"], "name": "Profile View"},
+    )
+    created = await client.post(f"/api/v1/projects/{slug}/variables", json={"name": "variant"})
+    variable_id = uuid.UUID(created.json()["id"])
+    # The project_id comes off the response rather than a session load: loading
+    # the Variable here would fire the very selectin this test counts.
+    project_id = uuid.UUID(created.json()["project_id"])
+
+    async with TestSessionLocal() as session, session.begin():
+        variable = await session.get(Variable, variable_id)
+        session.add(
+            VariableValue(
+                project_id=variable.project_id,
+                branch_id=variable.branch_id,
+                variable_id=variable_id,
+                event_id=uuid.UUID(created_event.json()["id"]),
+                field_definition_id=uuid.UUID(field.json()["id"]),
+                source_column="screen",
+                value_kind="low",
+                observed_count=1,
+                values=["a"],
+            )
+        )
+
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany) -> None:
+        statements.append(" ".join(statement.split()))
+
+    # A fresh session, so nothing the fixture loaded is already in the identity
+    # map and able to satisfy a loader without a query.
+    async with TestSessionLocal() as session:
+        sa_event.listen(engine.sync_engine, "before_cursor_execute", _record)
+        try:
+            await variable_retirement_service.plan_project_retirement(
+                session, project_id=project_id, branch_id=None
+            )
+        finally:
+            sa_event.remove(engine.sync_engine, "before_cursor_execute", _record)
+
+    context_reads = [s for s in statements if "FROM variable_values" in s]
+    assert len(context_reads) == 1, statements
+    assert context_reads[0].startswith("SELECT DISTINCT")
+    # The FieldDefinition hop belongs to a loaded context and to nothing else the
+    # plan does, so its absence is the second half of the same claim.
+    assert [s for s in statements if "FROM field_definitions" in s] == []
+
+
+@pytest.mark.asyncio
+async def test_listing_variables_does_not_hydrate_their_observed_contexts(client: AsyncClient):
+    """A page of the list must not drag the project's whole context table with it.
+
+    ``Variable.value_contexts`` is ``lazy="selectin"`` and each context then
+    selectin-loads its FieldDefinition, so the page select hydrated every
+    context of every variable it returned — on the endpoint the frontend calls
+    with VARIABLES_PAGE_LIMIT = 5000, which makes one page the whole project
+    (tripl-xkbb).
+
+    Nothing downstream wants them: ``VariableResponse`` declares no contexts
+    field, and ``attach_variable_summaries`` re-reads what it needs with its own
+    ``select(VariableValue)`` — which is the one read left below.
+    """
+    slug = "var-list-reads"
+    await _setup_project(client, slug)
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "pv", "display_name": "Page View"},
+    )
+    field = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et.json()['id']}/fields",
+        json={"name": "screen", "display_name": "Screen", "field_type": "string"},
+    )
+    created_event = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et.json()["id"], "name": "Profile View"},
+    )
+    created = await client.post(f"/api/v1/projects/{slug}/variables", json={"name": "variant"})
+    variable_id = uuid.UUID(created.json()["id"])
+
+    async with TestSessionLocal() as session, session.begin():
+        variable = await session.get(Variable, variable_id)
+        session.add(
+            VariableValue(
+                project_id=variable.project_id,
+                branch_id=variable.branch_id,
+                variable_id=variable_id,
+                event_id=uuid.UUID(created_event.json()["id"]),
+                field_definition_id=uuid.UUID(field.json()["id"]),
+                source_column="screen",
+                value_kind="low",
+                observed_count=1,
+                values=["a"],
+            )
+        )
+
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany) -> None:
+        statements.append(" ".join(statement.split()))
+
+    # A fresh session, so nothing the fixture loaded is already in the identity
+    # map and able to satisfy a loader without a query.
+    async with TestSessionLocal() as session:
+        sa_event.listen(engine.sync_engine, "before_cursor_execute", _record)
+        try:
+            items, total = await variable_service.list_variables(session, slug)
+        finally:
+            sa_event.remove(engine.sync_engine, "before_cursor_execute", _record)
+        # The page still reads correctly — the summary counts come off the one
+        # read below, not off the collection the option refuses to load.
+        assert [(v.name, v.context_count) for v in items] == [("variant", 1)]
+        assert total == 1
+
+    # Exactly one read of the table, in either shape the selectin loader emits,
+    # and it is the summary's own join to events. The selectin is the second one.
+    context_reads = [s for s in statements if "variable_values" in s]
+    assert len(context_reads) == 1, statements
+    assert "JOIN events" in context_reads[0]
 
 
 class _VariableHistory(NamedTuple):

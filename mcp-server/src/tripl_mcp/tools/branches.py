@@ -44,7 +44,11 @@ def register(mcp: FastMCP) -> None:
         description=(
             "Review what a working branch changed versus its base: one entry per "
             "changed entity with entity_type, kind (added/changed/removed), name, "
-            "parent, entity_id and field_changes. Use to verify your edits before a "
+            "parent, entity_id and field_changes. Entities are keyed by NAME, so a "
+            "rename arrives as a removal beside an addition; the response's "
+            "'renames' list (entity_type, parent, removed_name, added_name) names "
+            "the pairs the merge will treat as ONE renamed row, so read it before "
+            "reporting a deletion. Use to verify your edits before a "
             "human merges. Merging, reverting and branch transitions are NOT exposed "
             "through this MCP server — hand off to a human in the tripl UI. Requires "
             "a tk_r_ or tk_w_ key."

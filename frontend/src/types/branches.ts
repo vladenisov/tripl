@@ -135,6 +135,18 @@ export interface PlanBranchDiffSummary {
   entries: PlanDiffEntry[]
   summary: { added: number; removed: number; changed: number }
   behind_base: boolean
+  /** Removed/added pairs the merge will treat as one rename, computed by the
+   * same function the merge applies — so the UI reports the merge's decision
+   * rather than guessing at it. Absent on responses from an older instance. */
+  renames?: PlanDiffRename[]
+}
+
+/** One removed/added pair the merge has already decided is a rename. */
+export interface PlanDiffRename {
+  entity_type: PlanDiffEntityType
+  parent: string | null
+  removed_name: string
+  added_name: string
 }
 
 export interface PlanRevisionList {

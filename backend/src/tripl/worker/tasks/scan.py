@@ -44,7 +44,7 @@ from tripl.worker.search_reindex import reindex_main_branch_from_worker
 from tripl.worker.tasks._errors import NO_EVENT_NAMING_MSG, ScanError, user_facing_error
 from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 from tripl.worker.utils.reserved_columns import reserved_catalog_columns
-from tripl.worker.variable_sweep import retire_unused_variables
+from tripl.worker.variable_sweep import retire_unused_variables, retired_details_line
 
 logger = logging.getLogger(__name__)
 
@@ -272,9 +272,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             branch_id=main_branch_id(session, config.project_id),
         )
         if variables_retired:
-            result.details.append(
-                f"Retired {variables_retired} unused variables no event refers to"
-            )
+            result.details.append(retired_details_line(variables_retired))
         reindex_main_branch_from_worker(session, config.project_id)
 
         # Mark job as completed
@@ -291,6 +289,18 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             "events_grouped": result.events_grouped,
             "events_merged": result.events_merged,
             "variables_created": result.variables_created,
+            # Emitted UNCONDITIONALLY, and a literal 0 is honest here: the sweep
+            # above is not gated on anything, so a manual scan always sweeps and
+            # 0 means "swept, found nothing". That is the opposite of the
+            # scheduled path, where the key is ABSENT on a run that did not sweep
+            # (a replay, or a config that declared no catalog window) precisely
+            # so a 0 cannot be read as "found nothing". Without the key the run
+            # reported the sweep only in ``details``, so the frontend's
+            # "Variables retired" card — guarded on ``!= null`` — was structurally
+            # unreachable for the one run type a user triggers deliberately, and
+            # the docs telling the reader to read it against "Variables created"
+            # silently failed there.
+            "variables_retired": variables_retired,
             "columns_analyzed": result.columns_analyzed,
             "scan_row_limit": scan_row_limit,
             "scan_lookback_hours": config.scan_lookback_hours,
@@ -469,6 +479,11 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             project_id=config.project_id,
             event_type_ids=event_type_ids,
             event_group_rules=config.event_group_rules,
+            # The fold that combines two stored contexts demotes on this bound,
+            # so it has to be the project's own. The parameter defaults to the
+            # column default, which would silently be right for everyone who
+            # never moved it and wrong for everyone who did (tripl-3rex).
+            cardinality_threshold=config.cardinality_threshold,
         )
         session.commit()
         # AFTER the commit, exactly as run_scan does and for the same reason:

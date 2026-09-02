@@ -7,6 +7,19 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # Warehouse column or dotted JSON path, e.g. "variant" or "page_data.extra.variant".
 BINDING_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$")
 
+# The two list-row caps, declared where the contract is rather than where it is
+# applied, and imported from here by ``services.variable_value_service`` so the
+# number the response promises cannot drift from the number the accumulator
+# enforces. They reach the wire as ``maxItems``, and a row that overflowed one
+# now fails response validation instead of shipping: the value cap held only
+# within a single context row and a variable with a hundred contexts walked out
+# with 119 values, past a limit the description called hard (tripl-x050).
+SUMMARY_VALUE_LIMIT = 20
+# Event names shipped inline on the list row. The row only renders a preview
+# list (``event_count`` carries the true total), so a cap keeps a variable used
+# by hundreds of events from dominating the paged payload.
+SUMMARY_EVENT_LIMIT = 20
+
 
 def _validate_bindings(bindings: list[str] | None) -> list[str] | None:
     if bindings is None:
@@ -75,6 +88,7 @@ class VariableResponse(BaseModel):
     high_context_count: int = 0
     sample_values: list[str] = Field(
         default=[],
+        max_length=SUMMARY_VALUE_LIMIT,
         description=(
             "Observed values unioned across every (variable, event, field) context,"
             " de-duplicated and capped at 20. Lets a list client render the row's"
@@ -84,6 +98,7 @@ class VariableResponse(BaseModel):
     open_drift_count: int = 0
     event_names: list[str] = Field(
         default=[],
+        max_length=SUMMARY_EVENT_LIMIT,
         description=(
             "Distinct names of the events this variable was observed in, alphabetical"
             " and capped at 20. 'event_count' carries the untruncated total; fetch"

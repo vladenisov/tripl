@@ -114,6 +114,8 @@ POST /api/v1/projects/{slug}/branches/{branch_id}/revert
 
 The diff returns one entry per changed entity, each carrying `entity_type`, `kind` (`added` / `changed` / `removed`), `name`, `parent`, the `entity_id` it describes, and — for a changed entity — `field_changes`. A collection-valued field there additionally breaks down into `items`, keyed by the member that moved (a field name, a tag, the event an override targets).
 
+Read the response's `renames` list before interpreting those entries. Entities are keyed by name, so a rename arrives split in two — a removal of the old name beside an addition of the new one — which reads as a deletion your agent never made. Each `renames` element (`entity_type`, `parent`, `removed_name`, `added_name`) names the two entries the merge will treat as **one** renamed row, keeping the entity's id and everything hanging off it. The pairing is stated by the server because it also depends on `main`, which the diff you are holding does not show.
+
 `revert` takes the coordinates of one such entry and restores it to the branch's base state, responding with the resulting diff:
 
 ```json
@@ -202,10 +204,13 @@ and counts only what a capped sample turned up — report "at least N", never N.
 Reach for it only when the inline previews are not enough. Event overrides
 replace the global documented list for their event.
 
-The catalog is not append-only. Every catalog scan run retires the scan-created
+The catalog is not append-only. A catalog scan run can retire the scan-created
 variables nothing refers to any more — no `${token}` in any stored event field
 or meta value, no observed context, no value drift, no per-event override — so a
-variable id cached from an earlier read can be gone by the next call. A variable
+variable id cached from an earlier read can be gone by the next call. A scan
+started by hand always retires; a scheduled collection only when the config
+declares a lookback window, because a run must not call a variable unused from a
+window narrower than the plan; a replay never. A variable
 your agent edited, documented, bound, or excluded from scans is never retired.
 The branch-wide version of the same pass,
 `POST /projects/{slug}/danger/retire-unused-variables`, is not available to

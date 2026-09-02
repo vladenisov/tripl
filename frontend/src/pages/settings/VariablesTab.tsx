@@ -8,6 +8,7 @@ import { variableOverridesApi } from "@/api/variableOverrides"
 import { useActiveBranchId } from "@/hooks/useBranch"
 import type { Variable, VariableType } from "@/types"
 import { useConfirm } from "@/hooks/useConfirm"
+import { useDebouncedValue } from "@/hooks/useDebouncedValue"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
@@ -25,7 +26,13 @@ import { getErrorMessage } from '@/lib/utils'
 import { eventNameLabel } from '@/lib/eventName'
 import { countOf, pluralize } from '@/lib/plural'
 import { variablesKey, variablesPageKey } from '@/lib/queryKeys'
-import { DRIFT_STATUS_LABEL, isResolvedDrift } from '@/lib/variableDrift'
+import {
+  collapsedDriftLabel,
+  DRIFT_REVIVE_LABEL,
+  driftReviewState,
+  driftStatusNote,
+  useDriftReviewClock,
+} from '@/lib/variableDrift'
 
 // Warehouse column or dotted JSON path, e.g. "variant" or "page_data.extra.variant".
 const BINDING_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$/
@@ -36,6 +43,17 @@ const isValidBinding = (value: string) => BINDING_PATTERN.test(value)
 // seconds (tripl-jfm3.49) — one page keeps the DOM and every re-render bounded.
 const PAGE_SIZE = 50
 const LOADING_SKELETON_ROWS = 6
+
+// Events offered in the per-event override picker at once. The roster used to
+// be fetched with no params at all, which inherited the endpoint's own default
+// of 200 and left every event past it unreachable — no search, no note, and
+// "Accept for this event" only reaches events that already carry a drift
+// (tripl-46am). The cap is small on purpose now that the search below is
+// server-side: /events returns full list rows (tags, field values, meta
+// values), so pulling thousands into a dialog to avoid typing is the wrong
+// trade. Anything not in the page is one search away, and the count of what is
+// missing is printed rather than hidden.
+const OVERRIDE_EVENT_PAGE_SIZE = 100
 
 const VARIABLE_TYPES: VariableType[] = ['string', 'number', 'boolean', 'date', 'datetime', 'json', 'string_array', 'number_array']
 const TYPE_LABELS: Record<VariableType, string> = {
@@ -129,6 +147,9 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
   const focusRef = useRef<HTMLTableRowElement | null>(null)
+  // The excluded panel renders <li>s, not table rows, so the focused variable
+  // there needs its own ref — see the scroll effect below (tripl-acp2).
+  const excludedFocusRef = useRef<HTMLLIElement | null>(null)
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
   const [varType, setVarType] = useState<VariableType>('string')
@@ -141,10 +162,42 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const [editDescription, setEditDescription] = useState('')
   const [editAllowedValues, setEditAllowedValues] = useState<string[]>([])
   const [editBindings, setEditBindings] = useState<string[]>([])
-  const [overrideEventId, setOverrideEventId] = useState('')
+  // The picked event, NOT a bare id. The roster is one searched page of a
+  // catalog that can run to thousands, so an id alone is not enough to render
+  // the selection: Edit on an override whose event sits outside the page set an
+  // id no <option> carried and the select painted BLANK while Save stayed
+  // enabled (tripl-46am). Carrying the name the event was picked under — from
+  // the override row, or from the roster option — means the picker can always
+  // show what is selected, whatever the search is currently narrowed to. The
+  // name is stored RAW; eventNameLabel is applied where it is painted, so a
+  // blank-named event still reads "(unnamed event)" (tripl-wkwv.5).
+  const [overrideEvent, setOverrideEvent] = useState<{ id: string; name: string } | null>(null)
+  const [overrideEventSearch, setOverrideEventSearch] = useState('')
   const [overrideValues, setOverrideValues] = useState<string[]>([])
-  const [showResolvedDrifts, setShowResolvedDrifts] = useState(false)
+  // Covers everything the backend does not count as open right now — snoozed
+  // into the future as well as resolved (tripl-lh61).
+  const [showQuietDrifts, setShowQuietDrifts] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // BranchSwitcher is mounted permanently in the app sidebar, so it is reachable
+  // whenever a selection exists — and switching re-keys the variables query and
+  // repaints a completely different row set while `selectedIds` sits untouched.
+  // The bar then reads "12 selected" for twelve ids that are not on the branch
+  // now on screen, and every bulk action carries them: `_load_variables_by_ids`
+  // filters by branch and 404s the WHOLE call on the first id it cannot find, so
+  // a bulk edit aimed at the rows in front of the operator fails wholesale
+  // (tripl-42en).
+  //
+  // The reset lives beside the state it guards rather than inside
+  // `changeMatchSet`, because the sidebar switcher has no way to call a helper
+  // in this component. Adjusting during render with an equality guard is how
+  // this repo follows a prop change (see ProjectAlertingTab.tsx); an effect
+  // would let one frame of the new branch paint under the old count, and the
+  // lint rules reject it besides.
+  const [selectionBranchId, setSelectionBranchId] = useState(branchId)
+  if (selectionBranchId !== branchId) {
+    setSelectionBranchId(branchId)
+    setSelectedIds(new Set())
+  }
   const [filterText, setFilterText] = useState('')
   const [usageFilter, setUsageFilter] = useState<UsageFilter>('all')
   // Page the reviewer picked, tagged with the focus target it was picked under
@@ -209,18 +262,44 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     enabled: !!editingVar,
   })
 
+  // Searched SERVER-side, the way the alert-rule event picker already does it
+  // (pages/alerting/FilterEditor.tsx useEventOptions): the backend matches name,
+  // description and source_name with an ILIKE, so any event in the catalog is
+  // reachable by typing part of its name. Narrowing here instead would only
+  // re-filter the page the server already truncated, which is the defect
+  // (tripl-46am). `keepPreviousData` holds the current options while the next
+  // search lands, so the select does not flicker empty on every keystroke.
+  const debouncedOverrideEventSearch = useDebouncedValue(overrideEventSearch)
   const { data: eventsList } = useQuery({
-    queryKey: ['events', slug, branchId, 'override-picker'],
-    queryFn: () => eventsApi.list(slug, undefined, branchId),
+    queryKey: ['events', slug, branchId, 'override-picker', debouncedOverrideEventSearch],
+    queryFn: () => eventsApi.list(
+      slug,
+      { search: debouncedOverrideEventSearch || undefined, limit: OVERRIDE_EVENT_PAGE_SIZE, offset: 0 },
+      branchId,
+    ),
     enabled: !!editingVar,
+    placeholderData: keepPreviousData,
   })
+  const rosterEvents = useMemo(() => eventsList?.items ?? [], [eventsList])
+  // What the search did not return. The variables table above prints exactly
+  // this note for its own truncation; the picker printed nothing at all, so an
+  // operator had no way to tell a short list from a complete one (tripl-46am).
+  const hiddenEventCount = Math.max(0, (eventsList?.total ?? 0) - rosterEvents.length)
+  // The selected event is prepended when the search does not hold it, so Edit on
+  // an out-of-roster override shows that event rather than a blank select — and
+  // a selection survives retyping the search.
+  const pickerEvents = useMemo<{ id: string; name: string }[]>(() => {
+    const roster = rosterEvents.map(event => ({ id: event.id, name: event.name }))
+    if (!overrideEvent || roster.some(event => event.id === overrideEvent.id)) return roster
+    return [overrideEvent, ...roster]
+  }, [overrideEvent, rosterEvents])
 
   const overrideUpsertMut = useMutation({
     mutationFn: ({ eventId, values }: { eventId: string; values: string[] }) =>
       variableOverridesApi.upsert(slug, editingVar!.id, eventId, values, branchId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['variable-overrides', slug, branchId, editingVar?.id] })
-      setOverrideEventId(''); setOverrideValues([])
+      setOverrideEvent(null); setOverrideValues([])
     },
   })
 
@@ -235,12 +314,28 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     enabled: !!editingVar,
   })
   const driftItems = driftList?.items ?? []
-  const activeDrifts = driftItems.filter(drift => !isResolvedDrift(drift.status))
+  // One `now` for the whole render, so a drift cannot be classified against one
+  // instant here and a different one further down — and it advances the moment
+  // the nearest snooze runs out. This tab outlives the dialog by a long way, so
+  // a clock frozen at mount would keep a lapsed snooze collapsed here while the
+  // badge in the row behind it counted the drift as open (tripl-lh61). The hook
+  // carries the timer and the reasoning.
+  const driftNow = useDriftReviewClock(driftItems)
+  const activeDrifts = driftItems.filter(drift => driftReviewState(drift, driftNow) === 'active')
+  // Snoozed rows sit with the resolved ones, not with the active ones. The row's
+  // drift badge comes from `get_open_drift_counts`, which drops a future-snoozed
+  // row, so this dialog used to present as needing attention exactly the drift
+  // the table beside it had just counted as zero (tripl-lh61).
+  const snoozedDrifts = driftItems.filter(drift => driftReviewState(drift, driftNow) === 'snoozed')
   // Kept reachable rather than filtered away: a scan only reopens an accepted
   // row for values outside the accepted set, so undoing the acceptance itself
   // has to be possible from here.
-  const resolvedDrifts = driftItems.filter(drift => isResolvedDrift(drift.status))
-  const visibleDrifts = showResolvedDrifts ? [...activeDrifts, ...resolvedDrifts] : activeDrifts
+  const resolvedDrifts = driftItems.filter(drift => driftReviewState(drift, driftNow) === 'resolved')
+  const quietDrifts = [...snoozedDrifts, ...resolvedDrifts]
+  // Paired with the state the row was sorted by, so the pill and the action
+  // group cannot disagree with the list the row was put in.
+  const visibleDrifts = (showQuietDrifts ? [...activeDrifts, ...quietDrifts] : activeDrifts)
+    .map(drift => ({ drift, state: driftReviewState(drift, driftNow) }))
 
   const driftActionMut = useMutation({
     mutationFn: ({ driftId, action, scope, snoozedUntil }: {
@@ -297,9 +392,36 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     })
   }, [])
 
+  /** Drops ONE id from the selection, for a row-level action that has just moved
+   * that row out of the match set (tripl-42en).
+   *
+   * Deliberately not `changeMatchSet`: clearing the whole selection and jumping
+   * back to page 0 is the right answer when a filter redraws the boundary under
+   * every row at once, and the wrong price for a one-row action — it would throw
+   * away a batch the operator is still assembling as the cost of excluding a
+   * single variable.
+   *
+   * Returns `prev` untouched when the id was not selected, so the common case —
+   * acting on a row while nothing is ticked — does not re-render the table. */
+  const deselect = useCallback((id: string) => {
+    setSelectedIds(prev => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+  }, [])
+
   const deleteMut = useMutation({
     mutationFn: (id: string) => variablesApi.del(slug, id, branchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) }),
+    // The row is gone server-side, so a selection still naming it inflates the
+    // next bulk confirm — "Delete 12 selected variables?" over eleven rows — and
+    // then takes the whole bulk call down with it: `_load_variables_by_ids`
+    // raises 404 for the batch on the first id it cannot load (tripl-42en).
+    onSuccess: (_data, id) => {
+      qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
+      deselect(id)
+    },
   })
 
   const handleDelete = useStableCallback(async (v: Variable) => {
@@ -343,7 +465,21 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const excludeMut = useMutation({
     mutationFn: ({ id, excluded }: { id: string; excluded: boolean }) =>
       variablesApi.update(slug, id, { excluded_from_scans: excluded }, branchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) }),
+    // Excluding moves the row out of the table and into the panel below it, so a
+    // still-selected tombstone rides along on the next bulk Delete — and per the
+    // Delete copy right above, deleting an excluded variable un-excludes the
+    // name, because the flag is a column on the row being dropped. The next scan
+    // then re-creates it and the operator's instruction is silently revoked
+    // (tripl-42en).
+    //
+    // Restore (`excluded: false`) needs no guard and gets none: it only ADDS a
+    // row back to the match set, which can never leave an id naming a row nobody
+    // can see. The excluded panel has no checkbox either, so a restored id can
+    // only ever be one this selection already dropped on the way out.
+    onSuccess: (_data, { id, excluded }) => {
+      qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
+      if (excluded) deselect(id)
+    },
   })
 
   const handleExclude = useStableCallback(async (v: Variable) => {
@@ -381,9 +517,12 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     setEditDescription(v.description)
     setEditAllowedValues(v.allowed_values ?? [])
     setEditBindings(v.bindings ?? [])
-    setOverrideEventId('')
+    setOverrideEvent(null)
+    // The dialog is reused for every variable, so a search left over from the
+    // last one would silently narrow this variable's roster too.
+    setOverrideEventSearch('')
     setOverrideValues([])
-    setShowResolvedDrifts(false)
+    setShowQuietDrifts(false)
   })
 
   const activeVariables = useMemo(
@@ -403,6 +542,42 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     if (!needle) return activeVariables
     return activeVariables.filter(variable => matchesQuery(variable, needle))
   }, [activeVariables, filterText])
+  const matchingIds = useMemo(
+    () => new Set(matchingVariables.map(variable => variable.id)),
+    [matchingVariables],
+  )
+
+  // The net under the selection invariant, for the match-set changes NO CONTROL
+  // ANNOUNCES. `changeMatchSet` covers the controls a person operates and
+  // `deselect` the row-level ones; this covers the boundary moving on its own. A
+  // bulk "Add values" or "Set description" is the case that bites: usage is
+  // answered SERVER-side by the retirement predicate, which keeps a row for its
+  // documented values or for an edit someone made, so the update makes its own
+  // twelve rows stop being "unused" and the list comes back without them. The
+  // bar was then left floating "12 selected" — with a Delete button — over the
+  // "Nothing to retire" empty state, ready to confirm the destruction of twelve
+  // variables the operator had just documented and could no longer see. A bulk
+  // "Set description" does the same to the filter text box, which matches on
+  // description; a colleague's delete and a retiring scan land here too
+  // (tripl-42en).
+  //
+  // This does NOT re-open the intersection `changeMatchSet` rejects. That
+  // objection is about refining a filter and then broadening it, and a filter
+  // change clears the selection outright before it can ever reach this line.
+  // What is left is data moving under a selection nobody touched, where keeping
+  // an id no row can show has no reading at all.
+  //
+  // Guarded on a resolved page so a first load — or a query with no data — can
+  // never pass for "nothing matches" and wipe a live selection. Pruning during
+  // render converges in one extra render; an effect would leave a window in
+  // which Delete could post ids the page had already decided to forget, the same
+  // reasoning ProjectAlertingTab.tsx gives for its inbox selection.
+  if (variablePage !== undefined && selectedIds.size > 0) {
+    const stillMatching = [...selectedIds].filter(id => matchingIds.has(id))
+    if (stillMatching.length !== selectedIds.size) {
+      setSelectedIds(new Set(stillMatching))
+    }
+  }
 
   // A branch-diff link points at one variable, which may sit on any page. The
   // page is DERIVED rather than synced in an effect: until the reviewer picks a
@@ -423,6 +598,64 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const goToPage = (next: number) =>
     setPickedPage({ focusId, page: Math.min(Math.max(0, next), pageCount - 1) })
 
+  /** Runs a control that changes WHICH ROWS MATCH, and drops the selection with
+   * it.
+   *
+   * Selection deliberately spans every matching row rather than the page on
+   * screen, so once the match set moves the selected ids can be rows nobody can
+   * see or name. The usage-filter buttons cleared the selection; the filter
+   * text box did not (tripl-42en). Filter "checkout", tick select-all, retype
+   * to "payment": the table showed only payment rows, all unticked, and the
+   * bulk bar still said "12 selected". Delete confirmed with a bare count and
+   * destroyed the twelve checkout variables, cascading their value contexts and
+   * drifts — the ids were still loaded client-side, so nothing 404'd and no
+   * toast fired. Set type, Set description and Add values hit the same
+   * invisible rows.
+   *
+   * CLEARING, not intersecting with the visible rows: an intersection would
+   * make refining a filter and then broadening it silently DROP selections the
+   * operator never deselected, which is the same invisibility defect pointed
+   * the other way. Pagination is deliberately NOT routed through here — it
+   * changes which matching rows are painted, not which rows match, and
+   * selecting across pages is the reason this table has a select-all at all.
+   *
+   * TWO controls route through here and they are the only two that should: the
+   * filter text box and the usage-filter buttons, each of which redraws the
+   * match-set boundary under every row at once. The bug was a guard copy-pasted
+   * onto one of them, so that half of the invariant lives in one place where a
+   * third wholesale control cannot forget it.
+   *
+   * It is only that half, and this docstring used to claim the whole. The rest
+   * of the invariant is held where the rest of the movement happens, because
+   * clearing a whole batch and jumping to page 0 would be the wrong price for
+   * it: row-level Exclude and Delete drop their ONE id through `deselect`, a
+   * branch switch clears the selection beside the state itself (the sidebar
+   * switcher cannot reach a helper in here), and the changes no control
+   * announces — a bulk edit that moves its own rows out of the server-answered
+   * usage filter, a colleague's delete — are caught by the prune next to
+   * `matchingVariables`. That prune is not the intersection rejected above:
+   * refining a filter and then broadening it never reaches it, because the
+   * clearing here happens first, so all it can ever see is data that moved under
+   * a selection nobody touched.
+   *
+   * Adding a control that narrows the match set WHOLESALE means routing it
+   * through here; adding one that moves a single row means `deselect`. */
+  const changeMatchSet = (apply: () => void) => {
+    apply()
+    setSelectedIds(new Set())
+    goToPage(0)
+  }
+
+  // `excluded_from_scans` is a tracked plan-diff key, so a branch diff can carry
+  // a "variable X — excluded from scans" row whose link lands here. X is exactly
+  // the variable `activeVariables` filters OUT of the table, so `findIndex`
+  // returned -1, `focusPage` fell back to 0, and the reviewer arrived on page 1
+  // of an unrelated list with nothing marked — while X sat, unmarked, in the
+  // "Excluded from scans" panel further down (tripl-acp2). Following the link
+  // now marks the row wherever it renders.
+  const focusedExcludedVisible =
+    focusIndex < 0 && focusId !== undefined && excludedVariables.some(v => v.id === focusId)
+
   // Scroll the linked row into view once it is on screen. Keyed on focusId too,
   // so following a second link — to a variable already visible — scrolls to it
   // instead of leaving the reviewer where the first one landed.
@@ -430,8 +663,10 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   useEffect(() => {
     if (focusedRowVisible) {
       focusRef.current?.scrollIntoView({ block: 'center' })
+    } else if (focusedExcludedVisible) {
+      excludedFocusRef.current?.scrollIntoView({ block: 'center' })
     }
-  }, [focusId, focusedRowVisible])
+  }, [focusId, focusedRowVisible, focusedExcludedVisible])
 
   // Per-event contexts are fetched for the ONE variable being edited, never for
   // the list — the dialog is the only place that needs the full breakdown.
@@ -539,14 +774,21 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                   </div>
                   {visibleDrifts.length > 0 && (
                     <ul className="space-y-1.5">
-                      {visibleDrifts.map((drift, driftIndex) => (
+                      {visibleDrifts.map(({ drift, state }, driftIndex) => (
                         <li key={drift.id} className="rounded border bg-background px-2 py-1.5">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="min-w-0">
                               <div className="text-xs font-medium">
                                 {eventNameLabel(drift.event_name)}
-                                {drift.status !== 'open' && (
-                                  <span className="ml-1.5 rounded border px-1 py-0.5 text-[10px] text-muted-foreground">{DRIFT_STATUS_LABEL[drift.status]}</span>
+                                {/* Keyed on the review state, not on the raw
+                                    status: a snooze whose time has passed is
+                                    active again, and labelling that row
+                                    "snoozed" would tell the reader the opposite
+                                    of what the badge counts. The note carries
+                                    the expiry, so a deferral says when it comes
+                                    back (tripl-lh61). */}
+                                {state !== 'active' && (
+                                  <span className="ml-1.5 rounded border px-1 py-0.5 text-[10px] text-muted-foreground">{driftStatusNote(drift, driftNow)}</span>
                                 )}
                               </div>
                               <div className="mt-0.5 flex flex-wrap gap-1">
@@ -559,15 +801,19 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                               step="variables/see-drift"
                               // The action group is the useful target; anchoring the
                               // whole row makes the callout cover the form above it.
-                              // Never a resolved row: its only action is Reopen.
-                              when={driftIndex === 0 && !isResolvedDrift(drift.status) && editingVar?.name === SCENARIO_SEEDED.driftVariableName}
+                              // Only an ACTIVE row: a collapsed one — snoozed or
+                              // resolved — offers nothing but the button that puts
+                              // it back on the open list.
+                              when={driftIndex === 0 && state === 'active' && editingVar?.name === SCENARIO_SEEDED.driftVariableName}
                             >
+                              {/* The review row belongs to an ACTIVE drift. A
+                                  collapsed row gets the single action that puts it
+                                  back on the open list, because acting on a drift
+                                  the dialog has just said needs no attention should
+                                  start by saying it does (tripl-lh61). Both
+                                  readings post the same `reopen`. */}
                               <div className="flex shrink-0 flex-wrap gap-1">
-                                {isResolvedDrift(drift.status) ? (
-                                  <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'reopen' })}>
-                                    Reopen
-                                  </Button>
-                                ) : (
+                                {state === 'active' ? (
                                   <>
                                     <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'global' })}>
                                       Accept
@@ -582,6 +828,10 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                                       False positive
                                     </Button>
                                   </>
+                                ) : (
+                                  <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'reopen' })}>
+                                    {DRIFT_REVIVE_LABEL[state]}
+                                  </Button>
                                 )}
                               </div>
                             </ScenarioCoachMark>
@@ -590,9 +840,10 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                       ))}
                     </ul>
                   )}
-                  {resolvedDrifts.length > 0 && (
-                    <Button type="button" size="sm" variant="ghost" className="mt-1.5 h-6 px-2 text-[11px] text-muted-foreground" onClick={() => setShowResolvedDrifts(value => !value)}>
-                      {showResolvedDrifts ? 'Hide' : 'Show'} {resolvedDrifts.length} resolved
+                  {quietDrifts.length > 0 && (
+                    <Button type="button" size="sm" variant="ghost" className="mt-1.5 h-6 px-2 text-[11px] text-muted-foreground" onClick={() => setShowQuietDrifts(value => !value)}>
+                      {showQuietDrifts ? 'Hide' : 'Show'} {quietDrifts.length}{' '}
+                      {collapsedDriftLabel({ snoozed: snoozedDrifts.length, resolved: resolvedDrifts.length })}
                     </Button>
                   )}
                   {driftActionMut.isError && (
@@ -624,8 +875,14 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                             {/* Without the placeholder these read "Edit override for " and
                                 "Delete override for " — a trailing space and nothing else,
                                 the same defect EventRow fixed on the events list
-                                (tripl-wkwv.5). */}
-                            <Button type="button" variant="ghost" size="icon" className="h-6 w-6" aria-label={`Edit override for ${eventNameLabel(override.event_name)}`} onClick={() => { setOverrideEventId(override.event_id); setOverrideValues(override.values) }}>
+                                (tripl-wkwv.5).
+
+                                Edit hands the picker the event NAME as well as the id,
+                                both straight off this override row. The event is often
+                                absent from the roster page below — an override outlives
+                                whatever the picker is searched to — and a bare id left
+                                the select blank with Save still enabled (tripl-46am). */}
+                            <Button type="button" variant="ghost" size="icon" className="h-6 w-6" aria-label={`Edit override for ${eventNameLabel(override.event_name)}`} onClick={() => { setOverrideEvent({ id: override.event_id, name: override.event_name }); setOverrideValues(override.values) }}>
                               <Pencil className="h-3 w-3" aria-hidden="true" />
                             </Button>
                             <Button type="button" variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-destructive" aria-label={`Delete override for ${eventNameLabel(override.event_name)}`} onClick={() => overrideDeleteMut.mutate(override.event_id)}>
@@ -637,23 +894,54 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                     </ul>
                   )}
                   <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)_auto] sm:items-start">
-                    <select
-                      aria-label="Override event"
-                      value={overrideEventId}
-                      onChange={e => setOverrideEventId(e.target.value)}
-                      className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
-                    >
-                      <option value="">Select event…</option>
-                      {/* A native <option> takes its accessible name from its text
-                          content, so a blank-named event was a selectable row with
-                          no name at all — indistinguishable from a rendering glitch
-                          in the list, and announced as nothing (tripl-wkwv.5). */}
-                      {(eventsList?.items ?? []).map(event => (
-                        <option key={event.id} value={event.id}>{eventNameLabel(event.name)}</option>
-                      ))}
-                    </select>
+                    <div className="grid gap-1">
+                      <Input
+                        aria-label="Search events"
+                        className="h-8 text-sm"
+                        placeholder="Search events…"
+                        value={overrideEventSearch}
+                        onChange={e => setOverrideEventSearch(e.target.value)}
+                        // Enter is the universal gesture in a search field, and
+                        // this one sits inside the edit dialog's <form>, one
+                        // `type="submit"` Save away from HTML's implicit
+                        // submission: pressing it PATCHed the variable with
+                        // whatever the fields above happened to hold and closed
+                        // the dialog, destroying the override being written
+                        // (tripl-46am). The same guard ChipListInput already
+                        // carries inside this form. Nothing runs in its place,
+                        // because there is nothing to run — the search is
+                        // debounced and applies as you type.
+                        onKeyDown={e => { if (e.key === 'Enter') e.preventDefault() }}
+                      />
+                      <select
+                        aria-label="Override event"
+                        value={overrideEvent?.id ?? ''}
+                        onChange={e => {
+                          const picked = pickerEvents.find(event => event.id === e.target.value)
+                          setOverrideEvent(picked ?? null)
+                        }}
+                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                      >
+                        <option value="">Select event…</option>
+                        {/* A native <option> takes its accessible name from its text
+                            content, so a blank-named event was a selectable row with
+                            no name at all — indistinguishable from a rendering glitch
+                            in the list, and announced as nothing (tripl-wkwv.5). */}
+                        {pickerEvents.map(event => (
+                          <option key={event.id} value={event.id}>{eventNameLabel(event.name)}</option>
+                        ))}
+                      </select>
+                      {hiddenEventCount > 0 && (
+                        // Say what is missing rather than presenting a truncated
+                        // roster as the whole catalog (tripl-46am) — the same note
+                        // the variables table prints for its own truncation.
+                        <p className="text-[11px] text-muted-foreground">
+                          {hiddenEventCount} more not listed — search to narrow.
+                        </p>
+                      )}
+                    </div>
                     <ChipListInput values={overrideValues} onChange={setOverrideValues} placeholder="Values for this event" ariaLabel="Add override value" />
-                    <Button type="button" size="sm" disabled={!overrideEventId || overrideUpsertMut.isPending} onClick={() => overrideUpsertMut.mutate({ eventId: overrideEventId, values: overrideValues })}>
+                    <Button type="button" size="sm" disabled={!overrideEvent || overrideUpsertMut.isPending} onClick={() => { if (overrideEvent) overrideUpsertMut.mutate({ eventId: overrideEvent.id, values: overrideValues }) }}>
                       Save override
                     </Button>
                   </div>
@@ -747,7 +1035,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                   className="h-8 max-w-64"
                   placeholder="Filter by name, path or description…"
                   value={filterText}
-                  onChange={e => { setFilterText(e.target.value); goToPage(0) }}
+                  onChange={e => changeMatchSet(() => setFilterText(e.target.value))}
                 />
                 <div className="flex items-center gap-1" role="group" aria-label="Filter by usage">
                   {USAGE_FILTERS.map(option => (
@@ -758,11 +1046,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                       variant={usageFilter === option.value ? 'secondary' : 'ghost'}
                       className="h-7 px-2 text-xs"
                       aria-pressed={usageFilter === option.value}
-                      onClick={() => {
-                        setUsageFilter(option.value)
-                        setSelectedIds(new Set())
-                        goToPage(0)
-                      }}
+                      onClick={() => changeMatchSet(() => setUsageFilter(option.value))}
                     >
                       {option.label}
                     </Button>
@@ -885,7 +1169,15 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
         >
           <ul className="divide-y">
             {excludedVariables.map(v => (
-              <li key={v.id} className="flex items-center justify-between gap-2 px-4 py-2">
+              <li
+                key={v.id}
+                // The same marking the table row carries, because the diff link
+                // that brought the reviewer here neither knows nor cares which
+                // of the two lists the variable ended up in (tripl-acp2).
+                ref={v.id === focusId ? excludedFocusRef : undefined}
+                data-focused={v.id === focusId || undefined}
+                className={`flex items-center justify-between gap-2 px-4 py-2${v.id === focusId ? ' bg-primary/5 outline outline-1 outline-primary/40' : ''}`}
+              >
                 <div className="min-w-0">
                   <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{`\${${v.name}}`}</code>
                   {(v.bindings ?? []).length > 0 && (

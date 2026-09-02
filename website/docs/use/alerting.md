@@ -614,9 +614,26 @@ count so "wired up and nothing routes here" is still visible.
 ## Deliveries and the Inbox
 
 Each match creates a **delivery** that moves through `pending → sent` or
-`pending → failed`. Sending is idempotent, and a background reaper requeues
-deliveries that get stuck (roughly every 5 minutes, up to a few attempts). You can
-**retry** failed deliveries manually from the UI.
+`pending → failed`. Sending is idempotent for ticket and multi-part channels
+(created issue ids and delivered parts are recorded mid-flight, so a re-run
+does not repeat them); a plain message channel can, in the rare case where the
+receiver accepted a send whose response then timed out, deliver twice — the
+trade the pipeline prefers over a silently lost alert. A background reaper
+requeues deliveries that get stuck (roughly every 5 minutes, up to a few
+attempts). The
+same reaper also retries a delivery that **failed on a transient network
+error** — destination unreachable, connection refused, a timeout — a few
+times, minutes apart, within that same attempt budget (only failures from the
+last six hours are picked up, so a stale backlog is not resurrected after
+downtime or a deploy). While an attempt is queued the row shows **pending**
+but keeps its last error; a failed attempt returns it to **failed** with the
+fresh error, and a success flips it to **sent**. Ticket destinations (Jira,
+Linear) and destinations you have disabled are never retried automatically —
+creating a ticket twice cannot be undone by a retry, and a disabled toggle
+means silence. Every other failure — bad credentials, a rejected payload — is
+never retried automatically either: fix the cause and press **Retry** in the
+UI, which also resets the attempt budget, so a delivery you retry by hand
+starts with a fresh set of attempts.
 
 A Telegram delivery carrying more than **8 matched items** is split into several
 deliveries, because Telegram rejects a message over 4,096 characters outright.

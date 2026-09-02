@@ -44,7 +44,14 @@ tripl deliberately keeps two kinds of value list separate:
   show bounded examples and an observation count. A plain column's count is an
   exact distinct count over the scanned window, but a JSON path's comes from a
   capped sample and is a floor — read it as "at least this many", and expect a
-  JSON path to be high-cardinality however few values it returned.
+  JSON path to be high-cardinality however few values it returned. Samples
+  **accumulate**: re-sampling a path merges what the run saw into the stored
+  list instead of replacing it, so a value observed once stays on record even
+  when later scan windows no longer contain it. An exact enumeration stays
+  exact: a low-cardinality context keeps every value through a merge until the
+  union outgrows the cardinality threshold, and only then does it stop keeping
+  the full list and behave as high-cardinality — whose stored list is a capped
+  sample — from then on.
 
 A **context** is one (variable, event, field) pairing — the record that this
 event's field refers to this variable through that binding. The context and the
@@ -59,9 +66,14 @@ event and field, not for every context of the same binding.
 
 An empty context is not by itself a fault. A binding pointed at a column that is
 genuinely empty stays empty however often it is looked at. A JSON-path binding
-has a second, temporary reason to be empty: a run samples only a slice of the
-paths still waiting for their first values, so a newly discovered path can take
-a few runs to fill.
+has a second, temporary reason to be empty: a scheduled run samples the paths
+still waiting for their first values a slice at a time, and the rotation reaches
+every waiting path every few runs — so on a regularly collecting scan, a newly
+referenced path normally shows its first values within hours. Only paths with a
+context to fill are in that rotation: a variable whose token no event value
+references has no context row for a sample to land in and is not sampled at
+all, and a variable a scan has just created becomes sampleable one scheduled
+run after something references it.
 
 The global documented list applies everywhere unless an event has an override.
 A per-event override **replaces** the global list for that event; it is not
@@ -70,7 +82,10 @@ allow `control` and `treatment`, while one legacy event documents a different
 set.
 
 To add an override, edit the variable, choose an event under **Per-event
-overrides**, enter the complete effective list for that event, and save it.
+overrides**, enter the complete effective list for that event, and save it. The
+event list is one searched page rather than the whole catalog, so on a large
+project type into the search box above it to reach the event you want — the note
+under the list says how many events it is not currently showing.
 
 ## Bind a variable to warehouse data
 
@@ -114,6 +129,11 @@ Placeholders are a documentation contract, not a runtime expression language:
 tripl stores the template and uses it to relate plan values to observed variable
 contexts. It does not substitute a single global value into the event.
 
+Renaming a variable brings its references with it. Every `${old_name}` stored on
+an event in the same branch is rewritten to `${new_name}` as the rename is
+saved, and both `${token}` sites are covered: an event's **field values** and
+its **meta values**.
+
 Hand-authored event field values are protected from scheduled scans. A scan can
 still add a missing value, but it will not overwrite a value that a user saved
 through the event API or UI.
@@ -150,10 +170,17 @@ Available actions:
 - **Snooze** — hide the drift until a chosen time while scans continue to
   refresh its evidence.
 - **False positive** — resolve it without changing the documented contract.
-- **Reopen** — return a resolved drift to active review.
+- **Reopen** — return a resolved drift to active review. On a row that is only
+  snoozed the same control reads **Un-snooze**, because a snooze is what the
+  click undoes; both send the same action, which clears the snooze as well as
+  any resolution.
 
-Resolved drift is collapsed, not hidden: both panels carry a **Show N resolved**
-toggle so an acceptance you regret can always be reopened.
+Drift that is not asking for attention is collapsed, not hidden. Both panels
+carry a toggle that names what it is holding — **Show N resolved**, **Show N
+snoozed**, or **Show N snoozed or resolved** when the group has both — so an
+acceptance you regret can always be reopened and a snooze can always be ended
+early. A snooze also comes back on its own once its time is up, whether or not
+the page was reloaded in between.
 
 A later scan **reopens an accepted drift by itself** as soon as it observes a
 value the documented list does not cover. Accepting is what puts the values in
@@ -220,9 +247,51 @@ Exclusion keeps a lightweight tombstone:
 
 A scan creates a variable for every placeholder it detects. On a JSON column
 whose keys are user-typed text — a map rather than a struct — that once meant a
-permanent plan row per key. Every catalog run now ends by deleting the
-scan-created variables that nothing refers to any more. The sweep works on
-`main`, where scans write; the copies on an open working branch are left alone.
+permanent plan row per key. A catalog run now ends by deleting the scan-created
+variables that nothing refers to any more. **Which runs do that is a shorter
+list than "all of them":**
+
+| Run | Retires unused variables? |
+| --- | --- |
+| A scan you start by hand | Always |
+| A **scheduled monitoring collection** | Only when the config sets **Limits → Lookback (hours)** |
+| A **metrics replay** | Never |
+
+Both exceptions are the same rule seen twice: a run only decides a variable is
+unused from a view it can defend.
+
+A manual scan with no lookback reads everything the base query returns, so
+"nothing refers to this" is a claim about all of your data. A scheduled
+collection has no such view. It always reads through a window, and with
+**Lookback (hours)** left blank that window is the slice it is collecting —
+usually one or two intervals, often a single hour. A column carrying thousands
+of values across your table can carry a handful in one hour, and a run that sees
+a handful stores those values *literally* in place of the `${token}` template
+that named your variable. The reference the retirement rule looks for is then
+gone — and with it, if the run swept, the variable and its whole observed-value
+history. Setting a lookback is you saying which window represents your tracking
+plan; retirement runs behind that statement and not ahead of it.
+
+A **metrics replay** never retires anything, for the older reason: it does not
+sync the catalog at all — it recomputes counts over a past window and creates no
+events or variables — so it never sees which paths your rows currently carry and
+is in no position to call a variable unused.
+
+:::warning A new scan has no lookback, so its schedule never retires
+**Limits → Lookback (hours)** is blank on a new scan, and blank is a legitimate
+setting: each run reads the whole base query. But it also means a
+**Catalog + monitoring** config creates variables on every collection and
+retires none of them, which is exactly the shape — a JSON map keyed by free text,
+collected hourly, scanned by hand approximately never — that grows a permanent
+row per key. If that is your catalog, set a lookback wide enough to contain your
+tracking plan, run the scan by hand, or clear the backlog from the danger zone
+below. *Variables retired* on a [run](./feature-reference.md#scan-runs) is absent
+rather than `0` on a run that did not retire, so you can tell "found nothing"
+from "did not look".
+:::
+
+Retirement works on `main`, where scans write; the copies on an open working
+branch are left alone.
 
 A variable is retired only when **all** of the following are true:
 

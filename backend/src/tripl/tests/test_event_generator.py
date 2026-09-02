@@ -10,6 +10,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.core.adapters.base import ColumnInfo
+from tripl.core.analyzers._event_generator_variables import (
+    VARIABLE_VALUE_SAMPLE_LIMIT,
+    preserve_existing_variable_context_values,
+)
 from tripl.core.analyzers.cardinality import BreakdownAnalysis, CardinalityResult
 from tripl.core.analyzers.event_generator import (
     _ensure_variable,
@@ -285,9 +289,17 @@ class TestEventGeneration:
         assert contexts[0].observed_count == 12
         assert contexts[0].values == sorted(f"cat{i}" for i in range(12))
 
-    def test_variable_contexts_are_replaced_on_rescan(
+    def test_variable_contexts_survive_a_disjoint_sample_window_on_rescan(
         self, sync_session: Session, project_and_type
     ):
+        """A rescan whose sample shares nothing with the stored list evicts nothing.
+
+        This test used to pin the opposite — a rescan REPLACED the stored list —
+        which is the semantics that cost production one distinct value per
+        context per scheduled cycle (2026-08-31). Existing values lead the
+        union and the sample cap applies after, so the stored sample keeps the
+        earliest values while ``observed_count`` keeps counting.
+        """
         project, et, fds = project_and_type
 
         first = {
@@ -313,8 +325,9 @@ class TestEventGeneration:
         sync_session.commit()
 
         context = sync_session.execute(select(VariableValue)).scalar_one()
-        assert all(value.startswith("secondvalue") for value in context.values)
-        assert not any(value.startswith("firstvalue") for value in context.values)
+        assert len(context.values) == VARIABLE_VALUE_SAMPLE_LIMIT
+        assert all(value.startswith("firstvalue") for value in context.values)
+        assert context.observed_count == 150
 
     def test_rescan_preserves_replay_enriched_empty_variable_context_values(
         self, sync_session: Session, project_and_type
@@ -422,6 +435,223 @@ class TestEventGeneration:
         assert context.value_kind == "high"
         assert context.observed_count == 0
         assert context.values == []
+
+    def test_resampling_a_json_path_merges_into_stored_values(
+        self, sync_session: Session, project_and_type
+    ):
+        """A fresh non-empty sample UNIONS into the stored list, never replaces it.
+
+        The rotating sampler reads a 1-3h window, so a fresh payload carries
+        only the values that happened to occur in that window — on production
+        (2026-08-31) one scheduled cycle made ten contexts each lose exactly
+        one historical value this way. With the pre-fix replace semantics this
+        test fails with values == ["b", "e"].
+        """
+        project, et, fds = project_and_type
+        analysis = self._json_path_analysis("user.plan")
+
+        generate_events(
+            sync_session,
+            project.id,
+            et.id,
+            analysis,
+            fds,
+            json_path_samples={"payload": {"user.plan": ["a", "b", "c", "d"]}},
+        )
+        sync_session.commit()
+
+        generate_events(
+            sync_session,
+            project.id,
+            et.id,
+            analysis,
+            fds,
+            json_path_samples={"payload": {"user.plan": ["b", "e"]}},
+        )
+        sync_session.commit()
+
+        context = sync_session.execute(select(VariableValue)).scalar_one()
+        # Existing values lead, incoming append unique — the same order the
+        # metrics sink writes, so the rendered chip order stays stable.
+        assert context.values == ["a", "b", "c", "d", "e"]
+        assert context.observed_count == 5
+        assert context.value_kind == "high"
+
+    def test_merge_past_the_sample_cap_keeps_a_low_enumeration_intact(
+        self, sync_session: Session, project_and_type
+    ):
+        """A low row is an exact enumeration: the sample cap must not trim it.
+
+        Low legitimately holds up to the cardinality threshold's worth of
+        values untrimmed — the popover renders it as "All values", and the
+        replay sink documents why trimming it to the sample cap makes that
+        badge lie. So a merge that outgrows the CAP but not the THRESHOLD
+        keeps every value and stays low; demoting at the cap here rewrote
+        every 21..100-value enumeration as a 20-value sample on its first
+        rescan.
+        """
+        project, et, fds = project_and_type
+        variable = Variable(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name="plan_group",
+            source_name="plan_group",
+            variable_type="string",
+        )
+        event = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name="Merged",
+            source_name="Merged",
+            order=0,
+        )
+        sync_session.add_all([variable, event])
+        sync_session.flush()
+        existing_values = [f"v{i:02d}" for i in range(VARIABLE_VALUE_SAMPLE_LIMIT - 2)]
+        sync_session.add(
+            VariableValue(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                variable_id=variable.id,
+                event_id=event.id,
+                field_definition_id=fds["screen"].id,
+                source_column="screen",
+                value_kind="low",
+                observed_count=len(existing_values),
+                values=existing_values,
+            )
+        )
+        sync_session.commit()
+
+        key = (variable.id, event.id, fds["screen"].id)
+        # Two values re-observed, three new: the union holds cap + 1 distinct.
+        # The incoming kind is HIGH on purpose — a sampled JSON-path
+        # observation always arrives high — and must not decide the merged
+        # row's kind: the union below the threshold is still an enumeration.
+        incoming = [*existing_values[-2:], "w0", "w1", "w2"]
+        contexts = {
+            key: {
+                "variable_id": variable.id,
+                "event_id": event.id,
+                "field_definition_id": fds["screen"].id,
+                "source_column": "screen",
+                "value_kind": "high",
+                "observed_count": len(incoming),
+                "values": incoming,
+            }
+        }
+
+        prior = preserve_existing_variable_context_values(
+            sync_session,
+            project_id=project.id,
+            branch_id=None,
+            contexts=contexts,
+        )
+
+        context = contexts[key]
+        assert context["values"] == [*existing_values, "w0", "w1", "w2"]
+        assert len(context["values"]) == VARIABLE_VALUE_SAMPLE_LIMIT + 1
+        assert context["observed_count"] == VARIABLE_VALUE_SAMPLE_LIMIT + 1
+        assert context["value_kind"] == "low"
+        # The snapshot is the PRE-merge stored list — what the write counter
+        # compares the re-inserted row against.
+        assert prior == {key: existing_values}
+
+        # Crossing the cardinality THRESHOLD is what demotes: rerun the same
+        # merge with the threshold forced down to the cap — now the union's
+        # 21 distinct values outgrow an exact enumeration, the row leaves
+        # ``low``, the list trims to the sample cap, and the count keeps the
+        # uncapped truth. Same fixtures, so the two boundaries are compared
+        # on identical data.
+        contexts[key] = {
+            "variable_id": variable.id,
+            "event_id": event.id,
+            "field_definition_id": fds["screen"].id,
+            "source_column": "screen",
+            "value_kind": "low",
+            "observed_count": len(incoming),
+            "values": list(incoming),
+        }
+        preserve_existing_variable_context_values(
+            sync_session,
+            project_id=project.id,
+            branch_id=None,
+            contexts=contexts,
+            cardinality_threshold=VARIABLE_VALUE_SAMPLE_LIMIT,
+        )
+        demoted = contexts[key]
+        assert demoted["values"] == [*existing_values, "w0", "w1"]
+        assert len(demoted["values"]) == VARIABLE_VALUE_SAMPLE_LIMIT
+        assert demoted["observed_count"] == VARIABLE_VALUE_SAMPLE_LIMIT + 1
+        assert demoted["value_kind"] == "high"
+
+        # And the RESTORE arm restores the kind with the values: an empty
+        # planned-high observation over the stored low row must hand back the
+        # untrimmed enumeration as ``low``, or the next merge trims it.
+        contexts[key] = {
+            "variable_id": variable.id,
+            "event_id": event.id,
+            "field_definition_id": fds["screen"].id,
+            "source_column": "screen",
+            "value_kind": "high",
+            "observed_count": 0,
+            "values": [],
+        }
+        preserve_existing_variable_context_values(
+            sync_session,
+            project_id=project.id,
+            branch_id=None,
+            contexts=contexts,
+        )
+        restored = contexts[key]
+        assert restored["values"] == existing_values
+        assert restored["value_kind"] == "low"
+        assert restored["observed_count"] == len(existing_values)
+
+    def test_variable_values_written_counts_only_new_or_changed_rows(
+        self, sync_session: Session, project_and_type
+    ):
+        """Only a row left holding a NEW or CHANGED non-empty list counts.
+
+        The scan task publishes this number in its ``result_summary``, so a
+        steady-state cycle that merely restores every row must report zero —
+        otherwise the count reads as churn that never happened.
+        """
+        project, et, fds = project_and_type
+        analysis = self._json_path_analysis("user.plan")
+
+        def _generate(samples: list[str] | None):
+            return generate_events(
+                sync_session,
+                project.id,
+                et.id,
+                analysis,
+                fds,
+                json_path_samples=(
+                    None if samples is None else {"payload": {"user.plan": samples}}
+                ),
+            )
+
+        minted = _generate(None)
+        sync_session.commit()
+        assert minted.variable_values_written == 0, "created empty: nothing to read back"
+
+        filled = _generate(["free", "pro"])
+        sync_session.commit()
+        assert filled.variable_values_written == 1, "a newly filled row counts"
+
+        resampled = _generate(["free", "pro"])
+        sync_session.commit()
+        assert resampled.variable_values_written == 0, "a byte-identical rewrite does not"
+
+        restored = _generate(None)
+        sync_session.commit()
+        assert restored.variable_values_written == 0, "an untouched restore does not"
+
+        changed = _generate(["enterprise"])
+        sync_session.commit()
+        assert changed.variable_values_written == 1, "a changed row counts"
 
     def _seed_curated_event_with_context(
         self,
@@ -617,6 +847,74 @@ class TestEventGeneration:
             )
         ).one_or_none()
         assert survived is not None, "a scan must not delete what no scan can re-record"
+        assert survived == (7, ["seen_before_exclusion"])
+
+    def test_rescan_spares_an_excluded_variable_whose_only_token_a_sibling_claims(
+        self, sync_session: Session, project_and_type
+    ):
+        """Losing a token race does not make an excluded variable's rows collectable.
+
+        Same exemption as the test above, but the excluded variable names exactly
+        one token and an earlier-sorted sibling already claims it — ``myvar``
+        bound to ``retired``, a binding the API accepts because
+        ``_check_binding_conflicts`` compares against other variables'
+        ``bindings`` and ``source_name`` and never their ``name``. The excluded
+        variable is then absent from the index's token map, and reading the
+        exemption set off that map left it out, so the rewrite below took its
+        rows (bd tripl-cef2). Nothing restates them: ``resolve`` answers that
+        token with the sibling, so ``record_variable_contexts`` never reaches the
+        excluded one at all — the delete is permanent, and silent.
+
+        The assertion is on the stored row, not on ``excluded_ids()``: a set the
+        deleter had stopped reading would still satisfy the second.
+        """
+        project, et, fds = project_and_type
+        live = self._seed_curated_event_with_context(
+            sync_session, project, et, fds, screen_is_authored=False
+        )
+        shadowing = sync_session.get(Variable, live.variable_id)
+        assert shadowing is not None
+        shadowing.bindings = ["retired"]
+        excluded = Variable(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name="retired",
+            # NULL on purpose: the replay path writes ``VariableValue`` rows
+            # without backfilling ``source_name``, so a hand-made variable really
+            # does reach a scan owning rows and nothing but its display name.
+            source_name=None,
+            variable_type="string",
+            excluded_from_scans=True,
+        )
+        sync_session.add(excluded)
+        sync_session.flush()
+        tombstoned = VariableValue(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            variable_id=excluded.id,
+            event_id=live.event_id,
+            field_definition_id=live.field_definition_id,
+            source_column="screen",
+            value_kind="low",
+            observed_count=7,
+            values=["seen_before_exclusion"],
+        )
+        sync_session.add(tombstoned)
+        sync_session.commit()
+        live_id, tombstoned_id = live.id, tombstoned.id
+
+        generate_events(sync_session, project.id, et.id, self._low_card_analysis(), fds)
+        sync_session.commit()
+
+        assert sync_session.get(VariableValue, live_id) is None
+        # Columns, not the entity: a row read back through the identity map would
+        # look intact after the delete this test exists to catch.
+        survived = sync_session.execute(
+            select(VariableValue.observed_count, VariableValue.values).where(
+                VariableValue.id == tombstoned_id
+            )
+        ).one_or_none()
+        assert survived is not None, "a shadowed exclusion is still an exclusion"
         assert survived == (7, ["seen_before_exclusion"])
 
     def test_event_name_column_enumerated_despite_high_cardinality(
@@ -2169,8 +2467,11 @@ def test_json_path_sampling_collects_only_the_paths_that_need_values(
     """
     from tripl.worker.tasks.metrics.catalog_sync import _collect_json_path_samples
 
-    project, _, _ = project_and_type
+    project, et, fds = project_and_type
     config = _sampling_fixtures(sync_session, project, source_name="payload.user.plan")
+    variable = sync_session.execute(select(Variable)).scalar_one()
+    event = _seed_event(sync_session, project, et, "Signup")
+    _seed_context_row(sync_session, variable, event, fds["payload"], observed_count=0, values=[])
 
     class _Adapter:
         def get_json_path_samples(self, *args: object, **kwargs: object):
@@ -2193,7 +2494,10 @@ def test_json_path_sampling_collects_only_the_paths_that_need_values(
         time_to_dt=datetime(2026, 8, 30, 1, tzinfo=UTC),
     )
 
-    assert samples == {"payload": {"user.plan": ["pro", "free"]}}
+    assert samples.samples == {"payload": {"user.plan": ["pro", "free"]}}
+    assert samples.ring_size == 1
+    assert samples.paths_sampled == 1
+    assert samples.paths_with_samples == 1
 
 
 def _seed_event(sync_session: Session, project, et, name: str, *, order: int = 0) -> Event:
@@ -2260,7 +2564,8 @@ def test_json_path_sampling_skips_a_variable_whose_every_context_is_observed(
         time_to_dt=datetime(2026, 8, 30, 1, tzinfo=UTC),
     )
 
-    assert samples == {}
+    assert samples.samples == {}
+    assert samples.ring_size == 0
     # Recorded rather than raised: the collector swallows adapter exceptions on
     # purpose, so an assert inside the double would be caught and pass silently.
     assert calls == [], "a filled path must not cost a warehouse query"
@@ -2309,7 +2614,7 @@ def test_json_path_sampling_asks_again_while_one_context_is_still_empty(
         time_to_dt=datetime(2026, 8, 30, 1, tzinfo=UTC),
     )
 
-    assert samples == {"payload": {"user.plan": ["pro", "free"]}}
+    assert samples.samples == {"payload": {"user.plan": ["pro", "free"]}}
     # Recorded out here for the same reason as above: the collector swallows
     # adapter exceptions, so an assert inside the double would pass silently.
     assert len(calls) == 1, "an unobserved context must still be worth one query"
@@ -2326,8 +2631,11 @@ def test_json_path_sampling_degrades_to_empty_when_the_adapter_raises(
     """
     from tripl.worker.tasks.metrics.catalog_sync import _collect_json_path_samples
 
-    project, _, _ = project_and_type
+    project, et, fds = project_and_type
     config = _sampling_fixtures(sync_session, project, source_name="payload.user.plan")
+    variable = sync_session.execute(select(Variable)).scalar_one()
+    event = _seed_event(sync_session, project, et, "Signup")
+    _seed_context_row(sync_session, variable, event, fds["payload"], observed_count=0, values=[])
 
     class _RaisingAdapter:
         def get_json_path_samples(self, *args: object, **kwargs: object):
@@ -2343,7 +2651,13 @@ def test_json_path_sampling_degrades_to_empty_when_the_adapter_raises(
         time_to_dt=datetime(2026, 8, 30, 1, tzinfo=UTC),
     )
 
-    assert samples == {}
+    assert samples.samples == {}
+    # The counters still say what was attempted: sampled-but-nothing-back is
+    # the signature of a failing adapter, and all-zeros would hide it behind
+    # "nothing to do".
+    assert samples.ring_size == 1
+    assert samples.paths_sampled == 1
+    assert samples.paths_with_samples == 0
 
 
 def test_json_path_sampling_bounds_the_adapter_query_by_the_collection_window(
@@ -2364,10 +2678,13 @@ def test_json_path_sampling_bounds_the_adapter_query_by_the_collection_window(
         _collect_json_path_samples,
     )
 
-    project, _, _ = project_and_type
+    project, et, fds = project_and_type
     config = _sampling_fixtures(
         sync_session, project, source_name="payload.user.plan", time_column="ts"
     )
+    variable = sync_session.execute(select(Variable)).scalar_one()
+    event = _seed_event(sync_session, project, et, "Signup")
+    _seed_context_row(sync_session, variable, event, fds["payload"], observed_count=0, values=[])
     window_from = datetime(2026, 8, 30, tzinfo=UTC)
     window_to = datetime(2026, 8, 30, 1, tzinfo=UTC)
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
@@ -2387,7 +2704,7 @@ def test_json_path_sampling_bounds_the_adapter_query_by_the_collection_window(
         time_to_dt=window_to,
     )
 
-    assert samples == {"payload": {"user.plan": ["pro"]}}
+    assert samples.samples == {"payload": {"user.plan": ["pro"]}}
     # Recorded and asserted out here: the collector swallows adapter exceptions,
     # so an assert raised inside the double would be logged and the test pass.
     assert len(calls) == 1
@@ -2438,8 +2755,8 @@ def test_rotating_window_hands_back_one_windows_worth_of_distinct_candidates():
 def test_rotating_window_wraps_past_the_end_of_the_candidate_list():
     """A start near the end continues from the front instead of coming up short.
 
-    Every start is covered by stepping one tick per candidate, so this does not
-    depend on where the epoch arithmetic happens to begin.
+    Size 3 and ring 4 are coprime, so four consecutive ticks reach every start
+    regardless of where the epoch arithmetic happens to begin.
     """
     from tripl.worker.tasks.metrics.catalog_sync import _rotating_window
 
@@ -2461,14 +2778,18 @@ def test_rotating_window_wraps_past_the_end_of_the_candidate_list():
     )
 
 
-def test_rotating_window_advances_by_one_candidate_per_scheduled_tick():
-    """The starvation guard: a path the sampler cannot fill must not block the rest.
+def test_rotating_window_strides_a_whole_slice_per_scheduled_tick():
+    """The starvation guard: consecutive runs must sample DIFFERENT paths.
 
-    A project with more unfilled paths than one run may sample keeps them all
-    forever if the window never moves — the paths behind a stuck alphabetical
-    prefix would never be asked about again. One tick here is one SCHEDULED
-    interval, which is what the collector passes; see the collector-level test
-    below for why that is not the collection window.
+    Advancing one candidate per tick looked like rotation and was not:
+    consecutive slices shared all but one element, so the ring's tail waited
+    months for its first attempt (the 2026-08-31 production stall, where whole
+    cycles resampled the same already-filled prefix). Striding by the slice's
+    own size makes consecutive windows disjoint whenever the ring holds at
+    least two slices' worth — under the pre-fix +1 stride the two windows
+    below overlap on three of four paths and this test fails. One tick here is
+    one SCHEDULED interval, which is what the collector passes; see the
+    collector-level test below for why that is not the collection window.
     """
     from tripl.worker.tasks.metrics.catalog_sync import _rotating_window
 
@@ -2482,8 +2803,10 @@ def test_rotating_window_advances_by_one_candidate_per_scheduled_tick():
         tick=_ROTATION_TICK,
     )
 
-    assert second[:-1] == first[1:]
-    assert second[-1] not in first
+    assert set(second).isdisjoint(first)
+    # The stride is exactly one slice: the second window begins on the ring
+    # right where the first one ended.
+    assert second[0] == candidates[(candidates.index(first[-1]) + 1) % len(candidates)]
 
 
 def test_rotating_window_repeats_itself_for_a_retried_run():
@@ -2517,12 +2840,20 @@ def test_json_path_sampling_rotates_on_the_scheduled_interval_not_the_window(
     from tripl.worker.tasks.metrics import catalog_sync
     from tripl.worker.tasks.metrics.catalog_sync import _collect_json_path_samples
 
-    project, _, _ = project_and_type
+    project, et, fds = project_and_type
     config = _sampling_fixtures(
         sync_session, project, source_name="payload.user.plan", time_column="ts"
     )
     config.interval = "1h"
-    _add_path_variable(sync_session, project, "payload.user.tier")
+    plan_variable = sync_session.execute(select(Variable)).scalar_one()
+    tier_variable = _add_path_variable(sync_session, project, "payload.user.tier")
+    event = _seed_event(sync_session, project, et, "Signup")
+    _seed_context_row(
+        sync_session, plan_variable, event, fds["payload"], observed_count=0, values=[]
+    )
+    _seed_context_row(
+        sync_session, tier_variable, event, fds["payload"], observed_count=0, values=[]
+    )
     sync_session.commit()
     # One path per run, so which one this run picked is visible in what it returns.
     monkeypatch.setattr(catalog_sync, "_SAMPLED_PATHS_PER_RUN", 1)
@@ -2531,7 +2862,7 @@ def test_json_path_sampling_rotates_on_the_scheduled_interval_not_the_window(
         def get_json_path_samples(self, *args: object, **kwargs: object):
             return {"payload": {"user.plan": ['"pro"'], "user.tier": ['"gold"']}}
 
-    def _sample(window_end: datetime) -> dict[str, dict[str, list[str]]]:
+    def _sample(window_end: datetime):
         window_from = window_end - timedelta(hours=6)
         return _collect_json_path_samples(
             sync_session,
@@ -2549,9 +2880,11 @@ def test_json_path_sampling_rotates_on_the_scheduled_interval_not_the_window(
     first = _sample(datetime(2026, 8, 30, 12, tzinfo=UTC))
     second = _sample(datetime(2026, 8, 30, 13, tzinfo=UTC))
 
-    assert len(first["payload"]) == 1
-    assert len(second["payload"]) == 1
-    assert first != second, "one scheduled tick must move the rotation on by one path"
+    assert len(first.samples["payload"]) == 1
+    assert len(second.samples["payload"]) == 1
+    assert first.samples != second.samples, (
+        "one scheduled tick must move the rotation on to the other path"
+    )
 
 
 # --- the collector's own wiring, end to end (tripl-xv77.2) -------------------
@@ -3039,9 +3372,11 @@ def test_group_merge_folds_colliding_contexts_instead_of_violating_the_unique_co
 ):
     # uq_variable_value_context is the bare (variable_id, event_id,
     # field_definition_id), so a blanket ``UPDATE ... SET event_id`` would raise
-    # on the second row. The fold is the one record_variable_contexts already
-    # performs when two rows collapse onto one event: larger observed_count,
-    # ``high`` wins the kind, union of the sampled values.
+    # on the second row. This pins the easy half of ``_fold_context_facts``:
+    # ``high`` on either side wins the kind and neither side's samples are
+    # dropped. The columns it decides from BOTH sides — threshold demotion and
+    # the union's size as the count — are pinned by the two tests at the end of
+    # this module, where the lists are long enough for either to bite.
     project, et, fds = project_and_type
     variable = _add_variable(sync_session, project, name="variant", binding="screen")
     # The group event already exists, so it — not a freshly created row — is the
@@ -3908,3 +4243,246 @@ def test_group_merge_repoints_an_open_ticket_and_leaves_a_closed_one(
     closed = sync_session.get(ImplementationTicket, closed_ticket.id)
     assert closed is not None
     assert closed.event_ids == [str(source.id)], "history is not rewritten"
+
+
+# --- contexts recorded before the merge that deletes their event (tripl-gsum) ---
+
+
+_CATCH_ALL_AFTER_SPECIFIC_RULES = [
+    {
+        "name": "Clicks",
+        "condition_logic": "all",
+        "conditions": [{"field": "action", "pattern": "^click$"}],
+    },
+    {
+        # The trailing catch-all every grouped config grows: specific rules
+        # first, then one broad rule for the rest. It matches NO raw warehouse
+        # value here — neither "click" nor "view" starts with "/" — so the
+        # planner never reaches it. What it does match is the "/^click$/"
+        # override literal the first rule wrote, which is what the merge pass
+        # re-reads, and that is the whole non-idempotence.
+        "name": "Everything",
+        "condition_logic": "all",
+        "conditions": [{"field": "action", "pattern": "^/"}],
+    },
+]
+
+
+def test_a_rule_matching_an_earlier_rules_output_keeps_this_runs_observations(
+    sync_session: Session, project_and_type
+):
+    """A merge that deletes an event this run just recorded contexts for.
+
+    ``generate_events`` records contexts into an in-memory map keyed on
+    ``event.id`` and inserts them AFTER the merge pass, which can
+    ``session.delete`` one of those events. Unfixed, the insert writes the dead
+    id and the flush raises ``IntegrityError`` on
+    ``variable_values_event_id_fkey`` — the whole scan job, not one event.
+
+    Dropping the entry instead would be silent loss, which is why the assertion
+    below is about the group event's OBSERVATIONS and not about the absence of an
+    exception: "Everything" is minted inside the merge pass itself, appears in no
+    plan, and is therefore an event nothing else will ever record a context for.
+    """
+    project, et, fds = project_and_type
+    cardinality = {
+        "screen": CardinalityResult(
+            column=ColumnInfo("screen", "String"),
+            count=5000,
+            is_low=False,
+            sample_values=[f"/users/{i}/profile" for i in range(200)],
+        ),
+        "action": CardinalityResult(
+            column=ColumnInfo("action", "String"),
+            count=2,
+            is_low=True,
+            sample_values=["click", "view"],
+        ),
+    }
+    result = generate_events(
+        sync_session,
+        project.id,
+        et.id,
+        _make_analysis(cardinality),
+        fds,
+        event_group_rules=_CATCH_ALL_AFTER_SPECIFIC_RULES,
+    )
+    sync_session.commit()
+
+    # Pinned so the test cannot pass by the second rule quietly ceasing to match:
+    # two events planned, one of them merged away by the catch-all.
+    assert result.events_created == 2
+    assert result.events_merged == 1
+
+    events = list(
+        sync_session.execute(select(Event).where(Event.project_id == project.id)).scalars()
+    )
+    identities = {event.source_name for event in events}
+    assert "Everything" in identities
+    assert "Clicks" not in identities, "the catch-all swallowed the specific group"
+
+    contexts = _contexts(sync_session, project.id)
+    live_event_ids = {event.id for event in events}
+    # THE disable-the-fix assertion. Unfixed this never runs — the flush above
+    # raises first — but it is what stays true if the engine ever stops enforcing
+    # the foreign key: a context naming the deleted "Clicks" row.
+    assert {context.event_id for context in contexts} <= live_event_ids
+
+    group = next(event for event in events if event.source_name == "Everything")
+    group_contexts = [context for context in contexts if context.event_id == group.id]
+    assert len(group_contexts) == 1, "the merged-away event's observation followed its volume"
+    assert group_contexts[0].field_definition_id == fds["screen"].id
+    assert group_contexts[0].value_kind == "high"
+    assert group_contexts[0].observed_count == 200
+    assert len(group_contexts[0].values) == VARIABLE_VALUE_SAMPLE_LIMIT
+    # Both surviving events report a written row; neither is the empty list a
+    # dropped entry would have left behind.
+    assert result.variable_values_written == 2
+
+
+# --- folding two stored contexts decides every column from both sides (tripl-3rex) ---
+
+
+def test_group_merge_demotes_a_fold_that_crosses_the_cardinality_threshold(
+    sync_session: Session, project_and_type
+):
+    """Two ``low`` rows whose union is no longer an enumeration.
+
+    ``low`` means "fewer distinct values than the threshold" and renders as an
+    "All values" badge, so a fold that carries the row past the threshold has to
+    demote it — and only ``high`` rows are trimmed, so leaving it ``low`` parked
+    an uncapped over-threshold list behind that badge.
+    """
+    project, et, fds = project_and_type
+    variable = _add_variable(sync_session, project, name="variant", binding="screen")
+    target = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click events",
+        screen="${variant}",
+        action="/^click:/",
+        order=0,
+    )
+    _add_context(
+        sync_session,
+        project,
+        variable,
+        target,
+        fds["screen"],
+        values=[f"t{i}" for i in range(30)],
+        count=30,
+        kind="low",
+    )
+    source = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click:one",
+        screen="${variant}",
+        action="click:one",
+        order=1,
+    )
+    _add_context(
+        sync_session,
+        project,
+        variable,
+        source,
+        fds["screen"],
+        values=[f"s{i}" for i in range(30)],
+        count=30,
+        kind="low",
+    )
+    sync_session.commit()
+
+    merged = merge_existing_events_for_group_rules(
+        sync_session,
+        project_id=project.id,
+        event_type_ids=[et.id],
+        event_group_rules=_CLICK_GROUP_RULE,
+        # Passed rather than defaulted, so the threading from the caller is under
+        # test too: a project that lowered the bound gets the demotion it asked
+        # for, not the module's fallback of 100.
+        cardinality_threshold=50,
+    )
+    sync_session.commit()
+
+    assert merged == 1
+    (folded,) = _contexts(sync_session, project.id)
+    assert folded.event_id == target.id
+    assert folded.value_kind == "high", "60 distinct values is not an enumeration under 50"
+    assert folded.observed_count == 60, "counted before the trim, not after"
+    assert len(folded.values) == VARIABLE_VALUE_SAMPLE_LIMIT
+
+
+def test_group_merge_counts_the_union_even_when_the_fold_stays_an_enumeration(
+    sync_session: Session, project_and_type
+):
+    """The count is the union's size, not the larger of the two stored counts.
+
+    Same two rows under the default threshold: the fold is still an exact
+    enumeration and keeps every value, so ``observed_count`` is the only column
+    that moves — and a row whose stored count sits below the values it holds is
+    exactly what the replay sink then has to correct on some later tick.
+    """
+    project, et, fds = project_and_type
+    variable = _add_variable(sync_session, project, name="variant", binding="screen")
+    target = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click events",
+        screen="${variant}",
+        action="/^click:/",
+        order=0,
+    )
+    _add_context(
+        sync_session,
+        project,
+        variable,
+        target,
+        fds["screen"],
+        values=[f"t{i}" for i in range(30)],
+        count=30,
+        kind="low",
+    )
+    source = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click:one",
+        screen="${variant}",
+        action="click:one",
+        order=1,
+    )
+    _add_context(
+        sync_session,
+        project,
+        variable,
+        source,
+        fds["screen"],
+        values=[f"s{i}" for i in range(30)],
+        count=30,
+        kind="low",
+    )
+    sync_session.commit()
+
+    merged = merge_existing_events_for_group_rules(
+        sync_session,
+        project_id=project.id,
+        event_type_ids=[et.id],
+        event_group_rules=_CLICK_GROUP_RULE,
+        # Left at DEFAULT_CARDINALITY_THRESHOLD on purpose: 60 distinct values
+        # sit under it, so nothing demotes and the count is the sole change.
+    )
+    sync_session.commit()
+
+    assert merged == 1
+    (folded,) = _contexts(sync_session, project.id)
+    assert folded.value_kind == "low"
+    assert len(folded.values) == 60, "a low row is an exact enumeration and is never trimmed"
+    assert folded.observed_count == 60

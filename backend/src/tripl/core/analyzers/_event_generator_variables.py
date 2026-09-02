@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,6 +35,15 @@ SCAN_PROVENANCE_DESCRIPTION = "Auto-detected variable from data source scan"
 # one it is deliberately NOT (``core.name_template``).
 _TOKEN_PATTERN = VARIABLE_TOKEN_PATTERN
 
+# The in-memory context map a generation run fills before any ``VariableValue``
+# row exists: ``(variable_id, event_id, field_definition_id)`` -> the payload
+# ``insert_variable_contexts`` will write. Named here, beside the four functions
+# that read and write it, because the merge pass now has to reconcile it too
+# (``_reconcile_pending_variable_contexts``, tripl-gsum) and three modules
+# spelling the raw tuple out by hand is how a key order drifts apart.
+VariableContextKey = tuple[uuid.UUID, uuid.UUID, uuid.UUID]
+PendingVariableContexts = dict[VariableContextKey, dict[str, Any]]
+
 
 class VariableIndex:
     """Token → Variable lookup across ``name``, ``source_name`` and ``bindings``.
@@ -47,6 +56,12 @@ class VariableIndex:
 
     def __init__(self, variables: Sequence[Variable] = ()) -> None:
         self._by_token: dict[str, Variable] = {}
+        # Excluded ids are accumulated here rather than read back off
+        # ``_by_token``, because the two answer different questions and only this
+        # one is about variables: the map holds the WINNER of each token, so a
+        # variable whose every token an earlier-sorted sibling already claimed is
+        # absent from its values entirely. See ``excluded_ids`` (tripl-cef2).
+        self._excluded_ids: set[uuid.UUID] = set()
         for variable in sorted(variables, key=lambda v: v.name):
             self.add(variable)
 
@@ -92,6 +107,10 @@ class VariableIndex:
     def add(self, variable: Variable) -> None:
         for token in self.tokens_of(variable):
             self._by_token.setdefault(token, variable)
+        # Recorded whether or not the variable won a single token: it is in the
+        # index, so this run has seen it, and that is the whole test (tripl-cef2).
+        if variable.excluded_from_scans:
+            self._excluded_ids.add(variable.id)
 
     def resolve(self, token: str) -> Variable | None:
         return self._by_token.get(token)
@@ -104,8 +123,23 @@ class VariableIndex:
         DELETER needs: no run can re-record a row it takes from an excluded
         variable. Read by ``delete_variable_contexts_for_event_type``, which
         decides per row rather than per token and so cannot ask ``resolve``.
+
+        EVERY excluded variable the index was built from, not the excluded
+        subset of the token winners. Those differ whenever an earlier-sorted
+        sibling already claims every token an excluded variable names — a live
+        variable bound to the excluded one's display name is enough, and the API
+        accepts that binding because ``_check_binding_conflicts`` compares
+        against other variables' ``bindings`` and ``source_name`` and never
+        their ``name``. Reading the winners left such a variable out of the set,
+        and the deleter then took its rows on the next rewrite of their
+        ``(event, field)`` — the permanent, silent loss the set exists to
+        prevent, reappearing for exactly the variables hardest to notice
+        (tripl-cef2). Being shadowed is a fact about which variable answers a
+        token; it says nothing about whether a stored row can be restated, and
+        it cannot, because ``resolve`` hands ``record_variable_contexts`` the
+        shadowing sibling instead.
         """
-        return {variable.id for variable in self._by_token.values() if variable.excluded_from_scans}
+        return set(self._excluded_ids)
 
     def __len__(self) -> int:
         # Callers gate work on ``if index and ...`` meaning "there are variables
@@ -283,9 +317,16 @@ def preserve_existing_variable_context_values(
     project_id: uuid.UUID,
     branch_id: uuid.UUID | None,
     contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]],
-) -> None:
+    cardinality_threshold: int = 100,
+) -> dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], list[str]]:
+    """Fold every stored row into the planned context about to replace it.
+
+    Returns the stored ``values`` per context key, snapshotted before any
+    merging, so ``insert_variable_contexts`` can tell a rewrite that changed a
+    row from one that restored it byte-for-byte.
+    """
     if not contexts:
-        return
+        return {}
 
     variable_ids = {variable_id for variable_id, _, _ in contexts}
     event_ids = {event_id for _, event_id, _ in contexts}
@@ -300,6 +341,7 @@ def preserve_existing_variable_context_values(
         query = query.where(VariableValue.branch_id == branch_id)
 
     existing_contexts = session.execute(query).scalars().all()
+    prior_values: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], list[str]] = {}
     for existing in existing_contexts:
         key = (existing.variable_id, existing.event_id, existing.field_definition_id)
         context = contexts.get(key)
@@ -308,8 +350,15 @@ def preserve_existing_variable_context_values(
 
         context_values = list(context.get("values") or [])
         existing_values = list(existing.values or [])
+        prior_values[key] = existing_values
         if not context_values and existing_values:
             context["values"] = sample_variable_values(existing_values, existing.value_kind)
+            # The KIND is restored with the values: a planned JSON-path
+            # observation is always ``high``, and letting it stand over a
+            # restored low enumeration would flip the row to high with its
+            # full list — after which the next merge trims it to the sample
+            # cap. Restoring both keeps the row exactly what it was.
+            context["value_kind"] = existing.value_kind
 
         # A first observation IS reported as drift. That is the settled decision,
         # not an omission. A stored ``observed_count`` of 0 means the values
@@ -343,6 +392,51 @@ def preserve_existing_variable_context_values(
         # So the backlog surfaces, and the variables guide tells operators to
         # expect a batch the first time they document a list.
 
+        if context_values and existing_values:
+            # A non-empty payload is a WINDOW, not a census: the rotating
+            # sampler reads 1-3h of traffic, so a stored value absent from the
+            # window is still real. Replacing the list with the window dropped
+            # one historical value per context per scheduled cycle on
+            # production (2026-08-31); union instead, existing values first so
+            # the stored order — and the chips rendered from it — stays
+            # stable. Same order as ``_extend_unique_values`` on the metrics
+            # sink, this write path's sibling.
+            merged = sample_variable_values(
+                # ``low`` means "no cap" here: the union has to be measured
+                # before any trimming, like ``distinct_seen`` on the sink.
+                [*existing_values, *context_values],
+                VariableValueKind.low.value,
+            )
+            distinct_seen = len(merged)
+            # The demotion bound is the cardinality THRESHOLD, not the sample
+            # cap: a low row is an exact enumeration and legitimately holds up
+            # to the threshold's worth of values untrimmed — the replay sink
+            # (generation.py's low branch) spells out why trimming it to the
+            # sample cap makes the "All values" badge lie. Demoting at the cap
+            # here rewrote every 21..100-value enumeration as a 20-value
+            # sample on its first rescan. Decided BEFORE any trim, because
+            # ``sample_variable_values`` trims only high rows.
+            if (
+                distinct_seen > cardinality_threshold
+                or existing.value_kind == VariableValueKind.high.value
+            ):
+                context["value_kind"] = VariableValueKind.high.value
+            else:
+                # The union of two observed-value sets below the threshold is
+                # still an exact enumeration, whatever the incoming side
+                # claimed: a sampled JSON-path observation always arrives
+                # ``high`` (event_plan plans it that way), and inheriting that
+                # kind here would trim a stored low enumeration to the sample
+                # cap — the destruction this arm exists to remove, back
+                # through the side door. The replay sink keeps low the same
+                # way.
+                context["value_kind"] = VariableValueKind.low.value
+            context["values"] = sample_variable_values(merged, context["value_kind"])
+            context["observed_count"] = max(
+                int(context.get("observed_count") or 0),
+                distinct_seen,
+            )
+
         context["observed_count"] = max(
             int(context.get("observed_count") or 0),
             existing.observed_count,
@@ -350,6 +444,7 @@ def preserve_existing_variable_context_values(
         )
         if existing.value_kind == VariableValueKind.high.value:
             context["value_kind"] = VariableValueKind.high.value
+    return prior_values
 
 
 def record_variable_contexts(
@@ -408,8 +503,21 @@ def insert_variable_contexts(
     project_id: uuid.UUID,
     branch_id: uuid.UUID | None,
     contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]],
-) -> None:
-    for context in contexts.values():
+    prior_values: Mapping[tuple[uuid.UUID, uuid.UUID, uuid.UUID], list[str]] | None = None,
+) -> int:
+    """Write one row per planned context; count the writes a reader can see.
+
+    The return value is the number of rows this call left holding a NON-EMPTY
+    values list that is new or changed — a row restored to exactly its stored
+    values does not count, and neither does one created empty. ``prior_values``
+    is the pre-merge snapshot ``preserve_existing_variable_context_values``
+    took of the rows this run deletes and re-inserts; without it every insert
+    looks new. The semantics are a pinned contract: the scan task publishes
+    the sum in ``result_summary`` under ``variable_values_written``.
+    """
+    prior = prior_values or {}
+    variable_values_written = 0
+    for key, context in contexts.items():
         payload = {
             "id": uuid.uuid4(),
             "project_id": project_id,
@@ -424,6 +532,10 @@ def insert_variable_contexts(
         if branch_id is not None:
             payload["branch_id"] = branch_id
         session.add(VariableValue(**payload))
+        values = list(context["values"] or [])
+        if values and values != prior.get(key):
+            variable_values_written += 1
+    return variable_values_written
 
 
 def resolve_main_branch_id(session: Session, project_id: uuid.UUID) -> uuid.UUID | None:

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
+
+from tripl.schemas.plan_branch import PlanDiffRename
+from tripl.schemas.plan_revision import PlanEntityType
 
 # A natural key is the row's rename scope followed by its name:
 # ``("track", "purchase:success")`` for an event, ``("variant",)`` for a
@@ -11,12 +15,37 @@ from collections.abc import Mapping
 NaturalKey = tuple[str, ...]
 
 
+def _sole_key_by_identity[KeyT: NaturalKey](
+    side: Mapping[KeyT, str | None],
+) -> dict[tuple[NaturalKey, str], KeyT]:
+    """Each ``(scope, source_name)`` this side names exactly once, and its key.
+
+    An identity carried by two rows is dropped rather than guessed at: only a
+    UniqueConstraint makes ``source_name`` singular within a branch, and only
+    Variable carries one (``uq_variable_project_source_name``); events have a
+    plain index and rows predating either are live.
+
+    Which rows are "this side" is the caller's decision, and it is not always the
+    whole mapping — see ``pair_renames``, which narrows main to the base first so
+    that a row that could never be a rename source cannot veto one either.
+    """
+    keys_by_identity: dict[tuple[NaturalKey, str], list[KeyT]] = {}
+    for key, source_name in side.items():
+        # Nullable by design — "rows created outside a scan" — so two unrelated
+        # rows can both be empty and neither identifies anything. Pairing on
+        # absence would fuse arbitrary rows.
+        if not source_name:
+            continue
+        keys_by_identity.setdefault((key[:-1], source_name), []).append(key)
+    return {identity: keys[0] for identity, keys in keys_by_identity.items() if len(keys) == 1}
+
+
 def pair_renames[KeyT: NaturalKey](
     base: Mapping[KeyT, str | None],
     main: Mapping[KeyT, str | None],
     branch: Mapping[KeyT, str | None],
 ) -> dict[KeyT, KeyT]:
-    """Match the rows a merge would DELETE to the rows it would INSERT.
+    """Match main's rows to the branch rows they were renamed into.
 
     Each mapping is one side's natural key -> that row's ``source_name``.
     Returns ``old_key -> new_key`` for every pair proven to be a single row the
@@ -24,8 +53,8 @@ def pair_renames[KeyT: NaturalKey](
 
     ``_apply_merge`` upserts by natural key, and for an Event that key contains
     the very name the user edited — Event has no ``display_name``, so its
-    machine name IS the displayed one and editing it is routine. A rename
-    therefore reads as a removal plus an unrelated addition: main's row is
+    machine name IS the displayed one and editing it is routine. Left unpaired,
+    a rename reads as a removal plus an unrelated addition: main's row is
     deleted, a fresh uuid inserted, the FK cascade takes
     ``variable_values.event_id``, their drift rows and ``event_changes`` with
     it, and the ``event_metrics`` series is left holding a NULL ``event_id``.
@@ -42,57 +71,184 @@ def pair_renames[KeyT: NaturalKey](
     the stable scan identity, and ``deep_copy_plan_to_branch`` carries it onto
     the branch copy so a branch row still answers to main's identity.
 
-    A pair is made only when that identity is unambiguous: within one scope,
-    exactly one would-delete and exactly one would-insert carry the same
-    non-empty ``source_name``. Every other shape is left untouched and merges
-    the way it does today, as a delete plus an insert:
+    So the pairing reads the identity directly on both sides and never the name
+    key sets. That is the whole of tripl-htcz: derived from the key sets, a
+    rename was only visible when its name VANISHED from the branch, and in a
+    cycle no name vanishes. A plain swap — A renamed to B while B is renamed to
+    A, reachable through a temporary name — left both sets empty and paired
+    nothing, and a longer rotation put mismatched rows in them. The upsert then
+    matched each branch row to the main row wearing its new name and wrote that
+    row's ``source_name`` onto it, which for a Variable is a non-deferrable
+    ``UNIQUE (project_id, branch_id, source_name)`` violated inside one flush.
 
-    * **No source_name.** Nullable by design — "events created outside a scan"
-      — so two unrelated rows can both be empty and neither identifies
-      anything. Pairing on absence would fuse arbitrary rows.
-    * **Two or more candidates on one side.** Only a UniqueConstraint makes
-      ``source_name`` singular within a branch, and only Variable carries one;
-      events have a plain index, and rows predating either are live. A guess
-      here renames the wrong row, which is a worse outcome than the deletion it
-      set out to avoid.
-    * **An unmatched would-insert or would-delete.** A genuinely added event and
-      a genuinely removed one, which must keep merging as an add and a removal.
+    A pair is still made only when the identity is unambiguous, and the shapes
+    that must keep merging as a delete plus an insert still do:
+
+    * **No source_name**, or **two or more candidates on one side** — see
+      ``_sole_key_by_identity``, which drops both. On main "one side" means the
+      rows that were there when the branch was cut, not every row main holds
+      now; the comment on the narrowing below says why.
+    * **An identity only one side carries.** A genuinely added row and a
+      genuinely removed one, which must keep merging as an add and a removal.
+    * **A row main never had at the base.** A rename moves a row that existed
+      when the branch was cut; anything else is main's own edit racing the
+      branch's, which conflict detection judges rather than this.
+    * **A move onto a name a STAYING main row still holds.** The branch renamed
+      A to B while main independently grew its own B: honouring the rename would
+      put two rows on one name. Dropping one such move can strand another that
+      was only legal because its destination was being vacated, so the check
+      repeats until it stops finding any.
 
     The key type is the caller's own, not widened to ``NaturalKey``, so the
-    result can be used to re-key the very maps it was derived from.
+    result can be used to re-key the very maps it was derived from — with
+    ``rekey_in_place``, because the result may now be a permutation.
 
     Pure by construction — three plain mappings in, one mapping out — because
     the caller is the merge engine, where a wrongly matched id is unrecoverable,
     and every case above therefore deserves a test that needs no database.
     """
-    # These two comprehensions are the caller's insert and delete arms restated:
-    # main loses a row the base had and the branch no longer lists; the branch
-    # gains a row neither main nor the base has. Keeping them here rather than
-    # taking the caller's sets is what lets the rules above be tested directly.
+    # Main's side is narrowed to the base BEFORE the identities are counted. The
+    # loop below already refuses an ``old_key not in base``, so a row main grew
+    # after the branch was cut can never BE a rename source — but left in the
+    # grouping it can still VETO one, by making an identity look ambiguous.
+    # Grouping whole sides is new here: the previous shape grouped only the
+    # merge's own would-delete and would-insert candidates, so a duplicate that
+    # was not itself a candidate never poisoned anything. Only Variable makes
+    # ``source_name`` unique per branch, so a second Event carrying one is a live
+    # shape, and a rename that used to pair now falls back to delete-plus-insert
+    # — which cascades ``variable_values``, their drift rows and
+    # ``event_changes`` (tripl-htcz).
     #
-    # They also make the two sides disjoint — an old key is on main and a new key
-    # is not — so no pair's new key is another pair's old key and a caller can
-    # re-key its maps in a single pass without ordering the moves.
-    would_delete = [key for key in main if key in base and key not in branch]
-    would_insert = [key for key in branch if key not in main and key not in base]
+    # The branch side is deliberately NOT narrowed: in a cycle a rename's
+    # destination is a key that main and the base both already hold, and that is
+    # the whole shape this function exists to see. Nor does this narrowing touch
+    # the "is the destination occupied?" test at the end, which reads ``main``
+    # itself — a row main grew after the cut still holds its name and must still
+    # block a move onto it.
+    main_by_identity = _sole_key_by_identity(
+        {key: source_name for key, source_name in main.items() if key in base}
+    )
+    branch_by_identity = _sole_key_by_identity(branch)
 
-    def by_identity(
-        keys: list[KeyT], side: Mapping[KeyT, str | None]
-    ) -> dict[tuple[NaturalKey, str], list[KeyT]]:
-        grouped: dict[tuple[NaturalKey, str], list[KeyT]] = {}
-        for key in keys:
-            source_name = side[key]
-            if not source_name:
+    moves: dict[KeyT, KeyT] = {}
+    for identity, old_key in main_by_identity.items():
+        new_key = branch_by_identity.get(identity)
+        if new_key is None or new_key == old_key or old_key not in base:
+            continue
+        moves[old_key] = new_key
+
+    # A destination is free either because main has nothing there or because the
+    # row that is there is itself moving away. Removing a move makes its source a
+    # staying row, which can block a move that was previously fine, so this runs
+    # to a fixed point rather than once.
+    while blocked := [old for old, new in moves.items() if new in main and new not in moves]:
+        for old in blocked:
+            del moves[old]
+    return moves
+
+
+def _variable_identities(payload: Mapping[str, Any]) -> dict[tuple[str, ...], str | None]:
+    """A plan snapshot's variables as ``pair_renames`` wants them."""
+    return {(item["name"],): item.get("source_name") for item in payload.get("variables", [])}
+
+
+def _event_identities(payload: Mapping[str, Any]) -> dict[tuple[str, ...], str | None]:
+    return {
+        (item["event_type_name"], item["name"]): item.get("source_name")
+        for item in payload.get("events", [])
+    }
+
+
+# The two entity kinds the merge pairs, and only those: ``_apply_merge`` calls
+# ``pair_renames`` for variables and for events and for nothing else, because
+# ``source_name`` is the only identity a rename cannot move and it is the only
+# thing ``build_plan_snapshot`` records it on. Event types, fields, meta fields
+# and relations therefore keep merging — and keep reporting — as a removal plus
+# an addition, which is what they are.
+#
+# The keys built above are the keys ``compute_plan_diff_entries`` uses for the
+# same two sets (``item["name"]`` for a variable, ``(event_type_name, name)`` for
+# an event). That correspondence is load-bearing: the membership tests in
+# ``snapshot_rename_pairs`` decide whether a diff ENTRY exists, so a key shaped
+# differently here would answer about a row the diff never split.
+_PAIRED_ENTITY_TYPES: tuple[
+    tuple[PlanEntityType, Callable[[Mapping[str, Any]], dict[tuple[str, ...], str | None]]], ...
+] = (
+    ("variable", _variable_identities),
+    ("event", _event_identities),
+)
+
+
+def snapshot_rename_pairs(
+    base_payload: Mapping[str, Any],
+    main_payload: Mapping[str, Any],
+    branch_payload: Mapping[str, Any],
+) -> list[PlanDiffRename]:
+    """The renames a merge of this branch will pair, named the way the diff names them.
+
+    A branch diff compares the base snapshot with the branch, and keys entities
+    by name, so a rename arrives as a removal of the old name plus an addition of
+    the new one — two rows that look like a deletion and an unrelated creation.
+    The merge knows better, and this says what the merge knows, from the same
+    ``pair_renames`` the merge itself calls (tripl-amnn). A second implementation
+    would be free to drift, and the cost of drift here is a UI that promises a
+    rename the merge then performs as a delete-plus-insert, cascading the
+    variable's observed values and drift rows on the way through.
+
+    Only pairs the diff actually SPLIT are returned. ``pair_renames`` also pairs
+    a swap and a longer rotation, where every name is present on both sides and
+    the diff shows two ``changed`` entries instead — there is no removal and no
+    addition to join up, so reporting one would name entries that do not exist.
+    Hence the two membership tests: a removal exists only for an old key absent
+    from the branch, an addition only for a new key absent from the base.
+
+    Three payloads and not two, because the merge's pairing reads main: a move
+    onto a name a staying main row still holds is refused, and a row main grew
+    after the branch was cut can never be a rename source. Passing the base twice
+    would answer a question nobody asked and would promise pairings the merge
+    would then refuse. Callers already hold all three — ``diff_branch`` builds
+    the main and branch snapshots to compute the diff at all.
+
+    The answer is as fresh as ``main_payload``: main can move between this call
+    and the merge, and then the merge pairs what main says at that moment. That
+    is the same staleness ``behind_base`` already reports, not a new one.
+    """
+    pairs: list[PlanDiffRename] = []
+    for entity_type, identities_of in _PAIRED_ENTITY_TYPES:
+        base = identities_of(base_payload)
+        branch = identities_of(branch_payload)
+        for old_key, new_key in pair_renames(base, identities_of(main_payload), branch).items():
+            if old_key in branch or new_key in base:
                 continue
-            grouped.setdefault((key[:-1], source_name), []).append(key)
-        return grouped
+            pairs.append(
+                PlanDiffRename(
+                    entity_type=entity_type,
+                    # ``pair_renames`` never crosses ``key[:-1]``, so both halves
+                    # share a parent and either one names it.
+                    parent=old_key[0] if len(old_key) > 1 else None,
+                    removed_name=old_key[-1],
+                    added_name=new_key[-1],
+                )
+            )
+    # Sorted so the response does not reorder between two identical requests
+    # merely because a dict was built in a different order.
+    return sorted(pairs, key=lambda pair: (pair.entity_type, pair.parent or "", pair.removed_name))
 
-    removed = by_identity(would_delete, main)
-    added = by_identity(would_insert, branch)
 
-    renames: dict[KeyT, KeyT] = {}
-    for identity, old_keys in removed.items():
-        new_keys = added.get(identity, [])
-        if len(old_keys) == 1 and len(new_keys) == 1:
-            renames[old_keys[0]] = new_keys[0]
-    return renames
+def rekey_in_place[KeyT, ValueT](mapping: dict[KeyT, ValueT], renames: Mapping[KeyT, KeyT]) -> None:
+    """Move every ``old_key -> new_key`` of ``renames`` at once.
+
+    ``pair_renames`` can return a permutation — a two-row swap, or a longer
+    rotation — so one pair's new key is another pair's old key. Re-keying a pair
+    at a time would file the first row under the second pair's OLD key and then
+    read it straight back as the second row, quietly fusing two identities
+    (tripl-htcz). Lifting every moving entry out before putting any back cannot.
+
+    ``mapping`` must hold every old key. ``pair_renames`` only proposes a move
+    for a key that is on main and in the base, which is exactly what the merge
+    engine passes here — a ``KeyError`` means that invariant broke, and is a
+    better answer than a half-applied permutation.
+    """
+    lifted = {old: mapping.pop(old) for old in renames}
+    for old, new in renames.items():
+        mapping[new] = lifted[old]

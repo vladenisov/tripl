@@ -7981,6 +7981,8 @@ export interface components {
             behind_base: boolean;
             /** Entries */
             entries: components["schemas"]["PlanDiffEntry"][];
+            /** Renames */
+            renames?: components["schemas"]["PlanDiffRename"][];
             /** Summary */
             summary: {
                 [key: string]: number;
@@ -8083,6 +8085,35 @@ export interface components {
             name: string;
             /** Parent */
             parent?: string | null;
+        };
+        /**
+         * PlanDiffRename
+         * @description One removed entry and one added entry that are really a single renamed row.
+         *
+         *     The diff keys entities by NAME, so a rename splits into a removal of the old
+         *     name and an addition of the new one. The merge does not see it that way: it
+         *     pairs the two by ``source_name`` and UPDATEs main's row in place, keeping the
+         *     id and everything hanging off it. Stating the pairing here is what stops the
+         *     UI having to re-derive it, which it cannot do correctly — the pairing also
+         *     depends on main, and the diff the UI holds compares the base with the branch
+         *     (tripl-amnn).
+         *
+         *     ``removed_name`` and ``added_name`` are the two entries' ``name``, and
+         *     ``entity_type`` / ``parent`` are shared by both, so the pair addresses its
+         *     halves exactly the way ``BranchRevertRequest`` addresses a change.
+         */
+        PlanDiffRename: {
+            /** Added Name */
+            added_name: string;
+            /**
+             * Entity Type
+             * @enum {string}
+             */
+            entity_type: "event_type" | "field_definition" | "event" | "variable" | "meta_field" | "relation";
+            /** Parent */
+            parent?: string | null;
+            /** Removed Name */
+            removed_name: string;
         };
         /**
          * PlanFieldChange

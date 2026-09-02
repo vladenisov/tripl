@@ -241,7 +241,10 @@ variables, documented values, and warnings for unknown tokens. A JSON field
 must be valid JSON; tripl saves its canonical JSON form while preserving complete
 template values such as `${variable_name}`.
 
-Scans keep observed samples separate from the documented list. If a new value
+Scans keep observed samples separate from the documented list, and the samples
+accumulate — a re-scan merges what it saw into the stored evidence instead of
+replacing it, so a value observed once does not vanish when later scan windows
+stop carrying it. If a new value
 appears, review the drift from the Variables table or the affected event: accept
 it globally, accept a complete override for that event, snooze it, or mark it a
 false positive. If a scan-created variable should stay out of the plan, choose
@@ -570,7 +573,11 @@ Inbox says *"No correlated alert groups"*, work through this checklist:
 4. **Is the cooldown swallowing it?** A recent delivery for the same problem can
    suppress the next one until the cooldown elapses.
 5. **Did delivery fail?** Set the Deliveries status filter to **Failed** to see
-   transport errors (a bad Slack URL, an SMTP problem, etc.).
+   transport errors (a bad Slack URL, an SMTP problem, etc.). A failure from a
+   transient network error — unreachable host, refused connection, a timeout —
+   retries itself a few times over the following minutes; any other failure,
+   every Jira or Linear delivery, and a delivery whose destination was
+   disabled at the time, waits for the row's **Retry** button.
 6. **Did you silence it yourself?** An incident you acknowledged, resolved, muted
    or marked a false positive stops delivering — and **acknowledged** counts,
    which is the one people do not expect. Handled incidents sort below open ones,
@@ -631,7 +638,7 @@ If you're rolling tripl out on real data, this order tends to work well:
 | Data source card is red | Connection failed | Fix credentials, **Edit** then **Re-test** |
 | "By version" tab missing | Scan has no app-version column | Set the version column on the scan (optional) |
 | A deleted scan variable comes back | Its source binding is still present | Use **Exclude from scans**; restore it later if needed |
-| A scan-created variable disappeared | A run retired it — nothing in the plan referenced it | Expected cleanup; edit, document, or exclude a variable you want kept |
+| A scan-created variable disappeared | A catalog run retired it — nothing in the plan referenced it. A scheduled collection does this too when the scan sets **Limits → Lookback (hours)**, so it can happen without anyone starting a scan | Expected cleanup; edit, document, or exclude a variable you want kept |
 | A variable value keeps showing as drift | It is outside the effective documented list | Accept it globally or for that event, or resolve/snooze the drift |
 | Alert never arrived | No signal, rule off, threshold/cooldown, or delivery failed | Work the "alert never fired" checklist above |
 | Wrong change merged | — | Use the **Audit log** + a corrective branch through review |

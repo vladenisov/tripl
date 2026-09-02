@@ -11,6 +11,13 @@ export interface ScanJobResultSummary {
   events_merged?: number
   variables_created?: number
   variable_values_touched?: number
+  /** Scheduled-run sampler counters (absent on replay and on pre-2026-09 jobs). */
+  json_path_ring_size?: number
+  json_paths_sampled?: number
+  json_paths_with_samples?: number
+  variable_values_written?: number
+  variable_contexts_unfilled?: number
+  variables_retired?: number
   columns_analyzed?: number
   event_metrics?: number
   type_metrics?: number

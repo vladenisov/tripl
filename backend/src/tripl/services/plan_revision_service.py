@@ -17,7 +17,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import lazyload, selectinload
 
 from tripl.models.event import Event
 from tripl.models.event_photo import EventPhoto
@@ -275,11 +275,27 @@ async def build_plan_snapshot(
         .scalars()
         .all()
     )
+    # ``lazyload`` for the reason ``variable_service._check_binding_conflicts``
+    # gives: ``Variable.value_contexts`` is ``lazy="selectin"`` and each context
+    # then selectin-loads its FieldDefinition, so a bare select here hydrates the
+    # project's entire context table — and a snapshot is built on every branch
+    # DIFF, not only on a merge or a revision (tripl-xkbb).
+    #
+    # Proven safe rather than assumed: the serializer below reads columns and
+    # ``overrides_by_variable`` only, and no code in the repo dereferences
+    # ``Variable.value_contexts`` at all — the readers that want contexts
+    # (``attach_variable_summaries``, ``_search_documents``) issue their own
+    # ``select(VariableValue)``. The one place an unloaded collection would
+    # still be needed is the ORM delete cascade, and that runs inside
+    # ``await session.delete(...)``, which is a coroutine precisely so the load
+    # it may emit happens in the greenlet — not the plain attribute access that
+    # raises ``MissingGreenlet``.
     variables_rows = (
         (
             await session.execute(
                 select(Variable)
                 .where(Variable.project_id == project_id, Variable.branch_id == branch_id)
+                .options(lazyload(Variable.value_contexts))
                 .order_by(Variable.name)
             )
         )
