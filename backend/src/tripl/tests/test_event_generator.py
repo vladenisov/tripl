@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from itertools import product
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -205,6 +205,80 @@ class TestEventGeneration:
             .all()
         )
         assert len(events) == 6
+
+    def test_two_events_holding_one_identity_resolve_to_the_live_one(
+        self, sync_session: Session, project_and_type
+    ):
+        """Production holds this shape, so the scan must not pick by row order.
+
+        windy-web carries two pageview pairs written 94 ms apart that share an
+        event type, a name and every field value; one of each pair kept being
+        updated for months while its twin froze at creation. Nothing in the
+        schema forbids it — ``ix_events_source_identity`` is a plain index — so
+        the dedup map has to choose deterministically, or volumes and last-seen
+        times migrate between the two as the database's row order shifts.
+
+        The observable is which row gets the field values: a matched event is
+        upserted, the other is not touched at all. The stale row is inserted
+        SECOND on purpose. The map is built by iteration, so without an order the
+        row returned LAST is the one that ends up in it — insert the stale row
+        first and an unordered query picks the live one by luck, and the test
+        passes with the fix removed. It did, until this comment was rewritten.
+        """
+        project, et, fds = project_and_type
+        identity = "screen=/home | action=click"
+        live = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name=identity,
+            source_name=identity,
+            order=0,
+            status="in_review",
+            last_seen_at=datetime.now(UTC),
+        )
+        stale = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name=identity,
+            source_name=identity,
+            order=1,
+            status="in_review",
+            last_seen_at=None,
+        )
+        sync_session.add_all([live, stale])
+        sync_session.flush()
+
+        cardinality = {
+            "screen": CardinalityResult(
+                column=ColumnInfo("screen", "String"),
+                count=1,
+                is_low=True,
+                sample_values=["/home"],
+            ),
+            "action": CardinalityResult(
+                column=ColumnInfo("action", "String"),
+                count=1,
+                is_low=True,
+                sample_values=["click"],
+            ),
+        }
+        result = generate_events(sync_session, project.id, et.id, _make_analysis(cardinality), fds)
+        sync_session.commit()
+
+        # Neither row is recreated — the identity is known either way.
+        assert result.events_created == 0
+        values_by_event = {
+            event_id: count
+            for event_id, count in sync_session.execute(
+                select(EventFieldValue.event_id, func.count())
+                .where(EventFieldValue.event_id.in_([stale.id, live.id]))
+                .group_by(EventFieldValue.event_id)
+            ).all()
+        }
+        assert values_by_event.get(live.id, 0) > 0
+        assert values_by_event.get(stale.id, 0) == 0
 
     def test_high_cardinality_generates_templated_events(
         self, sync_session: Session, project_and_type

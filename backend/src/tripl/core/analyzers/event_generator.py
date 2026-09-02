@@ -233,6 +233,21 @@ def generate_events(
     )
     if main_branch_id is not None:
         existing_events_query = existing_events_query.where(Event.branch_id == main_branch_id)
+    # ORDER BY, and ``setdefault`` below, because two events CAN already hold one
+    # identity: nothing in the schema forbids it, and production carries proof —
+    # two windy-web pageview pairs written 94 ms apart, one of each pair updated
+    # for months while its twin froze at creation. Without an order the winner is
+    # whatever the database happened to return, which shifts as rows are updated,
+    # so volumes and last-seen times could migrate between the two across runs.
+    # Preference: the row traffic most recently landed on, then the older row,
+    # then a stable id. The rule matters more than which row it picks — an
+    # arbitrary-but-fixed winner leaves a dead twin the operator can find and
+    # retire; an alternating one corrupts both histories.
+    existing_events_query = existing_events_query.order_by(
+        Event.last_seen_at.desc().nullslast(),
+        Event.created_at.asc(),
+        Event.id.asc(),
+    )
     existing_events_list = session.execute(existing_events_query).scalars().all()
     existing_by_identity: dict[str, Event] = {}
     for ev in existing_events_list:
@@ -240,7 +255,7 @@ def generate_events(
             # Legacy / API-created rows: adopt the current name as the identity once,
             # so subsequent scans match on it instead of re-creating duplicates.
             ev.source_name = ev.name
-        existing_by_identity[ev.source_name] = ev
+        existing_by_identity.setdefault(ev.source_name, ev)
     next_event_order = session.execute(
         select(func.max(Event.order)).where(Event.project_id == project_id)
     ).scalar_one()
