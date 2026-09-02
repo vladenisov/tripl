@@ -1758,6 +1758,64 @@ async def test_bulk_create_events_refuses_two_items_claiming_one_identity(client
 
 
 @pytest.mark.asyncio
+async def test_bulk_create_events_refuses_an_identity_the_catalog_already_holds(
+    client: AsyncClient,
+):
+    """The batch is probed against the catalog in ONE query, not one per item.
+
+    Distinct from the in-batch clash above: that one is invisible to any query
+    because the sibling is not written yet, this one is invisible to any
+    in-memory check because the holder was written long ago.
+    """
+    slug = "ev-bulk-taken"
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types", json={"name": "se", "display_name": "Structured"}
+    )
+    et_id = et.json()["id"]
+    action = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "action", "display_name": "Action", "field_type": "string"},
+    )
+    action_id = action.json()["id"]
+    await _seed_scan_name_rule(slug, et_id, "{action}")
+
+    first = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": et_id,
+            "name": "x",
+            "field_values": [{"field_definition_id": action_id, "value": "sign_up"}],
+        },
+    )
+    assert first.status_code == 201, first.text
+
+    clash = await client.post(
+        f"/api/v1/projects/{slug}/events/bulk",
+        json=[
+            {
+                "event_type_id": et_id,
+                "name": "a",
+                "field_values": [{"field_definition_id": action_id, "value": "sign_out"}],
+            },
+            {
+                "event_type_id": et_id,
+                "name": "b",
+                "field_values": [{"field_definition_id": action_id, "value": "sign_up"}],
+            },
+        ],
+    )
+    assert clash.status_code == 409, clash.text
+    detail = clash.json()["detail"]
+    assert detail.startswith("Event 2 of 2: ")
+    assert first.json()["id"] in detail
+
+    # One transaction: the item that COULD have been created is not.
+    listed = await client.get(f"/api/v1/projects/{slug}/events")
+    assert [item["name"] for item in listed.json()["items"]] == ["sign_up"]
+
+
+@pytest.mark.asyncio
 async def test_bulk_create_events_names_the_item_that_failed(client: AsyncClient):
     """'Required field action is missing' is unusable when thirty events were posted."""
     slug = "ev-bulk-which"

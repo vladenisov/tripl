@@ -1,6 +1,7 @@
 import json
 import re
 import uuid
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
@@ -499,6 +500,25 @@ async def _generate_scan_template_name(
             )
         ).scalars()
     }
+    return apply_scan_name_format(
+        name_format=name_format, field_names=field_names, field_values=field_values
+    )
+
+
+def apply_scan_name_format(
+    *,
+    name_format: str,
+    field_names: Mapping[uuid.UUID, str],
+    field_values: Sequence[EventFieldValueIn],
+) -> str:
+    """The name a scan rule gives these field values, or 422 naming what is missing.
+
+    Separated from the lookups above so a batch can resolve the format and the
+    field names ONCE PER EVENT TYPE and then name every item without touching
+    the database. Naming fifty events item by item cost two queries each before
+    this — the governing-config select and the field-definition select — on top
+    of one identity probe per item.
+    """
     values_by_field = {
         field_names[fv.field_definition_id]: fv.value
         for fv in field_values
@@ -515,6 +535,55 @@ async def _generate_scan_template_name(
             ),
         )
     return generated
+
+
+async def _identities_already_held(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    wanted: Sequence[tuple[uuid.UUID, str]],
+) -> dict[tuple[uuid.UUID, str], Event]:
+    """Which of these (event type, identity) pairs an event already answers to.
+
+    One query for a whole batch, matching ``_event_holding_scan_identity``'s two
+    arms: an event carrying the identity, or one carrying no identity yet whose
+    name the next scan would adopt as one. Filtering by the identity strings up
+    front keeps the scan narrow; the pairing is finished in Python because the
+    event type has to match too, and a row is only a collision for its own type.
+    """
+    if not wanted:
+        return {}
+    identities = {identity for _, identity in wanted}
+    event_type_ids = {event_type_id for event_type_id, _ in wanted}
+    rows = (
+        (
+            await session.execute(
+                select(Event)
+                .where(
+                    Event.project_id == project_id,
+                    Event.branch_id == branch_id,
+                    Event.event_type_id.in_(event_type_ids),
+                    or_(
+                        Event.source_name.in_(identities),
+                        and_(Event.source_name.is_(None), Event.name.in_(identities)),
+                    ),
+                )
+                .options(
+                    noload(Event.event_type),
+                    noload(Event.field_values),
+                    noload(Event.meta_values),
+                    noload(Event.tags),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    held: dict[tuple[uuid.UUID, str], Event] = {}
+    for row in rows:
+        held.setdefault((row.event_type_id, row.source_name or row.name), row)
+    return held
 
 
 async def _event_holding_scan_identity(
@@ -1109,19 +1178,30 @@ async def bulk_create_events(
     # the name generated from the governing scan rule, and the identity that
     # name claims. Every failure names its item — a 422 reading "Required field
     # 'action' is missing" is unusable when thirty events were posted at once.
+    # The governing name format, resolved ONCE per event type rather than per
+    # item — the lookup behind it is two queries, and a batch of fifty would
+    # otherwise pay a hundred before writing anything.
+    name_formats: dict[uuid.UUID, str | None] = {
+        event_type_id: await _resolve_event_name_format(session, project_id, event_type_id)
+        for event_type_id in unique_event_type_ids
+    }
+
     normalized_values: list[list[EventFieldValueIn]] = []
     identities: list[str | None] = []
     claimed_in_batch: dict[tuple[uuid.UUID, str], int] = {}
     for index, data in enumerate(events_data):
         defs = field_defs_by_type[data.event_type_id]
+        name_format = name_formats[data.event_type_id]
         try:
             values = _check_and_normalize_field_values(defs, data.field_values)
-            identity = await _resolved_event_identity(
-                session,
-                project_id=project_id,
-                branch_id=branch_id,
-                event_type_id=data.event_type_id,
-                field_values=values,
+            identity = (
+                apply_scan_name_format(
+                    name_format=name_format,
+                    field_names={fd_id: fd.name for fd_id, fd in defs.items()},
+                    field_values=values,
+                )
+                if name_format
+                else None
             )
         except HTTPException as exc:
             raise HTTPException(
@@ -1129,9 +1209,9 @@ async def bulk_create_events(
                 detail=f"Event {index + 1} of {len(events_data)}: {exc.detail}",
             ) from exc
         if identity is not None:
-            # The sibling is not in the database yet, so the query above cannot
-            # see it; two items of one batch claiming one identity is exactly
-            # the collision this endpoint would otherwise create in a single
+            # The sibling is not in the database, so the batch query below cannot
+            # see it; two items of one batch claiming one identity is exactly the
+            # collision this endpoint would otherwise create in a single
             # transaction.
             key = (data.event_type_id, identity)
             first = claimed_in_batch.get(key)
@@ -1148,6 +1228,21 @@ async def bulk_create_events(
             claimed_in_batch[key] = index
         normalized_values.append(values)
         identities.append(identity)
+
+    # One probe for the whole batch, in place of one per item.
+    held = await _identities_already_held(
+        session, project_id=project_id, branch_id=branch_id, wanted=list(claimed_in_batch)
+    )
+    for key, index in claimed_in_batch.items():
+        existing = held.get(key)
+        if existing is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Event {index + 1} of {len(events_data)}: "
+                    + _scan_identity_conflict_detail(identity=key[1], existing=existing)
+                ),
+            )
 
     # One SELECT max(order) instead of N — we assign consecutive orders ourselves.
     base_order = await _get_next_event_order(session, project_id, branch_id)
