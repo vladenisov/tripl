@@ -253,6 +253,19 @@ agent. For narrow edits, patch only `description`, `name`, tags, or state
 fields.
 :::
 
+### Names an agent does not choose
+
+Where a scan names the events of a type, `create_event` does not use the `name`
+you send. The server builds it from the field values with that scan's format,
+stamps it as the event's scan identity, and returns a warning saying yours was
+ignored — read the response and adopt the returned `name` and `id`.
+
+Two failures follow from the same rule. A `422` means the format needs field
+values the call did not carry, and names the columns. A `409` means an event
+already answers to the derived name: only one event per identity ever receives
+scan data, so the second would be inert. Open the event named in the message
+rather than retrying — the call will not start succeeding.
+
 ### Branch safety
 
 The Agent API guide's rule — never mutate main by accident — is encoded at the

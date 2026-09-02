@@ -161,9 +161,11 @@ def register(mcp: FastMCP) -> None:
             "the live main plan by accident (list_branches to find one). Read the "
             "response: when a scan naming rule governs the event type, the server "
             "derives the canonical name from field values and may ignore yours with "
-            "a warning — adopt the returned name/id. Dry-run mindset: read the "
-            "catalog first and prefer updating an existing event over creating a "
-            "near-duplicate."
+            "a warning — adopt the returned name/id. A 409 means an event already "
+            "answers to that derived name; only one event per name ever receives "
+            "scan data, so open the one named in the message instead of retrying. "
+            "Dry-run mindset: read the catalog first and prefer updating an "
+            "existing event over creating a near-duplicate."
         ),
     )(create_event)
     mcp.tool(
