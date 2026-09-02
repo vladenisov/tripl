@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
@@ -195,6 +195,21 @@ async def _validate_field_values(
     )
     field_defs = {fd.id: fd for fd in result.scalars().all()}
 
+    return _check_and_normalize_field_values(field_defs, field_values)
+
+
+def _check_and_normalize_field_values(
+    field_defs: dict[uuid.UUID, FieldDefinition],
+    field_values: list[EventFieldValueIn],
+) -> list[EventFieldValueIn]:
+    """Required/known checks plus JSON template normalisation, given loaded defs.
+
+    Split out of ``_validate_field_values`` so ``bulk_create_events`` can run the
+    same rule off its one batched SELECT instead of restating it. Its own copy
+    had drifted: it repeated the two checks and silently skipped the JSON
+    normalisation, so the same payload stored a different value depending on
+    which door it came through (tripl-u2h9.11).
+    """
     provided_ids = {fv.field_definition_id for fv in field_values}
     for fd_id, fd in field_defs.items():
         if fd.is_required and fd_id not in provided_ids:
@@ -502,28 +517,171 @@ async def _generate_scan_template_name(
     return generated
 
 
+async def _event_holding_scan_identity(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    event_type_id: uuid.UUID,
+    identity: str,
+) -> Event | None:
+    """The event a scan would already match for ``identity``, if one exists.
+
+    Two arms, because ``generate_events`` resolves identity in two steps
+    (``core/analyzers/event_generator.py:230-243``). It matches on
+    ``source_name``; and for a row that has none — created through the API
+    before any scan rule governed its type — it ADOPTS the current ``name`` as
+    the identity on the next run. So a NULL-``source_name`` row whose name
+    equals the incoming one is not free: it is a row that will claim this
+    identity the first time a scan looks.
+
+    Scoped to one branch. ``ScanConfig`` has no branch column and scans write
+    the main branch, but a working branch is a copy of the plan, so the same
+    identity living once per branch is correct and only a collision WITHIN a
+    branch is one.
+    """
+    result = await session.execute(
+        select(Event)
+        .where(
+            Event.project_id == project_id,
+            Event.branch_id == branch_id,
+            Event.event_type_id == event_type_id,
+            or_(
+                Event.source_name == identity,
+                and_(Event.source_name.is_(None), Event.name == identity),
+            ),
+        )
+        # A probe, not a read: only ``name`` and ``id`` reach the 409 body, and
+        # every relationship here is eager by default.
+        .options(
+            noload(Event.event_type),
+            noload(Event.field_values),
+            noload(Event.meta_values),
+            noload(Event.tags),
+        )
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
+def _scan_identity_conflict_detail(*, identity: str, existing: Event) -> str:
+    """The 409 body for an authored event that would collide with an existing one.
+
+    Names the identity, says which event holds it, and gives the two ways out.
+    Deliberately explains the CONSEQUENCE rather than the constraint: nothing in
+    the schema stops the second row, so "duplicate key" would be a lie, and the
+    reason it is refused is that only one of the two can receive scan updates.
+    """
+    return (
+        f"An event already answers to the scan identity '{identity}' in this event type: "
+        f"'{existing.name}' ({existing.id}). A scan matches one event per identity, so a "
+        "second one would never receive volumes, last-seen times or observed values. "
+        "Open the existing event instead, or change the field values the name is built from."
+    )
+
+
+async def _guard_scan_identity(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    event_type_id: uuid.UUID,
+    identity: str,
+) -> None:
+    """Refuse an identity an existing event would compete with. See tripl-u2h9.1."""
+    existing = await _event_holding_scan_identity(
+        session,
+        project_id=project_id,
+        branch_id=branch_id,
+        event_type_id=event_type_id,
+        identity=identity,
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=_scan_identity_conflict_detail(identity=identity, existing=existing),
+        )
+
+
+async def _resolved_event_identity(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    event_type_id: uuid.UUID,
+    field_values: list[EventFieldValueIn],
+) -> str | None:
+    """Generate this event's scan identity and refuse it if it is already taken.
+
+    The single create and the bulk create share this so the two doors cannot
+    disagree about what an authored event is named — they did until tripl-u2h9.11,
+    with bulk writing ``data.name`` verbatim and no identity at all.
+    """
+    generated_name = await _generate_scan_template_name(
+        session,
+        project_id=project_id,
+        event_type_id=event_type_id,
+        field_values=field_values,
+    )
+    if generated_name is None:
+        return None
+    await _guard_scan_identity(
+        session,
+        project_id=project_id,
+        branch_id=branch_id,
+        event_type_id=event_type_id,
+        identity=generated_name,
+    )
+    return generated_name
+
+
 async def create_event(
     session: AsyncSession,
     slug: str,
     data: EventCreate,
     branch_id: uuid.UUID | None = None,
+    *,
+    scan_identity: str | None = None,
 ) -> Event:
+    """Author one event.
+
+    ``scan_identity`` is for the caller that ALREADY knows the identity a scan
+    derived — today only ``reconciliation_service.accept_shadow_event``, where the
+    warehouse observed the name directly. Passing it skips generation, which for
+    that caller could only ever fail: a shadow candidate carries no field values,
+    so a governing ``event_name_format`` reports every placeholder missing and the
+    accept 422s (tripl-u2h9.12). It also leaves ``data.name`` as the display name,
+    which is what lets an operator rename an event while accepting it.
+    """
     is_main = branch_id is None
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
     field_values = await _validate_field_values(session, data.event_type_id, data.field_values)
-    generated_name = await _generate_scan_template_name(
-        session,
-        project_id=project_id,
-        event_type_id=data.event_type_id,
-        field_values=field_values,
-    )
+    if scan_identity is None:
+        generated_name = await _resolved_event_identity(
+            session,
+            project_id=project_id,
+            branch_id=branch_id,
+            event_type_id=data.event_type_id,
+            field_values=field_values,
+        )
+        display_name = generated_name or data.name
+    else:
+        await _guard_scan_identity(
+            session,
+            project_id=project_id,
+            branch_id=branch_id,
+            event_type_id=data.event_type_id,
+            identity=scan_identity,
+        )
+        generated_name = scan_identity
+        display_name = data.name
 
     event = Event(
         project_id=project_id,
         branch_id=branch_id,
         event_type_id=data.event_type_id,
-        name=generated_name or data.name,
+        name=display_name,
         # Scan dedup keys on source_name: stamping the generated identity here
         # is what makes the manual event merge with its scanned counterpart.
         source_name=generated_name,
@@ -572,7 +730,10 @@ async def create_event(
     await session.refresh(event)
     await attach_event_field_variable_values(session, [event])
     await _attach_template_warnings(session, event)
-    if generated_name and data.name and data.name != generated_name:
+    # Only when the RULE overrode the caller. On the ``scan_identity`` path the
+    # provided name is kept as the display name, so saying it was ignored would
+    # be false — the two names differing there is the feature, not a collision.
+    if scan_identity is None and generated_name and data.name and data.name != generated_name:
         event.warnings = [  # type: ignore[attr-defined]
             *event.warnings,  # type: ignore[attr-defined]
             f"Event name was generated from the scan rule: '{generated_name}'"
@@ -943,20 +1104,50 @@ async def bulk_create_events(
     for fd in result.scalars().all():
         field_defs_by_type.setdefault(fd.event_type_id, {})[fd.id] = fd
 
-    for data in events_data:
+    # Same three rules the single create applies, per item, so a batch cannot
+    # author events the one-at-a-time door would have refused: the field checks,
+    # the name generated from the governing scan rule, and the identity that
+    # name claims. Every failure names its item — a 422 reading "Required field
+    # 'action' is missing" is unusable when thirty events were posted at once.
+    normalized_values: list[list[EventFieldValueIn]] = []
+    identities: list[str | None] = []
+    claimed_in_batch: dict[tuple[uuid.UUID, str], int] = {}
+    for index, data in enumerate(events_data):
         defs = field_defs_by_type[data.event_type_id]
-        provided_ids = {fv.field_definition_id for fv in data.field_values}
-        for fd_id, fd in defs.items():
-            if fd.is_required and fd_id not in provided_ids:
+        try:
+            values = _check_and_normalize_field_values(defs, data.field_values)
+            identity = await _resolved_event_identity(
+                session,
+                project_id=project_id,
+                branch_id=branch_id,
+                event_type_id=data.event_type_id,
+                field_values=values,
+            )
+        except HTTPException as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=f"Event {index + 1} of {len(events_data)}: {exc.detail}",
+            ) from exc
+        if identity is not None:
+            # The sibling is not in the database yet, so the query above cannot
+            # see it; two items of one batch claiming one identity is exactly
+            # the collision this endpoint would otherwise create in a single
+            # transaction.
+            key = (data.event_type_id, identity)
+            first = claimed_in_batch.get(key)
+            if first is not None:
                 raise HTTPException(
-                    status_code=422, detail=f"Required field '{fd.name}' is missing"
+                    status_code=409,
+                    detail=(
+                        f"Events {first + 1} and {index + 1} of {len(events_data)} both "
+                        f"generate the scan identity '{identity}' from the same event "
+                        "type's naming rule, so only one of them could ever receive "
+                        "scan updates."
+                    ),
                 )
-        for fv in data.field_values:
-            if fv.field_definition_id not in defs:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Field definition {fv.field_definition_id} not found",
-                )
+            claimed_in_batch[key] = index
+        normalized_values.append(values)
+        identities.append(identity)
 
     # One SELECT max(order) instead of N — we assign consecutive orders ourselves.
     base_order = await _get_next_event_order(session, project_id, branch_id)
@@ -968,11 +1159,15 @@ async def bulk_create_events(
                 project_id=project_id,
                 branch_id=branch_id,
                 event_type_id=data.event_type_id,
-                name=data.name,
+                name=identities[i] or data.name,
                 description=data.description,
                 order=base_order + i,
                 status=data.status,
                 sunset_at=data.sunset_at,
+                # Stamped for the same reason the single create stamps it: the
+                # scan matches on source_name, so this is what makes an authored
+                # event merge with its scanned counterpart instead of doubling it.
+                source_name=identities[i],
                 metric_breakdown_columns=data.metric_breakdown_columns,
             )
         )
@@ -980,8 +1175,8 @@ async def bulk_create_events(
     await session.flush()
 
     children: list[EventFieldValue | EventMetaValue | EventTag] = []
-    for event, data in zip(events, events_data, strict=True):
-        for fv in data.field_values:
+    for event, data, values in zip(events, events_data, normalized_values, strict=True):
+        for fv in values:
             children.append(
                 EventFieldValue(
                     event_id=event.id,

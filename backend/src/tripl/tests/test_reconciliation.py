@@ -60,7 +60,12 @@ async def _project_id(slug: str) -> uuid.UUID:
         return project_id
 
 
-async def _insert_scan_config(project_id: uuid.UUID) -> uuid.UUID:
+async def _insert_scan_config(
+    project_id: uuid.UUID,
+    *,
+    event_name_format: str | None = None,
+    event_type_id: uuid.UUID | None = None,
+) -> uuid.UUID:
     async with TestSessionLocal() as session:
         ds = DataSource(
             name=f"wh-{uuid.uuid4().hex[:8]}",
@@ -75,8 +80,10 @@ async def _insert_scan_config(project_id: uuid.UUID) -> uuid.UUID:
         config = ScanConfig(
             project_id=project_id,
             data_source_id=ds.id,
+            event_type_id=event_type_id,
             name="main scan",
             base_query="SELECT 1",
+            event_name_format=event_name_format,
         )
         session.add(config)
         await session.commit()
@@ -166,6 +173,44 @@ async def test_accept_shadow_event_creates_event_with_source_identity(client: As
         assert candidate.status == SHADOW_STATUS_ACCEPTED
         assert candidate.accepted_event_id == event.id
         assert candidate.resolved_by is not None
+
+
+@pytest.mark.asyncio
+async def test_accept_shadow_event_works_when_a_scan_rule_names_the_event_type(
+    client: AsyncClient,
+):
+    """Every production event type is governed by a name format; accept must survive one.
+
+    A candidate carries no field values, so routing it through the name
+    generator could only ever report every placeholder missing — the accept
+    422'd on any rule-governed type until the identity was passed in instead
+    (tripl-u2h9.12). No test above seeds an ``event_name_format``, which is
+    exactly why nothing caught it.
+    """
+    et_id, _ = await _setup_project(client, "rec-ruled")
+    project_id = await _project_id("rec-ruled")
+    await client.post(
+        f"/api/v1/projects/rec-ruled/event-types/{et_id}/fields",
+        json={"name": "action", "display_name": "Action", "field_type": "string"},
+    )
+    scan_id = await _insert_scan_config(project_id, event_name_format="{action}")
+    candidate_id = await _insert_candidate(
+        project_id, scan_id, event_name="wind_alert_created", event_type_id=uuid.UUID(et_id)
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/rec-ruled/reconciliation/shadow-events/{candidate_id}/accept",
+        json={"name": "Wind alert created"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    async with TestSessionLocal() as session:
+        event = await session.get(Event, uuid.UUID(resp.json()["event_id"]))
+        assert event is not None
+        # The operator's name survives; the identity is the observed one, not a
+        # template applied to values the candidate never had.
+        assert event.name == "Wind alert created"
+        assert event.source_name == "wind_alert_created"
 
 
 @pytest.mark.asyncio
