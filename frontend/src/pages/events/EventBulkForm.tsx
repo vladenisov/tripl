@@ -274,12 +274,15 @@ export default function EventBulkForm() {
                 title={`${ready.length} of ${rows.length} lines will be created`}
                 subtitle={
                   uncheckedCount > 0
-                    ? `Checked against the first ${taken.size} of ${identityQuery.data?.total} existing events; the rest are checked by the server on submit.`
+                    ? // The count of ROWS READ, not of distinct identities — the set
+                      // dedupes, so reporting its size would understate what was
+                      // checked and read as a smaller sample than it was.
+                      `Checked against the first ${identityQuery.data?.items.length} of ${identityQuery.data?.total} existing events; the rest are checked by the server on submit.`
                     : undefined
                 }
               >
                 <div className="max-h-[360px] overflow-auto">
-                  <table className="w-full text-[12px]">
+                  <table className="w-full text-[12px]" aria-label="Events to create">
                     <thead>
                       <tr style={{ color: 'var(--fg-subtle)' }}>
                         <th scope="col" className="px-[18px] py-2 text-left font-medium">Line</th>
