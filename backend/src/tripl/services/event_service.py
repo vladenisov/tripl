@@ -546,11 +546,24 @@ async def _identities_already_held(
 ) -> dict[tuple[uuid.UUID, str], Event]:
     """Which of these (event type, identity) pairs an event already answers to.
 
-    One query for a whole batch, matching ``_event_holding_scan_identity``'s two
-    arms: an event carrying the identity, or one carrying no identity yet whose
-    name the next scan would adopt as one. Filtering by the identity strings up
-    front keeps the scan narrow; the pairing is finished in Python because the
-    event type has to match too, and a row is only a collision for its own type.
+    THE definition of "this identity is taken", used by the single create, the
+    bulk create and the shadow accept alike. Two arms, because
+    ``generate_events`` resolves identity in two steps
+    (``core/analyzers/event_generator.py:230-243``): it matches on
+    ``source_name``; and for a row that has none — authored through the API
+    before any scan rule governed its type — it ADOPTS the current ``name`` as
+    the identity on the next run. So a NULL-``source_name`` row whose name
+    equals an incoming one is not free; it is a row that will claim that
+    identity the first time a scan looks.
+
+    Scoped to one branch. ``ScanConfig`` has no branch column and scans write the
+    main branch, but a working branch is a copy of the plan, so the same identity
+    living once per branch is correct and only a collision WITHIN a branch is one.
+
+    Filtering on the identity strings keeps the scan narrow; the pairing is
+    finished in Python because the event type has to match too, and a row is
+    only a collision for its own type. Every relationship is noload'ed: this is a
+    probe, and only ``name`` and ``id`` reach the 409 body.
     """
     if not wanted:
         return {}
@@ -596,41 +609,18 @@ async def _event_holding_scan_identity(
 ) -> Event | None:
     """The event a scan would already match for ``identity``, if one exists.
 
-    Two arms, because ``generate_events`` resolves identity in two steps
-    (``core/analyzers/event_generator.py:230-243``). It matches on
-    ``source_name``; and for a row that has none — created through the API
-    before any scan rule governed its type — it ADOPTS the current ``name`` as
-    the identity on the next run. So a NULL-``source_name`` row whose name
-    equals the incoming one is not free: it is a row that will claim this
-    identity the first time a scan looks.
-
-    Scoped to one branch. ``ScanConfig`` has no branch column and scans write
-    the main branch, but a working branch is a copy of the plan, so the same
-    identity living once per branch is correct and only a collision WITHIN a
-    branch is one.
+    One item routed through the batch helper rather than a second copy of the
+    predicate: the rule below has two arms and a branch scope, and two writings
+    of it are exactly what ``scan_config_lookup`` exists to prevent for the
+    reachability rule next door.
     """
-    result = await session.execute(
-        select(Event)
-        .where(
-            Event.project_id == project_id,
-            Event.branch_id == branch_id,
-            Event.event_type_id == event_type_id,
-            or_(
-                Event.source_name == identity,
-                and_(Event.source_name.is_(None), Event.name == identity),
-            ),
-        )
-        # A probe, not a read: only ``name`` and ``id`` reach the 409 body, and
-        # every relationship here is eager by default.
-        .options(
-            noload(Event.event_type),
-            noload(Event.field_values),
-            noload(Event.meta_values),
-            noload(Event.tags),
-        )
-        .limit(1)
+    held = await _identities_already_held(
+        session,
+        project_id=project_id,
+        branch_id=branch_id,
+        wanted=[(event_type_id, identity)],
     )
-    return result.scalars().first()
+    return held.get((event_type_id, identity))
 
 
 def _scan_identity_conflict_detail(*, identity: str, existing: Event) -> str:
@@ -682,9 +672,12 @@ async def _resolved_event_identity(
 ) -> str | None:
     """Generate this event's scan identity and refuse it if it is already taken.
 
-    The single create and the bulk create share this so the two doors cannot
-    disagree about what an authored event is named — they did until tripl-u2h9.11,
-    with bulk writing ``data.name`` verbatim and no identity at all.
+    The one-at-a-time path. The bulk create does the same two steps in a batched
+    shape — it resolves the format once per event type and probes every identity
+    in one query — but through the SAME two helpers, ``apply_scan_name_format``
+    and ``_identities_already_held``, so the doors cannot disagree about what an
+    authored event is named or when its name is free. They did until
+    tripl-u2h9.11, with bulk writing ``data.name`` verbatim and no identity at all.
     """
     generated_name = await _generate_scan_template_name(
         session,
@@ -1173,14 +1166,18 @@ async def bulk_create_events(
     for fd in result.scalars().all():
         field_defs_by_type.setdefault(fd.event_type_id, {})[fd.id] = fd
 
-    # Same three rules the single create applies, per item, so a batch cannot
-    # author events the one-at-a-time door would have refused: the field checks,
-    # the name generated from the governing scan rule, and the identity that
-    # name claims. Every failure names its item — a 422 reading "Required field
-    # 'action' is missing" is unusable when thirty events were posted at once.
-    # The governing name format, resolved ONCE per event type rather than per
-    # item — the lookup behind it is two queries, and a batch of fifty would
-    # otherwise pay a hundred before writing anything.
+    # Same three rules the single create applies, so a batch cannot author events
+    # the one-at-a-time door would have refused: the field checks, the name the
+    # governing scan rule gives, and the identity that name claims. Every failure
+    # names its item — a 422 reading "Required field 'action' is missing" is
+    # unusable when thirty events were posted at once.
+    #
+    # Shaped for a batch, not repeated per item: the format is resolved once per
+    # event type (the lookup behind it is two queries), the naming itself is pure
+    # over field definitions already loaded above, and the identities are probed
+    # in a single query below. A paste of fifty would otherwise cost about 150
+    # round trips before writing anything, and this endpoint takes an unbounded
+    # list.
     name_formats: dict[uuid.UUID, str | None] = {
         event_type_id: await _resolve_event_name_format(session, project_id, event_type_id)
         for event_type_id in unique_event_type_ids
