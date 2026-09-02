@@ -57,14 +57,11 @@ async def _check_binding_conflicts(
     # and on every update that touches bindings (tripl-xkbb). The same option
     # for the same reason as ``worker.tasks.metrics.catalog_sync``.
     #
-    # What the option does NOT buy, written down rather than left for a reader
-    # to discover: the request still pays for one whole-project hydration.
-    # ``create_variable`` and ``update_variable`` both call
-    # ``reindex_project_branch`` a few lines below, and its
-    # ``_search_documents`` pass selects every Variable of the branch with no
-    # loader option at all. So this removes the SECOND copy of that load, not
-    # the load — removing the first one means giving ``_search_documents`` the
-    # same option, which is not this module's to give.
+    # One of TWO whole-project selects the same request makes: ``create_variable``
+    # and ``update_variable`` both call ``reindex_project_branch`` a few lines
+    # below, whose ``_search_documents`` pass selects every Variable of the branch
+    # as well. That one now carries the same option, so the hydration is gone
+    # rather than merely halved — the two belong together if either ever moves.
     result = await session.execute(
         select(Variable)
         .where(Variable.project_id == project_id, Variable.branch_id == branch_id)

@@ -114,6 +114,8 @@ POST /api/v1/projects/{slug}/branches/{branch_id}/revert
 
 The diff returns one entry per changed entity, each carrying `entity_type`, `kind` (`added` / `changed` / `removed`), `name`, `parent`, the `entity_id` it describes, and — for a changed entity — `field_changes`. A collection-valued field there additionally breaks down into `items`, keyed by the member that moved (a field name, a tag, the event an override targets).
 
+Read the response's `renames` list before interpreting those entries. Entities are keyed by name, so a rename arrives split in two — a removal of the old name beside an addition of the new one — which reads as a deletion your agent never made. Each `renames` element (`entity_type`, `parent`, `removed_name`, `added_name`) names the two entries the merge will treat as **one** renamed row, keeping the entity's id and everything hanging off it. The pairing is stated by the server because it also depends on `main`, which the diff you are holding does not show.
+
 `revert` takes the coordinates of one such entry and restores it to the branch's base state, responding with the resulting diff:
 
 ```json
