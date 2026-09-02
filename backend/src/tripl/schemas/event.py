@@ -169,6 +169,16 @@ class EventResponse(BaseModel):
     event_type_id: uuid.UUID
     event_type: EventTypeBrief
     name: str
+    # The key a scan matches this event on, which is NOT ``name``: renaming an
+    # event deliberately leaves it alone so the next scan does not recreate the
+    # renamed event as a duplicate (core/analyzers/event_generator.py). It
+    # decides whether an authored event merges with its scanned counterpart, and
+    # until tripl-u2h9.10 it appeared in no response at all — so after creating
+    # an event by hand there was no way to see which identity it had claimed, or
+    # that a later rename had parted the two. NULL on an event no scan has seen
+    # and no naming rule governed; the generator adopts ``name`` as the identity
+    # the first time one does.
+    source_name: str | None = None
     description: str
     order: int
     status: EventStatus
@@ -205,6 +215,13 @@ class EventListItemResponse(BaseModel):
     project_id: uuid.UUID
     event_type_id: uuid.UUID
     name: str
+    # Carried here as well as on ``EventResponse``: it is a plain column, so it
+    # costs no extra query (unlike the ``event_type`` brief this variant drops),
+    # and a client deciding whether an identity is free has to test the same
+    # predicate the server does — ``source_name``, falling back to ``name`` only
+    # where ``source_name`` is NULL. Comparing names alone silently misses a
+    # scanned event that has since been renamed.
+    source_name: str | None = None
     description: str
     order: int
     status: EventStatus

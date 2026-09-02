@@ -20184,6 +20184,17 @@
             "type": "string",
             "title": "Name"
           },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Name"
+          },
           "description": {
             "type": "string",
             "title": "Description"
@@ -20706,6 +20717,17 @@
             "type": "string",
             "title": "Name"
           },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Name"
+          },
           "description": {
             "type": "string",
             "title": "Description"
@@ -21110,6 +21132,17 @@
           "name": {
             "type": "string",
             "title": "Name"
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Name"
           },
           "description": {
             "type": "string",

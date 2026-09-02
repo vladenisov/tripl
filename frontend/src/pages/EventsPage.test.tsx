@@ -600,6 +600,10 @@ describe('EventsPage', () => {
         return mockJsonResponse([])
       }
       if (url.includes('/api/v1/projects/demo/anomalies/signals')) return mockJsonResponse([])
+      // The form asks the scans which columns the project can collect, and for
+      // the rule that names events of this type. None here: the breakdown chips
+      // then come from the event type's own scalar fields.
+      if (url.includes('/api/v1/projects/demo/scans')) return mockJsonResponse([])
       if (url.endsWith('/api/v1/projects/demo/events') && init?.method === 'POST') {
         const body = JSON.parse(String(init.body))
         eventCreateBodies.push(body)
@@ -625,9 +629,14 @@ describe('EventsPage', () => {
     fireEvent.change(screen.getByPlaceholderText('e.g. checkout:completed'), {
       target: { value: 'Homepage View' },
     })
-    // Metric breakdowns are fixed toggle chips; click country then platform.
+    // Breakdown options come from the type's scalar fields and the project's
+    // scans — 'country' is a field on type-1, so it is offered as a chip. A
+    // column neither knows about is typed in, which is the half of the picker
+    // the redesign dropped and the docs never stopped describing (tripl-u2h9.6).
     fireEvent.click(screen.getByRole('button', { name: 'country' }))
-    fireEvent.click(screen.getByRole('button', { name: 'platform' }))
+    const breakdownInput = screen.getByLabelText(/Metric breakdowns/)
+    fireEvent.change(breakdownInput, { target: { value: 'platform' } })
+    fireEvent.keyDown(breakdownInput, { key: 'Enter' })
     fireEvent.click(screen.getByRole('button', { name: 'Create event' }))
 
     await waitFor(() => {

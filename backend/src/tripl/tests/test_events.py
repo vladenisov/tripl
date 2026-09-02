@@ -1518,6 +1518,56 @@ async def test_create_event_name_generated_from_scan_rule(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_the_scan_identity_is_readable_from_the_api(client: AsyncClient):
+    """It decides whether an authored event merges with the scan, and was invisible.
+
+    Crawling all 5702 production events returned no such key from any endpoint,
+    so after creating an event by hand there was no way to see which identity it
+    had claimed — nor, after a rename, that the display name and the identity had
+    parted (tripl-u2h9.10).
+    """
+    slug = "ev-identity-visible"
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types", json={"name": "se", "display_name": "Structured"}
+    )
+    et_id = et.json()["id"]
+    action = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "action", "display_name": "Action", "field_type": "string"},
+    )
+    await _seed_scan_name_rule(slug, et_id, "{action}")
+
+    created = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": et_id,
+            "name": "x",
+            "field_values": [{"field_definition_id": action.json()["id"], "value": "sign_up"}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    event_id = created.json()["id"]
+    assert created.json()["source_name"] == "sign_up"
+
+    detail = await client.get(f"/api/v1/projects/{slug}/events/{event_id}")
+    assert detail.json()["source_name"] == "sign_up"
+
+    # The slim list variant carries it too: a client deciding whether an identity
+    # is free has to test the same predicate the server does.
+    listed = await client.get(f"/api/v1/projects/{slug}/events")
+    assert [item["source_name"] for item in listed.json()["items"]] == ["sign_up"]
+
+    # A rename moves the display name and leaves the identity where the scan
+    # will still find it — which is the whole reason this needs to be readable.
+    renamed = await client.patch(
+        f"/api/v1/projects/{slug}/events/{event_id}", json={"name": "Sign up"}
+    )
+    assert renamed.json()["name"] == "Sign up"
+    assert renamed.json()["source_name"] == "sign_up"
+
+
+@pytest.mark.asyncio
 async def test_create_event_refuses_an_identity_another_event_already_holds(client: AsyncClient):
     """A scan matches ONE event per identity, so the second one could only rot."""
     slug = "ev-identity-taken"

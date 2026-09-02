@@ -16,6 +16,7 @@ function makeEvent(overrides: Partial<EventListItem> = {}): EventListItem {
     project_id: 'proj-1',
     event_type_id: 'et-1',
     name: 'checkout_completed',
+    source_name: null,
     description: '',
     order: 0,
     status: 'live',

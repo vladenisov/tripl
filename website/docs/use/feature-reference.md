@@ -87,19 +87,48 @@ built; it has been removed rather than shown as permanently unavailable.
 **Where:** click an event row to open its detail, or Plan › Events ›
 *(event type)* › **New event** / **Edit**.
 
+An event belongs to an event type, so a project with none says so in place of
+the picker and links to creating one.
+
 The event form exposes: **Event type** (required; cannot be changed after
 creation); **Name** (e.g. `checkout:completed`); **Description** — with a
 **Suggest with AI** action that appears when editing an existing event and AI is
 enabled; **Status** — one of `draft`, `in_review`, `ready_for_dev`,
 `implemented`, `live`, `deprecated`, `archived` (selecting `deprecated` reveals a
-**Sunset date**); **Tags**; **Metric breakdowns** (select scalar event-type
-fields or add another warehouse column manually; JSON fields are excluded);
-**Field values**
+**Sunset date**); **Tags**; **Metric breakdowns** (the selected type's scalar
+fields and the columns this project's scans collect — `platform`, the app
+version column and any configured breakdown column — plus any other warehouse
+column typed in by hand; JSON fields are excluded); **Field values**
 (per the event type's schema — boolean/enum selects, a JSON editor for `json`
 fields that validates and saves canonical JSON while preserving complete
 `${variable}` values, variable-aware text inputs); and **Meta fields** values.
 For a series of similar events, **Save and add another** creates the current
-event and keeps the entered form values in place for the next one.
+event, says what it created, and keeps the entered form values in place for the
+next one — change what differs and save again.
+
+#### Names a scan writes for you
+
+When a scan names the events of this type — its **Event name format**, e.g.
+`{category}:{action}:{label}` — the form fills **Name** in from that template as
+you type the field values, and the box becomes read-only. This is not a
+convenience: the formatted name is also the event's *scan identity*, the key
+collection matches on, so an event authored under a different name would never
+merge with the traffic it describes. The rows the name is built from are marked
+**names the event** and are required, and the form lists any that are still
+empty.
+
+An identity belongs to one event. If another event already answers to the name
+being composed, the form links to it and refuses to create a second — a second
+event with the same identity would receive no volume, no last-seen time and no
+observed values, because collection only ever updates one of them. The API
+refuses it too, with `409`, whether the request comes from the app, the CLI, the
+MCP server or `POST /projects/{slug}/events/bulk` (which applies the same naming
+rule per item, and rejects a batch whose own items collide).
+
+Renaming an event afterwards is safe and deliberately does *not* move the
+identity — collection keeps matching the event it already knew. Once the two
+differ, the event's **Properties** card shows the **Scan identity** row, and
+`source_name` carries it in every event response.
 
 Setting an event to `archived` takes it out of circulation on both sides:
 `GET /projects/{slug}/events` leaves it out unless the request asks for that

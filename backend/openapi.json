@@ -6559,6 +6559,17 @@
             "title": "Reviewed",
             "type": "boolean"
           },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Name"
+          },
           "status": {
             "$ref": "#/components/schemas/EventStatus"
           },
@@ -7076,6 +7087,17 @@
             "title": "Reviewed",
             "type": "boolean"
           },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Name"
+          },
           "status": {
             "$ref": "#/components/schemas/EventStatus"
           },
@@ -7479,6 +7501,17 @@
             "default": false,
             "title": "Reviewed",
             "type": "boolean"
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Name"
           },
           "status": {
             "$ref": "#/components/schemas/EventStatus"

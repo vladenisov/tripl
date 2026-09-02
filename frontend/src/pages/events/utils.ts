@@ -529,3 +529,18 @@ export function applyEventNameFormat(
   })
   return { name, missing }
 }
+
+/**
+ * The field names a scan `event_name_format` builds the event name from.
+ *
+ * A dotted key walks INTO a column's JSON, so `{page_data.type}` needs the
+ * `page_data` field — reducing to the part before the first dot is what makes
+ * the answer a set of rows the form can actually point at. Client mirror of
+ * `name_format_base_columns` in backend `core/analyzers/event_plan.py`, and it
+ * reuses this module's `{key}` regex rather than restating the grammar: four
+ * copies of that grammar is what took production down once (tripl-lpin).
+ */
+export function nameFormatBaseColumns(fmt: string | null | undefined): Set<string> {
+  if (!fmt) return new Set()
+  return new Set([...fmt.matchAll(NAME_FORMAT_TOKEN)].map(match => match[1].split('.')[0]))
+}

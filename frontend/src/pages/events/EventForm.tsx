@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
   Event as TEvent,
@@ -26,7 +26,8 @@ import { META_FIELD_LINK_PLACEHOLDER } from '@/lib/metaFields'
 import { ErrorState } from '@/components/error-state'
 import { JsonEditor } from './JsonEditor'
 import { VariableInput, type VariableSuggestion } from './VariableInput'
-import { applyEventNameFormat, resolveTemplateTokens } from './utils'
+import { applyEventNameFormat, nameFormatBaseColumns, resolveTemplateTokens } from './utils'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { ChevronDown, ChevronLeft, Loader2, Plus, Save, Sparkles, X } from 'lucide-react'
 import { eventTypesKey, variablesKey } from '@/lib/queryKeys'
 
@@ -38,7 +39,6 @@ const EV_INPUT_CLASS =
   'w-full rounded-[7px] border bg-[var(--bg)] px-[11px] text-[13px] text-[var(--fg)] outline-none focus:border-[var(--accent)]'
 const SELECT_CLASS = `${EV_INPUT_CLASS} h-[34px] cursor-pointer appearance-none pr-[30px]`
 const TEXT_INPUT_CLASS = `${EV_INPUT_CLASS} h-[34px]`
-const BREAKDOWN_COLUMNS = ['platform', 'app_version', 'country', 'device_model'] as const
 
 function normalizeMetricBreakdownColumns(columns: string[]): string[] {
   const seen = new Set<string>()
@@ -200,12 +200,27 @@ type FieldValueControlProps = {
   onChange: (value: string) => void
   variables: VariableSuggestion[]
   inputId?: string
+  /**
+   * Whether this row must be filled, when that is not simply `field.is_required`.
+   * A column the event name is built from is required in practice — the form
+   * blocks Create until it has a value — so the control has to say so too, or
+   * the label's mark is a promise the browser never keeps.
+   */
+  requiredOverride?: boolean
 }
 
-function FieldValueControl({ field, value, onChange, variables, inputId }: FieldValueControlProps) {
+function FieldValueControl({
+  field,
+  value,
+  onChange,
+  variables,
+  inputId,
+  requiredOverride,
+}: FieldValueControlProps) {
+  const required = requiredOverride ?? field.is_required
   if (field.field_type === 'boolean') {
     return (
-      <SelectControl id={inputId} value={value} onChange={onChange} required={field.is_required} maxWidth={160}>
+      <SelectControl id={inputId} value={value} onChange={onChange} required={required} maxWidth={160}>
         <option value="">—</option>
         <option value="true">true</option>
         <option value="false">false</option>
@@ -214,7 +229,7 @@ function FieldValueControl({ field, value, onChange, variables, inputId }: Field
   }
   if (field.field_type === 'enum' && field.enum_options) {
     return (
-      <SelectControl id={inputId} value={value} onChange={onChange} required={field.is_required} maxWidth={240}>
+      <SelectControl id={inputId} value={value} onChange={onChange} required={required} maxWidth={240}>
         <option value="">—</option>
         {field.enum_options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
       </SelectControl>
@@ -222,7 +237,7 @@ function FieldValueControl({ field, value, onChange, variables, inputId }: Field
   }
   if (field.field_type === 'json') {
     return (
-      <JsonEditor id={inputId} value={value} onChange={onChange} required={field.is_required} variables={variables} />
+      <JsonEditor id={inputId} value={value} onChange={onChange} required={required} variables={variables} />
     )
   }
   return (
@@ -232,7 +247,7 @@ function FieldValueControl({ field, value, onChange, variables, inputId }: Field
         value={value}
         onChange={onChange}
         variables={variables}
-        required={field.is_required}
+        required={required}
         type={field.field_type === 'number' ? 'number' : field.field_type === 'url' ? 'url' : 'text'}
       />
     </div>
@@ -324,6 +339,7 @@ export function EventForm({
   )
   const [tags, setTags] = useState<string[]>(event?.tags?.map(t => t.name) ?? [])
   const [tagInput, setTagInput] = useState('')
+  const [breakdownInput, setBreakdownInput] = useState('')
   const [fieldValues, setFieldValues] = useState<Record<string, string>>(() =>
     event ? Object.fromEntries(event.field_values.map(fv => [fv.field_definition_id, fv.value])) : {},
   )
@@ -365,10 +381,11 @@ export function EventForm({
   // Scan naming rule: when a scan config generates names for this event type,
   // manual creation must use the SAME template or the event never merges with
   // its scan-generated counterpart (identity keys on the formatted name).
+  // Fetched when editing too — the breakdown picker below asks the same configs
+  // which warehouse columns the project can actually collect.
   const { data: scanConfigs } = useQuery({
     queryKey: ['scans', slug],
     queryFn: () => scansApi.list(slug),
-    enabled: isNew,
   })
   const nameFormat = useMemo(() => {
     if (!isNew || !etId) return null
@@ -390,6 +407,101 @@ export function EventForm({
     }
     return applyEventNameFormat(nameFormat, valuesByField)
   }, [nameFormat, sortedFields, fieldValues])
+  // The rows that decide the name, so the card below can say so. Without this
+  // the reader had to map "Fill field values for: category, action, label" —
+  // raw warehouse columns — onto rows labelled "Category", "Action", "Label",
+  // and a dotted key named no row at all (tripl-u2h9.4).
+  const namingColumns = useMemo(() => nameFormatBaseColumns(nameFormat), [nameFormat])
+  const namingFieldIds = useMemo(
+    () => sortedFields.filter(field => namingColumns.has(field.name)).map(field => field.id),
+    [sortedFields, namingColumns],
+  )
+  // What the last "Save and add another" wrote. Cleared as soon as the form
+  // describes a different event, so it can never label the one on screen now.
+  const [justCreated, setJustCreated] = useState<string | null>(null)
+
+  // Warehouse columns worth offering as a breakdown, in the order a reader
+  // would look for them. Three sources, and the first two are what the docs have
+  // described all along — "select scalar event-type fields or add another
+  // warehouse column manually; JSON fields are excluded"
+  // (website/docs/use/feature-reference.md). The redesign replaced that with
+  // four literals, of which no production scan queries three (tripl-u2h9.6).
+  //
+  //  1. the selected type's scalar fields — these ARE warehouse columns, and the
+  //     backend's own support test measures a configured column against the
+  //     scan's real columns (metric_rows `_is_supported_metric_breakdown_column`);
+  //  2. the columns the project's scans collect scan-wide, which reserved-column
+  //     handling deliberately keeps OUT of field definitions, so `platform` and
+  //     `app_version` could otherwise only be typed from memory;
+  //  3. anything already stored on this event, so editing never silently drops a
+  //     setting the user did not touch.
+  //
+  // Anything else stays reachable through the manual input below.
+  const breakdownOptions = useMemo(() => {
+    const columns: string[] = []
+    const add = (column: string | null | undefined) => {
+      const trimmed = (column ?? '').trim()
+      if (trimmed && !columns.includes(trimmed)) columns.push(trimmed)
+    }
+    for (const field of sortedFields) {
+      if (field.field_type !== 'json') add(field.name)
+    }
+    for (const config of scanConfigs ?? []) {
+      for (const column of config.metric_breakdown_columns ?? []) add(column)
+      add(config.platform_column)
+      add(config.app_version_column)
+    }
+    for (const column of metricBreakdownColumns) add(column)
+    return columns
+  }, [sortedFields, scanConfigs, metricBreakdownColumns])
+  const missingFieldLabels = useMemo(() => {
+    if (!generatedName) return []
+    return generatedName.missing.map(key => {
+      const [column, ...path] = key.split('.')
+      const field = sortedFields.find(item => item.name === column)
+      if (!field) return key
+      return path.length > 0 ? `${field.display_name} → ${path.join('.')}` : field.display_name
+    })
+  }, [generatedName, sortedFields])
+
+  // Advisory duplicate check. The SERVER is what refuses a taken scan identity
+  // (409 from create_event); this only spares the user filling a whole form to
+  // find out on submit. `search` is a plain ILIKE over name/description/
+  // source_name, so an exact name is always inside the result set and the exact
+  // comparison below cannot produce a false POSITIVE. A false negative is
+  // possible if a very broad match pushes the row past the limit — and the
+  // server still catches that one.
+  const completedName =
+    generatedName && generatedName.missing.length === 0 ? generatedName.name : null
+  const probedName = useDebouncedValue(completedName, 350)
+  const { data: identityProbe } = useQuery({
+    queryKey: ['eventIdentityProbe', slug, branchId, etId, probedName],
+    queryFn: () =>
+      eventsApi.list(slug, { event_type_id: etId, search: probedName!, limit: 100 }, branchId),
+    enabled: isNew && !!probedName && !!etId,
+  })
+  const identityTaken = useMemo(() => {
+    if (!probedName || probedName !== completedName || !identityProbe) return null
+    // The same two arms the server tests in `_event_holding_scan_identity`: an
+    // event answering to this identity, or one with no identity yet whose name
+    // the next scan will adopt as one. Matching on `name` alone would miss a
+    // scanned event that has since been renamed — exactly the case source_name
+    // exists for.
+    return (
+      identityProbe.items.find(
+        item =>
+          item.source_name === probedName
+          || (item.source_name === null && item.name === probedName),
+      ) ?? null
+    )
+  }, [probedName, completedName, identityProbe])
+
+  // Adjust-during-render with an equality guard — this repo's idiom for state
+  // that has to follow a computed value (see the comments in
+  // ProjectAlertingTab.tsx). The moment the form composes a different name it is
+  // describing a different event, so the "created" line must stop claiming it.
+  const composedName = generatedName ? generatedName.name : name
+  if (justCreated !== null && composedName !== justCreated) setJustCreated(null)
 
   const toggleBreakdown = (column: string) => {
     setMetricBreakdownColumns(current =>
@@ -446,12 +558,39 @@ export function EventForm({
         notifyStepCompleted('edit-event/set-token')
       }
       notifyStepCompleted('edit-event/save')
-      if (closeAfterSave) onClose()
+      if (closeAfterSave) {
+        onClose()
+        return
+      }
+      // Keeping the entered values is the point of this button, not an
+      // oversight: it exists to author a RUN of similar events by changing one
+      // field between saves, and the docs say so
+      // (website/docs/use/feature-reference.md, "keeps the entered form values
+      // in place for the next one"). What was missing is any sign that a save
+      // happened — so pressing it again looked like the next step, and on a
+      // rule-governed type the retained values regenerate the same name, which
+      // is the scan identity (tripl-u2h9.2). Say what was created, and put the
+      // cursor on the field the next event most likely differs in.
+      setJustCreated(_data.name)
+      const form = formRef.current
+      if (form) {
+        const target =
+          namingFieldIds[0] !== undefined
+            ? form.querySelector<HTMLElement>(`#${CSS.escape(`field-${namingFieldIds[0]}`)}`)
+            : form.querySelector<HTMLElement>('[id^="field-"]')
+        target?.focus()
+      }
     },
   })
 
+  // One answer for both buttons and the keyboard submit path. The disable
+  // expression was already written out twice; a third copy for the identity
+  // check is how the two would start disagreeing.
+  const cannotSave =
+    saveMut.isPending || (generatedName?.missing.length ?? 0) > 0 || identityTaken !== null
+
   const saveAndAddAnother = () => {
-    if (generatedName?.missing.length || !formRef.current?.reportValidity()) return
+    if (cannotSave || !formRef.current?.reportValidity()) return
     saveMut.mutate(false)
   }
 
@@ -461,7 +600,7 @@ export function EventForm({
     <div className="h-full overflow-y-auto">
       <form
         ref={formRef}
-        onSubmit={e => { e.preventDefault(); saveMut.mutate(true) }}
+        onSubmit={e => { e.preventDefault(); if (cannotSave) return; saveMut.mutate(true) }}
         className="mx-auto max-w-[880px] px-6 pb-12 pt-4"
       >
         <button
@@ -479,22 +618,43 @@ export function EventForm({
         <SurfCard title="Details">
           <EvField
             label="Event type"
-            htmlFor="form-event-type"
+            // A select with nothing to select is not a control, so the caption
+            // names no control either (the `Field` escape hatch this repo uses
+            // elsewhere for rows that hold prose).
+            htmlFor={eventTypes.length === 0 ? undefined : 'form-event-type'}
             required
             hint={isNew ? undefined : "Can't be changed after creation."}
             last={false}
           >
-            <SelectControl
-              id="form-event-type"
-              value={etId}
-              onChange={value => { setEtId(value); setFieldValues({}) }}
-              disabled={!isNew}
-              required
-              maxWidth={280}
-            >
-              <option value="">Select type…</option>
-              {eventTypes.map(et => <option key={et.id} value={et.id}>{et.display_name}</option>)}
-            </SelectControl>
+            {eventTypes.length === 0 ? (
+              // An empty project offered "Select type…" and no way forward: the
+              // field card stayed hidden, Create stayed blocked, and nothing said
+              // a type has to exist first. This is the first thing a new project
+              // does (tripl-u2h9.3).
+              <p className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
+                This project has no event types yet, and an event belongs to one.{' '}
+                <Link
+                  to={`/p/${slug}/settings/event-types`}
+                  className="underline underline-offset-2"
+                  style={{ color: 'var(--accent)' }}
+                >
+                  Create an event type
+                </Link>{' '}
+                first, then come back here.
+              </p>
+            ) : (
+              <SelectControl
+                id="form-event-type"
+                value={etId}
+                onChange={value => { setEtId(value); setFieldValues({}) }}
+                disabled={!isNew}
+                required
+                maxWidth={280}
+              >
+                <option value="">Select type…</option>
+                {eventTypes.map(et => <option key={et.id} value={et.id}>{et.display_name}</option>)}
+              </SelectControl>
+            )}
           </EvField>
 
           <EvField
@@ -503,19 +663,46 @@ export function EventForm({
             required
             hint={generatedName ? <span className="mono">generated by scan rule: {nameFormat}</span> : undefined}
           >
+            {/* readOnly, not disabled: a disabled input cannot be focused,
+                selected or copied — so the name you are about to create could
+                not be lifted into a ticket — and it is skipped by constraint
+                validation, which made the `required` mark a promise the browser
+                never kept. readOnly keeps both, and agrees with the ARIA
+                already declared here (tripl-u2h9.5). */}
             <input
               id="form-name"
-              className={`${TEXT_INPUT_CLASS} mono max-w-[360px] disabled:opacity-70`}
+              className={`${TEXT_INPUT_CLASS} mono max-w-[360px] read-only:opacity-70`}
               value={generatedName ? generatedName.name : name}
               onChange={e => setName(e.target.value)}
-              placeholder="e.g. checkout:completed"
+              // No example to offer once the rule writes this box (tripl-u2h9.9).
+              placeholder={generatedName ? undefined : 'e.g. checkout:completed'}
               required
-              disabled={!!generatedName}
-              aria-readonly={!!generatedName}
+              readOnly={!!generatedName}
+              aria-readonly={generatedName ? 'true' : undefined}
             />
             {generatedName && generatedName.missing.length > 0 && (
               <p className="mt-1 text-xs text-warning">
-                Fill field values for: {generatedName.missing.join(', ')}
+                Fill field values for: {missingFieldLabels.join(', ')}
+              </p>
+            )}
+            {generatedName && name.trim() !== '' && (
+              // The typed name is kept in state (switching to a type with no
+              // rule brings it back), so say plainly that it is not being used
+              // rather than letting it vanish and reappear (tripl-u2h9.7).
+              <p className="mt-1 text-xs" style={{ color: 'var(--fg-subtle)' }}>
+                This event type names its events from the scan rule, so “{name.trim()}” is not used.
+              </p>
+            )}
+            {identityTaken && (
+              <p className="mt-1 text-xs text-warning" role="alert">
+                An event already answers to this name and would take every scan update:{' '}
+                <Link
+                  to={`/p/${slug}/monitoring/event/${identityTaken.id}`}
+                  className="underline underline-offset-2"
+                >
+                  open it instead
+                </Link>
+                .
               </p>
             )}
           </EvField>
@@ -611,9 +798,14 @@ export function EventForm({
             />
           </EvField>
 
-          <EvField label="Metric breakdowns" hint="Warehouse columns to roll metrics up by." last>
+          <EvField
+            label="Metric breakdowns"
+            htmlFor="form-breakdown-column"
+            hint="Warehouse columns to roll metrics up by."
+            last
+          >
             <div className="flex flex-wrap gap-[6px]">
-              {BREAKDOWN_COLUMNS.map(c => {
+              {breakdownOptions.map(c => {
                 const on = metricBreakdownColumns.includes(c)
                 return (
                   <button
@@ -633,18 +825,59 @@ export function EventForm({
                 )
               })}
             </div>
+            {/* The other half of what the docs describe, and what the redesign
+                dropped: a column the offered set cannot know about — one the
+                base query computes, or a scan column no field definition
+                covers — is still reachable by typing it. */}
+            <input
+              id="form-breakdown-column"
+              className={`${TEXT_INPUT_CLASS} mono mt-2 max-w-[280px]`}
+              value={breakdownInput}
+              onChange={e => setBreakdownInput(e.target.value)}
+              onKeyDown={e => {
+                if ((e.key === 'Enter' || e.key === ',') && breakdownInput.trim()) {
+                  e.preventDefault()
+                  toggleBreakdown(breakdownInput.trim())
+                  setBreakdownInput('')
+                }
+              }}
+              placeholder="Other column + Enter"
+            />
           </EvField>
         </SurfCard>
 
         {sortedFields.length > 0 && (
-          <SurfCard title="Field values" subtitle={`From the ${typeLabel} schema`}>
+          <SurfCard
+            title="Field values"
+            subtitle={
+              nameFormat
+                ? `From the ${typeLabel} schema. The event name is built from ${
+                    [...namingColumns].join(', ')
+                  }.`
+                : `From the ${typeLabel} schema`
+            }
+          >
             {sortedFields.map((f, i) => (
               <EvField
                 key={f.id}
                 label={f.display_name}
                 htmlFor={`field-${f.id}`}
-                required={f.is_required}
-                hint={<span className="mono">{f.name} · {f.field_type}</span>}
+                // A naming row is required in practice whatever its schema says:
+                // Create stays blocked until it is filled. Marking only
+                // `is_required` made the form's own marks disagree with what it
+                // enforces — on windy-ios's `se` type none of the three columns
+                // that build the name carries the flag (tripl-u2h9.4).
+                required={f.is_required || namingColumns.has(f.name)}
+                hint={
+                  <>
+                    <span className="mono">{f.name} · {f.field_type}</span>
+                    {namingColumns.has(f.name) && (
+                      <span className="mt-[2px] block" style={{ color: 'var(--accent)' }}>
+                        names the event
+                      </span>
+                    )}
+                  </>
+                }
                 last={i === sortedFields.length - 1}
               >
                 {/* The div is the mark's anchor: FieldValueControl is a plain
@@ -662,6 +895,11 @@ export function EventForm({
                   >
                     <FieldValueControl
                       field={f}
+                      // The label's required mark and the control must agree: a
+                      // naming column IS required to create the event, whatever
+                      // its schema flag says, and marking one without the other
+                      // is how the form came to promise a check nothing ran.
+                      requiredOverride={f.is_required || namingColumns.has(f.name)}
                       inputId={`field-${f.id}`}
                       value={fieldValues[f.id] ?? ''}
                       onChange={v => {
@@ -705,6 +943,13 @@ export function EventForm({
           </div>
         )}
 
+        {justCreated !== null && (
+          <p className="mb-[14px] text-[12px]" role="status" style={{ color: 'var(--fg-muted)' }}>
+            Created <span className="mono">{justCreated}</span>. The values below are still the
+            ones it was made from — change what differs and save the next one.
+          </p>
+        )}
+
         <div className="mt-1 flex justify-end gap-[10px]">
           <button
             type="button"
@@ -718,7 +963,7 @@ export function EventForm({
             <button
               type="button"
               onClick={saveAndAddAnother}
-              disabled={saveMut.isPending || (generatedName ? generatedName.missing.length > 0 : false)}
+              disabled={cannotSave}
               className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
               style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
             >
@@ -729,7 +974,7 @@ export function EventForm({
           <ScenarioCoachMark step="edit-event/save" when={!isNew}>
             <button
               type="submit"
-              disabled={saveMut.isPending || (generatedName ? generatedName.missing.length > 0 : false)}
+              disabled={cannotSave}
               className="inline-flex h-8 items-center gap-[6px] rounded-[7px] px-3 text-[12px] font-medium disabled:opacity-60"
               style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
             >

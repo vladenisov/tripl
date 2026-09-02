@@ -2527,6 +2527,14 @@ function EventSideColumn({
           <PropertyRow label="Event type" value={eventType?.display_name ?? event.event_type?.display_name ?? '—'} />
           <PropertyRow label="Status" value={EVENT_STATUS_LABELS[event.status as EventStatus] ?? event.status} />
           <PropertyRow label="Event ID" value={event.id} mono />
+          {!!event.source_name && event.source_name !== event.name && (
+            // Shown only when the two have parted. The scan matches on
+            // source_name, so once a rename moves the display name away from it
+            // this row is the only place that says which event the warehouse is
+            // still feeding (tripl-u2h9.10). When they agree the name IS the
+            // identity and a second row saying so would be noise.
+            <PropertyRow label="Scan identity" value={event.source_name} mono />
+          )}
           <PropertyRow label="First seen" value={formatTimestamp(event.created_at)} />
           <PropertyRow label="Updated" value={formatRelativeTime(event.updated_at)} />
           <PropertyRow label="Last seen" value={event.last_seen_at ? formatTimestamp(event.last_seen_at) : '—'} />
