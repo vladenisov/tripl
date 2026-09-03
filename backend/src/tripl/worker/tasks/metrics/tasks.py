@@ -514,8 +514,9 @@ def collect_metrics(
         # Whether the OPERATOR chose this catalog view or the collector chose it
         # for them. Read from the resolver's answer rather than from
         # ``config.scan_lookback_hours`` a second time, so the flag cannot drift
-        # from the fallback it describes. The sweep below is gated on it — see
-        # there for why a fallback view must never judge a variable unused.
+        # from the fallback it describes. The sweep below reads it to decide how
+        # MUCH of the catalog it may judge — see there for which variables a
+        # fallback view is allowed to call unused and which wait for this flag.
         catalog_window_declared = catalog_scan_window is not None
         if catalog_scan_window is None and config.time_column:
             catalog_scan_window = (time_from_dt, time_to_dt)
@@ -567,9 +568,11 @@ def collect_metrics(
         # catalog is ALWAYS judged through a window — the task returns early
         # without a ``time_column`` — and when the operator set no
         # ``scan_lookback_hours`` that window is the collection window
-        # (``_resolve_collection_window``: ``last_bucket - delta``, one
-        # interval in steady state). The sweep's predicate reads field values
-        # this run's catalog pass has just re-planned from that window, and the
+        # (``_resolve_collection_window``: ``last_bucket - delta`` to the newest
+        # complete boundary — three intervals in steady state, more when the
+        # newest buckets were empty, and thirty on a first run). The sweep's
+        # predicate reads the field values this run's catalog pass has just
+        # re-planned from that window, and the
         # re-plan is what costs a variable its evidence: ``_upsert_field_values``
         # overwrites a non-authored value that differs, and
         # ``delete_variable_contexts_for_event_type`` drops the rewritten
@@ -595,9 +598,11 @@ def collect_metrics(
         #   exists for, one key on one event, and recycling a key nothing refers
         #   to is the point. Measured 2026-09-03, 1929 of production's 1931
         #   variables are JSON-derived; gating the whole call on the lookback
-        #   left all of them unswept for the sake of two rows, and blank IS the
-        #   default (nullable column, ``None`` in every request schema, empty in
-        #   the form).
+        #   left all of them unswept for the sake of two rows — and a blank
+        #   lookback is the state of every config saved without one (nullable
+        #   column, ``None`` in every request schema; the create page pre-fills
+        #   24, so blank is what an older or deliberately cleared config
+        #   carries).
         #
         # ``run_scan`` has neither concern: an unset lookback leaves its window
         # ``None`` and it sees the whole table, so it sweeps everything. Here

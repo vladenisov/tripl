@@ -200,11 +200,12 @@ def is_json_derived(variable: Variable, json_columns: Collection[str]) -> bool:
 
     True when ``source_name`` is set, dotted, and ANY proper dotted prefix of
     it names a column in *json_columns* — the base column or a longer prefix,
-    because a ClickHouse ``Nested`` column or a BigQuery ``RECORD`` field is
-    itself a dotted name and its FieldDefinition is stored that way.
-    ``nested.col`` with no JSON column named ``nested`` is therefore scalar,
-    and "contains a dot" is not a safe discriminator on its own
-    (observed-values-2026-08-30).
+    because a ClickHouse ``Nested`` column is itself returned as a dotted name
+    and its FieldDefinition is stored that way. ``nested.col`` with no JSON
+    column named ``nested`` is therefore scalar, and "contains a dot" is not a
+    safe discriminator on its own (observed-values-2026-08-30). BigQuery is not
+    the case that needs the longer prefixes — its adapter emits one column per
+    top-level field, so a ``RECORD`` reaches this as the undotted ``payload``.
 
     The discriminator is the stored ``FieldDefinition.field_type`` rather than
     the shape of the bindings for two reasons. First, the shape lies: the scan

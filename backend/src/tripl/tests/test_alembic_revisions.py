@@ -6,6 +6,10 @@ from types import SimpleNamespace
 import sqlalchemy as sa
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from sqlalchemy.dialects import postgresql
+
+from tripl.core.analyzers._event_identity import scan_identity_winner_order
+from tripl.models.event import Event
 
 # The revision that finished converting every legacy VARCHAR status/kind column
 # to a native PostgreSQL enum. Migrations at or before it may legitimately
@@ -501,14 +505,29 @@ def test_scan_identity_migration_renames_losers_by_the_scan_winner_rule(monkeypa
     updating the other. Losers are renamed to an identity no scan derives and
     tagged so an operator can find them; a DELETE anywhere in this statement
     would be the deletion the owner refused.
+
+    The ordering is COMPILED from that function rather than copied from it, for
+    the reason the surface-form test above gives: an assertion written against a
+    hand-copied literal can only ever check the literal, and the drift it is
+    here to catch is precisely the two rules being edited apart.
     """
     calls = _scan_identity_migration_calls(monkeypatch, "upgrade")
     statements = [" ".join(str(args[0]).split()) for name, args, _ in calls if name == "execute"]
     assert len(statements) == 1, "the repair is one statement"
     repair = statements[0]
 
+    winner_order = (
+        str(
+            sa.select(Event.id)
+            .order_by(*scan_identity_winner_order())
+            .compile(dialect=postgresql.dialect())
+        )
+        .split("ORDER BY", 1)[1]
+        .strip()
+        .replace("events.", "")
+    )
     assert "PARTITION BY event_type_id, source_name" in repair
-    assert "ORDER BY last_seen_at DESC NULLS LAST, created_at ASC, id ASC" in repair
+    assert f"ORDER BY {winner_order}" in repair
     assert "WHERE source_name IS NOT NULL" in repair
     assert "DELETE" not in repair.upper()
     assert "UPDATE events" in repair

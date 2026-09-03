@@ -341,7 +341,7 @@ photos, comments) and merge back via a
    database would; a create that loses the concurrent INSERT race gets the same
    `409` body (`POST /projects/{slug}/events` and `/events/bulk`, the latter
    prefixed `Event N of M: `), while a scan that loses it adopts the holder
-   inside a savepoint, so a run never fails on this. The migration that added
+   inside a savepoint and carries on. The migration that added
    the key (`340d91a8825a`) repaired existing collisions first: per
    (event type, identity) it kept the row traffic most recently landed on
    (`last_seen_at` desc, then `created_at` asc — the winner rule

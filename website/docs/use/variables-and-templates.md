@@ -315,7 +315,9 @@ A variable is retired only when **all** of the following are true:
 
 - a scan created it and its description is still the scan's own
   (*Auto-detected variable from data source scan*);
-- its display name is still the one the scan gave it;
+- its display name is still one the scan itself could have given it — the scan
+  names a discovered path by shortening it (`property.session_time` becomes
+  `session_time`), so a name outside that shortening is one you typed;
 - its bindings are still only the source path the scan gave it;
 - it documents no values and carries no per-event override;
 - it carries no value drift — open or resolved;
@@ -329,6 +331,12 @@ description, a binding you added, documented values, an override, a drift you
 accepted or snoozed, and an **Exclude from scans** tombstone each keep the row. So does a single
 `${token}` left in one event value, even when the variable has no observed
 contexts at all.
+
+The one gap in that list is narrow and worth knowing: the name check asks
+whether the scan *could* have chosen your name, not whether it did. Rename
+`session_time` to `property_session_time` — another shortening of the same path
+— and the row reads as the scan's own. Rename it to anything else, which is
+what a rename is usually for, and it is yours.
 
 The run that creates a variable does not normally retire it in the same pass:
 that run writes the variable's token into at least one event's field value, so

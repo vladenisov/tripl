@@ -14,6 +14,9 @@ from tripl.core.analyzers._event_generator_variables import (
     VARIABLE_VALUE_SAMPLE_LIMIT,
     preserve_existing_variable_context_values,
 )
+from tripl.core.analyzers._event_identity import (
+    insert_event_claiming_identity as _insert_event_claiming_identity,
+)
 from tripl.core.analyzers.cardinality import BreakdownAnalysis, CardinalityResult
 from tripl.core.analyzers.event_generator import (
     _ensure_variable,
@@ -449,6 +452,72 @@ class TestEventGeneration:
             select(func.count()).where(EventFieldValue.event_id == competitor_id)
         ).scalar_one()
         assert values_on_holder == 2  # screen and action, upserted onto the holder
+
+    def test_a_pending_row_of_the_callers_own_keeps_its_own_error(
+        self,
+        sync_session: Session,
+        project_and_type,
+    ):
+        """The savepoint answers for its INSERT and for nothing else.
+
+        Opening a nested transaction FLUSHES whatever the caller already had
+        pending, at ROOT level, before the savepoint exists
+        (``SessionTransaction._take_snapshot``). While that call stood inside
+        ``insert_event_claiming_identity``'s ``try``, a caller's own violation —
+        an adoption UPDATE that lost its race, say — was caught as if it were
+        this INSERT's, and the recovery then queried a transaction the failed
+        flush had already deactivated: ``PendingRollbackError`` naming nothing,
+        for a row this function never touched.
+
+        Here the pending row is a second event claiming an identity a committed
+        row already holds, and the event being inserted claims a free one. The
+        error the caller sees must be the ``IntegrityError`` its own row earned.
+        """
+        project, et, _fds = project_and_type
+        main_branch_id = _resolve_main_branch_id(sync_session, project.id)
+        assert main_branch_id is not None
+        taken = "screen=/home | action=click"
+        sync_session.add(
+            Event(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                branch_id=main_branch_id,
+                event_type_id=et.id,
+                name=taken,
+                source_name=taken,
+                order=0,
+                status="in_review",
+            )
+        )
+        sync_session.commit()
+        # The caller's own doomed work, queued but not flushed.
+        sync_session.add(
+            Event(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                branch_id=main_branch_id,
+                event_type_id=et.id,
+                name=taken,
+                source_name=taken,
+                order=1,
+                status="in_review",
+            )
+        )
+
+        with pytest.raises(IntegrityError):
+            _insert_event_claiming_identity(
+                sync_session,
+                Event(
+                    id=uuid.uuid4(),
+                    project_id=project.id,
+                    branch_id=main_branch_id,
+                    event_type_id=et.id,
+                    name="screen=/about | action=view",
+                    source_name="screen=/about | action=view",
+                    order=2,
+                    status="in_review",
+                ),
+            )
 
     def test_losing_the_group_event_insert_race_merges_into_the_holder(
         self,

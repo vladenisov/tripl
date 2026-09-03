@@ -128,8 +128,7 @@ item, rejects a batch whose own items collide, and prefixes its message with
 `Event N of M: `). The rule is also a unique key in the database — one event per
 scan identity per event type, on each branch — so two creates racing for one
 identity end the same way: the loser gets that `409`, never a second event. A
-scan that loses the same race adopts the event that won, so a run never fails on
-it.
+scan that loses the same race adopts the event that won and carries on.
 
 Renaming an event afterwards is safe and deliberately does *not* move the
 identity — collection keeps matching the event it already knew. Once the two

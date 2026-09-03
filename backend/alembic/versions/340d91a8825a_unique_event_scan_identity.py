@@ -26,9 +26,13 @@ rule coexist with no identity until a scan adopts a name for one of them.
 Repair before DDL, and repair by renaming, not by deleting. A populated
 database already holds the twins this forbids, and the owner ruled out both
 deleting and merging them: every loser keeps its row, its name and its history.
-NULLing the loser's identity does not work either — ``generate_events`` adopts
-a NULL identity from the row's NAME on the next run, and twins share the name,
-so the collision would come straight back as an UPDATE. So each loser is moved
+NULLing the loser's identity is no repair either. It reads as "authored outside
+a scan rule", which a scan-created twin is not; it leaves an operator nothing to
+search for; and it only makes the collision dormant. ``index_events_by_identity``
+declines to adopt a name another row already holds, so the NULLed row sits quiet
+until the winner is ever deleted and then takes the identity back — and before
+this revision, when adoption was unconditional, it would have taken it back on
+the very next run. So each loser is moved
 to an identity no scan can derive, ``<source_name> #duplicate-<id>`` (unique by
 construction; cut at 450 characters so it fits ``String(500)``), and tagged
 ``duplicate-identity`` so an operator can list the dead twins with the events

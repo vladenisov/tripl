@@ -213,8 +213,9 @@ variable minted from a path inside a JSON column on every run and one minted
 from a scalar column only when the config declares a lookback window, because
 one quiet interval can flip a scalar column to literals in every event at once
 and a run must not recycle the variable on that evidence; a replay never. A
-variable your agent renamed, edited, documented, bound, or excluded from scans
-is never retired.
+variable your agent edited, documented, bound, or excluded from scans is never
+retired, and so is one renamed to anything the scan would not have chosen for
+that path itself.
 The branch-wide version of the same pass,
 `POST /projects/{slug}/danger/retire-unused-variables`, is not available to
 agents: it takes the strict owner gate and rejects every API key.

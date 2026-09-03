@@ -291,10 +291,12 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             "variables_created": result.variables_created,
             # Emitted UNCONDITIONALLY, and a literal 0 is honest here: the sweep
             # above is not gated on anything, so a manual scan always sweeps and
-            # 0 means "swept, found nothing". That is the opposite of the
-            # scheduled path, where the key is ABSENT on a run that did not sweep
-            # (a replay, or a config that declared no catalog window) precisely
-            # so a 0 cannot be read as "found nothing". Without the key the run
+            # 0 means "swept, found nothing". The scheduled path says the same
+            # thing on every run but a REPLAY, which sweeps nothing and omits the
+            # key precisely so its 0 cannot be read as "found nothing" — the one
+            # difference there is that a run with no declared lookback judges
+            # only the JSON-derived variables, so its 0 speaks for those alone
+            # (``collect_metrics``). Without the key the run
             # reported the sweep only in ``details``, so the frontend's
             # "Variables retired" card — guarded on ``!= null`` — was structurally
             # unreachable for the one run type a user triggers deliberately, and

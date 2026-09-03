@@ -224,8 +224,9 @@ can retire the scan-created variables nothing refers to any more, so an id from
 an earlier listing can stop resolving. A scan started by hand always does this;
 a scheduled collection does too, judging a variable minted from a path inside a
 JSON column on every run and one minted from a scalar column only when the
-config declares a lookback window; a replay never. Variables that were renamed,
-edited, documented, bound, or excluded from scans are never retired — see
+config declares a lookback window; a replay never. Variables that were edited, documented,
+bound, or excluded from scans are never retired, and neither is one renamed to
+anything the scan would not have chosen for that path itself — see
 [Variables & templates](../use/variables-and-templates.md#unreferenced-scan-created-variables-are-retired-automatically).
 
 The REST endpoint's `usage=all|used|unused` filter — `unused` being exactly the

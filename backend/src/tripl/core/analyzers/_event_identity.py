@@ -95,16 +95,28 @@ def insert_event_claiming_identity(session: Session, event: Event) -> tuple[Even
     it exactly as an existing event. Any other IntegrityError is re-raised.
 
     Isolated in a SAVEPOINT like ``_ensure_variable`` so the violation does not
-    poison the outer transaction. ``begin_nested()`` flushes the caller's
-    pending work BEFORE the savepoint is established, so the savepoint holds
-    nothing but this INSERT and a rollback to it discards nothing the run has
-    already done; the nested rollback expunges the pending ``event`` and expires
-    only what was dirty inside the savepoint, leaving the caller's identity map
-    intact. The key is read into locals before the attempt because the
-    expunged object is the one thing not safe to rely on afterwards.
+    poison the outer transaction. The savepoint holds nothing but this INSERT,
+    so a rollback to it discards nothing the run has already done; the nested
+    rollback expunges the pending ``event`` and expires only what was dirty
+    inside the savepoint, leaving the caller's identity map intact. The key is
+    read into locals before the attempt because the expunged object is the one
+    thing not safe to rely on afterwards.
+
+    The caller's pending work is settled by the explicit ``flush`` below, and
+    the fact that it stands ABOVE the ``try`` is the whole of it.
+    ``begin_nested()`` performs that flush itself
+    (``SessionTransaction._take_snapshot``) — at ROOT level, before the
+    savepoint exists — so leaving it to happen inside the ``try`` put the
+    caller's own rows under this function's ``except``: an adoption UPDATE that
+    lost its own race, or any other pending row, would be read as this INSERT's
+    collision, and the re-select below would then run against a transaction the
+    failed flush had already deactivated. The caller would get
+    ``PendingRollbackError`` naming nothing, in place of the ``IntegrityError``
+    naming the constraint that actually refused the row.
     """
     event_type_id = event.event_type_id
     source_name = event.source_name
+    session.flush()
     try:
         with session.begin_nested():
             session.add(event)

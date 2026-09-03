@@ -9605,8 +9605,9 @@ def test_scheduled_run_defers_scalar_derived_variables_without_a_declared_lookba
     a ``time_column`` — and with ``scan_lookback_hours`` unset
     ``resolve_lookback_window`` returns ``None`` and ``collect_metrics`` falls
     back to the collection window, which ``_resolve_collection_window`` sets to
-    ``last_bucket - delta`` — one interval in steady state. Cardinality judged
-    over that hour can flip a column that is high over the table to
+    ``last_bucket - delta`` — three intervals in steady state on an hourly
+    schedule. Cardinality judged over that slice can flip a column that is high
+    over the table to
     ``is_low`` (``plan_column_meta``, non-JSON branch only), ``plan_events``
     then writes a LITERAL where the ``${token}`` stood, and the rewrite drops
     the field's contexts — the whole column at once, on every event carrying
@@ -9619,9 +9620,12 @@ def test_scheduled_run_defers_scalar_derived_variables_without_a_declared_lookba
     which never asks the question (``test_replay_does_not_retire_variables``).
 
     DISABLE-THE-FIX: pass ``include_scalar_derived=True`` regardless of
-    ``catalog_window_declared`` and the fossil is deleted and the count reads
-    1. Make ``is_json_derived`` accept a non-dotted ``source_name`` and the same
-    happens.
+    ``catalog_window_declared`` and the fossil is deleted and the count reads 1.
+    (Loosening ``is_json_derived`` does NOT redden this one — ``campaign``'s
+    FieldDefinition is ``string``, so no reading of the dotted-ness rule
+    classifies it as JSON-derived. The dotted-ness rule is pinned in
+    ``test_variable_retirement`` instead, where a JSON column exists to be
+    matched.)
     """
     with sync_session_factory() as session:
         config = _create_scan_config(session, with_event_type=True)

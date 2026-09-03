@@ -142,8 +142,12 @@ def _json_column_names(
 
     Reads the stored type rather than the warehouse's because the sweep has no
     adapter — and does not want one: the catalog sync wrote this type from the
-    warehouse's own (``generation._ensure_event_type_with_fields``), so it is
-    the same answer without a connection.
+    warehouse's own when it created the row
+    (``generation._ensure_event_type_with_fields``). It never revisits it, and
+    a field can also be authored through the API, so this is that decision as
+    last recorded rather than as the warehouse would answer it today. The drift
+    errs toward deferring — a column recorded ``string`` keeps its variables
+    waiting for a declared window — which is the safe direction here.
     """
     scope = [EventType.project_id == project_id]
     if branch_id is not None:
@@ -188,8 +192,9 @@ def retire_unused_variables(
     summary and in the log.
 
     Commits only when it had something to delete, so a scan over a healthy
-    catalog costs four reads (five when deferring, for the branch's
-    FieldDefinition types) and no write at all.
+    catalog costs six reads — the variables, both value tables, and one
+    anti-join each for contexts, drifts and overrides — seven when deferring,
+    for the branch's FieldDefinition types, and no write at all.
     """
     scope = [Variable.project_id == project_id]
     value_scope = [Event.project_id == project_id]
@@ -269,8 +274,11 @@ def retire_unused_variables(
     # ``deferred`` is the scalar-derived rows a scheduled run left unjudged —
     # 0 whenever the caller swept everything — so a line reporting a few
     # retired JSON keys is not read as a full pass over the catalog. Emitted,
-    # as before, only when rows were deleted: a run that deferred everything
-    # returns 0 above without a line, exactly like a run that found nothing.
+    # as before, whenever the PLAN had something to delete, which is not the
+    # same as having deleted it: the raced run whose ``retired`` is 0 against a
+    # non-zero ``planned`` is exactly the case the two numbers exist to show. A
+    # run that planned nothing — nothing retirable, or everything deferred —
+    # returns 0 above and says nothing at all.
     logger.info(
         "Retired unreferenced scan-created variables",
         extra={
