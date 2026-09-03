@@ -26,23 +26,46 @@ Runs after the scan's ``session.commit()`` and before the search reindex, so the
 reindex sees the retired set and the deletions cannot be rolled back by a later
 failure in the same task.
 
-**The caller must have judged cardinality over a view it can defend.** "Nothing
-refers to this" is a claim about the whole project, and the run that answers it
-reads the field values its own catalog pass has just rewritten. Rewrite them
-from a view that is too narrow and the sweep destroys the evidence it is reading:
-``event_plan.plan_column_meta`` sets ``meta['is_low']`` from the cardinality of
-the window it was given, ``plan_events`` then emits a LITERAL instead of the
-``${token}`` template (``event_plan`` L485-491), ``_upsert_field_values``
-rewrites the stored value in place, and
-``delete_variable_contexts_for_event_type`` drops that field's contexts because
-the run rewrote it. The variable is left with no stored token and no context —
-retirable by this predicate — and its whole observed-value history goes with the
-row. ``run_scan`` is safe because an unset ``scan_lookback_hours`` leaves its
-window ``None`` and it sees the whole table; ``collect_metrics`` is not, because
-it falls back to the collection window (one or two intervals) and a column that
-is high-cardinality over the table can read low over one hour. So the scheduled
-caller sweeps only when the operator DECLARED the catalog window (tripl-bh1q
-follow-up); see ``collect_metrics`` for the gate itself.
+**"Nothing refers to this" is judged against field values the run has just
+rewritten, and the rewrite is where a variable's evidence is lost — not here.**
+The run's catalog pass reads its window, re-plans every event's stored values
+from what that window held, and ``_upsert_field_values`` overwrites any
+non-authored value that differs; ``delete_variable_contexts_for_event_type``
+then drops the field's contexts because the field was rewritten. A variable
+whose token was in the old value and is not in the new one is left with no
+stored token and no context — this predicate's fossil — the moment that
+rewrite commits, whether or not a sweep follows. What the sweep adds is the
+loss of the ROW: the next run that sees the token again mints a new id, runs
+``derive_display_name`` afresh, and the catalog shows a retired/created pair
+where nothing changed in the warehouse.
+
+How wide that flicker is depends on what the variable was minted from, and
+that is the split ``include_scalar_derived`` carries (tripl-bwo8):
+
+- A SCALAR column's variable is one ``${token}`` per column, and it vanishes
+  on the cardinality of the window: ``event_plan.plan_column_meta`` sets
+  ``meta['is_low']`` from the window it was given (non-JSON branch only), and
+  ``plan_events`` then writes a LITERAL where the template stood. A column that
+  is high over the table can read low over one quiet hour, and then the whole
+  column flips at once, on every event carrying it. Recycling that row is
+  churn an operator will notice, so the scheduled caller still asks for a
+  DECLARED ``scan_lookback_hours`` before it sweeps these — the operator has
+  said which window represents the plan, and the flip is theirs to own.
+- A JSON column's variables are its discovered paths, one per key, and the
+  ``is_low`` arm cannot reach them: a JSON column has no template and no
+  literal fallback. What a narrow window does to a JSON variable is drop a key
+  that did not arrive this interval from the stored value rebuilt for that
+  event (``build_json_value`` from the window's row). That is the "key that
+  stopped arriving" the sweep exists for, seen over one hour instead of one
+  table, and recycling a key nothing refers to is the point rather than a
+  hazard. Measured 2026-09-03, 1929 of production's 1931 variables are
+  JSON-derived (``windy-ios`` 1805/1807, ``android`` 77/77, ``web`` 47/47), so
+  a gate on the whole call left the whole growth unswept for the sake of two
+  rows.
+
+``run_scan`` passes neither concern: an unset ``scan_lookback_hours`` leaves its
+window ``None`` and it sees the whole table, so it sweeps everything on every
+run. See ``collect_metrics`` for the scheduled caller's gate.
 """
 
 from __future__ import annotations
@@ -53,10 +76,13 @@ import uuid
 from sqlalchemy import Select, delete, select
 from sqlalchemy.orm import InstrumentedAttribute, Session, lazyload
 
-from tripl.core.variable_retirement import plan_retirement, referenced_tokens
+from tripl.core.variable_retirement import is_json_derived, plan_retirement, referenced_tokens
+from tripl.models.domain_enums import FieldDefinitionType
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_meta_value import EventMetaValue
+from tripl.models.event_type import EventType
+from tripl.models.field_definition import FieldDefinition
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.models.variable_value import VariableValue
@@ -99,13 +125,55 @@ def _ids_with_rows(
     )
 
 
+def _json_column_names(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+) -> set[str]:
+    """The FieldDefinition names that are JSON-typed on EVERY type of the branch.
+
+    A name is what ``is_json_derived`` matches a variable's dotted prefix
+    against, and a variable is per branch while a FieldDefinition is per event
+    type, so one name can carry several types. A name that is ``json`` on one
+    type and ``string`` on another is treated as scalar: the variable's token
+    then stands in a scalar column's stored value somewhere on the branch, and
+    that value is the one the window can flip to a literal.
+
+    Reads the stored type rather than the warehouse's because the sweep has no
+    adapter — and does not want one: the catalog sync wrote this type from the
+    warehouse's own (``generation._ensure_event_type_with_fields``), so it is
+    the same answer without a connection.
+    """
+    scope = [EventType.project_id == project_id]
+    if branch_id is not None:
+        scope.append(EventType.branch_id == branch_id)
+    only_json: dict[str, bool] = {}
+    for name, field_type in session.execute(
+        select(FieldDefinition.name, FieldDefinition.field_type)
+        .join(EventType, FieldDefinition.event_type_id == EventType.id)
+        .where(*scope)
+        .distinct()
+    ):
+        only_json[name] = only_json.get(name, True) and field_type == FieldDefinitionType.json
+    return {name for name, is_json in only_json.items() if is_json}
+
+
 def retire_unused_variables(
     session: Session,
     *,
     project_id: uuid.UUID,
     branch_id: uuid.UUID | None,
+    include_scalar_derived: bool = True,
 ) -> int:
     """Delete the project branch's unreferenced scan-created variables.
+
+    ``include_scalar_derived=False`` restricts the pass to variables minted
+    from a path inside a JSON-typed column (:func:`is_json_derived` against the
+    branch's FieldDefinitions) and DEFERS the rest — leaves them in place,
+    unjudged, for a caller that can defend the window (the module docstring
+    has the split). The default sweeps everything, which is what ``run_scan``
+    and the danger-zone endpoint mean.
 
     Returns the number of rows this call ACTUALLY deleted, for the scan's own
     report — summed from the statements' rowcounts, not from the length of the
@@ -120,7 +188,8 @@ def retire_unused_variables(
     summary and in the log.
 
     Commits only when it had something to delete, so a scan over a healthy
-    catalog costs four reads and no write at all.
+    catalog costs four reads (five when deferring, for the branch's
+    FieldDefinition types) and no write at all.
     """
     scope = [Variable.project_id == project_id]
     value_scope = [Event.project_id == project_id]
@@ -141,6 +210,15 @@ def retire_unused_variables(
     )
     if not variables:
         return 0
+
+    deferred = 0
+    if not include_scalar_derived:
+        json_columns = _json_column_names(session, project_id=project_id, branch_id=branch_id)
+        candidates = [v for v in variables if is_json_derived(v, json_columns)]
+        deferred = len(variables) - len(candidates)
+        variables = candidates
+        if not variables:
+            return 0
 
     # BOTH value tables — see the note in ``variable_retirement_service``. A
     # ``${token}`` is legal in an event's field values and in its META values,
@@ -188,6 +266,11 @@ def retire_unused_variables(
     # Both numbers, always: ``planned`` short of ``retired`` is the signature of
     # the concurrent sibling config described in the docstring, and a log line
     # carrying only one of them cannot tell that apart from a quiet catalog.
+    # ``deferred`` is the scalar-derived rows a scheduled run left unjudged —
+    # 0 whenever the caller swept everything — so a line reporting a few
+    # retired JSON keys is not read as a full pass over the catalog. Emitted,
+    # as before, only when rows were deleted: a run that deferred everything
+    # returns 0 above without a line, exactly like a run that found nothing.
     logger.info(
         "Retired unreferenced scan-created variables",
         extra={
@@ -195,6 +278,7 @@ def retire_unused_variables(
             "retired": retired,
             "planned": len(plan.retirable),
             "scanned": plan.scanned,
+            "deferred": deferred,
         },
     )
     return retired

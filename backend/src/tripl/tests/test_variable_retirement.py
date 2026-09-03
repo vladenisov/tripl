@@ -18,9 +18,15 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
+from tripl.core.analyzers._event_generator_variables import (
+    VariableIndex,
+    derive_display_name,
+    display_name_candidates,
+)
 from tripl.core.variable_retirement import (
     SCAN_PROVENANCE_DESCRIPTION,
     KeptReason,
+    is_json_derived,
     plan_retirement,
     referenced_tokens,
 )
@@ -238,6 +244,149 @@ def test_a_variable_is_matched_by_its_source_name_and_bindings_not_only_its_name
     )
     assert plan.retirable == []
     assert plan.kept == {KeptReason.REFERENCED: 1}
+
+
+def _plan_alone(variable: Variable):
+    """``plan_retirement`` over one variable with no evidence of any kind."""
+    return plan_retirement(
+        [variable], referenced=set(), with_contexts=set(), with_drifts=set(), with_overrides=set()
+    )
+
+
+# --------------------------------------------------------------------------
+# The names a scan can write (tripl-bwo8)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("token", "candidates"),
+    [
+        # A plain column name is written untouched, case and all.
+        ("variant", ["variant"]),
+        ("Variant", ["Variant"]),
+        # Trailing segments, shortest first.
+        ("page_data.extra.variant", ["variant", "extra_variant", "page_data_extra_variant"]),
+        # The production map keys: lower-cased, punctuation and whitespace
+        # collapsed to one underscore, edges trimmed.
+        ("property.Albany, OR", ["albany_or", "property_albany_or"]),
+        # A candidate that does not start with a letter gets the ``v_`` prefix
+        # the variable-name grammar demands; the longer one already does.
+        ("property.2024", ["v_2024", "property_2024"]),
+        # A whitespace-only key — two of them existed on production — has no
+        # one-segment candidate at all, so the column name is the first.
+        ("property.  ", ["property"]),
+    ],
+)
+def test_display_name_candidates_are_the_names_a_scan_could_write(
+    token: str, candidates: list[str]
+) -> None:
+    assert display_name_candidates(token) == candidates
+
+
+def test_derive_display_name_takes_the_first_candidate_the_index_does_not_know() -> None:
+    """The refactor split the list out of ``derive_display_name``; this pins that
+    the walk is unchanged — candidate order, the index check, the raw-token
+    fallback — so the retirement predicate and the scan agree on what "a name
+    the scan wrote" means."""
+    token = "page_data.extra.variant"
+    assert derive_display_name(token, VariableIndex()) == "variant"
+
+    taken = VariableIndex([_unsaved(name="variant", source_name="variant", bindings=["variant"])])
+    assert derive_display_name(token, taken) == "extra_variant"
+
+    every_candidate_taken = VariableIndex(
+        [
+            _unsaved(name=name, source_name=name, bindings=[name])
+            for name in display_name_candidates(token)
+        ]
+    )
+    assert derive_display_name(token, every_candidate_taken) == token
+
+
+@pytest.mark.parametrize(
+    ("name", "retired"),
+    [
+        # The shortest candidate — what the scan writes when nothing claims it.
+        ("adana", True),
+        # A longer candidate — what the scan writes when ``adana`` was taken.
+        # Also the documented false negative: a person who typed exactly this
+        # is not detected, and the row is recycled as it was before.
+        ("property_adana", True),
+        # The legacy fallback: every candidate taken, raw path kept.
+        ("property.Adana", True),
+        # None of the above was written by the scan.
+        ("turkey_city", False),
+        ("Adana", False),
+    ],
+)
+def test_a_renamed_scan_variable_belongs_to_the_person_who_renamed_it(
+    name: str, retired: bool
+) -> None:
+    """The scan writes a display name once and never touches it again.
+
+    Now that the scheduled sweep runs on every cycle, a JSON key that stops
+    arriving for one interval is a fossil by this predicate; recycling the row
+    re-derives its name, which would silently undo a rename an operator made.
+    So a name outside ``display_name_candidates(source_name)`` — and not the
+    raw path itself — is read as a human's, and kept as ``user_edited``.
+    """
+    variable = _unsaved(name=name)
+    plan = _plan_alone(variable)
+    if retired:
+        assert plan.retirable == [variable.id]
+        assert plan.kept == {}
+    else:
+        assert plan.retirable == []
+        assert plan.kept == {KeptReason.USER_EDITED: 1}
+
+
+def test_a_plain_column_variable_is_renamed_when_its_name_is_not_the_column() -> None:
+    """Non-dotted tokens have one candidate — the token itself, untouched."""
+    scan_written = _unsaved(name="variant", source_name="variant", bindings=["variant"])
+    assert _plan_alone(scan_written).kept == {}
+
+    renamed = _unsaved(name="experiment_arm", source_name="variant", bindings=["variant"])
+    assert _plan_alone(renamed).kept == {KeptReason.USER_EDITED: 1}
+
+
+def test_the_rename_arm_needs_a_source_name_to_compare_against() -> None:
+    """A row without ``source_name`` has no scan-written name; the arm stays out
+    of the way and the row is judged exactly as before the arm existed."""
+    plan = _plan_alone(_unsaved(name="anything", source_name=None, bindings=[]))
+    assert plan.kept == {}
+    assert len(plan.retirable) == 1
+
+
+# --------------------------------------------------------------------------
+# Which variables came out of a JSON column (tripl-bwo8)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("source_name", "json_columns", "expected"),
+    [
+        # A path under a JSON column — the production shape.
+        ("payload.user.adana", {"payload"}, True),
+        # A longer prefix names the JSON column: a ClickHouse ``Nested`` or
+        # BigQuery ``RECORD`` field is itself a dotted FieldDefinition name.
+        ("nested.props.key", {"nested.props"}, True),
+        # Dotted, but no proper prefix is a JSON column: a ``Nested`` scalar
+        # column called ``nested.col`` — "contains a dot" is not the test.
+        ("nested.col", {"other"}, False),
+        # The whole name is a JSON column, not a path INSIDE one; the scan only
+        # mints ``column.path`` under a JSON column, so this is not its shape.
+        ("nested.col", {"nested.col"}, False),
+        # A plain column, even when a JSON column shares its name.
+        ("variant", {"variant"}, False),
+        # Nothing at all.
+        (None, {"payload"}, False),
+    ],
+)
+def test_is_json_derived_asks_the_stored_column_type_not_the_spelling(
+    source_name: str | None, json_columns: set[str], expected: bool
+) -> None:
+    variable = _unsaved(source_name=source_name, bindings=[source_name] if source_name else [])
+    assert is_json_derived(variable, json_columns) is expected
 
 
 # --------------------------------------------------------------------------

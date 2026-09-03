@@ -562,63 +562,80 @@ def collect_metrics(
         # commit and before the reindex like ``run_scan``, so the reindex sees
         # the retired set and a later failure cannot roll the deletions back.
         #
-        # Gated a SECOND time on ``catalog_window_declared``, and this one is
-        # about the view rather than the phase. On this path the catalog is
-        # ALWAYS judged through a window — the task returns early without a
-        # ``time_column`` — and when the operator set no ``scan_lookback_hours``
-        # that window is the collection window, one or two intervals wide
-        # (``_resolve_collection_window``: ``last_bucket - delta``). Cardinality
-        # judged over one hour flips a column that is high over the table to
-        # ``is_low``, ``plan_events`` writes a LITERAL where the ``${token}``
-        # template stood, ``_upsert_field_values`` rewrites the stored value and
-        # ``delete_variable_contexts_for_event_type`` drops that field's contexts
-        # because the run rewrote it — leaving a variable with no token and no
-        # context, which is exactly this predicate's definition of a fossil. The
-        # sweep would then delete a live variable and its whole observed-value
-        # history on the strength of one quiet hour. ``run_scan`` has no such
-        # fallback: an unset lookback leaves its window ``None`` and it sees the
-        # whole table, which is why the manual path sweeps unconditionally.
+        # ``catalog_window_declared`` decides how MUCH of the catalog this run
+        # may sweep, not whether it sweeps (tripl-bwo8). On this path the
+        # catalog is ALWAYS judged through a window — the task returns early
+        # without a ``time_column`` — and when the operator set no
+        # ``scan_lookback_hours`` that window is the collection window
+        # (``_resolve_collection_window``: ``last_bucket - delta``, one
+        # interval in steady state). The sweep's predicate reads field values
+        # this run's catalog pass has just re-planned from that window, and the
+        # re-plan is what costs a variable its evidence: ``_upsert_field_values``
+        # overwrites a non-authored value that differs, and
+        # ``delete_variable_contexts_for_event_type`` drops the rewritten
+        # field's contexts. The observed-value history is gone at that commit,
+        # sweep or no sweep. What the sweep adds is the ROW — a re-mint under a
+        # new id, a re-derived display name, a retired/created pair in the
+        # summary — and how much of that churn one quiet hour can cause depends
+        # on what the variable was minted from:
         #
-        # A DECLARED lookback is a different claim — the operator has said which
-        # window represents their tracking plan — and it is usually far wider
-        # than one interval, so the flip is theirs to own rather than ours to
-        # cause silently. The cost is real and named in the docs: a config that
-        # leaves the field blank is never swept on a schedule, and blank is the
-        # default (nullable column, ``None`` in every request schema, empty in
-        # the form).
+        # - SCALAR-derived (``source_name`` a plain column): cardinality judged
+        #   over one hour flips a column that is high over the table to
+        #   ``is_low`` (``event_plan.plan_column_meta``, non-JSON branch only),
+        #   and ``plan_events`` writes a LITERAL where the ``${token}`` stood —
+        #   the whole column at once, on every event carrying it. That flicker
+        #   waits for a DECLARED lookback: the operator has said which window
+        #   represents their tracking plan, so the flip is theirs to own rather
+        #   than ours to cause silently.
+        # - JSON-derived (``source_name`` a path under a json-typed
+        #   FieldDefinition): the ``is_low`` arm cannot reach these — a JSON
+        #   column has no template and no literal fallback — and what a narrow
+        #   window does is drop a key absent this hour from the value rebuilt
+        #   for that event. That is the "key that stopped arriving" the sweep
+        #   exists for, one key on one event, and recycling a key nothing refers
+        #   to is the point. Measured 2026-09-03, 1929 of production's 1931
+        #   variables are JSON-derived; gating the whole call on the lookback
+        #   left all of them unswept for the sake of two rows, and blank IS the
+        #   default (nullable column, ``None`` in every request schema, empty in
+        #   the form).
+        #
+        # ``run_scan`` has neither concern: an unset lookback leaves its window
+        # ``None`` and it sees the whole table, so it sweeps everything. Here
+        # ``variables_retired`` is an int (0 included) on every non-replay run
+        # and ``None`` only on a replay.
         variables_retired: int | None = None
         if not is_replay:
-            if catalog_window_declared:
-                variables_retired = retire_unused_variables(
-                    session,
-                    project_id=config.project_id,
-                    branch_id=main_branch_id(session, config.project_id),
-                )
-                # Stamped the MOMENT the delete is durable, not with the full
-                # summary ~400 lines below. Everything between here and there —
-                # the reindex, every chunk's warehouse query under a 24h soft
-                # limit, anomaly recalculation, alert preparation — can raise,
-                # and the deletions survive that because they are already
-                # committed. Before this stub such a run reported only failure
-                # and said nothing at all about what it had destroyed. A
-                # successful run simply overwrites the stub with the real
-                # summary. The mode stamped at job creation is carried over
-                # rather than replaced, and supplied when the job was created
-                # here instead of by the dispatcher, so an unlabelled failed row
-                # is still not indistinguishable from a failed manual scan — the
-                # reason ``check_metrics_due`` stamps it at creation at all. The
-                # stub deliberately carries no ``time_from``/``time_to``:
-                # ``_covered_buckets_from_scan_jobs`` reads only COMPLETED jobs,
-                # and a stub must never be able to claim coverage it did not
-                # produce. Reassigned as a NEW dict because a JSON column does
-                # not see an in-place mutation.
-                if variables_retired and job is not None:
-                    stub = dict(job.result_summary) if isinstance(job.result_summary, dict) else {}
-                    stub.setdefault("mode", METRICS_COLLECTION_MODE)
-                    stub["variables_retired"] = variables_retired
-                    stub["details"] = [retired_details_line(variables_retired)]
-                    job.result_summary = stub
-                    session.commit()
+            variables_retired = retire_unused_variables(
+                session,
+                project_id=config.project_id,
+                branch_id=main_branch_id(session, config.project_id),
+                include_scalar_derived=catalog_window_declared,
+            )
+            # Stamped the MOMENT the delete is durable, not with the full
+            # summary ~400 lines below. Everything between here and there —
+            # the reindex, every chunk's warehouse query under a 24h soft
+            # limit, anomaly recalculation, alert preparation — can raise,
+            # and the deletions survive that because they are already
+            # committed. Before this stub such a run reported only failure
+            # and said nothing at all about what it had destroyed. A
+            # successful run simply overwrites the stub with the real
+            # summary. The mode stamped at job creation is carried over
+            # rather than replaced, and supplied when the job was created
+            # here instead of by the dispatcher, so an unlabelled failed row
+            # is still not indistinguishable from a failed manual scan — the
+            # reason ``check_metrics_due`` stamps it at creation at all. The
+            # stub deliberately carries no ``time_from``/``time_to``:
+            # ``_covered_buckets_from_scan_jobs`` reads only COMPLETED jobs,
+            # and a stub must never be able to claim coverage it did not
+            # produce. Reassigned as a NEW dict because a JSON column does
+            # not see an in-place mutation.
+            if variables_retired and job is not None:
+                stub = dict(job.result_summary) if isinstance(job.result_summary, dict) else {}
+                stub.setdefault("mode", METRICS_COLLECTION_MODE)
+                stub["variables_retired"] = variables_retired
+                stub["details"] = [retired_details_line(variables_retired)]
+                job.result_summary = stub
+                session.commit()
             reindex_main_branch_from_worker(session, config.project_id)
 
         # ---- PHASE 2: Collect time-bucketed metrics ----
@@ -1036,16 +1053,15 @@ def collect_metrics(
                 }
             )
 
-        # ABSENT unless this run actually swept, which is now two conditions and
-        # not one: a replay never sweeps, and neither does a non-replay whose
-        # catalog window the operator did not declare. A ``0`` in either case
-        # would read as "swept, found nothing" rather than "did not sweep" —
-        # exactly the way ``variable_values_touched`` reading 0 on every
-        # scheduled run hid the 2026-08-31 stall. Absent is the honest answer for
-        # a run that never asked the question, and the frontend's "Variables
-        # retired" card is guarded on ``!= null`` so it renders accordingly.
-        # Set outside the replay/scheduled split because it is now reachable
-        # from neither branch's own conditions.
+        # ABSENT only on a replay, which never sweeps; every other run sweeps
+        # (deferring the scalar-derived rows when no lookback is declared, see
+        # the sweep block above) and reports an int, ``0`` included. A ``0`` here
+        # means "swept, found nothing"; absent means "did not ask" — the
+        # distinction ``variable_values_touched`` reading 0 on every scheduled
+        # run failed to make, which hid the 2026-08-31 stall. The frontend's
+        # "Variables retired" card is guarded on ``!= null`` so it renders
+        # accordingly. Set outside the replay/scheduled split because it is
+        # reachable from neither branch's own conditions.
         if variables_retired is not None:
             result_summary["variables_retired"] = variables_retired
 

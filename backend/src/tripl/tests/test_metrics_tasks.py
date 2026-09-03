@@ -9248,6 +9248,7 @@ def _seed_scan_created_variable(
     config: ScanConfig,
     *,
     source_name: str,
+    column_type: str | None = None,
 ) -> Variable:
     """A variable in exactly the state a scan leaves behind, and nothing else.
 
@@ -9256,7 +9257,38 @@ def _seed_scan_created_variable(
     the retirement predicate and can never be swept. That is why the other
     variables this module seeds are untouched by the sweep below:
     ``_seed_json_path_variable`` leaves ``description`` at its ``""`` default.
+
+    ``column_type`` seeds the column the variable was minted from: a
+    FieldDefinition named for the base column (``payload`` for
+    ``payload.user.adana``) with that ``field_type`` on the config's event
+    type. That stored type is what ``retire_unused_variables`` reads to tell a
+    JSON-derived variable from a scalar-derived one when a scheduled run asks
+    it to defer the latter (tripl-bwo8); left ``None``, no FieldDefinition
+    exists and the sweep's conservative default calls the variable
+    scalar-derived. Seeding one column twice reuses the row — a FieldDefinition
+    name is unique per event type.
     """
+    if column_type is not None:
+        assert config.event_type_id is not None
+        column = source_name.partition(".")[0]
+        already_seeded = session.scalar(
+            select(FieldDefinition.id).where(
+                FieldDefinition.event_type_id == config.event_type_id,
+                FieldDefinition.name == column,
+            )
+        )
+        if already_seeded is None:
+            session.add(
+                FieldDefinition(
+                    id=uuid.uuid4(),
+                    event_type_id=config.event_type_id,
+                    name=column,
+                    display_name=column,
+                    field_type=column_type,
+                    is_required=False,
+                    description="",
+                )
+            )
     variable = Variable(
         id=uuid.uuid4(),
         project_id=config.project_id,
@@ -9316,26 +9348,38 @@ def test_scheduled_collection_retires_the_variables_nothing_refers_to(
     hand approximately never. So the catalog every user-facing doc promises
     self-heals only ever grew, one permanent row per key.
 
-    Both variables here carry the scan's provenance description, so the only
+    Every variable here carries the scan's provenance description, so the only
     thing separating them is USE: ``plan`` still has its ``${token}`` in a stored
-    event field value, ``adana`` is the fossil of a key that stopped arriving.
+    event field value, ``adana`` is the fossil of a JSON key that stopped
+    arriving, ``campaign`` the fossil of a plain column whose token is gone.
 
-    ``scan_lookback_hours`` is set because the sweep now refuses to judge
-    "unused" from a catalog window the collector picked for itself — see
-    ``test_scheduled_run_does_not_sweep_a_window_it_chose_for_itself`` for what
-    that gate is protecting. A week is the operator saying which window
-    represents their tracking plan.
+    ``scan_lookback_hours`` is set so BOTH fossils go: with a declared lookback
+    the operator has said which window represents their tracking plan, and the
+    run sweeps scalar-derived variables as well as JSON-derived ones. Without
+    it only the JSON-derived fossil would be taken — see
+    ``test_scheduled_run_defers_scalar_derived_variables_without_a_declared_lookback``
+    for the half that waits and
+    ``test_scheduled_run_sweeps_json_derived_variables_without_a_declared_lookback``
+    for the half that does not (tripl-bwo8).
     """
     with sync_session_factory() as session:
         config = _create_scan_config(session, with_event_type=True)
         config.scan_lookback_hours = 168
         session.commit()
-        fossil = _seed_scan_created_variable(session, config, source_name="payload.user.adana")
-        live = _seed_scan_created_variable(session, config, source_name="payload.user.plan")
+        fossil = _seed_scan_created_variable(
+            session, config, source_name="payload.user.adana", column_type="json"
+        )
+        scalar_fossil = _seed_scan_created_variable(
+            session, config, source_name="campaign", column_type="string"
+        )
+        live = _seed_scan_created_variable(
+            session, config, source_name="payload.user.plan", column_type="json"
+        )
         _seed_event_value_naming(session, config, token="plan")
         config_id = str(config.id)
         project_id = config.project_id
         fossil_id = fossil.id
+        scalar_fossil_id = scalar_fossil.id
         live_id = live.id
 
     monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
@@ -9350,20 +9394,23 @@ def test_scheduled_collection_retires_the_variables_nothing_refers_to(
     result = metrics.collect_metrics.run(config_id)
 
     # DISABLE-THE-FIX: delete the ``retire_unused_variables`` call from
-    # ``collect_metrics`` and this reads 0 and the row below is still there —
-    # which is the state production was found in.
-    assert result["variables_retired"] == 1
+    # ``collect_metrics`` and this reads 0 and both rows below are still there —
+    # which is the state production was found in. Pass
+    # ``include_scalar_derived=False`` regardless of the lookback and it reads
+    # 1, with ``campaign`` still there.
+    assert result["variables_retired"] == 2
     with sync_session_factory() as session:
         surviving = set(
             session.execute(select(Variable.id).where(Variable.project_id == project_id)).scalars()
         )
     assert fossil_id not in surviving
+    assert scalar_fossil_id not in surviving
     # The predicate, not a blanket delete: a live ``${token}`` keeps its row.
     assert live_id in surviving
     # And the run says so where an operator reads it, in ``run_scan``'s words.
     details = result["details"]
     assert isinstance(details, list)
-    assert "Retired 1 unused variables no event refers to" in details
+    assert "Retired 2 unused variables no event refers to" in details
 
 
 def test_replay_does_not_retire_variables(
@@ -9548,32 +9595,33 @@ def test_scheduled_run_records_the_sweep_before_a_later_failure_can_hide_it(
         assert summary["mode"] == "metrics_collection"
 
 
-def test_scheduled_run_does_not_sweep_a_window_it_chose_for_itself(
+def test_scheduled_run_defers_scalar_derived_variables_without_a_declared_lookback(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """The sweep must never judge "unused" from the one-interval fallback view.
+    """A SCALAR column's variable waits for the operator to declare the window.
 
     On this path the catalog is ALWAYS windowed — the task returns early without
     a ``time_column`` — and with ``scan_lookback_hours`` unset
     ``resolve_lookback_window`` returns ``None`` and ``collect_metrics`` falls
     back to the collection window, which ``_resolve_collection_window`` sets to
-    ``last_bucket - delta`` — one or two intervals. ``run_scan`` has no such
-    fallback: it leaves the window ``None`` and sees the whole table.
+    ``last_bucket - delta`` — one interval in steady state. Cardinality judged
+    over that hour can flip a column that is high over the table to
+    ``is_low`` (``plan_column_meta``, non-JSON branch only), ``plan_events``
+    then writes a LITERAL where the ``${token}`` stood, and the rewrite drops
+    the field's contexts — the whole column at once, on every event carrying
+    it. The evidence is lost at that rewrite, sweep or no sweep; what the sweep
+    would add is the ROW, re-minted under a new id the next hour the column
+    reads high again. That churn waits for a declared lookback.
 
-    Judging cardinality over one hour is how a live variable becomes a fossil.
-    ``plan_column_meta`` sets ``meta['is_low']`` from that narrow view
-    (``event_plan`` L362), ``plan_events`` then emits a LITERAL instead of the
-    ``${token}`` template (L485-491), ``_upsert_field_values`` rewrites the
-    stored value in place, and ``delete_variable_contexts_for_event_type`` drops
-    that field's contexts because the run rewrote it. The variable is left with
-    no stored token and no context — this predicate's definition of a fossil —
-    and the sweep would take it, and its whole observed-value history, on the
-    strength of one quiet hour. The rewrite predates this branch; the deletion
-    behind it does not.
+    ``variables_retired`` is PRESENT and 0: the run swept — every JSON-derived
+    variable was judged — and found nothing. Absent is reserved for a replay,
+    which never asks the question (``test_replay_does_not_retire_variables``).
 
-    DISABLE-THE-FIX: remove the ``catalog_window_declared`` gate and the fossil
-    is deleted and ``variables_retired`` reads 0 — both assertions go red.
+    DISABLE-THE-FIX: pass ``include_scalar_derived=True`` regardless of
+    ``catalog_window_declared`` and the fossil is deleted and the count reads
+    1. Make ``is_json_derived`` accept a non-dotted ``source_name`` and the same
+    happens.
     """
     with sync_session_factory() as session:
         config = _create_scan_config(session, with_event_type=True)
@@ -9581,7 +9629,9 @@ def test_scheduled_run_does_not_sweep_a_window_it_chose_for_itself(
         # lookback: nullable column, ``None`` in every request schema, blank in
         # the form.
         assert config.scan_lookback_hours is None
-        fossil = _seed_scan_created_variable(session, config, source_name="payload.user.adana")
+        fossil = _seed_scan_created_variable(
+            session, config, source_name="campaign", column_type="string"
+        )
         config_id = str(config.id)
         fossil_id = fossil.id
 
@@ -9599,24 +9649,179 @@ def test_scheduled_run_does_not_sweep_a_window_it_chose_for_itself(
     assert result["mode"] == "metrics_collection"
     with sync_session_factory() as session:
         assert session.get(Variable, fossil_id) is not None
-    # ABSENT, for the same reason a replay's is: a ``0`` would read as "swept,
-    # found nothing" rather than "did not sweep", and the frontend's "Variables
-    # retired" card is guarded on ``!= null`` so it stays off the run entirely.
-    assert "variables_retired" not in result
+    assert result["variables_retired"] == 0
+    # A run that retired nothing does not say "Retired 0" to the operator.
+    assert not any("Retired" in line for line in result["details"])
 
 
-def test_scheduled_run_still_reindexes_when_it_declined_to_sweep(
+def test_scheduled_run_sweeps_json_derived_variables_without_a_declared_lookback(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """The window gate covers the sweep alone — the reindex has no such condition.
+    """A JSON key nothing refers to is recycled on every scheduled cycle.
+
+    The ``is_low`` flip that keeps the scalar case waiting cannot reach a
+    variable minted from a JSON column: a JSON column has no template and no
+    literal fallback, its variables are the discovered paths and are always
+    high. What a one-interval window does to one is drop a key absent this hour
+    from the value rebuilt for that event — the "key that stopped arriving" the
+    sweep exists for, one key on one event. Gating the whole call on the
+    lookback left every one of production's 1929 JSON-derived variables
+    unswept for the sake of the two that were not (measured 2026-09-03), and
+    blank is the default.
+
+    DISABLE-THE-FIX: revert ``collect_metrics`` to calling the sweep only under
+    ``catalog_window_declared`` and the fossil survives with ``variables_retired``
+    absent. Make ``_json_column_names`` return an empty set and it survives with
+    the count reading 0.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.scan_lookback_hours is None
+        fossil = _seed_scan_created_variable(
+            session, config, source_name="payload.user.adana", column_type="json"
+        )
+        config_id = str(config.id)
+        fossil_id = fossil.id
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: _SamplingFakeAdapter())
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        metrics,
+        "generate_events",
+        lambda *args, **kwargs: GenerationResult(columns_analyzed=1),
+    )
+
+    result = metrics.collect_metrics.run(config_id)
+
+    assert result["mode"] == "metrics_collection"
+    assert result["variables_retired"] == 1
+    with sync_session_factory() as session:
+        assert session.get(Variable, fossil_id) is None
+    assert "Retired 1 unused variables no event refers to" in result["details"]
+
+
+def test_the_sweep_defers_scalar_derived_rows_and_says_how_many(
+    sync_session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One call, both derivations: the JSON key goes, the column stays, and the
+    log line says the column was left unjudged rather than found clean.
+
+    ``deferred`` sits beside ``retired``/``planned``/``scanned`` because a line
+    reporting a few retired keys would otherwise read as a full pass over the
+    catalog. The default — what ``run_scan`` and the danger-zone endpoint mean
+    — defers nothing, so the second call takes the row the first one left.
+
+    DISABLE-THE-FIX: drop ``deferred`` from the log ``extra`` and the record
+    has no such attribute; filter with ``include_scalar_derived`` inverted and
+    the wrong row is deleted.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        json_fossil = _seed_scan_created_variable(
+            session, config, source_name="payload.user.adana", column_type="json"
+        )
+        scalar_fossil = _seed_scan_created_variable(
+            session, config, source_name="campaign", column_type="string"
+        )
+        project_id = config.project_id
+        json_fossil_id = json_fossil.id
+        scalar_fossil_id = scalar_fossil.id
+
+    with (
+        caplog.at_level("INFO", logger="tripl.worker.variable_sweep"),
+        sync_session_factory() as session,
+    ):
+        retired = variable_sweep.retire_unused_variables(
+            session, project_id=project_id, branch_id=None, include_scalar_derived=False
+        )
+
+    assert retired == 1
+    with sync_session_factory() as session:
+        assert session.get(Variable, json_fossil_id) is None
+        assert session.get(Variable, scalar_fossil_id) is not None
+
+    records = [r for r in caplog.records if r.name == "tripl.worker.variable_sweep"]
+    assert len(records) == 1
+    record = records[0]
+    assert (record.retired, record.planned, record.scanned, record.deferred) == (1, 1, 1, 1)
+
+    # The caller that can defend the window takes what this one deferred.
+    with sync_session_factory() as session:
+        assert (
+            variable_sweep.retire_unused_variables(session, project_id=project_id, branch_id=None)
+            == 1
+        )
+        assert session.get(Variable, scalar_fossil_id) is None
+
+
+def test_a_column_that_is_json_on_one_type_and_string_on_another_is_scalar(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A FieldDefinition is per event type, a variable is per branch.
+
+    The same column name can be ``json`` on one type and ``string`` on another,
+    and then the variable's token stands in a scalar column's stored value
+    somewhere on the branch — the value a narrow window can flip to a literal.
+    Conservatively scalar, so a scheduled run without a lookback leaves it.
+
+    DISABLE-THE-FIX: in ``_json_column_names`` make a name JSON when ANY of its
+    FieldDefinitions is (``or`` for ``and``) and the row is deleted.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        fossil = _seed_scan_created_variable(
+            session, config, source_name="payload.user.adana", column_type="json"
+        )
+        other_type = EventType(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            name="legacy",
+            display_name="Legacy",
+            description="",
+        )
+        session.add(other_type)
+        session.flush()
+        session.add(
+            FieldDefinition(
+                id=uuid.uuid4(),
+                event_type_id=other_type.id,
+                name="payload",
+                display_name="payload",
+                field_type="string",
+                is_required=False,
+                description="",
+            )
+        )
+        session.commit()
+        project_id = config.project_id
+        fossil_id = fossil.id
+
+    with sync_session_factory() as session:
+        retired = variable_sweep.retire_unused_variables(
+            session, project_id=project_id, branch_id=None, include_scalar_derived=False
+        )
+
+    assert retired == 0
+    with sync_session_factory() as session:
+        assert session.get(Variable, fossil_id) is not None
+
+
+def test_scheduled_run_reindexes_whatever_the_sweep_deferred(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The lookback narrows the sweep alone — the reindex has no such condition.
 
     Phase 1 syncs the catalog on every non-replay run whatever the window is, so
     the search index must be rebuilt on every non-replay run too. Only the
-    DESTRUCTIVE half is gated.
+    DESTRUCTIVE half reads ``catalog_window_declared``, and even that only to
+    decide how much it may take.
 
-    DISABLE-THE-FIX: pull the reindex inside the ``catalog_window_declared``
-    branch and ``reindexed`` stays empty.
+    DISABLE-THE-FIX: put the reindex under ``if catalog_window_declared:`` and
+    ``reindexed`` stays empty.
     """
     with sync_session_factory() as session:
         config = _create_scan_config(session, with_event_type=True)
