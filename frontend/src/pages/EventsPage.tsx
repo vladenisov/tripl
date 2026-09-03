@@ -71,6 +71,9 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
       ),
     [usersQuery.data],
   )
+  // Same shape as showForm above: the toolbar entry flips a flag and the
+  // render below redirects, so both authoring surfaces are reached the one way.
+  const [showBulk, setShowBulk] = useState(false)
   const [expandedCell, setExpandedCell] = useState<string | null>(null)
   const { hiddenColumns, toggleColumn, colMenuOpen, setColMenuOpen } = useColumnVisibility()
   const {
@@ -405,6 +408,9 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
   if (slug && showForm) {
     return <Navigate to={`${eventsBase}/new`} replace />
   }
+  if (slug && showBulk) {
+    return <Navigate to={`${eventsBase}/bulk`} replace />
+  }
   if (slug && openEventId) {
     return <Navigate to={`${eventsBase}/${openEventId}/edit`} replace />
   }
@@ -479,6 +485,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
               canExport={canExportCsv}
               isExporting={isExporting}
               onNewEvent={openNewEvent}
+              onBulkNew={() => setShowBulk(true)}
             />
           )}
 

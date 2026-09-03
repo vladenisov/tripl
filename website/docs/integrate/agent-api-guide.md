@@ -208,10 +208,14 @@ The catalog is not append-only. A catalog scan run can retire the scan-created
 variables nothing refers to any more — no `${token}` in any stored event field
 or meta value, no observed context, no value drift, no per-event override — so a
 variable id cached from an earlier read can be gone by the next call. A scan
-started by hand always retires; a scheduled collection only when the config
-declares a lookback window, because a run must not call a variable unused from a
-window narrower than the plan; a replay never. A variable
-your agent edited, documented, bound, or excluded from scans is never retired.
+started by hand always retires; a scheduled collection retires too, judging a
+variable minted from a path inside a JSON column on every run and one minted
+from a scalar column only when the config declares a lookback window, because
+one quiet interval can flip a scalar column to literals in every event at once
+and a run must not recycle the variable on that evidence; a replay never. A
+variable your agent edited, documented, bound, or excluded from scans is never
+retired, and so is one renamed to anything the scan would not have chosen for
+that path itself.
 The branch-wide version of the same pass,
 `POST /projects/{slug}/danger/retire-unused-variables`, is not available to
 agents: it takes the strict owner gate and rejects every API key.
@@ -266,10 +270,14 @@ treated as authored and are protected from later scan overwrite.
 Event create and patch return `EventMutationResponse`, which is the event plus a
 `warnings` array. When a scan config governs the event type with an
 `event_name_format`, manual creation derives the canonical name from the
-referenced field values. Missing template values produce `422`; a differing
-client-supplied name is ignored with a warning. Read the mutation response and
-use its returned name/id instead of assuming your proposed name became the
-identity.
+referenced field values. Missing template values produce `422`; a derived name
+another event of the type already holds produces `409` naming that event — the
+scan identity is a unique key in the database, so two creates racing for one
+name end the same way, the loser with that `409` and never a second event, and
+`POST /projects/{slug}/events/bulk` prefixes the same message with
+`Event N of M: `; a differing client-supplied name is ignored with a warning.
+Read the mutation response and use its returned name/id instead of assuming
+your proposed name became the identity.
 
 Bulk state updates are available for review/archive workflows:
 

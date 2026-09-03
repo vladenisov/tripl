@@ -726,7 +726,9 @@ panel is shorter for a catalog-only scan than for a scheduled collection:
 *Alerts queued*. Nothing was removed; it is one click further down. The four
 sampling counters in that second group are the ones the empty-observed-values
 answer below sends you to, and *Variables retired* read against *Variables
-created* is how you tell a growing catalog from one holding steady.
+created* is how you tell a growing catalog from one holding steady — it reads
+`0` rather than going missing on a run that swept and found nothing, and is
+absent only on a replay, which sweeps nothing.
 
 **The run says it raised 2 signals but Anomalies shows a different number. Which
 is wrong?**
@@ -832,16 +834,19 @@ arriving again. Exclusion is what makes a removal stick.
 **A scan-created variable vanished from the plan. Where did it go?**
 A catalog run retired it, so a catalog stops growing a permanent row per key of
 a JSON column keyed by free text. A scan you started always retires. A scheduled
-monitoring collection retires only when the scan sets **Limits → Lookback
-(hours)** — with the field blank it judges the catalog through the slice it is
-collecting, often a single hour, and one quiet hour is not evidence a variable is
-dead. A metrics **replay** syncs no catalog and retires nothing. A row is
-removed only when all of this holds: its
-description is still the scan's own, its bindings are still only the source path
-the scan gave it, it documents no values, and it has no per-event override, no
-value drift, no observed context, and no stored event field or meta value naming
-any of its tokens as `${token}`. Anything you edited, documented, overrode,
-triaged, or excluded is kept — and so is a variable that a single `${token}`
+monitoring collection retires on every run too, but what it judges depends on
+the variable: one minted from a path inside a JSON column is judged on every
+run, while one minted from a scalar column is judged only when the scan sets
+**Limits → Lookback (hours)** — with the field blank the run reads the slice it
+is collecting, often a single hour, and a scalar column that looks enumerable
+for one quiet hour is rewritten as literals in every event at once, which is not
+evidence its variable is dead. A metrics **replay** syncs no catalog and retires
+nothing. A row is removed only when all of this holds: its description and
+display name are still the scan's own, its bindings are still only the source
+path the scan gave it, it documents no values, and it has no per-event override,
+no value drift, no observed context, and no stored event field or meta value
+naming any of its tokens as `${token}`. Anything you renamed, edited,
+documented, overrode, triaged, or excluded is kept — and so is a variable that a single `${token}`
 still names, even with no observed contexts. The run's details list reports the
 count, and **Plan → Variables** has an **Unused** filter that shows exactly what
 a run would take. See

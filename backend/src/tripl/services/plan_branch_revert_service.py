@@ -11,7 +11,9 @@ One "deletion" is not one: a rename shows up as a removal of the old name plus
 an addition of the new one, because the diff keys entities by name. Where the
 base row carried a scan identity, reverting that removal moves the name back
 onto the row that is still there rather than inserting a second copy of it —
-see ``_row_renamed_from`` (tripl-hjxy).
+see ``_row_renamed_from`` (tripl-hjxy). A second copy is what
+``uq_variable_project_source_name`` and ``uq_event_scan_identity`` refuse
+outright; the rename is what keeps the surviving row's history.
 
 That precondition is worth stating rather than implying, because it is the
 common case that fails it: ``source_name`` is NULL for every API-created
@@ -602,10 +604,14 @@ async def _row_renamed_from(
     deep copy brought it over and ``update_variable`` / ``update_event`` never
     rewrite it. For a Variable that second copy violates
     ``uq_variable_project_source_name`` and the commit came back as a bare 500;
-    for an Event, which has only an index on ``(project, event_type,
-    source_name)``, nothing stopped it and the branch was quietly left with two
-    rows claiming one scan identity — which the next scan matches arbitrarily and
-    which ``pair_renames`` then refuses to pair for ever after (tripl-hjxy).
+    for an Event, which at the time had only an index on ``(project,
+    event_type, source_name)``, nothing stopped it and the branch was quietly
+    left with two rows claiming one scan identity — which the next scan matched
+    arbitrarily and which ``pair_renames`` then refused to pair for ever after
+    (tripl-hjxy). ``uq_event_scan_identity`` now refuses the event copy too
+    (tripl-8tdl), and ``revert_change`` turns that into a 409 — so the worst
+    case is a refused revert, not a corrupted branch; the rename below is still
+    the right answer because it keeps the row.
 
     So the honest revert of that removal is to move the row's NAME back, and this
     finds the row to move. Nothing is deleted and nothing is inserted: the id
@@ -639,24 +645,27 @@ async def _row_renamed_from(
 
     # Ambiguity is refused on BOTH sides, which is ``_sole_key_by_identity``'s
     # rule and was only half-applied here: the branch-side count below was
-    # checked and the base-side one was not. Events carry no uniqueness on
-    # ``source_name`` (only ``ix_events_source_identity``) and ``create_event``
-    # stamps it from the generated name, so main can legitimately hold two
-    # events sharing one scan identity under one type — create ``checkout:start``,
-    # rename it to ``checkout:begin``, create ``checkout:start`` again. Cut a
-    # branch, delete ``checkout:begin`` on it, revert that removal: exactly one
-    # branch row carries the identity, nothing below trips, and the revert
-    # renames the LIVE ``checkout:start`` to ``checkout:begin``. The deleted
-    # event is never restored and an unrelated one silently loses its name.
+    # checked and the base-side one was not. When this was written events
+    # carried no uniqueness on ``source_name`` (only ``ix_events_source_identity``)
+    # while ``create_event`` stamps it from the generated name, so main could
+    # legitimately hold two events sharing one scan identity under one type —
+    # create ``checkout:start``, rename it to ``checkout:begin``, create
+    # ``checkout:start`` again. Cut a branch, delete ``checkout:begin`` on it,
+    # revert that removal: exactly one branch row carries the identity, nothing
+    # below trips, and the revert renames the LIVE ``checkout:start`` to
+    # ``checkout:begin``. The deleted event is never restored and an unrelated
+    # one silently loses its name.
     #
     # Declining (rather than the 409 the branch side raises) is the right answer
     # for this side: two base rows against one branch row means one was really
     # deleted while the other stayed put, so the plain rebuild restores exactly
-    # what went missing. The variable arm cannot fire today —
-    # ``uq_variable_project_source_name`` makes the identity singular per branch,
-    # and the base IS one branch's snapshot — and is written anyway, because
-    # this reads a stored payload and a payload is data, not a constraint
-    # (tripl-hjxy).
+    # what went missing. Neither arm can fire from live rows today —
+    # ``uq_variable_project_source_name`` makes a variable's identity singular
+    # per branch and ``uq_event_scan_identity`` an event's singular per type
+    # (tripl-8tdl), and the base IS one branch's snapshot — and both are written
+    # anyway, because this reads a stored payload, a snapshot from before the
+    # event constraint existed can still name one identity twice, and a payload
+    # is data, not a constraint (tripl-hjxy).
     if _base_identity_count(base_payload, data, source_name) > 1:
         return None
 
@@ -685,9 +694,13 @@ async def _row_renamed_from(
     if not rows:
         return None
     if len(rows) > 1:
-        # Only reachable for events; ``uq_variable_project_source_name`` makes it
-        # impossible for variables. Guessing which row moved would rename a
-        # sibling the reviewer never looked at, the same reason ``_one`` refuses.
+        # Unreachable from live rows: ``uq_variable_project_source_name`` makes
+        # it impossible for variables, and ``uq_event_scan_identity`` for events
+        # (the branch-and-type scope above is one ``event_type_id``, by
+        # ``uq_event_type_project_name``). Kept as the same kind of guard as the
+        # base-side count — this is the row the query returned, not a schema
+        # promise — because guessing which row moved would rename a sibling the
+        # reviewer never looked at, the same reason ``_one`` refuses.
         raise HTTPException(
             status_code=409,
             detail=(

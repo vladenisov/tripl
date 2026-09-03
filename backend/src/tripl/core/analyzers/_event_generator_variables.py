@@ -563,24 +563,44 @@ def resolve_main_branch_id(session: Session, project_id: uuid.UUID) -> uuid.UUID
 _NAME_CLEAN_PATTERN = re.compile(r"[^a-z0-9_]+")
 
 
-def derive_display_name(token: str, index: VariableIndex) -> str:
-    """Short human name for a scan-discovered dotted path.
+def display_name_candidates(token: str) -> list[str]:
+    """Every display name a scan could give *token*, in the order it tries them.
 
-    Candidates grow from the trailing path segments (``variant`` →
-    ``extra_variant`` → ``page_data_extra_variant``), normalized to the strict
-    variable-name grammar; the first one not already claimed by any token in
-    the index wins. Falls back to the raw path (legacy style) when every
-    candidate is taken. Non-dotted tokens pass through unchanged.
+    The pure half of :func:`derive_display_name`: candidates grow from the
+    trailing path segments (``variant`` → ``extra_variant`` →
+    ``page_data_extra_variant``), normalized to the strict variable-name grammar
+    (lower-cased, anything outside ``[a-z0-9_]`` collapsed to ``_``, a ``v_``
+    prefix when the result does not start with a letter). A non-dotted token has
+    exactly one candidate, itself, untouched — the scan never normalizes a plain
+    column name. Split out so ``core.variable_retirement`` can answer "did the
+    scan write this name?" without an index and without restating the rules.
     """
     if "." not in token:
-        return token
+        return [token]
     segments = token.split(".")
+    candidates: list[str] = []
     for take in range(1, len(segments) + 1):
         candidate = _NAME_CLEAN_PATTERN.sub("_", "_".join(segments[-take:]).lower()).strip("_")
         if not candidate:
             continue
         if not candidate[0].isalpha():
             candidate = f"v_{candidate}"
+        candidates.append(candidate)
+    return candidates
+
+
+def derive_display_name(token: str, index: VariableIndex) -> str:
+    """Short human name for a scan-discovered dotted path.
+
+    The first :func:`display_name_candidates` entry not already claimed by any
+    token in the index wins. Falls back to the raw path (legacy style) when
+    every candidate is taken. Non-dotted tokens pass through unchanged — their
+    single candidate is the token itself, and it is returned without consulting
+    the index, exactly as before the split.
+    """
+    if "." not in token:
+        return token
+    for candidate in display_name_candidates(token):
         if index.resolve(candidate) is None:
             return candidate
     return token

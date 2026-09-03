@@ -4,6 +4,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.main import app
 from tripl.models.data_source import DataSource
@@ -1515,6 +1517,552 @@ async def test_create_event_name_generated_from_scan_rule(client: AsyncClient):
     async with TestSessionLocal() as session:
         event = await session.get(Event, uuid.UUID(body["id"]))
         assert event.source_name == "pv:onboarding:b2"
+
+
+@pytest.mark.asyncio
+async def test_the_scan_identity_is_readable_from_the_api(client: AsyncClient):
+    """It decides whether an authored event merges with the scan, and was invisible.
+
+    Crawling all 5702 production events returned no such key from any endpoint,
+    so after creating an event by hand there was no way to see which identity it
+    had claimed — nor, after a rename, that the display name and the identity had
+    parted (tripl-u2h9.10).
+    """
+    slug = "ev-identity-visible"
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types", json={"name": "se", "display_name": "Structured"}
+    )
+    et_id = et.json()["id"]
+    action = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "action", "display_name": "Action", "field_type": "string"},
+    )
+    await _seed_scan_name_rule(slug, et_id, "{action}")
+
+    created = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": et_id,
+            "name": "x",
+            "field_values": [{"field_definition_id": action.json()["id"], "value": "sign_up"}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    event_id = created.json()["id"]
+    assert created.json()["source_name"] == "sign_up"
+
+    detail = await client.get(f"/api/v1/projects/{slug}/events/{event_id}")
+    assert detail.json()["source_name"] == "sign_up"
+
+    # The slim list variant carries it too: a client deciding whether an identity
+    # is free has to test the same predicate the server does.
+    listed = await client.get(f"/api/v1/projects/{slug}/events")
+    assert [item["source_name"] for item in listed.json()["items"]] == ["sign_up"]
+
+    # A rename moves the display name and leaves the identity where the scan
+    # will still find it — which is the whole reason this needs to be readable.
+    renamed = await client.patch(
+        f"/api/v1/projects/{slug}/events/{event_id}", json={"name": "Sign up"}
+    )
+    assert renamed.json()["name"] == "Sign up"
+    assert renamed.json()["source_name"] == "sign_up"
+
+
+@pytest.mark.asyncio
+async def test_create_event_refuses_an_identity_another_event_already_holds(client: AsyncClient):
+    """A scan matches ONE event per identity, so the second one could only rot."""
+    slug = "ev-identity-taken"
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types", json={"name": "se", "display_name": "Structured"}
+    )
+    et_id = et.json()["id"]
+    action = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "action", "display_name": "Action", "field_type": "string"},
+    )
+    action_id = action.json()["id"]
+    await _seed_scan_name_rule(slug, et_id, "{action}")
+
+    payload = {
+        "event_type_id": et_id,
+        "name": "ignored",
+        "field_values": [{"field_definition_id": action_id, "value": "sign_up"}],
+    }
+    first = await client.post(f"/api/v1/projects/{slug}/events", json=payload)
+    assert first.status_code == 201, first.text
+    assert first.json()["name"] == "sign_up"
+
+    second = await client.post(f"/api/v1/projects/{slug}/events", json=payload)
+    assert second.status_code == 409, second.text
+    detail = second.json()["detail"]
+    # Names the identity AND the event holding it, so the reader can go there.
+    assert "sign_up" in detail
+    assert first.json()["id"] in detail
+
+
+@pytest.mark.asyncio
+async def test_create_event_refuses_an_identity_a_row_with_no_source_name_will_adopt(
+    client: AsyncClient,
+):
+    """The pre-rule event is not free: the next scan adopts its name as the identity.
+
+    Sequence taken from real projects — someone authors an event before any scan
+    config names that type, a scan is configured later, and the generator's
+    ``source_name = ev.name`` backfill hands the older row the very identity the
+    new one is trying to claim.
+    """
+    slug = "ev-identity-adopted"
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types", json={"name": "se", "display_name": "Structured"}
+    )
+    et_id = et.json()["id"]
+    action = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "action", "display_name": "Action", "field_type": "string"},
+    )
+    action_id = action.json()["id"]
+
+    # No scan rule yet: the name is the user's and source_name stays NULL.
+    early = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et_id, "name": "sign_up", "field_values": []},
+    )
+    assert early.status_code == 201, early.text
+    async with TestSessionLocal() as session:
+        stored = await session.get(Event, uuid.UUID(early.json()["id"]))
+        assert stored.source_name is None
+
+    await _seed_scan_name_rule(slug, et_id, "{action}")
+    clash = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": et_id,
+            "name": "whatever",
+            "field_values": [{"field_definition_id": action_id, "value": "sign_up"}],
+        },
+    )
+    assert clash.status_code == 409, clash.text
+    assert early.json()["id"] in clash.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_create_event_allows_a_different_identity_under_the_same_rule(client: AsyncClient):
+    """The guard refuses collisions, not second events."""
+    slug = "ev-identity-free"
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types", json={"name": "se", "display_name": "Structured"}
+    )
+    et_id = et.json()["id"]
+    action = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "action", "display_name": "Action", "field_type": "string"},
+    )
+    action_id = action.json()["id"]
+    await _seed_scan_name_rule(slug, et_id, "{action}")
+
+    for value in ("sign_up", "sign_out"):
+        created = await client.post(
+            f"/api/v1/projects/{slug}/events",
+            json={
+                "event_type_id": et_id,
+                "name": "x",
+                "field_values": [{"field_definition_id": action_id, "value": value}],
+            },
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["name"] == value
+
+
+@pytest.mark.asyncio
+async def test_bulk_create_events_applies_the_scan_naming_rule(client: AsyncClient):
+    """Both create doors must author the same event for the same payload."""
+    slug = "ev-bulk-namegen"
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types", json={"name": "se", "display_name": "Structured"}
+    )
+    et_id = et.json()["id"]
+    action = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "action", "display_name": "Action", "field_type": "string"},
+    )
+    action_id = action.json()["id"]
+    await _seed_scan_name_rule(slug, et_id, "se:{action}")
+
+    created = await client.post(
+        f"/api/v1/projects/{slug}/events/bulk",
+        json=[
+            {
+                "event_type_id": et_id,
+                "name": "whatever the caller typed",
+                "field_values": [{"field_definition_id": action_id, "value": "sign_up"}],
+            },
+            {
+                "event_type_id": et_id,
+                "name": "also ignored",
+                "field_values": [{"field_definition_id": action_id, "value": "sign_out"}],
+            },
+        ],
+    )
+    assert created.status_code == 201, created.text
+    assert [event["name"] for event in created.json()] == ["se:sign_up", "se:sign_out"]
+
+    async with TestSessionLocal() as session:
+        for event_payload in created.json():
+            stored = await session.get(Event, uuid.UUID(event_payload["id"]))
+            # The identity is what makes an authored event merge with its
+            # scanned counterpart; bulk used to leave it NULL.
+            assert stored.source_name == event_payload["name"]
+
+
+@pytest.mark.asyncio
+async def test_bulk_create_events_refuses_two_items_claiming_one_identity(client: AsyncClient):
+    """The sibling is not in the database yet, so only an in-batch check can see it."""
+    slug = "ev-bulk-clash"
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types", json={"name": "se", "display_name": "Structured"}
+    )
+    et_id = et.json()["id"]
+    action = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "action", "display_name": "Action", "field_type": "string"},
+    )
+    action_id = action.json()["id"]
+    await _seed_scan_name_rule(slug, et_id, "{action}")
+
+    clash = await client.post(
+        f"/api/v1/projects/{slug}/events/bulk",
+        json=[
+            {
+                "event_type_id": et_id,
+                "name": "a",
+                "field_values": [{"field_definition_id": action_id, "value": "sign_up"}],
+            },
+            {
+                "event_type_id": et_id,
+                "name": "b",
+                "field_values": [{"field_definition_id": action_id, "value": "sign_up"}],
+            },
+        ],
+    )
+    assert clash.status_code == 409, clash.text
+    detail = clash.json()["detail"]
+    assert "1 and 2 of 2" in detail
+    assert "sign_up" in detail
+
+    listed = await client.get(f"/api/v1/projects/{slug}/events")
+    assert listed.json()["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_bulk_create_events_refuses_an_identity_the_catalog_already_holds(
+    client: AsyncClient,
+):
+    """The batch is probed against the catalog in ONE query, not one per item.
+
+    Distinct from the in-batch clash above: that one is invisible to any query
+    because the sibling is not written yet, this one is invisible to any
+    in-memory check because the holder was written long ago.
+    """
+    slug = "ev-bulk-taken"
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types", json={"name": "se", "display_name": "Structured"}
+    )
+    et_id = et.json()["id"]
+    action = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "action", "display_name": "Action", "field_type": "string"},
+    )
+    action_id = action.json()["id"]
+    await _seed_scan_name_rule(slug, et_id, "{action}")
+
+    first = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": et_id,
+            "name": "x",
+            "field_values": [{"field_definition_id": action_id, "value": "sign_up"}],
+        },
+    )
+    assert first.status_code == 201, first.text
+
+    clash = await client.post(
+        f"/api/v1/projects/{slug}/events/bulk",
+        json=[
+            {
+                "event_type_id": et_id,
+                "name": "a",
+                "field_values": [{"field_definition_id": action_id, "value": "sign_out"}],
+            },
+            {
+                "event_type_id": et_id,
+                "name": "b",
+                "field_values": [{"field_definition_id": action_id, "value": "sign_up"}],
+            },
+        ],
+    )
+    assert clash.status_code == 409, clash.text
+    detail = clash.json()["detail"]
+    assert detail.startswith("Event 2 of 2: ")
+    assert first.json()["id"] in detail
+
+    # One transaction: the item that COULD have been created is not.
+    listed = await client.get(f"/api/v1/projects/{slug}/events")
+    assert [item["name"] for item in listed.json()["items"]] == ["sign_up"]
+
+
+def _land_a_competitor_before_the_insert(
+    monkeypatch: pytest.MonkeyPatch, *, event_type_id: str, identity: str, name: str
+) -> dict[str, uuid.UUID]:
+    """Commit a row holding ``identity`` after the probe and before the INSERT.
+
+    The identity probe is a SELECT without a lock, so the only holder it cannot
+    see is one another request commits between that SELECT and this request's
+    INSERT — the race ``uq_event_scan_identity`` exists to settle (tripl-8tdl).
+    The in-memory test database has a single connection, so the competitor
+    cannot arrive from a second session; it is written through the request's own
+    session at the last read before the INSERT, the next-order lookup, and
+    committed there, which is what a competing request's commit looks like from
+    this request's point of view. Returns a dict the competitor's id lands in.
+    """
+    from tripl.services import event_service
+
+    original = event_service._get_next_event_order
+    landed: dict[str, uuid.UUID] = {}
+
+    async def _racing(session: AsyncSession, project_id: uuid.UUID, branch_id: uuid.UUID) -> int:
+        if "id" not in landed:
+            competitor = Event(
+                project_id=project_id,
+                branch_id=branch_id,
+                event_type_id=uuid.UUID(event_type_id),
+                name=name,
+                source_name=identity,
+            )
+            session.add(competitor)
+            await session.commit()
+            landed["id"] = competitor.id
+        return await original(session, project_id, branch_id)
+
+    monkeypatch.setattr(event_service, "_get_next_event_order", _racing)
+    return landed
+
+
+async def _setup_ruled_event_type(client: AsyncClient, slug: str) -> tuple[str, str]:
+    """A project whose one event type names its events ``{action}``."""
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types", json={"name": "se", "display_name": "Structured"}
+    )
+    et_id = et.json()["id"]
+    action = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "action", "display_name": "Action", "field_type": "string"},
+    )
+    await _seed_scan_name_rule(slug, et_id, "{action}")
+    return et_id, action.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_create_event_answers_a_lost_identity_race_with_the_probe_s_409(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """The probe cannot see a holder committed after it; the constraint can.
+
+    Two requests authoring one identity at once both pass the probe, and
+    ``uq_event_scan_identity`` refuses the second INSERT. That refusal reached
+    the caller as a bare 500 (tripl-8tdl). It is the very collision the probe
+    refuses, so it gets the probe's answer: 409, naming the row that won.
+    """
+    slug = "ev-identity-race"
+    et_id, action_id = await _setup_ruled_event_type(client, slug)
+    landed = _land_a_competitor_before_the_insert(
+        monkeypatch, event_type_id=et_id, identity="sign_up", name="Sign up (won)"
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": et_id,
+            "name": "x",
+            "field_values": [{"field_definition_id": action_id, "value": "sign_up"}],
+        },
+    )
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert "'sign_up'" in detail
+    assert "Sign up (won)" in detail
+    assert str(landed["id"]) in detail
+
+    # The winner is the only holder; the loser left nothing behind.
+    async with TestSessionLocal() as session:
+        holders = (
+            (await session.execute(select(Event.id).where(Event.source_name == "sign_up")))
+            .scalars()
+            .all()
+        )
+        assert holders == [landed["id"]]
+
+
+@pytest.mark.asyncio
+async def test_bulk_create_events_answers_a_lost_identity_race_with_the_probe_s_409(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Same race through the batch door: the item that lost is named, nothing lands."""
+    slug = "ev-bulk-race"
+    et_id, action_id = await _setup_ruled_event_type(client, slug)
+    landed = _land_a_competitor_before_the_insert(
+        monkeypatch, event_type_id=et_id, identity="sign_up", name="won"
+    )
+
+    clash = await client.post(
+        f"/api/v1/projects/{slug}/events/bulk",
+        json=[
+            {
+                "event_type_id": et_id,
+                "name": "a",
+                "field_values": [{"field_definition_id": action_id, "value": "sign_out"}],
+            },
+            {
+                "event_type_id": et_id,
+                "name": "b",
+                "field_values": [{"field_definition_id": action_id, "value": "sign_up"}],
+            },
+        ],
+    )
+    assert clash.status_code == 409, clash.text
+    detail = clash.json()["detail"]
+    assert detail.startswith("Event 2 of 2: ")
+    assert str(landed["id"]) in detail
+
+    # One transaction: the item that COULD have been created is not.
+    listed = await client.get(f"/api/v1/projects/{slug}/events")
+    assert [item["name"] for item in listed.json()["items"]] == ["won"]
+
+
+@pytest.mark.asyncio
+async def test_create_event_does_not_dress_an_unrelated_constraint_as_an_identity_clash(
+    client: AsyncClient,
+):
+    """The 409 names a holder the re-probe FOUND, never one it assumed.
+
+    ``owner_id`` reaches the INSERT unvalidated, so an unknown owner trips the
+    ``users`` foreign key — an IntegrityError that is not the identity key. The
+    identity is generated and probed again, nobody holds it, and the error
+    leaves exactly as it did before the handler existed.
+    """
+    slug = "ev-identity-other-constraint"
+    et_id, action_id = await _setup_ruled_event_type(client, slug)
+
+    # The shared ``client`` transport re-raises app exceptions, so the error
+    # that would become the 500 surfaces here as itself.
+    with pytest.raises(IntegrityError):
+        await client.post(
+            f"/api/v1/projects/{slug}/events",
+            json={
+                "event_type_id": et_id,
+                "name": "x",
+                "owner_id": str(uuid.uuid4()),
+                "field_values": [{"field_definition_id": action_id, "value": "sign_up"}],
+            },
+        )
+
+    async with TestSessionLocal() as session:
+        held = await session.scalar(
+            select(func.count(Event.id)).where(Event.source_name == "sign_up")
+        )
+        assert held == 0
+
+
+@pytest.mark.asyncio
+async def test_bulk_create_events_names_the_item_that_failed(client: AsyncClient):
+    """'Required field action is missing' is unusable when thirty events were posted."""
+    slug = "ev-bulk-which"
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types", json={"name": "se", "display_name": "Structured"}
+    )
+    et_id = et.json()["id"]
+    action = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={
+            "name": "action",
+            "display_name": "Action",
+            "field_type": "string",
+            "is_required": True,
+        },
+    )
+    action_id = action.json()["id"]
+
+    bad = await client.post(
+        f"/api/v1/projects/{slug}/events/bulk",
+        json=[
+            {
+                "event_type_id": et_id,
+                "name": "ok",
+                "field_values": [{"field_definition_id": action_id, "value": "sign_up"}],
+            },
+            {"event_type_id": et_id, "name": "broken", "field_values": []},
+        ],
+    )
+    assert bad.status_code == 422, bad.text
+    assert bad.json()["detail"].startswith("Event 2 of 2: ")
+
+
+@pytest.mark.asyncio
+async def test_bulk_create_events_normalizes_json_like_the_single_create(client: AsyncClient):
+    """The batched door restated the field checks and dropped the normalisation."""
+    slug = "ev-bulk-json"
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types", json={"name": "pv", "display_name": "Page View"}
+    )
+    et_id = et.json()["id"]
+    payload_field = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "payload", "display_name": "Payload", "field_type": "json"},
+    )
+    field_id = payload_field.json()["id"]
+
+    created = await client.post(
+        f"/api/v1/projects/{slug}/events/bulk",
+        json=[
+            {
+                "event_type_id": et_id,
+                "name": "one",
+                "field_values": [{"field_definition_id": field_id, "value": '{"a":1}'}],
+            }
+        ],
+    )
+    assert created.status_code == 201, created.text
+    stored = created.json()[0]["field_values"][0]["value"]
+    single = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": et_id,
+            "name": "two",
+            "field_values": [{"field_definition_id": field_id, "value": '{"a":1}'}],
+        },
+    )
+    assert stored == single.json()["field_values"][0]["value"]
+
+    malformed = await client.post(
+        f"/api/v1/projects/{slug}/events/bulk",
+        json=[
+            {
+                "event_type_id": et_id,
+                "name": "three",
+                "field_values": [{"field_definition_id": field_id, "value": "{oops"}],
+            }
+        ],
+    )
+    assert malformed.status_code == 422, malformed.text
 
 
 @pytest.mark.asyncio

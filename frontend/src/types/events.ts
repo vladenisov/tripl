@@ -42,6 +42,12 @@ export interface Event {
   event_type_id: string
   event_type: EventTypeBrief
   name: string
+  /**
+   * The key a scan matches this event on — not `name`, which can be renamed
+   * freely without the scan losing the event. Null until a scan sees it or a
+   * naming rule governs its type.
+   */
+  source_name: string | null
   description: string
   order: number
   status: EventStatus

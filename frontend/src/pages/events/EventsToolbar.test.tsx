@@ -40,6 +40,7 @@ function renderToolbar(overrides: Partial<React.ComponentProps<typeof EventsTool
       canExport
       isExporting={false}
       onNewEvent={() => {}}
+      onBulkNew={() => {}}
       {...overrides}
     />,
   )

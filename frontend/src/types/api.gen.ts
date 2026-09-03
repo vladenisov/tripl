@@ -5657,6 +5657,8 @@ export interface components {
              * @default false
              */
             reviewed: boolean;
+            /** Source Name */
+            source_name?: string | null;
             status: components["schemas"]["EventStatus"];
             /** Sunset At */
             sunset_at?: string | null;
@@ -5861,6 +5863,8 @@ export interface components {
              * @default false
              */
             reviewed: boolean;
+            /** Source Name */
+            source_name?: string | null;
             status: components["schemas"]["EventStatus"];
             /** Sunset At */
             sunset_at?: string | null;
@@ -6043,6 +6047,8 @@ export interface components {
              * @default false
              */
             reviewed: boolean;
+            /** Source Name */
+            source_name?: string | null;
             status: components["schemas"]["EventStatus"];
             /** Sunset At */
             sunset_at?: string | null;

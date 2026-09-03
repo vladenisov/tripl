@@ -274,10 +274,17 @@ async def accept_shadow_event(
         name=data.name or candidate.event_name,
         status="live",
     )
-    event = await event_service.create_event(session, slug, event_create, branch_id=branch_id)
-    # The scan identity is what the metrics collector matches on — without it
-    # the accepted event would never attach to warehouse data.
-    event.source_name = candidate.event_name
+    # The scan identity is what the metrics collector matches on — without it the
+    # accepted event would never attach to warehouse data. It is passed IN rather
+    # than assigned after the call for two reasons: create_event would otherwise
+    # try to derive a name from a governing event_name_format, and a candidate
+    # carries no field values, so every placeholder reads as missing and the
+    # accept 422s on any rule-governed event type (tripl-u2h9.12); and assigning
+    # it afterwards wrote the identity in a second transaction, after the search
+    # index for this event had already been built without it.
+    event = await event_service.create_event(
+        session, slug, event_create, branch_id=branch_id, scan_identity=candidate.event_name
+    )
 
     candidate.status = SHADOW_STATUS_ACCEPTED
     candidate.accepted_event_id = event.id

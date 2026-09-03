@@ -6,6 +6,10 @@ from types import SimpleNamespace
 import sqlalchemy as sa
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from sqlalchemy.dialects import postgresql
+
+from tripl.core.analyzers._event_identity import scan_identity_winner_order
+from tripl.models.event import Event
 
 # The revision that finished converting every legacy VARCHAR status/kind column
 # to a native PostgreSQL enum. Migrations at or before it may legitimately
@@ -460,6 +464,113 @@ def test_surface_form_migration_downgrade_returns_to_the_stem_only_state(monkeyp
 
     drops = [statement for statement in statements if statement.startswith("DROP")]
     assert drops == ["DROP TEXT SEARCH CONFIGURATION IF EXISTS tripl_search_surface"]
+
+
+SCAN_IDENTITY_MIGRATION = "340d91a8825a_unique_event_scan_identity.py"
+
+
+def _scan_identity_migration_calls(monkeypatch, direction: str) -> list[tuple[str, tuple, dict]]:
+    """Run one direction of ``340d91a8825a`` with every ``op`` call captured.
+
+    Same shape as :func:`_search_stemming_statements`: the suite's schema comes
+    from ``Base.metadata.create_all`` and never runs the chain, so the SQL and
+    the DDL calls are the only coverage available without a database. The
+    repair itself cannot be exercised here at all — CI's round trip runs on an
+    EMPTY Postgres, so the UPDATE meets zero rows there too.
+    """
+    migration = _load_migration(f"scan_identity_migration_{direction}", SCAN_IDENTITY_MIGRATION)
+    calls: list[tuple[str, tuple, dict]] = []
+    for name in (
+        "execute",
+        "drop_index",
+        "create_index",
+        "create_unique_constraint",
+        "drop_constraint",
+    ):
+        monkeypatch.setattr(
+            migration.op,
+            name,
+            lambda *args, _name=name, **kwargs: calls.append((_name, args, kwargs)),
+        )
+    getattr(migration, direction)()
+    return calls
+
+
+def test_scan_identity_migration_renames_losers_by_the_scan_winner_rule(monkeypatch) -> None:
+    """tripl-8tdl: the repair keeps the row the scan routes to, and deletes nothing.
+
+    The winner per ``(event_type_id, source_name)`` has to be picked by the
+    same rule ``scan_identity_winner_order`` uses, or the migration would leave
+    the identity on one twin while the last pre-constraint scan had been
+    updating the other. Losers are renamed to an identity no scan derives and
+    tagged so an operator can find them; a DELETE anywhere in this statement
+    would be the deletion the owner refused.
+
+    The ordering is COMPILED from that function rather than copied from it, for
+    the reason the surface-form test above gives: an assertion written against a
+    hand-copied literal can only ever check the literal, and the drift it is
+    here to catch is precisely the two rules being edited apart.
+    """
+    calls = _scan_identity_migration_calls(monkeypatch, "upgrade")
+    statements = [" ".join(str(args[0]).split()) for name, args, _ in calls if name == "execute"]
+    assert len(statements) == 1, "the repair is one statement"
+    repair = statements[0]
+
+    winner_order = (
+        str(
+            sa.select(Event.id)
+            .order_by(*scan_identity_winner_order())
+            .compile(dialect=postgresql.dialect())
+        )
+        .split("ORDER BY", 1)[1]
+        .strip()
+        .replace("events.", "")
+    )
+    assert "PARTITION BY event_type_id, source_name" in repair
+    assert f"ORDER BY {winner_order}" in repair
+    assert "WHERE source_name IS NOT NULL" in repair
+    assert "DELETE" not in repair.upper()
+    assert "UPDATE events" in repair
+    assert "' #duplicate-' || e.id::text" in repair
+    assert "left(e.source_name, 450)" in repair
+    assert "INSERT INTO event_tags (id, event_id, name)" in repair
+    assert "'duplicate-identity'" in repair
+    assert "ON CONFLICT DO NOTHING" in repair
+
+
+def test_scan_identity_migration_swaps_the_plain_index_for_the_constraint(monkeypatch) -> None:
+    """The DDL runs AFTER the repair, and the downgrade reverses only the DDL.
+
+    The constraint columns are read off the model rather than spelled twice:
+    ``tests/conftest.py`` builds its schema from ``Event.__table_args__``, so a
+    migration keyed on different columns would pass every other test in the
+    suite and diverge only in production.
+    """
+    from tripl.models.event import Event
+
+    model_constraint = next(
+        constraint
+        for constraint in Event.__table__.constraints
+        if isinstance(constraint, sa.UniqueConstraint)
+        and constraint.name == "uq_event_scan_identity"
+    )
+    model_columns = [column.name for column in model_constraint.columns]
+
+    upgrade = _scan_identity_migration_calls(monkeypatch, "upgrade")
+    names = [name for name, _, _ in upgrade]
+    assert names == ["execute", "drop_index", "create_unique_constraint"]
+    assert upgrade[1][1:] == (("ix_events_source_identity",), {"table_name": "events"})
+    assert upgrade[2][1] == ("uq_event_scan_identity", "events", model_columns)
+
+    downgrade = _scan_identity_migration_calls(monkeypatch, "downgrade")
+    assert [name for name, _, _ in downgrade] == ["drop_constraint", "create_index"]
+    assert downgrade[0][1:] == (("uq_event_scan_identity", "events"), {"type_": "unique"})
+    # The index d7e8f9a0b1c2 created, exactly, so its own downgrade can drop it.
+    assert downgrade[1][1] == (
+        "ix_events_source_identity",
+        "events",
+        ["project_id", "event_type_id", "source_name"],
+    )
 
 
 def _string_literal(node: ast.expr) -> str | None:

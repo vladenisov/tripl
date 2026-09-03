@@ -60,6 +60,9 @@ function makeEvent(overrides: Partial<EventListItem> = {}): EventListItem {
     project_id: 'proj-1',
     event_type_id: 'et-1',
     name: 'checkout_completed',
+    // null, not the name: an event no scan has claimed carries no identity, and
+    // a double that stamped one would assert the wrong world is normal.
+    source_name: null,
     description: '',
     order: 0,
     status: 'implemented',

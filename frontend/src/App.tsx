@@ -61,6 +61,7 @@ const InvitePage = lazyRoute(() => import('./pages/InvitePage'))
 const MainPage = lazyRoute(() => import('./pages/ProjectsPage'))
 const EventsPage = lazyRoute(() => import('./pages/EventsPage'))
 const EventEditPage = lazyRoute(() => import('./pages/events/EventForm'))
+const EventBulkPage = lazyRoute(() => import('./pages/events/EventBulkForm'))
 const OverviewPage = lazyRoute(() => import('./pages/OverviewPage'))
 const MonitorDetailPage = lazyRoute(() => import('./pages/MonitorDetailPage'))
 const MonitoringDetailPage = lazyRoute(() => import('./pages/MonitoringDetailPage'))
@@ -403,6 +404,8 @@ export default function App() {
             <Route path="/p/:slug/events/detail/:eventId" element={<EventDetailRedirect />} />
             <Route path="/p/:slug/monitoring/:scope/:id" element={withSuspense(<MonitoringDetailPage />)} />
             <Route path="/p/:slug/events/:tab/new" element={withSuspense(<EventEditPage />)} />
+            {/* Before /events/:tab/:eventId, or "bulk" resolves as an event id. */}
+            <Route path="/p/:slug/events/:tab/bulk" element={withSuspense(<EventBulkPage />)} />
             <Route path="/p/:slug/events/:tab/:eventId/edit" element={withSuspense(<EventEditPage />)} />
             <Route path="/p/:slug/events/:tab/:eventId" element={withSuspense(<EventsPage />)} />
             <Route path="/p/:slug/events/:tab" element={withSuspense(<EventsPage />)} />

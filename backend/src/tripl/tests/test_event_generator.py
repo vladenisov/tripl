@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from itertools import product
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -13,6 +13,9 @@ from tripl.core.adapters.base import ColumnInfo
 from tripl.core.analyzers._event_generator_variables import (
     VARIABLE_VALUE_SAMPLE_LIMIT,
     preserve_existing_variable_context_values,
+)
+from tripl.core.analyzers._event_identity import (
+    insert_event_claiming_identity as _insert_event_claiming_identity,
 )
 from tripl.core.analyzers.cardinality import BreakdownAnalysis, CardinalityResult
 from tripl.core.analyzers.event_generator import (
@@ -205,6 +208,486 @@ class TestEventGeneration:
             .all()
         )
         assert len(events) == 6
+
+    def test_two_nameless_events_sharing_one_name_adopt_it_for_the_live_one(
+        self, sync_session: Session, project_and_type
+    ):
+        """Which row adopts a contested NAME is decided by the scan's winner rule.
+
+        ``uq_event_scan_identity`` forbids the shape this test used to seed —
+        two rows holding one ``source_name`` — so the ORDER BY no longer picks
+        between twins. What it decides now is adoption: several rows with NO
+        identity can share one name (authored through the API under a type with
+        no name format), and exactly one of them may take that name as its
+        identity, or the adoption UPDATE itself is the collision the constraint
+        refuses (tripl-8tdl).
+
+        Preference: the row traffic most recently landed on. The observable is
+        which row gets the identity and the field values; the other stays NULL
+        and is not touched at all. The stale row is inserted FIRST on purpose:
+        without an ORDER BY SQLite hands rows back in insertion order, the stale
+        row adopts first and shuts the live one out — so the test fails with the
+        order removed, which is the point.
+        """
+        project, et, fds = project_and_type
+        identity = "screen=/home | action=click"
+        stale = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name=identity,
+            source_name=None,
+            order=0,
+            status="in_review",
+            last_seen_at=None,
+        )
+        live = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name=identity,
+            source_name=None,
+            order=1,
+            status="in_review",
+            last_seen_at=datetime.now(UTC),
+        )
+        sync_session.add(stale)
+        sync_session.flush()
+        sync_session.add(live)
+        sync_session.flush()
+
+        cardinality = {
+            "screen": CardinalityResult(
+                column=ColumnInfo("screen", "String"),
+                count=1,
+                is_low=True,
+                sample_values=["/home"],
+            ),
+            "action": CardinalityResult(
+                column=ColumnInfo("action", "String"),
+                count=1,
+                is_low=True,
+                sample_values=["click"],
+            ),
+        }
+        result = generate_events(sync_session, project.id, et.id, _make_analysis(cardinality), fds)
+        sync_session.commit()
+
+        # Neither row is recreated — the identity is known through the adopter.
+        assert result.events_created == 0
+        assert result.events_skipped == 1
+        identity_by_event = dict(
+            sync_session.execute(
+                select(Event.id, Event.source_name).where(Event.id.in_([stale.id, live.id]))
+            ).all()
+        )
+        assert identity_by_event == {live.id: identity, stale.id: None}
+        values_by_event = dict(
+            sync_session.execute(
+                select(EventFieldValue.event_id, func.count())
+                .where(EventFieldValue.event_id.in_([stale.id, live.id]))
+                .group_by(EventFieldValue.event_id)
+            ).all()
+        )
+        assert values_by_event.get(live.id, 0) > 0
+        assert values_by_event.get(stale.id, 0) == 0
+
+    def test_nameless_event_named_like_an_established_identity_is_left_alone(
+        self, sync_session: Session, project_and_type
+    ):
+        """An established identity beats a lazy adoption.
+
+        The row already holding ``source_name`` is the one every previous scan
+        routed to. A NULL row that merely happens to be NAMED like it — authored
+        by hand after the fact — must not adopt that name: the adoption is an
+        UPDATE ``uq_event_scan_identity`` refuses, and before the constraint it
+        could move the identity's history onto a row no scan ever wrote. The
+        NULL row is the fresher one (``last_seen_at`` set) so a single ordered
+        pass that adopts as it files would pick it; only filing every held
+        identity BEFORE any adoption keeps it out (tripl-8tdl).
+        """
+        project, et, fds = project_and_type
+        identity = "screen=/home | action=click"
+        established = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name="Home click (renamed)",
+            source_name=identity,
+            order=0,
+            status="live",
+            last_seen_at=None,
+        )
+        orphan = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name=identity,
+            source_name=None,
+            order=1,
+            status="draft",
+            last_seen_at=datetime.now(UTC),
+        )
+        sync_session.add_all([established, orphan])
+        sync_session.commit()
+
+        cardinality = {
+            "screen": CardinalityResult(
+                column=ColumnInfo("screen", "String"),
+                count=1,
+                is_low=True,
+                sample_values=["/home"],
+            ),
+            "action": CardinalityResult(
+                column=ColumnInfo("action", "String"),
+                count=1,
+                is_low=True,
+                sample_values=["click"],
+            ),
+        }
+        result = generate_events(sync_session, project.id, et.id, _make_analysis(cardinality), fds)
+        sync_session.commit()
+
+        assert result.events_created == 0
+        assert result.events_skipped == 1
+        identity_by_event = dict(
+            sync_session.execute(
+                select(Event.id, Event.source_name).where(Event.id.in_([established.id, orphan.id]))
+            ).all()
+        )
+        assert identity_by_event == {established.id: identity, orphan.id: None}
+        values_by_event = dict(
+            sync_session.execute(
+                select(EventFieldValue.event_id, func.count())
+                .where(EventFieldValue.event_id.in_([established.id, orphan.id]))
+                .group_by(EventFieldValue.event_id)
+            ).all()
+        )
+        assert values_by_event.get(established.id, 0) > 0
+        assert values_by_event.get(orphan.id, 0) == 0
+
+    def test_losing_the_identity_insert_race_routes_to_the_holder(
+        self,
+        sync_session: Session,
+        project_and_type,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A scan that loses ``uq_event_scan_identity`` to another writer does not die.
+
+        Two scan configs of one project scanning one type, or a scan racing an
+        API create, can both miss the identity on load and both INSERT it. The
+        loser used to take the whole job down with an IntegrityError; now the
+        INSERT runs under a savepoint and the loser adopts the holder as the
+        existing event — field values and contexts land on it, it is counted as
+        skipped, nothing is created (tripl-8tdl).
+
+        The race is real, not a raised exception. When the scan opens the
+        savepoint that guards its INSERT, a competitor row for the identity is
+        first written through the SAME connection — before the SAVEPOINT, which
+        is exactly where a concurrent commit sits — so the flush inside the
+        savepoint hits the actual unique violation and the recovery runs end to
+        end against SQLite's enforcement of the constraint. It cannot be
+        written inside the savepoint: ROLLBACK TO SAVEPOINT would undo the
+        competitor with the scan's own INSERT and the re-select would find no
+        holder. Injected once, so the re-select meets one holder.
+        """
+        project, et, fds = project_and_type
+        identity = "screen=/home | action=click"
+        main_branch_id = _resolve_main_branch_id(sync_session, project.id)
+        assert main_branch_id is not None
+        competitor_id = uuid.uuid4()
+        original_begin_nested = sync_session.begin_nested
+        state = {"raced": 0}
+
+        def _begin_nested_after_a_competitor_lands():
+            if not state["raced"]:
+                state["raced"] += 1
+                sync_session.connection().execute(
+                    insert(Event.__table__).values(
+                        id=competitor_id,
+                        project_id=project.id,
+                        branch_id=main_branch_id,
+                        event_type_id=et.id,
+                        name=identity,
+                        source_name=identity,
+                        description="",
+                        order=7,
+                        status="in_review",
+                    )
+                )
+            return original_begin_nested()
+
+        monkeypatch.setattr(sync_session, "begin_nested", _begin_nested_after_a_competitor_lands)
+
+        cardinality = {
+            "screen": CardinalityResult(
+                column=ColumnInfo("screen", "String"),
+                count=1,
+                is_low=True,
+                sample_values=["/home"],
+            ),
+            "action": CardinalityResult(
+                column=ColumnInfo("action", "String"),
+                count=1,
+                is_low=True,
+                sample_values=["click"],
+            ),
+        }
+        result = generate_events(sync_session, project.id, et.id, _make_analysis(cardinality), fds)
+        sync_session.commit()
+
+        assert state["raced"] == 1
+        assert result.events_created == 0
+        assert result.events_skipped == 1
+        holders = (
+            sync_session.execute(
+                select(Event.id).where(Event.event_type_id == et.id, Event.source_name == identity)
+            )
+            .scalars()
+            .all()
+        )
+        assert holders == [competitor_id]
+        assert result.events_by_name[identity].id == competitor_id
+        values_on_holder = sync_session.execute(
+            select(func.count()).where(EventFieldValue.event_id == competitor_id)
+        ).scalar_one()
+        assert values_on_holder == 2  # screen and action, upserted onto the holder
+
+    def test_a_pending_row_of_the_callers_own_keeps_its_own_error(
+        self,
+        sync_session: Session,
+        project_and_type,
+    ):
+        """The savepoint answers for its INSERT and for nothing else.
+
+        Opening a nested transaction FLUSHES whatever the caller already had
+        pending, at ROOT level, before the savepoint exists
+        (``SessionTransaction._take_snapshot``). While that call stood inside
+        ``insert_event_claiming_identity``'s ``try``, a caller's own violation —
+        an adoption UPDATE that lost its race, say — was caught as if it were
+        this INSERT's, and the recovery then queried a transaction the failed
+        flush had already deactivated: ``PendingRollbackError`` naming nothing,
+        for a row this function never touched.
+
+        Here the pending row is a second event claiming an identity a committed
+        row already holds, and the event being inserted claims a free one. The
+        error the caller sees must be the ``IntegrityError`` its own row earned.
+        """
+        project, et, _fds = project_and_type
+        main_branch_id = _resolve_main_branch_id(sync_session, project.id)
+        assert main_branch_id is not None
+        taken = "screen=/home | action=click"
+        sync_session.add(
+            Event(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                branch_id=main_branch_id,
+                event_type_id=et.id,
+                name=taken,
+                source_name=taken,
+                order=0,
+                status="in_review",
+            )
+        )
+        sync_session.commit()
+        # The caller's own doomed work, queued but not flushed.
+        sync_session.add(
+            Event(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                branch_id=main_branch_id,
+                event_type_id=et.id,
+                name=taken,
+                source_name=taken,
+                order=1,
+                status="in_review",
+            )
+        )
+
+        with pytest.raises(IntegrityError):
+            _insert_event_claiming_identity(
+                sync_session,
+                Event(
+                    id=uuid.uuid4(),
+                    project_id=project.id,
+                    branch_id=main_branch_id,
+                    event_type_id=et.id,
+                    name="screen=/about | action=view",
+                    source_name="screen=/about | action=view",
+                    order=2,
+                    status="in_review",
+                ),
+            )
+
+    def test_losing_the_group_event_insert_race_merges_into_the_holder(
+        self,
+        sync_session: Session,
+        project_and_type,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """The group-rule pass survives losing the group identity the same way.
+
+        ``_create_group_event_from_source`` mints the group event a matched
+        source is folded into; when another writer claims the group name first,
+        the holder comes back and the source is merged into it like any existing
+        target — its field values are NOT copied onto the holder (those belong
+        to whoever created the group), everything else the merge carries is
+        carried, and the source row is gone. Same injection as the scan test,
+        for the same reason (tripl-8tdl).
+        """
+        project, et, fds = project_and_type
+        main_branch_id = _resolve_main_branch_id(sync_session, project.id)
+        assert main_branch_id is not None
+        source = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name="button:primary",
+            source_name="button:primary",
+            order=0,
+            status="implemented",
+        )
+        sync_session.add(source)
+        sync_session.flush()
+        sync_session.add(
+            EventFieldValue(
+                id=uuid.uuid4(),
+                event_id=source.id,
+                field_definition_id=fds["action"].id,
+                value="button:primary",
+            )
+        )
+        sync_session.commit()
+
+        competitor_id = uuid.uuid4()
+        original_begin_nested = sync_session.begin_nested
+        state = {"raced": 0}
+
+        def _begin_nested_after_a_competitor_lands():
+            if not state["raced"]:
+                state["raced"] += 1
+                sync_session.connection().execute(
+                    insert(Event.__table__).values(
+                        id=competitor_id,
+                        project_id=project.id,
+                        branch_id=main_branch_id,
+                        event_type_id=et.id,
+                        name="button events",
+                        source_name="button events",
+                        description="",
+                        order=7,
+                        status="draft",
+                    )
+                )
+            return original_begin_nested()
+
+        monkeypatch.setattr(sync_session, "begin_nested", _begin_nested_after_a_competitor_lands)
+
+        merged = merge_existing_events_for_group_rules(
+            sync_session,
+            project_id=project.id,
+            event_type_ids=[et.id],
+            event_group_rules=[
+                {
+                    "name": "button events",
+                    "condition_logic": "all",
+                    "conditions": [{"field": "action", "pattern": "^button:"}],
+                }
+            ],
+        )
+        sync_session.commit()
+
+        assert state["raced"] == 1
+        assert merged == 1
+        assert sync_session.get(Event, source.id) is None
+        events = (
+            sync_session.execute(select(Event).where(Event.event_type_id == et.id)).scalars().all()
+        )
+        assert [event.id for event in events] == [competitor_id]
+        holder = events[0]
+        assert holder.source_name == "button events"
+        # Merged, not copied: the merge lifts the status but leaves the holder's
+        # field values to whoever created the group.
+        assert holder.status == "implemented"
+        values_on_holder = sync_session.execute(
+            select(func.count()).where(EventFieldValue.event_id == competitor_id)
+        ).scalar_one()
+        assert values_on_holder == 0
+
+    def test_group_rules_pass_adopts_a_shared_name_once(
+        self, sync_session: Session, project_and_type
+    ):
+        """Two nameless rows sharing a name must not both adopt it in the group pass.
+
+        ``merge_existing_events_for_group_rules`` used to adopt EVERY NULL row's
+        name as its identity, last-wins. Under ``uq_event_scan_identity`` the
+        second adoption is an UPDATE the flush refuses, and the apply-groups job
+        died on it. Now the pass files by the scan's winner rule: the row traffic
+        most recently landed on adopts the name and is grouped; its twin stays
+        NULL, stays out of the map, and is not touched (tripl-8tdl).
+        """
+        project, et, fds = project_and_type
+        # The twin that must NOT adopt is inserted first, so a pass that adopts
+        # in insertion order rather than by the winner rule picks the wrong one.
+        twin = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name="button:primary",
+            source_name=None,
+            order=0,
+            status="implemented",
+            last_seen_at=None,
+        )
+        sync_session.add(twin)
+        sync_session.flush()
+        live = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name="button:primary",
+            source_name=None,
+            order=1,
+            status="implemented",
+            last_seen_at=datetime.now(UTC),
+        )
+        sync_session.add(live)
+        sync_session.flush()
+        for event in (twin, live):
+            sync_session.add(
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=event.id,
+                    field_definition_id=fds["action"].id,
+                    value="button:primary",
+                )
+            )
+        sync_session.commit()
+
+        merged = merge_existing_events_for_group_rules(
+            sync_session,
+            project_id=project.id,
+            event_type_ids=[et.id],
+            event_group_rules=[
+                {
+                    "name": "button events",
+                    "condition_logic": "all",
+                    "conditions": [{"field": "action", "pattern": "^button:"}],
+                }
+            ],
+        )
+        sync_session.commit()
+
+        assert merged == 1
+        # The adopter was grouped away; the twin is exactly as it was seeded.
+        assert sync_session.get(Event, live.id) is None
+        identities = dict(
+            sync_session.execute(
+                select(Event.id, Event.source_name).where(Event.event_type_id == et.id)
+            ).all()
+        )
+        assert identities.pop(twin.id) is None
+        assert list(identities.values()) == ["button events"]
 
     def test_high_cardinality_generates_templated_events(
         self, sync_session: Session, project_and_type

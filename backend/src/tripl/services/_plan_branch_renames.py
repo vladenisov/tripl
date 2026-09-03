@@ -20,10 +20,14 @@ def _sole_key_by_identity[KeyT: NaturalKey](
 ) -> dict[tuple[NaturalKey, str], KeyT]:
     """Each ``(scope, source_name)`` this side names exactly once, and its key.
 
-    An identity carried by two rows is dropped rather than guessed at: only a
-    UniqueConstraint makes ``source_name`` singular within a branch, and only
-    Variable carries one (``uq_variable_project_source_name``); events have a
-    plain index and rows predating either are live.
+    An identity carried by two rows is dropped rather than guessed at. Live rows
+    cannot do that any more — ``uq_variable_project_source_name`` makes a
+    variable's identity singular per branch, ``uq_event_scan_identity`` an
+    event's singular per type (tripl-8tdl) — but one of the three sides is the
+    BASE, a stored ``PlanRevision`` payload, and a snapshot taken before that
+    constraint existed can still list one identity twice. A payload is data,
+    not a constraint, so the rule stays on every side rather than being argued
+    away for the two that are live.
 
     Which rows are "this side" is the caller's decision, and it is not always the
     whole mapping — see ``pair_renames``, which narrows main to the base first so
@@ -113,11 +117,13 @@ def pair_renames[KeyT: NaturalKey](
     # grouping it can still VETO one, by making an identity look ambiguous.
     # Grouping whole sides is new here: the previous shape grouped only the
     # merge's own would-delete and would-insert candidates, so a duplicate that
-    # was not itself a candidate never poisoned anything. Only Variable makes
-    # ``source_name`` unique per branch, so a second Event carrying one is a live
-    # shape, and a rename that used to pair now falls back to delete-plus-insert
-    # — which cascades ``variable_values``, their drift rows and
-    # ``event_changes`` (tripl-htcz).
+    # was not itself a candidate never poisoned anything. When this was written
+    # a second Event carrying one identity was a live shape — events had only an
+    # index — and a rename that used to pair fell back to delete-plus-insert,
+    # which cascades ``variable_values``, their drift rows and ``event_changes``
+    # (tripl-htcz). ``uq_event_scan_identity`` has since closed that shape for
+    # live rows (tripl-8tdl); the base is a stored payload and can still carry
+    # it, which is why the narrowing stays.
     #
     # The branch side is deliberately NOT narrowed: in a cycle a rename's
     # destination is a key that main and the base both already hold, and that is

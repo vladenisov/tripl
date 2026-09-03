@@ -4,11 +4,13 @@ Takes breakdown analysis (per-column cardinality stats + raw GROUP BY ALL rows)
 and produces deduplicated Event + EventFieldValue records.  Each breakdown row
 maps to one event, preserving actual column correlations from the data.
 
-Implementation is split across three sibling modules:
+Implementation is split across four sibling modules:
 
 * ``event_plan``                  — the PURE half: which events a breakdown
   would produce, and under which names. Shared verbatim with the dry-run so a
   preview cannot drift from what a real run does
+* ``_event_identity``             — one event per scan identity: the load
+  order, the adoption rule and the race-safe insert, shared with the merge pass
 * ``_event_generator_variables``  — variable detection, creation, context ops
 * ``_event_generator_merge``      — grouping rules, merge/consolidation logic
 
@@ -60,6 +62,11 @@ from tripl.core.analyzers._event_generator_variables import (
 )
 from tripl.core.analyzers._event_generator_variables import (
     resolve_main_branch_id as _resolve_main_branch_id,
+)
+from tripl.core.analyzers._event_identity import (
+    index_events_by_identity,
+    insert_event_claiming_identity,
+    scan_identity_winner_order,
 )
 from tripl.core.analyzers._variable_value_drift import (
     detect_variable_value_drifts as _detect_variable_value_drifts,
@@ -233,14 +240,21 @@ def generate_events(
     )
     if main_branch_id is not None:
         existing_events_query = existing_events_query.where(Event.branch_id == main_branch_id)
-    existing_events_list = session.execute(existing_events_query).scalars().all()
-    existing_by_identity: dict[str, Event] = {}
-    for ev in existing_events_list:
-        if ev.source_name is None:
-            # Legacy / API-created rows: adopt the current name as the identity once,
-            # so subsequent scans match on it instead of re-creating duplicates.
-            ev.source_name = ev.name
-        existing_by_identity[ev.source_name] = ev
+    # ``uq_event_scan_identity`` guarantees one row per identity, so the map is
+    # no longer choosing between twins — production carried two windy-web
+    # pageview pairs written 94 ms apart before the constraint, and 340d91a8825a
+    # moved the frozen twin of each to an identity no scan derives. What the
+    # order still decides is which of several rows with NO identity and one
+    # shared name gets to adopt it. The order and the adoption rule live in
+    # ``_event_identity``, shared with the group-rule pass, which used to adopt
+    # every NULL row and could write the very collision the constraint forbids
+    # (tripl-8tdl).
+    existing_events_list = (
+        session.execute(existing_events_query.order_by(*scan_identity_winner_order()))
+        .scalars()
+        .all()
+    )
+    existing_by_identity = index_events_by_identity(existing_events_list)
     next_event_order = session.execute(
         select(func.max(Event.order)).where(Event.project_id == project_id)
     ).scalar_one()
@@ -277,52 +291,59 @@ def generate_events(
         ]
 
         existing = existing_by_identity.get(event_name)
-        if existing is not None:
-            if existing.status == EventStatus.archived:
-                # Archiving means "put it away", so an archived row is frozen:
-                # a scan must not rewrite its field values or re-observe its
-                # variable contexts just because the identity still arrives.
-                # Counted as skipped like any other already-known identity, so
-                # the run summary keeps reconciling against the plan (tripl-rsei).
-                result.events_skipped += 1
-                continue
-            # Update field values on existing event
-            rewritten_fields |= _upsert_field_values(existing, field_values)
-            _record_variable_contexts(
-                variable_contexts,
-                event=existing,
-                field_values=field_values,
-                col_meta=col_meta,
-                index=variable_index,
+        if existing is None:
+            event, created = insert_event_claiming_identity(
+                session,
+                Event(
+                    id=uuid.uuid4(),
+                    project_id=project_id,
+                    event_type_id=event_type_id,
+                    name=event_name,
+                    source_name=event_name,
+                    description="Auto-generated from data source scan",
+                    order=next_event_order,
+                    status="in_review",
+                ),
             )
+            if created:
+                next_event_order += 1
+                rewritten_fields |= _upsert_field_values(event, field_values)
+                _record_variable_contexts(
+                    variable_contexts,
+                    event=event,
+                    field_values=field_values,
+                    col_meta=col_meta,
+                    index=variable_index,
+                )
+                existing_by_identity[event_name] = event
+                result.events_created += 1
+                continue
+            # Lost the race: another writer claimed this identity after the load
+            # above. The holder is the row every later run routes to, so from
+            # here it is an existing event — it takes this row's values and
+            # contexts and counts as skipped, and the order number it did not
+            # consume stays free for the next creation.
+            existing = event
+            existing_by_identity[event_name] = existing
+
+        if existing.status == EventStatus.archived:
+            # Archiving means "put it away", so an archived row is frozen:
+            # a scan must not rewrite its field values or re-observe its
+            # variable contexts just because the identity still arrives.
+            # Counted as skipped like any other already-known identity, so
+            # the run summary keeps reconciling against the plan (tripl-rsei).
             result.events_skipped += 1
             continue
-
-        event = Event(
-            id=uuid.uuid4(),
-            project_id=project_id,
-            event_type_id=event_type_id,
-            name=event_name,
-            source_name=event_name,
-            description="Auto-generated from data source scan",
-            order=next_event_order,
-            status="in_review",
-        )
-        session.add(event)
-        session.flush()
-        next_event_order += 1
-
-        rewritten_fields |= _upsert_field_values(event, field_values)
+        # Update field values on existing event
+        rewritten_fields |= _upsert_field_values(existing, field_values)
         _record_variable_contexts(
             variable_contexts,
-            event=event,
+            event=existing,
             field_values=field_values,
             col_meta=col_meta,
             index=variable_index,
         )
-
-        existing_by_identity[event_name] = event
-        result.events_created += 1
+        result.events_skipped += 1
 
     result.events_merged += _merge_existing_grouped_events(
         session,

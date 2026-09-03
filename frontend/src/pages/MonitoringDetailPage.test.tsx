@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -543,6 +543,9 @@ function eventFixture() {
     event_type_id: 'type-1',
     event_type: { id: 'type-1', name: 'page', display_name: 'Page', color: '#0ea5e9' },
     name: 'checkout_completed',
+    // The API always sends the key; equal to the name here, which is the case
+    // where the Properties card deliberately shows no separate row.
+    source_name: 'checkout_completed',
     description: 'Fired on checkout.',
     order: 0,
     status: 'live',
@@ -1117,6 +1120,31 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     expect(properties).toBeInTheDocument()
     expect(within(properties).getAllByRole('row').length).toBeGreaterThan(0)
     expect(within(properties).getAllByRole('rowheader')[0]).toHaveTextContent('Event type')
+  })
+
+  it('shows the scan identity only once a rename has parted it from the name', async () => {
+    installEventDetailFetch()
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+    // The fixture's identity equals its name, so a row saying so would be noise.
+    expect(screen.queryByText('Scan identity')).not.toBeInTheDocument()
+
+    cleanup()
+    installEventDetailFetch({
+      event: {
+        ...eventFixture(),
+        name: 'Checkout completed',
+        source_name: 'checkout_completed',
+      },
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'Checkout completed' })
+
+    // Once they differ this row is the only place that says which event the
+    // warehouse is still feeding (tripl-u2h9.10).
+    const properties = screen.getByRole('table', { name: 'Properties' })
+    expect(within(properties).getByText('Scan identity')).toBeInTheDocument()
+    expect(within(properties).getByText('checkout_completed')).toBeInTheDocument()
   })
 })
 

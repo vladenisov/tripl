@@ -2638,6 +2638,90 @@ async def test_merge_moving_a_rename_onto_a_deleted_variables_name_is_a_409(
 
 
 @pytest.mark.asyncio
+async def test_merge_moving_a_rename_onto_a_deleted_events_name_is_a_409(
+    client: AsyncClient,
+) -> None:
+    """The event twin of the variable case above, pinned by ``uq_event_scan_identity``.
+
+    Base and main both hold ``purchase:success``/``purchase_success_raw`` and
+    ``purchase:completed``/``purchase_completed_raw`` under ``track``. The branch
+    DELETES ``purchase:completed`` and RENAMES ``purchase:success`` into the name
+    it vacated. ``pair_renames`` proposes that move and drops it — main's own
+    ``purchase:completed`` is not itself moving away — so the upsert, keyed by
+    name, writes ``purchase_success_raw`` onto main's ``purchase:completed``
+    while main's ``purchase:success`` still holds it and only goes in the
+    removal arm afterwards. Until events had a constraint that flush SUCCEEDED:
+    the row the user kept was deleted with everything hanging off it, the row
+    the user deleted survived wearing the kept row's scan identity, and no
+    snapshot diff showed either half. Now the two arms' disagreement is an
+    IntegrityError and ``_commit_merged_plan`` a 409 that loses nothing
+    (tripl-8tdl).
+    """
+    slug = "merge-delete-then-rename-event"
+    et_id = await _seed_plan(client, slug)
+    second = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et_id, "name": "purchase:completed"},
+    )
+    assert second.status_code == 201, second.text
+    main_branch_id = await _main_branch_id()
+
+    async with TestSessionLocal() as session:
+        main_rows = {
+            e.name: e
+            for e in (
+                (await session.execute(select(Event).where(Event.branch_id == main_branch_id)))
+                .scalars()
+                .all()
+            )
+        }
+        main_rows["purchase:success"].source_name = "purchase_success_raw"
+        main_rows["purchase:completed"].source_name = "purchase_completed_raw"
+        await session.commit()
+        main_ids = {name: e.id for name, e in main_rows.items()}
+
+    branch_id = await _create_branch(client, slug)
+    branch_uuid = uuid.UUID(branch_id)
+    async with TestSessionLocal() as session:
+        branch_ids = {
+            e.name: e.id
+            for e in (
+                (await session.execute(select(Event).where(Event.branch_id == branch_uuid)))
+                .scalars()
+                .all()
+            )
+        }
+
+    deleted = await client.delete(
+        f"/api/v1/projects/{slug}/events/{branch_ids['purchase:completed']}?branch={branch_id}"
+    )
+    assert deleted.status_code == 204, deleted.text
+    renamed = await client.patch(
+        f"/api/v1/projects/{slug}/events/{branch_ids['purchase:success']}?branch={branch_id}",
+        json={"name": "purchase:completed"},
+    )
+    assert renamed.status_code == 200, renamed.text
+
+    resp = await _approve_and_merge(client, slug, branch_id)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["merge_constraint_violation"] is True
+
+    async with TestSessionLocal() as session:
+        merged = (
+            (await session.execute(select(Event).where(Event.branch_id == main_branch_id)))
+            .scalars()
+            .all()
+        )
+    # Nothing moved and nothing went: both rows, both names, both identities,
+    # both ids.
+    assert {e.source_name: e.name for e in merged} == {
+        "purchase_success_raw": "purchase:success",
+        "purchase_completed_raw": "purchase:completed",
+    }
+    assert {e.name: e.id for e in merged} == main_ids
+
+
+@pytest.mark.asyncio
 async def test_merge_still_removes_a_deleted_event_beside_an_unrelated_addition(
     client: AsyncClient,
 ) -> None:
@@ -2739,7 +2823,15 @@ def test_pair_renames_leaves_rows_without_a_source_name_unpaired() -> None:
 
 
 def test_pair_renames_leaves_a_source_name_shared_by_two_candidates_unpaired() -> None:
-    """Only Variable constrains source_name to be unique; events merely index it."""
+    """An identity two rows claim on one side identifies neither of them.
+
+    Live rows cannot do this any more — ``uq_variable_project_source_name`` and
+    ``uq_event_scan_identity`` make an identity singular per branch and per type
+    (tripl-8tdl) — so these shapes now come only from a base payload snapshotted
+    before the event constraint existed. ``pair_renames`` is pure over three
+    mappings and cannot tell which side is live, and a payload is data, so the
+    rule holds on every side.
+    """
     two_could_have_been_renamed = pair_renames(
         {("track", "one"): "shared_raw", ("track", "two"): "shared_raw"},
         {("track", "one"): "shared_raw", ("track", "two"): "shared_raw"},
@@ -2824,14 +2916,19 @@ def test_pair_renames_leaves_a_row_missing_from_the_base_unpaired() -> None:
 def test_pair_renames_ignores_a_main_row_the_base_never_had_when_reading_identities() -> None:
     """A duplicate main grew after the cut must not veto a real rename.
 
-    ``source_name`` is unique within a branch only for Variable — Event carries a
-    plain index — so two live main events can share one, and here only the older
-    of the two was there when the branch was cut. That newer row can never BE the
-    rename source, because the pairing refuses an old key the base does not hold;
+    When this was written Event carried a plain index on ``source_name``, so two
+    live main events could share one, and here only the older of the two was
+    there when the branch was cut. That newer row can never BE the rename
+    source, because the pairing refuses an old key the base does not hold;
     letting it make the identity look ambiguous therefore costs the pair and
     nothing else. The rename then falls back to a delete plus an insert, and the
     cascade takes ``variable_values``, their drift rows and ``event_changes``
     with it (tripl-htcz).
+
+    ``uq_event_scan_identity`` has since made the shape impossible for live main
+    rows (tripl-8tdl). The test stays because what it pins is the ORDER of the
+    two steps — narrow main to the base, then count — which the function owes
+    every caller regardless of where its mappings came from.
     """
     renames = pair_renames(
         {("track", "purchase"): "purchase_raw"},
@@ -2847,6 +2944,11 @@ def test_pair_renames_still_refuses_two_base_rows_sharing_one_identity() -> None
     Both candidates were already there when the branch was cut, so either could
     be the row the branch renamed. A guess renames the wrong one, which is worse
     than the deletion the pairing set out to avoid.
+
+    A base naming one identity twice under one type is now only a snapshot taken
+    before ``uq_event_scan_identity`` existed (tripl-8tdl); such a payload is
+    data, not a constraint, and this is the rule that keeps it from being
+    guessed at.
     """
     both = {("track", "purchase"): "purchase_raw", ("track", "purchase_2"): "purchase_raw"}
     assert pair_renames(both, both, {("track", "checkout"): "purchase_raw"}) == {}
@@ -3570,14 +3672,18 @@ async def test_revert_of_a_renamed_variable_moves_the_name_back(client: AsyncCli
 async def test_revert_of_a_renamed_event_does_not_duplicate_the_scan_identity(
     client: AsyncClient,
 ) -> None:
-    """The same revert on an event, where nothing in the database says no.
+    """The same revert on an event, which once had nothing in the database saying no.
 
-    Events carry only an index on ``(project, event_type, source_name)``, so
+    Events carried only an index on ``(project, event_type, source_name)``, so
     rebuilding the removed half of a rename succeeded and left the branch with
-    two events claiming one scan identity: the next scan matches warehouse data
-    onto whichever it finds, and ``pair_renames`` refuses that identity for ever
+    two events claiming one scan identity: the next scan matched warehouse data
+    onto whichever it found, and ``pair_renames`` refused that identity for ever
     after because two candidates make the pairing a guess. No error, no diff
     entry, nothing to see — which is why it is tested (tripl-hjxy).
+    ``uq_event_scan_identity`` now refuses that second row outright (tripl-8tdl),
+    so without the rename reading this revert would 409 instead of corrupting;
+    the assertion is unchanged because the rename is still the answer that keeps
+    the row and everything hanging off it.
     """
     slug = "revert-event-rename"
     await _seed_plan(client, slug)
@@ -3796,6 +3902,32 @@ async def test_reverting_a_variable_rename_puts_the_token_back_in_the_values(
     )
 
 
+async def _name_one_identity_twice_in_the_base(
+    branch_id: uuid.UUID, *, event_type_name: str, event_names: tuple[str, str], identity: str
+) -> None:
+    """Rewrite a branch's stored base snapshot so two events under one type claim one identity.
+
+    Live rows cannot say this any more — ``uq_event_scan_identity`` refuses the
+    second — but a ``PlanRevision`` payload is data, and one snapshotted before
+    the constraint existed can still say it (tripl-8tdl). The column is plain
+    JSON with no mutation tracking, so the payload is replaced, not edited.
+    """
+    async with TestSessionLocal() as session:
+        branch = await session.get(PlanBranch, branch_id)
+        assert branch is not None and branch.base_revision_id is not None
+        revision = await session.get(PlanRevision, branch.base_revision_id)
+        assert revision is not None
+        events = [
+            {**item, "source_name": identity}
+            if item["event_type_name"] == event_type_name and item["name"] in event_names
+            else item
+            for item in revision.payload["events"]
+        ]
+        assert sum(1 for item in events if item.get("source_name") == identity) == 2
+        revision.payload = {**revision.payload, "events": events}
+        await session.commit()
+
+
 @pytest.mark.asyncio
 async def test_revert_is_not_a_rename_when_the_base_named_one_identity_twice(
     client: AsyncClient,
@@ -3803,15 +3935,25 @@ async def test_revert_is_not_a_rename_when_the_base_named_one_identity_twice(
     """Ambiguity on the BASE side must stop the rename reading too.
 
     ``_row_renamed_from`` counted candidates on the branch and never asked what
-    the base held. Events carry no uniqueness on ``source_name`` — only
-    ``ix_events_source_identity`` — and ``create_event`` stamps it from the
-    generated name, so main can legitimately hold two events sharing one scan
-    identity under one type: create ``checkout:start``, rename it, let the scan
-    mint ``checkout:start`` again. Cut a branch, delete one of them on it, and
-    revert that removal: exactly one branch row carries the identity, the
-    branch-side guard sees nothing wrong, and the revert renamed the LIVE event
-    to the deleted one's name. The deleted event never came back and an
-    unrelated one silently lost its name (tripl-hjxy).
+    the base held. When that was fixed (tripl-hjxy) main could legitimately hold
+    two events sharing one scan identity under one type — create
+    ``checkout:start``, rename it, let the scan mint ``checkout:start`` again.
+    ``uq_event_scan_identity`` has since made that impossible for live rows
+    (tripl-8tdl), so the shape is now reachable only through a base snapshot
+    taken before the constraint existed; a ``PlanRevision`` payload is data, not
+    a constraint, which is why the guard stays and why this seed writes the
+    duplicate into the stored payload and leaves the live rows unique.
+
+    Without the guard: exactly one branch row carries the identity, the
+    branch-side count sees nothing wrong, and the revert renames the LIVE
+    ``purchase:success`` to the deleted one's name — the deleted event never
+    comes back and an unrelated one silently loses its name. With it, the
+    removal is read as a removal and rebuilt from the snapshot, and the
+    snapshot's copy wears the identity the live row holds, so the constraint
+    refuses the rebuild and ``revert_change`` answers 409 with the branch left
+    exactly as it was. Before the constraint that rebuild landed as a second row
+    on one identity; a refused revert that names what to rename first is the
+    honest replacement.
     """
     slug = "revert-event-shared-identity"
     et_id = await _seed_plan(client, slug)
@@ -3822,12 +3964,22 @@ async def test_revert_is_not_a_rename_when_the_base_named_one_identity_twice(
     assert second.status_code == 201
 
     async with TestSessionLocal() as session:
-        for main_event in (await session.execute(select(Event))).scalars().all():
-            main_event.source_name = "purchase_raw"
+        main_event = (
+            (await session.execute(select(Event).where(Event.name == "purchase:success")))
+            .scalars()
+            .one()
+        )
+        main_event.source_name = "purchase_raw"
         await session.commit()
 
     branch_id = await _create_branch(client, slug)
     branch_uuid = uuid.UUID(branch_id)
+    await _name_one_identity_twice_in_the_base(
+        branch_uuid,
+        event_type_name="track",
+        event_names=("purchase:success", "purchase:completed"),
+        identity="purchase_raw",
+    )
     async with TestSessionLocal() as session:
         branch_ids_by_name = {
             e.name: e.id
@@ -3848,7 +4000,10 @@ async def test_revert_is_not_a_rename_when_the_base_named_one_identity_twice(
         f"/api/v1/projects/{slug}/branches/{branch_id}/revert",
         json={"entity_type": "event", "name": "purchase:completed", "parent": "track"},
     )
-    assert reverted.status_code == 200, reverted.text
+    assert reverted.status_code == 409, reverted.text
+    detail = reverted.json()["detail"]
+    assert "purchase:completed" in detail
+    assert "scan identity" in detail
 
     async with TestSessionLocal() as session:
         rows = (
@@ -3856,15 +4011,12 @@ async def test_revert_is_not_a_rename_when_the_base_named_one_identity_twice(
             .scalars()
             .all()
         )
-    by_name = {event.name: event for event in rows}
-    # Both events, not one: the removal is rebuilt from the snapshot and the row
-    # that was never deleted keeps the name and the id it had. Reading this as a
-    # rename left a single event on the branch, wearing the wrong name.
-    assert sorted(by_name) == ["purchase:completed", "purchase:success"]
-    assert by_name["purchase:success"].id == branch_ids_by_name["purchase:success"]
-    # A genuine rebuild, so a new id — the deleted row is gone for good and this
-    # is the snapshot's copy of it.
-    assert by_name["purchase:completed"].id != branch_ids_by_name["purchase:completed"]
+    # The branch is exactly as it was: the row that was never deleted keeps its
+    # name, its id and its identity, and nothing was rebuilt beside it. Reading
+    # the removal as a rename left this one row wearing the wrong name.
+    assert [(e.id, e.name, e.source_name) for e in rows] == [
+        (branch_ids_by_name["purchase:success"], "purchase:success", "purchase_raw")
+    ]
 
 
 @pytest.mark.asyncio
