@@ -248,13 +248,13 @@ Exclusion keeps a lightweight tombstone:
 A scan creates a variable for every placeholder it detects. On a JSON column
 whose keys are user-typed text — a map rather than a struct — that once meant a
 permanent plan row per key. A catalog run now ends by deleting the scan-created
-variables that nothing refers to any more. **Which runs do that is a shorter
-list than "all of them":**
+variables that nothing refers to any more. **Which runs do that, and over
+which variables, is a shorter list than "all of them":**
 
 | Run | Retires unused variables? |
 | --- | --- |
-| A scan you start by hand | Always |
-| A **scheduled monitoring collection** | Only when the config sets **Limits → Lookback (hours)** |
+| A scan you start by hand | Always, whatever minted them |
+| A **scheduled monitoring collection** | Always for a variable minted from a path inside a JSON column; for a variable minted from a scalar column, only when the config sets **Limits → Lookback (hours)** |
 | A **metrics replay** | Never |
 
 Both exceptions are the same rule seen twice: a run only decides a variable is
@@ -264,30 +264,48 @@ A manual scan with no lookback reads everything the base query returns, so
 "nothing refers to this" is a claim about all of your data. A scheduled
 collection has no such view. It always reads through a window, and with
 **Lookback (hours)** left blank that window is the slice it is collecting —
-usually one or two intervals, often a single hour. A column carrying thousands
-of values across your table can carry a handful in one hour, and a run that sees
-a handful stores those values *literally* in place of the `${token}` template
-that named your variable. The reference the retirement rule looks for is then
-gone — and with it, if the run swept, the variable and its whole observed-value
-history. Setting a lookback is you saying which window represents your tracking
-plan; retirement runs behind that statement and not ahead of it.
+usually one or two intervals, often a single hour. What that narrow view can do
+to a variable depends on where the variable came from.
+
+A variable minted from a **scalar column** stands, as `${token}`, in that
+column's value on every event of the type. A column carrying thousands of
+values across your table can carry a handful in one hour, and a run that sees a
+handful stores those values *literally* in place of the `${token}` template —
+in every event at once. That rewrite is what loses the field's observed-value
+history, and it happens with or without a sweep; what a sweep would add is
+deleting the variable row, so that the column's next busy hour mints it again
+under a new id. Setting a lookback is you saying which window represents your
+tracking plan; for these variables retirement runs behind that statement and
+not ahead of it.
+
+A variable minted from a **path inside a JSON column** — its scan source path is
+`column.path`, and `column` is a JSON field of the event type — has no such
+rewrite to follow. A key missing from one hour's rows drops out of that one
+event's stored value, not out of every event, and a key nothing refers to any
+more is exactly what the sweep exists to remove. So a scheduled collection
+judges these on every run, lookback or not. When the key arrives again the next
+run mints the variable again — a new row with a new id, so anything that stored
+the old id (an agent's cache, a bookmark) stops resolving.
 
 A **metrics replay** never retires anything, for the older reason: it does not
 sync the catalog at all — it recomputes counts over a past window and creates no
 events or variables — so it never sees which paths your rows currently carry and
 is in no position to call a variable unused.
 
-:::warning A new scan has no lookback, so its schedule never retires
-**Limits → Lookback (hours)** is blank on a new scan, and blank is a legitimate
-setting: each run reads the whole base query. But it also means a
-**Catalog + monitoring** config creates variables on every collection and
-retires none of them, which is exactly the shape — a JSON map keyed by free text,
-collected hourly, scanned by hand approximately never — that grows a permanent
-row per key. If that is your catalog, set a lookback wide enough to contain your
-tracking plan, run the scan by hand, or clear the backlog from the danger zone
-below. *Variables retired* on a [run](./feature-reference.md#scan-runs) is absent
-rather than `0` on a run that did not retire, so you can tell "found nothing"
-from "did not look".
+:::warning A schedule sweeps scalar-column variables only behind a lookback
+The create page pre-fills **Limits → Lookback (hours)** with 24, but a config
+saved without one shows the field blank, and blank is a legitimate setting: each
+run reads the whole base query. It also means the scheduled runs of a
+**Catalog + monitoring** config judge only the variables minted from JSON paths
+— the shape that grows a permanent row per key, a map keyed by free text
+collected hourly, is swept — and leave every variable minted from a scalar
+column alone. If those are the rows piling up, set a lookback wide enough to
+contain your tracking plan, run the scan by hand, or clear the backlog from the
+danger zone below. *Variables retired* on a
+[run](./feature-reference.md#scan-runs) is present, `0` included, on every
+manual run and every scheduled collection, and absent only on a replay — so on a
+scheduled run with a blank lookback, `0` means the JSON-path variables were
+looked at and found in use, not that the scalar ones were.
 :::
 
 Retirement works on `main`, where scans write; the copies on an open working
@@ -297,6 +315,7 @@ A variable is retired only when **all** of the following are true:
 
 - a scan created it and its description is still the scan's own
   (*Auto-detected variable from data source scan*);
+- its display name is still the one the scan gave it;
 - its bindings are still only the source path the scan gave it;
 - it documents no values and carries no per-event override;
 - it carries no value drift — open or resolved;
@@ -305,9 +324,9 @@ A variable is retired only when **all** of the following are true:
   its scan source path, or any binding — as `${token}`. Both `${token}` sites
   count: an event's **field values** and its **meta values**.
 
-Everything a person touched is out of reach. An edited description, a binding
-you added, documented values, an override, a drift you accepted or snoozed, and
-an **Exclude from scans** tombstone each keep the row. So does a single
+Everything a person touched is out of reach. A name you typed, an edited
+description, a binding you added, documented values, an override, a drift you
+accepted or snoozed, and an **Exclude from scans** tombstone each keep the row. So does a single
 `${token}` left in one event value, even when the variable has no observed
 contexts at all.
 

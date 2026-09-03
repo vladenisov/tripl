@@ -320,6 +320,21 @@ After any `docker compose up -d` (deploy, rollback, or recovery):
 If any step fails, see [Troubleshooting](../use/troubleshooting.md) for
 symptom-driven diagnosis, or roll back per the section above.
 
+### The scan-identity release: look for events tagged `duplicate-identity`
+
+:::note This upgrade may tag events, and deletes none
+The migration that makes a scan identity unique (`340d91a8825a`, one event per
+identity per event type) first repairs any events that already shared one.
+Per identity it keeps the row scan traffic most recently landed on — the same
+choice a scan makes — and leaves every other row in place with its identity
+suffixed ` #duplicate-<event id>` and the tag `duplicate-identity`. Nothing is
+deleted or merged. After the deploy, filter **Plan › Events** by that tag on
+each project (and on an open branch, which copied the pair): an empty result
+means the database held no duplicates. For each tagged event decide whether to
+delete it or keep it as history; either way it no longer receives scan data,
+and the untagged twin does.
+:::
+
 ### One-off: rebuild the search index after the ranking release
 
 :::warning Required once, per project **and** per plan branch

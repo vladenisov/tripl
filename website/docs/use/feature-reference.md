@@ -121,9 +121,15 @@ An identity belongs to one event. If another event already answers to the name
 being composed, the form links to it and refuses to create a second — a second
 event with the same identity would receive no volume, no last-seen time and no
 observed values, because collection only ever updates one of them. The API
-refuses it too, with `409`, whether the request comes from the app, the CLI, the
-MCP server or `POST /projects/{slug}/events/bulk` (which applies the same naming
-rule per item, and rejects a batch whose own items collide).
+refuses it too, with `409` naming the event that holds the identity, whether the
+request comes from the app, the CLI, the MCP server or
+`POST /projects/{slug}/events/bulk` (which applies the same naming rule per
+item, rejects a batch whose own items collide, and prefixes its message with
+`Event N of M: `). The rule is also a unique key in the database — one event per
+scan identity per event type, on each branch — so two creates racing for one
+identity end the same way: the loser gets that `409`, never a second event. A
+scan that loses the same race adopts the event that won, so a run never fails on
+it.
 
 Renaming an event afterwards is safe and deliberately does *not* move the
 identity — collection keeps matching the event it already knew. Once the two
@@ -299,18 +305,22 @@ A catalog run can end by **retiring the scan-created variables nothing refers
 to any more** — no `${token}` in any stored event field or meta value, no
 observed context, no value drift, no per-event override — so a catalog stops
 accumulating rows minted from a JSON column keyed by free text. A scan you start
-by hand always does this. A **scheduled monitoring collection** does it only when
-the config sets **Limits → Lookback (hours)**: with the field blank the run
-judges the catalog through the slice it is collecting, often a single hour, and
-one quiet hour is not evidence that a variable is dead. A **metrics replay**
-never does it: it syncs no catalog, so it has no current view of which paths your
-rows carry at all. See [Variables &
+by hand always does this, whatever minted the variable. A **scheduled monitoring
+collection** does it on every run for a variable minted from a path inside a
+JSON column — a key that stopped arriving is exactly what the pass is for, and
+the key's return mints the variable again under a new id — but judges a variable
+minted from a scalar column only when the config sets **Limits → Lookback
+(hours)**: with the field blank the run reads the slice it is collecting, often
+a single hour, and a scalar column that looks enumerable for one quiet hour is
+rewritten as literals in every event at once, which is not evidence that its
+variable is dead. A **metrics replay** never does it: it syncs no catalog, so it
+has no current view of which paths your rows carry at all. See [Variables &
 templates](./variables-and-templates.md#unreferenced-scan-created-variables-are-retired-automatically)
 for what a too-narrow view actually costs.
 
-The pass is deliberately narrow: an edited description, a hand-added binding,
-documented values, an override, drift triage, or an **Exclude from scans**
-tombstone each keep the row, and a variable the run has just created is always
+The pass is deliberately narrow: a typed display name, an edited description, a
+hand-added binding, documented values, an override, drift triage, or an
+**Exclude from scans** tombstone each keep the row, and a variable the run has just created is always
 still referenced by that run's own event values. When a run retires anything it
 says so in its [details list](#scan-runs).
 
@@ -406,9 +416,9 @@ limited to a selected historical period and cannot be undone.
 
 **Retire unused variables** applies the same retirement rule a catalog run
 applies (see [Variables](#variables)) across a whole plan branch in one pass —
-for the backlog that accumulated before runs started sweeping, and for a
-**Catalog + monitoring** config that sets no **Limits → Lookback (hours)**, whose
-scheduled runs never sweep. It is **two
+for the backlog that accumulated before runs started sweeping, and for the
+scalar-column variables of a **Catalog + monitoring** config that sets no
+**Limits → Lookback (hours)**, which its scheduled runs never judge. It is **two
 buttons, not one**: **Preview** commits nothing and reports what the pass would
 take, and **Retire** stays disabled until a preview says there is something to
 take. Either way the row reports the same breakdown — how many rows can be or
@@ -1093,9 +1103,10 @@ reconcile. The same delta is what the activity feed's "N new signals" reports on
 a scan card.
 
 Every counter the run reported is still there, verbatim, behind **Show raw
-counters**: *Events created*, *Variables created*, *Events skipped*, *Columns
-analyzed*, *Event breakdowns*, *Distribution rows*, *Signals added*, *Alerts
-queued* — and, on a scheduled run, the variable-value sampling sweep: *Paths
+counters**: *Events created*, *Variables created*, *Variables retired* (on
+every run but a replay, `0` included), *Events skipped*, *Columns analyzed*,
+*Event breakdowns*, *Distribution rows*, *Signals added*, *Alerts queued* — and,
+on a scheduled run, the variable-value sampling sweep: *Paths
 sampled* (how many still-unobserved paths this run attempted), *Paths with
 samples* (how many of those came back with a value — sampled high with zero
 back is the signature of a failing sampling query), *Values written* (contexts

@@ -250,11 +250,14 @@ type RevertOutcome =
  * moves the name, two or more is ambiguous and refused rather than guessed at.
  *
  * It scans the diff entries and not the whole branch, so it can only see rows
- * that differ from the base. A branch row identical to its base row can still
- * carry the same `source_name` — only Variable has a UNIQUE constraint on it —
- * and that row is invisible here while the endpoint's query sees it. The gap is
- * a base-side ambiguity the endpoint reports as a 409 either way; this is the
- * dialog's best honest answer, not a second copy of the endpoint.
+ * that differ from the base. Live rows cannot hold one identity twice — events
+ * carry `uq_event_scan_identity` per event type, variables
+ * `uq_variable_project_source_name` — but the base is a snapshot payload, data
+ * the key never checked, and one taken before the key can name an identity on
+ * two rows. A branch row identical to such a base row is then invisible here
+ * while the endpoint's query sees it. The gap is a base-side ambiguity the
+ * endpoint reports as a 409 either way; this is the dialog's best honest
+ * answer, not a second copy of the endpoint.
  */
 function revertOutcome(entries: PlanDiffEntry[], entry: PlanDiffEntry): RevertOutcome {
   // Only a removal can be a rename in disguise, and only for the two kinds

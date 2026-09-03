@@ -1247,9 +1247,12 @@ describe('BranchesTab', () => {
     vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
     vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
     vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
-    // Only Event can reach this: `uq_variable_project_source_name` makes two
-    // variables with one `source_name` impossible, while Event has a plain
-    // index. `_row_renamed_from` raises a 409 rather than rename a sibling the
+    // The fixture models a diff payload, not live rows. Two live events with one
+    // `source_name` under one type are as impossible as two such variables —
+    // `uq_event_scan_identity` beside `uq_variable_project_source_name` — so
+    // this shape now reaches the dialog only through data the key never
+    // checked, and the dialog must still refuse it rather than guess:
+    // `_row_renamed_from` raises a 409 rather than rename a sibling the
     // reviewer never looked at, so neither "Restore" nor "Undo rename" is true.
     vi.mocked(planBranchesApi.diff).mockResolvedValue({
       behind_base: false,

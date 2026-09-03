@@ -222,9 +222,10 @@ does not exist; on a large catalog, fall back to `search_plan` with
 A missing variable is not always a paging artefact either: a catalog scan run
 can retire the scan-created variables nothing refers to any more, so an id from
 an earlier listing can stop resolving. A scan started by hand always does this;
-a scheduled collection only when the config declares a lookback window; a replay
-never. Variables that were edited, documented,
-bound, or excluded from scans are never retired — see
+a scheduled collection does too, judging a variable minted from a path inside a
+JSON column on every run and one minted from a scalar column only when the
+config declares a lookback window; a replay never. Variables that were renamed,
+edited, documented, bound, or excluded from scans are never retired — see
 [Variables & templates](../use/variables-and-templates.md#unreferenced-scan-created-variables-are-retired-automatically).
 
 The REST endpoint's `usage=all|used|unused` filter — `unused` being exactly the
@@ -263,8 +264,10 @@ ignored — read the response and adopt the returned `name` and `id`.
 Two failures follow from the same rule. A `422` means the format needs field
 values the call did not carry, and names the columns. A `409` means an event
 already answers to the derived name: only one event per identity ever receives
-scan data, so the second would be inert. Open the event named in the message
-rather than retrying — the call will not start succeeding.
+scan data, so the second would be inert. The identity is a unique key in the
+database, so two creates racing for one name end the same way — the loser gets
+the `409` naming the holder, never a second event. Open the event named in the
+message rather than retrying — the call will not start succeeding.
 
 ### Branch safety
 

@@ -158,14 +158,13 @@ def register(mcp: FastMCP) -> None:
         description=(
             "WRITE: create an event (needs a tk_w_ key backed by an editor/owner). "
             "branch_id is REQUIRED so the draft lands on a working branch, never on "
-            "the live main plan by accident (list_branches to find one). Read the "
-            "response: when a scan naming rule governs the event type, the server "
-            "derives the canonical name from field values and may ignore yours with "
-            "a warning — adopt the returned name/id. A 409 means an event already "
-            "answers to that derived name; only one event per name ever receives "
-            "scan data, so open the one named in the message instead of retrying. "
-            "Dry-run mindset: read the catalog first and prefer updating an "
-            "existing event over creating a near-duplicate."
+            "the live main plan by accident (list_branches to find one). When a scan "
+            "naming rule governs the event type the server derives the name from field "
+            "values and may ignore yours with a warning — adopt the returned name/id. "
+            "A 409 names the event already holding that derived name; the identity is "
+            "a database unique key, so the 409 is final even under concurrent creates "
+            "(the REST batch form prefixes it 'Event N of M: ') — open that event, do "
+            "not retry. Prefer updating an existing event over creating a near-duplicate."
         ),
     )(create_event)
     mcp.tool(
