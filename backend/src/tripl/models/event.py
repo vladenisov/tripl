@@ -5,7 +5,17 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
@@ -50,7 +60,18 @@ class Event(UUIDMixin, TimestampMixin, Base):
         Index("ix_event_project_order", "project_id", "order"),
         Index("ix_event_event_type", "event_type_id"),
         Index("ix_events_last_seen_at", "last_seen_at"),
-        Index("ix_events_source_identity", "project_id", "event_type_id", "source_name"),
+        # One event per scan identity, enforced by the schema. An event type
+        # lives on exactly one branch of one project (``uq_event_type_project_name``
+        # is per branch, and a branch copy gets its own types), so
+        # ``event_type_id`` alone scopes the identity the way ``generate_events``
+        # and ``_identities_already_held`` scope their lookups — per project, per
+        # branch, per type — and the key names only the two columns that carry
+        # information. NULL stays free: an event authored outside a scan rule has
+        # no identity yet, and the database treats NULLs as distinct, so any
+        # number of them coexist until a scan adopts a name (tripl-8tdl). This
+        # replaces the plain ``ix_events_source_identity`` index, which promised
+        # nothing and let production hold two rows per identity.
+        UniqueConstraint("event_type_id", "source_name", name="uq_event_scan_identity"),
         Index("ix_events_project_branch_status", "project_id", "branch_id", "status"),
     )
 

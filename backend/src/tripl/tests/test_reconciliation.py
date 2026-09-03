@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import create_engine, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.models import Base
@@ -262,6 +263,77 @@ async def test_accept_conflicts_on_resolved_candidate_and_duplicate_identity(
         json={},
     )
     assert dup.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_accept_answers_a_lost_identity_race_with_the_create_409(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Both of the accept's probes are SELECTs; ``uq_event_scan_identity`` closes the gap.
+
+    A competing create that commits the candidate's identity after the probes
+    and before the INSERT used to reach the operator as a bare 500 (tripl-8tdl).
+    The accept authors through ``create_event``, so it inherits that door's
+    answer: 409, naming the winner — and the candidate stays ``new``, since the
+    whole request rolled back.
+
+    The in-memory database has one connection, so the competitor is written
+    through the request's own session at the last read before the INSERT (the
+    next-order lookup inside ``create_event``) and committed there, which is
+    what another request's commit looks like from this one's point of view.
+    """
+    from tripl.services import event_service
+
+    et_id, _ = await _setup_project(client, "rec-race")
+    project_id = await _project_id("rec-race")
+    scan_id = await _insert_scan_config(project_id)
+    candidate_id = await _insert_candidate(
+        project_id, scan_id, event_name="screen | checkout", event_type_id=uuid.UUID(et_id)
+    )
+
+    original = event_service._get_next_event_order
+    landed: dict[str, uuid.UUID] = {}
+
+    async def _racing(session: AsyncSession, project_id: uuid.UUID, branch_id: uuid.UUID) -> int:
+        if "id" not in landed:
+            competitor = Event(
+                project_id=project_id,
+                branch_id=branch_id,
+                event_type_id=uuid.UUID(et_id),
+                name="Checkout (won)",
+                source_name="screen | checkout",
+            )
+            session.add(competitor)
+            await session.commit()
+            landed["id"] = competitor.id
+        return await original(session, project_id, branch_id)
+
+    monkeypatch.setattr(event_service, "_get_next_event_order", _racing)
+
+    resp = await client.post(
+        f"/api/v1/projects/rec-race/reconciliation/shadow-events/{candidate_id}/accept",
+        json={"name": "Checkout Screen"},
+    )
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert "'screen | checkout'" in detail
+    assert str(landed["id"]) in detail
+
+    async with TestSessionLocal() as session:
+        holders = (
+            (
+                await session.execute(
+                    select(Event.id).where(Event.source_name == "screen | checkout")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert holders == [landed["id"]]
+        candidate = await session.get(ShadowEventCandidate, candidate_id)
+        assert candidate is not None
+        assert candidate.status == SHADOW_STATUS_NEW
+        assert candidate.accepted_event_id is None
 
 
 @pytest.mark.asyncio

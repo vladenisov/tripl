@@ -4,6 +4,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.main import app
 from tripl.models.data_source import DataSource
@@ -1813,6 +1815,169 @@ async def test_bulk_create_events_refuses_an_identity_the_catalog_already_holds(
     # One transaction: the item that COULD have been created is not.
     listed = await client.get(f"/api/v1/projects/{slug}/events")
     assert [item["name"] for item in listed.json()["items"]] == ["sign_up"]
+
+
+def _land_a_competitor_before_the_insert(
+    monkeypatch: pytest.MonkeyPatch, *, event_type_id: str, identity: str, name: str
+) -> dict[str, uuid.UUID]:
+    """Commit a row holding ``identity`` after the probe and before the INSERT.
+
+    The identity probe is a SELECT without a lock, so the only holder it cannot
+    see is one another request commits between that SELECT and this request's
+    INSERT — the race ``uq_event_scan_identity`` exists to settle (tripl-8tdl).
+    The in-memory test database has a single connection, so the competitor
+    cannot arrive from a second session; it is written through the request's own
+    session at the last read before the INSERT, the next-order lookup, and
+    committed there, which is what a competing request's commit looks like from
+    this request's point of view. Returns a dict the competitor's id lands in.
+    """
+    from tripl.services import event_service
+
+    original = event_service._get_next_event_order
+    landed: dict[str, uuid.UUID] = {}
+
+    async def _racing(session: AsyncSession, project_id: uuid.UUID, branch_id: uuid.UUID) -> int:
+        if "id" not in landed:
+            competitor = Event(
+                project_id=project_id,
+                branch_id=branch_id,
+                event_type_id=uuid.UUID(event_type_id),
+                name=name,
+                source_name=identity,
+            )
+            session.add(competitor)
+            await session.commit()
+            landed["id"] = competitor.id
+        return await original(session, project_id, branch_id)
+
+    monkeypatch.setattr(event_service, "_get_next_event_order", _racing)
+    return landed
+
+
+async def _setup_ruled_event_type(client: AsyncClient, slug: str) -> tuple[str, str]:
+    """A project whose one event type names its events ``{action}``."""
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types", json={"name": "se", "display_name": "Structured"}
+    )
+    et_id = et.json()["id"]
+    action = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "action", "display_name": "Action", "field_type": "string"},
+    )
+    await _seed_scan_name_rule(slug, et_id, "{action}")
+    return et_id, action.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_create_event_answers_a_lost_identity_race_with_the_probe_s_409(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """The probe cannot see a holder committed after it; the constraint can.
+
+    Two requests authoring one identity at once both pass the probe, and
+    ``uq_event_scan_identity`` refuses the second INSERT. That refusal reached
+    the caller as a bare 500 (tripl-8tdl). It is the very collision the probe
+    refuses, so it gets the probe's answer: 409, naming the row that won.
+    """
+    slug = "ev-identity-race"
+    et_id, action_id = await _setup_ruled_event_type(client, slug)
+    landed = _land_a_competitor_before_the_insert(
+        monkeypatch, event_type_id=et_id, identity="sign_up", name="Sign up (won)"
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": et_id,
+            "name": "x",
+            "field_values": [{"field_definition_id": action_id, "value": "sign_up"}],
+        },
+    )
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert "'sign_up'" in detail
+    assert "Sign up (won)" in detail
+    assert str(landed["id"]) in detail
+
+    # The winner is the only holder; the loser left nothing behind.
+    async with TestSessionLocal() as session:
+        holders = (
+            (await session.execute(select(Event.id).where(Event.source_name == "sign_up")))
+            .scalars()
+            .all()
+        )
+        assert holders == [landed["id"]]
+
+
+@pytest.mark.asyncio
+async def test_bulk_create_events_answers_a_lost_identity_race_with_the_probe_s_409(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Same race through the batch door: the item that lost is named, nothing lands."""
+    slug = "ev-bulk-race"
+    et_id, action_id = await _setup_ruled_event_type(client, slug)
+    landed = _land_a_competitor_before_the_insert(
+        monkeypatch, event_type_id=et_id, identity="sign_up", name="won"
+    )
+
+    clash = await client.post(
+        f"/api/v1/projects/{slug}/events/bulk",
+        json=[
+            {
+                "event_type_id": et_id,
+                "name": "a",
+                "field_values": [{"field_definition_id": action_id, "value": "sign_out"}],
+            },
+            {
+                "event_type_id": et_id,
+                "name": "b",
+                "field_values": [{"field_definition_id": action_id, "value": "sign_up"}],
+            },
+        ],
+    )
+    assert clash.status_code == 409, clash.text
+    detail = clash.json()["detail"]
+    assert detail.startswith("Event 2 of 2: ")
+    assert str(landed["id"]) in detail
+
+    # One transaction: the item that COULD have been created is not.
+    listed = await client.get(f"/api/v1/projects/{slug}/events")
+    assert [item["name"] for item in listed.json()["items"]] == ["won"]
+
+
+@pytest.mark.asyncio
+async def test_create_event_does_not_dress_an_unrelated_constraint_as_an_identity_clash(
+    client: AsyncClient,
+):
+    """The 409 names a holder the re-probe FOUND, never one it assumed.
+
+    ``owner_id`` reaches the INSERT unvalidated, so an unknown owner trips the
+    ``users`` foreign key — an IntegrityError that is not the identity key. The
+    identity is generated and probed again, nobody holds it, and the error
+    leaves exactly as it did before the handler existed.
+    """
+    slug = "ev-identity-other-constraint"
+    et_id, action_id = await _setup_ruled_event_type(client, slug)
+
+    # The shared ``client`` transport re-raises app exceptions, so the error
+    # that would become the 500 surfaces here as itself.
+    with pytest.raises(IntegrityError):
+        await client.post(
+            f"/api/v1/projects/{slug}/events",
+            json={
+                "event_type_id": et_id,
+                "name": "x",
+                "owner_id": str(uuid.uuid4()),
+                "field_values": [{"field_definition_id": action_id, "value": "sign_up"}],
+            },
+        )
+
+    async with TestSessionLocal() as session:
+        held = await session.scalar(
+            select(func.count(Event.id)).where(Event.source_name == "sign_up")
+        )
+        assert held == 0
 
 
 @pytest.mark.asyncio

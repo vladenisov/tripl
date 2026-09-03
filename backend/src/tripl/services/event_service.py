@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import HTTPException
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy import update as sql_update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
 
@@ -556,6 +557,14 @@ async def _identities_already_held(
     equals an incoming one is not free; it is a row that will claim that
     identity the first time a scan looks.
 
+    Only the first arm is backed by the schema: ``uq_event_scan_identity`` on
+    ``(event_type_id, source_name)`` refuses a second row for a held identity,
+    and it is what closes the window between this SELECT and the INSERT that a
+    concurrent request can slip through (tripl-8tdl). The second arm no unique
+    key can express — a NULL ``source_name`` is distinct from every other in a
+    unique key — so a rule-less row's future claim is honoured here and nowhere
+    else.
+
     Scoped to one branch. ``ScanConfig`` has no branch column and scans write the
     main branch, but a working branch is a copy of the plan, so the same identity
     living once per branch is correct and only a collision WITHIN a branch is one.
@@ -627,9 +636,15 @@ def _scan_identity_conflict_detail(*, identity: str, existing: Event) -> str:
     """The 409 body for an authored event that would collide with an existing one.
 
     Names the identity, says which event holds it, and gives the two ways out.
-    Deliberately explains the CONSEQUENCE rather than the constraint: nothing in
-    the schema stops the second row, so "duplicate key" would be a lie, and the
-    reason it is refused is that only one of the two can receive scan updates.
+    Deliberately explains the CONSEQUENCE rather than the constraint: the reason
+    a second row is refused is that only one of the two could ever receive scan
+    updates, and "duplicate key" says nothing about that. ``uq_event_scan_identity``
+    now refuses the row too (tripl-8tdl), but the probe before the INSERT keeps
+    two jobs the constraint cannot do: it lets this body NAME the holder, and it
+    honours the NULL-``source_name`` arm of ``_identities_already_held``, which
+    no unique key can express. The constraint's job is the concurrent-request
+    race the probe cannot see; a violation is re-probed and answered with this
+    same body, so the two doors read alike.
     """
     return (
         f"An event already answers to the scan identity '{identity}' in this event type: "
@@ -660,6 +675,36 @@ async def _guard_scan_identity(
             status_code=409,
             detail=_scan_identity_conflict_detail(identity=identity, existing=existing),
         )
+
+
+async def _guard_batch_scan_identities(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    claimed_in_batch: Mapping[tuple[uuid.UUID, str], int],
+    total: int,
+) -> None:
+    """The batch shape of ``_guard_scan_identity``: one probe, and the 409 names the item.
+
+    ``claimed_in_batch`` maps each identity to the index of the item that first
+    claimed it, in claim order, so the first held identity found is the lowest
+    numbered item that collides — the same item a reader fixing the paste from
+    the top would reach first.
+    """
+    held = await _identities_already_held(
+        session, project_id=project_id, branch_id=branch_id, wanted=list(claimed_in_batch)
+    )
+    for key, index in claimed_in_batch.items():
+        existing = held.get(key)
+        if existing is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Event {index + 1} of {total}: "
+                    + _scan_identity_conflict_detail(identity=key[1], existing=existing)
+                ),
+            )
 
 
 async def _resolved_event_identity(
@@ -755,8 +800,42 @@ async def create_event(
         reviewed=data.reviewed,
         metric_breakdown_columns=data.metric_breakdown_columns,
     )
-    session.add(event)
-    await session.flush()
+    # The probe above is a SELECT with no lock, so a second request can commit
+    # this identity between it and the INSERT; ``uq_event_scan_identity`` is
+    # what refuses the loser (tripl-8tdl). That refusal used to surface as a
+    # bare 500. Here it is answered with the pre-check's own 409, naming the
+    # winner: roll back, probe again, raise. The ROOT rollback is deliberate,
+    # not the SAVEPOINT ``_ensure_variable`` uses — that shape exists so a scan
+    # can carry on after a lost race, and this request cannot: nothing written
+    # before the INSERT is worth keeping when the answer is 409, and
+    # ``get_session`` would roll it all back on the way out anyway. (A savepoint
+    # would also misbehave in the SQLite test database, where pysqlite's legacy
+    # mode lets a SAVEPOINT opened before any DML commit on RELEASE — see
+    # ``sqlite_transactions`` in the dialect docs — and this INSERT is normally
+    # the request's first DML.)
+    #
+    # What the except arm may touch after a root rollback is exactly what
+    # ``_commit_merged_plan`` spells out: the rollback expires every state in
+    # the identity map, so reading an attribute of an ORM row loaded before
+    # the try would be implicit IO — ``MissingGreenlet`` — and a 500 again. It
+    # reads plain locals and the request schema only, and the re-probe is a
+    # fresh query, whose rows arrive loaded.
+    try:
+        session.add(event)
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        if generated_name is not None:
+            await _guard_scan_identity(
+                session,
+                project_id=project_id,
+                branch_id=branch_id,
+                event_type_id=data.event_type_id,
+                identity=generated_name,
+            )
+        # No identity, or nobody holds it: some other constraint refused the row,
+        # and that is not a collision this function knows how to name.
+        raise
 
     for fv in field_values:
         session.add(
@@ -1227,19 +1306,13 @@ async def bulk_create_events(
         identities.append(identity)
 
     # One probe for the whole batch, in place of one per item.
-    held = await _identities_already_held(
-        session, project_id=project_id, branch_id=branch_id, wanted=list(claimed_in_batch)
+    await _guard_batch_scan_identities(
+        session,
+        project_id=project_id,
+        branch_id=branch_id,
+        claimed_in_batch=claimed_in_batch,
+        total=len(events_data),
     )
-    for key, index in claimed_in_batch.items():
-        existing = held.get(key)
-        if existing is not None:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Event {index + 1} of {len(events_data)}: "
-                    + _scan_identity_conflict_detail(identity=key[1], existing=existing)
-                ),
-            )
 
     # One SELECT max(order) instead of N — we assign consecutive orders ourselves.
     base_order = await _get_next_event_order(session, project_id, branch_id)
@@ -1263,8 +1336,26 @@ async def bulk_create_events(
                 metric_breakdown_columns=data.metric_breakdown_columns,
             )
         )
-    session.add_all(events)
-    await session.flush()
+    # Same rollback and re-probe as ``create_event``, for the same race: the
+    # probe above cannot see an identity another request commits after it, and
+    # ``uq_event_scan_identity`` can. On a violation every identity is probed
+    # again in one query and the first item now held is named, with the same
+    # ``Event N of M`` prefix the rest of the batch's answers carry. The except
+    # arm reads ``claimed_in_batch`` and the request list only — plain values —
+    # for the reason given in ``create_event``.
+    try:
+        session.add_all(events)
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        await _guard_batch_scan_identities(
+            session,
+            project_id=project_id,
+            branch_id=branch_id,
+            claimed_in_batch=claimed_in_batch,
+            total=len(events_data),
+        )
+        raise
 
     children: list[EventFieldValue | EventMetaValue | EventTag] = []
     for event, data, values in zip(events, events_data, normalized_values, strict=True):

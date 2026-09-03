@@ -16,6 +16,11 @@ from tripl.core.analyzers._event_generator_variables import (
     VariableIndex,
     sample_variable_values,
 )
+from tripl.core.analyzers._event_identity import (
+    index_events_by_identity,
+    insert_event_claiming_identity,
+    scan_identity_winner_order,
+)
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.event import Event
 from tripl.models.event import EventStatus as _ES
@@ -193,21 +198,23 @@ def merge_existing_events_for_group_rules(
         if not field_definitions:
             continue
 
+        # Same load and same adoption rule as ``generate_events``: this used to
+        # adopt EVERY NULL row and file it last-wins, which under
+        # ``uq_event_scan_identity`` is an UPDATE the flush refuses whenever
+        # two NULL rows share a name, killing the apply-groups job (tripl-8tdl).
         existing_events = (
             session.execute(
-                select(Event).where(
+                select(Event)
+                .where(
                     Event.project_id == project_id,
                     Event.event_type_id == event_type_id,
                 )
+                .order_by(*scan_identity_winner_order())
             )
             .scalars()
             .all()
         )
-        existing_by_identity: dict[str, Event] = {}
-        for event in existing_events:
-            if event.source_name is None:
-                event.source_name = event.name
-            existing_by_identity[event.source_name] = event
+        existing_by_identity = index_events_by_identity(existing_events)
 
         total_merged += _merge_existing_grouped_events(
             session,
@@ -268,7 +275,23 @@ def _merge_existing_grouped_events(
             continue
 
         target = existing_by_identity.get(match.event_name)
-        if target is not None and _is_archived(target):
+        if target is None:
+            # On a lost race this is the row another writer just minted under
+            # the group name: the source is merged into it like any existing
+            # target, its field values are not copied, and no order number is
+            # consumed.
+            target, created = _create_group_event_from_source(
+                session,
+                source=source,
+                group_name=match.event_name,
+                field_name_by_id=field_name_by_id,
+                field_value_overrides=match.field_value_overrides,
+                order=next_event_order,
+            )
+            if created:
+                next_event_order += 1
+            existing_by_identity[match.event_name] = target
+        if _is_archived(target):
             # The group event itself is archived. Merging into it would rewrite
             # this source and then DELETE it, destroying a live row so that its
             # volume could land on one the user has retired.
@@ -282,17 +305,6 @@ def _merge_existing_grouped_events(
             # group event under that name is not an option either — it is the
             # same identity as the archived one.
             continue
-        if target is None:
-            target = _create_group_event_from_source(
-                session,
-                source=source,
-                group_name=match.event_name,
-                field_name_by_id=field_name_by_id,
-                field_value_overrides=match.field_value_overrides,
-                order=next_event_order,
-            )
-            next_event_order += 1
-            existing_by_identity[match.event_name] = target
 
         if target.id == source.id:
             continue
@@ -338,22 +350,33 @@ def _create_group_event_from_source(
     field_name_by_id: dict[uuid.UUID, str],
     field_value_overrides: dict[str, str],
     order: int,
-) -> Event:
-    target = Event(
-        id=uuid.uuid4(),
-        project_id=source.project_id,
-        branch_id=source.branch_id,
-        event_type_id=source.event_type_id,
-        name=group_name,
-        source_name=group_name,
-        description="Auto-generated event group from data source scan",
-        order=order,
-        status=source.status,
-        last_seen_at=source.last_seen_at,
-        metric_breakdown_columns=list(source.metric_breakdown_columns or []),
+) -> tuple[Event, bool]:
+    """Mint the group event ``source`` is folded into; ``(row, created)``.
+
+    ``created`` is False when another writer claimed ``group_name`` under this
+    type between the caller's load and the INSERT (see
+    ``insert_event_claiming_identity``): the holder comes back untouched, with
+    none of the source's field values copied onto it — those belong to the row
+    that created the group, and the merge that follows carries everything else.
+    """
+    target, created = insert_event_claiming_identity(
+        session,
+        Event(
+            id=uuid.uuid4(),
+            project_id=source.project_id,
+            branch_id=source.branch_id,
+            event_type_id=source.event_type_id,
+            name=group_name,
+            source_name=group_name,
+            description="Auto-generated event group from data source scan",
+            order=order,
+            status=source.status,
+            last_seen_at=source.last_seen_at,
+            metric_breakdown_columns=list(source.metric_breakdown_columns or []),
+        ),
     )
-    session.add(target)
-    session.flush()
+    if not created:
+        return target, False
     for fv in source.field_values:
         field_name = field_name_by_id.get(fv.field_definition_id)
         value = field_value_overrides.get(field_name or "", fv.value)
@@ -369,7 +392,7 @@ def _create_group_event_from_source(
             )
         )
     session.flush()
-    return target
+    return target, True
 
 
 def _merge_event_into_group(

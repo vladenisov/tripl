@@ -703,13 +703,17 @@ async def _apply_merge(
         # Only the last component of the key can differ: the pairing refuses to
         # cross event types, so the row keeps its parent.
         #
-        # Events need no parking pass of their own — they carry indexes on
-        # ``(project, event_type, source_name)`` and nothing unique on the name —
-        # so a rotation among them costs only the all-at-once re-key below. What
-        # it used to cost instead was silence: keyed by name, a swap paired
-        # nothing and the upsert wrote each branch row's ``source_name`` onto the
-        # main row wearing its new name, mixing up two scan identities with no
-        # constraint to stop it (tripl-htcz).
+        # Events need no parking pass of their own: nothing is unique on the
+        # name, so a rotation among them costs only the all-at-once re-key
+        # below. Their identity IS unique — ``uq_event_scan_identity`` on
+        # ``(event_type_id, source_name)`` (tripl-8tdl) — and this is a
+        # name-only write, which never touches it. What the pairing used to
+        # cost instead was silence: keyed by name, a swap paired nothing and the
+        # upsert wrote each branch row's ``source_name`` onto the main row
+        # wearing its new name, mixing up two scan identities with, back then,
+        # no constraint to stop it (tripl-htcz). Today that write trips the
+        # constraint and ``_commit_merged_plan`` answers 409; the pairing is
+        # what keeps a legitimate rotation from ever reaching it.
         main_event_by_key[old_event_key].name = new_event_key[-1]
     rekey_in_place(main_event_by_key, event_renames)
     rekey_in_place(base_event_by_key, event_renames)
@@ -1337,12 +1341,17 @@ async def _commit_merged_plan(
     failing the same way until someone renamed a row by hand (tripl-htcz).
 
     The known cause — a rename cycle colliding on
-    ``uq_variable_project_name`` / ``uq_variable_project_source_name`` — is
-    settled by the pairing in ``_apply_merge``, so anything still arriving here
-    is a shape we have not modelled. It is still the user's merge that cannot
-    proceed, and 409 says that; the constraint's own text stays in the log,
-    where an operator can read it against the request id, rather than in a
-    response body that would leak the schema.
+    ``uq_variable_project_name`` / ``uq_variable_project_source_name``, or on
+    ``uq_event_scan_identity`` now that an event's identity is unique per type
+    (tripl-8tdl) — is settled by the pairing in ``_apply_merge``. What still
+    arrives here is either a shape the pairing declines on purpose — a branch
+    that deletes a row and moves another onto its name, where the write of the
+    freed identity runs ahead of the removal (the removal-order note in
+    ``_apply_merge`` says why that is the better failure) — or one we have not
+    modelled. It is still the user's merge that cannot proceed, and 409 says
+    that; the constraint's own text stays in the log, where an operator can
+    read it against the request id, rather than in a response body that would
+    leak the schema.
     """
     # Bound to plain locals BEFORE the first write, and that ordering is the
     # whole point. A failed flush rolls back to the ROOT transaction, and
