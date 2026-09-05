@@ -682,3 +682,94 @@ async def test_disabling_a_destination_discards_what_it_was_holding(client: Asyn
             .all()
         )
         assert held == []
+
+
+def test_the_buffered_incident_handle_is_the_one_the_digest_will_deliver(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A `metric` scope is project-global; two scans must not open two incidents.
+
+    The buffer keys metric scopes on the CANONICAL scan config (the lowest id,
+    mirroring AlertRuleState) while `_correlation_group_id` is derived from the
+    FIRING one — dispatch builds `correlation_by_anomaly` with `config.id` for
+    every scope. So the second scan's collection computes a DIFFERENT group id
+    than the row already carries. Touching that computed id would leave a stray
+    AlertCorrelationState: an inbox row an operator can acknowledge, holding a
+    decision the digest can never honour because the delivered item references
+    the other id.
+
+    Exercised directly on `_buffer_pending_items` rather than through metric
+    detection, so the assertion is about the id bookkeeping and nothing else.
+    """
+    from tripl.alerting_matching import DriftAlertCandidate
+    from tripl.models.alert_correlation_state import AlertCorrelationState
+
+    with sync_session_factory() as session:
+        config_a, destination, rule, _event_type = _seed(session, cron=_DAILY)
+        config_b = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=config_a.data_source_id,
+            project_id=config_a.project_id,
+            name="Scan B",
+            base_query="SELECT time, event_name FROM events",
+            time_column="time",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add(config_b)
+        session.commit()
+
+        canonical = metrics_dispatch._project_metric_state_config_id(session, config_a)
+        scope_ref = str(uuid.uuid4())
+
+        def buffer_from(config: ScanConfig) -> None:
+            candidate = DriftAlertCandidate(
+                id=uuid.uuid4(),
+                scan_config_id=None,
+                scope_type="metric",
+                scope_ref=scope_ref,
+                event_id=None,
+                event_type_id=None,
+                bucket=_BUCKET,
+                direction="spike",
+                actual_count=200.0,
+                expected_count=10.0,
+                drift_field=None,
+                drift_type=None,
+                sample_value=None,
+            )
+            metrics_dispatch._buffer_pending_items(
+                session,
+                config,
+                rule=rule,
+                destination=destination,
+                anomalies=[candidate],
+                scope_names={("metric", scope_ref): "Signups"},
+                # Exactly what dispatch computes: keyed on the FIRING config.
+                correlation_by_anomaly={
+                    id(candidate): metrics_dispatch._correlation_group_id(
+                        scan_config_id=config.id,
+                        rule_id=rule.id,
+                        scope_type="metric",
+                        scope_ref=scope_ref,
+                        direction="spike",
+                    )
+                },
+                scan_job_id=None,
+                metric_state_config_id=canonical,
+                now=datetime.now(UTC),
+            )
+            session.commit()
+
+        buffer_from(config_a)
+        buffer_from(config_b)
+
+        buffered = session.execute(select(AlertPendingItem)).scalars().all()
+        assert len(buffered) == 1, "a project-global metric buffers ONE row, not one per scan"
+        assert buffered[0].observation_count == 2
+        assert buffered[0].scan_config_id == canonical
+
+        states = session.execute(select(AlertCorrelationState)).scalars().all()
+        assert [state.correlation_group_id for state in states] == [
+            buffered[0].correlation_group_id
+        ], "one incident, keyed on the id the digest will actually deliver"

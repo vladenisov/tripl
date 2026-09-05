@@ -145,6 +145,41 @@ Notes:
 - mypy runs in `strict` mode over `src/tripl` and excludes the test tree.
 - Run the checks for the side you touched before opening a PR.
 
+### Alert digest concurrency gate (needs a real PostgreSQL)
+
+`flush_due_alert_digests` is kept safe under concurrency by two things the rest
+of the suite cannot execute, because it runs on SQLite: the plain
+`SELECT ... FOR UPDATE` in `_build_digest`, which SQLite does not emit at all,
+and `_try_acquire_advisory_lock`, which returns "acquired" off PostgreSQL
+without asking the database. `src/tripl/tests/test_alert_digest_concurrency_pg.py`
+runs both against a real server (tripl-o3ry). Without one it SKIPS, so a plain
+`uv run pytest` is unaffected; CI runs it as its own job with
+`TRIPL_TEST_PG_REQUIRED=1`, which turns that skip into a failure.
+
+```bash
+docker run --rm -d --name tripl-digest-pg -p 55432:5432 \
+  -e POSTGRES_USER=tripl -e POSTGRES_PASSWORD=tripl -e POSTGRES_DB=tripl_digest \
+  postgres:18
+
+cd backend
+TRIPL_TEST_PG_URL=postgresql+psycopg://tripl:tripl@localhost:55432/tripl_digest \
+  uv run pytest -q -m pg_concurrency
+```
+
+Stock `postgres` is enough here, unlike the relevance and migration jobs: the
+gate builds its schema from `Base.metadata.create_all` rather than running the
+revision chain, so nothing asks for the `vector` extension. It drops and
+recreates every table per test, which is why the database name is
+`tripl_digest` and never `tripl`.
+
+The `FOR UPDATE` case is the one worth understanding. It holds a buffered row's
+lock — standing in for a `collect_metrics` that has written the row and not yet
+committed — and asserts the flush **blocks** rather than returning. With
+`SKIP LOCKED` it would sail past and ship a digest silently missing exactly the
+scope that is firing hardest. Flip `.with_for_update()` to
+`.with_for_update(skip_locked=True)` and the test fails on that assertion,
+which is what makes it a gate rather than decoration.
+
 ### Search relevance harness (needs a real PostgreSQL)
 
 Because the suite runs on SQLite, search keeps a Python fallback and the

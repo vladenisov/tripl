@@ -89,6 +89,15 @@ markers = [
     # xfail(strict=True) marker RelevanceCase still supports for the next measured
     # fault (tripl-338u). See CONTRIBUTING.md, "Search relevance harness".
     "relevance: ranks a fixed corpus with the real PostgreSQL search SQL",
+    # The alert-digest flush concurrency gate
+    # (src/tripl/tests/test_alert_digest_concurrency_pg.py). The rest of the
+    # suite runs on SQLite, where BOTH guards it covers are silent no-ops:
+    # `SELECT ... FOR UPDATE` emits nothing and `_try_acquire_advisory_lock`
+    # returns "acquired" without asking the database. So the flusher's
+    # concurrency safety is executed by nothing else. Needs any empty
+    # PostgreSQL via TRIPL_TEST_PG_URL and SKIPS without one; CI runs it with
+    # TRIPL_TEST_PG_REQUIRED=1, which turns that skip into a failure (tripl-o3ry).
+    "pg_concurrency: exercises the digest flush guards against a real PostgreSQL",
 ]
 filterwarnings = [
     # Third-party deprecations we don't control — keep the run summary clean

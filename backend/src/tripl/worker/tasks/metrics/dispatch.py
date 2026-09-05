@@ -793,7 +793,7 @@ def _buffer_pending_items(
             correlation_group_id=group_id,
             observation_count=1,
         )
-        session.execute(
+        upserted_group_id = session.execute(
             statement.on_conflict_do_update(
                 index_elements=list(_PENDING_ITEM_CONFLICT_KEYS),
                 set_={
@@ -818,15 +818,38 @@ def _buffer_pending_items(
                 # numbers a newer one already wrote — the same stance
                 # ``last_anomaly_bucket = max(...)`` takes in the send gate.
                 where=AlertPendingItem.bucket <= statement.excluded.bucket,
-            )
-        )
+            ).returning(AlertPendingItem.correlation_group_id)
+        ).scalar_one_or_none()
+        # RETURNING yields nothing when the ``where`` guard above vetoed the
+        # update (a late collection of an older bucket), so fall back to the
+        # row that is actually there.
+        if upserted_group_id is None:
+            upserted_group_id = session.execute(
+                select(AlertPendingItem.correlation_group_id).where(
+                    AlertPendingItem.destination_id == destination.id,
+                    AlertPendingItem.rule_id == rule.id,
+                    AlertPendingItem.scan_config_id == scan_config_id,
+                    AlertPendingItem.scope_type == anomaly.scope_type,
+                    AlertPendingItem.scope_ref == anomaly.scope_ref,
+                    AlertPendingItem.direction == anomaly.direction,
+                )
+            ).scalar_one_or_none()
+
         # Keep the incident's inbox last-seen live while it waits, so an
         # operator can still acknowledge or mute it before the digest ships.
-        # Idempotent (``last_seen_at = max(...)``), and it uses the id stored
-        # on the buffered row, so the flush cannot mint a different one.
-        _touch_correlation_state(
-            session,
-            project_id=config.project_id,
-            correlation_group_id=group_id,
-            seen_at=anomaly.bucket,
-        )
+        #
+        # Touch the id the ROW ended up carrying, not the one just computed.
+        # They differ for a ``metric`` scope on a multi-scan project: the buffer
+        # keys on the CANONICAL config while ``_correlation_group_id`` is
+        # derived from the FIRING one (dispatch builds ``correlation_by_anomaly``
+        # with ``config.id`` for every scope), so the second config's collection
+        # would otherwise touch a group the delivered item never references —
+        # leaving a stray AlertCorrelationState and an inbox decision the digest
+        # cannot honour. Idempotent either way (``last_seen_at = max(...)``).
+        if upserted_group_id is not None:
+            _touch_correlation_state(
+                session,
+                project_id=config.project_id,
+                correlation_group_id=upserted_group_id,
+                seen_at=anomaly.bucket,
+            )
