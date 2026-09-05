@@ -217,3 +217,39 @@ def test_an_unusable_timezone_is_rejected_at_write_time_but_degrades_at_read_tim
 
     assert resolve_timezone("Mars/Olympus_Mons") == resolve_timezone("UTC")
     assert resolve_timezone(None) == resolve_timezone("UTC")
+
+
+# ── the project timezone, as it arrives from a human ──────────────────────
+
+
+@pytest.mark.parametrize(
+    ("supplied", "stored"),
+    [
+        ("Europe/Moscow", "Europe/Moscow"),
+        # A timezone is something people paste, and ZoneInfo does not forgive
+        # the surrounding space: each of these is an ordinary copy from a docs
+        # page or a spreadsheet cell, and each was answered "Unknown timezone".
+        (" Europe/Moscow ", "Europe/Moscow"),
+        ("Europe/Moscow\n", "Europe/Moscow"),
+        ("\tUTC", "UTC"),
+    ],
+)
+def test_a_pasted_timezone_is_normalised_before_it_is_resolved(supplied: str, stored: str) -> None:
+    from tripl.schemas.project import ProjectCreate, ProjectUpdate
+
+    assert ProjectUpdate(timezone=supplied).timezone == stored
+    # Normalising in one schema and not the other would let the same zone be
+    # stored under two spellings depending on which endpoint wrote it.
+    assert ProjectCreate(name="x", slug="x", timezone=supplied).timezone == stored
+
+
+def test_an_unresolvable_or_overlong_timezone_is_a_422_not_a_database_error() -> None:
+    """The column is String(64); the schema says so rather than letting the
+    write fail. Nothing valid is constrained — the longest real zone is
+    America/Argentina/ComodRivadavia at 32 characters."""
+    from tripl.schemas.project import ProjectUpdate
+
+    with pytest.raises(ValueError, match="Unknown timezone"):
+        ProjectUpdate(timezone=" Mars/Olympus_Mons ")
+    with pytest.raises(ValueError, match="at most 64 characters"):
+        ProjectUpdate(timezone="Europe/" + "x" * 100)

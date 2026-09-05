@@ -28,21 +28,29 @@ class ProjectCreate(BaseModel):
     )
     # IANA zone every wall-clock schedule in this project is read in —
     # today, alert digest cadences. 'UTC' is what every project had
-    # implicitly before the column existed.
-    timezone: str = "UTC"
+    # implicitly before the column existed. max_length mirrors the
+    # String(64) column; the longest real zone is 32 characters
+    # (America/Argentina/ComodRivadavia), so it constrains nothing valid.
+    timezone: str = Field("UTC", max_length=64)
 
     @field_validator("timezone")
     @classmethod
     def check_timezone(cls, value: str | None) -> str | None:
-        """Reject a zone ``zoneinfo`` cannot resolve.
+        """Normalise, then reject a zone ``zoneinfo`` cannot resolve.
 
         The alert flusher degrades to UTC on an unresolvable zone so one bad
         project cannot stop every other project's digest — which is precisely
         why an unresolvable one must never be storable.
+
+        Stripped first because a timezone is something people paste, and
+        ``ZoneInfo`` does not forgive the surrounding space: " Europe/Moscow "
+        is a perfectly ordinary copy from a docs page and was answered with
+        "Unknown timezone". Stripping also means one spelling reaches the
+        column, so two projects cannot hold the same zone under two values.
         """
         if value is None:
             return None
-        return validate_timezone(value)
+        return validate_timezone(value.strip())
 
 
 class ProjectUpdate(BaseModel):
@@ -61,20 +69,26 @@ class ProjectUpdate(BaseModel):
     # ``str`` with a None default makes the PATCH field optional while still
     # rejecting an explicitly supplied JSON null — the column is NOT NULL, and
     # the generic setattr loop in ``update_project`` would otherwise write it.
-    timezone: str = Field(cast(str, None))
+    timezone: str = Field(cast(str, None), max_length=64)
 
     @field_validator("timezone")
     @classmethod
     def check_timezone(cls, value: str | None) -> str | None:
-        """Reject a zone ``zoneinfo`` cannot resolve.
+        """Normalise, then reject a zone ``zoneinfo`` cannot resolve.
 
         The alert flusher degrades to UTC on an unresolvable zone so one bad
         project cannot stop every other project's digest — which is precisely
         why an unresolvable one must never be storable.
+
+        Stripped first because a timezone is something people paste, and
+        ``ZoneInfo`` does not forgive the surrounding space: " Europe/Moscow "
+        is a perfectly ordinary copy from a docs page and was answered with
+        "Unknown timezone". Stripping also means one spelling reaches the
+        column, so two projects cannot hold the same zone under two values.
         """
         if value is None:
             return None
-        return validate_timezone(value)
+        return validate_timezone(value.strip())
 
 
 class DetectionResetPeriod(BaseModel):
