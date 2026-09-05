@@ -10,6 +10,7 @@ import {
   cadenceToCron,
   cronToCadence,
   describeCron,
+  formatInProjectZone,
   validateCadence,
   type CadenceDraft,
   type CadenceMode,
@@ -156,7 +157,7 @@ export function DeliveryScheduleField({
             ? "Alerts are sent as soon as a collection finds something."
             : `${describeCron(value)} (${projectTimezone}). Everything found in between is collected into one message.`}
           {nextDigestAt && draft.mode !== "immediate"
-            ? ` Next: ${new Date(nextDigestAt).toLocaleString()}.`
+            ? ` Next: ${formatInProjectZone(nextDigestAt, projectTimezone)}.`
             : ""}
         </p>
       )}

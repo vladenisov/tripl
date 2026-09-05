@@ -87,13 +87,15 @@ export function cadenceToCron(draft: CadenceDraft): string | null {
         .map(part => parseTime(part))
         .filter((at): at is { hour: number; minute: number } => at !== null)
       if (parsed.length === 0) return null
-      // Cron cannot express "09:00 and 18:30" as one expression when the
-      // minutes differ, so the shared-minute case is the one the preset
-      // covers; anything else falls back to the union of minutes and hours,
-      // which the description below states plainly rather than hiding.
-      const minutes = [...new Set(parsed.map(at => at.minute))].sort((a, b) => a - b)
+      // Cron fields are a CROSS-PRODUCT, not a list of pairs: `0,30 9,18 * * *`
+      // fires at 09:00, 09:30, 18:00 AND 18:30. So this preset can only express
+      // times that share a minute, and `validateCadence` rejects anything else
+      // and points at Custom (cron). Building from the shared minute here means
+      // the cross-product form can never be emitted at all, even by a caller
+      // that skipped validation.
+      const minute = parsed[0].minute
       const hours = [...new Set(parsed.map(at => at.hour))].sort((a, b) => a - b)
-      return `${minutes.join(',')} ${hours.join(',')} * * *`
+      return `${minute} ${hours.join(',')} * * *`
     }
     case 'weekly': {
       const at = parseTime(draft.time)
@@ -143,6 +145,27 @@ export function cronToCadence(cron: string | null | undefined): CadenceDraft {
   return base
 }
 
+/**
+ * An absolute instant rendered in the PROJECT's timezone, with the zone named.
+ *
+ * `toLocaleString()` alone renders in the viewer's zone, which is actively
+ * misleading here: the schedule was written as a wall-clock time in the
+ * project's zone, so an operator in another country would read "next digest
+ * 07:00" for a schedule they set to 09:00 and reasonably conclude it was wrong.
+ */
+export function formatInProjectZone(iso: string, timeZone: string | undefined): string {
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return iso
+  const zone = timeZone || 'UTC'
+  try {
+    return `${at.toLocaleString(undefined, { timeZone: zone, dateStyle: 'medium', timeStyle: 'short' })} (${zone})`
+  } catch {
+    // An unresolvable zone must not blank the tooltip; the backend degrades to
+    // UTC for the same reason.
+    return `${at.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })} (local)`
+  }
+}
+
 /** A one-line description of a cron expression, for the card and the form. */
 export function describeCron(cron: string | null | undefined): string {
   if (!cron || cron.trim() === '') return 'Immediately, after every collection'
@@ -176,9 +199,17 @@ export function validateCadence(draft: CadenceDraft): string | null {
     case 'times_of_day': {
       const parts = draft.times.split(',').map(part => part.trim()).filter(Boolean)
       if (parts.length === 0) return 'List at least one time, for example 09:00, 18:00.'
-      return parts.every(part => parseTime(part))
+      const parsed = parts.map(part => parseTime(part))
+      if (parsed.some(at => at === null)) {
+        return 'Enter each time as HH:MM, separated by commas.'
+      }
+      // A cron expression multiplies its minute and hour fields together, so
+      // "09:00, 18:30" would also fire at 09:30 and 18:00 — sends nobody asked
+      // for. The preset is honest about what it can express instead.
+      const minutes = new Set(parsed.map(at => at!.minute))
+      return minutes.size === 1
         ? null
-        : 'Enter each time as HH:MM, separated by commas.'
+        : 'Every time must share the same minute (09:00, 18:00). For mixed minutes use Custom (cron).'
     }
     case 'custom': {
       const cleaned = draft.cron.trim().replace(/\s+/g, ' ')

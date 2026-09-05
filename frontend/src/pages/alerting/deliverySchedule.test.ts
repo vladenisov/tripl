@@ -5,6 +5,7 @@ import {
   cadenceToCron,
   cronToCadence,
   describeCron,
+  formatInProjectZone,
   validateCadence,
   type CadenceDraft,
 } from './deliverySchedule'
@@ -94,5 +95,50 @@ describe('validateCadence', () => {
     expect(validateCadence(draft({ mode: 'times_of_day', times: '' }))).toContain('at least one')
     expect(validateCadence(draft({ mode: 'custom', cron: '@daily' }))).toContain('5 fields')
     expect(validateCadence(draft({ mode: 'custom', cron: '' }))).toContain('cron expression')
+  })
+})
+
+describe('times-of-day cannot become a cron cross-product', () => {
+  // Cron multiplies its minute and hour fields: `0,30 9,18 * * *` fires FOUR
+  // times a day, not two. Serializing "09:00, 18:30" that way would schedule
+  // digests nobody asked for, which is the one thing a delivery schedule must
+  // never do.
+  it('rejects a mixed-minute list instead of silently adding fire times', () => {
+    const draft: CadenceDraft = { ...DEFAULT_CADENCE, mode: 'times_of_day', times: '09:00, 18:30' }
+
+    expect(validateCadence(draft)).toContain('same minute')
+    // ...and even unvalidated, the serializer never emits the cross-product.
+    expect(cadenceToCron(draft)).not.toContain('0,30')
+  })
+
+  it('accepts a shared-minute list and emits exactly those times', () => {
+    const draft: CadenceDraft = { ...DEFAULT_CADENCE, mode: 'times_of_day', times: '09:15, 18:15' }
+
+    expect(validateCadence(draft)).toBeNull()
+    expect(cadenceToCron(draft)).toBe('15 9,18 * * *')
+    expect(describeCron('15 9,18 * * *')).toBe('Every day at 09:15, 18:15')
+  })
+})
+
+describe('formatInProjectZone', () => {
+  // The schedule is a wall-clock time in the PROJECT's zone. Rendering the next
+  // fire in the viewer's zone would show an operator abroad "07:00" for a
+  // schedule they set to 09:00.
+  const nineMoscow = '2026-09-06T06:00:00Z'
+
+  it('renders the instant in the project zone and names it', () => {
+    const shown = formatInProjectZone(nineMoscow, 'Europe/Moscow')
+
+    expect(shown).toContain('9:00')
+    expect(shown).toContain('Europe/Moscow')
+  })
+
+  it('shows the same instant differently for a different project zone', () => {
+    expect(formatInProjectZone(nineMoscow, 'UTC')).toContain('6:00')
+  })
+
+  it('degrades instead of blanking when the zone is unusable', () => {
+    expect(formatInProjectZone(nineMoscow, 'Mars/Olympus_Mons')).toContain('local')
+    expect(formatInProjectZone('not-a-date', 'UTC')).toBe('not-a-date')
   })
 })

@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch"
 import { getErrorMessage } from '@/lib/utils'
 import { formatDateTime } from "@/lib/datetime"
 import { countOf } from "@/lib/plural"
-import { describeCron } from "./deliverySchedule"
+import { describeCron, formatInProjectZone } from "./deliverySchedule"
 import { invalidateAlertingConfig } from "./alertingCache"
 
 interface DestinationCardProps {
@@ -88,7 +88,7 @@ export function DestinationCard({
                   className="text-[10px]"
                   title={
                     destination.next_digest_at
-                      ? `Next digest ${new Date(destination.next_digest_at).toLocaleString()}`
+                      ? `Next digest ${formatInProjectZone(destination.next_digest_at, destination.project_timezone)}`
                       : undefined
                   }
                 >
