@@ -1216,7 +1216,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
                   <Label htmlFor="dest-channel">Channel</Label>
                   <Select
                     value={destinationForm.type}
-                    onValueChange={value => setDestinationForm(current => ({ ...defaultDestinationForm(value as DestinationChannel), name: current.name }))}
+                    onValueChange={value => setDestinationForm(current => ({ ...defaultDestinationForm(value as DestinationChannel), name: current.name, delivery_schedule_cron: current.delivery_schedule_cron }))}
                     disabled={!!editingDestination}
                   >
                     <SelectTrigger id="dest-channel"><SelectValue /></SelectTrigger>
