@@ -21,6 +21,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from httpx import AsyncClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -37,6 +38,7 @@ from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
+from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks import alert_flush
 from tripl.worker.tasks.metrics import dispatch as metrics_dispatch
 
@@ -575,3 +577,108 @@ def test_switching_back_to_immediate_ships_what_was_still_being_held(
         assert session.execute(select(AlertPendingItem)).scalars().all() == []
         refreshed = session.execute(select(AlertDestination)).scalars().one()
         assert refreshed.last_flushed_at is None
+
+
+@pytest.mark.asyncio
+async def test_disabling_a_destination_discards_what_it_was_holding(client: AsyncClient) -> None:
+    """Disabling already means "forget this destination's alerting state".
+
+    A buffer that survived it would make a re-enable ship measurements from
+    before the disable as though they were current — on a daily cadence, up to
+    a day stale, rendered as a live page.
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Digest Disable", "slug": "digest-disable", "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    destination_resp = await client.post(
+        "/api/v1/projects/digest-disable/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Daily Slack",
+            "webhook_url": "https://hooks.slack.com/services/T0/B0/xxxxxxxxxxxxxxxxxxxxxxxx",
+            "delivery_schedule_cron": "0 9 * * *",
+        },
+    )
+    assert destination_resp.status_code == 201, destination_resp.text
+    destination = destination_resp.json()
+    assert destination["delivery_schedule_cron"] == "0 9 * * *"
+    # A destination born with a cadence adopts the clock, so its first digest is
+    # the next real fire rather than an immediate backlog dump.
+    assert destination["last_digest_at"] is not None
+    assert destination["next_digest_at"] is not None
+    destination_id = uuid.UUID(destination["id"])
+
+    rule_resp = await client.post(
+        f"/api/v1/projects/digest-disable/alert-destinations/{destination_id}/rules",
+        json={"name": "Everything"},
+    )
+    assert rule_resp.status_code == 201
+    rule_id = uuid.UUID(rule_resp.json()["id"])
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"DS {uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project_id,
+            name="Scan",
+            base_query="SELECT time, event_name FROM events",
+            time_column="time",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, config])
+        await session.flush()
+        session.add(
+            AlertPendingItem(
+                id=uuid.uuid4(),
+                project_id=project_id,
+                destination_id=destination_id,
+                rule_id=rule_id,
+                scan_config_id=config.id,
+                scope_type="event_type",
+                scope_ref=str(uuid.uuid4()),
+                scope_name="Page",
+                bucket=datetime.now(UTC),
+                direction="spike",
+                actual_count=200.0,
+                expected_count=10.0,
+                correlation_group_id=uuid.uuid4(),
+            )
+        )
+        await session.commit()
+
+    disable_resp = await client.patch(
+        f"/api/v1/projects/digest-disable/alert-destinations/{destination_id}",
+        json={"enabled": False},
+    )
+    assert disable_resp.status_code == 200
+    assert disable_resp.json()["enabled"] is False
+    assert disable_resp.json()["last_digest_at"] is None
+
+    async with TestSessionLocal() as session:
+        held = (
+            (
+                await session.execute(
+                    select(AlertPendingItem).where(
+                        AlertPendingItem.destination_id == destination_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert held == []
