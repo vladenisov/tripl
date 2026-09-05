@@ -155,13 +155,16 @@ describe('ProjectGeneralSection', () => {
     // Wait for the project to load (the Save button renders once it resolves).
     expect((await screen.findAllByRole('button', { name: /Save/i })).length).toBeGreaterThan(0)
 
-    // The four preview-only fields (accent color + the Defaults trio) are gone.
-    // "Timezone" here is scoped to this section — ProfileSection's real Timezone
-    // is a different component and is not rendered in this tree.
+    // The preview-only fields (accent color + the Defaults pair) are gone.
     expect(screen.queryByText('Accent color')).toBeNull()
     expect(screen.queryByText('Default branch')).toBeNull()
     expect(screen.queryByText('Default environment')).toBeNull()
-    expect(screen.queryByText('Timezone')).toBeNull()
+
+    // Timezone used to be in that list. It is now a REAL setting, not a
+    // preview: alert delivery schedules are wall-clock times read in the
+    // project's zone, so it is rendered, enabled, and saved with the rest of
+    // the identity card.
+    expect(screen.getByLabelText('Timezone')).toBeEnabled()
 
     // No inert "Coming soon" badges survive in the release view.
     expect(screen.queryByText(/Coming soon/i)).toBeNull()

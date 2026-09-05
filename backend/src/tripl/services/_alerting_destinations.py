@@ -17,13 +17,16 @@ from tripl.alerting_validation import (
     validate_telegram_bot_token,
     validate_telegram_chat_id,
 )
+from tripl.core.alert_schedule import next_fire_at
 from tripl.crypto import encrypt_value
 from tripl.models.alert_destination import AlertDestination, AlertDestinationType
+from tripl.models.alert_pending_item import AlertPendingItem
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_filter import AlertRuleFilter
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
+from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.alerting import (
     AlertDestinationCreate,
@@ -244,11 +247,28 @@ def rule_to_response(rule: AlertRule, health: RuleHealth, *, now: datetime) -> A
     )
 
 
+def _next_digest_at(
+    destination: AlertDestination,
+    *,
+    now: datetime,
+    project_timezone: str,
+) -> datetime | None:
+    """When this destination's next digest is due, or None if it is immediate."""
+    cron = destination.delivery_schedule_cron
+    if cron is None:
+        return None
+    try:
+        return next_fire_at(cron, tz_name=project_timezone, after=now)
+    except ValueError:
+        return None
+
+
 def destination_to_response(
     destination: AlertDestination,
     health: DestinationHealth,
     *,
     now: datetime,
+    project_timezone: str = "UTC",
 ) -> AlertDestinationResponse:
     """One destination card. ``now`` is the clock every mute on it is read against.
 
@@ -282,6 +302,15 @@ def destination_to_response(
         linear_team_id=destination.linear_team_id,
         linear_state_id=destination.linear_state_id,
         linear_label_ids=destination.linear_label_ids,
+        delivery_schedule_cron=destination.delivery_schedule_cron,
+        project_timezone=project_timezone,
+        last_digest_at=destination.last_flushed_at,
+        # Computed rather than stored: the answer changes with the clock, and a
+        # cached one would be wrong the moment it was read. `next_fire_at`
+        # never raises on a stored expression — the API validated it on write —
+        # but a row written before that validation existed would, and a card
+        # that 500s is worse than one that omits the preview.
+        next_digest_at=_next_digest_at(destination, now=now, project_timezone=project_timezone),
         is_local=destination.type == AlertDestinationType.demo_sink,
         delivery_count=health.delivery_count,
         incident_count=health.incident_count,
@@ -300,10 +329,14 @@ async def build_destination_response(
 ) -> AlertDestinationResponse:
     """One destination, with the rollups its card and delete confirm need."""
     health = await load_destination_health(session, [destination.id])
+    project_timezone = await session.scalar(
+        select(Project.timezone).where(Project.id == destination.project_id)
+    )
     return destination_to_response(
         destination,
         health.get(destination.id, DestinationHealth()),
         now=datetime.now(UTC),
+        project_timezone=project_timezone or "UTC",
     )
 
 
@@ -438,6 +471,7 @@ async def list_destinations(session: AsyncSession, slug: str) -> list[AlertDesti
             destination,
             health.get(destination.id, DestinationHealth()),
             now=now,
+            project_timezone=project.timezone,
         )
         for destination in destinations
     ]
@@ -495,6 +529,10 @@ async def create_destination(
         linear_team_id=data.linear_team_id,
         linear_state_id=data.linear_state_id,
         linear_label_ids=data.linear_label_ids,
+        delivery_schedule_cron=data.delivery_schedule_cron,
+        # A destination born with a cadence adopts the clock immediately, so
+        # its first digest is the next real fire rather than a backlog dump.
+        last_flushed_at=(datetime.now(UTC) if data.delivery_schedule_cron is not None else None),
     )
     session.add(destination)
     await session.commit()
@@ -567,10 +605,27 @@ async def update_destination(
             )
     if "name" in update_dict:
         destination.name = update_dict["name"]
+    if "delivery_schedule_cron" in update_dict:
+        cadence = update_dict["delivery_schedule_cron"]
+        if cadence != destination.delivery_schedule_cron:
+            destination.delivery_schedule_cron = cadence
+            # Adopt the clock on every cadence change. Without this a
+            # destination switched to "daily at 09:00" at 14:00 would carry a
+            # watermark from an older cadence, and the flusher would find
+            # today's 09:00 already past and unflushed — dumping whatever is
+            # buffered within the minute instead of waiting for tomorrow.
+            destination.last_flushed_at = datetime.now(UTC) if cadence is not None else None
     if "enabled" in update_dict:
         destination.enabled = update_dict["enabled"]
         if destination.enabled is False:
             await clear_rule_states(session, [rule.id for rule in destination.rules])
+            # "Disable a destination" already means "forget its alerting
+            # state". A buffer that survived would make a re-enable ship
+            # measurements from before the disable as if they were current.
+            await session.execute(
+                delete(AlertPendingItem).where(AlertPendingItem.destination_id == destination.id)
+            )
+            destination.last_flushed_at = None
     if destination.type == AlertDestinationType.slack and "webhook_url" in update_dict:
         webhook_url = update_dict["webhook_url"]
         if webhook_url is not None:

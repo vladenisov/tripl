@@ -89,6 +89,9 @@ export const alertingApi = {
       linear_team_id?: string | null
       linear_state_id?: string | null
       linear_label_ids?: string | null
+      // null means immediate — send after every collection. Otherwise a
+      // 5-field cron expression read in the project's timezone.
+      delivery_schedule_cron?: string | null
     },
   ) => api.post<AlertDestination>(`/projects/${slug}/alert-destinations`, data),
 
@@ -116,6 +119,9 @@ export const alertingApi = {
       linear_team_id?: string | null
       linear_state_id?: string | null
       linear_label_ids?: string | null
+      // null means immediate — send after every collection. Otherwise a
+      // 5-field cron expression read in the project's timezone.
+      delivery_schedule_cron?: string | null
     },
   ) => api.patch<AlertDestination>(`/projects/${slug}/alert-destinations/${destinationId}`, data),
 

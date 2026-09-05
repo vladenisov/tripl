@@ -5,6 +5,8 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from tripl.alerting_matching import AlertMatchCandidate, rule_matches_anomaly
@@ -12,7 +14,9 @@ from tripl.core.analyzers.anomaly_detector import SCOPE_METRIC
 from tripl.models.alert_correlation_state import AlertCorrelationState
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
-from tripl.models.alert_destination import AlertDestinationType
+from tripl.models.alert_destination import AlertDestination, AlertDestinationType
+from tripl.models.alert_pending_item import AlertPendingItem
+from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.domain_enums import AnomalyDirection
 from tripl.models.scan_config import ScanConfig
@@ -350,6 +354,26 @@ def _prepare_alert_deliveries(
         if not enabled_rules:
             continue
 
+        # A destination on a delivery cadence holds its alerts in
+        # ``alert_pending_items`` until ``flush_due_alert_digests`` mints the
+        # digest, and the cadence IS that destination's rate limiter. The
+        # rule's ``cooldown_minutes`` is therefore NOT applied a second time
+        # here.
+        #
+        # Applying both puts two limiters of comparable period in series, and
+        # the default makes them the SAME period: ``cooldown_minutes`` defaults
+        # to 1440 and "daily at 09:00" is the cadence people ask for. The
+        # cooldown clock starts when the digest is SENT, a hair after the fire
+        # instant, so the next day's collections are all a few seconds short of
+        # elapsed and buffer nothing — every other digest arrives empty and the
+        # real delivery rate halves. Letting the cadence own the rate is both
+        # simpler and what a digest means: here is what is wrong right now.
+        #
+        # The freshness half of the gate is untouched, so a scope that produced
+        # no new bucket is still not re-reported, and the buffer's unique key
+        # collapses a scope that re-fires all day into ONE digest line.
+        cooldown_applies = destination.delivery_schedule_cron is None
+
         for rule in enabled_rules:
             # Non-metric scopes are config-partitioned (state keyed by config.id);
             # metric scopes are project-global, keyed by the canonical config so
@@ -457,7 +481,7 @@ def _prepare_alert_deliveries(
                         # because nothing consulted it. Elapsed time still lets
                         # the case this branch exists for through: a scope that
                         # closed and reopens long after keeps alerting.
-                        should_send = _cooldown_elapsed(
+                        should_send = not cooldown_applies or _cooldown_elapsed(
                             current_state.last_notified_at,
                             now=now,
                             cooldown_minutes=rule.cooldown_minutes,
@@ -467,10 +491,13 @@ def _prepare_alert_deliveries(
                             current_state.last_anomaly_bucket is None
                             or anomaly.bucket > current_state.last_anomaly_bucket
                         )
-                        and _cooldown_elapsed(
-                            current_state.last_notified_at,
-                            now=now,
-                            cooldown_minutes=rule.cooldown_minutes,
+                        and (
+                            not cooldown_applies
+                            or _cooldown_elapsed(
+                                current_state.last_notified_at,
+                                now=now,
+                                cooldown_minutes=rule.cooldown_minutes,
+                            )
                         )
                     ):
                         should_send = True
@@ -535,100 +562,271 @@ def _prepare_alert_deliveries(
             if not anomalies_to_send:
                 continue
 
-            for chunk in _delivery_chunks(anomalies_to_send, channel=destination.type):
-                delivery = AlertDelivery(
-                    project_id=config.project_id,
-                    scan_config_id=config.id,
-                    scan_job_id=scan_job_id,
-                    destination_id=destination.id,
-                    rule_id=rule.id,
-                    status=AlertDeliveryStatus.pending.value,
-                    channel=destination.type,
-                    matched_count=len(chunk),
-                    payload_snapshot=None,
+            if destination.delivery_schedule_cron is None:
+                delivery_ids.extend(
+                    _create_deliveries(
+                        session,
+                        config,
+                        project_slug=project_slug,
+                        rule=rule,
+                        destination=destination,
+                        anomalies=anomalies_to_send,
+                        scope_names=scope_names,
+                        correlation_by_anomaly=correlation_by_anomaly,
+                        scan_job_id=scan_job_id,
+                    )
                 )
-                session.add(delivery)
-                session.flush()
-                # The snapshot is built AFTER the flush because it now contains
-                # links back to this delivery's own audit row, and those need
-                # the id. Whole-object assignment (not in-place mutation) so
-                # SQLAlchemy sees the JSON column change.
-                delivery.payload_snapshot = _build_delivery_snapshot(
+            else:
+                # Held for this destination's next digest window. Nothing is
+                # dispatched now and no AlertDelivery exists yet, so the
+                # stranded-delivery reaper has nothing to sweep and the Inbox,
+                # the delivery history and their created_at orderings are
+                # untouched until the digest is actually minted.
+                _buffer_pending_items(
+                    session,
                     config,
-                    project_slug=project_slug,
                     rule=rule,
                     destination=destination,
-                    anomalies=chunk,
+                    anomalies=anomalies_to_send,
                     scope_names=scope_names,
-                    delivery_id=delivery.id,
+                    correlation_by_anomaly=correlation_by_anomaly,
+                    scan_job_id=scan_job_id,
+                    metric_state_config_id=metric_state_config_id,
+                    now=now,
                 )
 
-                for anomaly in chunk:
-                    absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
-                    # 0.0 at a zero baseline is a PLACEHOLDER, not a measurement:
-                    # the ratio is undefined and the column is NOT NULL. Nothing
-                    # may emit it as it stands. Readers go through one of two
-                    # encodings of the same gate: humans get the words via
-                    # ``alert_templates.format_percent_delta`` (the message's
-                    # ${percent_delta_label}, the AI prompt) or the frontend's
-                    # ``lib/percentDelta`` mirror; machines get JSON ``null`` via
-                    # ``alert_templates.percent_delta_or_none`` (the generic
-                    # webhook body, ``payload_snapshot``). The percent gate admits
-                    # the class on purpose (tripl-l429.12); printing the
-                    # placeholder reported the largest possible relative move as
-                    # the smallest (tripl-l429.24, tripl-l429.27).
-                    # The one deliberate exception is the raw ${percent_delta}
-                    # template variable, whose documented contract is a bare
-                    # number; see ``alerts_messages._build_item_template_context``.
-                    percent_delta = (
-                        absolute_delta / anomaly.expected_count * 100
-                        if anomaly.expected_count > 0
-                        else 0.0
-                    )
-                    details_path, monitoring_path = _build_item_paths(
-                        project_slug,
-                        scope_type=anomaly.scope_type,
-                        scope_ref=anomaly.scope_ref,
-                        event_id=anomaly.event_id,
-                        delivery_id=delivery.id,
-                        correlation_group_id=correlation_by_anomaly.get(id(anomaly)),
-                    )
-                    session.add(
-                        AlertDeliveryItem(
-                            delivery_id=delivery.id,
-                            scope_type=anomaly.scope_type,
-                            scope_ref=anomaly.scope_ref,
-                            scope_name=scope_names[(anomaly.scope_type, anomaly.scope_ref)],
-                            event_type_id=anomaly.event_type_id,
-                            event_id=anomaly.event_id,
-                            bucket=anomaly.bucket,
-                            direction=anomaly.direction,
-                            actual_count=anomaly.actual_count,
-                            expected_count=anomaly.expected_count,
-                            absolute_delta=absolute_delta,
-                            percent_delta=percent_delta,
-                            details_path=details_path,
-                            monitoring_path=monitoring_path,
-                            drift_field=getattr(anomaly, "drift_field", None),
-                            drift_type=getattr(anomaly, "drift_type", None),
-                            sample_value=getattr(anomaly, "sample_value", None),
-                            # Only release regressions carry one (see
-                            # signals.py). It is snapshotted here rather than
-                            # read back at render time because the source rows
-                            # are deleted on every recalculation, so an Inbox
-                            # retry would otherwise render an unqualified line.
-                            window_from=getattr(anomaly, "window_from", None),
-                            correlation_group_id=correlation_by_anomaly.get(id(anomaly)),
-                        )
-                    )
-                    item_group_id = correlation_by_anomaly.get(id(anomaly))
-                    if item_group_id is not None:
-                        _touch_correlation_state(
-                            session,
-                            project_id=config.project_id,
-                            correlation_group_id=item_group_id,
-                            seen_at=anomaly.bucket,
-                        )
-                delivery_ids.append(delivery.id)
+    return delivery_ids
+
+
+def _create_deliveries(
+    session: Session,
+    config: ScanConfig,
+    *,
+    project_slug: str,
+    rule: AlertRule,
+    destination: AlertDestination,
+    anomalies: list[AlertMatchCandidate],
+    scope_names: dict[tuple[str, str], str],
+    correlation_by_anomaly: dict[int, uuid.UUID],
+    scan_job_id: uuid.UUID | None,
+) -> list[uuid.UUID]:
+    """Mint the AlertDelivery + AlertDeliveryItem rows for one (rule, destination).
+
+    Extracted verbatim from ``_prepare_alert_deliveries`` so the immediate path
+    and the scheduled flush (``worker/tasks/alert_flush.py``) mint deliveries
+    through ONE code path. That matters more than it looks: this is where the
+    three machine-readable encodings of a delivery are born together — the
+    ``payload_snapshot`` JSON, the ``AlertDeliveryItem`` rows, and the chunking
+    that keeps a Telegram message under its item cap. A second implementation
+    for digests would be a second chance for them to disagree.
+    """
+    delivery_ids: list[uuid.UUID] = []
+    for chunk in _delivery_chunks(anomalies, channel=destination.type):
+        delivery = AlertDelivery(
+            project_id=config.project_id,
+            scan_config_id=config.id,
+            scan_job_id=scan_job_id,
+            destination_id=destination.id,
+            rule_id=rule.id,
+            status=AlertDeliveryStatus.pending.value,
+            channel=destination.type,
+            matched_count=len(chunk),
+            payload_snapshot=None,
+        )
+        session.add(delivery)
+        session.flush()
+        # The snapshot is built AFTER the flush because it now contains
+        # links back to this delivery's own audit row, and those need
+        # the id. Whole-object assignment (not in-place mutation) so
+        # SQLAlchemy sees the JSON column change.
+        delivery.payload_snapshot = _build_delivery_snapshot(
+            config,
+            project_slug=project_slug,
+            rule=rule,
+            destination=destination,
+            anomalies=chunk,
+            scope_names=scope_names,
+            delivery_id=delivery.id,
+        )
+
+        for anomaly in chunk:
+            absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
+            # 0.0 at a zero baseline is a PLACEHOLDER, not a measurement:
+            # the ratio is undefined and the column is NOT NULL. Nothing
+            # may emit it as it stands. Readers go through one of two
+            # encodings of the same gate: humans get the words via
+            # ``alert_templates.format_percent_delta`` (the message's
+            # ${percent_delta_label}, the AI prompt) or the frontend's
+            # ``lib/percentDelta`` mirror; machines get JSON ``null`` via
+            # ``alert_templates.percent_delta_or_none`` (the generic
+            # webhook body, ``payload_snapshot``). The percent gate admits
+            # the class on purpose (tripl-l429.12); printing the
+            # placeholder reported the largest possible relative move as
+            # the smallest (tripl-l429.24, tripl-l429.27).
+            # The one deliberate exception is the raw ${percent_delta}
+            # template variable, whose documented contract is a bare
+            # number; see ``alerts_messages._build_item_template_context``.
+            percent_delta = (
+                absolute_delta / anomaly.expected_count * 100 if anomaly.expected_count > 0 else 0.0
+            )
+            details_path, monitoring_path = _build_item_paths(
+                project_slug,
+                scope_type=anomaly.scope_type,
+                scope_ref=anomaly.scope_ref,
+                event_id=anomaly.event_id,
+                delivery_id=delivery.id,
+                correlation_group_id=correlation_by_anomaly.get(id(anomaly)),
+            )
+            session.add(
+                AlertDeliveryItem(
+                    delivery_id=delivery.id,
+                    scope_type=anomaly.scope_type,
+                    scope_ref=anomaly.scope_ref,
+                    scope_name=scope_names[(anomaly.scope_type, anomaly.scope_ref)],
+                    event_type_id=anomaly.event_type_id,
+                    event_id=anomaly.event_id,
+                    bucket=anomaly.bucket,
+                    direction=anomaly.direction,
+                    actual_count=anomaly.actual_count,
+                    expected_count=anomaly.expected_count,
+                    absolute_delta=absolute_delta,
+                    percent_delta=percent_delta,
+                    details_path=details_path,
+                    monitoring_path=monitoring_path,
+                    drift_field=getattr(anomaly, "drift_field", None),
+                    drift_type=getattr(anomaly, "drift_type", None),
+                    sample_value=getattr(anomaly, "sample_value", None),
+                    # Only release regressions carry one (see
+                    # signals.py). It is snapshotted here rather than
+                    # read back at render time because the source rows
+                    # are deleted on every recalculation, so an Inbox
+                    # retry would otherwise render an unqualified line.
+                    window_from=getattr(anomaly, "window_from", None),
+                    correlation_group_id=correlation_by_anomaly.get(id(anomaly)),
+                )
+            )
+            item_group_id = correlation_by_anomaly.get(id(anomaly))
+            if item_group_id is not None:
+                _touch_correlation_state(
+                    session,
+                    project_id=config.project_id,
+                    correlation_group_id=item_group_id,
+                    seen_at=anomaly.bucket,
+                )
+        delivery_ids.append(delivery.id)
 
     return delivery_ids
+
+
+# The six columns of ``uq_alert_pending_item_scope``. Spelled out because the
+# upsert names them as conflict targets and the model names them as the
+# constraint — they have to stay the same list.
+_PENDING_ITEM_CONFLICT_KEYS = (
+    "destination_id",
+    "rule_id",
+    "scan_config_id",
+    "scope_type",
+    "scope_ref",
+    "direction",
+)
+
+
+def _buffer_pending_items(
+    session: Session,
+    config: ScanConfig,
+    *,
+    rule: AlertRule,
+    destination: AlertDestination,
+    anomalies: list[AlertMatchCandidate],
+    scope_names: dict[tuple[str, str], str],
+    correlation_by_anomaly: dict[int, uuid.UUID],
+    scan_job_id: uuid.UUID | None,
+    metric_state_config_id: uuid.UUID,
+    now: datetime,
+) -> None:
+    """Hold matched signals for this destination's next digest window.
+
+    Upsert, not insert: a scope that keeps firing is re-offered on every
+    collection, and each one overwrites its buffered row with the newest
+    numbers. That is what makes the digest carry the state of the world at the
+    moment it is SENT rather than the moment the incident opened — and it is
+    why a scope firing all day still occupies exactly one line.
+
+    Values are snapshotted rather than referenced. ``_recalculate_*`` deletes
+    and rewrites the anomaly rows on every collection, so by flush time the row
+    this was built from is gone; ``AlertDeliveryItem.window_from`` carries the
+    same warning for the same reason.
+    """
+    dialect = session.bind.dialect.name if session.bind is not None else "postgresql"
+    insert = sqlite_insert if dialect == "sqlite" else postgresql_insert
+
+    for anomaly in anomalies:
+        group_id = correlation_by_anomaly[id(anomaly)]
+        # Mirror AlertRuleState's key exactly: metric scopes are project-global
+        # and anchor on the canonical config, everything else on the firing one.
+        # Recomputing this at flush time instead would be wrong — the buffered
+        # row would then key differently from the rule state that gates it.
+        scan_config_id = metric_state_config_id if anomaly.scope_type == SCOPE_METRIC else config.id
+        statement = insert(AlertPendingItem).values(
+            # UUIDMixin's default is Python-side and does not fire for a Core
+            # insert, so the id is supplied here.
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            destination_id=destination.id,
+            rule_id=rule.id,
+            scan_config_id=scan_config_id,
+            scan_job_id=scan_job_id,
+            source_anomaly_id=getattr(anomaly, "id", None),
+            scope_type=anomaly.scope_type,
+            scope_ref=anomaly.scope_ref,
+            scope_name=scope_names[(anomaly.scope_type, anomaly.scope_ref)],
+            event_type_id=anomaly.event_type_id,
+            event_id=anomaly.event_id,
+            bucket=anomaly.bucket,
+            direction=anomaly.direction,
+            actual_count=anomaly.actual_count,
+            expected_count=anomaly.expected_count,
+            drift_field=getattr(anomaly, "drift_field", None),
+            drift_type=getattr(anomaly, "drift_type", None),
+            sample_value=getattr(anomaly, "sample_value", None),
+            window_from=getattr(anomaly, "window_from", None),
+            correlation_group_id=group_id,
+            observation_count=1,
+        )
+        session.execute(
+            statement.on_conflict_do_update(
+                index_elements=list(_PENDING_ITEM_CONFLICT_KEYS),
+                set_={
+                    "scan_job_id": statement.excluded.scan_job_id,
+                    "source_anomaly_id": statement.excluded.source_anomaly_id,
+                    "scope_name": statement.excluded.scope_name,
+                    "event_type_id": statement.excluded.event_type_id,
+                    "event_id": statement.excluded.event_id,
+                    "bucket": statement.excluded.bucket,
+                    "actual_count": statement.excluded.actual_count,
+                    "expected_count": statement.excluded.expected_count,
+                    "drift_field": statement.excluded.drift_field,
+                    "drift_type": statement.excluded.drift_type,
+                    "sample_value": statement.excluded.sample_value,
+                    "window_from": statement.excluded.window_from,
+                    # A Core upsert bypasses SQLAlchemy's ``onupdate``, so the
+                    # age sweep's column is advanced by hand.
+                    "updated_at": now,
+                    "observation_count": AlertPendingItem.observation_count + 1,
+                },
+                # Never let a late collection of an OLDER bucket rewind the
+                # numbers a newer one already wrote — the same stance
+                # ``last_anomaly_bucket = max(...)`` takes in the send gate.
+                where=AlertPendingItem.bucket <= statement.excluded.bucket,
+            )
+        )
+        # Keep the incident's inbox last-seen live while it waits, so an
+        # operator can still acknowledge or mute it before the digest ships.
+        # Idempotent (``last_seen_at = max(...)``), and it uses the id stored
+        # on the buffered row, so the flush cannot mint a different one.
+        _touch_correlation_state(
+            session,
+            project_id=config.project_id,
+            correlation_group_id=group_id,
+            seen_at=anomaly.bucket,
+        )

@@ -70,6 +70,61 @@ post a message; **Webhook** POSTs a JSON payload. **MarkdownV2** falls back to
 plain text automatically if a message can't be rendered safely.
 :::
 
+### Delivery schedule — send now, or collect into a digest {#delivery-schedule}
+
+By default a destination delivers **immediately**: the moment a metrics
+collection finds something a rule matches, the message goes out. With
+collections running every few minutes across several scans, that is a message
+whenever anything is wrong — which is what you want for a pager and not what
+you want for a channel people read in the morning.
+
+**Delivery schedule** on the destination changes *when* the messages leave,
+never *what* they contain. Pick a cadence and everything the rules match is
+held and collected instead of sent:
+
+| Cadence | Means |
+|---------|-------|
+| **Immediately** | Send after every collection. The default, and what every destination created before this option existed still does. |
+| **Hourly** | One send per hour, on the hour. |
+| **Daily** | One send a day, at a time you pick. |
+| **Several times a day** | One send at each time you list, e.g. `09:00, 18:00`. |
+| **Weekly** | One send a week, on a day and time you pick. |
+| **Custom (cron)** | A 5-field cron expression — `minute hour day-of-month month day-of-week`, e.g. `0 9,18 * * 1-5` for 09:00 and 18:00 on weekdays. |
+
+Times are read in the **project's timezone**, set on
+*Settings → General → Timezone* (an IANA name such as `Europe/Moscow`; new and
+pre-existing projects are `UTC`). The zone is honoured across daylight-saving
+changes: "daily at 09:00" stays 09:00 local as the UTC offset shifts.
+
+**What "collected" means, exactly.** While a destination is on a cadence, each
+scope that matches a rule occupies **one line**, refreshed by every collection
+until the moment the digest is sent. A scope that has been broken all day is
+one line carrying its *latest* numbers, not twenty-four lines carrying its
+first. Nothing is dropped and nothing is sent twice: an alert that arrives
+while a digest is being assembled simply lands in the next one.
+
+An empty window sends nothing at all — a quiet day is silent, not a message
+saying there is nothing to report.
+
+:::note
+**On a cadence, the cadence is the rate limit.** A rule's
+[cooldown](#rules--what-fires-an-alert) is not applied a second time on top of
+it: with the default 1440-minute cooldown and a daily digest, two limiters of
+the same period would leave every other digest empty. A scope still has to
+produce a *new* reading to be re-reported, so a digest never repeats a figure
+nothing has updated.
+:::
+
+Changing the cadence, or disabling the destination, starts the clock fresh —
+switching to "daily at 09:00" in the afternoon delivers tomorrow at 09:00, and
+never dumps a backlog the moment you save. Disabling a destination discards
+what it was holding, the same way it already clears the rest of its alerting
+state.
+
+Muting or acknowledging an incident during the window still works: the
+[Inbox](#the-inbox) keeps tracking it while it waits, and a monitor you mute
+before the digest goes out is left out of it.
+
 ### Testing a destination
 
 **Test** on a destination card sends one fixed, clearly-marked message through
@@ -459,7 +514,9 @@ snooze or dismiss the drift from there.
 
 **Cooldown** suppresses repeats. Default **1440 minutes (24h)**, tracked
 separately per *(rule, scan, scope)* and measured from the last message that was
-actually delivered. A rule fires when the anomaly first opens, when it re-opens
+actually delivered. It applies to destinations that deliver **immediately**; on
+a destination with a [delivery schedule](#delivery-schedule) the cadence is the
+rate limit instead. A rule fires when the anomaly first opens, when it re-opens
 after recovering, or when a newer anomaly bucket appears — in every case only
 once the cooldown has elapsed. A scope that recovers and relapses within the
 cooldown is still recorded as firing; you just aren't told twice.

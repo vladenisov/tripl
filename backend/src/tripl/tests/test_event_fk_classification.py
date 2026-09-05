@@ -104,6 +104,17 @@ KNOWN_GAPS: dict[tuple[str, str], str] = {}
 
 # Recreated by a later step, so losing them on merge is harmless.
 DELIBERATELY_CASCADES: dict[tuple[str, str], str] = {
+    ("alert_pending_items", "event_id"): (
+        "An alert matched but NOT yet delivered, waiting for its destination's next digest "
+        "window. MERGE: the FK is ondelete CASCADE (unlike alert_delivery_items.event_id, which "
+        "is SET NULL because a sent message is history and must keep its record), so the source's "
+        "buffered rows die with the source event and _prepare_alert_deliveries re-buffers the "
+        "survivor's own anomaly on the next metrics collection — under the correct scope_ref, "
+        "scope_name and correlation_group_id, none of which a blanket re-point would fix. "
+        "Re-pointing would also have to fold on uq_alert_pending_item_scope whenever both events "
+        "were buffered for the same rule. DELETE: same CASCADE, and the right answer for the same "
+        "reason — a digest must not name an event that no longer exists."
+    ),
     ("event_field_values", "event_id"): (
         "_create_group_event_from_source already wrote the target's own values with the rule "
         "overrides applied; the source's are redundant and would collide on "

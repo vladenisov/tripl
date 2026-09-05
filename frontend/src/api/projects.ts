@@ -62,6 +62,7 @@ export const projectsApi = {
     slug?: string
     description?: string
     app_version_keep_releases?: number
+    timezone?: string
   }) =>
     api.patch<Project>(`/projects/${slug}`, data),
   del: (slug: string) => api.del(`/projects/${slug}`),

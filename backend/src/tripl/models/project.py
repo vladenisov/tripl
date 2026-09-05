@@ -38,6 +38,15 @@ class Project(UUIDMixin, TimestampMixin, Base):
         server_default=str(DEFAULT_APP_VERSION_KEEP_RELEASES),
         nullable=False,
     )
+    # IANA zone name every wall-clock schedule in this project is read in —
+    # today only alert digest cadences (`AlertDestination.delivery_schedule_cron`).
+    # 'UTC' reproduces the implicit behaviour of every project that predates
+    # this column, so the backfill is semantically a no-op. Validated against
+    # `zoneinfo.available_timezones()` on write; an unresolvable value degrades
+    # to UTC on read rather than stopping every other project's digest.
+    timezone: Mapped[str] = mapped_column(
+        String(64), default="UTC", server_default="UTC", nullable=False
+    )
 
     # ── Demo identity & provisioning lifecycle ─────────────────────────────
     # A demo is a first-class, generated project. Identity is this explicit

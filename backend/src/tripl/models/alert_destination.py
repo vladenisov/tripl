@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import enum
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.base import Base, TimestampMixin, UtcDateTime, UUIDMixin
 from tripl.models.enum_types import db_enum
 
 if TYPE_CHECKING:
@@ -43,6 +44,27 @@ class AlertDestination(UUIDMixin, TimestampMixin, Base):
     type: Mapped[str] = mapped_column(db_enum(AlertDestinationType, "alert_destination_type"))
     name: Mapped[str] = mapped_column(String(255))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    # Hold this destination's alerts back and deliver them on a cadence instead
+    # of after every metrics collection. NULL — the default, and what every
+    # destination created before this column carries — means IMMEDIATE, i.e.
+    # exactly today's behaviour: `_prepare_alert_deliveries` mints deliveries
+    # and `collect_metrics` dispatches them at the end of the run.
+    #
+    # A 5-field cron expression otherwise, evaluated in the owning project's
+    # timezone (`Project.timezone`). The UI's friendly presets ("daily at
+    # 09:00") are cron strings the frontend generates, so there is exactly ONE
+    # encoding of a cadence in the database and one parser that reads it
+    # (`core/alert_schedule.parse_cron`).
+    delivery_schedule_cron: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Watermark for the cadence: the fire instant of the last window this
+    # destination flushed, never `now()`. Storing the fire instant keeps the
+    # due test a clean total order, and makes the flusher's compare-and-set
+    # reject a repeated DST wall-clock time instead of sending twice.
+    #
+    # UtcDateTime rather than DateTime(timezone=True): SQLite hands tz-aware
+    # columns back naive, and every read of this value is compared against an
+    # aware `datetime.now(UTC)` (see models/base.py:11-18).
+    last_flushed_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
     webhook_url_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     bot_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     chat_id: Mapped[str | None] = mapped_column(String(255), nullable=True)

@@ -102,6 +102,13 @@ export interface AlertDestination {
   linear_team_id: string | null
   linear_state_id: string | null
   linear_label_ids: string | null
+  // Delivery cadence. `null` means immediate — send after every collection,
+  // which is what every destination did before this existed. Otherwise a
+  // 5-field cron expression read in `project_timezone`.
+  delivery_schedule_cron?: string | null
+  project_timezone?: string
+  last_digest_at?: string | null
+  next_digest_at?: string | null
   // True for a demo_sink: a local, non-sendable sink badged LOCAL SIMULATED.
   is_local: boolean
   // Traffic this destination has actually carried. A configured destination that

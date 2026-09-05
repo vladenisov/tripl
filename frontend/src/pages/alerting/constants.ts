@@ -37,6 +37,9 @@ export type DestinationFormState = {
   linear_team_id: string
   linear_state_id: string
   linear_label_ids: string
+  // The cadence as a cron string, or '' for immediate. The form edits it
+  // through the presets in ./deliverySchedule; this is the value that ships.
+  delivery_schedule_cron: string
 }
 
 export type RuleFilterDraft = {
@@ -278,6 +281,7 @@ export function defaultDestinationForm(type: DestinationChannel): DestinationFor
     linear_team_id: '',
     linear_state_id: '',
     linear_label_ids: '',
+    delivery_schedule_cron: '',
   }
 }
 

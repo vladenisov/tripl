@@ -1030,6 +1030,17 @@
             ],
             "title": "Chat Id"
           },
+          "delivery_schedule_cron": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Schedule Cron"
+          },
           "email_from_address": {
             "anyOf": [
               {
@@ -1252,6 +1263,17 @@
             "title": "Delivery Count",
             "type": "integer"
           },
+          "delivery_schedule_cron": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Schedule Cron"
+          },
           "email_from_address": {
             "anyOf": [
               {
@@ -1351,6 +1373,18 @@
             ],
             "title": "Jira Project Key"
           },
+          "last_digest_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Digest At"
+          },
           "linear_api_key_set": {
             "title": "Linear Api Key Set",
             "type": "boolean"
@@ -1392,9 +1426,26 @@
             "title": "Name",
             "type": "string"
           },
+          "next_digest_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Digest At"
+          },
           "project_id": {
             "format": "uuid",
             "title": "Project Id",
+            "type": "string"
+          },
+          "project_timezone": {
+            "default": "UTC",
+            "title": "Project Timezone",
             "type": "string"
           },
           "rules": {
@@ -1539,6 +1590,17 @@
               }
             ],
             "title": "Chat Id"
+          },
+          "delivery_schedule_cron": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Schedule Cron"
           },
           "email_from_address": {
             "anyOf": [
@@ -14034,6 +14096,11 @@
             "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
             "title": "Slug",
             "type": "string"
+          },
+          "timezone": {
+            "default": "UTC",
+            "title": "Timezone",
+            "type": "string"
           }
         },
         "required": [
@@ -14314,6 +14381,11 @@
           },
           "summary": {
             "$ref": "#/components/schemas/ProjectSummary"
+          },
+          "timezone": {
+            "default": "UTC",
+            "title": "Timezone",
+            "type": "string"
           },
           "updated_at": {
             "format": "date-time",
@@ -14643,6 +14715,10 @@
               }
             ],
             "title": "Slug"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
           }
         },
         "title": "ProjectUpdate",
