@@ -130,9 +130,45 @@ def test_next_fire_at_is_strictly_after_its_anchor() -> None:
     )
 
 
-def test_sunday_may_be_written_as_7() -> None:
-    """Standard crontab accepts 7; celery's parser caps the field at 6."""
-    assert parse_cron("0 9 * * 7").days_of_week == parse_cron("0 9 * * 0").days_of_week
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("0 9 * * 7", {0}),
+        ("0 9 * * 1,7", {0, 1}),
+        # `1-7` is the common way to write Mon-Sun, and the one a
+        # rewrite-before-parsing normalisation misses: it only ever reached
+        # bare literals, so every RANGE touching 7 was rejected outright.
+        ("0 9 * * 1-7", {0, 1, 2, 3, 4, 5, 6}),
+        ("0 9 * * 0-7", {0, 1, 2, 3, 4, 5, 6}),
+        ("0 9 * * 6-7", {0, 6}),
+        ("0 9 * * */2", {0, 2, 4, 6}),
+        ("0 9 * * mon-fri", {1, 2, 3, 4, 5}),
+        ("0 9 * * sun", {0}),
+        ("0 9 * * *", {0, 1, 2, 3, 4, 5, 6}),
+    ],
+)
+def test_sunday_may_be_written_as_7_in_every_form(expression: str, expected: set[int]) -> None:
+    """Standard crontab accepts 7 for Sunday; celery's parser caps at 6.
+
+    The field is parsed over 0..7 and 7 folded onto 0 afterwards, so literals,
+    lists, ranges, steps and weekday names all work — not just the bare
+    literals a string rewrite would have caught.
+    """
+    assert set(parse_cron(expression).days_of_week) == expected
+
+
+def test_eight_is_still_not_a_day() -> None:
+    """Widening the parse range must not widen what is accepted."""
+    with pytest.raises(ValueError, match="day-of-week"):
+        parse_cron("0 9 * * 8")
+
+
+def test_a_weekday_range_through_sunday_actually_fires_on_sunday() -> None:
+    """The parse fix has to reach the scheduler, not just the field set."""
+    # 2026-09-06 is a Sunday; `6-7` is Saturday and Sunday.
+    assert previous_fire_at("0 9 * * 6-7", tz_name="UTC", now=utc("2026-09-06 12:00:00")) == (
+        utc("2026-09-06 09:00:00")
+    )
 
 
 def test_a_restricted_day_of_month_and_day_of_week_are_ORed() -> None:

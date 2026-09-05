@@ -106,16 +106,26 @@ def parse_cron(expression: str) -> CronSpec:
         )
     minute, hour, day_of_month, month, day_of_week = fields
     # Standard cron accepts 7 as Sunday; celery's parser caps day-of-week at 6
-    # and rejects it with "Invalid end range: 7 > 6". Normalise before parsing
-    # so a copied-from-crontab expression does not 422.
-    normalised_dow = ",".join("0" if part == "7" else part for part in day_of_week.split(","))
+    # and rejects it with "Invalid end range: 7 > 6". So the field is parsed
+    # over 0..7 and 7 is folded onto 0 AFTERWARDS.
+    #
+    # Rewriting the string before parsing (the obvious approach) only reaches
+    # bare literals: `7` and `1,7` would work while `1-7` — Mon-Sun, the most
+    # common way to write "every day" — still hit the parser's range check and
+    # 422'd, along with `0-7` and `6-7`. Folding the parsed set covers every
+    # form at once: literals, lists, ranges, steps and weekday names. `8` is
+    # still rejected, because 8 is not a day.
+    days_of_week = frozenset(
+        0 if day == 7 else day
+        for day in _parse_field(crontab_parser(8), day_of_week, "day-of-week")
+    )
     return CronSpec(
         expression=expression,
         minutes=_parse_field(crontab_parser(60), minute, "minute"),
         hours=_parse_field(crontab_parser(24), hour, "hour"),
         days_of_month=_parse_field(crontab_parser(31, 1), day_of_month, "day-of-month"),
         months=_parse_field(crontab_parser(12, 1), month, "month"),
-        days_of_week=_parse_field(crontab_parser(7), normalised_dow, "day-of-week"),
+        days_of_week=days_of_week,
         dom_restricted=day_of_month.strip() != "*",
         dow_restricted=day_of_week.strip() != "*",
     )
