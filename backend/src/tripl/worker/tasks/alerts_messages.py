@@ -745,15 +745,25 @@ def _build_email_subject(
     matched_count: int,
     destination: AlertDestination,
     message_format: str,
+    rule_name_override: str | None = None,
 ) -> str:
-    """Render the subject template. Falls back to a sensible default."""
+    """Render the subject template. Falls back to a sensible default.
+
+    ``rule_name_override`` exists for the scheduled digest, where one email
+    carries several rules and no single ``rule.name`` is the truth. It is a
+    parameter rather than an assignment to ``rule.name`` on purpose: the
+    AlertRule the sender loaded is a live ORM object in the session's identity
+    map, so writing to it would be flushed by the next commit and would
+    permanently rename the operator's rule — from a subject line.
+    """
+    name = rule_name_override or rule.name
     if template is None:
         prefix = project.name if project else "tripl"
-        return f"[{prefix}] {rule.name} — {matched_count} alert(s)"
+        return f"[{prefix}] {name} — {matched_count} alert(s)"
     variables = {
         "project_name": escape_alert_value(project.name if project else "", message_format),
         "project_slug": escape_alert_value(project.slug if project else "", message_format),
-        "rule_name": escape_alert_value(rule.name, message_format),
+        "rule_name": escape_alert_value(name, message_format),
         "destination_name": escape_alert_value(destination.name, message_format),
         "matched_count": escape_alert_value(matched_count, message_format),
     }
@@ -762,7 +772,7 @@ def _build_email_subject(
         AlertTemplateContext(variables=variables, message_format=ALERT_MESSAGE_FORMAT_PLAIN),
     ).strip()
     # Subject MUST be single-line — strip any newline injection that snuck in.
-    return rendered.replace("\r", " ").replace("\n", " ") or rule.name
+    return rendered.replace("\r", " ").replace("\n", " ") or name
 
 
 def _build_jira_adf_body(text: str) -> dict[str, object]:

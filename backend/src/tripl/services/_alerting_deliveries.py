@@ -211,7 +211,15 @@ async def list_deliveries(
             .join(AlertRule, AlertRule.id == AlertDelivery.rule_id)
             .join(ScanConfig, ScanConfig.id == AlertDelivery.scan_config_id)
             .where(*filters)
-            .order_by(AlertDelivery.created_at.desc())
+            # `id` is the tie-break, and it is load-bearing rather than tidy:
+            # `created_at` is NOT unique. `_delivery_chunks` mints several
+            # deliveries inside one transaction on the immediate path, and a
+            # scheduled digest mints one per rule in a single commit, so a page
+            # boundary can fall inside a tied group — where OFFSET/LIMIT over an
+            # unstable sort silently repeats one row on page 2 and drops
+            # another. Any deterministic second key fixes it; `id` is the one
+            # already carried by every row.
+            .order_by(AlertDelivery.created_at.desc(), AlertDelivery.id.desc())
             .offset(offset)
             .limit(limit)
         )

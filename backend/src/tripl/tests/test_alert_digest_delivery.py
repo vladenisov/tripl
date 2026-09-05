@@ -193,8 +193,16 @@ def _fire_anomaly(
 def _run_flush(
     monkeypatch: pytest.MonkeyPatch,
     factory: sessionmaker[Session],
+    digests: list[list[str]] | None = None,
 ) -> tuple[dict[str, int], list[str]]:
+    """Run one flush tick, capturing BOTH dispatch routes.
+
+    `digests` collects the combined `send_alert_digest` calls. Every caller
+    that does not pass one still asserts on the per-delivery list, so an
+    accidental change of routing fails loudly instead of silently emptying it.
+    """
     enqueued: list[str] = []
+    from tripl.worker.tasks import alert_digest_send as digest_module
     from tripl.worker.tasks import alerts as alerts_module
 
     monkeypatch.setattr(alert_flush, "_get_sync_session", factory)
@@ -202,6 +210,12 @@ def _run_flush(
         alerts_module.send_alert_delivery,
         "delay",
         lambda delivery_id: enqueued.append(delivery_id),
+    )
+    sink = digests if digests is not None else []
+    monkeypatch.setattr(
+        digest_module.send_alert_digest,
+        "delay",
+        lambda delivery_ids: sink.append(list(delivery_ids)),
     )
     return alert_flush.flush_due_alert_digests.run(), enqueued
 
@@ -773,3 +787,260 @@ def test_the_buffered_incident_handle_is_the_one_the_digest_will_deliver(
         assert [state.correlation_group_id for state in states] == [
             buffered[0].correlation_group_id
         ], "one incident, keyed on the id the digest will actually deliver"
+
+
+# ── one message per destination (tripl-o0u7) ──────────────────────────────
+
+
+def _add_rule(session: Session, destination: AlertDestination, name: str) -> AlertRule:
+    rule = AlertRule(
+        id=uuid.uuid4(),
+        destination_id=destination.id,
+        name=name,
+        enabled=True,
+        include_project_total=False,
+        include_event_types=True,
+        include_events=False,
+        notify_on_spike=True,
+        notify_on_drop=True,
+        min_percent_delta=0,
+        min_absolute_delta=0,
+        min_expected_count=0,
+        cooldown_minutes=1440,
+    )
+    session.add(rule)
+    session.commit()
+    return rule
+
+
+def _run_digest(
+    monkeypatch: pytest.MonkeyPatch,
+    factory: sessionmaker[Session],
+    delivery_ids: list[str],
+    *,
+    fail_with: Exception | None = None,
+) -> tuple[dict[str, object], list[tuple[str, str]]]:
+    """Run the combined send, capturing the outbound Slack calls."""
+    from tripl.worker.tasks import alert_digest_send as digest_module
+    from tripl.worker.tasks import alerts as alerts_module
+
+    posts: list[tuple[str, str]] = []
+
+    def fake_slack(webhook_url: str, text: str, *, message_format: str) -> None:
+        if fail_with is not None:
+            raise fail_with
+        posts.append((text, message_format))
+
+    monkeypatch.setattr(digest_module, "_get_sync_session", factory)
+    monkeypatch.setattr(alerts_module, "_send_slack_message", fake_slack)
+    # The fixture stores a placeholder rather than a real encrypted webhook;
+    # credential resolution is `send_alert_delivery`'s contract and is covered
+    # there, so it is stubbed out of the way here.
+    monkeypatch.setattr(
+        alerts_module, "_resolve_slack_webhook", lambda destination: "https://hooks.slack.com/x"
+    )
+    return digest_module.send_alert_digest.run(delivery_ids), posts
+
+
+def test_two_rules_on_one_destination_become_one_message(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole point of tripl-o0u7: a digest is one message, not one per rule."""
+    with sync_session_factory() as session:
+        config, destination, _rule_a, event_type = _seed(
+            session,
+            cron=_ALWAYS_DUE,
+            last_flushed_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+        _add_rule(session, destination, "Second monitor")
+        _fire_anomaly(session, config, event_type, actual=200.0)
+        metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+        session.commit()
+
+    digests: list[list[str]] = []
+    result, per_delivery = _run_flush(monkeypatch, sync_session_factory, digests)
+
+    assert result["deliveries"] == 2, "two rules matched, so two audit rows"
+    # ...but ONE outbound task, carrying both.
+    assert per_delivery == [], "a combinable multi-rule digest must not fan out"
+    assert len(digests) == 1
+    assert len(digests[0]) == 2
+
+
+def test_a_single_rule_keeps_the_ordinary_per_delivery_path(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing new happens when there is nothing to combine."""
+    with sync_session_factory() as session:
+        config, _destination, _rule, event_type = _seed(
+            session,
+            cron=_ALWAYS_DUE,
+            last_flushed_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+        _fire_anomaly(session, config, event_type, actual=200.0)
+        metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+        session.commit()
+
+    digests: list[list[str]] = []
+    _result, per_delivery = _run_flush(monkeypatch, sync_session_factory, digests)
+
+    assert len(per_delivery) == 1
+    assert digests == []
+
+
+def test_several_deliveries_of_one_rule_are_not_combined(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Routing counts RULES, not delivery rows.
+
+    `_delivery_chunks` already splits one rule's matches into several deliveries
+    for a channel with a per-message item cap. Bundling those back together
+    would stack two "N alerts" banners for the same rule in one message and
+    re-do the split the chunking exists to avoid.
+    """
+    with sync_session_factory() as session:
+        config, destination, rule, event_type = _seed(
+            session,
+            cron=_ALWAYS_DUE,
+            last_flushed_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+        _fire_anomaly(session, config, event_type, actual=200.0)
+        metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+        session.commit()
+
+    # A second buffered row for the SAME rule, as chunking would produce.
+    with sync_session_factory() as session:
+        first = session.execute(select(AlertPendingItem)).scalars().one()
+        session.add(
+            AlertPendingItem(
+                id=uuid.uuid4(),
+                project_id=first.project_id,
+                destination_id=first.destination_id,
+                rule_id=first.rule_id,
+                scan_config_id=first.scan_config_id,
+                scope_type="event_type",
+                scope_ref=str(uuid.uuid4()),
+                scope_name="Another scope",
+                bucket=first.bucket,
+                direction="drop",
+                actual_count=1.0,
+                expected_count=50.0,
+                correlation_group_id=uuid.uuid4(),
+            )
+        )
+        session.commit()
+
+    digests: list[list[str]] = []
+    _result, per_delivery = _run_flush(monkeypatch, sync_session_factory, digests)
+
+    assert digests == [], "one rule must never take the combined path"
+    assert len(per_delivery) >= 1
+
+
+def test_the_combined_send_posts_once_and_marks_every_member_sent(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        config, destination, rule_a, event_type = _seed(
+            session,
+            cron=_ALWAYS_DUE,
+            last_flushed_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+        _add_rule(session, destination, "Second monitor")
+        _fire_anomaly(session, config, event_type, actual=200.0)
+        metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+        session.commit()
+
+    digests: list[list[str]] = []
+    _run_flush(monkeypatch, sync_session_factory, digests)
+    assert len(digests) == 1
+
+    result, posts = _run_digest(monkeypatch, sync_session_factory, digests[0])
+
+    assert result["messages"] == 1, "one destination, one outbound call"
+    assert result["sent"] == 2
+    # Both rules are in the one body.
+    assert len(posts) == 1
+    body = posts[0][0]
+    assert rule_a.name in body or "Page" in body
+    assert body.count("Page") >= 2, "both rules' sections are present"
+
+    with sync_session_factory() as session:
+        deliveries = session.execute(select(AlertDelivery)).scalars().all()
+        assert len(deliveries) == 2
+        assert {d.status for d in deliveries} == {"sent"}
+        # One transaction, so they share an instant — a crash mid-loop cannot
+        # leave half of them pending for the reaper to send a second time.
+        assert len({d.sent_at for d in deliveries}) == 1
+        assert all(d.error_message is None for d in deliveries)
+
+
+def test_a_failed_combined_send_marks_every_member_failed(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nobody got the message, so no member may claim it was delivered."""
+    with sync_session_factory() as session:
+        config, destination, _rule_a, event_type = _seed(
+            session,
+            cron=_ALWAYS_DUE,
+            last_flushed_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+        _add_rule(session, destination, "Second monitor")
+        _fire_anomaly(session, config, event_type, actual=200.0)
+        metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+        session.commit()
+
+    digests: list[list[str]] = []
+    _run_flush(monkeypatch, sync_session_factory, digests)
+
+    result, posts = _run_digest(
+        monkeypatch,
+        sync_session_factory,
+        digests[0],
+        fail_with=RuntimeError("slack said no"),
+    )
+
+    assert posts == []
+    assert result["sent"] == 0
+    assert result["failed"] == 2
+
+    with sync_session_factory() as session:
+        deliveries = session.execute(select(AlertDelivery)).scalars().all()
+        assert {d.status for d in deliveries} == {"failed"}
+        # Each row carries the real cause, so the Inbox Retry button — which
+        # only accepts `failed` — reaches every one of them.
+        assert all("slack said no" in (d.error_message or "") for d in deliveries)
+
+
+def test_a_member_already_sent_is_never_sent_again(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """acks-late can re-queue this task after a successful send."""
+    with sync_session_factory() as session:
+        config, destination, _rule_a, event_type = _seed(
+            session,
+            cron=_ALWAYS_DUE,
+            last_flushed_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+        _add_rule(session, destination, "Second monitor")
+        _fire_anomaly(session, config, event_type, actual=200.0)
+        metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+        session.commit()
+
+    digests: list[list[str]] = []
+    _run_flush(monkeypatch, sync_session_factory, digests)
+
+    first_result, first_posts = _run_digest(monkeypatch, sync_session_factory, digests[0])
+    assert first_result["sent"] == 2
+    assert len(first_posts) == 1
+
+    second_result, second_posts = _run_digest(monkeypatch, sync_session_factory, digests[0])
+
+    assert second_result["status"] == "already_sent"
+    assert second_posts == [], "a re-run must not put the message in the channel twice"

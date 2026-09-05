@@ -46,6 +46,7 @@ from sqlalchemy.orm import Session
 
 from tripl.alerting_matching import AlertMatchCandidate, DriftAlertCandidate
 from tripl.core.alert_schedule import previous_fire_at
+from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_pending_item import AlertPendingItem
 from tripl.models.alert_rule import AlertRule
@@ -234,9 +235,43 @@ def _build_digest(
     return delivery_ids
 
 
+def _dispatch_digest(
+    session: Session,
+    *,
+    destination_id: uuid.UUID,
+    delivery_ids: list[uuid.UUID],
+    send_one: object,
+    send_group: object,
+    combinable: frozenset[str],
+) -> None:
+    """Send this destination's flushed deliveries as one message, or as N.
+
+    Combining is decided by the number of DISTINCT RULES, never by the number
+    of deliveries. ``_delivery_chunks`` already splits ONE rule's matches into
+    several AlertDelivery rows for a channel with a per-message item cap, and
+    bundling those back together would stack two "N alerts" banners for the
+    same rule in one message — while re-doing the split the chunking exists to
+    avoid. One rule therefore always keeps the ordinary per-delivery path,
+    byte-identical to an immediate send.
+    """
+    destination = session.get(AlertDestination, destination_id)
+    rule_ids = set(
+        session.execute(
+            select(AlertDelivery.rule_id).where(AlertDelivery.id.in_(delivery_ids))
+        ).scalars()
+    )
+    combine = destination is not None and destination.type in combinable and len(rule_ids) > 1
+    if combine:
+        send_group.delay([str(value) for value in delivery_ids])  # type: ignore[attr-defined]
+        return
+    for delivery_id in delivery_ids:
+        send_one.delay(str(delivery_id))  # type: ignore[attr-defined]
+
+
 @celery_app.task(name="tripl.worker.tasks.alert_flush.flush_due_alert_digests")  # type: ignore[untyped-decorator]
 def flush_due_alert_digests() -> dict[str, int]:
     """Send the digest for every destination whose cadence has come round."""
+    from tripl.worker.tasks.alert_digest_send import COMBINABLE_CHANNELS, send_alert_digest
     from tripl.worker.tasks.alerts import send_alert_delivery
     from tripl.worker.tasks.metrics.dispatch import _as_utc
     from tripl.worker.tasks.metrics.schedule import (
@@ -253,7 +288,7 @@ def flush_due_alert_digests() -> dict[str, int]:
 
     checked = 0
     flushed = 0
-    dispatched: list[uuid.UUID] = []
+    dispatched: dict[uuid.UUID, list[uuid.UUID]] = {}
     swept = 0
     try:
         now = datetime.now(UTC)
@@ -290,7 +325,7 @@ def flush_due_alert_digests() -> dict[str, int]:
             session.commit()
             if delivery_ids:
                 flushed += 1
-                dispatched.extend(delivery_ids)
+                dispatched.setdefault(destination.id, []).extend(delivery_ids)
 
         rows = session.execute(
             select(AlertDestination, Project.timezone)
@@ -385,21 +420,29 @@ def flush_due_alert_digests() -> dict[str, int]:
                 # destination back into a near-immediate one.
                 continue
             flushed += 1
-            dispatched.extend(delivery_ids)
+            dispatched.setdefault(destination.id, []).extend(delivery_ids)
 
         # Enqueued after the commit, exactly as collect_metrics does it. If a
         # publish is lost the deliveries are already `pending`, so the existing
-        # stranded-delivery reaper ships them within 15 minutes.
-        for delivery_id in dispatched:
+        # stranded-delivery reaper ships them within 15 minutes — unbundled,
+        # which is the right degradation: the operator gets every alert.
+        for destination_id, delivery_ids in dispatched.items():
             try:
-                send_alert_delivery.delay(str(delivery_id))
+                _dispatch_digest(
+                    session,
+                    destination_id=destination_id,
+                    delivery_ids=delivery_ids,
+                    send_one=send_alert_delivery,
+                    send_group=send_alert_digest,
+                    combinable=COMBINABLE_CHANNELS,
+                )
             except Exception:
-                logger.exception("Failed to dispatch digest delivery %s", delivery_id)
+                logger.exception("Failed to dispatch digest for destination %s", destination_id)
 
         return {
             "checked": checked,
             "flushed": flushed,
-            "deliveries": len(dispatched),
+            "deliveries": sum(len(ids) for ids in dispatched.values()),
             "swept": swept,
         }
     finally:

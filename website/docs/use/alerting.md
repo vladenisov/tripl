@@ -106,6 +106,20 @@ while a digest is being assembled simply lands in the next one.
 An empty window sends nothing at all — a quiet day is silent, not a message
 saying there is nothing to report.
 
+**One message, not one per monitor.** When several rules on a Slack or email
+destination match inside the same window, the digest goes out as a *single*
+message carrying each rule's section, rather than one message per rule. The
+Delivery log still records one row per rule — that is what keeps each rule's
+own template, its Inbox incidents and its Retry working — so a digest of three
+monitors is three rows and one message.
+
+Telegram, webhook, Jira and Linear still send one message (or ticket) per rule.
+Telegram already splits a single rule across several messages to fit its
+4096-character ceiling and resumes a partial send per rule, and a Jira or Linear
+ticket is per rule by contract; bundling either would cost more than it buys.
+Their alerts are still held and released on the schedule — only the packing
+differs.
+
 :::note
 **On a cadence, the cadence is the rate limit.** A rule's
 [cooldown](#rules--what-fires-an-alert) is not applied a second time on top of

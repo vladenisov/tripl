@@ -235,7 +235,9 @@ export function AlertAuditPanel({
       <Panel title="Delivery log" subtitle={countOf(total, 'delivery', 'deliveries')}>
         <div className="min-w-0 space-y-4 p-4">
           <p className="text-xs text-muted-foreground">
-            Every message this project actually sent — the deliveries behind the incidents in the Inbox.
+            Every alert this project actually sent — the deliveries behind the incidents in the Inbox.
+            A destination on a delivery schedule sends its rules together, so several rows here can
+            share one message.
           </p>
           {!canWrite && (
             <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">

@@ -320,7 +320,7 @@ describe('AlertAuditPanel naming', () => {
     expect(screen.getByText('Delivery log')).toBeInTheDocument()
     expect(
       screen.getByText(
-        'Every message this project actually sent — the deliveries behind the incidents in the Inbox.',
+        /Every alert this project actually sent — the deliveries behind the incidents in the Inbox\./,
       ),
     ).toBeInTheDocument()
   })
