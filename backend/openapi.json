@@ -14099,6 +14099,7 @@
           },
           "timezone": {
             "default": "UTC",
+            "maxLength": 64,
             "title": "Timezone",
             "type": "string"
           }
@@ -14717,6 +14718,7 @@
             "title": "Slug"
           },
           "timezone": {
+            "maxLength": 64,
             "title": "Timezone",
             "type": "string"
           }
