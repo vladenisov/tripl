@@ -82,20 +82,25 @@ export function cadenceToCron(draft: CadenceDraft): string | null {
       return at ? `${at.minute} ${at.hour} * * *` : null
     }
     case 'times_of_day': {
-      const parsed = draft.times
-        .split(',')
-        .map(part => parseTime(part))
-        .filter((at): at is { hour: number; minute: number } => at !== null)
+      const parts = draft.times.split(',').map(part => part.trim()).filter(Boolean)
+      const parsed = parts.map(part => parseTime(part))
       if (parsed.length === 0) return null
-      // Cron fields are a CROSS-PRODUCT, not a list of pairs: `0,30 9,18 * * *`
-      // fires at 09:00, 09:30, 18:00 AND 18:30. So this preset can only express
-      // times that share a minute, and `validateCadence` rejects anything else
-      // and points at Custom (cron). Building from the shared minute here means
-      // the cross-product form can never be emitted at all, even by a caller
-      // that skipped validation.
-      const minute = parsed[0].minute
-      const hours = [...new Set(parsed.map(at => at.hour))].sort((a, b) => a - b)
-      return `${minute} ${hours.join(',')} * * *`
+      // STRICT, like `daily` and `weekly` above: an entry that does not parse,
+      // or a list whose times do not share a minute, yields null rather than a
+      // cron built from whatever survived.
+      //
+      // Being lenient here is not a smaller sin than emitting a bad schedule —
+      // it IS one. `DeliveryScheduleField` seeds the Custom box from
+      // `cadenceToCron(draft)` when the mode changes, so a lenient reading
+      // turned "09:00, 18:30" (rejected by validation, never published) into a
+      // perfectly valid `0 9,18 * * *` the moment the operator switched to
+      // Custom — silently moving the second send half an hour and defeating the
+      // component's whole "a typo must never change the schedule" guarantee.
+      if (parsed.some(at => at === null)) return null
+      const minutes = new Set(parsed.map(at => at!.minute))
+      if (minutes.size > 1) return null
+      const hours = [...new Set(parsed.map(at => at!.hour))].sort((a, b) => a - b)
+      return `${parsed[0]!.minute} ${hours.join(',')} * * *`
     }
     case 'weekly': {
       const at = parseTime(draft.time)

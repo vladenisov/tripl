@@ -108,8 +108,9 @@ describe('times-of-day cannot become a cron cross-product', () => {
     const draft: CadenceDraft = { ...DEFAULT_CADENCE, mode: 'times_of_day', times: '09:00, 18:30' }
 
     expect(validateCadence(draft)).toContain('same minute')
-    // ...and even unvalidated, the serializer never emits the cross-product.
-    expect(cadenceToCron(draft)).not.toContain('0,30')
+    // ...and the serializer refuses outright rather than emitting the
+    // cross-product OR a plausible-looking cron built from what survived.
+    expect(cadenceToCron(draft)).toBeNull()
   })
 
   it('accepts a shared-minute list and emits exactly those times', () => {
@@ -168,5 +169,42 @@ describe('resolveScheduleTimezone', () => {
     expect(resolveScheduleTimezone(undefined, null)).toBe('UTC')
     // An older fixture or a pre-column response carries no timezone at all.
     expect(resolveScheduleTimezone({}, {})).toBe('UTC')
+  })
+})
+
+describe('an invalid times-of-day draft never becomes a valid cron', () => {
+  // `DeliveryScheduleField` seeds the Custom box from `cadenceToCron(draft)`
+  // when the mode changes. A lenient serializer therefore turns a REJECTED
+  // draft into a perfectly valid schedule the moment the operator switches to
+  // Custom — which is precisely the "a typo must never change the schedule"
+  // guarantee the component exists to make.
+  it('refuses a mixed-minute list rather than moving a send', () => {
+    const draft: CadenceDraft = { ...DEFAULT_CADENCE, mode: 'times_of_day', times: '09:00, 18:30' }
+
+    // Would otherwise seed Custom with `0 9,18 * * *` — 18:00, not 18:30.
+    expect(cadenceToCron(draft)).toBeNull()
+    expect(validateCadence(draft)).toContain('same minute')
+  })
+
+  it('refuses a list with an unparseable entry rather than dropping it', () => {
+    const draft: CadenceDraft = { ...DEFAULT_CADENCE, mode: 'times_of_day', times: '09:00, banana' }
+
+    expect(cadenceToCron(draft)).toBeNull()
+    expect(validateCadence(draft)).toContain('HH:MM')
+  })
+
+  it('still serializes a list that is actually valid', () => {
+    const draft: CadenceDraft = { ...DEFAULT_CADENCE, mode: 'times_of_day', times: '09:00, 18:00' }
+
+    expect(validateCadence(draft)).toBeNull()
+    expect(cadenceToCron(draft)).toBe('0 9,18 * * *')
+  })
+
+  it('matches how daily and weekly already treat an unusable time', () => {
+    expect(cadenceToCron({ ...DEFAULT_CADENCE, mode: 'daily', time: '9am' })).toBeNull()
+    expect(cadenceToCron({ ...DEFAULT_CADENCE, mode: 'weekly', time: '25:00' })).toBeNull()
+    expect(
+      cadenceToCron({ ...DEFAULT_CADENCE, mode: 'times_of_day', times: 'nope' }),
+    ).toBeNull()
   })
 })
