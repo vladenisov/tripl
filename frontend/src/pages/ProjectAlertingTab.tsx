@@ -48,6 +48,7 @@ import {
   type InboxBulkActionRequest,
 } from './alerting/InboxBulkActionBar'
 import { DeliveryScheduleField } from './alerting/DeliveryScheduleField'
+import { resolveScheduleTimezone } from './alerting/deliverySchedule'
 import { DestinationsSection } from './alerting/DestinationsSection'
 import { MonitorsSection } from './alerting/MonitorsSection'
 import { CHANNEL_META } from './alerting/channelMeta'
@@ -1452,7 +1453,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
               <DeliveryScheduleField
                 value={destinationForm.delivery_schedule_cron}
                 onChange={cron => setDestinationForm(current => ({ ...current, delivery_schedule_cron: cron }))}
-                projectTimezone={editingDestination?.project_timezone ?? 'UTC'}
+                projectTimezone={resolveScheduleTimezone(project, editingDestination)}
                 nextDigestAt={editingDestination?.next_digest_at}
               />
 

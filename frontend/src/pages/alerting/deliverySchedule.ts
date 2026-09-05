@@ -146,6 +146,26 @@ export function cronToCadence(cron: string | null | undefined): CadenceDraft {
 }
 
 /**
+ * The zone a destination's schedule should be READ in.
+ *
+ * The project is the source of truth, not the destination being edited. On the
+ * create path there is no destination yet, and defaulting to 'UTC' there told
+ * an operator on a Europe/Moscow project that "daily at 09:00" meant 09:00 UTC
+ * while the server would read the very same cron as 09:00 Moscow.
+ *
+ * A pure function rather than an inline `??` chain because the create path is
+ * the one that was wrong and the one a component test cannot easily reach —
+ * the cadence picker is a Radix Select, and the zone is only rendered once a
+ * non-immediate cadence is chosen.
+ */
+export function resolveScheduleTimezone(
+  project: { timezone?: string } | undefined | null,
+  destination: { project_timezone?: string } | undefined | null,
+): string {
+  return project?.timezone || destination?.project_timezone || 'UTC'
+}
+
+/**
  * An absolute instant rendered in the PROJECT's timezone, with the zone named.
  *
  * `toLocaleString()` alone renders in the viewer's zone, which is actively

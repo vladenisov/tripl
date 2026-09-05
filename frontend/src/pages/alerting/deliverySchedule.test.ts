@@ -6,6 +6,7 @@ import {
   cronToCadence,
   describeCron,
   formatInProjectZone,
+  resolveScheduleTimezone,
   validateCadence,
   type CadenceDraft,
 } from './deliverySchedule'
@@ -140,5 +141,32 @@ describe('formatInProjectZone', () => {
   it('degrades instead of blanking when the zone is unusable', () => {
     expect(formatInProjectZone(nineMoscow, 'Mars/Olympus_Mons')).toContain('local')
     expect(formatInProjectZone('not-a-date', 'UTC')).toBe('not-a-date')
+  })
+})
+
+describe('resolveScheduleTimezone', () => {
+  // The create path is the one that was wrong: `editingDestination` is null, so
+  // a `destination-first` chain fell through to a hard-coded 'UTC' and the form
+  // promised 09:00 UTC for a cron the server reads as 09:00 Moscow.
+  it('uses the project zone when creating, where there is no destination yet', () => {
+    expect(resolveScheduleTimezone({ timezone: 'Europe/Moscow' }, null)).toBe('Europe/Moscow')
+  })
+
+  it('uses the project zone when editing too — the project is the source of truth', () => {
+    expect(
+      resolveScheduleTimezone({ timezone: 'Europe/Moscow' }, { project_timezone: 'UTC' }),
+    ).toBe('Europe/Moscow')
+  })
+
+  it('falls back to the destination while the project query is still in flight', () => {
+    expect(resolveScheduleTimezone(undefined, { project_timezone: 'Asia/Tokyo' })).toBe(
+      'Asia/Tokyo',
+    )
+  })
+
+  it('only reaches UTC when nothing knows better', () => {
+    expect(resolveScheduleTimezone(undefined, null)).toBe('UTC')
+    // An older fixture or a pre-column response carries no timezone at all.
+    expect(resolveScheduleTimezone({}, {})).toBe('UTC')
   })
 })
