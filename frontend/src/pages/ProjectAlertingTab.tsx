@@ -47,6 +47,8 @@ import {
   InboxBulkActionBar,
   type InboxBulkActionRequest,
 } from './alerting/InboxBulkActionBar'
+import { DeliveryScheduleField } from './alerting/DeliveryScheduleField'
+import { resolveScheduleTimezone } from './alerting/deliverySchedule'
 import { DestinationsSection } from './alerting/DestinationsSection'
 import { MonitorsSection } from './alerting/MonitorsSection'
 import { CHANNEL_META } from './alerting/channelMeta'
@@ -433,7 +435,12 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       if (type === 'demo_sink') {
         throw new Error('The local demo sink cannot be created from the UI')
       }
-      return alertingApi.createDestination(slug, { ...destinationForm, type })
+      return alertingApi.createDestination(slug, {
+        ...destinationForm,
+        type,
+        // '' is the form's way of saying immediate; the API wants null.
+        delivery_schedule_cron: destinationForm.delivery_schedule_cron || null,
+      })
     },
     onSuccess: created => {
       invalidateAlertingConfig(qc, slug)
@@ -459,6 +466,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       return alertingApi.updateDestination(slug, editingDestination.id, {
         name: destinationForm.name,
         enabled: destinationForm.enabled,
+        delivery_schedule_cron: destinationForm.delivery_schedule_cron || null,
         webhook_url: destinationForm.type === 'slack' && destinationForm.webhook_url ? destinationForm.webhook_url : undefined,
         bot_token: destinationForm.type === 'telegram' && destinationForm.bot_token ? destinationForm.bot_token : undefined,
         chat_id: destinationForm.type === 'telegram' ? destinationForm.chat_id : undefined,
@@ -522,6 +530,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       linear_team_id: destination.linear_team_id ?? '',
       linear_state_id: destination.linear_state_id ?? '',
       linear_label_ids: destination.linear_label_ids ?? '',
+      delivery_schedule_cron: destination.delivery_schedule_cron ?? '',
     })
   }
 
@@ -1208,7 +1217,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
                   <Label htmlFor="dest-channel">Channel</Label>
                   <Select
                     value={destinationForm.type}
-                    onValueChange={value => setDestinationForm(current => ({ ...defaultDestinationForm(value as DestinationChannel), name: current.name }))}
+                    onValueChange={value => setDestinationForm(current => ({ ...defaultDestinationForm(value as DestinationChannel), name: current.name, delivery_schedule_cron: current.delivery_schedule_cron }))}
                     disabled={!!editingDestination}
                   >
                     <SelectTrigger id="dest-channel"><SelectValue /></SelectTrigger>
@@ -1440,6 +1449,13 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
                   </p>
                 </div>
               )}
+
+              <DeliveryScheduleField
+                value={destinationForm.delivery_schedule_cron}
+                onChange={cron => setDestinationForm(current => ({ ...current, delivery_schedule_cron: cron }))}
+                projectTimezone={resolveScheduleTimezone(project, editingDestination)}
+                nextDigestAt={editingDestination?.next_digest_at}
+              />
 
               <label className="flex items-center gap-2 text-sm">
                 <Checkbox

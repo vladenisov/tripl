@@ -153,6 +153,68 @@ def _record_delivered_items(
     return updated
 
 
+def _assert_egress_allowed(destination: AlertDestination, project: Project | None) -> None:
+    """Refuse an outbound send from a demo project (tripl-2su6.12).
+
+    A demo project is strictly zero-egress: the only sendable destination it may
+    have is the local ``demo_sink``. The API refuses to create or enable an
+    external destination on a demo project, but every dispatch path (scan
+    dispatch, manual retry, stale-pending re-dispatch, the scheduled digest)
+    funnels through a send task, so the guard that actually stops the send lives
+    here — it also covers rows written before that API guard existed. Callers
+    run it BEFORE rendering, so the AI round-trip cannot fire either.
+    """
+    if (
+        project is not None
+        and project.is_demo
+        and destination.type != AlertDestinationType.demo_sink
+    ):
+        raise ValueError(
+            "External alert delivery is disabled for demo projects: destination "
+            f"{destination.name!r} ({destination.type}) is not a local demo sink. "
+            "Nothing was sent."
+        )
+
+
+def _resolve_slack_webhook(destination: AlertDestination) -> str:
+    try:
+        return validate_slack_webhook_url(_decrypt_secret(destination.webhook_url_encrypted))
+    except ValueError as exc:
+        raise ValueError(
+            "Slack destination configuration is invalid. Update the webhook URL."
+        ) from exc
+
+
+def _resolve_email_context(
+    session: Session,
+    destination: AlertDestination,
+) -> tuple[app_settings_service.EmailConfig, list[str], str]:
+    """SMTP config, recipients and From: for one email destination, or raise."""
+    email_config = app_settings_service.get_email_config_sync(session)
+    if not email_config.smtp_host:
+        raise ValueError(
+            "Email destination is configured but SMTP is not — set SMTP_HOST "
+            "(and SMTP_USERNAME/SMTP_PASSWORD if your relay requires auth)."
+        )
+    try:
+        recipients_csv = validate_email_recipients(destination.email_recipients)
+    except ValueError as exc:
+        raise ValueError(
+            "Email destination configuration is invalid. Update the recipients list."
+        ) from exc
+    recipients = _parse_email_recipients(recipients_csv)
+    from_address = destination.email_from_address or email_config.smtp_from_address
+    if not from_address:
+        raise ValueError("Email destination has no From: address and SMTP_FROM_ADDRESS is unset.")
+    try:
+        from_address = validate_email_address(from_address)
+    except ValueError as exc:
+        raise ValueError(
+            "Email destination From: address is invalid. Update the override or SMTP_FROM_ADDRESS."
+        ) from exc
+    return email_config, recipients, from_address
+
+
 def _stamp_rule_state(session: Session, delivery: AlertDelivery) -> None:
     """Record this delivery as the last notification for each item's scope."""
     for item in delivery.items:
@@ -324,21 +386,8 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         if destination is None or rule is None or scan_config is None:
             raise ValueError(f"AlertDelivery {delivery_id} is missing related objects")
 
-        # A demo project is strictly zero-egress (tripl-2su6.12): the only
-        # sendable destination it may have is the local ``demo_sink``. The API
-        # refuses to create or enable an external destination on a demo project,
-        # but every dispatch path (scan dispatch, manual retry, stale-pending
-        # re-dispatch) funnels through this task, so the guard that actually
-        # stops the send lives here — it also covers rows written before that API
-        # guard existed. It runs before rendering, so the AI round-trip below
-        # cannot fire either.
         is_demo_project = project is not None and project.is_demo
-        if is_demo_project and destination.type != AlertDestinationType.demo_sink:
-            raise ValueError(
-                "External alert delivery is disabled for demo projects: destination "
-                f"{destination.name!r} ({destination.type}) is not a local demo sink. "
-                "Nothing was sent."
-            )
+        _assert_egress_allowed(destination, project)
 
         # Built once and reused across re-renders (e.g. the MarkdownV2→plain
         # fallback) so the warehouse/DB queries behind sparkline + top-movers
@@ -425,15 +474,9 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         delivery.payload_snapshot = payload_snapshot
 
         if destination.type == AlertDestinationType.slack:
-            try:
-                webhook_url = validate_slack_webhook_url(
-                    _decrypt_secret(destination.webhook_url_encrypted)
-                )
-            except ValueError as exc:
-                raise ValueError(
-                    "Slack destination configuration is invalid. Update the webhook URL."
-                ) from exc
-            _send_slack_message(webhook_url, text, message_format=message_format)
+            _send_slack_message(
+                _resolve_slack_webhook(destination), text, message_format=message_format
+            )
         elif destination.type == AlertDestinationType.telegram:
             try:
                 bot_token = validate_telegram_bot_token(
@@ -627,31 +670,7 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                 header_value=header_value,
             )
         elif destination.type == AlertDestinationType.email:
-            email_config = app_settings_service.get_email_config_sync(session)
-            if not email_config.smtp_host:
-                raise ValueError(
-                    "Email destination is configured but SMTP is not — set SMTP_HOST "
-                    "(and SMTP_USERNAME/SMTP_PASSWORD if your relay requires auth)."
-                )
-            try:
-                recipients_csv = validate_email_recipients(destination.email_recipients)
-            except ValueError as exc:
-                raise ValueError(
-                    "Email destination configuration is invalid. Update the recipients list."
-                ) from exc
-            recipients = _parse_email_recipients(recipients_csv)
-            from_address = destination.email_from_address or email_config.smtp_from_address
-            if not from_address:
-                raise ValueError(
-                    "Email destination has no From: address and SMTP_FROM_ADDRESS is unset."
-                )
-            try:
-                from_address = validate_email_address(from_address)
-            except ValueError as exc:
-                raise ValueError(
-                    "Email destination From: address is invalid. Update the override "
-                    "or SMTP_FROM_ADDRESS."
-                ) from exc
+            email_config, recipients, from_address = _resolve_email_context(session, destination)
             subject = _build_email_subject(
                 template=destination.email_subject_template,
                 rule=rule,

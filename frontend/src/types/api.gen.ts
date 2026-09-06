@@ -3606,6 +3606,8 @@ export interface components {
             bot_token?: string | null;
             /** Chat Id */
             chat_id?: string | null;
+            /** Delivery Schedule Cron */
+            delivery_schedule_cron?: string | null;
             /** Email From Address */
             email_from_address?: string | null;
             /** Email Recipients */
@@ -3660,6 +3662,8 @@ export interface components {
             created_at: string;
             /** Delivery Count */
             delivery_count: number;
+            /** Delivery Schedule Cron */
+            delivery_schedule_cron?: string | null;
             /** Email From Address */
             email_from_address: string | null;
             /** Email Recipients */
@@ -3690,6 +3694,8 @@ export interface components {
             jira_issue_type: string | null;
             /** Jira Project Key */
             jira_project_key: string | null;
+            /** Last Digest At */
+            last_digest_at?: string | null;
             /** Linear Api Key Set */
             linear_api_key_set: boolean;
             /** Linear Label Ids */
@@ -3700,11 +3706,18 @@ export interface components {
             linear_team_id: string | null;
             /** Name */
             name: string;
+            /** Next Digest At */
+            next_digest_at?: string | null;
             /**
              * Project Id
              * Format: uuid
              */
             project_id: string;
+            /**
+             * Project Timezone
+             * @default UTC
+             */
+            project_timezone: string;
             /** Rules */
             rules: components["schemas"]["AlertRuleResponse"][];
             /** Target Url Set */
@@ -3749,6 +3762,8 @@ export interface components {
             bot_token?: string | null;
             /** Chat Id */
             chat_id?: string | null;
+            /** Delivery Schedule Cron */
+            delivery_schedule_cron?: string | null;
             /** Email From Address */
             email_from_address?: string | null;
             /** Email Recipients */
@@ -8417,6 +8432,11 @@ export interface components {
             name: string;
             /** Slug */
             slug: string;
+            /**
+             * Timezone
+             * @default UTC
+             */
+            timezone: string;
         };
         /**
          * ProjectGenerationStatus
@@ -8532,6 +8552,11 @@ export interface components {
             /** Slug */
             slug: string;
             summary?: components["schemas"]["ProjectSummary"];
+            /**
+             * Timezone
+             * @default UTC
+             */
+            timezone: string;
             /**
              * Updated At
              * Format: date-time
@@ -8678,6 +8703,8 @@ export interface components {
             name?: string | null;
             /** Slug */
             slug?: string | null;
+            /** Timezone */
+            timezone?: string;
         };
         /** RegisterRequest */
         RegisterRequest: {

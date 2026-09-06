@@ -267,6 +267,7 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
   const [slugDraft, setSlugDraft] = useState('')
   const [description, setDescription] = useState('')
   const [appVersionKeepReleases, setAppVersionKeepReleases] = useState('')
+  const [timezone, setTimezone] = useState('UTC')
   const [hydratedFor, setHydratedFor] = useState<string | null>(null)
 
   if (projectQuery.data && hydratedFor !== projectQuery.data.id) {
@@ -274,11 +275,12 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
     setSlugDraft(projectQuery.data.slug)
     setDescription(projectQuery.data.description ?? '')
     setAppVersionKeepReleases(String(projectQuery.data.app_version_keep_releases))
+    setTimezone(projectQuery.data.timezone ?? 'UTC')
     setHydratedFor(projectQuery.data.id)
   }
 
   const updateMut = useMutation({
-    mutationFn: () => projectsApi.update(slug, { name, slug: slugDraft, description }),
+    mutationFn: () => projectsApi.update(slug, { name, slug: slugDraft, description, timezone }),
     onSuccess: (project) => {
       qc.invalidateQueries({ queryKey: ['projects'] })
       qc.invalidateQueries({ queryKey: ['project'] })
@@ -396,7 +398,8 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
     !!projectQuery.data &&
     name === projectQuery.data.name &&
     slugDraft === projectQuery.data.slug &&
-    description === (projectQuery.data.description ?? '')
+    description === (projectQuery.data.description ?? '') &&
+    timezone === (projectQuery.data.timezone ?? 'UTC')
   const canEdit = user?.role === 'owner' || user?.role === 'editor'
   const canDelete = user?.role === 'owner'
   const appVersionKeepReleasesNumber = Number(appVersionKeepReleases)
@@ -484,8 +487,23 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
                 disabled={!canEdit}
               />
             </Field>
-            <Field label="Description" htmlFor="proj-desc" last>
+            <Field label="Description" htmlFor="proj-desc">
               <TextArea id="proj-desc" value={description} onChange={setDescription} rows={2} disabled={!canEdit} />
+            </Field>
+            <Field
+              label="Timezone"
+              htmlFor="proj-timezone"
+              hint="The clock alert delivery schedules are read in. An IANA zone name, e.g. Europe/Moscow."
+              last
+            >
+              <TextInput
+                id="proj-timezone"
+                value={timezone}
+                onChange={setTimezone}
+                mono
+                placeholder="UTC"
+                disabled={!canEdit}
+              />
             </Field>
           </SCard>
 

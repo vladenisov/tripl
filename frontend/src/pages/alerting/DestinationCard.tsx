@@ -9,6 +9,7 @@ import { Switch } from "@/components/ui/switch"
 import { getErrorMessage } from '@/lib/utils'
 import { formatDateTime } from "@/lib/datetime"
 import { countOf } from "@/lib/plural"
+import { describeCron, formatInProjectZone } from "./deliverySchedule"
 import { invalidateAlertingConfig } from "./alertingCache"
 
 interface DestinationCardProps {
@@ -79,6 +80,20 @@ export function DestinationCard({
               {destination.is_local && (
                 <Badge variant="outline" className="text-[10px]">
                   local · nothing is sent
+                </Badge>
+              )}
+              {destination.delivery_schedule_cron && (
+                <Badge
+                  variant="outline"
+                  className="text-[10px]"
+                  title={
+                    destination.next_digest_at
+                      ? `Next digest ${formatInProjectZone(destination.next_digest_at, destination.project_timezone)}`
+                      : undefined
+                  }
+                >
+                  {describeCron(destination.delivery_schedule_cron)}
+                  {destination.project_timezone ? ` · ${destination.project_timezone}` : ''}
                 </Badge>
               )}
               {destination.type === 'slack' && destination.webhook_set && (

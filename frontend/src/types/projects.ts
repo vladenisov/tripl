@@ -50,6 +50,10 @@ export interface Project {
   slug: string
   description: string
   app_version_keep_releases: number
+  // IANA zone every wall-clock schedule in this project is read in — today,
+  // alert delivery cadences. Optional on the wire so fixtures written before
+  // the column keep type-checking; the server always sends it.
+  timezone?: string
   created_at: string
   updated_at: string
   summary: ProjectSummary

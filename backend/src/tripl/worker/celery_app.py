@@ -116,6 +116,21 @@ celery_app.conf.beat_schedule = {
         # batch retry can leave documents pending (STRANDED_EMBEDDING_MINUTES).
         "schedule": 900.0,
     },
+    "flush-due-alert-digests": {
+        "task": "tripl.worker.tasks.alert_flush.flush_due_alert_digests",
+        # 60s, not the 300s the other dispatchers use. Those poll for work that
+        # lands on 15m/1h/6h boundaries and nobody watches the clock for; a
+        # digest cadence is a wall-clock time the operator TYPED, and the UI
+        # offers a cron minute field. At 300s "daily at 09:00" would arrive
+        # anywhere in [09:00, 09:05) and the minute field would be a lie.
+        #
+        # The tick is cheap enough to justify it: one indexed read of
+        # alert_destinations filtered to the enabled+scheduled rows (tens, not
+        # millions), and nothing else at all when none are due. Compare
+        # check-metrics-due, which does a grouped max(bucket) over the metrics
+        # table every 300s.
+        "schedule": 60.0,
+    },
     "advance-demos": {
         "task": "tripl.worker.tasks.demo_runtime.advance_demos",
         # Every 5 minutes — demos advance on hourly bucket boundaries, so 5-minute
@@ -144,6 +159,8 @@ def _reset_sync_engine_after_fork(**_kwargs: object) -> None:
 
 
 # Import tasks so they are registered with the celery app
+import tripl.worker.tasks.alert_digest_send  # noqa: F401, E402
+import tripl.worker.tasks.alert_flush  # noqa: F401, E402
 import tripl.worker.tasks.alerts  # noqa: F401, E402
 import tripl.worker.tasks.demo_runtime  # noqa: F401, E402
 import tripl.worker.tasks.implementation_tickets  # noqa: F401, E402

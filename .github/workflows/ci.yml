@@ -44,11 +44,11 @@ jobs:
       - name: Mypy
         run: uv run mypy
 
-      # The conformance gates need real warehouses, and the relevance harness needs
-      # a real PostgreSQL, so both run in their own jobs (below) rather than
-      # skipping noisily here.
+      # The conformance gates need real warehouses, and the relevance harness and
+      # the digest concurrency gate each need a real PostgreSQL, so all three run
+      # in their own jobs (below) rather than skipping noisily here.
       - name: Pytest
-        run: uv run pytest -q -m "not conformance and not relevance"
+        run: uv run pytest -q -m "not conformance and not relevance and not pg_concurrency"
 
   # The two client packages. NEITHER ran in PR CI before tripl-ey6j.1 —
   # mcp-server's suite executed only in publish-mcp.yml, at tag time, and cli/
@@ -430,6 +430,56 @@ jobs:
   # whereas a job skipped by an `if:` reports a conclusion that branch protection
   # accepts. bigquery-value-conformance.yml gates its credentialed job the same
   # way, for the same reason.
+  digest-concurrency:
+    name: Alert digest flush concurrency (postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        # Stock postgres is enough here, unlike the relevance and migration jobs:
+        # this gate builds its schema from Base.metadata.create_all rather than
+        # running the revision chain, so nothing asks for the vector extension.
+        # Pinned by digest for the same reason as every other service in this
+        # file — a gate whose database can change underneath it is not a gate.
+        image: postgres:18@sha256:22c89fe0d0f507606260237fd55e51f6137f58b2d5bcf6152242b96d9fe8f9a4
+        env:
+          POSTGRES_USER: tripl
+          POSTGRES_PASSWORD: tripl
+          POSTGRES_DB: tripl_digest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tripl -d tripl_digest"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 24
+    env:
+      TRIPL_TEST_PG_URL: postgresql+psycopg://tripl:tripl@localhost:5432/tripl_digest
+      # A gate that can silently skip itself in CI is not a gate: this turns
+      # "PostgreSQL unreachable" from a skip into a failure, exactly as
+      # TRIPL_CONFORMANCE_REQUIRED and TRIPL_RELEVANCE_REQUIRED do.
+      TRIPL_TEST_PG_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Digest concurrency gate
+        # -p no:randomly: two of these assert on a thread blocking against a held
+        # row lock, and they seed and drop the whole schema per test. Order is not
+        # the thing under test and a shuffled run only makes a failure harder to
+        # read.
+        run: uv run pytest -q -m pg_concurrency -p no:randomly
+
   migration-scope:
     name: Detect alembic changes
     runs-on: ubuntu-latest

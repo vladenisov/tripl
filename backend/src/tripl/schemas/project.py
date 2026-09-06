@@ -2,8 +2,9 @@ import uuid
 from datetime import datetime
 from typing import Literal, cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from tripl.core.alert_schedule import validate_timezone
 from tripl.models.domain_enums import (
     AnomalyDirection,
     MetricScopeType,
@@ -25,6 +26,31 @@ class ProjectCreate(BaseModel):
         ge=1,
         le=MAX_APP_VERSION_KEEP_RELEASES,
     )
+    # IANA zone every wall-clock schedule in this project is read in —
+    # today, alert digest cadences. 'UTC' is what every project had
+    # implicitly before the column existed. max_length mirrors the
+    # String(64) column; the longest real zone is 32 characters
+    # (America/Argentina/ComodRivadavia), so it constrains nothing valid.
+    timezone: str = Field("UTC", max_length=64)
+
+    @field_validator("timezone")
+    @classmethod
+    def check_timezone(cls, value: str | None) -> str | None:
+        """Normalise, then reject a zone ``zoneinfo`` cannot resolve.
+
+        The alert flusher degrades to UTC on an unresolvable zone so one bad
+        project cannot stop every other project's digest — which is precisely
+        why an unresolvable one must never be storable.
+
+        Stripped first because a timezone is something people paste, and
+        ``ZoneInfo`` does not forgive the surrounding space: " Europe/Moscow "
+        is a perfectly ordinary copy from a docs page and was answered with
+        "Unknown timezone". Stripping also means one spelling reaches the
+        column, so two projects cannot hold the same zone under two values.
+        """
+        if value is None:
+            return None
+        return validate_timezone(value.strip())
 
 
 class ProjectUpdate(BaseModel):
@@ -40,6 +66,29 @@ class ProjectUpdate(BaseModel):
         ge=1,
         le=MAX_APP_VERSION_KEEP_RELEASES,
     )
+    # ``str`` with a None default makes the PATCH field optional while still
+    # rejecting an explicitly supplied JSON null — the column is NOT NULL, and
+    # the generic setattr loop in ``update_project`` would otherwise write it.
+    timezone: str = Field(cast(str, None), max_length=64)
+
+    @field_validator("timezone")
+    @classmethod
+    def check_timezone(cls, value: str | None) -> str | None:
+        """Normalise, then reject a zone ``zoneinfo`` cannot resolve.
+
+        The alert flusher degrades to UTC on an unresolvable zone so one bad
+        project cannot stop every other project's digest — which is precisely
+        why an unresolvable one must never be storable.
+
+        Stripped first because a timezone is something people paste, and
+        ``ZoneInfo`` does not forgive the surrounding space: " Europe/Moscow "
+        is a perfectly ordinary copy from a docs page and was answered with
+        "Unknown timezone". Stripping also means one spelling reaches the
+        column, so two projects cannot hold the same zone under two values.
+        """
+        if value is None:
+            return None
+        return validate_timezone(value.strip())
 
 
 class DetectionResetPeriod(BaseModel):
@@ -177,6 +226,11 @@ class ProjectResponse(BaseModel):
         ge=1,
         le=MAX_APP_VERSION_KEEP_RELEASES,
     )
+    # Defaulted, NOT required. ``list_projects`` rehydrates this model from a
+    # 60s Redis cache, so immediately after a deploy the cache still holds
+    # entries serialized by the previous schema. A required field would make
+    # every GET /projects 500 until the TTL expired.
+    timezone: str = "UTC"
     created_at: datetime
     updated_at: datetime
     summary: ProjectSummary = Field(default_factory=ProjectSummary)

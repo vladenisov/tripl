@@ -27,6 +27,7 @@ from tripl.alerting_validation import (
     validate_webhook_header_value,
     validate_webhook_target_url,
 )
+from tripl.core.alert_schedule import parse_cron
 from tripl.models.alert_delivery import AlertDeliveryStatus
 from tripl.models.alert_destination import AlertDestinationType
 from tripl.models.alert_rule import DEFAULT_MIN_PERCENT_DELTA
@@ -213,6 +214,13 @@ class AlertDestinationCreate(BaseModel):
     type: AlertDestinationType
     name: str
     enabled: bool = True
+    # Hold this destination's alerts and deliver them on a cadence instead of
+    # after every metrics collection. NULL/omitted means IMMEDIATE — today's
+    # behaviour, and what every existing destination keeps. A 5-field cron
+    # expression otherwise, read in the project's timezone. The UI's presets
+    # ("daily at 09:00") are cron strings it generates, so the wire format has
+    # exactly one shape.
+    delivery_schedule_cron: str | None = None
     webhook_url: str | None = None
     bot_token: str | None = None
     chat_id: str | None = None
@@ -231,6 +239,26 @@ class AlertDestinationCreate(BaseModel):
     linear_team_id: str | None = None
     linear_state_id: str | None = None
     linear_label_ids: str | None = None
+
+    @field_validator("delivery_schedule_cron")
+    @classmethod
+    def validate_delivery_schedule_cron(cls, value: str | None) -> str | None:
+        """Reject an unusable cadence at write time, naming the bad field.
+
+        The worker degrades on a bad expression (logs and skips that
+        destination) so one typo cannot stop every other digest — which is
+        exactly why it must not be possible to store one from the API.
+        """
+        if value is None:
+            return None
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            return None
+        try:
+            parse_cron(cleaned)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        return cleaned
 
     @field_validator("type", mode="before")
     @classmethod
@@ -334,6 +362,13 @@ class AlertDestinationCreate(BaseModel):
 class AlertDestinationUpdate(BaseModel):
     name: str | None = None
     enabled: bool | None = None
+    # Hold this destination's alerts and deliver them on a cadence instead of
+    # after every metrics collection. NULL/omitted means IMMEDIATE — today's
+    # behaviour, and what every existing destination keeps. A 5-field cron
+    # expression otherwise, read in the project's timezone. The UI's presets
+    # ("daily at 09:00") are cron strings it generates, so the wire format has
+    # exactly one shape.
+    delivery_schedule_cron: str | None = None
     webhook_url: str | None = None
     bot_token: str | None = None
     chat_id: str | None = None
@@ -352,6 +387,26 @@ class AlertDestinationUpdate(BaseModel):
     linear_team_id: str | None = None
     linear_state_id: str | None = None
     linear_label_ids: str | None = None
+
+    @field_validator("delivery_schedule_cron")
+    @classmethod
+    def validate_delivery_schedule_cron(cls, value: str | None) -> str | None:
+        """Reject an unusable cadence at write time, naming the bad field.
+
+        The worker degrades on a bad expression (logs and skips that
+        destination) so one typo cannot stop every other digest — which is
+        exactly why it must not be possible to store one from the API.
+        """
+        if value is None:
+            return None
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            return None
+        try:
+            parse_cron(cleaned)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        return cleaned
 
     @field_validator("name")
     @classmethod
@@ -504,6 +559,15 @@ class AlertDestinationResponse(BaseModel):
     linear_team_id: str | None
     linear_state_id: str | None
     linear_label_ids: str | None
+    # The delivery cadence, and what the operator needs to trust it: NULL means
+    # alerts go out after every collection (immediate). ``last_digest_at`` is
+    # the fire instant of the last window flushed, ``next_digest_at`` the next
+    # one due — both computed in ``project_timezone`` so the UI can say "09:00
+    # Europe/Moscow" without re-deriving the zone.
+    delivery_schedule_cron: str | None = None
+    project_timezone: str = "UTC"
+    last_digest_at: datetime | None = None
+    next_digest_at: datetime | None = None
     # True for a ``demo_sink`` destination: a local, non-sendable sink that
     # renders and records deliveries locally with no outbound network. The UI
     # uses it to badge the destination as LOCAL SIMULATED (tripl-2su6.6).
