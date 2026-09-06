@@ -121,6 +121,12 @@ export const ITEM_TEMPLATE_VARIABLE_OPTIONS = [
   { name: 'scope_label', description: 'Matched scope label' },
   { name: 'direction', description: 'Direction: spike or drop' },
   { name: 'direction_label', description: 'Direction: up or down' },
+  { name: 'direction_arrow', description: 'A single up/down arrow for the direction' },
+  {
+    name: 'scope_link',
+    description:
+      'Scope name linked to its incident on formats that support links; the bare name on plain',
+  },
   { name: 'actual_count', description: 'Actual count' },
   { name: 'expected_count', description: 'Expected count' },
   {

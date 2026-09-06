@@ -107,6 +107,9 @@ ALERT_TEMPLATE_VARIABLES: dict[str, str] = {
     "matched_count": "Number of matched alert items",
     "items_count": "Alias for matched_count",
     "items_text": "Preformatted list of all matched alert items",
+    "headline": 'Digest summary line, e.g. "24 alerts - 7 down, 17 up" (digests only)',
+    "window_label": "The period a digest covers, in the project timezone (digests only)",
+    "ai_explanation_block": "The AI note with its trailing blank line, or empty (digests only)",
 }
 
 ALERT_ITEM_TEMPLATE_VARIABLES: dict[str, str] = {
@@ -140,7 +143,149 @@ ALERT_ITEM_TEMPLATE_VARIABLES: dict[str, str] = {
     "top_movers": "Inline summary of top-3 breakdown movers (empty if none)",
     "sparkline_line": "Rendered trend line with leading newline when sparkline exists",
     "top_movers_line": "Rendered movers line with leading newline when movers exist",
+    "direction_arrow": "A single up/down arrow for the direction",
+    "scope_link": (
+        "Scope name linked to its incident on formats that support links; the bare name on plain"
+    ),
 }
+
+# ── Digest rendering ──────────────────────────────────────────────────────
+#
+# A scheduled digest is a different reading task from an immediate alert. An
+# immediate alert is ONE thing that just happened and the reader is being
+# interrupted; a digest is twenty-four things that happened since yesterday and
+# the reader is triaging over coffee. The verbose default answers the first
+# question well and the second one badly: measured on a real production
+# delivery it spends 317 characters per item, 186 of them on a raw details URL
+# printed on its own line, so 24 items is ~8,150 characters of mostly URL.
+#
+# These templates are used ONLY when the delivery is a digest AND the operator
+# has not saved a template of their own. A custom template always wins, and the
+# immediate path never sees these at all.
+DIGEST_ALERT_MESSAGE_TEMPLATES: dict[str, str] = {
+    ALERT_MESSAGE_FORMAT_PLAIN: (
+        "[tripl] ${headline}\n${window_label}\n${ai_explanation_block}${items_text}"
+    ),
+    ALERT_MESSAGE_FORMAT_SLACK_MRKDWN: (
+        "*[tripl] ${headline}*\n${window_label}\n${ai_explanation_block}${items_text}"
+    ),
+    ALERT_MESSAGE_FORMAT_TELEGRAM_HTML: (
+        "<b>[tripl] ${headline}</b>\n${window_label}\n${ai_explanation_block}${items_text}"
+    ),
+    ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2: (
+        "*tripl: ${headline}*\n${window_label}\n${ai_explanation_block}${items_text}"
+    ),
+}
+
+# One line per item, and it must STAY one line: no variable here may carry a
+# newline. ``${top_movers_line}`` and ``${sparkline_line}`` are deliberately
+# absent because both are built with a leading "\n  " — three breakdown movers
+# per line across 24 items is not a scanning surface, it is what the page
+# behind the link is for. ``${sparkline}`` (newline-free) carries the trend.
+#
+# ``${direction_arrow}`` leads the line rather than trailing it: with the items
+# grouped, direction is otherwise carried only by the group heading, and a
+# reader who scrolls past the heading loses it entirely.
+DIGEST_ALERT_ITEMS_TEMPLATES: dict[str, str] = {
+    ALERT_MESSAGE_FORMAT_PLAIN: (
+        "${direction_arrow} ${scope_name} ${actual_count} vs ${expected_count} "
+        "(${percent_delta_label})${details_line}"
+    ),
+    ALERT_MESSAGE_FORMAT_SLACK_MRKDWN: (
+        "${direction_arrow} ${scope_link} ${actual_count} vs ${expected_count} "
+        "(${percent_delta_label})"
+    ),
+    ALERT_MESSAGE_FORMAT_TELEGRAM_HTML: (
+        "${direction_arrow} ${scope_link} ${actual_count} vs ${expected_count} "
+        "(${percent_delta_label})"
+    ),
+    ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2: (
+        "${direction_arrow} ${scope_link} ${actual_count} vs ${expected_count} "
+        "(${percent_delta_label})"
+    ),
+}
+
+# Formats whose syntax can hide a URL behind a label. ``plain`` cannot, which is
+# why its digest template above keeps ``${details_line}`` — dropping the link
+# there would lose the way to reach the incident entirely.
+LINK_CAPABLE_ALERT_FORMATS = frozenset(
+    {
+        ALERT_MESSAGE_FORMAT_SLACK_MRKDWN,
+        ALERT_MESSAGE_FORMAT_TELEGRAM_HTML,
+        ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2,
+    }
+)
+
+
+def escape_alert_link_url(url: str, message_format: str) -> str:
+    """Escape a URL for the href/target slot, which is NOT the label slot.
+
+    The two slots have different rules and using ``escape_alert_value`` for both
+    corrupts one of them. In MarkdownV2 the LABEL escapes ``_ * [ ] ( )`` and
+    the URL must NOT — a backslash inside the parentheses is sent literally and
+    the link 404s. In HTML the href needs the same entity escaping as text
+    (``&`` in a query string above all), so it shares the escaper. Slack wraps
+    ``<url|label>`` and needs the url's ``<`` ``>`` ``&`` escaped but nothing
+    else.
+    """
+    if message_format == ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2:
+        # Only the two characters that would close the link early.
+        return url.replace("\\", "%5C").replace(")", "%29")
+    if message_format in (
+        ALERT_MESSAGE_FORMAT_TELEGRAM_HTML,
+        ALERT_MESSAGE_FORMAT_SLACK_MRKDWN,
+    ):
+        return escape_alert_value(url, message_format)
+    return url
+
+
+def format_alert_link(label: str, url: str, message_format: str) -> str:
+    """A label linked to a URL, or the bare escaped label when the format cannot."""
+    safe_label = escape_alert_value(label, message_format)
+    if not url or message_format not in LINK_CAPABLE_ALERT_FORMATS:
+        return safe_label
+    safe_url = escape_alert_link_url(url, message_format)
+    if message_format == ALERT_MESSAGE_FORMAT_TELEGRAM_HTML:
+        return f'<a href="{safe_url}">{safe_label}</a>'
+    if message_format == ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2:
+        return f"[{safe_label}]({safe_url})"
+    return f"<{safe_url}|{safe_label}>"
+
+
+def format_alert_bold(text: str, message_format: str) -> str:
+    """Bold an ALREADY-ESCAPED string.
+
+    Escape first, then wrap — never the other way round. Wrapping first and
+    escaping the result turns the markup itself into literal text; escaping a
+    string that already contains the wrapper does the same. A group heading is
+    the one string in a digest body that is built at runtime rather than pulled
+    from an item field, and it is exactly where that has been got wrong before:
+    ``variable_value_drift drops`` carries two underscores, which MarkdownV2
+    reads as a nested italic entity.
+    """
+    if message_format == ALERT_MESSAGE_FORMAT_TELEGRAM_HTML:
+        return f"<b>{text}</b>"
+    if message_format in (
+        ALERT_MESSAGE_FORMAT_SLACK_MRKDWN,
+        ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2,
+    ):
+        return f"*{text}*"
+    return text
+
+
+def get_digest_message_template(message_format: str | None) -> str:
+    fmt = message_format or ALERT_MESSAGE_FORMAT_PLAIN
+    return DIGEST_ALERT_MESSAGE_TEMPLATES.get(
+        fmt, DIGEST_ALERT_MESSAGE_TEMPLATES[ALERT_MESSAGE_FORMAT_PLAIN]
+    )
+
+
+def get_digest_items_template(message_format: str | None) -> str:
+    fmt = message_format or ALERT_MESSAGE_FORMAT_PLAIN
+    return DIGEST_ALERT_ITEMS_TEMPLATES.get(
+        fmt, DIGEST_ALERT_ITEMS_TEMPLATES[ALERT_MESSAGE_FORMAT_PLAIN]
+    )
+
 
 _ALERT_TEMPLATE_VAR_RE = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 _TELEGRAM_MARKDOWNV2_SPECIAL_CHARS = set("_*[]()~`>#+-=|{}.!\\")

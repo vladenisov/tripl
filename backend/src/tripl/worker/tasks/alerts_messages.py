@@ -19,6 +19,8 @@ from tripl.alert_templates import (
     ALERT_MESSAGE_FORMAT_PLAIN,
     AlertTemplateContext,
     escape_alert_value,
+    format_alert_bold,
+    format_alert_link,
     format_metric_alert_value,
     format_percent_delta,
     get_default_items_template,
@@ -341,8 +343,58 @@ def _build_item_template_context(
         "top_movers": escape_alert_value(top_movers, message_format),
         "sparkline_line": escape_alert_value(sparkline_line, message_format),
         "top_movers_line": escape_alert_value(top_movers_line, message_format),
+        # A digest groups by direction, so a reader who has scrolled past the
+        # heading has nothing else telling them which way the number moved —
+        # the sign alone does not, because format_percent_delta prints an
+        # unsigned magnitude for a spike. Both arrows are BMP, so one UTF-16
+        # unit each.
+        "direction_arrow": "\u25b2" if item.direction == "spike" else "\u25bc",
+        # Already-escaped markup: NOT passed through escape_alert_value, which
+        # would turn the tags into literal text. format_alert_link escapes the
+        # label and the URL separately, because the two slots have different
+        # rules — a backslash-escaped URL inside MarkdownV2 parentheses 404s.
+        "scope_link": format_alert_link(item.scope_name, item.details_path or "", message_format),
     }
     return AlertTemplateContext(variables=variables, message_format=message_format)
+
+
+def _digest_groups(
+    items: list[AlertDeliveryItem],
+) -> list[tuple[str, list[AlertDeliveryItem]]]:
+    """Order a digest's items the way a person triages one.
+
+    DROPS FIRST, and that ordering is the whole point. A drop needs an existing
+    baseline to be a drop at all, so it is structurally the smaller class — and
+    a fall in a checkout, login or payment event is close to always the thing
+    worth acting on before a rise in an impression counter. Ordered the other
+    way round, on a real 24-item morning the two revenue-shaped drops sat about
+    thirty phone-lines below the fold.
+
+    NO-BASELINE ITEMS GET THEIR OWN TRAILING GROUP rather than the top of the
+    spikes. Sorting by percent puts them first by construction (an undefined
+    ratio has no magnitude to rank), which is exactly backwards: a counter that
+    went from nothing to something is usually a new event shipping, not an
+    incident, and it was crowding out the items that were.
+    """
+    drops, spikes, unbaselined = [], [], []
+    for item in items:
+        if item.expected_count <= 0:
+            unbaselined.append(item)
+        elif item.direction == "spike":
+            spikes.append(item)
+        else:
+            drops.append(item)
+
+    by_percent = lambda item: -abs(item.percent_delta)  # noqa: E731
+    by_absolute = lambda item: -abs(item.actual_count - item.expected_count)  # noqa: E731
+    groups: list[tuple[str, list[AlertDeliveryItem]]] = []
+    if drops:
+        groups.append((f"{len(drops)} down", sorted(drops, key=by_percent)))
+    if spikes:
+        groups.append((f"{len(spikes)} up", sorted(spikes, key=by_percent)))
+    if unbaselined:
+        groups.append((f"{len(unbaselined)} new", sorted(unbaselined, key=by_absolute)))
+    return groups
 
 
 def _build_items_text(
@@ -354,6 +406,7 @@ def _build_items_text(
     scan_config_id: uuid.UUID | None = None,
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
     metric_units_cache: dict[str, str | None] | None = None,
+    digest: bool = False,
 ) -> str:
     """Render every item it is given, whole.
 
@@ -365,9 +418,9 @@ def _build_items_text(
     chooses the subsets and hands them here one group at a time.
     """
     metric_units = _resolve_metric_units(session, items, metric_units_cache)
-    lines: list[str] = []
-    for item in items:
-        rendered_item = render_alert_template(
+
+    def render_one(item: AlertDeliveryItem) -> str:
+        return render_alert_template(
             items_template,
             _build_item_template_context(
                 item,
@@ -380,10 +433,22 @@ def _build_items_text(
                 ),
             ),
         ).rstrip()
-        if not rendered_item:
+
+    if not digest:
+        return "\n".join(line for line in (render_one(item) for item in items) if line)
+
+    # Headings are ESCAPED FIRST and bolded second. Wrapping first and escaping
+    # the result turns the markup into literal text; and a heading is the one
+    # string in the body built at runtime rather than read off an item, which
+    # is where that has been got wrong before.
+    blocks: list[str] = []
+    for heading, group in _digest_groups(items):
+        rendered = [line for line in (render_one(item) for item in group) if line]
+        if not rendered:
             continue
-        lines.append(rendered_item)
-    return "\n".join(lines)
+        label = format_alert_bold(escape_alert_value(heading, message_format), message_format)
+        blocks.append("\n".join([label, *rendered]))
+    return "\n\n".join(blocks)
 
 
 def _build_template_context(
