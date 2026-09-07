@@ -129,6 +129,10 @@ URL takes up the line, and the items grouped.
   and it is what your phone shows in the notification preview.
 - The window the digest covers is stated in the project's timezone, because a
   digest is separated from its data by up to a whole day.
+- **A digest that needs more than one message is still one digest.** Every part
+  repeats the same summary and the same window — they describe the digest, not
+  the part — and the window line carries a `2/3` marker so the alert count and
+  the number of lines under it are not read as items lost.
 
 The AI note, when the rule has one enabled, is written over **all** the
 window's events at once and sits above the list.
@@ -140,6 +144,10 @@ messages. Switch the rule's message format to **Telegram HTML** (or Slack
 mrkdwn) and the same digest is one message at about a quarter of Telegram's
 size limit — the URL moves behind the event name and stops counting against it.
 :::
+
+This layout is what every channel receives. A Slack or email digest is laid out
+exactly like a Telegram one — same grouping, same summary line, same AI note
+over the whole window.
 
 **One message, not one per monitor.** When several rules on a Slack or email
 destination match inside the same window, the digest goes out as a *single*

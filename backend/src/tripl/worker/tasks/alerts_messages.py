@@ -113,9 +113,17 @@ def telegram_message_length(text: str) -> int:
 # rather than anything greedier, so a literal "<" that survived escaping (it
 # cannot, but the length budget must not depend on that) is still counted.
 _HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
-_MARKDOWNV2_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
-_MARKDOWNV2_ESCAPE_RE = re.compile(r"\\(.)")
-_SLACK_LINK_RE = re.compile(r"<([^|>]+)\|([^>]*)>")
+# Both slots step over an escaped pair before testing for their terminator,
+# because MarkdownV2 escaping puts the terminator itself INSIDE them: a scope
+# name holding "]" reaches the label as "\]", and a naive "[^\]]*" cannot cross
+# it — the link then matches nothing and stays in the count, URL and all. The
+# measurement over-counts and splits a message that would have fitted, silently
+# undoing the saving links exist for.
+_MARKDOWNV2_LINK_RE = re.compile(
+    r"\[((?:\\.|[^\]\\])*)\]\((?:\\.|[^)\\])*\)",
+    re.DOTALL,
+)
+_MARKDOWNV2_ESCAPE_RE = re.compile(r"\\(.)", re.DOTALL)
 
 
 def telegram_visible_length(text: str, message_format: str) -> int:
@@ -460,6 +468,19 @@ def _digest_window_label(items: list[AlertDeliveryItem], timezone_name: str | No
     return f"{start:%b %d %H:%M} – {end:%b %d %H:%M} {zone.key}"
 
 
+_WINDOW_LABEL_SEPARATOR = " · "
+
+
+def _join_window_label(window_label: str, part_label: str) -> str:
+    """The window line, carrying the part marker when the digest needs one.
+
+    Either half may be empty — a digest whose items all lost their bucket has no
+    window, and the overwhelming majority of digests are one message and have no
+    part — so this never leaves a dangling separator for the reader to wonder at.
+    """
+    return _WINDOW_LABEL_SEPARATOR.join(part for part in (window_label, part_label) if part)
+
+
 def _digest_groups(
     items: list[AlertDeliveryItem],
 ) -> list[tuple[str, list[AlertDeliveryItem]]]:
@@ -565,6 +586,8 @@ def _build_template_context(
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
     metric_units_cache: dict[str, str | None] | None = None,
     items: list[AlertDeliveryItem] | None = None,
+    summary_items: list[AlertDeliveryItem] | None = None,
+    part_label: str = "",
     digest: bool = False,
     ai_explanation: str | None = None,
     project_timezone: str | None = None,
@@ -588,6 +611,15 @@ def _build_template_context(
     # chunks its own matched_count for the same reason.
     rendered_items = delivery.items if items is None else items
     rendered_count = delivery.matched_count if items is None else len(items)
+    # ...but the SUMMARY is the other half of that split, and it does not follow
+    # the same rule. ``${matched_count}`` counts what is in front of the reader;
+    # ``${headline}`` and ``${window_label}`` describe the digest, which is one
+    # thing however many messages carry it. Computing them per part would have
+    # message 2 of 3 announce "9 alerts" over its own share and name a window
+    # that closes hours before the digest's does — three disagreeing summaries
+    # of one morning, which is exactly the reading a digest exists to prevent.
+    summarised_items = rendered_items if summary_items is None else summary_items
+    summarised_count = rendered_count if summary_items is None else len(summary_items)
 
     variables = {
         "project_name": escape_alert_value(project.name if project else "", message_format),
@@ -613,13 +645,23 @@ def _build_template_context(
         # true on every delivery including the one where the LLM is off, times
         # out, or writes 230 characters of preamble before saying anything.
         "headline": escape_alert_value(
-            _digest_headline(rendered_items, rendered_count), message_format
+            _digest_headline(summarised_items, summarised_count), message_format
         ),
         # An immediate alert arrives AT the anomaly, so "when" is implicit. A
         # digest is decoupled from its data by up to a whole day, and nothing
         # else in the compact line carries a timestamp.
+        #
+        # The part marker rides here rather than on the headline because the
+        # headline is what a phone shows in its notification preview, where
+        # "24 alerts, 7 down" is the useful sentence and "(2/3)" is noise. On
+        # the line below it, it is the answer to the question a whole-digest
+        # headline provokes: the reader counts nine items under "24 alerts" and
+        # needs to be told the other fifteen are in the neighbouring messages.
         "window_label": escape_alert_value(
-            _digest_window_label(rendered_items, project_timezone) if digest else "",
+            _join_window_label(
+                _digest_window_label(summarised_items, project_timezone) if digest else "",
+                part_label,
+            ),
             message_format,
         ),
         # Pre-escaped and pre-wrapped: it carries its own trailing blank line so
@@ -647,6 +689,8 @@ def _render_delivery_message(
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
     metric_units_cache: dict[str, str | None] | None = None,
     items: list[AlertDeliveryItem] | None = None,
+    summary_items: list[AlertDeliveryItem] | None = None,
+    part_label: str = "",
     digest: bool = False,
     ai_explanation: str | None = None,
     project_timezone: str | None = None,
@@ -656,6 +700,10 @@ def _render_delivery_message(
     ``items`` renders a subset — one message's share of a delivery split across
     several. None means the whole delivery, which is what every channel without
     a per-message ceiling gets.
+
+    ``summary_items`` is what the digest header DESCRIBES, which on a split is
+    not what the body lists: every part summarises the whole digest and carries
+    ``part_label`` to say which slice of it the reader is holding.
 
     ``digest`` selects the compact grouped layout. It is a parameter rather
     than something read off the destination, because the caller is the only
@@ -674,6 +722,8 @@ def _render_delivery_message(
         item_context_cache=item_context_cache,
         metric_units_cache=metric_units_cache,
         items=items,
+        summary_items=summary_items,
+        part_label=part_label,
         digest=digest,
         ai_explanation=ai_explanation,
         project_timezone=project_timezone,
@@ -723,6 +773,10 @@ def split_telegram_messages(
     delivery, and repeating it under every part would cost the reader nothing
     but length.
 
+    A digest's HEADER, by contrast, is repeated on every part and describes the
+    whole digest on each — the reader is holding one digest, not three — with a
+    "2/3" marker on the window line saying which slice the body under it is.
+
     Nothing is ever dropped: an item too long to share a message gets one of its
     own. A SINGLE item that alone exceeds the ceiling is the one thing this
     cannot fix — it is returned as its own message and Telegram refuses it, so
@@ -732,7 +786,9 @@ def split_telegram_messages(
     if len(delivery_items) <= 1 or telegram_visible_length(message, message_format) <= max_chars:
         return [(message, list(delivery_items))]
 
-    def render_part(part: list[AlertDeliveryItem], *, with_ai_note: bool) -> str:
+    def render_part(
+        part: list[AlertDeliveryItem], *, with_ai_note: bool, part_label: str = ""
+    ) -> str:
         text, part_format = _render_delivery_message(
             delivery,
             destination=destination,
@@ -744,6 +800,11 @@ def split_telegram_messages(
             item_context_cache=item_context_cache,
             metric_units_cache=metric_units_cache,
             items=part,
+            # The header summarises the whole digest on EVERY part — see
+            # _build_template_context. Only the digest layout has a header that
+            # makes a claim about scope, so nothing else opts in.
+            summary_items=delivery_items if digest else None,
+            part_label=part_label,
             digest=digest,
             # A digest carries its note INSIDE the layout, above the list, so it
             # is rendered into the part rather than appended after it — and only
@@ -755,6 +816,15 @@ def split_telegram_messages(
             text = _append_ai_explanation(text, ai_explanation, part_format)
         return text
 
+    # The marker names a total that does not exist until packing has finished,
+    # so it cannot be rendered while packing. Instead the packer works to a
+    # budget short by the widest marker this delivery could ever carry — it
+    # cannot split into more parts than it has items — and the finished parts
+    # are re-rendered with the real one. Reserving is what stops that second
+    # render pushing a part back over the ceiling it was just measured against.
+    widest_part_label = f"{len(delivery_items)}/{len(delivery_items)}"
+    budget = max_chars - (len(_WINDOW_LABEL_SEPARATOR) + len(widest_part_label) if digest else 0)
+
     parts: list[tuple[str, list[AlertDeliveryItem]]] = []
     current: list[AlertDeliveryItem] = []
     current_text = ""
@@ -763,7 +833,7 @@ def split_telegram_messages(
         candidate_text = render_part(candidate, with_ai_note=not parts)
         # ``current`` being non-empty is what keeps a lone oversized item in:
         # closing an empty message to make room for it would drop it forever.
-        if current and telegram_visible_length(candidate_text, message_format) > max_chars:
+        if current and telegram_visible_length(candidate_text, message_format) > budget:
             parts.append((current_text, current))
             current = [item]
             current_text = render_part(current, with_ai_note=False)
@@ -771,7 +841,19 @@ def split_telegram_messages(
         current = candidate
         current_text = candidate_text
     parts.append((current_text, current))
-    return parts
+    if not digest or len(parts) == 1:
+        return parts
+    return [
+        (
+            render_part(
+                part_items,
+                with_ai_note=index == 0,
+                part_label=f"{index + 1}/{len(parts)}",
+            ),
+            part_items,
+        )
+        for index, (_text, part_items) in enumerate(parts)
+    ]
 
 
 def _describe_age(delta: timedelta) -> str:

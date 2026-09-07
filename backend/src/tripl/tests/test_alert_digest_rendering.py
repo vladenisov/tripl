@@ -32,6 +32,11 @@ from tripl.alert_templates import (
     get_default_items_template,
     get_digest_items_template,
 )
+from tripl.models.alert_delivery import AlertDelivery
+from tripl.models.alert_delivery_item import AlertDeliveryItem
+from tripl.models.alert_destination import AlertDestination, AlertDestinationType
+from tripl.models.alert_rule import AlertRule
+from tripl.models.project import Project
 from tripl.worker.tasks import alerts_messages as am
 
 _URL = (
@@ -277,3 +282,165 @@ def test_without_the_digest_flag_nothing_changes() -> None:
     assert "▲" not in immediate
     # No group headings at all on the immediate path.
     assert "1 up" not in immediate
+
+
+# ── a split digest is still ONE digest ────────────────────────────────────
+
+
+def _split_digest(
+    count: int, *, max_chars: int, message_format: str = ALERT_MESSAGE_FORMAT_TELEGRAM_HTML
+) -> list[tuple[str, list[AlertDeliveryItem]]]:
+    """Force a digest across several messages and return them in send order."""
+    items = [
+        AlertDeliveryItem(
+            id=uuid.uuid4(),
+            delivery_id=uuid.uuid4(),
+            scope_type="event",
+            scope_ref=str(uuid.uuid4()),
+            scope_name=f"main:tap:snippet:{index:03d}",
+            # Spread across the morning so the WHOLE window is wider than any
+            # single part's — the property the per-part label got wrong.
+            bucket=datetime(2026, 9, 6, 8 + index, tzinfo=UTC),
+            direction="drop",
+            actual_count=15403,
+            expected_count=32048,
+            absolute_delta=16645,
+            percent_delta=51.9,
+            details_path=_URL,
+            monitoring_path=None,
+        )
+        for index in range(count)
+    ]
+    destination = AlertDestination(
+        id=uuid.uuid4(),
+        project_id=uuid.uuid4(),
+        type=AlertDestinationType.telegram,
+        name="All",
+    )
+    rule = AlertRule(
+        id=uuid.uuid4(),
+        destination_id=destination.id,
+        name="TG",
+        message_format=message_format,
+    )
+    delivery = AlertDelivery(
+        id=uuid.uuid4(),
+        project_id=destination.project_id,
+        scan_config_id=uuid.uuid4(),
+        destination_id=destination.id,
+        rule_id=rule.id,
+        channel=AlertDestinationType.telegram,
+        matched_count=len(items),
+    )
+    delivery.items = items
+    project = Project(id=delivery.project_id, name="windy-ios", slug="windy-ios", description="")
+    text, fmt = am._render_delivery_message(
+        delivery,
+        destination=destination,
+        rule=rule,
+        scan_name="Snowplow Events (iOS)",
+        project=project,
+        digest=True,
+        project_timezone="Europe/Moscow",
+    )
+    return am.split_telegram_messages(
+        delivery,
+        destination=destination,
+        rule=rule,
+        scan_name="Snowplow Events (iOS)",
+        project=project,
+        message=text,
+        message_format=fmt,
+        digest=True,
+        project_timezone="Europe/Moscow",
+        max_chars=max_chars,
+    )
+
+
+def test_every_part_of_a_split_digest_summarises_the_whole_digest() -> None:
+    """The reader is holding one digest, not three, and the header must say so.
+
+    Computed per part, message 2 of 3 announced its own share and named a window
+    that closed hours before the digest's did — three disagreeing summaries of
+    one morning, which is the reading a digest exists to prevent.
+    """
+    parts = _split_digest(12, max_chars=600)
+
+    assert len(parts) > 1
+    headlines = {_visible(text).splitlines()[0] for text, _items in parts}
+    assert len(headlines) == 1
+    assert "12 alerts" in headlines.pop()
+
+
+def test_every_part_names_the_whole_window_not_its_own_slice() -> None:
+    parts = _split_digest(12, max_chars=600)
+
+    # 08:00–19:00 UTC is 11:00–22:00 in Moscow; no single part spans it.
+    windows = {_visible(text).splitlines()[1] for text, _items in parts}
+    assert len(windows) == len(parts), "the part marker must differ per part"
+    assert all(window.startswith("Sep 06, 11:00–22:00 Europe/Moscow") for window in windows)
+
+
+def test_a_split_digest_says_which_part_the_reader_is_holding() -> None:
+    """Without it, "24 alerts" over nine visible lines reads as lost items."""
+    parts = _split_digest(12, max_chars=600)
+
+    markers = [_visible(text).splitlines()[1].rsplit(" · ", 1)[-1] for text, _items in parts]
+    assert markers == [f"{index + 1}/{len(parts)}" for index in range(len(parts))]
+
+
+def test_the_part_marker_never_pushes_a_part_over_the_ceiling() -> None:
+    """The marker is reserved during packing precisely so this cannot happen.
+
+    336 rather than a round number: the marker is stamped AFTER packing, so it
+    can only overflow a part that packing left within its own width of the
+    ceiling. Sweeping every ceiling from 300 to 1200 over this delivery, 42 of
+    them do exactly that without the reserve — this is one, overflowing by 6 —
+    and none of them do with it. A ceiling picked for roundness misses the
+    hazard entirely and pins nothing.
+    """
+    parts = _split_digest(12, max_chars=336)
+
+    assert len(parts) > 1
+    for text, _items in parts:
+        assert am.telegram_visible_length(text, ALERT_MESSAGE_FORMAT_TELEGRAM_HTML) <= 336
+
+
+def test_a_split_digest_still_loses_no_item() -> None:
+    parts = _split_digest(12, max_chars=600)
+
+    delivered = [item.scope_name for _text, part_items in parts for item in part_items]
+    assert sorted(delivered) == sorted(f"main:tap:snippet:{index:03d}" for index in range(12))
+
+
+def test_one_message_digests_carry_no_part_marker() -> None:
+    """The overwhelming majority of digests, and they must not grow a "1/1"."""
+    ((text, _items),) = _split_digest(4, max_chars=4096)
+
+    window_line = _visible(text).splitlines()[1]
+    assert window_line == "Sep 06, 11:00–14:00 Europe/Moscow"
+
+
+# ── the MarkdownV2 length measurement survives a bracket in a scope name ──
+
+
+def test_an_escaped_bracket_in_a_label_does_not_hide_the_link_from_the_ruler() -> None:
+    """ "]" reaches the label as "\\]", which the old label class could not cross.
+
+    The link then matched nothing and stayed in the count with its whole URL —
+    over-counting by ~140 units per item and splitting messages that fitted.
+    """
+    fmt = ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2
+    plain = format_alert_link("checkout", _URL, fmt)
+    bracketed = format_alert_link("checkout[a]", _URL, fmt)
+
+    assert am.telegram_visible_length(plain, fmt) == len("checkout")
+    assert am.telegram_visible_length(bracketed, fmt) == len("checkout[a]")
+
+
+def test_a_closing_paren_in_a_label_is_measured_too() -> None:
+    fmt = ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2
+
+    text = format_alert_link("checkout (v2)", _URL, fmt)
+
+    assert am.telegram_visible_length(text, fmt) == len("checkout (v2)")

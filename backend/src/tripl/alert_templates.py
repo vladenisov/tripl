@@ -108,7 +108,10 @@ ALERT_TEMPLATE_VARIABLES: dict[str, str] = {
     "items_count": "Alias for matched_count",
     "items_text": "Preformatted list of all matched alert items",
     "headline": 'Digest summary line, e.g. "24 alerts - 7 down, 17 up" (digests only)',
-    "window_label": "The period a digest covers, in the project timezone (digests only)",
+    "window_label": (
+        'The period a digest covers, in the project timezone, plus a "2/3" marker '
+        "on the rare digest that needs more than one message (digests only)"
+    ),
     "ai_explanation_block": "The AI note with its trailing blank line, or empty (digests only)",
 }
 

@@ -1133,3 +1133,38 @@ def test_a_digest_delivery_is_not_split_by_the_item_cap(
         assert deliveries[0].payload_snapshot.get("digest") is True, (
             "the send path has no other way to know it is rendering a digest"
         )
+
+
+def test_the_combined_send_uses_the_digest_layout(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Slack digest is a digest, and the readability work has to reach it.
+
+    Two send paths carry a digest: `send_alert_delivery` for Telegram and this
+    one for Slack and email. Only the first read the `digest` flag, so a Slack
+    destination on a cadence kept receiving the verbose per-item layout the
+    compact one replaced — the same buffered rows, rendered two different ways
+    depending on which channel they happened to be routed to.
+    """
+    with sync_session_factory() as session:
+        config, destination, _rule_a, event_type = _seed(
+            session,
+            cron=_ALWAYS_DUE,
+            last_flushed_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+        _add_rule(session, destination, "Second monitor")
+        _fire_anomaly(session, config, event_type, actual=200.0)
+        metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+        session.commit()
+
+    digests: list[list[str]] = []
+    _run_flush(monkeypatch, sync_session_factory, digests)
+
+    _result, posts = _run_digest(monkeypatch, sync_session_factory, digests[0])
+
+    body = posts[0][0]
+    # The compact line leads with a direction arrow; the verbose one opens
+    # "- Event type X: up, actual=..." and carries no arrow anywhere.
+    assert "▲" in body or "▼" in body
+    assert "actual=" not in body, "the verbose per-item layout is still being rendered"
