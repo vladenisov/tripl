@@ -255,8 +255,21 @@ def test_telegram_counts_the_text_after_entities_not_the_wire() -> None:
 
 
 def test_the_visible_length_of_a_plain_body_is_its_whole_length() -> None:
-    body = "just text, no markup"
-    assert am.telegram_visible_length(body, ALERT_MESSAGE_FORMAT_PLAIN) == len(body)
+    """Plain has no markup to parse away, so visible length IS wire length.
+
+    The ASCII case alone stated that rule in ``len``, which is code points —
+    the one unit that cannot express it. Telegram counts UTF-16 code units, so
+    the two rulers agree only while the body stays in the BMP, and an assertion
+    that holds only there pins the implementation rather than the contract. The
+    emoji line is the case that carries the claim.
+    """
+    ascii_body = "just text, no markup"
+    assert am.telegram_visible_length(ascii_body, ALERT_MESSAGE_FORMAT_PLAIN) == len(ascii_body)
+
+    emoji_body = "checkout 🚀 dropped"
+    visible = am.telegram_visible_length(emoji_body, ALERT_MESSAGE_FORMAT_PLAIN)
+    assert visible == am.telegram_message_length(emoji_body)
+    assert visible == len(emoji_body) + 1, "the surrogate pair costs two, not one"
 
 
 def test_an_escaped_angle_bracket_still_counts_as_text() -> None:

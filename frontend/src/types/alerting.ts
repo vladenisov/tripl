@@ -112,7 +112,13 @@ export interface AlertDestination {
   // Alerts matched and held for the next digest. A cadence puts a
   // destination into "on and quiet" for a whole window by design, and
   // nothing else on the card can tell that from "on and broken".
-  held_count?: number
+  //
+  // REQUIRED, unlike the schedule fields above it: the backend field carries a
+  // default rather than a null, so every response has it. Declared optional it
+  // was worse than merely loose — the card reads it as a falsy count and a
+  // missing field renders "nothing held", which is a claim about the buffer,
+  // not an absence of one. Not representable now.
+  held_count: number
   // True for a demo_sink: a local, non-sendable sink badged LOCAL SIMULATED.
   is_local: boolean
   // Traffic this destination has actually carried. A configured destination that
