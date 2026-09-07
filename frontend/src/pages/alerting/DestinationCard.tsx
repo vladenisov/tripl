@@ -96,6 +96,13 @@ export function DestinationCard({
                   {destination.project_timezone ? ` · ${destination.project_timezone}` : ''}
                 </Badge>
               )}
+              {destination.delivery_schedule_cron && (
+                <Badge variant="outline" className="text-[10px]">
+                  {destination.held_count
+                    ? `${destination.held_count} held`
+                    : 'nothing held'}
+                </Badge>
+              )}
               {destination.type === 'slack' && destination.webhook_set && (
                 <Badge variant="outline" className="text-[10px]">webhook set</Badge>
               )}

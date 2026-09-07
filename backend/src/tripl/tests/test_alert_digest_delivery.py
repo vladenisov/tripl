@@ -1044,3 +1044,127 @@ def test_a_member_already_sent_is_never_sent_again(
 
     assert second_result["status"] == "already_sent"
     assert second_posts == [], "a re-run must not put the message in the channel twice"
+
+
+def test_a_held_alert_is_visible_from_outside_the_database(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """`alerts_queued: 0` cannot distinguish "held 12" from "nothing matched".
+
+    On a cadence that is the difference between the feature working and it
+    swallowing every alert for a whole window — which is exactly what could not
+    be confirmed when this shipped to production (tripl-ftrn). The collection
+    now reports what it buffered.
+    """
+    with sync_session_factory() as session:
+        config, _destination, _rule, event_type = _seed(session, cron=_DAILY)
+        _fire_anomaly(session, config, event_type, actual=200.0)
+
+        buffered: list[int] = []
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(
+            session, config, scan_job_id=None, buffered=buffered
+        )
+        session.commit()
+
+        assert delivery_ids == [], "a scheduled destination mints no delivery"
+        assert sum(buffered) == 1, "...but it must SAY that it held one"
+        assert len(session.execute(select(AlertPendingItem)).scalars().all()) == 1
+
+
+def test_an_immediate_destination_reports_nothing_held(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    with sync_session_factory() as session:
+        config, _destination, _rule, event_type = _seed(session, cron=None)
+        _fire_anomaly(session, config, event_type, actual=200.0)
+
+        buffered: list[int] = []
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(
+            session, config, scan_job_id=None, buffered=buffered
+        )
+        session.commit()
+
+        assert len(delivery_ids) == 1
+        assert sum(buffered) == 0
+
+
+def test_a_digest_delivery_is_not_split_by_the_item_cap(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Telegram caps a delivery at 8 items — an estimate sized for the verbose
+    layout, where a digest line is about a seventh as long. It split a
+    perfectly deliverable digest into three messages."""
+    with sync_session_factory() as session:
+        config, destination, rule, event_type = _seed(
+            session,
+            cron=_ALWAYS_DUE,
+            last_flushed_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+        destination.type = "telegram"
+        session.commit()
+        # Twelve buffered scopes for one rule: over the 8-item cap.
+        for index in range(12):
+            session.add(
+                AlertPendingItem(
+                    id=uuid.uuid4(),
+                    project_id=config.project_id,
+                    destination_id=destination.id,
+                    rule_id=rule.id,
+                    scan_config_id=config.id,
+                    scope_type="event_type",
+                    scope_ref=str(uuid.uuid4()),
+                    scope_name=f"scope {index}",
+                    bucket=_BUCKET,
+                    direction="spike",
+                    actual_count=200.0,
+                    expected_count=10.0,
+                    correlation_group_id=uuid.uuid4(),
+                )
+            )
+        session.commit()
+
+    _run_flush(monkeypatch, sync_session_factory, [])
+
+    with sync_session_factory() as session:
+        deliveries = session.execute(select(AlertDelivery)).scalars().all()
+        assert len(deliveries) == 1, "one digest is ONE delivery, not two"
+        assert deliveries[0].matched_count == 12
+        assert deliveries[0].payload_snapshot.get("digest") is True, (
+            "the send path has no other way to know it is rendering a digest"
+        )
+
+
+def test_the_combined_send_uses_the_digest_layout(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Slack digest is a digest, and the readability work has to reach it.
+
+    Two send paths carry a digest: `send_alert_delivery` for Telegram and this
+    one for Slack and email. Only the first read the `digest` flag, so a Slack
+    destination on a cadence kept receiving the verbose per-item layout the
+    compact one replaced — the same buffered rows, rendered two different ways
+    depending on which channel they happened to be routed to.
+    """
+    with sync_session_factory() as session:
+        config, destination, _rule_a, event_type = _seed(
+            session,
+            cron=_ALWAYS_DUE,
+            last_flushed_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+        _add_rule(session, destination, "Second monitor")
+        _fire_anomaly(session, config, event_type, actual=200.0)
+        metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+        session.commit()
+
+    digests: list[list[str]] = []
+    _run_flush(monkeypatch, sync_session_factory, digests)
+
+    _result, posts = _run_digest(monkeypatch, sync_session_factory, digests[0])
+
+    body = posts[0][0]
+    # The compact line leads with a direction arrow; the verbose one opens
+    # "- Event type X: up, actual=..." and carries no arrow anywhere.
+    assert "▲" in body or "▼" in body
+    assert "actual=" not in body, "the verbose per-item layout is still being rendered"

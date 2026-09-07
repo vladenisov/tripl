@@ -950,10 +950,12 @@ def collect_metrics(
             evaluation_start=time_from_dt,
             evaluation_end=time_to_dt,
         )
+        buffered_counts: list[int] = []
         delivery_ids = _prepare_alert_deliveries(
             session,
             config,
             scan_job_id=job.id if job else None,
+            buffered=buffered_counts,
         )
         visible_signals_after = _get_visible_signal_scope_keys(session, config.id)
         signals_added = len(visible_signals_after - visible_signals_before)
@@ -996,6 +998,12 @@ def collect_metrics(
             "signals_added": signals_added,
             "signals_removed": signals_removed,
             "alerts_queued": len(delivery_ids),
+            # Alerts HELD for a later digest. Without it "alerts_queued: 0"
+            # is ambiguous: "held 12" and "nothing matched" look identical
+            # from outside the database, and on a cadence that is the
+            # difference between the feature working and it swallowing
+            # every alert for a whole window (tripl-ftrn).
+            "alerts_buffered": sum(buffered_counts),
             "metrics_row_limit": metrics_row_limit,
             "query_rows_scanned": query_rows_scanned,
             "archived_event_volume": archived_volume,

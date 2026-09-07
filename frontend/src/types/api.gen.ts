@@ -3673,6 +3673,11 @@ export interface components {
             /** Enabled */
             enabled: boolean;
             /**
+             * Held Count
+             * @default 0
+             */
+            held_count: number;
+            /**
              * Id
              * Format: uuid
              */

@@ -113,6 +113,25 @@ export const TEMPLATE_VARIABLE_OPTIONS = [
   { name: 'matched_count', description: 'Number of matched alert items' },
   { name: 'items_count', description: 'Alias for matched_count' },
   { name: 'items_text', description: 'Preformatted list of all matched alert items' },
+  // Digest-only, and listed because the backend validator already accepts them:
+  // an operator writing a custom message template for a destination on a
+  // cadence otherwise has no way to learn the three slots the default digest
+  // layout is built from.
+  {
+    name: 'headline',
+    description:
+      'Digest summary line, e.g. "24 alerts · 7 down, 17 up · worst checkout down 86%". Describes the whole digest even when it takes several messages (digests only)',
+  },
+  {
+    name: 'window_label',
+    description:
+      'The period a digest covers, in the project timezone, plus a "2/3" marker on the rare digest that needs more than one message (digests only)',
+  },
+  {
+    name: 'ai_explanation_block',
+    description:
+      'The AI note with its trailing blank line, or empty when there is none (digests only)',
+  },
 ] as const
 
 export const ITEM_TEMPLATE_VARIABLE_OPTIONS = [
@@ -121,6 +140,12 @@ export const ITEM_TEMPLATE_VARIABLE_OPTIONS = [
   { name: 'scope_label', description: 'Matched scope label' },
   { name: 'direction', description: 'Direction: spike or drop' },
   { name: 'direction_label', description: 'Direction: up or down' },
+  { name: 'direction_arrow', description: 'A single up/down arrow for the direction' },
+  {
+    name: 'scope_link',
+    description:
+      'Scope name linked to its incident on formats that support links; the bare name on plain',
+  },
   { name: 'actual_count', description: 'Actual count' },
   { name: 'expected_count', description: 'Expected count' },
   {

@@ -283,13 +283,27 @@ def _delivery_chunks(
     anomalies: list[AlertMatchCandidate],
     *,
     channel: str,
+    chunk_items: bool = True,
 ) -> list[list[AlertMatchCandidate]]:
     """Split one rule's matches into deliveries the channel can actually carry.
 
     Chunking rather than truncating: every chunk is its own AlertDelivery with
     its own items, so no scope is silently dropped and each chunk stamps
     ``last_notified_at`` on the states it covers once it lands.
+
+    ``chunk_items=False`` for a DIGEST. The item cap is a character-ceiling
+    estimate, and a digest's compact line is roughly a seventh of a verbose
+    one — so the estimate that was right for the immediate path splits a
+    perfectly deliverable digest into three messages. ``split_telegram_messages``
+    still enforces the real 4096 ceiling at send time, measured after entity
+    parsing, and it drops nothing.
+
+    Passed by the CALLER rather than read off ``destination.delivery_schedule_cron``
+    on purpose: the flush's drain arm ships a genuine digest from a destination
+    whose cadence has already been cleared, so the column would misclassify it.
     """
+    if not chunk_items:
+        return [anomalies]
     limit = _MAX_ITEMS_PER_DELIVERY.get(str(channel))
     if limit is None or len(anomalies) <= limit:
         return [anomalies]
@@ -325,7 +339,17 @@ def _prepare_alert_deliveries(
     config: ScanConfig,
     *,
     scan_job_id: uuid.UUID | None,
+    buffered: list[int] | None = None,
 ) -> list[uuid.UUID]:
+    """Mint deliveries for immediate destinations, buffer for scheduled ones.
+
+    ``buffered`` is an out-parameter rather than a second return value so every
+    existing call site keeps working unchanged: it appends the number of alerts
+    held for a later digest, which is otherwise invisible from outside the
+    database (tripl-ftrn). ``alerts_queued == 0`` alone cannot distinguish
+    "held 12" from "nothing matched", and on a cadence that is the difference
+    between working and silently swallowing every alert.
+    """
     active_candidates: dict[tuple[str, str], AlertMatchCandidate] = {}
     active_candidates.update(_get_latest_active_anomalies(session, config))
     active_candidates.update(_get_active_metric_anomaly_candidates(session, config))
@@ -344,6 +368,7 @@ def _prepare_alert_deliveries(
     metric_state_config_id = _project_metric_state_config_id(session, config)
     scope_names = _build_alert_scope_names(session, list(active_candidates.values()))
     delivery_ids: list[uuid.UUID] = []
+    buffered_count = 0
     suppressed_group_ids = _suppressed_correlation_group_ids(
         session,
         project_id=config.project_id,
@@ -582,7 +607,7 @@ def _prepare_alert_deliveries(
                 # stranded-delivery reaper has nothing to sweep and the Inbox,
                 # the delivery history and their created_at orderings are
                 # untouched until the digest is actually minted.
-                _buffer_pending_items(
+                buffered_count += _buffer_pending_items(
                     session,
                     config,
                     rule=rule,
@@ -595,6 +620,8 @@ def _prepare_alert_deliveries(
                     now=now,
                 )
 
+    if buffered is not None:
+        buffered.append(buffered_count)
     return delivery_ids
 
 
@@ -609,6 +636,7 @@ def _create_deliveries(
     scope_names: dict[tuple[str, str], str],
     correlation_by_anomaly: dict[int, uuid.UUID],
     scan_job_id: uuid.UUID | None,
+    chunk_items: bool = True,
 ) -> list[uuid.UUID]:
     """Mint the AlertDelivery + AlertDeliveryItem rows for one (rule, destination).
 
@@ -621,7 +649,7 @@ def _create_deliveries(
     for digests would be a second chance for them to disagree.
     """
     delivery_ids: list[uuid.UUID] = []
-    for chunk in _delivery_chunks(anomalies, channel=destination.type):
+    for chunk in _delivery_chunks(anomalies, channel=destination.type, chunk_items=chunk_items):
         delivery = AlertDelivery(
             project_id=config.project_id,
             scan_config_id=config.id,
@@ -639,7 +667,7 @@ def _create_deliveries(
         # links back to this delivery's own audit row, and those need
         # the id. Whole-object assignment (not in-place mutation) so
         # SQLAlchemy sees the JSON column change.
-        delivery.payload_snapshot = _build_delivery_snapshot(
+        snapshot = _build_delivery_snapshot(
             config,
             project_slug=project_slug,
             rule=rule,
@@ -648,6 +676,14 @@ def _create_deliveries(
             scope_names=scope_names,
             delivery_id=delivery.id,
         )
+        if not chunk_items:
+            # The send path has no other way to tell a digest from an immediate
+            # alert: the destination's cadence column cannot answer it (the
+            # flush's drain arm ships a real digest from a destination whose
+            # cadence was just cleared), and by send time the buffer rows are
+            # gone. Recorded at creation, where the caller's intent is known.
+            snapshot["digest"] = True
+        delivery.payload_snapshot = snapshot
 
         for anomaly in chunk:
             absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
@@ -743,7 +779,7 @@ def _buffer_pending_items(
     scan_job_id: uuid.UUID | None,
     metric_state_config_id: uuid.UUID,
     now: datetime,
-) -> None:
+) -> int:
     """Hold matched signals for this destination's next digest window.
 
     Upsert, not insert: a scope that keeps firing is re-offered on every
@@ -853,3 +889,4 @@ def _buffer_pending_items(
                 correlation_group_id=upserted_group_id,
                 seen_at=anomaly.bucket,
             )
+    return len(anomalies)

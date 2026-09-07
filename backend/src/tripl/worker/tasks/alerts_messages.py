@@ -8,21 +8,29 @@ I/O lives in alerts.py.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections import Counter
 from datetime import UTC, datetime, timedelta
+from html import unescape
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from tripl.alert_templates import (
     ALERT_MESSAGE_FORMAT_PLAIN,
+    ALERT_MESSAGE_FORMAT_TELEGRAM_HTML,
+    ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2,
     AlertTemplateContext,
     escape_alert_value,
+    format_alert_bold,
+    format_alert_link,
     format_metric_alert_value,
     format_percent_delta,
     get_default_items_template,
     get_default_message_template,
+    get_digest_items_template,
+    get_digest_message_template,
     normalize_message_template,
     percent_delta_or_none,
     render_alert_template,
@@ -33,6 +41,7 @@ from tripl.alerting_matching import (
     SCOPE_VARIABLE_VALUE_DRIFT,
 )
 from tripl.anomaly_context import build_alert_item_context
+from tripl.core.alert_schedule import resolve_timezone
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination
@@ -54,6 +63,13 @@ DIGEST_WINDOW_DAYS = 7
 DEAD_EVENT_DAYS = 30
 
 _AI_EXPLANATION_MAX_ITEMS = 10
+
+# A digest is one delivery covering a whole window, so the immediate path's cap
+# would write the note from the first ten of twenty-four items and say nothing
+# about the rest — the note would confidently describe less than half the
+# morning. Bounded rather than unbounded because the prompt is one LLM
+# round-trip inside the send task.
+DIGEST_AI_EXPLANATION_MAX_ITEMS = 40
 _AI_EXPLANATION_MAX_TOKENS = 250
 
 # How much of what this rule already said about these same scopes goes into the
@@ -90,6 +106,46 @@ def telegram_message_length(text: str) -> int:
     this ceiling let an oversized message through.
     """
     return len(text.encode("utf-16-le")) // 2
+
+
+# Markup Telegram parses away before it counts: a tag pair, and the HTML
+# entities the escaper produces. Anchored deliberately at a tag-shaped token
+# rather than anything greedier, so a literal "<" that survived escaping (it
+# cannot, but the length budget must not depend on that) is still counted.
+_HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+# Both slots step over an escaped pair before testing for their terminator,
+# because MarkdownV2 escaping puts the terminator itself INSIDE them: a scope
+# name holding "]" reaches the label as "\]", and a naive "[^\]]*" cannot cross
+# it — the link then matches nothing and stays in the count, URL and all. The
+# measurement over-counts and splits a message that would have fitted, silently
+# undoing the saving links exist for.
+_MARKDOWNV2_LINK_RE = re.compile(
+    r"\[((?:\\.|[^\]\\])*)\]\((?:\\.|[^)\\])*\)",
+    re.DOTALL,
+)
+_MARKDOWNV2_ESCAPE_RE = re.compile(r"\\(.)", re.DOTALL)
+
+
+def telegram_visible_length(text: str, message_format: str) -> int:
+    """Length of ``text`` as Telegram counts it AFTER parsing entities.
+
+    The 4096 ceiling applies to what the reader sees, not to the wire bytes: a
+    200-character URL hidden behind a 20-character link label costs 20. Counting
+    the raw body instead is what made hyperlinks buy nothing — the URL simply
+    moved from a visible line into an ``href`` and kept splitting the message.
+
+    Measured on a real 24-item digest: 5,323 raw units against 1,061 visible.
+    The difference is the whole feature.
+    """
+    if message_format == ALERT_MESSAGE_FORMAT_TELEGRAM_HTML:
+        # Strip tags FIRST, then unescape: doing it the other way round would
+        # turn an escaped "&lt;b&gt;" from a scope name into a tag and delete
+        # text the reader can actually see.
+        return telegram_message_length(unescape(_HTML_TAG_RE.sub("", text)))
+    if message_format == ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2:
+        without_links = _MARKDOWNV2_LINK_RE.sub(lambda m: m.group(1), text)
+        return telegram_message_length(_MARKDOWNV2_ESCAPE_RE.sub(r"\1", without_links))
+    return telegram_message_length(text)
 
 
 def _resolve_metric_units(
@@ -341,8 +397,127 @@ def _build_item_template_context(
         "top_movers": escape_alert_value(top_movers, message_format),
         "sparkline_line": escape_alert_value(sparkline_line, message_format),
         "top_movers_line": escape_alert_value(top_movers_line, message_format),
+        # A digest groups by direction, so a reader who has scrolled past the
+        # heading has nothing else telling them which way the number moved —
+        # the sign alone does not, because format_percent_delta prints an
+        # unsigned magnitude for a spike. Both arrows are BMP, so one UTF-16
+        # unit each.
+        "direction_arrow": "\u25b2" if item.direction == "spike" else "\u25bc",
+        # Already-escaped markup: NOT passed through escape_alert_value, which
+        # would turn the tags into literal text. format_alert_link escapes the
+        # label and the URL separately, because the two slots have different
+        # rules — a backslash-escaped URL inside MarkdownV2 parentheses 404s.
+        "scope_link": format_alert_link(item.scope_name, item.details_path or "", message_format),
     }
     return AlertTemplateContext(variables=variables, message_format=message_format)
+
+
+def _digest_headline(items: list[AlertDeliveryItem], total: int) -> str:
+    """ "24 alerts · 7 down, 17 up · worst checkout:complete:annual -86%".
+
+    Deterministic on purpose. This is the line that lands in a phone's
+    notification preview, so it must be true on the delivery where the LLM is
+    off, times out, or spends its first 230 characters clearing its throat —
+    and it must name the worst DROP, because that is what a reader triaging a
+    morning digest is looking for.
+    """
+    if not items:
+        return f"{total} alerts"
+    downs = [i for i in items if i.direction != "spike" and i.expected_count > 0]
+    ups = [i for i in items if i.direction == "spike" and i.expected_count > 0]
+    new = [i for i in items if i.expected_count <= 0]
+    parts = [f"{total} alerts"]
+    counts = [
+        f"{len(downs)} down" if downs else "",
+        f"{len(ups)} up" if ups else "",
+        f"{len(new)} new" if new else "",
+    ]
+    counted = ", ".join(part for part in counts if part)
+    if counted:
+        parts.append(counted)
+    worst = max(downs, key=lambda i: abs(i.percent_delta), default=None) or max(
+        ups, key=lambda i: abs(i.percent_delta), default=None
+    )
+    if worst is not None:
+        arrow = "down" if worst.direction != "spike" else "up"
+        parts.append(f"worst {worst.scope_name} {arrow} {abs(worst.percent_delta):.0f}%")
+    return " · ".join(parts)
+
+
+def _digest_window_label(items: list[AlertDeliveryItem], timezone_name: str | None) -> str:
+    """The period the digest covers, in the PROJECT's clock.
+
+    The reader set "daily at 10:00" as a wall-clock time in their own zone;
+    telling them the window in UTC would make them do the arithmetic the
+    schedule already did for them.
+    """
+    buckets = [item.bucket for item in items if item.bucket is not None]
+    if not buckets:
+        return ""
+    zone = resolve_timezone(timezone_name)
+    first = min(buckets)
+    last = max(buckets)
+    if first.tzinfo is None:
+        first = first.replace(tzinfo=UTC)
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=UTC)
+    start = first.astimezone(zone)
+    end = last.astimezone(zone)
+    if start.date() == end.date():
+        return f"{start:%b %d, %H:%M}–{end:%H:%M} {zone.key}"
+    return f"{start:%b %d %H:%M} – {end:%b %d %H:%M} {zone.key}"
+
+
+_WINDOW_LABEL_SEPARATOR = " · "
+
+
+def _join_window_label(window_label: str, part_label: str) -> str:
+    """The window line, carrying the part marker when the digest needs one.
+
+    Either half may be empty — a digest whose items all lost their bucket has no
+    window, and the overwhelming majority of digests are one message and have no
+    part — so this never leaves a dangling separator for the reader to wonder at.
+    """
+    return _WINDOW_LABEL_SEPARATOR.join(part for part in (window_label, part_label) if part)
+
+
+def _digest_groups(
+    items: list[AlertDeliveryItem],
+) -> list[tuple[str, list[AlertDeliveryItem]]]:
+    """Order a digest's items the way a person triages one.
+
+    DROPS FIRST, and that ordering is the whole point. A drop needs an existing
+    baseline to be a drop at all, so it is structurally the smaller class — and
+    a fall in a checkout, login or payment event is close to always the thing
+    worth acting on before a rise in an impression counter. Ordered the other
+    way round, on a real 24-item morning the two revenue-shaped drops sat about
+    thirty phone-lines below the fold.
+
+    NO-BASELINE ITEMS GET THEIR OWN TRAILING GROUP rather than the top of the
+    spikes. Sorting by percent puts them first by construction (an undefined
+    ratio has no magnitude to rank), which is exactly backwards: a counter that
+    went from nothing to something is usually a new event shipping, not an
+    incident, and it was crowding out the items that were.
+    """
+    drops, spikes, unbaselined = [], [], []
+    for item in items:
+        if item.expected_count <= 0:
+            unbaselined.append(item)
+        elif item.direction == "spike":
+            spikes.append(item)
+        else:
+            drops.append(item)
+
+    by_percent = lambda item: -abs(item.percent_delta)  # noqa: E731
+    by_absolute = lambda item: -abs(item.actual_count - item.expected_count)  # noqa: E731
+    groups: list[tuple[str, list[AlertDeliveryItem]]] = []
+    if drops:
+        groups.append((f"{len(drops)} down", sorted(drops, key=by_percent)))
+    if spikes:
+        groups.append((f"{len(spikes)} up", sorted(spikes, key=by_percent)))
+    if unbaselined:
+        groups.append((f"{len(unbaselined)} new", sorted(unbaselined, key=by_absolute)))
+    return groups
 
 
 def _build_items_text(
@@ -354,6 +529,7 @@ def _build_items_text(
     scan_config_id: uuid.UUID | None = None,
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
     metric_units_cache: dict[str, str | None] | None = None,
+    digest: bool = False,
 ) -> str:
     """Render every item it is given, whole.
 
@@ -365,9 +541,9 @@ def _build_items_text(
     chooses the subsets and hands them here one group at a time.
     """
     metric_units = _resolve_metric_units(session, items, metric_units_cache)
-    lines: list[str] = []
-    for item in items:
-        rendered_item = render_alert_template(
+
+    def render_one(item: AlertDeliveryItem) -> str:
+        return render_alert_template(
             items_template,
             _build_item_template_context(
                 item,
@@ -380,10 +556,22 @@ def _build_items_text(
                 ),
             ),
         ).rstrip()
-        if not rendered_item:
+
+    if not digest:
+        return "\n".join(line for line in (render_one(item) for item in items) if line)
+
+    # Headings are ESCAPED FIRST and bolded second. Wrapping first and escaping
+    # the result turns the markup into literal text; and a heading is the one
+    # string in the body built at runtime rather than read off an item, which
+    # is where that has been got wrong before.
+    blocks: list[str] = []
+    for heading, group in _digest_groups(items):
+        rendered = [line for line in (render_one(item) for item in group) if line]
+        if not rendered:
             continue
-        lines.append(rendered_item)
-    return "\n".join(lines)
+        label = format_alert_bold(escape_alert_value(heading, message_format), message_format)
+        blocks.append("\n".join([label, *rendered]))
+    return "\n\n".join(blocks)
 
 
 def _build_template_context(
@@ -398,11 +586,24 @@ def _build_template_context(
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
     metric_units_cache: dict[str, str | None] | None = None,
     items: list[AlertDeliveryItem] | None = None,
+    summary_items: list[AlertDeliveryItem] | None = None,
+    part_label: str = "",
+    digest: bool = False,
+    ai_explanation: str | None = None,
+    project_timezone: str | None = None,
 ) -> AlertTemplateContext:
     message_format = message_format_override or rule.message_format or ALERT_MESSAGE_FORMAT_PLAIN
     items_template = normalize_message_template(rule.items_template)
+    # The two templates are INDEPENDENT operator signals and are gated
+    # separately. A rule that saved a custom message_template and left the item
+    # template alone must still get the compact digest items — reading one
+    # column to decide both would hand it the verbose ones.
     if items_template is None:
-        items_template = get_default_items_template(message_format)
+        items_template = (
+            get_digest_items_template(message_format)
+            if digest
+            else get_default_items_template(message_format)
+        )
     # ``items`` is one message's share of a delivery split across several (see
     # split_telegram_messages). Its count, not the delivery's, is what the
     # header may claim: a reader looking at message 2 of 2 counts what is in
@@ -410,6 +611,15 @@ def _build_template_context(
     # chunks its own matched_count for the same reason.
     rendered_items = delivery.items if items is None else items
     rendered_count = delivery.matched_count if items is None else len(items)
+    # ...but the SUMMARY is the other half of that split, and it does not follow
+    # the same rule. ``${matched_count}`` counts what is in front of the reader;
+    # ``${headline}`` and ``${window_label}`` describe the digest, which is one
+    # thing however many messages carry it. Computing them per part would have
+    # message 2 of 3 announce "9 alerts" over its own share and name a window
+    # that closes hours before the digest's does — three disagreeing summaries
+    # of one morning, which is exactly the reading a digest exists to prevent.
+    summarised_items = rendered_items if summary_items is None else summary_items
+    summarised_count = rendered_count if summary_items is None else len(summary_items)
 
     variables = {
         "project_name": escape_alert_value(project.name if project else "", message_format),
@@ -428,6 +638,40 @@ def _build_template_context(
             scan_config_id=delivery.scan_config_id,
             item_context_cache=item_context_cache,
             metric_units_cache=metric_units_cache,
+            digest=digest,
+        ),
+        # A deterministic summary line, computed here and never by the model.
+        # It is what lands in the phone's notification preview, so it has to be
+        # true on every delivery including the one where the LLM is off, times
+        # out, or writes 230 characters of preamble before saying anything.
+        "headline": escape_alert_value(
+            _digest_headline(summarised_items, summarised_count), message_format
+        ),
+        # An immediate alert arrives AT the anomaly, so "when" is implicit. A
+        # digest is decoupled from its data by up to a whole day, and nothing
+        # else in the compact line carries a timestamp.
+        #
+        # The part marker rides here rather than on the headline because the
+        # headline is what a phone shows in its notification preview, where
+        # "24 alerts, 7 down" is the useful sentence and "(2/3)" is noise. On
+        # the line below it, it is the answer to the question a whole-digest
+        # headline provokes: the reader counts nine items under "24 alerts" and
+        # needs to be told the other fifteen are in the neighbouring messages.
+        "window_label": escape_alert_value(
+            _join_window_label(
+                _digest_window_label(summarised_items, project_timezone) if digest else "",
+                part_label,
+            ),
+            message_format,
+        ),
+        # Pre-escaped and pre-wrapped: it carries its own trailing blank line so
+        # the template needs no conditional, and it is empty when there is no
+        # note rather than leaving a hole.
+        "ai_explanation_block": (
+            f"{format_alert_bold('AI', message_format)} "
+            f"{escape_alert_value(ai_explanation, message_format)}\n\n"
+            if ai_explanation
+            else ""
         ),
     }
     return AlertTemplateContext(variables=variables, message_format=message_format)
@@ -445,12 +689,26 @@ def _render_delivery_message(
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
     metric_units_cache: dict[str, str | None] | None = None,
     items: list[AlertDeliveryItem] | None = None,
+    summary_items: list[AlertDeliveryItem] | None = None,
+    part_label: str = "",
+    digest: bool = False,
+    ai_explanation: str | None = None,
+    project_timezone: str | None = None,
 ) -> tuple[str, str]:
     """Render (message, message_format) for a delivery.
 
     ``items`` renders a subset — one message's share of a delivery split across
     several. None means the whole delivery, which is what every channel without
     a per-message ceiling gets.
+
+    ``summary_items`` is what the digest header DESCRIBES, which on a split is
+    not what the body lists: every part summarises the whole digest and carries
+    ``part_label`` to say which slice of it the reader is holding.
+
+    ``digest`` selects the compact grouped layout. It is a parameter rather
+    than something read off the destination, because the caller is the only
+    thing that knows: the drain arm ships a genuine digest from a destination
+    whose cadence has already been cleared.
     """
     template = normalize_message_template(rule.message_template)
     context = _build_template_context(
@@ -464,9 +722,18 @@ def _render_delivery_message(
         item_context_cache=item_context_cache,
         metric_units_cache=metric_units_cache,
         items=items,
+        summary_items=summary_items,
+        part_label=part_label,
+        digest=digest,
+        ai_explanation=ai_explanation,
+        project_timezone=project_timezone,
     )
     if template is None:
-        template = get_default_message_template(context.message_format)
+        template = (
+            get_digest_message_template(context.message_format)
+            if digest
+            else get_default_message_template(context.message_format)
+        )
     return render_alert_template(template, context).rstrip(), context.message_format
 
 
@@ -485,6 +752,8 @@ def split_telegram_messages(
     metric_units_cache: dict[str, str | None] | None = None,
     ai_explanation: str | None = None,
     max_chars: int = TELEGRAM_MESSAGE_MAX_CHARS,
+    digest: bool = False,
+    project_timezone: str | None = None,
 ) -> list[tuple[str, list[AlertDeliveryItem]]]:
     """``message`` as one or more messages that each clear Telegram's ceiling.
 
@@ -504,16 +773,22 @@ def split_telegram_messages(
     delivery, and repeating it under every part would cost the reader nothing
     but length.
 
+    A digest's HEADER, by contrast, is repeated on every part and describes the
+    whole digest on each — the reader is holding one digest, not three — with a
+    "2/3" marker on the window line saying which slice the body under it is.
+
     Nothing is ever dropped: an item too long to share a message gets one of its
     own. A SINGLE item that alone exceeds the ceiling is the one thing this
     cannot fix — it is returned as its own message and Telegram refuses it, so
     the delivery fails visibly instead of quietly losing the item.
     """
     delivery_items = delivery.items if items is None else items
-    if len(delivery_items) <= 1 or telegram_message_length(message) <= max_chars:
+    if len(delivery_items) <= 1 or telegram_visible_length(message, message_format) <= max_chars:
         return [(message, list(delivery_items))]
 
-    def render_part(part: list[AlertDeliveryItem], *, with_ai_note: bool) -> str:
+    def render_part(
+        part: list[AlertDeliveryItem], *, with_ai_note: bool, part_label: str = ""
+    ) -> str:
         text, part_format = _render_delivery_message(
             delivery,
             destination=destination,
@@ -525,10 +800,30 @@ def split_telegram_messages(
             item_context_cache=item_context_cache,
             metric_units_cache=metric_units_cache,
             items=part,
+            # The header summarises the whole digest on EVERY part — see
+            # _build_template_context. Only the digest layout has a header that
+            # makes a claim about scope, so nothing else opts in.
+            summary_items=delivery_items if digest else None,
+            part_label=part_label,
+            digest=digest,
+            # A digest carries its note INSIDE the layout, above the list, so it
+            # is rendered into the part rather than appended after it — and only
+            # into the first part, for the same reason the appended one is.
+            ai_explanation=ai_explanation if (digest and with_ai_note) else None,
+            project_timezone=project_timezone,
         )
-        if with_ai_note and ai_explanation:
+        if with_ai_note and ai_explanation and not digest:
             text = _append_ai_explanation(text, ai_explanation, part_format)
         return text
+
+    # The marker names a total that does not exist until packing has finished,
+    # so it cannot be rendered while packing. Instead the packer works to a
+    # budget short by the widest marker this delivery could ever carry — it
+    # cannot split into more parts than it has items — and the finished parts
+    # are re-rendered with the real one. Reserving is what stops that second
+    # render pushing a part back over the ceiling it was just measured against.
+    widest_part_label = f"{len(delivery_items)}/{len(delivery_items)}"
+    budget = max_chars - (len(_WINDOW_LABEL_SEPARATOR) + len(widest_part_label) if digest else 0)
 
     parts: list[tuple[str, list[AlertDeliveryItem]]] = []
     current: list[AlertDeliveryItem] = []
@@ -538,7 +833,7 @@ def split_telegram_messages(
         candidate_text = render_part(candidate, with_ai_note=not parts)
         # ``current`` being non-empty is what keeps a lone oversized item in:
         # closing an empty message to make room for it would drop it forever.
-        if current and telegram_message_length(candidate_text) > max_chars:
+        if current and telegram_visible_length(candidate_text, message_format) > budget:
             parts.append((current_text, current))
             current = [item]
             current_text = render_part(current, with_ai_note=False)
@@ -546,7 +841,19 @@ def split_telegram_messages(
         current = candidate
         current_text = candidate_text
     parts.append((current_text, current))
-    return parts
+    if not digest or len(parts) == 1:
+        return parts
+    return [
+        (
+            render_part(
+                part_items,
+                with_ai_note=index == 0,
+                part_label=f"{index + 1}/{len(parts)}",
+            ),
+            part_items,
+        )
+        for index, (_text, part_items) in enumerate(parts)
+    ]
 
 
 def _describe_age(delta: timedelta) -> str:
@@ -640,6 +947,7 @@ def _build_ai_explanation(
     item_context_cache: dict[uuid.UUID, tuple[str, str]],
     session: Session | None = None,
     now: datetime | None = None,
+    max_items: int = _AI_EXPLANATION_MAX_ITEMS,
 ) -> str | None:
     """LLM summary of the delivery's items, or None when AI is off or fails.
 
@@ -658,7 +966,7 @@ def _build_ai_explanation(
     cofiring_sizes: Counter[tuple[datetime, str]] = Counter(
         (item.bucket, item.direction) for item in delivery.items
     )
-    for item in delivery.items[:_AI_EXPLANATION_MAX_ITEMS]:
+    for item in delivery.items[:max_items]:
         sparkline, top_movers = item_context_cache.get(item.id, ("", ""))
         if item.scope_type == SCOPE_RELEASE_REGRESSION:
             # Same basis clause as the rendered message. Without it the model

@@ -86,6 +86,8 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
         _stamp_rule_state,
     )
     from tripl.worker.tasks.alerts_messages import (
+        _AI_EXPLANATION_MAX_ITEMS,
+        DIGEST_AI_EXPLANATION_MAX_ITEMS,
         _append_ai_explanation,
         _build_ai_explanation,
         _build_email_subject,
@@ -139,6 +141,33 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
                     raise ValueError(f"AlertDelivery {delivery.id} is missing related objects")
                 _assert_egress_allowed(destination, project)
 
+                # Every delivery this task is handed came out of the flush, so
+                # it is a digest by construction — but the flag is still read
+                # from the snapshot the dispatcher stamped rather than assumed,
+                # because that snapshot is the one record of digest-ness the
+                # Inbox, Retry and the single-delivery path all agree on, and a
+                # second source of truth here is how the two layouts drift.
+                is_digest = bool(
+                    isinstance(delivery.payload_snapshot, dict)
+                    and delivery.payload_snapshot.get("digest")
+                )
+                # Computed BEFORE the render, over every item: a digest carries
+                # its note inside the layout, above the list, and it summarises
+                # the whole window rather than the immediate path's first ten.
+                ai_explanation: str | None = None
+                if rule.ai_explanation_enabled and not (project is not None and project.is_demo):
+                    ai_explanation = _build_ai_explanation(
+                        delivery,
+                        scan_name=scan_config.name,
+                        project_name=project.name if project else "",
+                        item_context_cache=item_context_cache,
+                        session=session,
+                        max_items=(
+                            DIGEST_AI_EXPLANATION_MAX_ITEMS
+                            if is_digest
+                            else _AI_EXPLANATION_MAX_ITEMS
+                        ),
+                    )
                 text, message_format = _render_delivery_message(
                     delivery,
                     destination=destination,
@@ -148,17 +177,11 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
                     session=session,
                     item_context_cache=item_context_cache,
                     metric_units_cache=metric_units_cache,
+                    digest=is_digest,
+                    ai_explanation=ai_explanation if is_digest else None,
+                    project_timezone=project.timezone if project else None,
                 )
-                ai_explanation: str | None = None
-                if rule.ai_explanation_enabled and not (project is not None and project.is_demo):
-                    ai_explanation = _build_ai_explanation(
-                        delivery,
-                        scan_name=scan_config.name,
-                        project_name=project.name if project else "",
-                        item_context_cache=item_context_cache,
-                        session=session,
-                    )
-                if ai_explanation:
+                if ai_explanation and not is_digest:
                     text = _append_ai_explanation(text, ai_explanation, message_format)
 
                 snapshot = (

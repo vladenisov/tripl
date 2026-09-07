@@ -568,6 +568,10 @@ class AlertDestinationResponse(BaseModel):
     project_timezone: str = "UTC"
     last_digest_at: datetime | None = None
     next_digest_at: datetime | None = None
+    # Alerts matched and HELD for the next digest. A cadence puts a destination
+    # into "on and quiet" for a whole window by design, and nothing else on the
+    # screen can tell that apart from "on and structurally dead" (tripl-ftrn).
+    held_count: int = 0
     # True for a ``demo_sink`` destination: a local, non-sendable sink that
     # renders and records deliveries locally with no outbound network. The UI
     # uses it to badge the destination as LOCAL SIMULATED (tripl-2su6.6).

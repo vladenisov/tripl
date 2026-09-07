@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.sql import Select
@@ -247,6 +247,26 @@ def rule_to_response(rule: AlertRule, health: RuleHealth, *, now: datetime) -> A
     )
 
 
+async def load_held_counts(
+    session: AsyncSession,
+    destination_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, int]:
+    """How many alerts each destination is holding for its next digest.
+
+    One grouped query for the whole page, the same shape as
+    ``load_destination_health`` — a per-card count would be N queries on a
+    screen that already batches everything else.
+    """
+    if not destination_ids:
+        return {}
+    rows = await session.execute(
+        select(AlertPendingItem.destination_id, func.count())
+        .where(AlertPendingItem.destination_id.in_(destination_ids))
+        .group_by(AlertPendingItem.destination_id)
+    )
+    return {destination_id: count for destination_id, count in rows.all()}
+
+
 def _next_digest_at(
     destination: AlertDestination,
     *,
@@ -269,6 +289,7 @@ def destination_to_response(
     *,
     now: datetime,
     project_timezone: str = "UTC",
+    held_count: int = 0,
 ) -> AlertDestinationResponse:
     """One destination card. ``now`` is the clock every mute on it is read against.
 
@@ -311,6 +332,7 @@ def destination_to_response(
         # but a row written before that validation existed would, and a card
         # that 500s is worse than one that omits the preview.
         next_digest_at=_next_digest_at(destination, now=now, project_timezone=project_timezone),
+        held_count=held_count,
         is_local=destination.type == AlertDestinationType.demo_sink,
         delivery_count=health.delivery_count,
         incident_count=health.incident_count,
@@ -332,11 +354,13 @@ async def build_destination_response(
     project_timezone = await session.scalar(
         select(Project.timezone).where(Project.id == destination.project_id)
     )
+    held = await load_held_counts(session, [destination.id])
     return destination_to_response(
         destination,
         health.get(destination.id, DestinationHealth()),
         now=datetime.now(UTC),
         project_timezone=project_timezone or "UTC",
+        held_count=held.get(destination.id, 0),
     )
 
 
@@ -466,12 +490,14 @@ async def list_destinations(session: AsyncSession, slug: str) -> list[AlertDesti
     # ...and one clock for the whole page, for the same reason: every mute in
     # this response is read against the same instant.
     now = datetime.now(UTC)
+    held = await load_held_counts(session, [dest.id for dest in destinations])
     return [
         destination_to_response(
             destination,
             health.get(destination.id, DestinationHealth()),
             now=now,
             project_timezone=project.timezone,
+            held_count=held.get(destination.id, 0),
         )
         for destination in destinations
     ]

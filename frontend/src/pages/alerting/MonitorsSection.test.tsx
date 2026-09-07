@@ -54,6 +54,9 @@ function makeDestination(overrides: Partial<AlertDestination> = {}): AlertDestin
     project_id: 'proj-1',
     type: 'telegram',
     name: 'TG',
+    // Zero, not omitted: the API always sends this field, and a double that can
+    // leave it out is a claim that a destination with no held count is normal.
+    held_count: 0,
     enabled: true,
     webhook_set: false,
     bot_token_set: true,
