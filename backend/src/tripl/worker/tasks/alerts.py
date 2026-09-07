@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 from tripl import realtime
 from tripl.alert_templates import (
     ALERT_MESSAGE_FORMAT_PLAIN,
+    ALERT_MESSAGE_FORMAT_TELEGRAM_HTML,
     ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2,
 )
 from tripl.alerting_matching import SCOPE_METRIC
@@ -69,6 +70,7 @@ from tripl.worker.tasks.alerts_digest import (
     send_weekly_plan_digest,
 )
 from tripl.worker.tasks.alerts_messages import (
+    DIGEST_AI_EXPLANATION_MAX_ITEMS,
     _append_ai_explanation,
     _build_ai_explanation,
     _build_email_subject,
@@ -429,6 +431,29 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                 # snapshot the Inbox shows describes the whole delivery.
                 telegram_fully_delivered = True
 
+        # A digest is stamped at creation (metrics/dispatch.py) because nothing
+        # at send time can infer it: the cadence column misses the drain arm and
+        # the buffer rows are long gone.
+        is_digest = bool(
+            isinstance(delivery.payload_snapshot, dict) and delivery.payload_snapshot.get("digest")
+        )
+        # For a digest the note is part of the LAYOUT, not a tail — it sits
+        # above the list so the reader meets the summary first — so it has to
+        # exist before the render rather than be appended after it. It is also
+        # computed over EVERY item, which is the whole point of one digest
+        # instead of three chunks, so the immediate path's 10-item prompt cap
+        # would silently describe less than half a 24-item morning.
+        digest_ai: str | None = None
+        if is_digest and rule.ai_explanation_enabled and not is_demo_project:
+            digest_ai = _build_ai_explanation(
+                delivery,
+                scan_name=scan_config.name,
+                project_name=project.name if project else "",
+                item_context_cache=item_context_cache,
+                session=session,
+                max_items=DIGEST_AI_EXPLANATION_MAX_ITEMS,
+            )
+
         text, message_format = _render_delivery_message(
             delivery,
             destination=destination,
@@ -439,6 +464,9 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
             item_context_cache=item_context_cache,
             metric_units_cache=metric_units_cache,
             items=pending_items,
+            digest=is_digest,
+            ai_explanation=digest_ai,
+            project_timezone=project.timezone if project else None,
         )
         # AI explanation is generated once (LLM round-trip) and appended after
         # template rendering so custom templates stay untouched; the Telegram
@@ -450,7 +478,12 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         # a resume: the note rides on the first message only and that message is
         # already with the reader, so regenerating it would cost an LLM
         # round-trip to produce something nobody would see.
-        if rule.ai_explanation_enabled and not is_demo_project and not is_telegram_resume:
+        if (
+            rule.ai_explanation_enabled
+            and not is_demo_project
+            and not is_telegram_resume
+            and not is_digest
+        ):
             ai_explanation = _build_ai_explanation(
                 delivery,
                 scan_name=scan_config.name,
@@ -469,8 +502,8 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         )
         payload_snapshot["message_format"] = message_format
         payload_snapshot["rendered_message"] = text
-        if ai_explanation:
-            payload_snapshot["ai_explanation"] = ai_explanation
+        if ai_explanation or digest_ai:
+            payload_snapshot["ai_explanation"] = ai_explanation or digest_ai
         delivery.payload_snapshot = payload_snapshot
 
         if destination.type == AlertDestinationType.slack:
@@ -511,8 +544,10 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                     session=session,
                     item_context_cache=item_context_cache,
                     metric_units_cache=metric_units_cache,
-                    ai_explanation=ai_explanation,
+                    ai_explanation=ai_explanation or digest_ai,
                     items=pending_items,
+                    digest=is_digest,
+                    project_timezone=project.timezone if project else None,
                 )
             )
             if len(parts) > 1:
@@ -545,10 +580,17 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                         items=part_items,
                     )
             except ValueError as exc:
-                if (
-                    message_format == ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2
-                    and _is_telegram_markdown_parse_error(exc)
-                ):
+                # HTML belongs here as much as MarkdownV2 does, and only did
+                # not because nothing put runtime-built markup in an HTML body
+                # before the digest link did. Telegram rejects the WHOLE message
+                # on a parse error, and a digest's inputs (a saved template, a
+                # scope name, the app base url) do not change between mornings —
+                # so without this arm one bad character fails at 10:00 every day
+                # forever, silently, and never self-heals.
+                if message_format in (
+                    ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2,
+                    ALERT_MESSAGE_FORMAT_TELEGRAM_HTML,
+                ) and _is_telegram_markdown_parse_error(exc):
                     delivered_ids = {item.id for item in delivered_items}
                     remaining = [item for item in send_items if item.id not in delivered_ids]
                     # Reuse the already-built sparkline/top-movers context and
@@ -565,6 +607,12 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                         item_context_cache=item_context_cache,
                         metric_units_cache=metric_units_cache,
                         items=remaining,
+                        # Still a digest. Dropping this reverts the reader to
+                        # the verbose 317-character-per-item layout precisely
+                        # when something has already gone wrong.
+                        digest=is_digest,
+                        ai_explanation=digest_ai if not delivered_items else None,
+                        project_timezone=project.timezone if project else None,
                     )
                     # The note went out with the first message; do not repeat it.
                     fallback_note = None if delivered_items else ai_explanation
@@ -587,6 +635,8 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                         item_context_cache=item_context_cache,
                         metric_units_cache=metric_units_cache,
                         ai_explanation=fallback_note,
+                        digest=is_digest,
+                        project_timezone=project.timezone if project else None,
                     ):
                         _send_telegram_message(
                             bot_token,

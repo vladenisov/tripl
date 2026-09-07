@@ -99,6 +99,11 @@ def render_firing_item(
         "top_movers": "",
         "sparkline_line": "",
         "top_movers_line": "",
+        "direction_arrow": "\u25b2" if firing.direction == "spike" else "\u25bc",
+        # The simulator has no delivery, so no incident to link to. The bare
+        # escaped name is what ``format_alert_link`` returns for an empty URL,
+        # so the preview shows exactly what a link-less format would render.
+        "scope_link": escape_alert_value(firing.scope_name, message_format),
     }
     return render_alert_template(
         items_template,
@@ -152,6 +157,13 @@ def render_firings_message(
         "matched_count": escape_alert_value(len(firings), message_format),
         "items_count": escape_alert_value(len(firings), message_format),
         "items_text": items_text,
+        # The simulator renders whatever the operator typed, so every variable
+        # the validator ACCEPTS has to resolve here too — otherwise a template
+        # saving cleanly prints "${headline}" back at them in the preview and
+        # they cannot tell a typo from an unimplemented variable.
+        "headline": escape_alert_value(f"{len(firings)} alerts", message_format),
+        "window_label": escape_alert_value("(the digest window)", message_format),
+        "ai_explanation_block": "",
     }
     rendered_message = render_alert_template(
         message_template,

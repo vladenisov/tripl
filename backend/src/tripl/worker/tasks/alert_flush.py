@@ -225,6 +225,8 @@ def _build_digest(
                 # come from however many collections happened in the window —
                 # so it claims none.
                 scan_job_id=None,
+                # One delivery, so one message and one AI note over everything.
+                chunk_items=False,
             )
         )
 

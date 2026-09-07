@@ -283,13 +283,27 @@ def _delivery_chunks(
     anomalies: list[AlertMatchCandidate],
     *,
     channel: str,
+    chunk_items: bool = True,
 ) -> list[list[AlertMatchCandidate]]:
     """Split one rule's matches into deliveries the channel can actually carry.
 
     Chunking rather than truncating: every chunk is its own AlertDelivery with
     its own items, so no scope is silently dropped and each chunk stamps
     ``last_notified_at`` on the states it covers once it lands.
+
+    ``chunk_items=False`` for a DIGEST. The item cap is a character-ceiling
+    estimate, and a digest's compact line is roughly a seventh of a verbose
+    one — so the estimate that was right for the immediate path splits a
+    perfectly deliverable digest into three messages. ``split_telegram_messages``
+    still enforces the real 4096 ceiling at send time, measured after entity
+    parsing, and it drops nothing.
+
+    Passed by the CALLER rather than read off ``destination.delivery_schedule_cron``
+    on purpose: the flush's drain arm ships a genuine digest from a destination
+    whose cadence has already been cleared, so the column would misclassify it.
     """
+    if not chunk_items:
+        return [anomalies]
     limit = _MAX_ITEMS_PER_DELIVERY.get(str(channel))
     if limit is None or len(anomalies) <= limit:
         return [anomalies]
@@ -609,6 +623,7 @@ def _create_deliveries(
     scope_names: dict[tuple[str, str], str],
     correlation_by_anomaly: dict[int, uuid.UUID],
     scan_job_id: uuid.UUID | None,
+    chunk_items: bool = True,
 ) -> list[uuid.UUID]:
     """Mint the AlertDelivery + AlertDeliveryItem rows for one (rule, destination).
 
@@ -621,7 +636,7 @@ def _create_deliveries(
     for digests would be a second chance for them to disagree.
     """
     delivery_ids: list[uuid.UUID] = []
-    for chunk in _delivery_chunks(anomalies, channel=destination.type):
+    for chunk in _delivery_chunks(anomalies, channel=destination.type, chunk_items=chunk_items):
         delivery = AlertDelivery(
             project_id=config.project_id,
             scan_config_id=config.id,
@@ -639,7 +654,7 @@ def _create_deliveries(
         # links back to this delivery's own audit row, and those need
         # the id. Whole-object assignment (not in-place mutation) so
         # SQLAlchemy sees the JSON column change.
-        delivery.payload_snapshot = _build_delivery_snapshot(
+        snapshot = _build_delivery_snapshot(
             config,
             project_slug=project_slug,
             rule=rule,
@@ -648,6 +663,14 @@ def _create_deliveries(
             scope_names=scope_names,
             delivery_id=delivery.id,
         )
+        if not chunk_items:
+            # The send path has no other way to tell a digest from an immediate
+            # alert: the destination's cadence column cannot answer it (the
+            # flush's drain arm ships a real digest from a destination whose
+            # cadence was just cleared), and by send time the buffer rows are
+            # gone. Recorded at creation, where the caller's intent is known.
+            snapshot["digest"] = True
+        delivery.payload_snapshot = snapshot
 
         for anomaly in chunk:
             absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
