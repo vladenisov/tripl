@@ -409,6 +409,10 @@ def test_the_part_marker_never_pushes_a_part_over_the_ceiling() -> None:
 def test_a_split_digest_still_loses_no_item() -> None:
     parts = _split_digest(12, max_chars=600)
 
+    # Without this the test passes on a single part, so it would go on being
+    # green the day the split stopped happening at all — proving nothing about
+    # the packing it exists to check.
+    assert len(parts) > 1
     delivered = [item.scope_name for _text, part_items in parts for item in part_items]
     assert sorted(delivered) == sorted(f"main:tap:snippet:{index:03d}" for index in range(12))
 
