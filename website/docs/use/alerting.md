@@ -106,6 +106,41 @@ while a digest is being assembled simply lands in the next one.
 An empty window sends nothing at all — a quiet day is silent, not a message
 saying there is nothing to report.
 
+**You can see what is being held.** A destination card on a cadence shows a
+`12 held` badge beside the schedule, and every metrics collection records
+`alerts_buffered` next to `alerts_queued` in its scan job. Both exist for one
+reason: while a destination is holding alerts it is silent, and silence is also
+what a broken destination looks like. These say which one it is.
+
+**A digest reads like a digest.** It is laid out for triage rather than for
+interruption: one line per alert, the event name carrying the link so no raw
+URL takes up the line, and the items grouped.
+
+- **Drops come first.** A drop needs a baseline to be a drop, so there are
+  fewer of them, and a fall in checkout, login or payment is close to always
+  worth more than a rise in an impression counter.
+- **Scopes with no baseline get their own group at the end.** A counter that
+  went from nothing to something is usually a new event shipping, not an
+  incident, and ranking by percentage would otherwise pin it to the top —
+  an undefined ratio has no magnitude to sort by.
+- **The first line is a summary you can trust**, e.g. `24 alerts · 7 down,
+  17 up · worst checkout:complete:annual down 86%`. It is computed, never
+  written by the AI, so it is correct on the morning the model is off or slow —
+  and it is what your phone shows in the notification preview.
+- The window the digest covers is stated in the project's timezone, because a
+  digest is separated from its data by up to a whole day.
+
+The AI note, when the rule has one enabled, is written over **all** the
+window's events at once and sits above the list.
+
+:::tip
+**Links need a format that has them.** On `plain` there is no link syntax, so
+the digest keeps the full URL on its own line and a 24-alert morning is two
+messages. Switch the rule's message format to **Telegram HTML** (or Slack
+mrkdwn) and the same digest is one message at about a quarter of Telegram's
+size limit — the URL moves behind the event name and stops counting against it.
+:::
+
 **One message, not one per monitor.** When several rules on a Slack or email
 destination match inside the same window, the digest goes out as a *single*
 message carrying each rule's section, rather than one message per rule. The

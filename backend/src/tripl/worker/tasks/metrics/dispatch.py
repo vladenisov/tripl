@@ -339,7 +339,17 @@ def _prepare_alert_deliveries(
     config: ScanConfig,
     *,
     scan_job_id: uuid.UUID | None,
+    buffered: list[int] | None = None,
 ) -> list[uuid.UUID]:
+    """Mint deliveries for immediate destinations, buffer for scheduled ones.
+
+    ``buffered`` is an out-parameter rather than a second return value so every
+    existing call site keeps working unchanged: it appends the number of alerts
+    held for a later digest, which is otherwise invisible from outside the
+    database (tripl-ftrn). ``alerts_queued == 0`` alone cannot distinguish
+    "held 12" from "nothing matched", and on a cadence that is the difference
+    between working and silently swallowing every alert.
+    """
     active_candidates: dict[tuple[str, str], AlertMatchCandidate] = {}
     active_candidates.update(_get_latest_active_anomalies(session, config))
     active_candidates.update(_get_active_metric_anomaly_candidates(session, config))
@@ -358,6 +368,7 @@ def _prepare_alert_deliveries(
     metric_state_config_id = _project_metric_state_config_id(session, config)
     scope_names = _build_alert_scope_names(session, list(active_candidates.values()))
     delivery_ids: list[uuid.UUID] = []
+    buffered_count = 0
     suppressed_group_ids = _suppressed_correlation_group_ids(
         session,
         project_id=config.project_id,
@@ -596,7 +607,7 @@ def _prepare_alert_deliveries(
                 # stranded-delivery reaper has nothing to sweep and the Inbox,
                 # the delivery history and their created_at orderings are
                 # untouched until the digest is actually minted.
-                _buffer_pending_items(
+                buffered_count += _buffer_pending_items(
                     session,
                     config,
                     rule=rule,
@@ -609,6 +620,8 @@ def _prepare_alert_deliveries(
                     now=now,
                 )
 
+    if buffered is not None:
+        buffered.append(buffered_count)
     return delivery_ids
 
 
@@ -766,7 +779,7 @@ def _buffer_pending_items(
     scan_job_id: uuid.UUID | None,
     metric_state_config_id: uuid.UUID,
     now: datetime,
-) -> None:
+) -> int:
     """Hold matched signals for this destination's next digest window.
 
     Upsert, not insert: a scope that keeps firing is re-offered on every
@@ -876,3 +889,4 @@ def _buffer_pending_items(
                 correlation_group_id=upserted_group_id,
                 seen_at=anomaly.bucket,
             )
+    return len(anomalies)

@@ -1311,6 +1311,11 @@
             "title": "Enabled",
             "type": "boolean"
           },
+          "held_count": {
+            "default": 0,
+            "title": "Held Count",
+            "type": "integer"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",

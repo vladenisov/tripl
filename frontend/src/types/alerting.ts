@@ -109,6 +109,10 @@ export interface AlertDestination {
   project_timezone?: string
   last_digest_at?: string | null
   next_digest_at?: string | null
+  // Alerts matched and held for the next digest. A cadence puts a
+  // destination into "on and quiet" for a whole window by design, and
+  // nothing else on the card can tell that from "on and broken".
+  held_count?: number
   // True for a demo_sink: a local, non-sendable sink badged LOCAL SIMULATED.
   is_local: boolean
   // Traffic this destination has actually carried. A configured destination that
