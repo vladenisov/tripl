@@ -93,6 +93,15 @@ describe('JsonEditor template authoring', () => {
     render(<JsonEditor value="not json at all" onChange={vi.fn()} variables={VARIABLES} />)
 
     expect(screen.getByRole('combobox')).toHaveValue('not json at all')
+    // ...and says so on mount. Validity used to start null and only be written
+    // by a keystroke, so an untouched stored value read as valid (tripl-h2sx.10).
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('reports nothing on an empty field', () => {
+    render(<JsonEditor value="" onChange={vi.fn()} variables={VARIABLES} />)
+
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-invalid', 'false')
   })
 
   it('reports why Format refused instead of silently doing nothing', () => {

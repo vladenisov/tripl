@@ -1184,3 +1184,51 @@ describe('EventForm multi-value meta field (tripl-h2sx.31)', () => {
     )
   })
 })
+
+describe('EventForm JSON validity gate (tripl-h2sx.10)', () => {
+  it('refuses Save while a JSON field is malformed, and names the row', async () => {
+    vi.mocked(eventsApi.create).mockResolvedValue({} as never)
+    renderForm(null, { eventTypes: [JSON_TEMPLATE_EVENT_TYPE] })
+
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'checkout:started' } })
+    fireEvent.change(screen.getByLabelText('Payload'), { target: { value: '{"a":' } })
+
+    expect(screen.getByText('Fix the JSON in: Payload')).toBeInTheDocument()
+    const save = screen.getByRole('button', { name: /Create event/i })
+    expect(save).toBeDisabled()
+    fireEvent.click(save)
+    expect(eventsApi.create).not.toHaveBeenCalled()
+
+    fireEvent.change(screen.getByLabelText('Payload'), { target: { value: '{"a":1}' } })
+    expect(screen.queryByText(/Fix the JSON in/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Create event/i })).not.toBeDisabled()
+  })
+
+  it('blocks a stored value nobody has touched', () => {
+    // Seven backend paths write a field value without normalizing it, so an
+    // event can arrive holding JSON the server would refuse. A gate reading
+    // JsonEditor's own error state would pass this: the editor only validates
+    // what is TYPED.
+    renderForm(
+      {
+        ...EXISTING_EVENT,
+        event_type_id: 'et-1',
+        field_values: [{ field_definition_id: 'field-payload', value: '{oops' }],
+      } as unknown as TEvent,
+      { eventTypes: [JSON_TEMPLATE_EVENT_TYPE] },
+    )
+
+    expect(screen.getByText('Fix the JSON in: Payload')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Save event/i })).toBeDisabled()
+  })
+
+  it('lets a template through — the client must never be stricter than the server', () => {
+    renderForm(null, { eventTypes: [JSON_TEMPLATE_EVENT_TYPE] })
+
+    fireEvent.change(screen.getByLabelText('Payload'), {
+      target: { value: '{"screen": "${screen}"}' },
+    })
+
+    expect(screen.queryByText(/Fix the JSON in/)).not.toBeInTheDocument()
+  })
+})

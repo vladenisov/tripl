@@ -36,6 +36,7 @@ import {
 } from '@/lib/metaFields'
 import { ErrorState } from '@/components/error-state'
 import { JsonEditor } from './JsonEditor'
+import { validateJsonWithVars } from './jsonTemplate'
 import { VariableInput, type VariableSuggestion } from './VariableInput'
 import { applyEventNameFormat, nameFormatBaseColumns, resolveTemplateTokens } from './utils'
 import { EV_INPUT_CLASS, EvField, SelectControl, SurfCard, TEXT_INPUT_CLASS } from './eventFormLayout'
@@ -615,6 +616,31 @@ export function EventForm({
     })
   }, [generatedName, sortedFields])
 
+  // The server refuses malformed JSON with a 422 (`_normalize_json_template_value`,
+  // event_service.py); ask the same question here so Save is refused with the row
+  // NAMED instead of round-tripping to find out (tripl-h2sx.10).
+  //
+  // It runs the validator over the value that will be POSTed rather than reading
+  // JsonEditor's own error state: the editor validates what the user TYPES, so an
+  // untouched field holding an invalid stored value would sail past a gate that
+  // trusted the child. The client validator is strictly more permissive than the
+  // server's, so this can let a 422 through — it can never block a save the server
+  // would have accepted.
+  const invalidJsonFieldLabels = useMemo(
+    () =>
+      sortedFields
+        .filter(field => field.field_type === 'json')
+        .filter(field => {
+          const value = fieldValues[field.id] ?? ''
+          // Empty is not sent at all; whitespace IS sent and `json.loads` refuses
+          // it, while `validateJsonWithVars` treats it as empty.
+          if (value === '') return false
+          return value.trim() === '' || validateJsonWithVars(value) !== null
+        })
+        .map(field => field.display_name),
+    [sortedFields, fieldValues],
+  )
+
   // Advisory duplicate check. The SERVER is what refuses a taken scan identity
   // (409 from create_event); this only spares the user filling a whole form to
   // find out on submit. `search` is a plain ILIKE over name/description/
@@ -748,7 +774,10 @@ export function EventForm({
   // expression was already written out twice; a third copy for the identity
   // check is how the two would start disagreeing.
   const cannotSave =
-    saveMut.isPending || (generatedName?.missing.length ?? 0) > 0 || identityTaken !== null
+    saveMut.isPending
+    || (generatedName?.missing.length ?? 0) > 0
+    || identityTaken !== null
+    || invalidJsonFieldLabels.length > 0
 
   const saveAndAddAnother = () => {
     if (cannotSave || !formRef.current?.reportValidity()) return
@@ -1184,6 +1213,14 @@ export function EventForm({
           <p className="mb-[14px] text-[12px]" role="status" style={{ color: 'var(--fg-muted)' }}>
             Created <span className="mono">{justCreated}</span>. The values below are still the
             ones it was made from — change what differs and save the next one.
+          </p>
+        )}
+
+        {/* A JSON field can sit far above the fold, so the reason a disabled Save
+            is disabled belongs next to the button, not only beside the field. */}
+        {invalidJsonFieldLabels.length > 0 && (
+          <p className="mt-2 text-right text-xs text-warning" role="alert">
+            Fix the JSON in: {invalidJsonFieldLabels.join(', ')}
           </p>
         )}
 
