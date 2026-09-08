@@ -60,7 +60,13 @@ export type EventsCsvColumnOptions = {
  * blanks would read as "no volume" rather than "not fetched".
  */
 export function buildEventsCsvColumns(options: EventsCsvColumnOptions): EventsCsvColumn[] {
-  const columns: EventsCsvColumn[] = [{ header: 'Event', value: ev => ev.name }]
+  const columns: EventsCsvColumn[] = [
+    { header: 'Event', value: ev => ev.name },
+    // The free-text label beside the identity. It has no column of its own in
+    // the table (it renders inside the Event cell), so it is exported
+    // unconditionally right after the identity it belongs to (tripl-kjhi.3).
+    { header: 'Title', value: ev => ev.title },
+  ]
 
   if (!options.activeTypeName) {
     columns.push({

@@ -668,8 +668,11 @@ describe('MonitoringDetailPage event detail', () => {
     expect(await screen.findByRole('heading', { name: 'checkout_completed' })).toBeInTheDocument()
     // Signal banner derived from latest_signal (spike, +100% vs baseline).
     expect(screen.getByText(/Volume spike detected/)).toBeInTheDocument()
-    // Fields table shows the schema field with its sensitivity chip.
-    expect(screen.getByText('country')).toBeInTheDocument()
+    // Fields table shows the schema field with its sensitivity chip. The field
+    // also heads a row of the Spec card that leads the page for an event that
+    // is not live yet (tripl-kjhi.8), so the name appears twice.
+    expect(screen.getAllByText('country').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByTestId('event-spec-card')).toBeInTheDocument()
     expect(screen.getByText('PII')).toBeInTheDocument()
     // Real breakdown column from the event surfaces in the side column.
     expect(screen.getByText('platform')).toBeInTheDocument()

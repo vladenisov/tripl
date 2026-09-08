@@ -51,6 +51,7 @@ export const eventsApi = {
     data: {
       event_type_id: string
       name: string
+      title?: string
       description?: string
       status?: string
       sunset_at?: string | null
@@ -66,6 +67,7 @@ export const eventsApi = {
     id: string,
     data: {
       name?: string
+      title?: string
       description?: string
       status?: string
       sunset_at?: string | null

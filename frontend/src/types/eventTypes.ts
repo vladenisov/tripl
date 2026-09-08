@@ -9,6 +9,10 @@ export interface EventType {
   created_at: string
   updated_at: string
   field_definitions: FieldDefinition[]
+  /** The scan naming rule that governs this type, resolved server-side — for a
+   * branch copy, through its main counterpart. Null when no scan names the
+   * type and a free-text name is the identity. Absent from an older instance. */
+  event_name_format?: string | null
 }
 
 export interface EventTypeBrief {

@@ -193,6 +193,10 @@ export interface PlanDiffEntry {
    * base-side for removed. Null on legacy snapshots that predate id capture. */
   entity_id?: string | null
   changes: string[]
+  /** Things a reviewer should know that are not a change between the two sides
+   * — an event on a scan-governed type with no scan identity, for one. Plain
+   * sentences. Absent on responses from an older instance. */
+  warnings?: string[]
   /** Per-field before/after for `changed` entries; empty/absent otherwise.
    * Optional to match the OpenAPI shape (Pydantic default → not required). */
   field_changes?: PlanFieldChange[]

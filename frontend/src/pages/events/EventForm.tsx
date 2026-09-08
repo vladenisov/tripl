@@ -22,7 +22,12 @@ import { useDemoScenario, useDemoScenarioActions } from '@/demo/demoScenarioCont
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
-import { META_FIELD_LINK_PLACEHOLDER } from '@/lib/metaFields'
+import {
+  META_FIELD_LINK_EXAMPLE_KEY,
+  META_FIELD_LINK_PLACEHOLDER,
+  metaFieldLinkExample,
+  stripLinkTemplate,
+} from '@/lib/metaFields'
 import { ErrorState } from '@/components/error-state'
 import { JsonEditor } from './JsonEditor'
 import { VariableInput, type VariableSuggestion } from './VariableInput'
@@ -178,18 +183,42 @@ function MetaFieldControl({
       </SelectControl>
     )
   }
+  // A pasted address is reduced to the key the template wraps, as the server
+  // will do on write anyway (tripl-kjhi.5): the box then shows what is stored,
+  // and the rendered link is never the template applied to a URL. On change
+  // catches the paste; the blur catches a value that arrived any other way.
+  const template = metaField.link_template
+  const strip = (next: string) => (template ? stripLinkTemplate(template, next) : next)
+  const example = metaFieldLinkExample(template)
   return (
-    <div className="max-w-[320px]">
+    <div
+      className="max-w-[320px]"
+      onBlur={() => {
+        const settled = strip(value)
+        if (settled !== value) onChange(settled)
+      }}
+    >
       <VariableInput
         id={inputId}
         value={value}
-        onChange={onChange}
+        onChange={next => onChange(strip(next))}
         variables={variables}
         type={metaField.field_type === 'url' ? 'url' : metaField.field_type === 'date' ? 'date' : 'text'}
       />
-      {metaField.link_template && (
+      {template && (
         <p className="mt-1 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-          Uses link template with <span className="mono">{META_FIELD_LINK_PLACEHOLDER}</span>.
+          {example ? (
+            // Said with the reader's own template: "uses link template with
+            // ${value}" named a mechanism and left the reader to work out that
+            // the box wants the key, not the link (tripl-kjhi.5).
+            <>
+              Enter the key, e.g. <span className="mono">{META_FIELD_LINK_EXAMPLE_KEY}</span>
+              {' — opens '}
+              <span className="mono break-all">{example}</span>
+            </>
+          ) : (
+            <>Uses link template with <span className="mono">{META_FIELD_LINK_PLACEHOLDER}</span>.</>
+          )}
         </p>
       )}
     </div>
@@ -225,6 +254,7 @@ export function EventForm({
     event?.event_type_id ?? defaultEventTypeId ?? (eventTypes.length === 1 ? eventTypes[0].id : ''),
   )
   const [name, setName] = useState(event?.name ?? '')
+  const [title, setTitle] = useState(event?.title ?? '')
   const [description, setDescription] = useState(event?.description ?? '')
   const [status, setStatus] = useState(event?.status ?? 'draft')
   const [sunsetAt, setSunsetAt] = useState(event?.sunset_at ? event.sunset_at.slice(0, 16) : '')
@@ -272,26 +302,22 @@ export function EventForm({
     }
   }, [editedFieldValue, notifyStepCompleted, scenarioStep.id])
 
-  // Scan naming rule: when a scan config generates names for this event type,
-  // manual creation must use the SAME template or the event never merges with
-  // its scan-generated counterpart (identity keys on the formatted name).
-  // Fetched when editing too — the breakdown picker below asks the same configs
-  // which warehouse columns the project can actually collect.
+  // The breakdown picker below asks the project's scan configs which warehouse
+  // columns it can actually collect. Nothing else reads them here any more:
+  // the naming rule used to be picked out of this list by event_type_id, which
+  // on a plan branch never matched — a branch copy of the type has a new id no
+  // config names — so the form offered free text where a scan rule governed
+  // (tripl-kjhi.1). The server now resolves the rule onto the type itself.
   const { data: scanConfigs } = useQuery({
     queryKey: ['scans', slug],
     queryFn: () => scansApi.list(slug),
   })
-  const nameFormat = useMemo(() => {
-    if (!isNew || !etId) return null
-    const ruled = (scanConfigs ?? []).filter(
-      sc => !!sc.event_name_format && (sc.event_type_id === etId || sc.event_type_id === null),
-    )
-    const exact = ruled.filter(sc => sc.event_type_id === etId)
-    const candidates = exact.length > 0 ? exact : ruled
-    return [...candidates]
-      .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))[0]
-      ?.event_name_format ?? null
-  }, [isNew, etId, scanConfigs])
+  // Scan naming rule: when a scan generates names for this event type, manual
+  // creation must use the SAME template or the event never merges with its
+  // scan-generated counterpart (identity keys on the formatted name). Read off
+  // the type, which the form loads in branch context, so a branch copy carries
+  // its main counterpart's rule (tripl-kjhi.1).
+  const nameFormat = isNew && selectedEt ? selectedEt.event_name_format ?? null : null
   const generatedName = useMemo(() => {
     if (!nameFormat) return null
     const valuesByField: Record<string, string> = {}
@@ -420,6 +446,7 @@ export function EventForm({
       const payload = {
         event_type_id: etId,
         name: generatedName ? generatedName.name : name,
+        title: title.trim(),
         description,
         status,
         sunset_at: status === 'deprecated' && sunsetAt ? sunsetAt : null,
@@ -555,7 +582,16 @@ export function EventForm({
             label="Name"
             htmlFor="form-name"
             required
-            hint={generatedName ? <span className="mono">generated by scan rule: {nameFormat}</span> : undefined}
+            hint={
+              generatedName ? (
+                <>
+                  <span className="mono">generated by scan rule: {nameFormat}</span>
+                  {/* The rule owns this box, so the analyst's wording has to go
+                      somewhere the scan never reads (tripl-kjhi.3). */}
+                  <span className="mt-[2px] block">Your own wording goes in Title.</span>
+                </>
+              ) : undefined
+            }
           >
             {/* readOnly, not disabled: a disabled input cannot be focused,
                 selected or copied — so the name you are about to create could
@@ -599,6 +635,25 @@ export function EventForm({
                 .
               </p>
             )}
+          </EvField>
+
+          {/* The name is the scan identity and, under a rule, not the author's
+              to write; the title is the human label, and the event has room for
+              exactly this split now — production had analysts' wording jammed
+              into names that could never match a scan (tripl-kjhi.3). */}
+          <EvField
+            label="Title"
+            htmlFor="form-title"
+            hint="Shown beside the identity in lists and the diff. Never part of the name a scan matches on."
+          >
+            <input
+              id="form-title"
+              className={`${TEXT_INPUT_CLASS} max-w-[360px]`}
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+              maxLength={500}
+              placeholder="Human-readable label, e.g. Tap on a model card"
+            />
           </EvField>
 
           <EvField label="Description" htmlFor="form-description">

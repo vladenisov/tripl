@@ -18,24 +18,36 @@ export interface BulkRow {
   values: string[]
   /** The event that would be created. */
   name: string
+  /** The human label that followed the identity columns; empty when the line gave none. */
+  title: string
   status: BulkRowStatus
   /** Naming columns this line left empty; only set when `status` is `incomplete`. */
   missing: string[]
 }
 
 /**
- * Split one line into the values its columns need.
+ * Split one line into the values its columns need, and the title after them.
  *
- * A single-column format takes the WHOLE line: `{page}` names events after
- * paths like `/buoy/2758a8b1.../Tregde+A`, which carry commas and would be torn
- * apart by a delimiter that has nothing to separate. Past one column, a tab wins
- * over a comma — a paste out of a spreadsheet is tab-separated, and its cells
- * may themselves contain commas.
+ * Whatever follows the last identity column is the title, kept whole with its
+ * own delimiters — `weather_alert,show,widget,Weather alert widget shown` is
+ * three columns and a label (tripl-kjhi.3). Past one column, a tab wins over a
+ * comma — a paste out of a spreadsheet is tab-separated, and its cells may
+ * themselves contain commas.
+ *
+ * A single identity column (a one-column format, or a free-text name) is only
+ * ever split on a TAB: `{page}` names events after paths like
+ * `/buoy/2758a8b1.../Tregde+A`, which carry commas, and a comma there would
+ * tear the identity apart to make a title nobody asked for.
  */
-function splitLine(line: string, columnCount: number): string[] {
-  if (columnCount <= 1) return [line.trim()]
-  const parts = line.includes('\t') ? line.split('\t') : line.split(',')
-  return parts.map(part => part.trim())
+function splitLine(line: string, columnCount: number): { values: string[]; title: string } {
+  const identityCount = Math.max(columnCount, 1)
+  const delimiter = line.includes('\t') ? '\t' : identityCount > 1 ? ',' : null
+  if (delimiter === null) return { values: [line.trim()], title: '' }
+  const parts = line.split(delimiter)
+  return {
+    values: parts.slice(0, identityCount).map(part => part.trim()),
+    title: parts.slice(identityCount).join(delimiter).trim(),
+  }
 }
 
 export interface ParseBulkDraftOptions {
@@ -67,13 +79,13 @@ export function parseBulkDraft(text: string, options: ParseBulkDraftOptions): Bu
     const line = index + 1
     if (rawLine.trim() === '') return
 
-    const values = splitLine(rawLine, columns.length)
+    const { values, title } = splitLine(rawLine, columns.length)
 
     if (nameFormat === null) {
       const name = values[0] ?? ''
       const status = classify(name)
       if (status === 'ready') seen.add(name)
-      rows.push({ line, values, name, status, missing: [] })
+      rows.push({ line, values, name, title, status, missing: [] })
       return
     }
 
@@ -85,12 +97,12 @@ export function parseBulkDraft(text: string, options: ParseBulkDraftOptions): Bu
     const { name, missing } = applyEventNameFormat(nameFormat, valuesByColumn)
 
     if (missing.length > 0) {
-      rows.push({ line, values, name, status: 'incomplete', missing })
+      rows.push({ line, values, name, title, status: 'incomplete', missing })
       return
     }
     const status = classify(name)
     if (status === 'ready') seen.add(name)
-    rows.push({ line, values, name, status, missing: [] })
+    rows.push({ line, values, name, title, status, missing: [] })
   })
 
   return rows

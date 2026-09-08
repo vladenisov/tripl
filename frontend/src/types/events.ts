@@ -48,6 +48,8 @@ export interface Event {
    * naming rule governs its type.
    */
   source_name: string | null
+  /** Free-text label shown beside the identity; never part of it. */
+  title: string
   description: string
   order: number
   status: EventStatus
@@ -62,6 +64,10 @@ export interface Event {
   meta_values: EventMetaValue[]
   created_at: string
   updated_at: string
+  /** The branch the row lives on. `GET /events/{id}` answers for any branch of
+   * the project, so a reader can tell when the row is not on the branch it is
+   * looking at. Absent on list items and on responses from an older instance. */
+  branch_id?: string | null
 }
 
 export interface EventMutationResponse extends Event {

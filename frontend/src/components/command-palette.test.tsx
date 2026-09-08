@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AuthUser } from '@/types'
 import { buildNavGroups } from '@/lib/navigation'
 import { AuthContext, type AuthContextValue } from './auth-context'
+import { BranchProvider } from './branch-context'
 import { CommandPaletteProvider } from './command-palette'
 import {
   COMMAND_PALETTE_TRIGGER_ATTR,
@@ -95,13 +96,35 @@ function TopBarTrigger() {
 
 function LocationBeacon() {
   const location = useLocation()
-  return <div data-testid="location">{location.pathname}</div>
+  return (
+    <>
+      <div data-testid="location">{location.pathname}</div>
+      {/* Separate from the pathname beacon so the many exact-path assertions
+          above stay untouched; only the branch test reads the query. */}
+      <div data-testid="location-search">{location.search}</div>
+    </>
+  )
 }
 
-function renderHarness(initialEntry = '/p/demo/events', auth: AuthContextValue = authValue) {
+function renderHarness(
+  initialEntry = '/p/demo/events',
+  auth: AuthContextValue = authValue,
+  {
+    // Opt-in: with a BranchProvider mounted the palette's requests carry
+    // `?branch=`, which the exact-URL fetch mocks of the other tests reject.
+    withBranchProvider = false,
+  }: { withBranchProvider?: boolean } = {},
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+  const eventsSurface = (
+    <CommandPaletteProvider>
+      <LocationBeacon />
+      <PaletteOpener />
+      <TopBarTrigger />
+    </CommandPaletteProvider>
+  )
   return render(
     <QueryClientProvider client={queryClient}>
       <AuthContext.Provider value={auth}>
@@ -110,11 +133,11 @@ function renderHarness(initialEntry = '/p/demo/events', auth: AuthContextValue =
             <Route
               path="/p/:slug/events"
               element={
-                <CommandPaletteProvider>
-                  <LocationBeacon />
-                  <PaletteOpener />
-                  <TopBarTrigger />
-                </CommandPaletteProvider>
+                withBranchProvider ? (
+                  <BranchProvider slug="demo">{eventsSurface}</BranchProvider>
+                ) : (
+                  eventsSurface
+                )
               }
             />
             <Route
@@ -138,6 +161,9 @@ function renderHarness(initialEntry = '/p/demo/events', auth: AuthContextValue =
 
 afterEach(() => {
   vi.restoreAllMocks()
+  // BranchProvider persists the selection per slug; a branch left behind by
+  // one test would silently attach `?branch=` to the next test's requests.
+  window.localStorage.clear()
 })
 
 describe('CommandPalette', () => {

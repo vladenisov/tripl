@@ -44,6 +44,9 @@ import { formatIncidentCount } from '@/lib/alertStatus'
 import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/metricFormat'
 import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, defaultGranularityForRange, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
+import { EntityBranchBanner } from '@/components/EntityBranchBanner'
+import { EventSpecCard } from '@/components/EventSpecCard'
+import { historyFieldLabel } from '@/lib/eventHistory'
 import { formatSignalSeverity, resolveDetailScope } from '@/lib/monitoring'
 import { NO_BASELINE_LABEL, formatRatioDelta, ratioDelta } from '@/lib/percentDelta'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
@@ -814,8 +817,11 @@ export default function MonitoringDetailPage() {
     if (scope === 'metric') return metricDefinition?.display_name ?? 'Metric'
     if (scope === 'project_total') return 'Project Total'
     if (scope === 'event_type') return eventType?.display_name ?? 'Event Type'
-    return event?.name ?? 'Event'
+    // The label an analyst wrote leads when there is one; the identity the scan
+    // matches on then sits beneath it in mono (tripl-kjhi.3).
+    return event?.title || (event?.name ?? 'Event')
   })()
+  const headerIdentity = scope === 'event' && event?.title ? (event.source_name || event.name) : null
   const headerDescription = (() => {
     if (scope === 'metric') return metricDefinition?.description || 'Catalog metric monitoring detail.'
     if (scope === 'project_total') return 'Canonical total event volume for the selected scan.'
@@ -972,6 +978,11 @@ export default function MonitoringDetailPage() {
           <div className="space-y-3">
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-[22px] font-semibold tracking-[-0.01em]">{headerTitle}</h1>
+              {headerIdentity && (
+                <span className="mono text-[13px]" style={{ color: 'var(--fg-muted)' }} data-testid="header-identity">
+                  {headerIdentity}
+                </span>
+              )}
               {eventType && (
                 <Badge style={{ backgroundColor: eventType.color, color: '#fff' }}>
                   {eventType.display_name}
@@ -1004,11 +1015,31 @@ export default function MonitoringDetailPage() {
         <MetricDefinitionCard slug={slug} definition={metricDefinition} />
       )}
 
+      {isEventDetail && event && slug && (
+        <EntityBranchBanner
+          slug={slug}
+          rowBranchId={event.branch_id}
+          path={`/p/${slug}/monitoring/event/${event.id}`}
+        />
+      )}
+
+      {/* The spec comes first for an event that is not yet live: that page is
+          where a developer is sent to instrument it, and the metrics below can
+          only say "no data" until they have (tripl-kjhi.8). Once the event is
+          live the chart leads and the spec follows the fields. */}
+      {isEventDetail && event && slug && !LIVE_STATUSES.has(event.status) && (
+        <EventSpecCard slug={slug} event={event} eventType={eventType} metaFieldMap={metaFieldMap} />
+      )}
+
       {isEventDetail && event && (
         <div className="grid items-start gap-[14px] lg:grid-cols-[1.5fr_1fr]">
           <EventFieldsTable eventType={eventType} event={event} fieldDefMap={fieldDefMap} />
           <EventSideColumn event={event} eventType={eventType} history={eventHistory} metaFieldMap={metaFieldMap} />
         </div>
+      )}
+
+      {isEventDetail && event && slug && LIVE_STATUSES.has(event.status) && (
+        <EventSpecCard slug={slug} event={event} eventType={eventType} metaFieldMap={metaFieldMap} />
       )}
 
       {isEventDetail && <span ref={metricsRef} aria-hidden className="-mt-5 block scroll-mt-4" />}
@@ -1977,6 +2008,10 @@ type EventDetailStats = {
 
 type EventHistoryItem = { id: string; field: string; created_at: string; new_value: string | null }
 
+// Statuses whose event has data behind it, so the chart may lead the page.
+const LIVE_STATUSES = new Set<string>(['live', 'deprecated', 'archived'])
+
+
 /**
  * Derives the event-detail stat strip + trend from the real volume series.
  * The mockup's error-rate/coverage have no API source, so the strip instead
@@ -2574,7 +2609,9 @@ function EventSideColumn({
               <Dot tone="neutral" size={6} className="mt-[5px]" />
               <div className="min-w-0 flex-1">
                 <div className="text-[11.5px] font-medium">
-                  <span className="mono">{change.field}</span>
+                  <span className={change.field.startsWith('field:') || change.field.startsWith('meta:') ? 'mono' : ''}>
+                    {historyFieldLabel(change.field)}
+                  </span>
                   {change.new_value != null && <span style={{ color: 'var(--fg-muted)' }}> → {change.new_value}</span>}
                 </div>
                 <div className="mt-[2px] text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>

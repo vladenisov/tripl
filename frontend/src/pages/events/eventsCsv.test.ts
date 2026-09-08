@@ -17,6 +17,7 @@ function makeEvent(overrides: Partial<EventListItem> = {}): EventListItem {
     event_type_id: 'et-1',
     name: 'checkout_completed',
     source_name: null,
+    title: '',
     description: '',
     order: 0,
     status: 'live',
@@ -57,7 +58,20 @@ describe('buildEventsCsvColumns', () => {
   it('mirrors the column picker — a hidden column is not exported', () => {
     const headers = columns({ hideOwner: true, hideTags: true }).map(col => col.header)
 
-    expect(headers).toEqual(['Event', 'Type', 'Status', 'Reviewed', 'Last seen'])
+    expect(headers).toEqual(['Event', 'Title', 'Type', 'Status', 'Reviewed', 'Last seen'])
+  })
+
+  // tripl-kjhi.3: the title has no column of its own in the table (it renders
+  // inside the Event cell), so the picker cannot hide it and the export always
+  // carries it, right after the identity it labels.
+  it('exports the free-text title beside the identity', () => {
+    const rows = toCsv(columns({ hideTags: true, hideLastSeen: true, hideOwner: true }), [
+      makeEvent({ title: 'Purchase finished' }),
+      makeEvent({ id: 'evt-2', name: 'cart_opened' }),
+    ]).split('\r\n')
+
+    expect(rows[1]).toBe('checkout_completed,Purchase finished,Page View,Live,no')
+    expect(rows[2]).toBe('cart_opened,,Page View,Live,no')
   })
 
   it('drops the Type column on a type-scoped tab, like the table does', () => {
@@ -78,7 +92,7 @@ describe('toCsv', () => {
       makeEvent({ name: 'checkout, "final" step' }),
     ])
 
-    expect(csv.split('\r\n')[1]).toBe('"checkout, ""final"" step",Page View,Live,no')
+    expect(csv.split('\r\n')[1]).toBe('"checkout, ""final"" step",,Page View,Live,no')
   })
 
   // Event names arrive from ingested scan data, so a name starting with "=" is

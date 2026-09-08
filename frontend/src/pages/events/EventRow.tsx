@@ -26,6 +26,7 @@ import { eventNameLabel } from '@/lib/eventName'
 import { SIGNAL_LEVEL, rowSignalLevel } from '@/lib/statusLexicon'
 import { getMonitoringPath } from '@/lib/monitoring'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
+import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
 import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
 import { EventName } from '@/components/event-name'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
@@ -175,6 +176,18 @@ export const EventRow = memo(function EventRow({
   // RAW name, because <EventName> needs it to paint ∅ empty segments.
   const nameLabel = eventNameLabel(ev.name)
 
+  // The detail link carries the ACTIVE branch, not just the path. The provider
+  // reads `?branch=` only when it mounts, so a row link copied out of a branch
+  // catalog without it opened a 404 in a fresh session — the event only exists
+  // on that branch (tripl-kjhi.7). useBranchLinkProps bundles the query param
+  // with the on-click branch set, so in-app and pasted navigation agree.
+  const activeBranchId = useActiveBranchId()
+  const branchLink = useBranchLinkProps()
+  const detailLink = branchLink(
+    getMonitoringPath(slug, { scope_type: 'event', scope_ref: ev.id }),
+    activeBranchId,
+  )
+
   // The edit affordance is hover-revealed like the drag handle, but the row the
   // coached scenario points at must not hide its own click target — so it stays
   // visible while the edit-event chapter's mark is on it (context bypasses the
@@ -225,7 +238,8 @@ export const EventRow = memo(function EventRow({
                   need an href. react-router's Link leaves modified clicks to
                   the browser (tripl-fa8l). */}
               <Link
-                to={getMonitoringPath(slug, { scope_type: 'event', scope_ref: ev.id })}
+                to={detailLink.to}
+                onClick={detailLink.onClick}
                 className="mono truncate text-left text-[12.5px] hover:underline underline-offset-4"
                 // Native title only when there's no description to show in the
                 // richer tooltip — avoids a double (native + Radix) popover.
@@ -240,6 +254,20 @@ export const EventRow = memo(function EventRow({
               </TooltipContent>
             )}
           </Tooltip>
+          {/* The free-text title beside the identity (tripl-kjhi.3). Inline, not
+              a second line: the virtualizer sizes every row to ROW_H_ESTIMATE
+              and never measures (useEventsTableVirtualization), so a taller
+              titled row would shift every row under it. Rendered only when set,
+              so an untitled row gains no blank gap either. */}
+          {ev.title && (
+            <span
+              className="min-w-0 truncate text-[11px]"
+              style={{ color: 'var(--fg-subtle)' }}
+              title={ev.title}
+            >
+              {ev.title}
+            </span>
+          )}
           {ev.drift_count > 0 && (
             <ScenarioCoachMark
               step="reconcile/review-drift"
