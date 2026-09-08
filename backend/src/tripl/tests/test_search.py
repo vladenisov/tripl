@@ -1881,3 +1881,73 @@ async def test_a_broker_failure_is_reported_not_raised(
     monkeypatch.setattr(celery_module.celery_app, "send_task", boom)
 
     assert await search_service._queue_branch_reindex(uuid.uuid4(), uuid.uuid4()) is False
+
+
+@pytest.mark.asyncio
+async def test_semantic_false_never_reaches_the_embedding_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``semantic=False`` is lexical-only: no provider call, no demo vector.
+
+    The palette asks for this answer first and upgrades to the full one when it
+    lands; on production the embedding round trip was the whole difference
+    between results at ~150 ms and at ~1.5 s (tripl-kjhi.15). The flag has to
+    skip the embed leg outright — a call that is made and thrown away would
+    still be paid for.
+    """
+
+    async def fake_lexical(_session: object, **_kwargs: object) -> list[SearchResult]:
+        return []
+
+    def fake_embed(_query: str, *, config: AiConfig) -> list[float]:
+        pytest.fail("semantic=False must not call the embedding provider")
+
+    async def fake_semantic(_session: object, **_kwargs: object) -> list[SearchResult]:
+        pytest.fail("semantic=False must not run the vector leg")
+
+    enabled = replace(env_ai_config(), search_embeddings_enabled=True)
+
+    async def fake_ai_config(_session: object) -> AiConfig:
+        return enabled
+
+    monkeypatch.setattr(_search_query, "postgres_lexical_search", fake_lexical)
+    monkeypatch.setattr(_search_query, "postgres_semantic_search", fake_semantic)
+    monkeypatch.setattr(_search_query, "embed_query", fake_embed)
+    monkeypatch.setattr(app_settings_service, "get_ai_config", fake_ai_config)
+
+    async with TestSessionLocal() as session:
+        _, semantic_used = await _search_query.postgres_search(
+            session,
+            project_id=uuid.uuid4(),
+            branch_id=uuid.uuid4(),
+            query="session",
+            entity_types=None,
+            include_archived=False,
+            limit=10,
+            project_is_demo=True,
+            semantic=False,
+        )
+
+    assert semantic_used is False
+
+
+@pytest.mark.asyncio
+async def test_search_endpoint_accepts_the_semantic_flag(client: AsyncClient) -> None:
+    await client.post("/api/v1/projects", json={"name": "Lex", "slug": "search-lexical"})
+    event_type = await client.post(
+        "/api/v1/projects/search-lexical/event-types",
+        json={"name": "track", "display_name": "Track"},
+    )
+    created = await client.post(
+        "/api/v1/projects/search-lexical/events",
+        json={"event_type_id": event_type.json()["id"], "name": "checkout_started"},
+    )
+    assert created.status_code == 201, created.text
+
+    lexical_only = await client.get(
+        "/api/v1/projects/search-lexical/search", params={"q": "checkout", "semantic": "false"}
+    )
+    assert lexical_only.status_code == 200, lexical_only.text
+    body = lexical_only.json()
+    assert body["semantic_used"] is False
+    assert [item["name"] for item in body["items"]] == ["checkout_started"]

@@ -5,6 +5,7 @@ import { chartAnnotationsApi } from '@/api/chartAnnotations'
 import { eventTypesApi } from '@/api/eventTypes'
 import { eventsApi } from '@/api/events'
 import { metaFieldsApi } from '@/api/metaFields'
+import { usersApi } from '@/api/users'
 import { metricsApi } from '@/api/metrics'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { scansApi } from '@/api/scans'
@@ -2552,6 +2553,21 @@ function EventSideColumn({
   metaFieldMap: Map<string, MetaFieldDefinition>
 }) {
   const breakdowns = event.metric_breakdown_columns
+  const usersQuery = useQuery({
+    queryKey: ['users'],
+    queryFn: () => usersApi.list(),
+    enabled: Boolean(event.owner_id),
+  })
+  const owner = event.owner_id ? usersQuery.data?.find(user => user.id === event.owner_id) : undefined
+  // An owner the roster no longer lists (a removed member, or a roster the
+  // request could not fetch) reads as unknown, not as still loading.
+  const ownerLabel = !event.owner_id
+    ? '—'
+    : owner
+      ? owner.name || owner.email
+      : usersQuery.isPending
+        ? '…'
+        : 'Unknown user'
   return (
     <div className="flex flex-col gap-[14px]">
       <div className={SURFACE_CARD} style={SURFACE_STYLE}>
@@ -2570,7 +2586,11 @@ function EventSideColumn({
             // identity and a second row saying so would be noise.
             <PropertyRow label="Scan identity" value={event.source_name} mono />
           )}
-          <PropertyRow label="First seen" value={formatTimestamp(event.created_at)} />
+          <PropertyRow label="Owner" value={ownerLabel} />
+          {/* Authored and seen are two dates: an event planned before it
+              shipped was "first seen" on a day nothing was (tripl-kjhi.10). */}
+          <PropertyRow label="Created" value={formatTimestamp(event.created_at)} />
+          <PropertyRow label="First seen" value={event.first_seen_at ? formatTimestamp(event.first_seen_at) : '—'} />
           <PropertyRow label="Updated" value={formatRelativeTime(event.updated_at)} />
           <PropertyRow label="Last seen" value={event.last_seen_at ? formatTimestamp(event.last_seen_at) : '—'} />
           {event.sunset_at && <PropertyRow label="Sunset" value={formatTimestamp(event.sunset_at)} />}

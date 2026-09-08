@@ -58,7 +58,10 @@ export default function EventBulkForm() {
   const branchId = useActiveBranchId()
   const qc = useQueryClient()
 
-  const [etId, setEtId] = useState('')
+  // `null` is "not chosen yet": until the reader picks, the type the route names
+  // (`/events/se/bulk`) is the choice, as on the single-event form
+  // (tripl-kjhi.13). A cleared select is '' — a choice — and stays cleared.
+  const [chosenEtId, setEtId] = useState<string | null>(null)
   const [status, setStatus] = useState<EventStatus>('draft')
   const [draft, setDraft] = useState('')
 
@@ -72,6 +75,8 @@ export default function EventBulkForm() {
     enabled: !!slug,
   })
   const eventTypes = eventTypesQuery.data ?? EMPTY_EVENT_TYPES
+  const routedEt = tab && tab !== 'all' ? eventTypes.find(et => et.name === tab) : undefined
+  const etId = chosenEtId ?? routedEt?.id ?? ''
   const selectedEt = eventTypes.find(et => et.id === etId)
 
   // The rule comes with the type, resolved by the server, as on the single

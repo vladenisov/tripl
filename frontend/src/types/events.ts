@@ -55,6 +55,9 @@ export interface Event {
   status: EventStatus
   sunset_at: string | null
   last_seen_at: string | null
+  /** Oldest metric bucket with traffic; null until a collection sees the event,
+   * and on list responses, which do not compute it (tripl-kjhi.10). */
+  first_seen_at?: string | null
   owner_id: string | null
   reviewed: boolean
   metric_breakdown_columns: string[]

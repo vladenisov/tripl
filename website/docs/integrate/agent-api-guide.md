@@ -142,6 +142,10 @@ Useful query parameters:
   grows as new kinds are indexed. It spans plan content and project
   configuration alike, so scan configs and alert rules are filterable values.
 - `include_archived`: defaults to `false`.
+- `semantic`: defaults to `true`. `false` skips the embedding leg and answers
+  from the keyword index alone — much sooner, with `semantic_used` always
+  `false`. The command palette asks this way first and upgrades to the full
+  answer when it lands.
 - `limit`: 1 to 100, defaults to 20.
 - `branch`: optional branch id.
 

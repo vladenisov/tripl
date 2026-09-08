@@ -14,6 +14,8 @@ import { eventsApi } from '@/api/events'
 import { scansApi } from '@/api/scans'
 import { eventTypesApi } from '@/api/eventTypes'
 import { metaFieldsApi } from '@/api/metaFields'
+import { planBranchesApi } from '@/api/planBranches'
+import { usersApi } from '@/api/users'
 import { variablesApi } from '@/api/variables'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useAiStatus } from '@/hooks/useAiStatus'
@@ -35,7 +37,8 @@ import { applyEventNameFormat, nameFormatBaseColumns, resolveTemplateTokens } fr
 import { EV_INPUT_CLASS, EvField, SelectControl, SurfCard, TEXT_INPUT_CLASS } from './eventFormLayout'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { ChevronLeft, Loader2, Plus, Save, Sparkles, X } from 'lucide-react'
-import { eventTypesKey, variablesKey } from '@/lib/queryKeys'
+import { branchTicket } from '@/lib/branchTicket'
+import { eventTypesKey, planBranchesKey, variablesKey } from '@/lib/queryKeys'
 
 const EMPTY_EVENT_TYPES: EventType[] = []
 const EMPTY_META_FIELDS: MetaFieldDefinition[] = []
@@ -257,6 +260,7 @@ export function EventForm({
   const [title, setTitle] = useState(event?.title ?? '')
   const [description, setDescription] = useState(event?.description ?? '')
   const [status, setStatus] = useState(event?.status ?? 'draft')
+  const [ownerId, setOwnerId] = useState(event?.owner_id ?? '')
   const [sunsetAt, setSunsetAt] = useState(event?.sunset_at ? event.sunset_at.slice(0, 16) : '')
   const [metricBreakdownColumns, setMetricBreakdownColumns] = useState(
     () => normalizeMetricBreakdownColumns(event?.metric_breakdown_columns ?? []),
@@ -270,6 +274,35 @@ export function EventForm({
   const [metaValues, setMetaValues] = useState<Record<string, string>>(() =>
     event ? Object.fromEntries(event.meta_values.map(mv => [mv.meta_field_definition_id, mv.value])) : {},
   )
+
+  // The owner used to be settable only from the list's bulk bar, after the
+  // event existed; the form is where the analyst is when they know who it is
+  // for (tripl-kjhi.16). GET /users is open to any signed-in user.
+  const usersQuery = useQuery({ queryKey: ['users'], queryFn: () => usersApi.list() })
+  const users = usersQuery.data ?? []
+
+  // A branch named after a ticket pre-fills the meta field that links to it,
+  // once, on a new event; a field the reader has touched — typed into, or
+  // cleared before the branch list arrived — is never overwritten, which is
+  // why the check is for the KEY, not for a value (tripl-kjhi.14). Off main
+  // there is no branch name to read.
+  const branchesQuery = useQuery({
+    queryKey: planBranchesKey(slug),
+    queryFn: () => planBranchesApi.list(slug),
+    enabled: isNew && branchId !== null,
+  })
+  const ticket = useMemo(() => {
+    const branch = branchesQuery.data?.items.find(b => b.id === branchId)
+    return branchTicket(branch?.name, metaFields)
+  }, [branchesQuery.data, branchId, metaFields])
+  const ticketPrefilled = useRef(false)
+  useEffect(() => {
+    if (!isNew || !ticket || ticketPrefilled.current) return
+    ticketPrefilled.current = true
+    setMetaValues(prev =>
+      ticket.field.id in prev ? prev : { ...prev, [ticket.field.id]: ticket.key },
+    )
+  }, [isNew, ticket])
 
   const selectedEt = eventTypes.find(e => e.id === etId)
   const sortedFields = useMemo(
@@ -449,6 +482,7 @@ export function EventForm({
         title: title.trim(),
         description,
         status,
+        owner_id: ownerId || null,
         sunset_at: status === 'deprecated' && sunsetAt ? sunsetAt : null,
         metric_breakdown_columns: metricBreakdownColumns,
         tags,
@@ -684,9 +718,23 @@ export function EventForm({
             )}
           </EvField>
 
-          <EvField label="Status" htmlFor="form-status" last={status !== 'deprecated'}>
+          <EvField label="Status" htmlFor="form-status">
             <SelectControl id="form-status" value={status} onChange={v => setStatus(v as EventStatus)} maxWidth={240}>
               {EVENT_STATUSES.map(s => <option key={s} value={s}>{EVENT_STATUS_LABELS[s]}</option>)}
+            </SelectControl>
+          </EvField>
+
+          <EvField
+            label="Owner"
+            htmlFor="form-owner"
+            hint="Who answers for this event."
+            last={status !== 'deprecated'}
+          >
+            <SelectControl id="form-owner" value={ownerId} onChange={setOwnerId} maxWidth={240}>
+              <option value="">No owner</option>
+              {users.map(u => (
+                <option key={u.id} value={u.id}>{u.name || u.email}</option>
+              ))}
             </SelectControl>
           </EvField>
 

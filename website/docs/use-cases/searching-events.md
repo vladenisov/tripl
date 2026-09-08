@@ -94,6 +94,7 @@ Query parameters:
 | `q` | the natural-language query (1–500 characters) |
 | `types` | restrict the returned hits to any of the `entity_type` values below — repeatable |
 | `include_archived` | include archived entities (default `false`) |
+| `semantic` | `false` skips the embedding leg: a keyword-only answer, sooner, with `semantic_used: false` (default `true`) |
 | `limit` | cap the number of hits (default `20`, max `100`) |
 
 Each item carries:

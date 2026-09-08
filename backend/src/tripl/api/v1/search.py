@@ -20,6 +20,16 @@ async def search_project(
     types: Annotated[list[SearchEntityType] | None, Query()] = None,
     include_archived: bool = False,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    semantic: Annotated[
+        bool,
+        Query(
+            description=(
+                "Run the embedding leg as well as the lexical one. Pass false for "
+                "a keyword-only answer that skips the provider round trip; "
+                "``semantic_used`` in the response is then always false."
+            )
+        ),
+    ] = True,
 ) -> SearchResponse:
     return await search_service.search_project(
         session,
@@ -29,6 +39,7 @@ async def search_project(
         entity_types=types,
         include_archived=include_archived,
         limit=limit,
+        semantic=semantic,
     )
 
 

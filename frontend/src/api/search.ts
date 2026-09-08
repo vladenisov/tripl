@@ -6,6 +6,8 @@ type SearchParams = {
   types?: SearchEntityType[]
   include_archived?: boolean
   limit?: number
+  /** `false` skips the embedding leg: a keyword-only answer, much sooner. */
+  semantic?: boolean
 }
 
 export const searchApi = {
@@ -17,6 +19,7 @@ export const searchApi = {
       sp.set('include_archived', String(params.include_archived))
     }
     if (params.limit !== undefined) sp.set('limit', String(params.limit))
+    if (params.semantic !== undefined) sp.set('semantic', String(params.semantic))
     return api.get<SearchResponse>(
       withBranch(`/projects/${slug}/search?${sp.toString()}`, branchId),
     )

@@ -98,7 +98,8 @@ identity; **Description** — with a
 **Suggest with AI** action that appears when editing an existing event and AI is
 enabled; **Status** — one of `draft`, `in_review`, `ready_for_dev`,
 `implemented`, `live`, `deprecated`, `archived` (selecting `deprecated` reveals a
-**Sunset date**); **Tags**; **Metric breakdowns** (the selected type's scalar
+**Sunset date**); **Owner** — a project member, or none, the same value the
+list's bulk bar sets; **Tags**; **Metric breakdowns** (the selected type's scalar
 fields and the columns this project's scans collect — `platform`, the app
 version column and any configured breakdown column — plus any other warehouse
 column typed in by hand; JSON fields are excluded); **Field values**
@@ -146,11 +147,16 @@ identity — collection keeps matching the event it already knew. Once the two
 differ, the event's **Properties** card shows the **Scan identity** row, and
 `source_name` carries it in every event response. The human-readable label
 belongs in **Title**, which is free to change and never touches the identity.
+The same card tells **Created** — when the event was authored — apart from
+**First seen**, the first metric bucket that counted it (`first_seen_at` in the
+single-event response). An event planned before it shipped shows a dash there
+until a collection sees it; a branch copy reads it through its `main` twin.
 
 #### Adding many at once
 
 **More › Add many events…** takes a whole run of events from a pasted block.
-What the block carries follows from the event type. Where a scan names its
+Opened from a type's tab, the page starts on that type. What the block carries
+follows from the event type. Where a scan names its
 events, each line carries the columns the name is built from — separated by a
 tab or a comma, or the whole line where the format needs only one column, so a
 path with commas in it survives. Where no rule governs the type, each line is
@@ -219,8 +225,10 @@ attachment.
 The detail view stacks: **General** (name, display name, color), a **Fields**
 editor (add/edit/reorder/delete fields — type, required flag, enum options,
 validation such as regex/range, and a sensitivity level), a **Sensitive fields**
-summary, and **Owners** (shown only on the `main` branch). Owners gate branch
-merges: a type **with** owners is "gated" (the branch needs a fresh approval from
+summary, and **Owners** (shown only on the `main` branch — owners are a fact
+about `main`'s type, so in branch context neither the list's Owner column nor
+the detail's merge-gate chip is shown, and nothing is asked for). Owners gate
+branch merges: a type **with** owners is "gated" (the branch needs a fresh approval from
 one of those owners before an authorized editor can merge changes to that type);
 a type with no owners has no owner-approval gate.
 
@@ -386,7 +394,15 @@ the branch without a scan identity — e.g.
 sees it before the merge lands an event that would never match its traffic. A branch copy of an event reads its
 metrics and **last seen** through its `main` twin (the event with the same type
 name and identity), so the branch shows what the live plan collected rather than
-blanks.
+blanks. Removals that are the machine's doing — a scan-minted variable nobody
+bound, documented or referenced being retired, or a removal `main` has already
+made since the branch was cut — carry a `housekeeping` reason in the diff
+response, are left out of the added/removed/changed counts (`summary.housekeeping`
+counts them), are folded into one line under the list, opened on request, and
+are not what the merge confirmation warns about. A branch named after a tracker
+ticket (`WND-4770`) links to it from the detail
+header through the first meta field whose link template takes a key, and a new
+event opened in that branch has that meta field pre-filled with the key.
 Branch comments identify their author using the current project roster.
 
 **Revert** on a diff row (or on a single field-change row) puts that change back
@@ -1289,7 +1305,8 @@ Concepts, Detection settings); a **Projects** switcher; an
 **Event types** jump list; **branch-aware knowledge search** (from 2 characters)
 across events, event types, fields, meta fields, variables, relations, tags,
 metrics, fact tables, scans and alert rules, each with a
-confidence badge; **Ask AI** (when AI is
+confidence badge — the keyword answer is shown as soon as it lands and the
+semantic re-ranking replaces it when that arrives; **Ask AI** (when AI is
 enabled and the query is at least 8 characters, with cited sources); and **Sign
 out**.
 

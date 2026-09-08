@@ -347,11 +347,25 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
   const eventTypes = eventTypesQuery.data ?? []
 
   const searchSlug = activeProject?.slug ?? projects[0]?.slug ?? null
+  const searchEnabled = open && !!searchSlug && debouncedQuery.length >= 2
+  // Two answers per query, cheapest first (tripl-kjhi.15). On production the
+  // full search took 0.5–1.8 s and every millisecond past the lexical SQL was
+  // the embedding round trip; a palette is typed into, and a list that lands
+  // in ~150 ms is one the reader keeps typing against. So the keyword-only
+  // answer is asked for alongside the full one and shown until the full one
+  // — the same rows re-ranked, plus the semantic matches — replaces it.
+  const lexicalQuery = useQuery({
+    queryKey: ['commandPaletteSearch', searchSlug, debouncedQuery, 'lexical'],
+    queryFn: () =>
+      searchApi.search(searchSlug!, { q: debouncedQuery, limit: 12, semantic: false }),
+    enabled: searchEnabled,
+    staleTime: 30_000,
+  })
   const searchQuery = useQuery({
     queryKey: ['commandPaletteSearch', searchSlug, debouncedQuery],
     queryFn: () =>
       searchApi.search(searchSlug!, { q: debouncedQuery, limit: 12 }),
-    enabled: open && !!searchSlug && debouncedQuery.length >= 2,
+    enabled: searchEnabled,
     staleTime: 30_000,
     // The key carries the DEBOUNCED text, so every 200ms boundary mints a new
     // key whose `data` starts undefined. Without a placeholder the rows already
@@ -374,21 +388,31 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
   // happened — clearing the input, Esc, or running a command. Adjusted during
   // render rather than in an effect: an effect would leave one painted frame in
   // which stale rows are still presented as answering the new input.
+  //
+  // "Settled" means the rows answer the DEBOUNCED text: the full answer once it
+  // is no longer a placeholder, or the lexical one (which carries no
+  // placeholder, so success alone means this key).
+  const fullSettled = searchQuery.isSuccess && !searchQuery.isPlaceholderData
+  const lexicalSettled = lexicalQuery.isSuccess
   const settledQuery =
-    query.trim().length < 2
-      ? ''
-      : searchQuery.isSuccess && !searchQuery.isPlaceholderData
-        ? debouncedQuery
-        : heldQuery
+    query.trim().length < 2 ? '' : fullSettled || lexicalSettled ? debouncedQuery : heldQuery
   if (settledQuery !== heldQuery) setHeldQuery(settledQuery)
 
-  const searchResults = useMemo(
-    () =>
-      !searchQuery.isPlaceholderData || isSearchRefinement(heldQuery, debouncedQuery)
-        ? searchQuery.data?.items ?? []
-        : [],
-    [searchQuery.data, searchQuery.isPlaceholderData, heldQuery, debouncedQuery],
-  )
+  const searchResults = useMemo(() => {
+    if (fullSettled) return searchQuery.data?.items ?? []
+    if (lexicalSettled) return lexicalQuery.data?.items ?? []
+    return !searchQuery.isPlaceholderData || isSearchRefinement(heldQuery, debouncedQuery)
+      ? searchQuery.data?.items ?? []
+      : []
+  }, [
+    fullSettled,
+    lexicalSettled,
+    searchQuery.data,
+    lexicalQuery.data,
+    searchQuery.isPlaceholderData,
+    heldQuery,
+    debouncedQuery,
+  ])
   const searchGroups = useMemo(() => groupSearchResults(searchResults), [searchResults])
 
   const aiEnabled = useAiStatus(searchSlug)
@@ -565,9 +589,9 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
   // so they are gone before the request is even sent.
   const knowledgeState: KnowledgeState = !searchSlug || query.trim().length < 2
     ? 'off'
-    : query.trim() !== debouncedQuery || searchQuery.isFetching
+    : query.trim() !== debouncedQuery || (searchQuery.isFetching && !lexicalSettled)
       ? 'searching'
-      : searchQuery.isError
+      : searchQuery.isError && !lexicalSettled
         ? 'error'
         : searchResults.length > 0
           ? 'results'

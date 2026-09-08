@@ -472,7 +472,7 @@ async def test_diff_only_reports_branch_changes_when_main_advances(client: Async
     body = initial.json()
     # Right after deep-copy the branch mirrors main: no entries, not behind base.
     assert body["entries"] == []
-    assert body["summary"] == {"added": 0, "removed": 0, "changed": 0}
+    assert body["summary"] == {"added": 0, "removed": 0, "changed": 0, "housekeeping": 0}
     assert body["behind_base"] is False
 
     async with TestSessionLocal() as session:
@@ -499,7 +499,7 @@ async def test_diff_only_reports_branch_changes_when_main_advances(client: Async
     assert after.status_code == 200
     after_body = after.json()
     assert after_body["behind_base"] is True
-    assert after_body["summary"] == {"added": 0, "removed": 0, "changed": 1}
+    assert after_body["summary"] == {"added": 0, "removed": 0, "changed": 1, "housekeeping": 0}
     assert len(after_body["entries"]) == 1
     entry = after_body["entries"][0]
     assert entry["entity_type"] == "event"
@@ -4239,3 +4239,85 @@ async def test_branch_diff_names_the_rename_the_merge_will_pair(client: AsyncCli
     kinds = {(entry["kind"], entry["name"]) for entry in body["entries"]}
     assert ("removed", "plan_tier") in kinds
     assert ("added", "subscription_tier") in kinds
+
+
+@pytest.mark.asyncio
+async def test_diff_keeps_scan_housekeeping_out_of_the_reviewers_counts(
+    client: AsyncClient,
+) -> None:
+    """A retired scan-minted variable is not one of the author's removals.
+
+    On production a branch with two authored events read "+3 added −7 removed":
+    the seven were variables a scan had minted from user-typed city names and
+    later retired — scan provenance, nothing bound, nothing documented. The
+    entries stay in the diff with a reason, and the counts a reviewer reads
+    (``summary`` here, ``ahead`` on the list) count only the rest. A removal
+    main has ALSO made since the branch was cut is housekeeping too: the merge
+    has nothing to do for it (tripl-kjhi.12).
+    """
+    from tripl.core.analyzers._event_generator_variables import SCAN_PROVENANCE_DESCRIPTION
+
+    slug = "branch-housekeeping"
+    await _seed_plan(client, slug)
+    junk = await client.post(
+        f"/api/v1/projects/{slug}/variables",
+        json={"name": "property_adana", "description": SCAN_PROVENANCE_DESCRIPTION},
+    )
+    assert junk.status_code == 201, junk.text
+    documented = await client.post(
+        f"/api/v1/projects/{slug}/variables",
+        json={
+            "name": "property_city",
+            "description": SCAN_PROVENANCE_DESCRIPTION,
+            "allowed_values": ["adana", "ankara"],
+        },
+    )
+    assert documented.status_code == 201, documented.text
+    branch_id = await _create_branch(client, slug)
+
+    branch_vars = (await client.get(f"/api/v1/projects/{slug}/variables?branch={branch_id}")).json()
+    branch_rows = branch_vars["items"] if isinstance(branch_vars, dict) else branch_vars
+    for row in branch_rows:
+        gone = await client.delete(
+            f"/api/v1/projects/{slug}/variables/{row['id']}?branch={branch_id}"
+        )
+        assert gone.status_code == 204, gone.text
+    branch_ets = await client.get(f"/api/v1/projects/{slug}/event-types?branch={branch_id}")
+    branch_et_id = next(et["id"] for et in branch_ets.json() if et["name"] == "track")
+    added = await client.post(
+        f"/api/v1/projects/{slug}/events?branch={branch_id}",
+        json={"event_type_id": branch_et_id, "name": "checkout:started"},
+    )
+    assert added.status_code == 201, added.text
+
+    diff = (await client.get(f"/api/v1/projects/{slug}/branches/{branch_id}/diff")).json()
+    by_name = {e["name"]: e for e in diff["entries"]}
+    assert by_name["property_adana"]["housekeeping"] == "unused scan variable retired"
+    assert by_name["property_city"]["housekeeping"] is None, "documented values are a mark"
+    assert by_name["checkout:started"]["housekeeping"] is None
+    assert diff["summary"] == {"added": 1, "removed": 1, "changed": 0, "housekeeping": 1}
+
+    # Main retires the documented one too: the branch no longer removes anything.
+    gone_on_main = await client.delete(
+        f"/api/v1/projects/{slug}/variables/{documented.json()['id']}"
+    )
+    assert gone_on_main.status_code == 204, gone_on_main.text
+    diff = (await client.get(f"/api/v1/projects/{slug}/branches/{branch_id}/diff")).json()
+    by_name = {e["name"]: e for e in diff["entries"]}
+    assert by_name["property_city"]["housekeeping"] == "already removed on main"
+    assert by_name["property_adana"]["housekeeping"] == "unused scan variable retired"
+    assert diff["summary"] == {"added": 1, "removed": 0, "changed": 0, "housekeeping": 2}
+    assert diff["behind_base"] is True
+
+    # Once main retires the junk one as well, "already removed on main" is the
+    # stronger statement — the merge does nothing for it — and wins.
+    gone_junk = await client.delete(f"/api/v1/projects/{slug}/variables/{junk.json()['id']}")
+    assert gone_junk.status_code == 204, gone_junk.text
+    diff = (await client.get(f"/api/v1/projects/{slug}/branches/{branch_id}/diff")).json()
+    by_name = {e["name"]: e for e in diff["entries"]}
+    assert by_name["property_adana"]["housekeeping"] == "already removed on main"
+    assert diff["summary"] == {"added": 1, "removed": 0, "changed": 0, "housekeeping": 2}
+
+    listed = (await client.get(f"/api/v1/projects/{slug}/branches?include_diff_counts=true")).json()
+    row = next(b for b in listed["items"] if b["id"] == branch_id)
+    assert row["ahead"] == 1

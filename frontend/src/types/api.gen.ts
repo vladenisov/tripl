@@ -5644,6 +5644,8 @@ export interface components {
              * @default []
              */
             field_values: components["schemas"]["EventFieldValueResponse"][];
+            /** First Seen At */
+            first_seen_at?: string | null;
             /**
              * Id
              * Format: uuid
@@ -5862,6 +5864,8 @@ export interface components {
              * @default []
              */
             field_values: components["schemas"]["EventFieldValueResponse"][];
+            /** First Seen At */
+            first_seen_at?: string | null;
             /**
              * Id
              * Format: uuid
@@ -6053,6 +6057,8 @@ export interface components {
              * @default []
              */
             field_values: components["schemas"]["EventFieldValueResponse"][];
+            /** First Seen At */
+            first_seen_at?: string | null;
             /**
              * Id
              * Format: uuid
@@ -8130,6 +8136,8 @@ export interface components {
             entity_type: "event_type" | "field_definition" | "event" | "variable" | "meta_field" | "relation";
             /** Field Changes */
             field_changes?: components["schemas"]["PlanFieldChange"][];
+            /** Housekeeping */
+            housekeeping?: string | null;
             /**
              * Kind
              * @enum {string}
@@ -17101,6 +17109,8 @@ export interface operations {
                 types?: ("event" | "event_type" | "field" | "meta_field" | "variable" | "relation" | "tag" | "metric" | "fact_table" | "scan_config" | "alert_rule")[] | null;
                 include_archived?: boolean;
                 limit?: number;
+                /** @description Run the embedding leg as well as the lexical one. Pass false for a keyword-only answer that skips the provider round trip; ``semantic_used`` in the response is then always false. */
+                semantic?: boolean;
                 /** @description Plan branch id (UUID) to read and write instead of the main branch. */
                 branch?: string | null;
             };

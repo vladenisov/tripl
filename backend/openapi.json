@@ -6564,6 +6564,18 @@
             "title": "Field Values",
             "type": "array"
           },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -7114,6 +7126,18 @@
             "title": "Field Values",
             "type": "array"
           },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -7545,6 +7569,18 @@
             },
             "title": "Field Values",
             "type": "array"
+          },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
           },
           "id": {
             "format": "uuid",
@@ -13367,6 +13403,17 @@
             },
             "title": "Field Changes",
             "type": "array"
+          },
+          "housekeeping": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Housekeeping"
           },
           "kind": {
             "enum": [
@@ -31721,6 +31768,18 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "description": "Run the embedding leg as well as the lexical one. Pass false for a keyword-only answer that skips the provider round trip; ``semantic_used`` in the response is then always false.",
+            "in": "query",
+            "name": "semantic",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Run the embedding leg as well as the lexical one. Pass false for a keyword-only answer that skips the provider round trip; ``semantic_used`` in the response is then always false.",
+              "title": "Semantic",
+              "type": "boolean"
             }
           },
           {

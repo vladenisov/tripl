@@ -40,7 +40,7 @@ from tripl.schemas.event import (
     EventReorder,
     EventUpdate,
 )
-from tripl.services._branch_counterparts import attach_main_last_seen
+from tripl.services._branch_counterparts import attach_main_last_seen, metrics_row_for
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
@@ -601,7 +601,24 @@ async def get_event(
         raise HTTPException(status_code=404, detail="Event not found")
     await attach_event_field_variable_values(session, [event])
     await attach_main_last_seen(session, project_id=project_id, events=[event])
+    await _attach_first_seen(session, project_id=project_id, event=event)
     return event
+
+
+async def _attach_first_seen(session: AsyncSession, *, project_id: uuid.UUID, event: Event) -> None:
+    """``first_seen_at``: the oldest bucket that counted this event (tripl-kjhi.10).
+
+    Metrics are keyed on the main row, so a branch copy reads its twin's — the
+    same twin ``last_seen_at`` comes from. Only the single-event read pays for
+    this: one aggregate over the event's own metric rows.
+    """
+    row = await metrics_row_for(session, project_id=project_id, event=event)
+    first_seen = await session.scalar(
+        select(func.min(EventMetric.bucket)).where(
+            EventMetric.event_id == row.id, EventMetric.count > 0
+        )
+    )
+    event.first_seen_at = first_seen  # type: ignore[attr-defined]
 
 
 async def _resolve_event_name_format(
