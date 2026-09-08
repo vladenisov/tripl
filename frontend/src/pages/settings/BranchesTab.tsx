@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 
 import { branchSettingsApi } from '@/api/branchSettings'
+import { metaFieldsApi } from '@/api/metaFields'
 import { ApiError } from '@/api/client'
 import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
@@ -40,6 +41,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { formatRelativeTime } from '@/lib/datetime'
+import { branchTicket } from '@/lib/branchTicket'
 import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
 import type {
@@ -797,6 +799,14 @@ function FeatureBranchDetail({
 }: FeatureBranchDetailProps) {
   const qc = useQueryClient()
   const usersById = useUsersById()
+  // The ticket a branch is named after, linked through the meta field that
+  // links event values to the tracker (tripl-kjhi.14). Main's fields: the
+  // template is project-wide and a branch copy carries the same one.
+  const metaFieldsQuery = useQuery({
+    queryKey: ['metaFields', slug],
+    queryFn: () => metaFieldsApi.list(slug),
+  })
+  const ticket = branchTicket(branch.name, metaFieldsQuery.data ?? [])
   const { notifyStepCompleted } = useDemoScenarioActions()
 
   // Opening the seeded branch's detail completes open-branch, whether the user
@@ -902,16 +912,25 @@ function FeatureBranchDetail({
   const pairedAdditions = new Set(
     renames.map((r) => entryKey(r.entity_type, r.parent, r.added_name)),
   )
+  // Machine removals — scan-minted variables nobody used being retired, or
+  // removals main already made — are folded into one line below the list
+  // rather than read as the author's deletions (tripl-kjhi.12).
+  const housekeepingEntries = entries.filter((entry) => Boolean(entry.housekeeping))
   const visibleEntries = entries.filter(
     (entry) =>
-      entry.kind !== 'added' ||
-      !pairedAdditions.has(entryKey(entry.entity_type, entry.parent, entry.name)),
+      !entry.housekeeping &&
+      (entry.kind !== 'added' ||
+        !pairedAdditions.has(entryKey(entry.entity_type, entry.parent, entry.name))),
   )
   // A variable removed relative to the branch base and not paired with an
   // addition is an intentional deletion; warn because its observed values,
   // overrides and drift history cascade. A rename is paired away — it keeps
-  // all three.
-  const removedVariables = variablesDeletedByMerge(entries, renames)
+  // all three. A removal main has already made is not a deletion the merge
+  // performs, so it is not one the merge warns about (tripl-kjhi.12).
+  const removedVariables = variablesDeletedByMerge(
+    entries.filter((entry) => entry.housekeeping !== HOUSEKEEPING_ALREADY_ON_MAIN),
+    renames,
+  )
 
   const handleMerge = async () => {
     if (removedVariables.length > 0) {
@@ -980,6 +999,19 @@ function FeatureBranchDetail({
         subtitle={`Opened by ${branchAuthor(branch, usersById)} · updated ${formatRelativeTime(branch.updated_at)}`}
         right={
           <div className="flex items-center gap-1.5">
+            {ticket ? (
+              <a
+                href={ticket.href}
+                target="_blank"
+                rel="noreferrer"
+                className="mono inline-flex items-center gap-0.5 text-[11px] hover:underline"
+                style={{ color: 'var(--accent)' }}
+                title={`Open ${ticket.key} in ${ticket.field.display_name}`}
+              >
+                {ticket.key}
+                <ArrowUpRight className="size-3" aria-hidden />
+              </a>
+            ) : null}
             {requiredApprovals > 0 && branch.status !== 'merged' ? (
               <Chip
                 tone={
@@ -1129,6 +1161,9 @@ function FeatureBranchDetail({
             ))}
           </div>
         )}
+        {diffLoad.status === 'success' && housekeepingEntries.length > 0 ? (
+          <HousekeepingFold entries={housekeepingEntries} />
+        ) : null}
         {revertMut.isError ? (
           <p
             className="border-t px-4 py-2.5 text-[11.5px]"
@@ -2136,5 +2171,77 @@ function CreateBranchDialog({
         </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** The reasons the backend stamps on `PlanDiffEntry.housekeeping`
+ * (`services/_plan_diff_housekeeping.py`), and how each reads as a count:
+ * "7 unused scan variables retired". */
+const HOUSEKEEPING_RETIRED_SCAN_VARIABLE = 'unused scan variable retired'
+const HOUSEKEEPING_ALREADY_ON_MAIN = 'already removed on main'
+const HOUSEKEEPING_WORDING: Record<string, [string, string]> = {
+  [HOUSEKEEPING_RETIRED_SCAN_VARIABLE]: [
+    'unused scan variable retired',
+    'unused scan variables retired',
+  ],
+  [HOUSEKEEPING_ALREADY_ON_MAIN]: ['removal already made on main', 'removals already made on main'],
+}
+
+function housekeepingLine(entries: PlanDiffEntry[]): string {
+  const byReason = new Map<string, number>()
+  for (const entry of entries) {
+    const reason = entry.housekeeping ?? ''
+    byReason.set(reason, (byReason.get(reason) ?? 0) + 1)
+  }
+  return [...byReason]
+    .map(([reason, count]) => {
+      const wording = HOUSEKEEPING_WORDING[reason]
+      return wording ? countOf(count, wording[0], wording[1]) : `${count} × ${reason}`
+    })
+    .join(' · ')
+}
+
+/** The machine's rows, one line, opened on request (tripl-kjhi.12). */
+function HousekeepingFold({ entries }: { entries: PlanDiffEntry[] }) {
+  const [expanded, setExpanded] = useState(false)
+  const listId = useId()
+  return (
+    <div className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        aria-controls={listId}
+        className="flex w-full items-center gap-1.5 px-4 py-2.5 text-left text-[11.5px]"
+        style={{ color: 'var(--fg-subtle)' }}
+      >
+        <ChevronRight
+          className="size-3 shrink-0 transition-transform"
+          style={{ transform: expanded ? 'rotate(90deg)' : undefined }}
+          aria-hidden
+        />
+        <span>{housekeepingLine(entries)}</span>
+        <span className="ml-auto" style={{ color: 'var(--fg-faint)' }}>
+          not counted
+        </span>
+      </button>
+      {expanded ? (
+        <ul id={listId} className="px-4 pb-2.5">
+          {entries.map((entry) => (
+            <li
+              key={`${entry.entity_type}-${entry.parent ?? ''}-${entry.name}`}
+              className="flex items-baseline gap-2 py-0.5 text-[11.5px]"
+            >
+              <span className="mono truncate" style={{ color: 'var(--fg-muted)' }}>
+                {entry.name}
+              </span>
+              <span className="shrink-0" style={{ color: 'var(--fg-faint)' }}>
+                {ENTITY_LABEL[entry.entity_type] ?? entry.entity_type} · {entry.housekeeping}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   )
 }

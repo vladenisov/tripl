@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { branchSettingsApi } from '@/api/branchSettings'
 import { ApiError } from '@/api/client'
+import { metaFieldsApi } from '@/api/metaFields'
 import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
 import type {
@@ -44,6 +45,12 @@ vi.mock('@/api/users', () => ({
   usersApi: {
     list: vi.fn(),
     updateRole: vi.fn(),
+  },
+}))
+
+vi.mock('@/api/metaFields', () => ({
+  metaFieldsApi: {
+    list: vi.fn(),
   },
 }))
 
@@ -170,6 +177,7 @@ function renderTab(branchId?: string) {
 
 beforeEach(() => {
   vi.mocked(usersApi.list).mockResolvedValue(USERS)
+  vi.mocked(metaFieldsApi.list).mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -1393,5 +1401,106 @@ describe('BranchesTab', () => {
     // empty — spending a request on it would be pure waste.
     await waitFor(() => expect(planBranchesApi.diff).toHaveBeenCalledWith('demo', 'feat-1'))
     expect(planBranchesApi.listImplementationTickets).not.toHaveBeenCalled()
+  })
+})
+
+describe('BranchesTab housekeeping rows (tripl-kjhi.12)', () => {
+  it('folds machine removals into one uncounted line, opened on request', async () => {
+    mockBranchDetailQueries([MAIN, FEATURE])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: true,
+      summary: { added: 1, removed: 0, changed: 0, housekeeping: 3 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'added',
+          name: 'weather_alert:show:widget',
+          parent: 'se',
+          changes: [],
+          field_changes: [],
+          before: null,
+          after: { name: 'weather_alert:show:widget' },
+        },
+        ...['property.adana', 'property.79602'].map((name) => ({
+          entity_type: 'variable' as const,
+          kind: 'removed' as const,
+          name,
+          parent: null,
+          changes: [],
+          field_changes: [],
+          before: { name, description: 'Auto-detected variable from data source scan' },
+          after: null,
+          housekeeping: 'unused scan variable retired',
+        })),
+        {
+          entity_type: 'variable',
+          kind: 'removed',
+          name: 'property.city',
+          parent: null,
+          changes: [],
+          field_changes: [],
+          before: { name: 'property.city' },
+          after: null,
+          housekeeping: 'already removed on main',
+        },
+      ],
+    })
+
+    renderTab('feat-1')
+
+    expect(await screen.findByText('weather_alert:show:widget')).toBeInTheDocument()
+    // The reviewer's counts: one addition, no removals.
+    expect(screen.getByText('+1')).toBeInTheDocument()
+    expect(screen.queryByText('−3')).not.toBeInTheDocument()
+    expect(screen.getByText('1 change')).toBeInTheDocument()
+
+    const fold = screen.getByRole('button', {
+      name: /2 unused scan variables retired · 1 removal already made on main/,
+    })
+    expect(fold).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('property.adana')).not.toBeInTheDocument()
+
+    fireEvent.click(fold)
+    expect(screen.getByText('property.adana')).toBeInTheDocument()
+    expect(screen.getByText('property.city')).toBeInTheDocument()
+    expect(screen.getAllByText(/unused scan variable retired/)).toHaveLength(2)
+  })
+})
+
+describe('BranchesTab ticket link (tripl-kjhi.14)', () => {
+  const WND = makeBranch({ id: 'feat-wnd', name: 'WND-4770', kind: 'working', status: 'draft' })
+
+  it('links a branch named after a ticket through the meta field that links to it', async () => {
+    mockBranchDetailQueries([MAIN, WND])
+    vi.mocked(metaFieldsApi.list).mockResolvedValue([
+      {
+        id: 'mf-jira',
+        project_id: 'p-1',
+        name: 'jira',
+        display_name: 'Jira',
+        field_type: 'string',
+        is_required: false,
+        enum_options: null,
+        default_value: null,
+        link_template: 'https://jira.example/browse/${value}',
+        order: 0,
+        sensitivity: 'none',
+      },
+    ])
+
+    renderTab('feat-wnd')
+
+    const link = await screen.findByRole('link', { name: /WND-4770/ })
+    expect(link).toHaveAttribute('href', 'https://jira.example/browse/WND-4770')
+    expect(link).toHaveAttribute('target', '_blank')
+  })
+
+  it('shows nothing when no meta field can link a key', async () => {
+    mockBranchDetailQueries([MAIN, WND])
+    renderTab('feat-wnd')
+
+    await waitFor(() => expect(planBranchesApi.diff).toHaveBeenCalledWith('demo', 'feat-wnd'))
+    await waitFor(() => expect(metaFieldsApi.list).toHaveBeenCalledWith('demo'))
+    expect(screen.queryByRole('link', { name: /WND-4770/ })).not.toBeInTheDocument()
   })
 })

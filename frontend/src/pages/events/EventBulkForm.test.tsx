@@ -197,4 +197,32 @@ describe('EventBulkForm', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/needs platform/)
     expect(screen.queryByLabelText('Events to create')).not.toBeInTheDocument()
   })
+
+  it('preselects the type the route names, once (tripl-kjhi.13)', async () => {
+    render(createElement(EventBulkForm), {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          createElement(
+            MemoryRouter,
+            { initialEntries: ['/p/demo/events/se/bulk'] },
+            createElement(
+              Routes,
+              null,
+              createElement(Route, { path: '/p/:slug/events/:tab/bulk', element: children }),
+            ),
+          ),
+        ),
+    })
+
+    await screen.findByRole('option', { name: 'Structured Event' })
+    await waitFor(() => expect(screen.getByLabelText(/Event type/)).toHaveValue('et-se'))
+    // The rule's columns appear without a click, as on the single-event form.
+    expect(await screen.findByLabelText('Events to create')).toBeInTheDocument()
+
+    // A reader who clears the choice is not overruled.
+    fireEvent.change(screen.getByLabelText(/Event type/), { target: { value: '' } })
+    await waitFor(() => expect(screen.getByLabelText(/Event type/)).toHaveValue(''))
+  })
 })

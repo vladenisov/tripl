@@ -8453,6 +8453,18 @@
             }
           },
           {
+            "name": "semantic",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Run the embedding leg as well as the lexical one. Pass false for a keyword-only answer that skips the provider round trip; ``semantic_used`` in the response is then always false.",
+              "default": true,
+              "title": "Semantic"
+            },
+            "description": "Run the embedding leg as well as the lexical one. Pass false for a keyword-only answer that skips the provider round trip; ``semantic_used`` in the response is then always false."
+          },
+          {
             "name": "branch",
             "in": "query",
             "required": false,
@@ -20308,6 +20320,18 @@
             ],
             "title": "Last Seen At"
           },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
+          },
           "owner_id": {
             "anyOf": [
               {
@@ -20846,6 +20870,18 @@
             ],
             "title": "Last Seen At"
           },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
+          },
           "owner_id": {
             "anyOf": [
               {
@@ -21278,6 +21314,18 @@
               }
             ],
             "title": "Last Seen At"
+          },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
           },
           "owner_id": {
             "anyOf": [
@@ -27100,6 +27148,17 @@
             },
             "type": "array",
             "title": "Warnings"
+          },
+          "housekeeping": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Housekeeping"
           }
         },
         "type": "object",

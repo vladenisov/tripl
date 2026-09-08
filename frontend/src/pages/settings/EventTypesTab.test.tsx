@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { EventType, FieldDefinition } from '@/types'
+import { BranchContext } from '@/components/branch-context-internal'
 import { EventTypesTab, FieldsEditor } from './EventTypesTab'
 import { EventTypeDetail } from './EventTypeDetailView'
 
@@ -71,6 +72,24 @@ function renderWithRoutes(initialPath: string, fetchImpl: typeof fetch) {
 
 function DetailRoute() {
   return <EventTypeDetail slug="demo" eventTypeId="type-1" />
+}
+
+/** The same routes, with a feature branch selected. */
+function renderInBranch(initialPath: string, fetchImpl: typeof fetch) {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(fetchImpl)
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <BranchContext.Provider value={{ branchId: 'branch-1', setBranchId: () => {}, slug: 'demo' }}>
+        <MemoryRouter initialEntries={[initialPath]}>
+          <Routes>
+            <Route path="/p/:slug/settings/event-types/:itemId" element={<DetailRoute />} />
+            <Route path="/p/:slug/settings/event-types" element={<EventTypesTab slug="demo" />} />
+          </Routes>
+        </MemoryRouter>
+      </BranchContext.Provider>
+    </QueryClientProvider>,
+  )
 }
 
 afterEach(() => {
@@ -286,5 +305,42 @@ describe('EventTypeDetail tabbed page', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Add field/i }))
     expect(await screen.findByText('New field')).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+})
+
+describe('EventTypesTab in branch context (tripl-kjhi.11)', () => {
+  it('does not ask for owners, which live on main under main ids', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/v1/projects/demo/event-types?branch=branch-1'))
+        return mockJsonResponse([CHECKOUT])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderInBranch('/p/demo/settings/event-types', fetchImpl as unknown as typeof fetch)
+
+    expect(await screen.findByText('Checkout')).toBeInTheDocument()
+    const asked = fetchImpl.mock.calls.map(([input]) => String(input))
+    expect(asked.some((url) => url.includes('/owners'))).toBe(false)
+    // Nor does the list pretend to know: the Owner column stays hidden.
+    expect(screen.queryByText('Owner')).not.toBeInTheDocument()
+  })
+
+  it('leaves the merge-gate chip off the branch detail instead of claiming "no owners"', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/v1/projects/demo/event-types?branch=branch-1'))
+        return mockJsonResponse([CHECKOUT])
+      if (url.includes('/api/v1/projects/demo/event-types/type-1?branch=branch-1'))
+        return mockJsonResponse(CHECKOUT)
+      if (url.includes('/api/v1/projects/demo/event-types/type-1/'))
+        return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderInBranch('/p/demo/settings/event-types/type-1', fetchImpl as unknown as typeof fetch)
+
+    expect(await screen.findByRole('heading', { name: 'Checkout' })).toBeInTheDocument()
+    const asked = fetchImpl.mock.calls.map(([input]) => String(input))
+    expect(asked.some((url) => url.includes('/owners'))).toBe(false)
+    expect(screen.queryByText(/anyone can merge/i)).not.toBeInTheDocument()
   })
 })

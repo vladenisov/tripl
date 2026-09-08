@@ -190,6 +190,12 @@ class EventResponse(BaseModel):
     status: EventStatus
     sunset_at: datetime | None = None
     last_seen_at: datetime | None = None
+    # The earliest metric bucket with traffic, read off the main twin for a
+    # branch copy. ``created_at`` is when the ROW was authored, which the detail
+    # page used to label "First seen" — for an event planned before it shipped,
+    # that is a date nothing was seen on (tripl-kjhi.10). Null until the first
+    # collection finds it, and on list responses, which do not compute it.
+    first_seen_at: datetime | None = None
     owner_id: uuid.UUID | None = None
     reviewed: bool = False
     metric_breakdown_columns: list[str] = []
@@ -238,6 +244,12 @@ class EventListItemResponse(BaseModel):
     status: EventStatus
     sunset_at: datetime | None = None
     last_seen_at: datetime | None = None
+    # The earliest metric bucket with traffic, read off the main twin for a
+    # branch copy. ``created_at`` is when the ROW was authored, which the detail
+    # page used to label "First seen" — for an event planned before it shipped,
+    # that is a date nothing was seen on (tripl-kjhi.10). Null until the first
+    # collection finds it, and on list responses, which do not compute it.
+    first_seen_at: datetime | None = None
     owner_id: uuid.UUID | None = None
     reviewed: bool = False
     metric_breakdown_columns: list[str] = []

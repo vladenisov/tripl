@@ -198,6 +198,7 @@ async def postgres_search(
     include_archived: bool,
     limit: int,
     project_is_demo: bool = False,
+    semantic: bool = True,
 ) -> tuple[list[SearchResult], bool]:
     semantic_used = False
     semantic_results: list[SearchResult] = []
@@ -208,8 +209,13 @@ async def postgres_search(
     # (embeddings disabled, or the embed call failed / returned empty) — a canned
     # vector from the demo project's precomputed fixture. Non-demo projects never
     # reach the second source.
+    # ``semantic=False`` is the caller declining the vector leg outright: no
+    # provider round trip, no demo fixture, lexical rows only. The palette asks
+    # for this first and upgrades to the full answer when it lands, because on
+    # production the embedding call was the whole difference between a result
+    # list at ~150 ms and one at ~1.5 s (tripl-kjhi.15).
     embedding: list[float] | None = None
-    is_semantic_eligible = len(query) >= 3
+    is_semantic_eligible = semantic and len(query) >= 3
     lexical = postgres_lexical_search(
         session,
         project_id=project_id,

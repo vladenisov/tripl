@@ -105,6 +105,12 @@ class PlanDiffEntry(BaseModel):
     # which will never merge with its scanned twin (tripl-kjhi.1). Plain
     # sentences, rendered beside the row.
     warnings: list[str] = Field(default_factory=list)
+    # Set when the entry is the machine's doing rather than the author's — a
+    # scan-minted variable nobody used being retired, or a removal main has
+    # already made — with the reason in words. Such entries stay in the list
+    # but are left out of ``summary``'s added/removed/changed and shown folded
+    # (tripl-kjhi.12). Null for a change a reviewer should read.
+    housekeeping: str | None = None
 
 
 class PlanDiff(BaseModel):

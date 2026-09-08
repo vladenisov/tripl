@@ -55,6 +55,7 @@ export const eventsApi = {
       description?: string
       status?: string
       sunset_at?: string | null
+      owner_id?: string | null
       tags?: string[]
       metric_breakdown_columns?: string[]
       field_values?: { field_definition_id: string; value: string }[]
@@ -71,6 +72,7 @@ export const eventsApi = {
       description?: string
       status?: string
       sunset_at?: string | null
+      owner_id?: string | null
       tags?: string[]
       metric_breakdown_columns?: string[]
       field_values?: { field_definition_id: string; value: string }[]

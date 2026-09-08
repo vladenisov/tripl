@@ -1149,6 +1149,33 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     expect(within(properties).getByText('Scan identity')).toBeInTheDocument()
     expect(within(properties).getByText('checkout_completed')).toBeInTheDocument()
   })
+
+  it('tells the authoring date and the first traffic apart (tripl-kjhi.10)', async () => {
+    installEventDetailFetch({
+      event: { ...eventFixture(), first_seen_at: '2026-01-03T00:00:00Z' },
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const properties = screen.getByRole('table', { name: 'Properties' })
+    const row = (label: string) =>
+      within(properties).getByText(label).closest('[role="row"]') as HTMLElement
+    expect(within(row('Created')).getByText(/2026/)).toHaveTextContent(/Jan 1|01/)
+    expect(within(row('First seen')).getByText(/2026/)).toHaveTextContent(/Jan 3|03/)
+    expect(within(row('Owner')).getByText('—')).toBeInTheDocument()
+  })
+
+  it('says an unseen event has not been seen, rather than naming its authoring date', async () => {
+    installEventDetailFetch({ event: { ...eventFixture(), first_seen_at: null } })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const properties = screen.getByRole('table', { name: 'Properties' })
+    const firstSeen = within(properties)
+      .getByText('First seen')
+      .closest('[role="row"]') as HTMLElement
+    expect(within(firstSeen).getByText('—')).toBeInTheDocument()
+  })
 })
 
 describe('MonitoringDetailPage catalog-metric drilldown', () => {

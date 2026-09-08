@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import type { Event as TEvent, EventType, MetaFieldDefinition, Project, Variable } from '@/types'
 import { eventsApi } from '@/api/events'
+import { planBranchesApi } from '@/api/planBranches'
 import { scansApi } from '@/api/scans'
+import { usersApi } from '@/api/users'
+import { BranchContext } from '@/components/branch-context-internal'
 import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
 import { readScenarioState, writeScenarioState } from '@/demo/scenarioModel'
 import { chapterState } from '@/demo/scenarioTestState'
@@ -24,6 +27,12 @@ vi.mock('@/api/events', () => ({
   },
 }))
 
+vi.mock('@/api/users', () => ({
+  usersApi: { list: vi.fn().mockResolvedValue([]) },
+}))
+vi.mock('@/api/planBranches', () => ({
+  planBranchesApi: { list: vi.fn().mockResolvedValue({ items: [], total: 0 }) },
+}))
 vi.mock('@/api/scans', () => ({
   scansApi: {
     list: vi.fn().mockResolvedValue([]),
@@ -825,5 +834,113 @@ describe('EventForm — coached demo scenario (tripl-odrj.4)', () => {
     await waitFor(() =>
       expect(readScenarioState(SLUG).chapters['edit-event']?.status).toBe('completed'),
     )
+  })
+})
+
+describe('EventForm owner (tripl-kjhi.16)', () => {
+  it('offers the roster next to Status and sends the chosen owner', async () => {
+    vi.mocked(usersApi.list).mockResolvedValue([
+      { id: 'u-maya', email: 'maya@example.com', name: 'Maya R.', role: 'editor', created_at: '' },
+      { id: 'u-priya', email: 'priya@example.com', name: null, role: 'editor', created_at: '' },
+    ] as never)
+    vi.mocked(eventsApi.create).mockResolvedValue({} as never)
+    renderForm(null)
+
+    const owner = screen.getByLabelText('Owner', { exact: false })
+    expect(await screen.findByRole('option', { name: 'Maya R.' })).toBeInTheDocument()
+    // No name falls back to the email, as the roster does everywhere else.
+    expect(screen.getByRole('option', { name: 'priya@example.com' })).toBeInTheDocument()
+    fireEvent.change(owner, { target: { value: 'u-priya' } })
+
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'checkout:started' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save and add another/i }))
+    await waitFor(() =>
+      expect(eventsApi.create).toHaveBeenCalledWith(
+        'demo',
+        expect.objectContaining({ owner_id: 'u-priya' }),
+        null,
+      ),
+    )
+  })
+
+  it('sends no owner when none is chosen', async () => {
+    vi.mocked(eventsApi.create).mockResolvedValue({} as never)
+    renderForm(null)
+
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'checkout:started' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save and add another/i }))
+    await waitFor(() =>
+      expect(eventsApi.create).toHaveBeenCalledWith(
+        'demo',
+        expect.objectContaining({ owner_id: null }),
+        null,
+      ),
+    )
+  })
+})
+
+describe('EventForm ticket prefill from the branch name (tripl-kjhi.14)', () => {
+  const JIRA_FIELD: MetaFieldDefinition = {
+    id: 'mf-jira',
+    project_id: 'project-1',
+    name: 'jira',
+    display_name: 'Jira',
+    field_type: 'string',
+    is_required: false,
+    enum_options: null,
+    default_value: null,
+    link_template: 'https://jira.example/browse/${value}',
+    order: 0,
+    sensitivity: 'none',
+  }
+
+  function renderInBranch(event: TEvent | null, branchName: string) {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({
+      items: [{ id: 'b-wnd', name: branchName, kind: 'working' }],
+      total: 1,
+    } as never)
+    return render(
+      createElement(EventForm, {
+        slug: 'demo',
+        eventTypes: [EVENT_TYPE],
+        metaFields: [JIRA_FIELD],
+        projectVariables: [],
+        event,
+        onClose: () => {},
+      }),
+      {
+        wrapper: ({ children }: { children: ReactNode }) =>
+          createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            createElement(
+              BranchContext.Provider,
+              { value: { branchId: 'b-wnd', setBranchId: () => {}, slug: 'demo' } },
+              createElement(MemoryRouter, null, children),
+            ),
+          ),
+      },
+    )
+  }
+
+  it('fills the linking meta field with the key the branch is named after', async () => {
+    renderInBranch(null, 'WND-4770')
+    await waitFor(() => expect(screen.getByLabelText('Jira')).toHaveValue('WND-4770'))
+  })
+
+  it('leaves a branch not named after a ticket, and an existing event, alone', async () => {
+    renderInBranch(null, 'checkout-v2')
+    await waitFor(() => expect(planBranchesApi.list).toHaveBeenCalled())
+    expect(screen.getByLabelText('Jira')).toHaveValue('')
+  })
+
+  it('never overwrites what an existing event already holds', async () => {
+    const existing = {
+      ...EXISTING_EVENT,
+      meta_values: [{ meta_field_definition_id: 'mf-jira', value: 'WND-1' }],
+    } as unknown as TEvent
+    renderInBranch(existing, 'WND-4770')
+    expect(screen.getByLabelText('Jira')).toHaveValue('WND-1')
+    expect(planBranchesApi.list).not.toHaveBeenCalled()
   })
 })

@@ -617,3 +617,57 @@ async def test_history_records_creation_tags_fields_and_meta(client: AsyncClient
         ("meta:jira", "WND-1", "WND-2"),
     }
     assert all(row["user_email"] == "test@example.com" for row in history)
+
+
+@pytest.mark.asyncio
+async def test_first_seen_is_the_oldest_bucket_with_traffic_read_through_the_twin(
+    client: AsyncClient,
+) -> None:
+    """``first_seen_at`` is when traffic first arrived, not when the row was authored.
+
+    The detail page labelled ``created_at`` "First seen", which for an event
+    planned before it shipped named a day nothing was seen on (tripl-kjhi.10).
+    A branch copy reads its main twin's buckets, the same way ``last_seen_at``
+    reaches it; an empty bucket does not count as being seen.
+    """
+    slug = "handoff-first-seen"
+    await _seed_plan(client, slug)
+    main_event = (await client.get(f"/api/v1/projects/{slug}/events")).json()["items"][0]
+    branch_id = await _create_branch(client, slug)
+    await _seed_event_metrics_at(
+        main_event["project_id"],
+        main_event["id"],
+        name="first seen scan",
+        points=[
+            (datetime(2026, 9, 1, 9, tzinfo=UTC), 0),
+            (datetime(2026, 9, 1, 10, tzinfo=UTC), 4),
+            (datetime(2026, 9, 1, 11, tzinfo=UTC), 6),
+        ],
+    )
+    first_traffic = datetime(2026, 9, 1, 10, tzinfo=UTC)
+
+    on_main = await client.get(f"/api/v1/projects/{slug}/events/{main_event['id']}")
+    assert on_main.status_code == 200, on_main.text
+    assert datetime.fromisoformat(on_main.json()["first_seen_at"]).replace(tzinfo=UTC) == (
+        first_traffic
+    )
+
+    copies = (await client.get(f"/api/v1/projects/{slug}/events?branch={branch_id}")).json()[
+        "items"
+    ]
+    copy = next(e for e in copies if e["name"] == "purchase:success")
+    assert copy.get("first_seen_at") is None, "the list does not compute it"
+    single = await client.get(f"/api/v1/projects/{slug}/events/{copy['id']}?branch={branch_id}")
+    assert datetime.fromisoformat(single.json()["first_seen_at"]).replace(tzinfo=UTC) == (
+        first_traffic
+    )
+
+    main_type = await _main_type(client, slug)
+    unseen = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": main_type["id"], "name": "track:never_shipped"},
+    )
+    assert unseen.status_code == 201, unseen.text
+    fresh = await client.get(f"/api/v1/projects/{slug}/events/{unseen.json()['id']}")
+    assert fresh.json()["first_seen_at"] is None
+    assert fresh.json()["created_at"] is not None

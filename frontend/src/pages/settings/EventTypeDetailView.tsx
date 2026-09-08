@@ -401,10 +401,15 @@ function DangerZoneCard({
 // Real "gates merge" status: a type with owners gates branch merges; without
 // owners, anyone can merge. Surfaced as a chip next to the title.
 function MergeGateChip({ slug, eventType }: { slug: string; eventType: EventType }) {
+  // Owners live on main under main's type id; a branch copy has neither, so
+  // the request 404s and the chip would then claim "no owners" (tripl-kjhi.11).
+  const branchId = useActiveBranchId()
   const { data: owners = [] } = useQuery({
     queryKey: ['eventTypeOwners', slug, eventType.id],
     queryFn: () => eventTypeOwnersApi.list(slug, eventType.id),
+    enabled: branchId === null,
   })
+  if (branchId !== null) return null
   const gated = (owners as EventTypeOwner[]).length > 0
   return (
     <Chip

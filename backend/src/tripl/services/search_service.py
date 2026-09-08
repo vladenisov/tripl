@@ -454,6 +454,7 @@ async def search_project(
     entity_types: list[SearchEntityType] | None = None,
     include_archived: bool = False,
     limit: int = 20,
+    semantic: bool = True,
 ) -> SearchResponse:
     # Sanitize here rather than in the router: this is the single funnel every
     # caller goes through (HTTP search, ai_service.ask_plan, search_event_ids),
@@ -487,6 +488,7 @@ async def search_project(
             include_archived=include_archived,
             limit=retrieval_limit,
             project_is_demo=project_is_demo,
+            semantic=semantic,
         )
     else:
         items = await _sqlite_search(

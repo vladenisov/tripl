@@ -31,7 +31,10 @@ catalog anywhere. See the [privacy trade-off](#the-privacy-trade-off) below.
 When enabled, tripl indexes your tracking-plan text (event names, descriptions,
 field and meta values, and related entities) as vector embeddings and uses them
 to rank smart-search results by meaning rather than literal substring overlap.
-The `/search` response then reports `semantic_used: true`.
+The `/search` response then reports `semantic_used: true`. A caller can still
+ask for the keyword answer alone with `semantic=false`; the command palette
+does exactly that first, shows those rows, and swaps in the full answer when
+it arrives, so the embedding round trip never holds the first list back.
 
 When **disabled** — the default — `/search` still works. It transparently falls
 back to keyword/substring matching and returns `semantic_used: false`. No text
