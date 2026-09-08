@@ -2289,3 +2289,115 @@ async def test_create_event_free_name_without_scan_rule(client: AsyncClient):
     )
     assert resp.status_code == 201
     assert resp.json()["name"] == "hand written"
+
+
+async def _multi_meta_field(client: AsyncClient, slug: str) -> str:
+    """A second meta field on `slug`, opted in to several values."""
+    resp = await client.post(
+        f"/api/v1/projects/{slug}/meta-fields",
+        json={
+            "name": "jira_keys",
+            "display_name": "Jira keys",
+            "field_type": "string",
+            "allow_multiple": True,
+            "link_template": "https://tracker.example.com/browse/${value}",
+        },
+    )
+    assert resp.status_code == 201
+    return resp.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_multi_value_meta_field_keeps_every_value(client: AsyncClient):
+    et_id, field_id, _ = await _setup_events(client, "ev-meta-multi")
+    multi_id = await _multi_meta_field(client, "ev-meta-multi")
+    resp = await client.post(
+        "/api/v1/projects/ev-meta-multi/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Home Page View",
+            "field_values": [{"field_definition_id": field_id, "value": "home"}],
+            "meta_values": [
+                {"meta_field_definition_id": multi_id, "value": "WND-1"},
+                {"meta_field_definition_id": multi_id, "value": "WND-2"},
+                # Pasted whole out of the browser: stored as the bare key, like
+                # any single value would be.
+                {
+                    "meta_field_definition_id": multi_id,
+                    "value": "https://tracker.example.com/browse/WND-3",
+                },
+            ],
+        },
+    )
+    assert resp.status_code == 201
+    stored = [mv["value"] for mv in resp.json()["meta_values"]]
+    assert sorted(stored) == ["WND-1", "WND-2", "WND-3"]
+
+
+@pytest.mark.asyncio
+async def test_multi_value_meta_field_drops_an_exact_repeat(client: AsyncClient):
+    et_id, field_id, _ = await _setup_events(client, "ev-meta-multi-dup")
+    multi_id = await _multi_meta_field(client, "ev-meta-multi-dup")
+    resp = await client.post(
+        "/api/v1/projects/ev-meta-multi-dup/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Home Page View",
+            "field_values": [{"field_definition_id": field_id, "value": "home"}],
+            "meta_values": [
+                {"meta_field_definition_id": multi_id, "value": "WND-1"},
+                {"meta_field_definition_id": multi_id, "value": "WND-1"},
+            ],
+        },
+    )
+    assert resp.status_code == 201
+    assert [mv["value"] for mv in resp.json()["meta_values"]] == ["WND-1"]
+
+
+@pytest.mark.asyncio
+async def test_single_valued_meta_field_refuses_a_second_value(client: AsyncClient):
+    et_id, field_id, meta_id = await _setup_events(client, "ev-meta-single")
+    resp = await client.post(
+        "/api/v1/projects/ev-meta-single/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Home Page View",
+            "field_values": [{"field_definition_id": field_id, "value": "home"}],
+            "meta_values": [
+                {"meta_field_definition_id": meta_id, "value": "https://jira.example.com/A"},
+                {"meta_field_definition_id": meta_id, "value": "https://jira.example.com/B"},
+            ],
+        },
+    )
+    assert resp.status_code == 422
+    assert "Allow multiple" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_updating_an_event_replaces_the_whole_multi_value_set(client: AsyncClient):
+    et_id, field_id, _ = await _setup_events(client, "ev-meta-multi-upd")
+    multi_id = await _multi_meta_field(client, "ev-meta-multi-upd")
+    created = await client.post(
+        "/api/v1/projects/ev-meta-multi-upd/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Home Page View",
+            "field_values": [{"field_definition_id": field_id, "value": "home"}],
+            "meta_values": [
+                {"meta_field_definition_id": multi_id, "value": "WND-1"},
+                {"meta_field_definition_id": multi_id, "value": "WND-2"},
+            ],
+        },
+    )
+    event_id = created.json()["id"]
+    resp = await client.patch(
+        f"/api/v1/projects/ev-meta-multi-upd/events/{event_id}",
+        json={
+            "meta_values": [
+                {"meta_field_definition_id": multi_id, "value": "WND-2"},
+                {"meta_field_definition_id": multi_id, "value": "WND-9"},
+            ]
+        },
+    )
+    assert resp.status_code == 200
+    assert sorted(mv["value"] for mv in resp.json()["meta_values"]) == ["WND-2", "WND-9"]

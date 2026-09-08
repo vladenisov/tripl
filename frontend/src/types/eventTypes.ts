@@ -86,6 +86,12 @@ export interface MetaFieldDefinition {
   display_name: string
   field_type: 'string' | 'url' | 'boolean' | 'enum' | 'date'
   is_required: boolean
+  /**
+   * The event may carry several values for this field, the way it carries
+   * several tags. Optional to mirror the backend default: an older response
+   * omits it, and a missing flag must read as single-valued.
+   */
+  allow_multiple?: boolean
   enum_options: string[] | null
   default_value: string | null
   link_template: string | null

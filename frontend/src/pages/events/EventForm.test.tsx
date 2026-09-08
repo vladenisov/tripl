@@ -1091,3 +1091,96 @@ describe('EventForm field breakdown link', () => {
     ).not.toBeInTheDocument()
   })
 })
+
+describe('EventForm multi-value meta field (tripl-h2sx.31)', () => {
+  const KEYS_FIELD: MetaFieldDefinition = {
+    id: 'mf-keys',
+    project_id: 'project-1',
+    name: 'jira_keys',
+    display_name: 'Jira keys',
+    field_type: 'string',
+    is_required: false,
+    allow_multiple: true,
+    enum_options: null,
+    default_value: null,
+    link_template: 'https://jira.example/browse/${value}',
+    order: 0,
+    sensitivity: 'none',
+  }
+
+  it('sends every key entered, each as its own value', async () => {
+    vi.mocked(eventsApi.create).mockResolvedValue({} as never)
+    renderForm(null, { metaFields: [KEYS_FIELD] })
+
+    const input = screen.getByLabelText('Add Jira keys')
+    fireEvent.change(input, { target: { value: 'WND-1' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.change(input, { target: { value: 'WND-2' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'checkout:started' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save and add another/i }))
+    await waitFor(() =>
+      expect(eventsApi.create).toHaveBeenCalledWith(
+        'demo',
+        expect.objectContaining({
+          meta_values: [
+            { meta_field_definition_id: 'mf-keys', value: 'WND-1' },
+            { meta_field_definition_id: 'mf-keys', value: 'WND-2' },
+          ],
+        }),
+        null,
+      ),
+    )
+  })
+
+  it('keeps only the key when a whole address is pasted into a chip', () => {
+    renderForm(null, { metaFields: [KEYS_FIELD] })
+
+    const input = screen.getByLabelText('Add Jira keys')
+    fireEvent.change(input, { target: { value: 'https://jira.example/browse/WND-4770' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(screen.getByRole('button', { name: 'Remove WND-4770' })).toBeInTheDocument()
+  })
+
+  it('prefills every stored value when editing', () => {
+    renderForm({
+      ...EXISTING_EVENT,
+      meta_values: [
+        { id: 'mv-1', meta_field_definition_id: 'mf-keys', value: 'WND-1' },
+        { id: 'mv-2', meta_field_definition_id: 'mf-keys', value: 'WND-2' },
+      ],
+    } as unknown as TEvent, { metaFields: [KEYS_FIELD] })
+
+    expect(screen.getByRole('button', { name: 'Remove WND-1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove WND-2' })).toBeInTheDocument()
+  })
+
+  it('submits only the value it shows once the field is single-valued again', async () => {
+    vi.mocked(eventsApi.update).mockResolvedValue({} as never)
+    // The admin turned Allow multiple off; the two stored values stayed. The
+    // form renders one input, so saving must not send a second value the
+    // server would refuse — the event would otherwise be unsaveable.
+    renderForm({
+      ...EXISTING_EVENT,
+      meta_values: [
+        { id: 'mv-1', meta_field_definition_id: 'mf-keys', value: 'WND-1' },
+        { id: 'mv-2', meta_field_definition_id: 'mf-keys', value: 'WND-2' },
+      ],
+    } as unknown as TEvent, { metaFields: [{ ...KEYS_FIELD, allow_multiple: false }] })
+
+    expect(screen.getByLabelText('Jira keys')).toHaveValue('WND-1')
+    fireEvent.click(screen.getByRole('button', { name: /Save event/i }))
+    await waitFor(() =>
+      expect(eventsApi.update).toHaveBeenCalledWith(
+        'demo',
+        'ev-1',
+        expect.objectContaining({
+          meta_values: [{ meta_field_definition_id: 'mf-keys', value: 'WND-1' }],
+        }),
+        null,
+      ),
+    )
+  })
+})

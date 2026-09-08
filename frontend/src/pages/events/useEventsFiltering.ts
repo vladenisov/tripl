@@ -75,12 +75,23 @@ export function resolveFieldValue(
   return fv ? normalizeFieldValue(fv.value) : ''
 }
 
-/** A row's value for a meta column, resolved straight off the row. */
-export function resolveMetaValue(ev: EventListItem, mf: MetaFieldDefinition): string {
+/** Every value a row holds for a meta column, in the order the API returned. */
+export function resolveMetaValues(ev: EventListItem, mf: MetaFieldDefinition): string[] {
+  const out: string[] = []
   for (const mv of ev.meta_values) {
-    if (mv.meta_field_definition_id === mf.id) return mv.value
+    if (mv.meta_field_definition_id === mf.id) out.push(mv.value)
   }
-  return ''
+  return out
+}
+
+/** A row's value for a meta column as one string — several joined.
+ *
+ * For reading and searching: a CSV cell, a filter match, a truncated column.
+ * Anything that turns a value into a LINK needs `resolveMetaValues` instead,
+ * since the template wraps one value and a joined string would render a single
+ * broken address (tripl-h2sx.31). */
+export function resolveMetaValue(ev: EventListItem, mf: MetaFieldDefinition): string {
+  return resolveMetaValues(ev, mf).join(', ')
 }
 
 /** One event's field values, addressable by FieldDefinition id and by name. */
@@ -233,11 +244,17 @@ export function useEventsFiltering({
     return map
   }, [allFieldDefs, rawEvents])
 
+  // A list per field, not a value: a field with `allow_multiple` has several
+  // rows, and `set` would have kept only the last one.
   const metaValuesByEvent = useMemo(() => {
-    const map = new Map<string, Map<string, string>>()
+    const map = new Map<string, Map<string, string[]>>()
     for (const ev of rawEvents) {
-      const mvMap = new Map<string, string>()
-      for (const mv of ev.meta_values) mvMap.set(mv.meta_field_definition_id, mv.value)
+      const mvMap = new Map<string, string[]>()
+      for (const mv of ev.meta_values) {
+        const existing = mvMap.get(mv.meta_field_definition_id)
+        if (existing) existing.push(mv.value)
+        else mvMap.set(mv.meta_field_definition_id, [mv.value])
+      }
       map.set(ev.id, mvMap)
     }
     return map
@@ -262,7 +279,8 @@ export function useEventsFiltering({
   )
 
   const getMetaValue = useCallback(
-    (ev: EventListItem, mf: MetaFieldDefinition) => metaValuesByEvent.get(ev.id)?.get(mf.id) ?? '',
+    (ev: EventListItem, mf: MetaFieldDefinition) =>
+      (metaValuesByEvent.get(ev.id)?.get(mf.id) ?? []).join(', '),
     [metaValuesByEvent],
   )
 

@@ -336,6 +336,16 @@ whatever a client sends — so `https://tracker.example.com/browse/TRK-42` is
 stored as `TRK-42` and rendered back as the link. The field's caption shows an
 example of what to paste.
 
+**Several values on one event.** Tick **Multiple values** on a `string`, `url`,
+or `enum` meta field and the event form gives it a chip input instead of a
+single box — one event picked up in two tickets holds both keys, and each is a
+link of its own. `boolean` and `date` fields are not offered the option: a
+second value there is a contradiction, not a list. Repeats of the same value
+are dropped.
+
+Turning the option back off leaves values already stored on their events; the
+form then shows the first one, and the next save of that event keeps only it.
+
 ### Variables
 
 **Where:** Plan › Variables. Typed, reusable `${name}` placeholders referenced

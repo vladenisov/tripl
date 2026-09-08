@@ -15,9 +15,18 @@ if TYPE_CHECKING:
 
 class EventMetaValue(UUIDMixin, Base):
     __tablename__ = "event_meta_values"
+    # One row per DISTINCT value, not per field: a field with ``allow_multiple``
+    # carries several. The constraint still does the work it was there for —
+    # ``update_event`` deletes and re-inserts the whole set, and a value
+    # repeated inside one payload is a mistake either way. Whether a field may
+    # hold more than one at all is enforced in the service, where the definition
+    # is in hand (tripl-h2sx.31).
     __table_args__ = (
         UniqueConstraint(
-            "event_id", "meta_field_definition_id", name="uq_event_meta_value_event_meta"
+            "event_id",
+            "meta_field_definition_id",
+            "value",
+            name="uq_event_meta_value_event_meta_value",
         ),
     )
 

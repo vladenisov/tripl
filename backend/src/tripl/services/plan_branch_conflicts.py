@@ -77,6 +77,7 @@ _MF_CHANGE_KEYS = (
     "display_name",
     "field_type",
     "is_required",
+    "allow_multiple",
     "enum_options",
     "default_value",
     "link_template",

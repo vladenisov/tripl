@@ -10164,6 +10164,11 @@
       },
       "MetaFieldCreate": {
         "properties": {
+          "allow_multiple": {
+            "default": false,
+            "title": "Allow Multiple",
+            "type": "boolean"
+          },
           "default_value": {
             "anyOf": [
               {
@@ -10241,6 +10246,11 @@
       },
       "MetaFieldResponse": {
         "properties": {
+          "allow_multiple": {
+            "default": false,
+            "title": "Allow Multiple",
+            "type": "boolean"
+          },
           "default_value": {
             "anyOf": [
               {
@@ -10337,6 +10347,17 @@
       },
       "MetaFieldUpdate": {
         "properties": {
+          "allow_multiple": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow Multiple"
+          },
           "default_value": {
             "anyOf": [
               {

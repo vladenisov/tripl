@@ -19,6 +19,7 @@ import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
 import { variablesApi } from '@/api/variables'
 import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
+import { ChipListInput } from '@/components/chip-list-input'
 import { CommentThread } from '@/components/comment-thread'
 import { EntityBranchBanner } from '@/components/EntityBranchBanner'
 import { useAiStatus } from '@/hooks/useAiStatus'
@@ -293,20 +294,53 @@ function FieldValueControl({
 
 function MetaFieldControl({
   metaField,
-  value,
+  values,
   onChange,
   variables,
   inputId,
 }: {
   metaField: MetaFieldDefinition
-  value: string
-  onChange: (value: string) => void
+  /** Always a list: a single-valued field simply holds none or one. */
+  values: string[]
+  onChange: (values: string[]) => void
   variables: VariableSuggestion[]
   inputId?: string
 }) {
+  const value = values[0] ?? ''
+  const setOne = (next: string) => onChange(next === '' ? [] : [next])
+  // Several values, the way tags work — the interaction the analyst asked for
+  // when an event picked up in a second task had nowhere to put the second Jira
+  // key. The link template still applies per value: resolveMetaFieldHref is
+  // already per-value, so N chips render N links with no new concept.
+  if (metaField.allow_multiple) {
+    const template = metaField.link_template
+    return (
+      <div className="max-w-[320px]">
+        <ChipListInput
+          inputId={inputId}
+          values={values}
+          // A whole address pasted into a chip is the same mistake as one
+          // pasted into the single input, and the server strips per value —
+          // so the chip shows the key that will be stored, not the address.
+          onChange={next => {
+            const keys = next.map(v => stripLinkTemplate(template, v))
+            onChange(keys.filter((v, i) => keys.indexOf(v) === i))
+          }}
+          placeholder={metaFieldLinkExample(template) ? 'Type a key + Enter' : 'Type a value + Enter'}
+          ariaLabel={`Add ${metaField.display_name}`}
+        />
+        {template && (
+          <p className="mt-1 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+            Enter the key, e.g. <span className="mono">{META_FIELD_LINK_EXAMPLE_KEY}</span> — each
+            one opens on its own.
+          </p>
+        )}
+      </div>
+    )
+  }
   if (metaField.field_type === 'boolean') {
     return (
-      <SelectControl id={inputId} value={value} onChange={onChange} maxWidth={160}>
+      <SelectControl id={inputId} value={value} onChange={setOne} maxWidth={160}>
         <option value="">—</option>
         <option value="true">true</option>
         <option value="false">false</option>
@@ -315,7 +349,7 @@ function MetaFieldControl({
   }
   if (metaField.field_type === 'enum' && metaField.enum_options) {
     return (
-      <SelectControl id={inputId} value={value} onChange={onChange} maxWidth={240}>
+      <SelectControl id={inputId} value={value} onChange={setOne} maxWidth={240}>
         <option value="">—</option>
         {metaField.enum_options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
       </SelectControl>
@@ -333,13 +367,13 @@ function MetaFieldControl({
       className="max-w-[320px]"
       onBlur={() => {
         const settled = strip(value)
-        if (settled !== value) onChange(settled)
+        if (settled !== value) setOne(settled)
       }}
     >
       <VariableInput
         id={inputId}
         value={value}
-        onChange={next => onChange(strip(next))}
+        onChange={next => setOne(strip(next))}
         variables={variables}
         type={metaField.field_type === 'url' ? 'url' : metaField.field_type === 'date' ? 'date' : 'text'}
       />
@@ -407,9 +441,17 @@ export function EventForm({
   const [fieldValues, setFieldValues] = useState<Record<string, string>>(() =>
     event ? Object.fromEntries(event.field_values.map(fv => [fv.field_definition_id, fv.value])) : {},
   )
-  const [metaValues, setMetaValues] = useState<Record<string, string>>(() =>
-    event ? Object.fromEntries(event.meta_values.map(mv => [mv.meta_field_definition_id, mv.value])) : {},
-  )
+  // A list per field, even where only one value is allowed: a field with
+  // `allow_multiple` carries several rows (tripl-h2sx.31), and one shape for
+  // both keeps every read site from having to ask which kind it is holding.
+  const [metaValues, setMetaValues] = useState<Record<string, string[]>>(() => {
+    if (!event) return {}
+    const grouped: Record<string, string[]> = {}
+    for (const mv of event.meta_values) {
+      ;(grouped[mv.meta_field_definition_id] ??= []).push(mv.value)
+    }
+    return grouped
+  })
   // Columns the event was ALREADY splitting by when the form opened. A column
   // added in this session has no collected rows behind it yet, so linking
   // straight to the Breakdowns tab would open an empty chart.
@@ -456,7 +498,7 @@ export function EventForm({
     if (!isNew || !ticket || ticketPrefilled.current) return
     ticketPrefilled.current = true
     setMetaValues(prev =>
-      ticket.field.id in prev ? prev : { ...prev, [ticket.field.id]: ticket.key },
+      ticket.field.id in prev ? prev : { ...prev, [ticket.field.id]: [ticket.key] },
     )
   }, [isNew, ticket])
 
@@ -645,9 +687,17 @@ export function EventForm({
         field_values: Object.entries(fieldValues)
           .filter(([, v]) => v !== '')
           .map(([k, v]) => ({ field_definition_id: k, value: v })),
-        meta_values: Object.entries(metaValues)
-          .filter(([, v]) => v !== '')
-          .map(([k, v]) => ({ meta_field_definition_id: k, value: v })),
+        meta_values: Object.entries(metaValues).flatMap(([k, values]) => {
+          // Submit what the control SHOWS. A field that held several values and
+          // then lost `allow_multiple` renders as a single input on `values[0]`;
+          // sending the rest would 422 the save and strand the event on a
+          // setting the author may not own (tripl-h2sx.31).
+          const allowMultiple = metaFields.find(mf => mf.id === k)?.allow_multiple ?? false
+          const visible = allowMultiple ? values : values.slice(0, 1)
+          return visible
+            .filter(value => value !== '')
+            .map(value => ({ meta_field_definition_id: k, value }))
+        }),
       }
       return event
         ? eventsApi.update(slug, event.id, payload, branchId)
@@ -1115,8 +1165,8 @@ export function EventForm({
                 <MetaFieldControl
                   metaField={mf}
                   inputId={`meta-${mf.id}`}
-                  value={metaValues[mf.id] ?? ''}
-                  onChange={v => setMetaValues({ ...metaValues, [mf.id]: v })}
+                  values={metaValues[mf.id] ?? []}
+                  onChange={next => setMetaValues({ ...metaValues, [mf.id]: next })}
                   variables={varSuggestions}
                 />
               </EvField>

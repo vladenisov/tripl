@@ -449,6 +449,7 @@ async def deep_copy_plan_to_branch(
                 display_name=mf.display_name,
                 field_type=mf.field_type,
                 is_required=mf.is_required,
+                allow_multiple=mf.allow_multiple,
                 enum_options=list(mf.enum_options) if mf.enum_options else None,
                 default_value=mf.default_value,
                 link_template=mf.link_template,
@@ -658,6 +659,12 @@ async def deep_copy_plan_to_branch(
             )
             comment_id_map: dict[uuid.UUID, uuid.UUID] = {}
             for c in comments:
+                # The query selects on photo_id, so an event-anchored comment
+                # cannot arrive here — and must not: the event discussion is one
+                # conversation read through to main, never deep-copied
+                # (tripl-h2sx.25).
+                if c.photo_id is None:
+                    continue
                 new_c_id = uuid.uuid4()
                 comment_id_map[c.id] = new_c_id
                 new_objs.append(

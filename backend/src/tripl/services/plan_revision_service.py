@@ -372,6 +372,7 @@ async def build_plan_snapshot(
             "display_name": mf.display_name,
             "field_type": mf.field_type,
             "is_required": mf.is_required,
+            "allow_multiple": mf.allow_multiple,
             "enum_options": list(mf.enum_options) if mf.enum_options else None,
             "default_value": mf.default_value,
             "link_template": mf.link_template,
@@ -406,6 +407,11 @@ async def build_plan_snapshot(
                 .all()
             )
             for comment in comment_rows:
+                # The query is keyed on photo_id, so an event-anchored comment
+                # cannot appear here — and must not: the event discussion is
+                # deliberately outside the snapshot (tripl-h2sx.25).
+                if comment.photo_id is None:
+                    continue
                 comments_by_photo.setdefault(comment.photo_id, []).append(comment)
 
     def serialize_comments(photo_id: uuid.UUID) -> list[dict[str, Any]]:
@@ -686,6 +692,12 @@ def _format_change(change: PlanFieldChange) -> str:
 # ("recreate it from current main", plan_branch_merge_service) for the sake of
 # one optional text column, so the older shape is upgraded on read instead.
 _V2_EVENT_DEFAULTS: dict[str, Any] = {"title": ""}
+# Same argument for the meta field's ``allow_multiple`` (tripl-h2sx.31): an
+# older payload predates the key, and ``_field_changes_between`` refuses to
+# treat one absent from a current-version payload as skew (tripl-2d3d), so
+# without this every pre-existing snapshot would diff every meta field as
+# changed the moment the column shipped.
+_V2_META_FIELD_DEFAULTS: dict[str, Any] = {"allow_multiple": False}
 
 # Member attributes the diff does not read as a change on their own. A field
 # value's ``is_authored`` flips when a person re-saves a scan-observed value
@@ -703,15 +715,21 @@ def with_snapshot_defaults(payload: dict[str, Any]) -> dict[str, Any]:
     pass it everywhere — the diff, the conflict scan and the merge all read the
     same shape.
     """
-    events = payload.get("events")
-    if not isinstance(events, list):
-        return payload
-    if all(isinstance(ev, dict) and _V2_EVENT_DEFAULTS.keys() <= ev.keys() for ev in events):
-        return payload
-    return {
-        **payload,
-        "events": [{**_V2_EVENT_DEFAULTS, **ev} if isinstance(ev, dict) else ev for ev in events],
-    }
+    filled = payload
+    for key, defaults in (
+        ("events", _V2_EVENT_DEFAULTS),
+        ("meta_fields", _V2_META_FIELD_DEFAULTS),
+    ):
+        items = filled.get(key)
+        if not isinstance(items, list):
+            continue
+        if all(isinstance(item, dict) and defaults.keys() <= item.keys() for item in items):
+            continue
+        filled = {
+            **filled,
+            key: [{**defaults, **item} if isinstance(item, dict) else item for item in items],
+        }
+    return filled
 
 
 def _comparable(field: str, value: Any) -> Any:

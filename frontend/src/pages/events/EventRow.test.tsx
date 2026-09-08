@@ -10,6 +10,7 @@ import type {
   EventMetricPoint,
   EventTypeBrief,
   FieldDefinition,
+  MetaFieldDefinition,
   MonitoringSignal,
   Variable,
 } from '@/types'
@@ -116,9 +117,15 @@ function renderRow(
     getFieldValueRow = () => undefined,
     branchId = null,
     setBranchId = () => {},
+    metaFields = [] as MetaFieldDefinition[],
+    metaValueMap,
   }: {
     variables?: Variable[]
     fieldColumns?: FieldDefinition[]
+    metaFields?: MetaFieldDefinition[]
+    /** Every value this row holds per meta field — a list, so a field with
+     *  `allow_multiple` renders one link per value. */
+    metaValueMap?: Map<string, string[]>
     getFieldValue?: (event: EventListItem, field: FieldDefinition) => string
     getFieldValueRow?: (event: EventListItem, field: FieldDefinition) => EventFieldValue | undefined
     /** Active branch the row is rendered under; null (the default) is main. */
@@ -148,14 +155,14 @@ function renderRow(
                   hideTags={false}
                   hideLastSeen={false}
                   fieldColumns={fieldColumns}
-                  metaFields={[]}
+                  metaFields={metaFields}
                   variables={variables}
                   slug="proj-1"
                   expandedFieldId={null}
                   rowSignal={rowSignal}
                   windowTotal={windowData.length}
                   windowData={windowData}
-                  metaValueMap={undefined}
+                  metaValueMap={metaValueMap}
                   getFieldValue={getFieldValue}
                   getFieldValueRow={getFieldValueRow}
                   onToggleSelected={() => {}}
@@ -480,5 +487,34 @@ describe('EventRow single saturated signal indicator', () => {
     expect(screen.queryByText('Live')).not.toBeInTheDocument()
     // Covered but quiet still reads as "Monitored" (a monitor exists), not a signal.
     expect(screen.getByText('Monitored')).toBeInTheDocument()
+  })
+})
+
+describe('EventRow multi-value meta field (tripl-h2sx.31)', () => {
+  const KEYS_FIELD = {
+    id: 'mf-keys',
+    project_id: 'p-1',
+    name: 'jira_keys',
+    display_name: 'Jira keys',
+    field_type: 'string',
+    is_required: false,
+    allow_multiple: true,
+    enum_options: null,
+    default_value: null,
+    link_template: 'https://jira.example/browse/${value}',
+    order: 0,
+    sensitivity: 'none',
+  } as MetaFieldDefinition
+
+  it('renders one link per value, not one link around them joined', () => {
+    renderRow(makeEvent(), [], undefined, {
+      metaFields: [KEYS_FIELD],
+      metaValueMap: new Map([['mf-keys', ['WND-1', 'WND-2']]]),
+    })
+
+    const first = screen.getByRole('link', { name: 'WND-1' })
+    const second = screen.getByRole('link', { name: 'WND-2' })
+    expect(first).toHaveAttribute('href', 'https://jira.example/browse/WND-1')
+    expect(second).toHaveAttribute('href', 'https://jira.example/browse/WND-2')
   })
 })

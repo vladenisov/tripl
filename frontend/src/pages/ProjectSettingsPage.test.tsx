@@ -1094,6 +1094,7 @@ describe('ProjectSettingsPage', () => {
         display_name: 'Jira Key',
         field_type: 'string',
         is_required: false,
+        allow_multiple: false,
         link_template: 'https://tracker.example.com/issues/${value}',
         sensitivity: 'none',
       })

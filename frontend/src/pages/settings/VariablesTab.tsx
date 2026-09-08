@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Pencil, Plus, RotateCcw, Trash2, Variable as VariableIcon, X } from "lucide-react"
+import { Pencil, Plus, RotateCcw, Trash2, Variable as VariableIcon } from "lucide-react"
 import { eventsApi } from "@/api/events"
 import { variablesApi } from "@/api/variables"
 import { variableDriftsApi } from "@/api/variableDrifts"
@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { ChipListInput } from "@/components/chip-list-input"
 import { EmptyState } from "@/components/empty-state"
 import { Panel } from "@/components/settings/kit"
 import { ScenarioCoachMark } from "@/demo/ScenarioCoachMark"
@@ -37,6 +38,8 @@ import {
 // Warehouse column or dotted JSON path, e.g. "variant" or "page_data.extra.variant".
 const BINDING_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$/
 const isValidBinding = (value: string) => BINDING_PATTERN.test(value)
+const INVALID_BINDING_MESSAGE =
+  'Invalid path — use letters/digits/underscores with dots, e.g. page_data.extra.variant'
 
 // Rows rendered at once. The whole set arrives in one request, but a governance
 // project can hold >1k variables and painting them all froze the tab for
@@ -96,48 +99,6 @@ function useStableCallback<Args extends unknown[]>(fn: (...args: Args) => void) 
     ref.current = fn
   })
   return useCallback((...args: Args) => ref.current(...args), [])
-}
-
-function ChipListInput({ values, onChange, placeholder, ariaLabel, validate }: {
-  values: string[]
-  onChange: (next: string[]) => void
-  placeholder: string
-  ariaLabel: string
-  validate?: (value: string) => boolean
-}) {
-  const [draft, setDraft] = useState('')
-  const [invalid, setInvalid] = useState(false)
-  const add = () => {
-    const value = draft.trim()
-    if (!value) return
-    if (validate && !validate(value)) { setInvalid(true); return }
-    if (!values.includes(value)) onChange([...values, value])
-    setDraft(''); setInvalid(false)
-  }
-  return (
-    <div>
-      <div className="flex min-h-9 flex-wrap items-center gap-1 rounded-md border border-input bg-transparent px-2 py-1">
-        {values.map(value => (
-          <span key={value} className="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
-            {value}
-            <button type="button" aria-label={`Remove ${value}`} onClick={() => onChange(values.filter(v => v !== value))}>
-              <X className="h-3 w-3" aria-hidden="true" />
-            </button>
-          </span>
-        ))}
-        <input
-          aria-label={ariaLabel}
-          className="h-6 min-w-28 flex-1 bg-transparent text-sm outline-none"
-          value={draft}
-          onChange={e => { setDraft(e.target.value); setInvalid(false) }}
-          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add() } }}
-          onBlur={add}
-          placeholder={placeholder}
-        />
-      </div>
-      {invalid && <p className="mt-1 text-xs text-destructive">Invalid path — use letters/digits/underscores with dots, e.g. page_data.extra.variant</p>}
-    </div>
-  )
 }
 
 /** `focusId` scrolls to and highlights one variable — the landing spot for a
@@ -727,7 +688,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                     of all: a scan matches a variable by NAME first, so a variable
                     named after its column needs none. */}
                 <Label>Data bindings (optional)</Label>
-                <ChipListInput values={bindings} onChange={setBindings} placeholder="e.g. page_data.extra.variant" ariaLabel="Add data binding" validate={isValidBinding} />
+                <ChipListInput values={bindings} onChange={setBindings} placeholder="e.g. page_data.extra.variant" ariaLabel="Add data binding" validate={isValidBinding} invalidMessage={INVALID_BINDING_MESSAGE} />
                 <p className="text-[11px] text-muted-foreground">Leave it empty and scans match this variable by its name. Add a binding only when the warehouse column or JSON path is spelled differently — <code className="rounded bg-muted px-1">page_data.extra.variant</code> behind <code className="rounded bg-muted px-1">{'${variant}'}</code>.</p>
               </div>
               {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
@@ -769,7 +730,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
               </div>
               <div className="grid gap-2">
                 <Label>Data bindings</Label>
-                <ChipListInput values={editBindings} onChange={setEditBindings} placeholder="e.g. page_data.extra.variant" ariaLabel="Add data binding" validate={isValidBinding} />
+                <ChipListInput values={editBindings} onChange={setEditBindings} placeholder="e.g. page_data.extra.variant" ariaLabel="Add data binding" validate={isValidBinding} invalidMessage={INVALID_BINDING_MESSAGE} />
                 {/* Deliberately not "you can leave this empty", which is true of
                     creation and misleading here: emptying a binding a scan filled
                     in makes the row read as hand-owned to `_human_claim`, and it

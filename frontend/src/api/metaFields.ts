@@ -11,6 +11,7 @@ export const metaFieldsApi = {
       display_name: string
       field_type: string
       is_required?: boolean
+      allow_multiple?: boolean
       enum_options?: string[]
       default_value?: string
       link_template?: string | null

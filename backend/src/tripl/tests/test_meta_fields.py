@@ -103,3 +103,81 @@ async def test_delete_meta_field(client: AsyncClient):
     mf_id = create.json()["id"]
     resp = await client.delete(f"/api/v1/projects/meta-del/meta-fields/{mf_id}")
     assert resp.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_allow_multiple_round_trips(client: AsyncClient):
+    await _setup_meta(client, "meta-multi")
+    create = await client.post(
+        "/api/v1/projects/meta-multi/meta-fields",
+        json={
+            "name": "jira",
+            "display_name": "Jira",
+            "field_type": "string",
+            "allow_multiple": True,
+        },
+    )
+    assert create.status_code == 201
+    assert create.json()["allow_multiple"] is True
+    mf_id = create.json()["id"]
+
+    listed = await client.get("/api/v1/projects/meta-multi/meta-fields")
+    assert listed.json()[0]["allow_multiple"] is True
+
+    off = await client.patch(
+        f"/api/v1/projects/meta-multi/meta-fields/{mf_id}",
+        json={"allow_multiple": False},
+    )
+    assert off.status_code == 200
+    assert off.json()["allow_multiple"] is False
+
+
+@pytest.mark.asyncio
+async def test_allow_multiple_defaults_off(client: AsyncClient):
+    await _setup_meta(client, "meta-multi-default")
+    resp = await client.post(
+        "/api/v1/projects/meta-multi-default/meta-fields",
+        json={"name": "jira", "display_name": "Jira", "field_type": "string"},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["allow_multiple"] is False
+
+
+@pytest.mark.asyncio
+async def test_allow_multiple_rejected_for_boolean_field(client: AsyncClient):
+    await _setup_meta(client, "meta-multi-bool")
+    resp = await client.post(
+        "/api/v1/projects/meta-multi-bool/meta-fields",
+        json={
+            "name": "shipped",
+            "display_name": "Shipped",
+            "field_type": "boolean",
+            "allow_multiple": True,
+        },
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_multi_when_switching_to_unsupported_type(client: AsyncClient):
+    """The pair spans the request and the row, so the schema alone cannot see it.
+
+    `field_type: date` is legal on its own and the stored `allow_multiple` is not
+    in the patch — only the service, holding both halves, can refuse it.
+    """
+    await _setup_meta(client, "meta-multi-switch")
+    create = await client.post(
+        "/api/v1/projects/meta-multi-switch/meta-fields",
+        json={
+            "name": "jira",
+            "display_name": "Jira",
+            "field_type": "string",
+            "allow_multiple": True,
+        },
+    )
+    mf_id = create.json()["id"]
+    resp = await client.patch(
+        f"/api/v1/projects/meta-multi-switch/meta-fields/{mf_id}",
+        json={"field_type": "date"},
+    )
+    assert resp.status_code == 422

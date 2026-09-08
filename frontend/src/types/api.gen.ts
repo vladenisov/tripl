@@ -7059,6 +7059,11 @@ export interface components {
         MergeResolutionChoice: "ours" | "theirs";
         /** MetaFieldCreate */
         MetaFieldCreate: {
+            /**
+             * Allow Multiple
+             * @default false
+             */
+            allow_multiple: boolean;
             /** Default Value */
             default_value?: string | null;
             /** Display Name */
@@ -7085,6 +7090,11 @@ export interface components {
         };
         /** MetaFieldResponse */
         MetaFieldResponse: {
+            /**
+             * Allow Multiple
+             * @default false
+             */
+            allow_multiple: boolean;
             /** Default Value */
             default_value: string | null;
             /** Display Name */
@@ -7119,6 +7129,8 @@ export interface components {
         MetaFieldType: "string" | "url" | "boolean" | "enum" | "date";
         /** MetaFieldUpdate */
         MetaFieldUpdate: {
+            /** Allow Multiple */
+            allow_multiple?: boolean | null;
             /** Default Value */
             default_value?: string | null;
             /** Display Name */

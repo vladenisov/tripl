@@ -1,7 +1,7 @@
 import json
 import re
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
@@ -266,23 +266,58 @@ async def _normalize_meta_values(
     """
     if not meta_values:
         return list(meta_values)
-    templates: dict[uuid.UUID, str | None] = {
-        definition_id: template
-        for definition_id, template in (
+    definitions = {
+        definition_id: (template, allow_multiple, name)
+        for definition_id, template, allow_multiple, name in (
             await session.execute(
-                select(MetaFieldDefinition.id, MetaFieldDefinition.link_template).where(
-                    MetaFieldDefinition.id.in_({mv.meta_field_definition_id for mv in meta_values}),
-                    MetaFieldDefinition.link_template.is_not(None),
+                select(
+                    MetaFieldDefinition.id,
+                    MetaFieldDefinition.link_template,
+                    MetaFieldDefinition.allow_multiple,
+                    MetaFieldDefinition.name,
+                ).where(
+                    MetaFieldDefinition.id.in_({mv.meta_field_definition_id for mv in meta_values})
                 )
             )
         ).all()
     }
     out: list[EventMetaValueIn] = []
+    # A field opted in to several values may repeat; one that did not may not.
+    # The row constraint stopped counting fields when it started counting values
+    # (tripl-h2sx.31), so the "one value here" rule lives here now, where the
+    # definition says whether it applies.
+    seen: dict[uuid.UUID, set[str]] = {}
     for mv in meta_values:
-        template = templates.get(mv.meta_field_definition_id) or ""
-        stripped = strip_link_template(template, mv.value)
+        template, allow_multiple, name = definitions.get(
+            mv.meta_field_definition_id, (None, False, "")
+        )
+        stripped = strip_link_template(template or "", mv.value)
+        already = seen.setdefault(mv.meta_field_definition_id, set())
+        if already and not allow_multiple:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Meta field '{name}' holds one value; enable Allow multiple for more",
+            )
+        # An exact repeat is the same fact twice, not a second value — and it
+        # would collide on uq_event_meta_value_event_meta_value.
+        if stripped in already:
+            continue
+        already.add(stripped)
         out.append(mv if stripped == mv.value else mv.model_copy(update={"value": stripped}))
     return out
+
+
+def _meta_by_definition(pairs: Iterable[tuple[uuid.UUID, str]]) -> dict[uuid.UUID, str]:
+    """One activity-log line per meta field, its values joined.
+
+    The log is keyed by field, so a multi-valued field would otherwise have its
+    entries overwrite each other under one key and report the last one as the
+    whole change. "WND-4770, WND-5012" is what actually happened.
+    """
+    grouped: dict[uuid.UUID, list[str]] = {}
+    for definition_id, value in pairs:
+        grouped.setdefault(definition_id, []).append(value)
+    return {definition_id: ", ".join(values) for definition_id, values in grouped.items()}
 
 
 def strip_link_template(template: str, value: str) -> str:
@@ -1165,7 +1200,12 @@ async def update_event(
 
     if data.meta_values is not None:
         meta_values = await _normalize_meta_values(session, data.meta_values)
-        meta_before = {mv.meta_field_definition_id: mv.value for mv in event.meta_values}
+        meta_before = _meta_by_definition(
+            (mv.meta_field_definition_id, mv.value) for mv in event.meta_values
+        )
+        meta_after = _meta_by_definition(
+            (mv.meta_field_definition_id, mv.value) for mv in meta_values
+        )
         _record_keyed_changes(
             session,
             event=event,
@@ -1173,10 +1213,10 @@ async def update_event(
             names=await _definition_names(
                 session,
                 MetaFieldDefinition,
-                set(meta_before) | {mv.meta_field_definition_id for mv in meta_values},
+                set(meta_before) | set(meta_after),
             ),
             old=meta_before,
-            new={mv.meta_field_definition_id: mv.value for mv in meta_values},
+            new=meta_after,
             user_id=user_id,
         )
         await session.execute(delete(EventMetaValue).where(EventMetaValue.event_id == event.id))

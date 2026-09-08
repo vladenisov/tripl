@@ -5,8 +5,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
+from tripl.models.domain_enums import MetaFieldType
 from tripl.models.meta_field_definition import MetaFieldDefinition
-from tripl.schemas.meta_field import MetaFieldCreate, MetaFieldResponse, MetaFieldUpdate
+from tripl.schemas.meta_field import (
+    MULTI_VALUE_FIELD_TYPES,
+    MetaFieldCreate,
+    MetaFieldResponse,
+    MetaFieldUpdate,
+)
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.search_service import reindex_project_branch
@@ -92,6 +98,18 @@ async def update_meta_field(
     if not mf:
         raise HTTPException(status_code=404, detail="Meta field not found")
     update_data = data.model_dump(exclude_unset=True)
+    # The schema can only check the pair when both halves are in the payload.
+    # Here the other half is on the row: switching a multi-valued field to
+    # `boolean`, or turning the flag on for one that already is, has to be
+    # refused against what is actually stored.
+    resulting_type = update_data.get("field_type", mf.field_type)
+    resulting_multi = update_data.get("allow_multiple", mf.allow_multiple)
+    if resulting_multi and MetaFieldType(resulting_type) not in MULTI_VALUE_FIELD_TYPES:
+        allowed = ", ".join(sorted(item.value for item in MULTI_VALUE_FIELD_TYPES))
+        raise HTTPException(
+            status_code=422,
+            detail=f"allow_multiple is only supported for {allowed} fields",
+        )
     for key, value in update_data.items():
         setattr(mf, key, value)
     await session.commit()

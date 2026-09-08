@@ -91,6 +91,7 @@ _PLAIN_ATTRS: dict[str, tuple[str, ...]] = {
     "meta_field": (
         "field_type",
         "is_required",
+        "allow_multiple",
         "enum_options",
         "default_value",
         "link_template",
@@ -847,6 +848,10 @@ async def _recreate_entity(
                 display_name=_required(base_item, "display_name"),
                 field_type=_required(base_item, "field_type"),
                 is_required=base_item.get("is_required", False),
+                # An older snapshot predates the key; with_snapshot_defaults
+                # fills it in on read, and the default here covers a payload
+                # that reached this call by another route.
+                allow_multiple=base_item.get("allow_multiple", False),
                 enum_options=list(base_item["enum_options"])
                 if base_item.get("enum_options")
                 else None,
