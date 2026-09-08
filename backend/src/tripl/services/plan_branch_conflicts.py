@@ -94,6 +94,29 @@ def _flatten_fields(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def comparable_field(item: dict[str, Any], field: str) -> Any:
+    """The part of a snapshot field that counts as a change to the plan.
+
+    ``build_plan_snapshot`` nests each photo's comments inside the ``photos``
+    subtree, so a comment used to read as "this event changed". That is not what
+    a comment is — it is discussion hanging off the design, and it describes no
+    part of the tracking plan. The consequence was worse than a noisy diff: a
+    comment on main made the event conflict with the branch, an event conflict
+    is not resolvable inline, and the branch became unmergeable while the
+    conflicts endpoint reported nothing to resolve (tripl-h2sx.28). Compare the
+    attachments; leave the conversation out of it.
+    """
+    value = item.get(field)
+    if field != "photos" or not isinstance(value, list):
+        return value
+    return [
+        {key: entry for key, entry in photo.items() if key != "comments"}
+        if isinstance(photo, dict)
+        else photo
+        for photo in value
+    ]
+
+
 def _entity_changed(
     base_item: dict[str, Any] | None,
     new_item: dict[str, Any] | None,
@@ -103,7 +126,7 @@ def _entity_changed(
         return True
     if base_item is None or new_item is None:
         return False
-    return any(base_item.get(f) != new_item.get(f) for f in fields)
+    return any(comparable_field(base_item, f) != comparable_field(new_item, f) for f in fields)
 
 
 def _entities_equal(
@@ -115,7 +138,7 @@ def _entities_equal(
         return False
     if a is None or b is None:
         return True
-    return all(a.get(f) == b.get(f) for f in fields)
+    return all(comparable_field(a, f) == comparable_field(b, f) for f in fields)
 
 
 def _conflict_set(
@@ -139,9 +162,9 @@ def _conflict_set(
         t = theirs_by.get(key)
         if b is not None and o is not None and t is not None:
             same_field_conflict = any(
-                o.get(field) != b.get(field)
-                and t.get(field) != b.get(field)
-                and o.get(field) != t.get(field)
+                comparable_field(o, field) != comparable_field(b, field)
+                and comparable_field(t, field) != comparable_field(b, field)
+                and comparable_field(o, field) != comparable_field(t, field)
                 for field in change_keys
             )
             if same_field_conflict:

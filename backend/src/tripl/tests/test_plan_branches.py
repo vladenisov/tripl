@@ -1825,6 +1825,113 @@ async def test_merge_carries_branch_photo_changes_to_main(client: AsyncClient) -
     assert urls == [new_url]
 
 
+@pytest.mark.asyncio
+async def test_merge_keeps_comments_written_on_main_and_the_photo_id(
+    client: AsyncClient,
+) -> None:
+    """Regression (tripl-h2sx.28): a merge used to replace main's whole photo
+    canvas whenever the branch's snapshot subtree differed — and comments are
+    nested INSIDE each photo there, so one comment written on the branch was
+    enough. Main's photo rows were deleted, ``event_photo_comments.photo_id``
+    cascaded, and everything said on main since the branch was cut went with
+    them. The photo ids churned too, so any link into the canvas broke.
+    """
+    slug = "merge-photo-comments"
+    await _seed_plan(client, slug)
+    events = await client.get(f"/api/v1/projects/{slug}/events")
+    main_event_id = events.json()["items"][0]["id"]
+    main_photo_id = await _attach_main_figma(
+        client,
+        slug,
+        main_event_id,
+        "https://www.figma.com/file/abc/Spec",
+        "Spec",
+    )
+    main_comments_url = (
+        f"/api/v1/projects/{slug}/events/{main_event_id}/photos/{main_photo_id}/comments"
+    )
+    before = await client.post(main_comments_url, json={"body": "before the branch"})
+    assert before.status_code == 201
+
+    branch_id = await _create_branch(client, slug, "feature-art")
+
+    async with TestSessionLocal() as session:
+        branch_event = (
+            (await session.execute(select(Event).where(Event.branch_id == uuid.UUID(branch_id))))
+            .scalars()
+            .first()
+        )
+        assert branch_event is not None
+        branch_event_id = branch_event.id
+        branch_photo = (
+            (
+                await session.execute(
+                    select(EventPhoto).where(EventPhoto.event_id == branch_event_id)
+                )
+            )
+            .scalars()
+            .one()
+        )
+        branch_photo_id = branch_photo.id
+        branch_copy_of_before = (
+            (
+                await session.execute(
+                    select(EventPhotoComment).where(
+                        EventPhotoComment.photo_id == branch_photo_id,
+                        EventPhotoComment.body == "before the branch",
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+
+    branch_comments_url = (
+        f"/api/v1/projects/{slug}/events/{branch_event_id}/photos/{branch_photo_id}/comments"
+    )
+    on_branch = await client.post(
+        branch_comments_url,
+        json={"body": "answered on the branch", "parent_id": str(branch_copy_of_before.id)},
+    )
+    assert on_branch.status_code == 201
+    # Meanwhile, someone reading main says something there. This is the comment
+    # the merge used to destroy.
+    on_main = await client.post(main_comments_url, json={"body": "said on main"})
+    assert on_main.status_code == 201
+
+    resp = await _approve_and_merge(client, slug, branch_id)
+    assert resp.status_code == 200
+
+    listed = await client.get(f"/api/v1/projects/{slug}/events/{main_event_id}/photos")
+    assert [row["id"] for row in listed.json()] == [main_photo_id]
+
+    async with TestSessionLocal() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(EventPhotoComment).where(
+                        EventPhotoComment.photo_id == uuid.UUID(main_photo_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    # Both sides survive, and the branch's copy of a comment main already holds
+    # is recognised as the same comment rather than added a second time.
+    assert sorted(row.body for row in rows) == [
+        "answered on the branch",
+        "before the branch",
+        "said on main",
+    ]
+    root = next(row for row in rows if row.body == "before the branch")
+    reply = next(row for row in rows if row.body == "answered on the branch")
+    # The reply came over from the branch and found main's own comment to hang
+    # under, not the branch copy it was written against.
+    assert reply.parent_id == root.id
+    assert root.id == uuid.UUID(before.json()["id"])
+
+
 # --- ?branch= router param threading ----------------------------------------
 
 
