@@ -118,7 +118,14 @@ const GRANULARITY_FOR_INTERVAL: Record<string, MetricsGranularity> = {
   '1w': 'week',
 }
 
-type MonitoringDetailTab = 'volume' | 'versions' | 'distribution' | 'heatmap' | 'breakdowns'
+const MONITORING_DETAIL_TABS = [
+  'volume',
+  'versions',
+  'distribution',
+  'heatmap',
+  'breakdowns',
+] as const
+type MonitoringDetailTab = (typeof MONITORING_DETAIL_TABS)[number]
 type VersionFilter = 'all' | 'latest'
 
 const VERSION_CHART_COLORS = [
@@ -304,11 +311,23 @@ export default function MonitoringDetailPage() {
   // null = "no manual pick yet": the effective granularity then follows the
   // scope's default (interval-aware for catalog metrics, range-aware otherwise).
   const [granularityOverride, setGranularityOverride] = useState<MetricsGranularity | null>(null)
-  const [activeTab, setActiveTab] = useState<MonitoringDetailTab>('volume')
+  // `?tab=` and `?column=` make this page linkable to the answer instead of to
+  // its front door: the event form points a scan-observed field at the split it
+  // belongs to. Read ONCE, as the branch context does — after mount the tab and
+  // the column are the reader's, and re-reading would yank them back on every
+  // navigation that touches the query string.
+  const [activeTab, setActiveTab] = useState<MonitoringDetailTab>(() => {
+    const requested = new URLSearchParams(location.search).get('tab')
+    return MONITORING_DETAIL_TABS.includes(requested as MonitoringDetailTab)
+      ? (requested as MonitoringDetailTab)
+      : 'volume'
+  })
   const metricsRef = useRef<HTMLSpanElement>(null)
   const [versionFilter, setVersionFilter] = useState<VersionFilter>('all')
   const [distributionField, setDistributionField] = useState('')
-  const [breakdownColumn, setBreakdownColumn] = useState('')
+  const [breakdownColumn, setBreakdownColumn] = useState(
+    () => new URLSearchParams(location.search).get('column') ?? '',
+  )
   // Breakdown VALUE filter: empty = show every value (the default). Selecting
   // labels narrows the chart to just those series (tripl-egt5).
   const [breakdownValueFilter, setBreakdownValueFilter] = useState<string[]>([])
@@ -431,9 +450,20 @@ export default function MonitoringDetailPage() {
   const hasVersionColumn = scope === 'metric'
     ? Boolean(metricDefinition?.app_version_column)
     : Boolean(scanConfigQuery.data?.app_version_column)
-  const selectedTab: MonitoringDetailTab = activeTab === 'versions' && !hasVersionColumn
-    ? 'volume'
-    : activeTab
+  // Which tabs this scope actually renders a trigger for — kept in step with
+  // the TabsList below. A URL can now ask for any of them, so the fallback has
+  // to cover every absent tab, not only `versions` on a scan with no version
+  // column: a value with no trigger leaves the reader on an empty page.
+  const availableTabs = useMemo<MonitoringDetailTab[]>(
+    () => [
+      'volume',
+      ...(hasVersionColumn ? (['versions'] as const) : []),
+      ...(scope !== 'metric' ? (['heatmap', 'distribution'] as const) : []),
+      ...(scope === 'event' || scope === 'metric' ? (['breakdowns'] as const) : []),
+    ],
+    [hasVersionColumn, scope],
+  )
+  const selectedTab: MonitoringDetailTab = availableTabs.includes(activeTab) ? activeTab : 'volume'
 
   const appVersionScope = useMemo(() => {
     // The catalog `metric` scope fetches versions from its own endpoint, so it

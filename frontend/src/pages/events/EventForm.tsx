@@ -17,7 +17,7 @@ import { metaFieldsApi } from '@/api/metaFields'
 import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
 import { variablesApi } from '@/api/variables'
-import { useActiveBranchId } from '@/hooks/useBranch'
+import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
 import { EntityBranchBanner } from '@/components/EntityBranchBanner'
 import { useAiStatus } from '@/hooks/useAiStatus'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
@@ -104,6 +104,56 @@ function ScanMaintenanceNotice({
   if (current === stored.value) return null
   return (
     <p className="mt-1 text-xs text-warning">Saving this stops scans from updating the field.</p>
+  )
+}
+
+/**
+ * Points a field at the Breakdowns tab, which already answers "and what else
+ * does this field hold?" — one value per box is all an event can carry, so the
+ * question came up every time a scanned value looked wrong. The tab needed the
+ * column in the breakdown set and a reader who knew the tab existed; this is
+ * both, from where the question is asked.
+ */
+function FieldBreakdownLink({
+  column,
+  href,
+  state,
+  onSelect,
+}: {
+  column: string
+  href: { to: string; onClick: () => void }
+  /** `collecting` = added in this session and not yet saved, so there is nothing to open. */
+  state: 'collected' | 'collecting' | 'off'
+  onSelect: () => void
+}) {
+  if (state === 'collecting') {
+    return (
+      <p className="mt-1 text-xs text-muted-foreground">
+        Added to metric breakdowns. Save, and collection starts splitting by{' '}
+        <span className="mono">{column}</span>.
+      </p>
+    )
+  }
+  return (
+    <p className="mt-1 text-xs">
+      {state === 'collected' ? (
+        <Link
+          to={href.to}
+          onClick={href.onClick}
+          className="text-muted-foreground underline underline-offset-2 hover:text-foreground"
+        >
+          See every value this field takes
+        </Link>
+      ) : (
+        <button
+          type="button"
+          onClick={onSelect}
+          className="text-muted-foreground underline underline-offset-2 hover:text-foreground"
+        >
+          Split volume by this field
+        </button>
+      )}
+    </p>
   )
 }
 
@@ -330,6 +380,7 @@ export function EventForm({
 }) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
+  const branchLink = useBranchLinkProps()
   const aiEnabled = useAiStatus(slug)
   const { step: scenarioStep } = useDemoScenario()
   const { notifyStepCompleted } = useDemoScenarioActions()
@@ -356,6 +407,13 @@ export function EventForm({
   )
   const [metaValues, setMetaValues] = useState<Record<string, string>>(() =>
     event ? Object.fromEntries(event.meta_values.map(mv => [mv.meta_field_definition_id, mv.value])) : {},
+  )
+  // Columns the event was ALREADY splitting by when the form opened. A column
+  // added in this session has no collected rows behind it yet, so linking
+  // straight to the Breakdowns tab would open an empty chart.
+  const collectedBreakdownColumns = useMemo(
+    () => new Set(event?.metric_breakdown_columns ?? []),
+    [event],
   )
   // What the form must say about a field depends on the SAVED row, not only on
   // what is typed: `_authored_after_edit` freezes a value the moment its text
@@ -1017,6 +1075,26 @@ export function EventForm({
                       : () => setFieldValues({ ...fieldValues, [f.id]: '' })
                   }
                 />
+                {/* A JSON field is not a warehouse column, so it can never be a
+                    breakdown — `breakdownOptions` leaves those out too. */}
+                {event && f.field_type !== 'json' && (
+                  <FieldBreakdownLink
+                    column={f.name}
+                    href={branchLink(
+                      `/p/${slug}/monitoring/event/${event.id}`
+                        + `?tab=breakdowns&column=${encodeURIComponent(f.name)}`,
+                      branchId,
+                    )}
+                    state={
+                      collectedBreakdownColumns.has(f.name)
+                        ? 'collected'
+                        : metricBreakdownColumns.includes(f.name)
+                          ? 'collecting'
+                          : 'off'
+                    }
+                    onSelect={() => toggleBreakdown(f.name)}
+                  />
+                )}
               </EvField>
             ))}
           </SurfCard>

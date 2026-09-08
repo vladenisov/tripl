@@ -213,6 +213,13 @@ it in again from live data. Clearing a field and correcting it therefore do
 opposite things, which is worth knowing when a value looks wrong: correcting it
 freezes your answer, clearing it asks for a fresh one.
 
+**Seeing what else a field holds.** An event carries one value per field, so a
+scanned value is one out of however many the event actually fires with. Under
+each field, **Split volume by this field** adds that column to the event's
+metric breakdowns; once collection has data for it, **See every value this field
+takes** opens the event's **Breakdowns** tab on that column, with a series and a
+count per value.
+
 ### Event photos & specs
 
 **Where:** the **Photos & specs** panel on an event's **monitoring detail** page

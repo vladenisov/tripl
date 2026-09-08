@@ -1045,3 +1045,49 @@ describe('EventForm scan maintenance notice', () => {
     expect(screen.queryByText(/Edited by hand/)).not.toBeInTheDocument()
   })
 })
+
+describe('EventForm field breakdown link', () => {
+  it('links a field the event already splits by to the Breakdowns tab', () => {
+    const splitting = {
+      ...EDIT_EVENT,
+      metric_breakdown_columns: ['product_id'],
+    } as unknown as TEvent
+    renderForm(splitting, { eventTypes: [EDIT_EVENT_TYPE] })
+
+    expect(screen.getByRole('link', { name: 'See every value this field takes' })).toHaveAttribute(
+      'href',
+      '/p/demo/monitoring/event/ev-1?tab=breakdowns&column=product_id',
+    )
+  })
+
+  it('offers to start splitting by a field, and says the data is not there yet', () => {
+    renderForm(EDIT_EVENT, { eventTypes: [EDIT_EVENT_TYPE] })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Split volume by this field' }))
+
+    // Not a link: the column was added in this session, so there are no
+    // collected rows behind it and the tab would open on an empty chart.
+    expect(screen.queryByRole('link', { name: /every value/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/Added to metric breakdowns/)).toBeInTheDocument()
+    // It is the same set the "Tags & breakdowns" chips drive, now switched on.
+    expect(screen.getByRole('button', { name: 'product_id', pressed: true })).toBeInTheDocument()
+  })
+
+  it('offers nothing on an event that does not exist yet', () => {
+    renderForm(null, { eventTypes: [EDIT_EVENT_TYPE] })
+    expect(
+      screen.queryByRole('button', { name: 'Split volume by this field' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('offers nothing for a JSON field, which is no warehouse column', () => {
+    const jsonType = {
+      ...EDIT_EVENT_TYPE,
+      field_definitions: [{ ...EDIT_EVENT_TYPE.field_definitions[0], field_type: 'json' }],
+    } as unknown as EventType
+    renderForm(EDIT_EVENT, { eventTypes: [jsonType] })
+    expect(
+      screen.queryByRole('button', { name: 'Split volume by this field' }),
+    ).not.toBeInTheDocument()
+  })
+})

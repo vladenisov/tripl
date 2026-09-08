@@ -195,13 +195,13 @@ function appVersionAdoptionResponse(scanConfigId: string) {
   }
 }
 
-function renderMonitoringPage() {
+function renderMonitoringPage(search = '') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/p/demo/monitoring/project-total/scan-1']}>
+      <MemoryRouter initialEntries={[`/p/demo/monitoring/project-total/scan-1${search}`]}>
         <Routes>
           <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
         </Routes>
@@ -563,11 +563,11 @@ function eventFixture() {
   }
 }
 
-function renderEventDetail() {
+function renderEventDetail(search = '') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/p/demo/monitoring/event/event-1']}>
+      <MemoryRouter initialEntries={[`/p/demo/monitoring/event/event-1${search}`]}>
         <Routes>
           <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
           <Route path="/p/:slug/events/:tab/:eventId/edit" element={<div>edit-page</div>} />
@@ -1851,5 +1851,60 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
       expect(callouts()).toHaveLength(0)
       expect(screen.queryByText(COLLECT_INSTRUCTION)).not.toBeInTheDocument()
     })
+  })
+})
+
+describe('MonitoringDetailPage deep links (tripl-h2sx.20)', () => {
+  it('opens the tab and the breakdown column the link names', async () => {
+    const fetchSpy = installEventDetailFetch({
+      breakdowns: {
+        event_id: 'event-1',
+        scan_config_id: 'scan-1',
+        interval: '1h',
+        columns: ['platform', 'screen'],
+        selected_column: 'screen',
+        series: [
+          {
+            breakdown_value: 'spot',
+            is_other: false,
+            total_count: 12000,
+            data: [metricPoint('2026-01-02T00:00:00Z', 12000)],
+            parity_anomalies: [],
+          },
+        ],
+      },
+    })
+    renderEventDetail('?tab=breakdowns&column=screen')
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    // No click: the link IS the navigation, which is the whole point of
+    // pointing a field value at the split that answers for it.
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: /Breakdowns/i })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      ),
+    )
+    await waitFor(() =>
+      expect(
+        fetchSpy.mock.calls.some(([input]) => {
+          const url = String(input)
+          return url.includes('/events/event-1/metrics/breakdowns') && url.includes('column=screen')
+        }),
+      ).toBe(true),
+    )
+  })
+
+  it('falls back to volume when the link names a tab this scope has no trigger for', async () => {
+    // The scan carries no app_version_column, so there is no "By version" tab
+    // to land on. Before the URL could pick a tab only `versions` needed this
+    // guard; now any of the five can be asked for by a stale or hand-edited
+    // link, and a value with no trigger leaves the reader on a blank page.
+    installEventDetailFetch()
+    renderEventDetail('?tab=versions')
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    expect(screen.queryByRole('tab', { name: /By version/i })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('tab')[0]).toHaveAttribute('aria-selected', 'true')
   })
 })
