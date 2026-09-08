@@ -218,6 +218,16 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     },
   })
 
+  const clearValuesMut = useMutation({
+    mutationFn: (id: string) => variablesApi.clearValues(slug, id, branchId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
+      // The contexts query key is an inline literal and sits OUTSIDE the
+      // variablesKey prefix, so the line above does not reach it.
+      qc.invalidateQueries({ queryKey: ['variable-values', slug, branchId] })
+    },
+  })
+
   const { data: overrides = [] } = useQuery({
     queryKey: ['variable-overrides', slug, branchId, editingVar?.id],
     queryFn: () => variableOverridesApi.list(slug, editingVar!.id, branchId),
@@ -384,6 +394,26 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
       qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
       deselect(id)
     },
+  })
+
+  const handleClearValues = useStableCallback(async (v: Variable) => {
+    const contextCount = v.context_count ?? 0
+    const ok = await confirm({
+      title: 'Clear observed values',
+      message:
+        `Clear the ${countOf(contextCount, 'observed value context', 'observed value contexts')} `
+        + `recorded for "${v.name}"? The variable keeps its description, documented values, `
+        + 'bindings, per-event overrides and every drift verdict.\n\n'
+        // Two things a person would otherwise discover the hard way. The first
+        // is why this is not simply undone by re-scanning; the second is that
+        // "keep the variable" is not a guarantee the sweep is bound by.
+        + `A later scan re-records a context only where an event field still says \${${v.name}}. `
+        + 'And if nothing refers to this variable any more, having no observed values makes it '
+        + "retirable — the next scan's cleanup may then remove it.",
+      confirmLabel: 'Clear values',
+      variant: 'danger',
+    })
+    if (ok) clearValuesMut.mutate(v.id)
   })
 
   const handleDelete = useStableCallback(async (v: Variable) => {
@@ -949,8 +979,22 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
               )}
               {editingVar && (
                 <div className="rounded-md border bg-muted/30 p-3">
-                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Observed values
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Observed values
+                    </div>
+                    {/* Sits with the thing it clears. Deleting the variable was
+                        the only reset available, and it takes everything else
+                        on the row with it (tripl-h2sx.21). */}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      disabled={(editingVar.context_count ?? 0) === 0 || clearValuesMut.isPending}
+                      onClick={() => handleClearValues(editingVar)}
+                    >
+                      Clear observed values
+                    </Button>
                   </div>
                   <div className="max-h-72 overflow-auto rounded border bg-background">
                     <Table>

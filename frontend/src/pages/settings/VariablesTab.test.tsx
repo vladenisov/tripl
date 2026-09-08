@@ -18,6 +18,7 @@ vi.mock('@/api/variables', () => ({
     update: vi.fn(),
     del: vi.fn(),
     values: vi.fn(),
+    clearValues: vi.fn(),
     bulkUpdate: vi.fn(),
     bulkDelete: vi.fn(),
   },
@@ -1320,5 +1321,55 @@ describe('VariablesTab', () => {
     expect(screen.getByText('${still_scanned}').closest('tr')).not.toHaveAttribute('data-focused')
 
     scrollIntoView.mockRestore()
+  })
+})
+
+describe('VariablesTab clear observed values (tripl-h2sx.21)', () => {
+  it('clears the contexts on confirm, and refreshes both queries', async () => {
+    vi.mocked(variablesApi.clearValues).mockResolvedValue(undefined as never)
+    mockList([makeVariable({ id: 'var-1', name: 'variant', source_name: 'variant', context_count: 2 })])
+    vi.mocked(variablesApi.values).mockResolvedValue([makeContext({ id: 'ctx-1' })])
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+    const dialog = await screen.findByRole('dialog')
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Clear observed values' }))
+
+    // The copy has to carry both surprises: a scan does not simply put them
+    // back, and an unreferenced variable can be swept once it has none.
+    expect(await screen.findByText(/observed value contexts/)).toBeInTheDocument()
+    expect(screen.getByText(/re-records a context only where/)).toBeInTheDocument()
+    expect(screen.getByText(/may then remove it/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear values' }))
+
+    await waitFor(() =>
+      expect(variablesApi.clearValues).toHaveBeenCalledWith('demo', 'var-1', null),
+    )
+  })
+
+  it('calls nothing when the confirm is dismissed', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant', source_name: 'variant', context_count: 2 })])
+    vi.mocked(variablesApi.values).mockResolvedValue([makeContext({ id: 'ctx-1' })])
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Clear observed values' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
+
+    expect(variablesApi.clearValues).not.toHaveBeenCalled()
+  })
+
+  it('offers nothing to clear when the scan has recorded nothing', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant', source_name: 'variant', context_count: 0 })])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+    const dialog = await screen.findByRole('dialog')
+
+    expect(within(dialog).getByRole('button', { name: 'Clear observed values' })).toBeDisabled()
   })
 })

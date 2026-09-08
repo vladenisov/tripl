@@ -3096,7 +3096,15 @@ export interface paths {
         get: operations["list_variable_values_api_v1_projects__slug__variables__variable_id__values_get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Clear Variable Values
+         * @description Drop the variable's observed contexts and keep the variable.
+         *
+         *     Deleting the variable was the only reset available and it takes the
+         *     description, documented values, bindings, overrides and drift triage with
+         *     it — none of which a scan rebuilds.
+         */
+        delete: operations["clear_variable_values_api_v1_projects__slug__variables__variable_id__values_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -17824,6 +17832,41 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["VariableValueContextResponse"][];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_variable_values_api_v1_projects__slug__variables__variable_id__values_delete: {
+        parameters: {
+            query?: {
+                /** @description Clear one context row instead of all of them. The id is the `id` on VariableValueContextResponse — the same value /values already returns, so a client can scope the clear to a single (event, field). */
+                context_id?: string | null;
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+                variable_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

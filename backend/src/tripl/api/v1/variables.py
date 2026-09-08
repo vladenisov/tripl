@@ -1,5 +1,5 @@
 import uuid
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query
 
@@ -181,6 +181,48 @@ async def list_variable_values(
     branch_id: BranchIdDep,
 ) -> list[VariableValue]:
     return await variable_value_service.list_variable_values(session, slug, variable_id, branch_id)
+
+
+@router.delete("/{variable_id}/values", status_code=204)
+async def clear_variable_values(
+    session: SessionDep,
+    slug: str,
+    variable_id: uuid.UUID,
+    current_user: EditorUserDep,
+    branch_id: BranchIdDep,
+    context_id: Annotated[
+        uuid.UUID | None,
+        Query(
+            description=(
+                "Clear one context row instead of all of them. The id is the `id` on"
+                " VariableValueContextResponse — the same value /values already returns,"
+                " so a client can scope the clear to a single (event, field)."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Drop the variable's observed contexts and keep the variable.
+
+    Deleting the variable was the only reset available and it takes the
+    description, documented values, bindings, overrides and drift triage with
+    it — none of which a scan rebuilds.
+    """
+    name, removed = await variable_service.clear_variable_values(
+        session, slug, variable_id, branch_id, context_id
+    )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="variable.values_clear",
+        target_type="variable",
+        target_id=variable_id,
+        target_name=name,
+        project_slug=slug,
+        payload={
+            "removed": removed,
+            **({"context_id": str(context_id)} if context_id else {}),
+        },
+    )
 
 
 @router.get("/{variable_id}/event-overrides", response_model=list[VariableEventOverrideResponse])

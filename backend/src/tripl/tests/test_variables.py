@@ -1085,3 +1085,153 @@ def test_excluded_variable_raises_no_drift_alert_candidate(sync_session: Session
     sync_session.commit()
     candidates = _get_active_variable_value_drift_candidates(sync_session, config)
     assert [candidate.drift_field for candidate in candidates.values()] == ["variant"]
+
+
+@pytest.mark.asyncio
+async def test_clearing_observed_values_keeps_everything_a_person_put_there(client: AsyncClient):
+    """The reset that used to require deleting the whole variable.
+
+    Deleting takes the description, documented values, bindings, per-event
+    overrides and drift triage with it; none of that is rebuilt by a scan.
+    """
+    await _setup_project(client, "var-clear")
+    et_resp = await client.post(
+        "/api/v1/projects/var-clear/event-types",
+        json={"name": "pv", "display_name": "Page View"},
+    )
+    event_type_id = et_resp.json()["id"]
+    field_resp = await client.post(
+        f"/api/v1/projects/var-clear/event-types/{event_type_id}/fields",
+        json={"name": "screen", "display_name": "Screen", "field_type": "string"},
+    )
+    field_id = field_resp.json()["id"]
+    variable_resp = await client.post(
+        "/api/v1/projects/var-clear/variables",
+        json={
+            "name": "variant",
+            "variable_type": "string",
+            "description": "Which layout the user saw",
+            "allowed_values": ["a", "b"],
+            "bindings": ["page_data.extra.variant"],
+        },
+    )
+    variable_id = uuid.UUID(variable_resp.json()["id"])
+    event_resp = await client.post(
+        "/api/v1/projects/var-clear/events",
+        json={
+            "event_type_id": event_type_id,
+            "name": "Profile View",
+            "field_values": [{"field_definition_id": field_id, "value": "${variant}"}],
+        },
+    )
+    event_id = uuid.UUID(event_resp.json()["id"])
+    override = await client.put(
+        f"/api/v1/projects/var-clear/variables/{variable_id}/event-overrides/{event_id}",
+        json={"values": ["a"]},
+    )
+    assert override.status_code in (200, 201)
+
+    async with TestSessionLocal() as session, session.begin():
+        variable = await session.get(Variable, variable_id)
+        assert variable is not None
+        session.add(
+            VariableValue(
+                project_id=variable.project_id,
+                branch_id=variable.branch_id,
+                variable_id=variable.id,
+                event_id=event_id,
+                field_definition_id=uuid.UUID(field_id),
+                source_column="variant",
+                value_kind="low",
+                observed_count=3,
+                values=["a", "b", "stale"],
+            )
+        )
+
+    resp = await client.delete(f"/api/v1/projects/var-clear/variables/{variable_id}/values")
+    assert resp.status_code == 204
+
+    values_resp = await client.get(f"/api/v1/projects/var-clear/variables/{variable_id}/values")
+    assert values_resp.json() == []
+
+    listed = await client.get("/api/v1/projects/var-clear/variables")
+    variable_row = listed.json()["items"][0]
+    assert variable_row["name"] == "variant"
+    assert variable_row["description"] == "Which layout the user saw"
+    assert variable_row["allowed_values"] == ["a", "b"]
+    assert variable_row["bindings"] == ["page_data.extra.variant"]
+    assert variable_row["context_count"] == 0
+
+    overrides = await client.get(
+        f"/api/v1/projects/var-clear/variables/{variable_id}/event-overrides"
+    )
+    assert [row["values"] for row in overrides.json()] == [["a"]]
+
+
+@pytest.mark.asyncio
+async def test_clearing_one_context_leaves_the_others(client: AsyncClient):
+    await _setup_project(client, "var-clear-one")
+    et_resp = await client.post(
+        "/api/v1/projects/var-clear-one/event-types",
+        json={"name": "pv", "display_name": "Page View"},
+    )
+    event_type_id = et_resp.json()["id"]
+    field_resp = await client.post(
+        f"/api/v1/projects/var-clear-one/event-types/{event_type_id}/fields",
+        json={"name": "screen", "display_name": "Screen", "field_type": "string"},
+    )
+    field_id = field_resp.json()["id"]
+    variable_resp = await client.post(
+        "/api/v1/projects/var-clear-one/variables",
+        json={"name": "variant", "variable_type": "string"},
+    )
+    variable_id = uuid.UUID(variable_resp.json()["id"])
+    event_ids = []
+    for name in ("Profile View", "Spot View"):
+        created = await client.post(
+            "/api/v1/projects/var-clear-one/events",
+            json={
+                "event_type_id": event_type_id,
+                "name": name,
+                "field_values": [{"field_definition_id": field_id, "value": "${variant}"}],
+            },
+        )
+        event_ids.append(uuid.UUID(created.json()["id"]))
+
+    async with TestSessionLocal() as session, session.begin():
+        variable = await session.get(Variable, variable_id)
+        assert variable is not None
+        for event_id in event_ids:
+            session.add(
+                VariableValue(
+                    project_id=variable.project_id,
+                    branch_id=variable.branch_id,
+                    variable_id=variable.id,
+                    event_id=event_id,
+                    field_definition_id=uuid.UUID(field_id),
+                    source_column="variant",
+                    value_kind="low",
+                    observed_count=1,
+                    values=["a"],
+                )
+            )
+
+    before = await client.get(f"/api/v1/projects/var-clear-one/variables/{variable_id}/values")
+    assert len(before.json()) == 2
+    doomed = next(row for row in before.json() if row["event_name"] == "Profile View")
+
+    resp = await client.delete(
+        f"/api/v1/projects/var-clear-one/variables/{variable_id}/values",
+        params={"context_id": doomed["id"]},
+    )
+    assert resp.status_code == 204
+
+    after = await client.get(f"/api/v1/projects/var-clear-one/variables/{variable_id}/values")
+    assert [row["event_name"] for row in after.json()] == ["Spot View"]
+
+
+@pytest.mark.asyncio
+async def test_clearing_values_on_an_unknown_variable_is_a_404(client: AsyncClient):
+    await _setup_project(client, "var-clear-404")
+    resp = await client.delete(f"/api/v1/projects/var-clear-404/variables/{uuid.uuid4()}/values")
+    assert resp.status_code == 404

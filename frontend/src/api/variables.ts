@@ -66,6 +66,20 @@ export const variablesApi = {
     api.get<VariableValueContext[]>(
       withBranch(`/projects/${slug}/variables/${id}/values`, branchId),
     ),
+  /** Drop this variable's observed contexts, keeping the variable itself along
+   * with its description, documented values, bindings, per-event overrides and
+   * drift verdicts. Pass `contextId` to clear one (event, field) row instead of
+   * all of them. `withBranch` appends with `&` when a query string is already
+   * there, so the order below is safe. */
+  clearValues: (slug: string, id: string, branchId?: string | null, contextId?: string) =>
+    api.del(
+      withBranch(
+        `/projects/${slug}/variables/${id}/values${
+          contextId ? `?context_id=${encodeURIComponent(contextId)}` : ''
+        }`,
+        branchId,
+      ),
+    ),
   del: (slug: string, id: string, branchId?: string | null) =>
     api.del(withBranch(`/projects/${slug}/variables/${id}`, branchId)),
   bulkUpdate: (

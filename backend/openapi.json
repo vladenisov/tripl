@@ -33018,6 +33018,87 @@
       }
     },
     "/api/v1/projects/{slug}/variables/{variable_id}/values": {
+      "delete": {
+        "description": "Drop the variable's observed contexts and keep the variable.\n\nDeleting the variable was the only reset available and it takes the\ndescription, documented values, bindings, overrides and drift triage with\nit \u2014 none of which a scan rebuilds.",
+        "operationId": "clear_variable_values_api_v1_projects__slug__variables__variable_id__values_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "variable_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Variable Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Clear one context row instead of all of them. The id is the `id` on VariableValueContextResponse \u2014 the same value /values already returns, so a client can scope the clear to a single (event, field).",
+            "in": "query",
+            "name": "context_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Clear one context row instead of all of them. The id is the `id` on VariableValueContextResponse \u2014 the same value /values already returns, so a client can scope the clear to a single (event, field).",
+              "title": "Context Id"
+            }
+          },
+          {
+            "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+            "in": "query",
+            "name": "branch",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+              "title": "Branch"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clear Variable Values",
+        "tags": [
+          "variables"
+        ]
+      },
       "get": {
         "operationId": "list_variable_values_api_v1_projects__slug__variables__variable_id__values_get",
         "parameters": [

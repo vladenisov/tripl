@@ -57,6 +57,43 @@ tripl deliberately keeps two kinds of value list separate:
   the full list and behave as high-cardinality — whose stored list is a capped
   sample — from then on.
 
+### The other store: an event's own field value
+
+Accumulation is a property of observed values, and **only** of them. An event's
+plain field value is a single string: one value per field, per event, full stop.
+That matters because a scan can produce several warehouse rows for one event —
+one per breakdown combination — and they collapse onto that one field.
+
+The rule is **the busiest row wins**. Rows are applied in ascending order of
+volume, so the highest-count row for an identity is written last and its value
+is the one stored. A rare row cannot overwrite the common case: an event seen
+12,000 times on `spot` and three times on `purchase/main` keeps `spot`.
+
+Nothing is merged, and nothing warns you in the plan itself — so when a field
+did see more than one value, the **scan report says so**, naming the field and
+how many values it saw (`windbar_tap.screen (3 values)`). Read that as "this
+field varies across the rows behind this event"; the stored value is the
+dominant one, not the only one.
+
+Ordering between events is unaffected: identities keep first-appearance order,
+so the sort changes which value survives, never which events exist or in what
+order they were created.
+
+### Clearing what a scan has recorded
+
+**Plan › Variables › edit a variable › Clear observed values** drops that
+variable's contexts and keeps everything else on the row — description,
+documented values, bindings, per-event overrides, and every drift verdict. It
+is the reset that previously required deleting the whole variable, which took
+all of that with it.
+
+Two consequences worth knowing before you use it. A later scan re-records a
+context only where an event field still refers to the variable, so a context
+whose event has moved on does not come back. And because "has observed values"
+is one of the reasons the retirement sweep keeps a variable, clearing them can
+make an otherwise unreferenced variable retirable — the next scan's cleanup may
+then remove it.
+
 A **context** is one (variable, event, field) pairing — the record that this
 event's field refers to this variable through that binding. The context and the
 values are separate facts, and the context comes first: it exists as soon as
