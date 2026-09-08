@@ -51,9 +51,11 @@ export const eventsApi = {
     data: {
       event_type_id: string
       name: string
+      title?: string
       description?: string
       status?: string
       sunset_at?: string | null
+      owner_id?: string | null
       tags?: string[]
       metric_breakdown_columns?: string[]
       field_values?: { field_definition_id: string; value: string }[]
@@ -66,9 +68,11 @@ export const eventsApi = {
     id: string,
     data: {
       name?: string
+      title?: string
       description?: string
       status?: string
       sunset_at?: string | null
+      owner_id?: string | null
       tags?: string[]
       metric_breakdown_columns?: string[]
       field_values?: { field_definition_id: string; value: string }[]

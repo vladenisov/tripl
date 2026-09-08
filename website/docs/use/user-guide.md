@@ -227,6 +227,11 @@ it is what populates monitoring later.
    `Onboarding`) so a catalog of hundreds of events stays organised.
 2. **Events** — add events, give each a clear description, and attach the
    **fields** it carries. Mark any field that holds personal or sensitive data.
+   Where a scan names the events of a type, the **Name** is written for you
+   from the field values and is the identity collection matches on — put the
+   human-readable label in **Title** instead (`Order paid`, `Video started`).
+   The title shows beside the name in lists, the diff and the event page, is
+   searchable, and can be changed at any time without touching the identity.
 3. **Schema & fields** — define **meta fields** that ride along with every event
    (app version, platform, country), reusable **variables** for templates you
    use in more than one place, and **relations** that record how one event is
@@ -261,7 +266,10 @@ full workflow.
 
 As events get built and verified, move them through their statuses — **Draft**,
 **In Review**, **Ready for Dev**, **Implemented**, **Live** — and **Deprecate**
-or **Archive** the ones you retire. Reviewing is tracked separately: mark an
+or **Archive** the ones you retire. The last step happens on its own: the
+first data collection sees for an event in **Ready for Dev** or **Implemented**
+moves it to **Live**. **Draft** and **In Review** events stay put, so stray
+traffic never promotes an event nobody has signed off on. Reviewing is tracked separately: mark an
 event **reviewed** once you've checked it, independent of its status. The two
 axes really are independent — an event can be marked reviewed and still sit in
 **In Review** — which is why the header's **In review** stat counts events whose
@@ -306,6 +314,17 @@ branch instead — the same idea as a pull request for code.
    settings. If both sides changed the same state differently, merge reports a
    conflict. Older branches without a complete merge baseline must be recreated
    from current main.
+
+Handing a branch to a developer works the same way: send the link. Catalog
+rows, diff rows and the command palette keep the branch in the URL
+(`?branch=`), and an event opened from such a link shows a banner naming the
+branch, so the developer reads the right copy rather than main's. On that
+event's monitoring page, an event that is not yet live shows a **Spec** card —
+the identity with a copy button, the fields with the ones that name the event
+marked, documented variable values and an example payload — with **Copy as
+JSON** / **Copy as Markdown** for the ticket. If a diff row carries a warning
+that an event on the branch has **no scan identity**, fix that before merging:
+such an event would never match its traffic.
 
 If an event type has **owners**, merging a branch that touches it requires a
 sign-off from one of them.

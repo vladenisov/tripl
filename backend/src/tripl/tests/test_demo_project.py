@@ -470,7 +470,7 @@ async def test_demo_branch_diff_is_exactly_one_modified_event(client: AsyncClien
     diff_resp = await client.get(f"/api/v1/projects/{slug}/branches/{feature['id']}/diff")
     assert diff_resp.status_code == 200
     diff = diff_resp.json()
-    assert diff["summary"] == {"added": 0, "removed": 0, "changed": 1}
+    assert diff["summary"] == {"added": 0, "removed": 0, "changed": 1, "housekeeping": 0}
     assert len(diff["entries"]) == 1, diff["entries"]
 
     entry = diff["entries"][0]
@@ -616,7 +616,7 @@ async def test_demo_branch_change_and_drift_are_deterministic() -> None:
         second_diff = await _branch_diff_shape(session, "demo-branchB", second_id)
         assert first_diff == second_diff
         entries, summary, behind_base = first_diff
-        assert summary == {"added": 0, "removed": 0, "changed": 1}
+        assert summary == {"added": 0, "removed": 0, "changed": 1, "housekeeping": 0}
         assert entries[0][1] == "changed"
         assert entries[0][3] == "Buy Button Click"
         assert behind_base is False

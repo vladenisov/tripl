@@ -48,8 +48,11 @@ An **event** is one thing that happens in your product that you care about:
 `checkout_completed`, `video_played`, `signup_started`. It's the central object
 in tripl. An event has a name, a description, the fields it carries, and a
 lifecycle status: `draft`, `in_review`, `ready_for_dev`, `implemented`, `live`,
-`deprecated`, or `archived`. Review state, owner, and an optional deprecation
-sunset date add workflow context without changing the event's identity.
+`deprecated`, or `archived`. Where a scan names events, the name is also the
+event's *scan identity* — the key collection matches on; an optional **title**
+is a free-text label shown beside it and never part of the identity. Review
+state, owner, and an optional deprecation sunset date add workflow context
+without changing the event's identity.
 
 ### Event type
 

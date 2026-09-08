@@ -83,10 +83,15 @@ export function EventTypesTab({ slug }: { slug: string }) {
 
   // Per-type owners drive the list's Owner column and the derived merge Status
   // (no owners ⇒ anyone can merge ⇒ "ungated"; owners present ⇒ "gated").
+  // Owners are a main-plan fact keyed by MAIN's type ids. A branch lists its
+  // own deep-copied ids, so asking for their owners was one 404 per type on
+  // every visit in branch context, for a column the page then hid anyway
+  // (tripl-kjhi.11). The editor for owners is likewise main-only.
   const ownerQueries = useQueries({
     queries: eventTypes.map((et) => ({
       queryKey: ['eventTypeOwners', slug, et.id],
       queryFn: () => eventTypeOwnersApi.list(slug, et.id),
+      enabled: branchId === null,
     })),
   })
   const ownersByType = new Map<string, EventTypeOwner[]>()

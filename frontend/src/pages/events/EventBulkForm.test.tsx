@@ -6,7 +6,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EventType } from '@/types'
 import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
-import { scansApi } from '@/api/scans'
 import EventBulkForm from './EventBulkForm'
 
 vi.mock('@/api/events', () => ({
@@ -16,25 +15,21 @@ vi.mock('@/api/events', () => ({
   },
 }))
 vi.mock('@/api/eventTypes', () => ({ eventTypesApi: { list: vi.fn() } }))
-vi.mock('@/api/scans', () => ({ scansApi: { list: vi.fn() } }))
 
+// The rule arrives ON the type, resolved by the server — not read off the scan
+// list by event_type_id, which a branch copy of the type never matches
+// (tripl-kjhi.1).
 const SE_TYPE = {
   id: 'et-se',
   name: 'se',
   display_name: 'Structured Event',
+  event_name_format: '{category}:{action}:{label}',
   field_definitions: [
     { id: 'f-category', name: 'category', display_name: 'Category', field_type: 'string', is_required: false, order: 0 },
     { id: 'f-action', name: 'action', display_name: 'Action', field_type: 'string', is_required: false, order: 1 },
     { id: 'f-label', name: 'label', display_name: 'Label', field_type: 'string', is_required: false, order: 2 },
   ],
 } as unknown as EventType
-
-const RULED_SCAN = {
-  id: 'scan-se',
-  event_type_id: 'et-se',
-  event_name_format: '{category}:{action}:{label}',
-  updated_at: '2026-01-01T00:00:00Z',
-} as never
 
 let queryClient: QueryClient
 
@@ -65,7 +60,6 @@ async function chooseType(id = 'et-se') {
 beforeEach(() => {
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   vi.mocked(eventTypesApi.list).mockResolvedValue([SE_TYPE])
-  vi.mocked(scansApi.list).mockResolvedValue([RULED_SCAN])
   vi.mocked(eventsApi.list).mockResolvedValue({ items: [], total: 0 } as never)
   vi.mocked(eventsApi.bulkCreate).mockResolvedValue([] as never)
 })
@@ -114,6 +108,54 @@ describe('EventBulkForm', () => {
     )
   })
 
+  it('carries a title given after the identity columns, and previews it', async () => {
+    render(createElement(EventBulkForm), { wrapper })
+    await chooseType()
+    fireEvent.change(await screen.findByLabelText('Events to create'), {
+      target: { value: 'weather_alert,show,widget,Weather alert widget shown' },
+    })
+
+    // The label is visible before it is stored, next to the identity it never
+    // becomes part of (tripl-kjhi.3).
+    expect(await screen.findByText('weather_alert:show:widget')).toBeInTheDocument()
+    expect(screen.getByText('Weather alert widget shown')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Create 1 event' }))
+
+    await waitFor(() =>
+      expect(eventsApi.bulkCreate).toHaveBeenCalledWith(
+        'demo',
+        [
+          expect.objectContaining({
+            name: 'weather_alert:show:widget',
+            title: 'Weather alert widget shown',
+            field_values: [
+              { field_definition_id: 'f-category', value: 'weather_alert' },
+              { field_definition_id: 'f-action', value: 'show' },
+              { field_definition_id: 'f-label', value: 'widget' },
+            ],
+          }),
+        ],
+        null,
+      ),
+    )
+  })
+
+  it('takes free names from a type no rule governs', async () => {
+    vi.mocked(eventTypesApi.list).mockResolvedValue([
+      { ...SE_TYPE, event_name_format: null, field_definitions: [] } as unknown as EventType,
+    ])
+    render(createElement(EventBulkForm), { wrapper })
+    await chooseType()
+    fireEvent.change(await screen.findByLabelText('Events to create'), {
+      target: { value: 'checkout:started\tCheckout started\ncheckout:completed' },
+    })
+
+    expect(await screen.findByText('checkout:started')).toBeInTheDocument()
+    expect(screen.getByText('Checkout started')).toBeInTheDocument()
+    expect(screen.getByText('checkout:completed')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create 2 events' })).not.toBeDisabled()
+  })
+
   it('leaves out the lines it cannot create, and says why', async () => {
     vi.mocked(eventsApi.list).mockResolvedValue({
       items: [{ id: 'ev-1', name: 'spot:open:models', source_name: 'spot:open:models' }],
@@ -154,5 +196,33 @@ describe('EventBulkForm', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/needs platform/)
     expect(screen.queryByLabelText('Events to create')).not.toBeInTheDocument()
+  })
+
+  it('preselects the type the route names, once (tripl-kjhi.13)', async () => {
+    render(createElement(EventBulkForm), {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          createElement(
+            MemoryRouter,
+            { initialEntries: ['/p/demo/events/se/bulk'] },
+            createElement(
+              Routes,
+              null,
+              createElement(Route, { path: '/p/:slug/events/:tab/bulk', element: children }),
+            ),
+          ),
+        ),
+    })
+
+    await screen.findByRole('option', { name: 'Structured Event' })
+    await waitFor(() => expect(screen.getByLabelText(/Event type/)).toHaveValue('et-se'))
+    // The rule's columns appear without a click, as on the single-event form.
+    expect(await screen.findByLabelText('Events to create')).toBeInTheDocument()
+
+    // A reader who clears the choice is not overruled.
+    fireEvent.change(screen.getByLabelText(/Event type/), { target: { value: '' } })
+    await waitFor(() => expect(screen.getByLabelText(/Event type/)).toHaveValue(''))
   })
 })

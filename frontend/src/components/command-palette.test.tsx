@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AuthUser } from '@/types'
 import { buildNavGroups } from '@/lib/navigation'
 import { AuthContext, type AuthContextValue } from './auth-context'
+import { BranchProvider } from './branch-context'
 import { CommandPaletteProvider } from './command-palette'
 import {
   COMMAND_PALETTE_TRIGGER_ATTR,
@@ -95,13 +96,35 @@ function TopBarTrigger() {
 
 function LocationBeacon() {
   const location = useLocation()
-  return <div data-testid="location">{location.pathname}</div>
+  return (
+    <>
+      <div data-testid="location">{location.pathname}</div>
+      {/* Separate from the pathname beacon so the many exact-path assertions
+          above stay untouched; only the branch test reads the query. */}
+      <div data-testid="location-search">{location.search}</div>
+    </>
+  )
 }
 
-function renderHarness(initialEntry = '/p/demo/events', auth: AuthContextValue = authValue) {
+function renderHarness(
+  initialEntry = '/p/demo/events',
+  auth: AuthContextValue = authValue,
+  {
+    // Opt-in: with a BranchProvider mounted the palette's requests carry
+    // `?branch=`, which the exact-URL fetch mocks of the other tests reject.
+    withBranchProvider = false,
+  }: { withBranchProvider?: boolean } = {},
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+  const eventsSurface = (
+    <CommandPaletteProvider>
+      <LocationBeacon />
+      <PaletteOpener />
+      <TopBarTrigger />
+    </CommandPaletteProvider>
+  )
   return render(
     <QueryClientProvider client={queryClient}>
       <AuthContext.Provider value={auth}>
@@ -110,11 +133,11 @@ function renderHarness(initialEntry = '/p/demo/events', auth: AuthContextValue =
             <Route
               path="/p/:slug/events"
               element={
-                <CommandPaletteProvider>
-                  <LocationBeacon />
-                  <PaletteOpener />
-                  <TopBarTrigger />
-                </CommandPaletteProvider>
+                withBranchProvider ? (
+                  <BranchProvider slug="demo">{eventsSurface}</BranchProvider>
+                ) : (
+                  eventsSurface
+                )
               }
             />
             <Route
@@ -138,6 +161,9 @@ function renderHarness(initialEntry = '/p/demo/events', auth: AuthContextValue =
 
 afterEach(() => {
   vi.restoreAllMocks()
+  // BranchProvider persists the selection per slug; a branch left behind by
+  // one test would silently attach `?branch=` to the next test's requests.
+  window.localStorage.clear()
 })
 
 describe('CommandPalette', () => {
@@ -824,10 +850,13 @@ describe('CommandPalette ranking and filtering (tripl-k6gt)', () => {
     // the whole round trip — measured at over 2.2s, during which the dialog held
     // zero selectable rows while the events table behind it listed the very rows
     // being searched for. Narrowing beats blanking.
+    // Every query is two requests — the keyword-only leg and the full one
+    // (tripl-kjhi.15) — so the first query's pair answers and the second
+    // query's pair never does.
     let searches = 0
     mockPalette({ id: 'project-1', name: 'Demo', slug: 'demo' }, async () => {
       searches += 1
-      if (searches > 1) return new Promise<Response>(() => {})
+      if (searches > 2) return new Promise<Response>(() => {})
       return mockJsonResponse({
         items: [
           searchDocument({
@@ -855,7 +884,7 @@ describe('CommandPalette ranking and filtering (tripl-k6gt)', () => {
     // Wait until the SECOND request is actually out, so this is the new query
     // key and not just the debounce window: that is the moment the rows used to
     // disappear.
-    await waitFor(() => expect(searches).toBe(2))
+    await waitFor(() => expect(searches).toBe(4))
     expect(screen.getByText('Session Started')).toBeInTheDocument()
     expect(screen.getByText('Updating results…')).toBeInTheDocument()
     // The cold-start line belongs to a palette session that has never had
@@ -869,10 +898,13 @@ describe('CommandPalette ranking and filtering (tripl-k6gt)', () => {
     // record of which query they answer, "checkout"'s results came back under
     // "Updating results…" for every later search, dimmed but selectable: Enter
     // navigated to a checkout result while the input read something else.
+    // Every query is two requests — the keyword-only leg and the full one
+    // (tripl-kjhi.15) — so the first query's pair answers and the second
+    // query's pair never does.
     let searches = 0
     mockPalette({ id: 'project-1', name: 'Demo', slug: 'demo' }, async () => {
       searches += 1
-      if (searches > 1) return new Promise<Response>(() => {})
+      if (searches > 2) return new Promise<Response>(() => {})
       return mockJsonResponse({
         items: [
           searchDocument({
@@ -899,7 +931,7 @@ describe('CommandPalette ranking and filtering (tripl-k6gt)', () => {
     fireEvent.change(input, { target: { value: '' } })
     fireEvent.change(input, { target: { value: 'zzzqqq' } })
 
-    await waitFor(() => expect(searches).toBe(2))
+    await waitFor(() => expect(searches).toBe(4))
     expect(screen.queryByText('Session Started')).toBeNull()
     expect(screen.queryByText('Updating results…')).toBeNull()
     expect(screen.getByText('Searching.')).toBeInTheDocument()
@@ -1012,5 +1044,90 @@ describe('CommandPalette focus restore', () => {
       expect(document.activeElement).toBe(screen.getByTestId('topbar-trigger'))
     })
     expect(document.activeElement).not.toBe(document.body)
+  })
+})
+
+describe('CommandPalette keyword-first results (tripl-kjhi.15)', () => {
+  const PROJECT = {
+    id: 'project-1',
+    name: 'Demo',
+    slug: 'demo',
+    description: '',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    summary: {
+      event_type_count: 0,
+      event_count: 0,
+      active_event_count: 0,
+      implemented_event_count: 0,
+      review_pending_event_count: 0,
+      archived_event_count: 0,
+      variable_count: 0,
+      scan_count: 0,
+      alert_destination_count: 0,
+      alert_rule_count: 0,
+      monitoring_signal_count: 0,
+      latest_scan_job: null,
+      latest_signal: null,
+    },
+  }
+  const result = (title: string, semantic: boolean) => ({
+    id: `doc-${title}`,
+    entity_type: 'event',
+    entity_id: `event-${title}`,
+    parent_event_id: `event-${title}`,
+    title,
+    subtitle: 'Checkout',
+    snippet: 'matched text',
+    route_path: `/p/demo/events/detail/event-${title}`,
+    score: 8,
+    highlights: [],
+    semantic_used: semantic,
+  })
+
+  it('shows the lexical answer while the semantic one is still in flight, then upgrades', async () => {
+    let releaseSemantic: (() => void) | null = null
+    const asked: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects')) return mockJsonResponse([PROJECT])
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/search?')) {
+        asked.push(url)
+        if (url.includes('semantic=false')) {
+          return mockJsonResponse({
+            items: [result('Checkout Completed', false)],
+            total: 1,
+            semantic_used: false,
+          })
+        }
+        await new Promise<void>(resolve => {
+          releaseSemantic = resolve
+        })
+        return mockJsonResponse({
+          items: [result('Checkout Completed', false), result('Order Paid', true)],
+          total: 2,
+          semantic_used: true,
+        })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderHarness('/p/demo/events')
+    fireEvent.click(screen.getByTestId('open-palette'))
+    fireEvent.change(await screen.findByPlaceholderText(/Search projects/i), {
+      target: { value: 'checkout' },
+    })
+
+    // The keyword rows are on screen with the vector leg still unanswered.
+    expect(await screen.findByText('Checkout Completed')).toBeInTheDocument()
+    expect(screen.queryByText('Order Paid')).not.toBeInTheDocument()
+    expect(asked.some(url => url.includes('semantic=false'))).toBe(true)
+    expect(asked.some(url => !url.includes('semantic=false'))).toBe(true)
+
+    await waitFor(() => expect(releaseSemantic).not.toBeNull())
+    releaseSemantic!()
+    expect(await screen.findByText('Order Paid')).toBeInTheDocument()
+    expect(screen.getByText('Checkout Completed')).toBeInTheDocument()
   })
 })

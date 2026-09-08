@@ -64,6 +64,7 @@ from tripl.semver import (
     APP_VERSION_OTHER_LABEL,
     order_versions,
 )
+from tripl.services._branch_counterparts import main_counterparts, metrics_row_for
 from tripl.services.monitoring_utils import (
     classify_signal_state,
     latest_bucket_by_scan,
@@ -93,7 +94,8 @@ async def _resolve_event(
     event = await session.get(Event, event_id)
     if event is None or event.project_id != project_id:
         raise HTTPException(404, "Event not found")
-    return event
+    # A branch copy has no metrics of its own; its main twin has them all.
+    return await metrics_row_for(session, project_id=project_id, event=event)
 
 
 async def _resolve_event_type(
@@ -1869,6 +1871,22 @@ async def get_events_window_metrics(
 
     project = await _resolve_project(session, slug)
 
+    # Branch copies read through to their main twins (tripl-kjhi.9): the batch
+    # runs on the twin ids and each response is stamped with the id asked for.
+    requested_rows = (
+        (
+            await session.execute(
+                select(Event).where(Event.project_id == project.id, Event.id.in_(event_ids))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    twins = await main_counterparts(session, project_id=project.id, events=requested_rows)
+    twin_id_for = {event_id: twin.id for event_id, twin in twins.items()}
+    requested_ids = list(dict.fromkeys(event_ids))
+    event_ids = list(dict.fromkeys(twin_id_for.get(event_id, event_id) for event_id in event_ids))
+
     # Which scan config last reported each requested event, resolved as a
     # correlated "newest bucket wins" lookup per event.
     #
@@ -2004,7 +2022,8 @@ async def get_events_window_metrics(
         ),
     )
     responses: list[EventWindowMetricsResponse] = []
-    for event_id in event_ids:
+    for requested_id in requested_ids:
+        event_id = twin_id_for.get(requested_id, requested_id)
         if event_id not in valid_event_ids_set:
             continue
 
@@ -2031,7 +2050,7 @@ async def get_events_window_metrics(
         )
         responses.append(
             EventWindowMetricsResponse(
-                event_id=event_id,
+                event_id=requested_id,
                 scan_config_id=scan_config_id,
                 interval=interval,
                 total_count=sum(count for _bucket, count in metric_rows),

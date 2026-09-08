@@ -4,7 +4,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { EventType } from '@/types'
 import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
-import { scansApi } from '@/api/scans'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
@@ -59,7 +58,10 @@ export default function EventBulkForm() {
   const branchId = useActiveBranchId()
   const qc = useQueryClient()
 
-  const [etId, setEtId] = useState('')
+  // `null` is "not chosen yet": until the reader picks, the type the route names
+  // (`/events/se/bulk`) is the choice, as on the single-event form
+  // (tripl-kjhi.13). A cleared select is '' — a choice — and stays cleared.
+  const [chosenEtId, setEtId] = useState<string | null>(null)
   const [status, setStatus] = useState<EventStatus>('draft')
   const [draft, setDraft] = useState('')
 
@@ -72,28 +74,17 @@ export default function EventBulkForm() {
     queryFn: () => eventTypesApi.list(slug!, branchId),
     enabled: !!slug,
   })
-  const { data: scanConfigs } = useQuery({
-    queryKey: ['scans', slug],
-    queryFn: () => scansApi.list(slug!),
-    enabled: !!slug,
-  })
-
   const eventTypes = eventTypesQuery.data ?? EMPTY_EVENT_TYPES
+  const routedEt = tab && tab !== 'all' ? eventTypes.find(et => et.name === tab) : undefined
+  const etId = chosenEtId ?? routedEt?.id ?? ''
   const selectedEt = eventTypes.find(et => et.id === etId)
 
-  // Same resolution the single form uses: a config bound to this exact type
-  // wins over a project-wide one, ties break on the most recently updated.
-  const nameFormat = useMemo(() => {
-    if (!etId) return null
-    const ruled = (scanConfigs ?? []).filter(
-      sc => !!sc.event_name_format && (sc.event_type_id === etId || sc.event_type_id === null),
-    )
-    const exact = ruled.filter(sc => sc.event_type_id === etId)
-    const candidates = exact.length > 0 ? exact : ruled
-    return [...candidates]
-      .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))[0]
-      ?.event_name_format ?? null
-  }, [etId, scanConfigs])
+  // The rule comes with the type, resolved by the server, as on the single
+  // form. It used to be picked out of the scan configs by event_type_id, which
+  // on a plan branch never matched — the branch copy of a type has a new id no
+  // config names — so the page took free names for events a scan rule governs
+  // (tripl-kjhi.1).
+  const nameFormat = selectedEt?.event_name_format ?? null
 
   const namingColumns = useMemo(() => [...nameFormatBaseColumns(nameFormat)], [nameFormat])
   const fieldsByName = useMemo(
@@ -148,6 +139,9 @@ export default function EventBulkForm() {
         ready.map(row => ({
           event_type_id: etId,
           name: row.name,
+          // Only when the line gave one: the label is optional and an empty
+          // string would read as a deliberate blank.
+          ...(row.title ? { title: row.title } : {}),
           status,
           field_values: namingColumns.flatMap((column, position) => {
             const field = fieldsByName.get(column)
@@ -180,6 +174,11 @@ export default function EventBulkForm() {
       ? `One event per line: ${namingColumns.join(', then ')}, separated by a tab or a comma.`
       : `One ${namingColumns[0] ?? 'value'} per line.`
     : 'One event name per line.'
+  // The title is what follows the identity; with a single column only a tab can
+  // follow it, because the value itself may carry commas (tripl-kjhi.3).
+  const titleHint = namingColumns.length > 1
+    ? 'Add a title after the identity columns, e.g. weather_alert,show,widget,Weather alert widget shown.'
+    : 'Add a title after a tab, e.g. sign_up, a tab, then User signs up.'
 
   return (
     <div className="h-full overflow-y-auto">
@@ -249,8 +248,8 @@ export default function EventBulkForm() {
               title="The list"
               subtitle={
                 nameFormat
-                  ? `${columnHint} Each event is named by the scan rule ${nameFormat}.`
-                  : columnHint
+                  ? `${columnHint} Each event is named by the scan rule ${nameFormat}. ${titleHint}`
+                  : `${columnHint} ${titleHint}`
               }
             >
               <div className="px-[18px] py-[15px]">
@@ -287,6 +286,7 @@ export default function EventBulkForm() {
                       <tr style={{ color: 'var(--fg-subtle)' }}>
                         <th scope="col" className="px-[18px] py-2 text-left font-medium">Line</th>
                         <th scope="col" className="py-2 text-left font-medium">Event</th>
+                        <th scope="col" className="px-[18px] py-2 text-left font-medium">Title</th>
                         <th scope="col" className="px-[18px] py-2 text-left font-medium">Status</th>
                       </tr>
                     </thead>
@@ -300,6 +300,14 @@ export default function EventBulkForm() {
                             {row.line}
                           </td>
                           <td className="mono py-[6px]">{row.name}</td>
+                          {/* The parse is the only place a stray fourth column
+                              becomes visible before it is stored as a title. */}
+                          <td
+                            className="px-[18px] py-[6px]"
+                            style={{ color: row.title ? undefined : 'var(--fg-subtle)' }}
+                          >
+                            {row.title || '—'}
+                          </td>
                           <td
                             className="px-[18px] py-[6px]"
                             style={{ color: STATUS_COLOR[row.status] }}

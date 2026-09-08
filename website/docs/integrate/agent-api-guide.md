@@ -93,7 +93,7 @@ Plan branch context is passed as the query parameter named `branch`:
 
 If `branch` is omitted, services resolve the project's main branch. For read-only context gathering, omitting `branch` is usually correct. For proposed edits, pass the working branch id explicitly so the agent does not mutate the live plan by accident.
 
-Passing `branch` also makes the write **attributable**: the audit log records the entry against that working branch, by id and by name, and an owner reading the log sees a branch chip on the row. A write with no `branch` carries no chip, which covers both a deliberate write to main and an action that has no branch dimension at all — and passing the **main** branch's own id records no branch either, by design, so one write to main cannot render two ways. So an agent's branch-scoped edits are distinguishable after the fact from writes to the live plan — which is the other reason to pass the id rather than rely on the default. This applies to the branch-scoped plan writes (`event.*`, `field.*`, `event_type.*`, `variable.*`, `meta_field.*`, `relation.*`, and `project.retire_unused_variables`). Drift resolutions (`variable.drift_action`, `schema_drift.*`) are the exception: a drift is only ever detected against main, so accepting one is always a write to the main plan and carries no chip whatever `branch` you pass. Event writes are recorded as `event.create`, `event.bulk_create`, `event.update`, `event.bulk_update`, `event.delete` and `event.bulk_delete`; a bulk route files one row per request, with the ids (and, for a delete, the names) in the payload. Reordering an event is not recorded, and neither are events written by a scan — but accepting a scan's shadow-event candidate is a plan write, not a scan write, and files `event.create` like any other, with the candidate it was admitted from named in the payload; dismissing one files `shadow_event.dismiss` against the candidate and carries no branch, a candidate having no branch to name. Events additionally keep their own per-event history — before/after values for `status`, `name`, `description` and `sunset_at`, and nothing else, so an event's `field_values` are recoverable from neither surface. That history is removed with the event, while the audit row is not.
+Passing `branch` also makes the write **attributable**: the audit log records the entry against that working branch, by id and by name, and an owner reading the log sees a branch chip on the row. A write with no `branch` carries no chip, which covers both a deliberate write to main and an action that has no branch dimension at all — and passing the **main** branch's own id records no branch either, by design, so one write to main cannot render two ways. So an agent's branch-scoped edits are distinguishable after the fact from writes to the live plan — which is the other reason to pass the id rather than rely on the default. This applies to the branch-scoped plan writes (`event.*`, `field.*`, `event_type.*`, `variable.*`, `meta_field.*`, `relation.*`, and `project.retire_unused_variables`). Drift resolutions (`variable.drift_action`, `schema_drift.*`) are the exception: a drift is only ever detected against main, so accepting one is always a write to the main plan and carries no chip whatever `branch` you pass. Event writes are recorded as `event.create`, `event.bulk_create`, `event.update`, `event.bulk_update`, `event.delete` and `event.bulk_delete`; a bulk route files one row per request, with the ids (and, for a delete, the names) in the payload. Reordering an event is not recorded, and neither are events written by a scan — but accepting a scan's shadow-event candidate is a plan write, not a scan write, and files `event.create` like any other, with the candidate it was admitted from named in the payload; dismissing one files `shadow_event.dismiss` against the candidate and carries no branch, a candidate having no branch to name. Events additionally keep their own per-event history (`GET /projects/{slug}/events/{event_id}/history`): a `created` row first, then before/after rows keyed `status`, `name`, `title`, `description`, `sunset_at`, `tags`, `field:<field name>` and `meta:<meta field name>`. That history is removed with the event, while the audit row is not — so a deleted event's `field_values` are recoverable from neither surface.
 
 Discover branches:
 
@@ -142,6 +142,10 @@ Useful query parameters:
   grows as new kinds are indexed. It spans plan content and project
   configuration alike, so scan configs and alert rules are filterable values.
 - `include_archived`: defaults to `false`.
+- `semantic`: defaults to `true`. `false` skips the embedding leg and answers
+  from the keyword index alone — much sooner, with `semantic_used` always
+  `false`. The command palette asks this way first and upgrades to the full
+  answer when it lands.
 - `limit`: 1 to 100, defaults to 20.
 - `branch`: optional branch id.
 
@@ -165,10 +169,17 @@ GET /api/v1/projects/{slug}/variables/{variable_id}/event-overrides?branch=<bran
 GET /api/v1/projects/{slug}/variables/drifts?branch=<branch_id>
 ```
 
+`GET /projects/{slug}/events/{event_id}` and its `/history` answer for an event
+on **any** branch of the project, whatever `branch` you pass or omit — a link
+handed over with a branch id resolves without first looking the branch up — and
+the response's `branch_id` says which branch the row belongs to. Writes stay
+strict: a `PATCH` must name the event's own branch.
+
 Event responses include:
 
-- event identity and state: `name`, `description`, lifecycle `status`,
-  `reviewed`, `owner_id`, and optional `sunset_at`;
+- event identity and state: `name`, the free-text `title`, `description`,
+  lifecycle `status`, `reviewed`, `owner_id`, optional `sunset_at`, and
+  `branch_id`;
 - event type id and brief event type data;
 - field values and meta values;
 - tags;
@@ -252,6 +263,9 @@ Example payload for state-only review workflow:
 `EventUpdate` fields are optional and partial:
 
 - `name`
+- `title` — a free-text label (max 500), shown beside the name and searchable,
+  never part of the scan identity; `EventCreate` takes the same field,
+  defaulting to `""`
 - `description`
 - `status`
 - `sunset_at`
@@ -264,8 +278,10 @@ Example payload for state-only review workflow:
 
 When updating `field_values` or `meta_values`, send the full replacement list
 for that collection. For narrow text edits, prefer patching only `description`,
-`name`, tags, or state fields. Values written through event mutations are
-treated as authored and are protected from later scan overwrite.
+`title`, `name`, tags, or state fields — and where a scan names the type, fix a
+wrong label through `title`, since `name` is the identity. Values written
+through event mutations are treated as authored and are protected from later
+scan overwrite; re-sending an unchanged value keeps its flag as it was.
 
 Event create and patch return `EventMutationResponse`, which is the event plus a
 `warnings` array. When a scan config governs the event type with an
@@ -277,7 +293,11 @@ name end the same way, the loser with that `409` and never a second event, and
 `POST /projects/{slug}/events/bulk` prefixes the same message with
 `Event N of M: `; a differing client-supplied name is ignored with a warning.
 Read the mutation response and use its returned name/id instead of assuming
-your proposed name became the identity.
+your proposed name became the identity. The resolved rule is on the event type
+itself — `event_name_format` on `GET /event-types` and
+`GET /event-types/{event_type_id}`, `null` when no scan names the type — and it
+governs a branch copy of the type exactly as it governs `main`, so read it there
+rather than re-deriving it from the scan config list.
 
 Bulk state updates are available for review/archive workflows:
 

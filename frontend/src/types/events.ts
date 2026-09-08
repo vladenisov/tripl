@@ -48,11 +48,16 @@ export interface Event {
    * naming rule governs its type.
    */
   source_name: string | null
+  /** Free-text label shown beside the identity; never part of it. */
+  title: string
   description: string
   order: number
   status: EventStatus
   sunset_at: string | null
   last_seen_at: string | null
+  /** Oldest metric bucket with traffic; null until a collection sees the event,
+   * and on list responses, which do not compute it (tripl-kjhi.10). */
+  first_seen_at?: string | null
   owner_id: string | null
   reviewed: boolean
   metric_breakdown_columns: string[]
@@ -62,6 +67,10 @@ export interface Event {
   meta_values: EventMetaValue[]
   created_at: string
   updated_at: string
+  /** The branch the row lives on. `GET /events/{id}` answers for any branch of
+   * the project, so a reader can tell when the row is not on the branch it is
+   * looking at. Absent on list items and on responses from an older instance. */
+  branch_id?: string | null
 }
 
 export interface EventMutationResponse extends Event {

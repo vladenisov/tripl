@@ -86,6 +86,7 @@ async def create_event(
     name: str,
     ctx: Context,  # type: ignore[type-arg]
     description: str | None = None,
+    title: str | None = None,
     status: EventStatus | None = None,
     tags: list[str] | None = None,
     field_values: list[dict[str, Any]] | None = None,
@@ -97,6 +98,7 @@ async def create_event(
     body: dict[str, Any] = {"event_type_id": event_type_id, "name": name}
     for key, value in (
         ("description", description),
+        ("title", title),
         ("status", status),
         ("tags", tags),
         ("field_values", field_values),
@@ -161,6 +163,8 @@ def register(mcp: FastMCP) -> None:
             "the live main plan by accident (list_branches to find one). When a scan "
             "naming rule governs the event type the server derives the name from field "
             "values and may ignore yours with a warning — adopt the returned name/id. "
+            "Put the human-readable label in 'title', never in 'name': 'name' is the "
+            "identity a scan matches on. "
             "A 409 names the event already holding that derived name; the identity is "
             "a database unique key, so the 409 is final even under concurrent creates "
             "(the REST batch form prefixes it 'Event N of M: ') — open that event, do "
@@ -173,7 +177,7 @@ def register(mcp: FastMCP) -> None:
         description=(
             "WRITE: partially update an event (needs a tk_w_ key backed by an "
             "editor/owner). branch_id is REQUIRED to avoid accidental edits to the "
-            "live main plan. 'patch' takes any subset of: name, description, status, "
+            "live main plan. 'patch' takes any subset of: name, title, description, status, "
             "sunset_at, owner_id, reviewed, metric_breakdown_columns, tags, "
             "field_values, meta_values. WARNING: 'field_values' and 'meta_values' "
             "are FULL-LIST REPLACEMENTS — sending a partial list deletes the missing "

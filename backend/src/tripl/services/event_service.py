@@ -27,6 +27,7 @@ from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_tag import EventTag
 from tripl.models.field_definition import FieldDefinition
+from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.models.user import User
 from tripl.models.variable import Variable
 from tripl.schemas.event import (
@@ -34,14 +35,19 @@ from tripl.schemas.event import (
     EventBulkUpdate,
     EventCreate,
     EventFieldValueIn,
+    EventMetaValueIn,
     EventMove,
     EventReorder,
     EventUpdate,
 )
+from tripl.services._branch_counterparts import attach_main_last_seen, metrics_row_for
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
-from tripl.services.scan_config_lookup import load_governing_scan_configs
+from tripl.services.scan_config_lookup import (
+    governing_name_format,
+    load_governing_scan_configs,
+)
 from tripl.services.schema_drift_service import get_drift_counts_by_event_type
 from tripl.services.search_service import (
     _queue_embedding_refresh,
@@ -49,7 +55,7 @@ from tripl.services.search_service import (
 )
 from tripl.services.variable_value_service import attach_event_field_variable_values
 
-_TRACKED_FIELDS = ("status", "name", "description", "sunset_at")
+_TRACKED_FIELDS = ("status", "name", "title", "description", "sunset_at")
 # One ``${token}`` grammar for the codebase; this module's spelling is the one
 # it standardised on (``core.name_template``).
 _TEMPLATE_TOKEN_PATTERN = VARIABLE_TOKEN_PATTERN
@@ -187,6 +193,131 @@ def _record_changes(
                     new_value=new_str,
                 )
             )
+
+
+def _record_list_change(
+    session: AsyncSession,
+    *,
+    event: Event,
+    field: str,
+    old: Sequence[str],
+    new: Sequence[str],
+    user_id: uuid.UUID | None,
+) -> None:
+    """One history row for a list-valued attribute (tags), joined for reading."""
+    if sorted(old) == sorted(new):
+        return
+    session.add(
+        create_event_change(
+            event_id=event.id,
+            user_id=user_id,
+            field=field,
+            old_value=", ".join(sorted(old)) or None,
+            new_value=", ".join(sorted(new)) or None,
+        )
+    )
+
+
+def _record_keyed_changes(
+    session: AsyncSession,
+    *,
+    event: Event,
+    prefix: str,
+    names: Mapping[uuid.UUID, str],
+    old: Mapping[uuid.UUID, str],
+    new: Mapping[uuid.UUID, str],
+    user_id: uuid.UUID | None,
+) -> None:
+    """One history row per field or meta value whose text changed.
+
+    Rows are keyed ``field:<name>`` / ``meta:<name>`` so the history reads as
+    the same list the form shows. Until tripl-kjhi.9 only name, description,
+    status and sunset date were recorded, and an event whose Jira key or
+    screen value changed hands had an empty history.
+    """
+    for definition_id in sorted(set(old) | set(new), key=lambda key: names.get(key, "")):
+        before = old.get(definition_id)
+        after = new.get(definition_id)
+        if before == after:
+            continue
+        session.add(
+            create_event_change(
+                event_id=event.id,
+                user_id=user_id,
+                field=f"{prefix}:{names.get(definition_id, str(definition_id))}",
+                old_value=before,
+                new_value=after,
+            )
+        )
+
+
+async def _normalize_meta_values(
+    session: AsyncSession, meta_values: Sequence[EventMetaValueIn]
+) -> list[EventMetaValueIn]:
+    """Store what the link template will be applied TO, never the whole link.
+
+    A meta field with a ``link_template`` such as
+    ``https://jira.example/browse/${value}`` renders its value into that
+    template, so the value should be ``WND-4770``. People paste the full URL
+    from the browser — on production every branch-authored event held the
+    whole address, and the rendered link was the template applied to a URL
+    (tripl-kjhi.5). When the pasted text is exactly the template around some
+    value, keep only the value; anything else is stored as typed.
+    """
+    if not meta_values:
+        return list(meta_values)
+    templates: dict[uuid.UUID, str | None] = {
+        definition_id: template
+        for definition_id, template in (
+            await session.execute(
+                select(MetaFieldDefinition.id, MetaFieldDefinition.link_template).where(
+                    MetaFieldDefinition.id.in_({mv.meta_field_definition_id for mv in meta_values}),
+                    MetaFieldDefinition.link_template.is_not(None),
+                )
+            )
+        ).all()
+    }
+    out: list[EventMetaValueIn] = []
+    for mv in meta_values:
+        template = templates.get(mv.meta_field_definition_id) or ""
+        stripped = strip_link_template(template, mv.value)
+        out.append(mv if stripped == mv.value else mv.model_copy(update={"value": stripped}))
+    return out
+
+
+def strip_link_template(template: str, value: str) -> str:
+    """``value`` with the template's fixed text removed when it wraps it exactly."""
+    if "${value}" not in template:
+        return value
+    prefix, suffix = template.split("${value}", 1)
+    text = value.strip()
+    if (
+        prefix
+        and text.startswith(prefix)
+        and text.endswith(suffix)
+        and len(text) > len(prefix) + len(suffix)
+    ):
+        return text[len(prefix) : len(text) - len(suffix)] if suffix else text[len(prefix) :]
+    return value
+
+
+async def _definition_names(
+    session: AsyncSession,
+    model: type[FieldDefinition] | type[MetaFieldDefinition],
+    ids: set[uuid.UUID],
+) -> dict[uuid.UUID, str]:
+    if not ids:
+        return {}
+    rows = (await session.execute(select(model.id, model.name).where(model.id.in_(ids)))).all()
+    return {row_id: name for row_id, name in rows}
+
+
+def _authored_after_edit(before: tuple[str, bool] | None, value: str) -> bool:
+    """Authored when typed or changed; otherwise whatever the row already said."""
+    if before is None:
+        return True
+    previous_value, was_authored = before
+    return True if previous_value != value else was_authored
 
 
 async def _validate_field_values(
@@ -377,6 +508,7 @@ async def list_events(
         )
 
     await attach_event_field_variable_values(session, events)
+    await attach_main_last_seen(session, project_id=project_id, events=events)
     return events, total
 
 
@@ -435,7 +567,20 @@ async def get_event(
     slug: str,
     event_id: uuid.UUID,
     branch_id: uuid.UUID | None = None,
+    *,
+    strict_branch: bool = True,
 ) -> Event:
+    """One event by id.
+
+    ``strict_branch`` is what every WRITE path needs: an id from another branch
+    is a 404, so a PATCH aimed at main can never land on a branch copy or the
+    other way round. The two read routes pass ``False``: an event id is a link
+    people paste, and a link into a branch event without its ``?branch=`` (or
+    into main's row with someone else's branch selected) dead-ended on a 404
+    that told the reader nothing. The row is returned with its own
+    ``branch_id`` so the client can say where it lives and switch
+    (tripl-kjhi.7).
+    """
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
     result = await session.execute(
@@ -446,10 +591,34 @@ async def get_event(
         )
     )
     event = result.scalar_one_or_none()
+    if event is None and not strict_branch:
+        event = (
+            await session.execute(
+                select(Event).where(Event.id == event_id, Event.project_id == project_id)
+            )
+        ).scalar_one_or_none()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
     await attach_event_field_variable_values(session, [event])
+    await attach_main_last_seen(session, project_id=project_id, events=[event])
+    await _attach_first_seen(session, project_id=project_id, event=event)
     return event
+
+
+async def _attach_first_seen(session: AsyncSession, *, project_id: uuid.UUID, event: Event) -> None:
+    """``first_seen_at``: the oldest bucket that counted this event (tripl-kjhi.10).
+
+    Metrics are keyed on the main row, so a branch copy reads its twin's — the
+    same twin ``last_seen_at`` comes from. Only the single-event read pays for
+    this: one aggregate over the event's own metric rows.
+    """
+    row = await metrics_row_for(session, project_id=project_id, event=event)
+    first_seen = await session.scalar(
+        select(func.min(EventMetric.bucket)).where(
+            EventMetric.event_id == row.id, EventMetric.count > 0
+        )
+    )
+    event.first_seen_at = first_seen  # type: ignore[attr-defined]
 
 
 async def _resolve_event_name_format(
@@ -461,19 +630,14 @@ async def _resolve_event_name_format(
 
     Which configs are in scope is ``scan_config_lookup.load_governing_scan_configs``
     — shared with the schema-drift guard so the two cannot disagree about
-    reachability (tripl-3mmh). The tie-break below is this function's own policy:
-    a config bound to the exact event type wins over project-wide (NULL
-    event_type_id) configs, and ties break on the most recently updated config.
+    reachability (tripl-3mmh) — and the tie-break is ``governing_name_format``
+    beside it, shared with the event-type listing so the form and the create
+    path cannot disagree either (tripl-kjhi.1).
     """
     rows = await load_governing_scan_configs(
         session, project_id=project_id, event_type_id=event_type_id
     )
-    if not rows:
-        return None
-    exact = [row for row in rows if row.event_type_id == event_type_id]
-    pool = exact or rows
-    pool.sort(key=lambda row: row.updated_at, reverse=True)
-    return pool[0].event_name_format
+    return governing_name_format(rows)
 
 
 async def _generate_scan_template_name(
@@ -749,6 +913,7 @@ async def create_event(
     branch_id: uuid.UUID | None = None,
     *,
     scan_identity: str | None = None,
+    user_id: uuid.UUID | None = None,
 ) -> Event:
     """Author one event.
 
@@ -789,6 +954,7 @@ async def create_event(
         branch_id=branch_id,
         event_type_id=data.event_type_id,
         name=display_name,
+        title=data.title.strip(),
         # Scan dedup keys on source_name: stamping the generated identity here
         # is what makes the manual event merge with its scanned counterpart.
         source_name=generated_name,
@@ -846,7 +1012,7 @@ async def create_event(
                 is_authored=True,
             )
         )
-    for mv in data.meta_values:
+    for mv in await _normalize_meta_values(session, data.meta_values):
         session.add(
             EventMetaValue(
                 event_id=event.id,
@@ -856,6 +1022,17 @@ async def create_event(
         )
     for tag_name in data.tags:
         session.add(EventTag(event_id=event.id, name=tag_name))
+    # The history's first row, so "who created this and when" is answered by
+    # the same list as every later edit (tripl-kjhi.9).
+    session.add(
+        create_event_change(
+            event_id=event.id,
+            user_id=user_id,
+            field="created",
+            old_value=None,
+            new_value=event.name,
+        )
+    )
 
     # Rebuild the search index inside the SAME transaction as the write, then
     # commit once. A single commit keeps primary data and the search index
@@ -902,6 +1079,8 @@ async def update_event(
 
     if "name" in update_data:
         event.name = update_data["name"]
+    if "title" in update_data:
+        event.title = (update_data["title"] or "").strip()
     if "description" in update_data:
         event.description = update_data["description"]
     if "status" in update_data:
@@ -923,6 +1102,14 @@ async def update_event(
     # Replace child rows via a single DELETE+INSERT-batch per relation, instead
     # of `await session.delete(row)` per existing child (was ~N round-trips).
     if data.tags is not None:
+        _record_list_change(
+            session,
+            event=event,
+            field="tags",
+            old=[tag.name for tag in event.tags],
+            new=list(data.tags),
+            user_id=user_id,
+        )
         await session.execute(delete(EventTag).where(EventTag.event_id == event.id))
         await session.flush()
         if data.tags:
@@ -930,6 +1117,32 @@ async def update_event(
 
     if data.field_values is not None:
         field_values = await _validate_field_values(session, event.event_type_id, data.field_values)
+        # The form always sends every field back, edited or not. A value whose
+        # text did not change keeps the ``is_authored`` it had: re-inserting it
+        # as authored turned a scan-observed value into a "curated" one on every
+        # unrelated save, which the search ranking reads as identity and the
+        # branch diff showed as a change no one made (tripl-kjhi.4).
+        authored_before = {
+            row.field_definition_id: (row.value, row.is_authored)
+            for row in (
+                await session.execute(
+                    select(EventFieldValue).where(EventFieldValue.event_id == event.id)
+                )
+            ).scalars()
+        }
+        _record_keyed_changes(
+            session,
+            event=event,
+            prefix="field",
+            names=await _definition_names(
+                session,
+                FieldDefinition,
+                set(authored_before) | {fv.field_definition_id for fv in field_values},
+            ),
+            old={key: value for key, (value, _authored) in authored_before.items()},
+            new={fv.field_definition_id: fv.value for fv in field_values},
+            user_id=user_id,
+        )
         # VariableValue rows are scan-observed contexts keyed by field_definition_id,
         # not by EventFieldValue rows — manual edits must not wipe them.
         await session.execute(delete(EventFieldValue).where(EventFieldValue.event_id == event.id))
@@ -941,16 +1154,34 @@ async def update_event(
                         event_id=event.id,
                         field_definition_id=field_value.field_definition_id,
                         value=field_value.value,
-                        is_authored=True,
+                        is_authored=_authored_after_edit(
+                            authored_before.get(field_value.field_definition_id),
+                            field_value.value,
+                        ),
                     )
                     for field_value in field_values
                 ]
             )
 
     if data.meta_values is not None:
+        meta_values = await _normalize_meta_values(session, data.meta_values)
+        meta_before = {mv.meta_field_definition_id: mv.value for mv in event.meta_values}
+        _record_keyed_changes(
+            session,
+            event=event,
+            prefix="meta",
+            names=await _definition_names(
+                session,
+                MetaFieldDefinition,
+                set(meta_before) | {mv.meta_field_definition_id for mv in meta_values},
+            ),
+            old=meta_before,
+            new={mv.meta_field_definition_id: mv.value for mv in meta_values},
+            user_id=user_id,
+        )
         await session.execute(delete(EventMetaValue).where(EventMetaValue.event_id == event.id))
         await session.flush()
-        if data.meta_values:
+        if meta_values:
             session.add_all(
                 [
                     EventMetaValue(
@@ -958,7 +1189,7 @@ async def update_event(
                         meta_field_definition_id=meta_value.meta_field_definition_id,
                         value=meta_value.value,
                     )
-                    for meta_value in data.meta_values
+                    for meta_value in meta_values
                 ]
             )
 
@@ -1224,6 +1455,8 @@ async def bulk_create_events(
     slug: str,
     events_data: list[EventCreate],
     branch_id: uuid.UUID | None = None,
+    *,
+    user_id: uuid.UUID | None = None,
 ) -> list[Event]:
     if not events_data:
         return []
@@ -1325,6 +1558,7 @@ async def bulk_create_events(
                 branch_id=branch_id,
                 event_type_id=data.event_type_id,
                 name=identities[i] or data.name,
+                title=data.title.strip(),
                 description=data.description,
                 order=base_order + i,
                 status=data.status,
@@ -1368,7 +1602,7 @@ async def bulk_create_events(
                     is_authored=True,
                 )
             )
-        for mv in data.meta_values:
+        for mv in await _normalize_meta_values(session, data.meta_values):
             children.append(
                 EventMetaValue(
                     event_id=event.id,
@@ -1382,6 +1616,20 @@ async def bulk_create_events(
     if children:
         session.add_all(children)
 
+    # The same first history row ``create_event`` writes, one per event, now
+    # that the ids exist (tripl-kjhi.9).
+    session.add_all(
+        [
+            create_event_change(
+                event_id=event.id,
+                user_id=user_id,
+                field="created",
+                old_value=None,
+                new_value=event.name,
+            )
+            for event in events
+        ]
+    )
     await session.flush()
     _, ai_config = await _reindex_branch_documents(
         session, project_id=project_id, branch_id=branch_id, slug=slug
@@ -1406,7 +1654,7 @@ async def get_event_history(
     branch_id: uuid.UUID | None = None,
 ) -> list[dict[str, object]]:
     # Validate event belongs to this project
-    await get_event(session, slug, event_id, branch_id)
+    await get_event(session, slug, event_id, branch_id, strict_branch=False)
 
     result = await session.execute(
         select(EventChange, User.email)

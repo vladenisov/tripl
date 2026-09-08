@@ -124,7 +124,7 @@ async def test_revert_without_a_field_restores_the_whole_entity(client: AsyncCli
         client, slug, branch_id, entity_type="event", name="purchase:success", parent="track"
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["summary"] == {"added": 0, "removed": 0, "changed": 0}
+    assert resp.json()["summary"] == {"added": 0, "removed": 0, "changed": 0, "housekeeping": 0}
     assert resp.json()["entries"] == []
 
 

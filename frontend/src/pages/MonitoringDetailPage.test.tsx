@@ -668,8 +668,11 @@ describe('MonitoringDetailPage event detail', () => {
     expect(await screen.findByRole('heading', { name: 'checkout_completed' })).toBeInTheDocument()
     // Signal banner derived from latest_signal (spike, +100% vs baseline).
     expect(screen.getByText(/Volume spike detected/)).toBeInTheDocument()
-    // Fields table shows the schema field with its sensitivity chip.
-    expect(screen.getByText('country')).toBeInTheDocument()
+    // Fields table shows the schema field with its sensitivity chip. The field
+    // also heads a row of the Spec card that leads the page for an event that
+    // is not live yet (tripl-kjhi.8), so the name appears twice.
+    expect(screen.getAllByText('country').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByTestId('event-spec-card')).toBeInTheDocument()
     expect(screen.getByText('PII')).toBeInTheDocument()
     // Real breakdown column from the event surfaces in the side column.
     expect(screen.getByText('platform')).toBeInTheDocument()
@@ -1145,6 +1148,45 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     const properties = screen.getByRole('table', { name: 'Properties' })
     expect(within(properties).getByText('Scan identity')).toBeInTheDocument()
     expect(within(properties).getByText('checkout_completed')).toBeInTheDocument()
+  })
+
+  it('tells the authoring date and the first traffic apart (tripl-kjhi.10)', async () => {
+    installEventDetailFetch({
+      event: { ...eventFixture(), first_seen_at: '2026-01-03T00:00:00Z' },
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const properties = screen.getByRole('table', { name: 'Properties' })
+    const row = (label: string) =>
+      within(properties).getByText(label).closest('[role="row"]') as HTMLElement
+    expect(within(row('Created')).getByText(/2026/)).toHaveTextContent(/Jan 1|01/)
+    expect(within(row('First seen')).getByText(/2026/)).toHaveTextContent(/Jan 3|03/)
+    expect(within(row('Owner')).getByText('—')).toBeInTheDocument()
+  })
+
+  it('says an unseen event has not been seen, rather than naming its authoring date', async () => {
+    installEventDetailFetch({ event: { ...eventFixture(), first_seen_at: null } })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const properties = screen.getByRole('table', { name: 'Properties' })
+    const firstSeen = within(properties)
+      .getByText('First seen')
+      .closest('[role="row"]') as HTMLElement
+    expect(within(firstSeen).getByText('—')).toBeInTheDocument()
+  })
+
+  it('names an owner the roster cannot resolve as unknown, not as still loading', async () => {
+    // The harness answers no `/users` request, so the roster query fails —
+    // the same outcome as a member who has since been removed.
+    installEventDetailFetch({ event: { ...eventFixture(), owner_id: 'u-ghost' } })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const properties = screen.getByRole('table', { name: 'Properties' })
+    const ownerRow = within(properties).getByText('Owner').closest('[role="row"]') as HTMLElement
+    expect(await within(ownerRow).findByText('Unknown user')).toBeInTheDocument()
   })
 })
 

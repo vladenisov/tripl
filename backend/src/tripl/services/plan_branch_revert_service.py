@@ -800,6 +800,7 @@ async def _recreate_entity(
             branch_id=branch_id,
             event_type_id=event_type.id,
             name=_required(base_item, "name"),
+            title=base_item.get("title") or "",
             source_name=base_item.get("source_name"),
             description=base_item.get("description") or "",
             order=base_item.get("order", 0),

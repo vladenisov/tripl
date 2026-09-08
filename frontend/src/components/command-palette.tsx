@@ -45,7 +45,7 @@ import {
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { eventNameLabel } from '@/lib/eventName'
 import { buildNavGroups } from '@/lib/navigation'
-import { useActiveBranchId } from '@/hooks/useBranch'
+import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
 import { useAiStatus } from '@/hooks/useAiStatus'
 import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -312,6 +312,7 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
   const auth = useAuth()
   const { slug: routeSlug } = useParams()
   const branchId = useActiveBranchId()
+  const branchLink = useBranchLinkProps()
   const [query, setQuery] = useState('')
   const debouncedQuery = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS)
   const [aiQuestion, setAiQuestion] = useState<string | null>(null)
@@ -346,11 +347,25 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
   const eventTypes = eventTypesQuery.data ?? []
 
   const searchSlug = activeProject?.slug ?? projects[0]?.slug ?? null
+  const searchEnabled = open && !!searchSlug && debouncedQuery.length >= 2
+  // Two answers per query, cheapest first (tripl-kjhi.15). On production the
+  // full search took 0.5–1.8 s and every millisecond past the lexical SQL was
+  // the embedding round trip; a palette is typed into, and a list that lands
+  // in ~150 ms is one the reader keeps typing against. So the keyword-only
+  // answer is asked for alongside the full one and shown until the full one
+  // — the same rows re-ranked, plus the semantic matches — replaces it.
+  const lexicalQuery = useQuery({
+    queryKey: ['commandPaletteSearch', searchSlug, debouncedQuery, 'lexical'],
+    queryFn: () =>
+      searchApi.search(searchSlug!, { q: debouncedQuery, limit: 12, semantic: false }),
+    enabled: searchEnabled,
+    staleTime: 30_000,
+  })
   const searchQuery = useQuery({
     queryKey: ['commandPaletteSearch', searchSlug, debouncedQuery],
     queryFn: () =>
       searchApi.search(searchSlug!, { q: debouncedQuery, limit: 12 }),
-    enabled: open && !!searchSlug && debouncedQuery.length >= 2,
+    enabled: searchEnabled,
     staleTime: 30_000,
     // The key carries the DEBOUNCED text, so every 200ms boundary mints a new
     // key whose `data` starts undefined. Without a placeholder the rows already
@@ -373,21 +388,31 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
   // happened — clearing the input, Esc, or running a command. Adjusted during
   // render rather than in an effect: an effect would leave one painted frame in
   // which stale rows are still presented as answering the new input.
+  //
+  // "Settled" means the rows answer the DEBOUNCED text: the full answer once it
+  // is no longer a placeholder, or the lexical one (which carries no
+  // placeholder, so success alone means this key).
+  const fullSettled = searchQuery.isSuccess && !searchQuery.isPlaceholderData
+  const lexicalSettled = lexicalQuery.isSuccess
   const settledQuery =
-    query.trim().length < 2
-      ? ''
-      : searchQuery.isSuccess && !searchQuery.isPlaceholderData
-        ? debouncedQuery
-        : heldQuery
+    query.trim().length < 2 ? '' : fullSettled || lexicalSettled ? debouncedQuery : heldQuery
   if (settledQuery !== heldQuery) setHeldQuery(settledQuery)
 
-  const searchResults = useMemo(
-    () =>
-      !searchQuery.isPlaceholderData || isSearchRefinement(heldQuery, debouncedQuery)
-        ? searchQuery.data?.items ?? []
-        : [],
-    [searchQuery.data, searchQuery.isPlaceholderData, heldQuery, debouncedQuery],
-  )
+  const searchResults = useMemo(() => {
+    if (fullSettled) return searchQuery.data?.items ?? []
+    if (lexicalSettled) return lexicalQuery.data?.items ?? []
+    return !searchQuery.isPlaceholderData || isSearchRefinement(heldQuery, debouncedQuery)
+      ? searchQuery.data?.items ?? []
+      : []
+  }, [
+    fullSettled,
+    lexicalSettled,
+    searchQuery.data,
+    lexicalQuery.data,
+    searchQuery.isPlaceholderData,
+    heldQuery,
+    debouncedQuery,
+  ])
   const searchGroups = useMemo(() => groupSearchResults(searchResults), [searchResults])
 
   const aiEnabled = useAiStatus(searchSlug)
@@ -426,6 +451,17 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
   const goTo = useCallback(
     (path: string) => runCommand(() => navigate(path)),
     [navigate, runCommand],
+  )
+
+  // Knowledge results and AI sources arrive with a bare `route_path`, but the
+  // rows they name were searched on the ACTIVE branch. Landing on the plain
+  // path leaves the branch out of the URL, so the address the reader then
+  // copies opens a 404 in a fresh session — the event only exists on that
+  // branch (tripl-kjhi.7). Only `to` is used: the palette never leaves the
+  // branch it searched in, so there is nothing for the click half to set.
+  const goToResult = useCallback(
+    (routePath: string) => goTo(branchLink(routePath, branchId).to),
+    [branchId, branchLink, goTo],
   )
 
   const showAskAiAction = aiEnabled && searchSlug && debouncedQuery.length >= 8
@@ -553,9 +589,9 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
   // so they are gone before the request is even sent.
   const knowledgeState: KnowledgeState = !searchSlug || query.trim().length < 2
     ? 'off'
-    : query.trim() !== debouncedQuery || searchQuery.isFetching
+    : query.trim() !== debouncedQuery || (searchQuery.isFetching && !lexicalSettled)
       ? 'searching'
-      : searchQuery.isError
+      : searchQuery.isError && !lexicalSettled
         ? 'error'
         : searchResults.length > 0
           ? 'results'
@@ -657,7 +693,7 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
                         <button
                           key={index}
                           type="button"
-                          onClick={() => runCommand(() => navigate(source.route_path))}
+                          onClick={() => goToResult(source.route_path)}
                           className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] hover:bg-[var(--surface-hover)]"
                           style={{ color: 'var(--fg)' }}
                         >
@@ -778,7 +814,7 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
                               <Item
                                 key={result.id}
                                 value={paletteValue.search(result.id)}
-                                onSelect={() => goTo(result.route_path)}
+                                onSelect={() => goToResult(result.route_path)}
                                 icon={meta.icon}
                                 iconColor={eventType?.color}
                                 label={label}

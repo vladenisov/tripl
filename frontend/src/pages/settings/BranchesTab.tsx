@@ -2,6 +2,7 @@ import { Fragment, useEffect, useId, useMemo, useState, type ReactNode } from 'r
 import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  AlertTriangle,
   ArrowUpRight,
   ChevronRight,
   GitBranch,
@@ -15,6 +16,7 @@ import {
 } from 'lucide-react'
 
 import { branchSettingsApi } from '@/api/branchSettings'
+import { metaFieldsApi } from '@/api/metaFields'
 import { ApiError } from '@/api/client'
 import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
@@ -39,6 +41,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { formatRelativeTime } from '@/lib/datetime'
+import { branchTicket } from '@/lib/branchTicket'
 import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
 import type {
@@ -171,6 +174,15 @@ interface PairedDiffCounts {
   renamed: number
   /** Rows the Changes panel shows — which is the branch's "ahead" distance. */
   total: number
+}
+
+/** Where the selected branch's diff request stands, so the detail pane can
+ * tell a diff that is still loading from one that is empty (tripl-kjhi.2).
+ * Mirrors TanStack Query's `status`; `retry` refetches after an error. */
+interface DiffLoad {
+  status: 'pending' | 'error' | 'success'
+  error: unknown
+  retry: () => void
 }
 
 /**
@@ -469,12 +481,24 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
 
   // The selected feature branch's diff drives the real ahead/behind counts shown
   // both in the list row and the detail summary (the list API carries no counts).
-  const { data: selectedDiff } = useQuery({
+  const selectedDiffQuery = useQuery({
     queryKey: ['planBranchDiff', slug, selected?.id],
     queryFn: () => planBranchesApi.diff(slug, selected!.id),
     enabled: !!selected && selected.kind !== 'main',
     staleTime: DIFF_STALE_MS,
   })
+  const selectedDiff = selectedDiffQuery.data
+  // The detail pane needs to know the difference between "no diff yet" and "an
+  // empty diff": rendering counts from `undefined` drew "+0 ~0 −0 · No changes
+  // in this branch" for the 1.3-8.5 s the request takes on production, with
+  // Approve live under it (tripl-kjhi.2). `status` alone carries that — an
+  // invalidation after a revert keeps the data and stays `success`, so the
+  // loading state shows only when there really is nothing to show.
+  const selectedDiffLoad: DiffLoad = {
+    status: selectedDiffQuery.status,
+    error: selectedDiffQuery.error,
+    retry: () => void selectedDiffQuery.refetch(),
+  }
 
   // Row ahead/behind badges still need one diff per feature branch (the list
   // endpoint carries no counts), and each diff is computed server-side in
@@ -557,6 +581,7 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
               slug={slug}
               branch={selected}
               diff={selectedDiff}
+              diffLoad={selectedDiffLoad}
               confirm={confirm}
             />
           </div>
@@ -718,10 +743,11 @@ interface BranchDetailProps {
   slug: string
   branch: PlanBranchSummary | null
   diff: PlanBranchDiffSummary | undefined
+  diffLoad: DiffLoad
   confirm: ReturnType<typeof useConfirm>['confirm']
 }
 
-function BranchDetail({ slug, branch, diff, confirm }: BranchDetailProps) {
+function BranchDetail({ slug, branch, diff, diffLoad, confirm }: BranchDetailProps) {
   if (!branch) {
     return (
       <Panel title="Branch" subtitle="">
@@ -750,6 +776,7 @@ function BranchDetail({ slug, branch, diff, confirm }: BranchDetailProps) {
       slug={slug}
       branch={branch}
       diff={diff}
+      diffLoad={diffLoad}
       confirm={confirm}
     />
   )
@@ -759,12 +786,27 @@ interface FeatureBranchDetailProps {
   slug: string
   branch: PlanBranchSummary
   diff: PlanBranchDiffSummary | undefined
+  diffLoad: DiffLoad
   confirm: ReturnType<typeof useConfirm>['confirm']
 }
 
-function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetailProps) {
+function FeatureBranchDetail({
+  slug,
+  branch,
+  diff,
+  diffLoad,
+  confirm,
+}: FeatureBranchDetailProps) {
   const qc = useQueryClient()
   const usersById = useUsersById()
+  // The ticket a branch is named after, linked through the meta field that
+  // links event values to the tracker (tripl-kjhi.14). Main's fields: the
+  // template is project-wide and a branch copy carries the same one.
+  const metaFieldsQuery = useQuery({
+    queryKey: ['metaFields', slug],
+    queryFn: () => metaFieldsApi.list(slug),
+  })
+  const ticket = branchTicket(branch.name, metaFieldsQuery.data ?? [])
   const { notifyStepCompleted } = useDemoScenarioActions()
 
   // Opening the seeded branch's detail completes open-branch, whether the user
@@ -870,16 +912,28 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
   const pairedAdditions = new Set(
     renames.map((r) => entryKey(r.entity_type, r.parent, r.added_name)),
   )
+  // Machine removals — scan-minted variables nobody used being retired, or
+  // removals main already made — are folded into one line below the list
+  // rather than read as the author's deletions (tripl-kjhi.12).
+  const housekeepingEntries = entries.filter((entry) => Boolean(entry.housekeeping))
   const visibleEntries = entries.filter(
     (entry) =>
-      entry.kind !== 'added' ||
-      !pairedAdditions.has(entryKey(entry.entity_type, entry.parent, entry.name)),
+      !entry.housekeeping &&
+      (entry.kind !== 'added' ||
+        !pairedAdditions.has(entryKey(entry.entity_type, entry.parent, entry.name))),
   )
   // A variable removed relative to the branch base and not paired with an
   // addition is an intentional deletion; warn because its observed values,
   // overrides and drift history cascade. A rename is paired away — it keeps
-  // all three.
-  const removedVariables = variablesDeletedByMerge(entries, renames)
+  // all three. Housekeeping rows are not the author's deletions: a removal
+  // main has already made is nothing the merge does, and a retired scan
+  // variable nobody bound, documented or referenced has none of the three
+  // things this dialog exists to protect — so neither is warned about, which
+  // keeps the dialog consistent with the counts (tripl-kjhi.12).
+  const removedVariables = variablesDeletedByMerge(
+    entries.filter((entry) => !entry.housekeeping),
+    renames,
+  )
 
   const handleMerge = async () => {
     if (removedVariables.length > 0) {
@@ -918,6 +972,15 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
   const staleApprovals = new Set(countedApprovals.filter((a) => a.stale).map((a) => a.user_id)).size
   const requiredApprovals = policy?.min_approvals ?? 0
   const actionError = actionMut.isError ? describeBranchActionError(actionMut.error) : null
+  // While the diff is in flight there is nothing on screen to review, and the
+  // merge's variable-deletion warning reads `removedVariables` from that same
+  // diff, so a Merge clicked now would skip it. Hold the verdict buttons
+  // (approve, request changes) and Merge until the diff has settled; the
+  // housekeeping transitions (submit, reopen, close) do not read it and stay
+  // live. An error is not "pending": the backend is the authority on the
+  // merge, so a diff that failed to load must not lock the branch (tripl-kjhi.2).
+  const diffLoading = diffLoad.status === 'pending'
+  const DIFF_VERDICTS: ReadonlySet<PlanBranchTransitionAction> = new Set(['approve', 'request_changes'])
   // Approve is the one action that can change nothing visible: on an already
   // `approved` branch it only restamps the approval's plan_hash, so the status
   // chip, the counts and the button row all render identically before and
@@ -939,6 +1002,19 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
         subtitle={`Opened by ${branchAuthor(branch, usersById)} · updated ${formatRelativeTime(branch.updated_at)}`}
         right={
           <div className="flex items-center gap-1.5">
+            {ticket ? (
+              <a
+                href={ticket.href}
+                target="_blank"
+                rel="noreferrer"
+                className="mono inline-flex items-center gap-0.5 text-[11px] hover:underline"
+                style={{ color: 'var(--accent)' }}
+                title={`Open ${ticket.key} in ${ticket.field.display_name}`}
+              >
+                {ticket.key}
+                <ArrowUpRight className="size-3" aria-hidden />
+              </a>
+            ) : null}
             {requiredApprovals > 0 && branch.status !== 'merged' ? (
               <Chip
                 tone={
@@ -965,7 +1041,7 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
             {branch.status === 'approved' ? (
               <Button
                 size="sm"
-                disabled={actionMut.isPending}
+                disabled={actionMut.isPending || diffLoading}
                 onClick={handleMerge}
               >
                 <GitMerge className="size-3" />
@@ -986,25 +1062,35 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
         }
       >
         <div className="flex items-center gap-[18px] px-4 py-3">
-          <SummaryCount tone="success" sym="+" n={counts.added} label="added" />
-          <SummaryCount tone="warning" sym="~" n={counts.changed} label="modified" />
-          <SummaryCount tone="danger" sym="−" n={counts.removed} label="removed" />
-          {/* Shown only when there is one, and shown rather than left implicit:
-              a rename subtracts itself from "added" and from "removed", and a
-              reviewer watching two counts drop with no new label beside them is
-              owed the word that explains where the rows went (tripl-amnn). */}
-          {counts.renamed > 0 ? (
-            <SummaryCount
-              tone={RENAMED_META.tone}
-              sym={RENAMED_META.sym}
-              n={counts.renamed}
-              label="renamed"
-            />
-          ) : null}
-          <div className="flex-1" />
-          <span className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-            ↓ {behind} behind main
-          </span>
+          {diffLoad.status !== 'success' ? (
+            // Never the zero counts: "+0 ~0 −0" over an unloaded diff reads as
+            // an empty branch, which is the false state measured on
+            // production (tripl-kjhi.2). The strip carries the live region;
+            // the Changes card below repeats the words for the eye only.
+            <DiffLoadNotice load={diffLoad} live />
+          ) : (
+            <>
+              <SummaryCount tone="success" sym="+" n={counts.added} label="added" />
+              <SummaryCount tone="warning" sym="~" n={counts.changed} label="modified" />
+              <SummaryCount tone="danger" sym="−" n={counts.removed} label="removed" />
+              {/* Shown only when there is one, and shown rather than left implicit:
+                  a rename subtracts itself from "added" and from "removed", and a
+                  reviewer watching two counts drop with no new label beside them is
+                  owed the word that explains where the rows went (tripl-amnn). */}
+              {counts.renamed > 0 ? (
+                <SummaryCount
+                  tone={RENAMED_META.tone}
+                  sym={RENAMED_META.sym}
+                  n={counts.renamed}
+                  label="renamed"
+                />
+              ) : null}
+              <div className="flex-1" />
+              <span className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                ↓ {behind} behind main
+              </span>
+            </>
+          )}
         </div>
         {ALLOWED_TRANSITIONS[branch.status].length > 0 && (
           <div
@@ -1016,7 +1102,7 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
                 key={action}
                 size="sm"
                 variant={action === 'approve' ? 'default' : 'outline'}
-                disabled={actionMut.isPending}
+                disabled={actionMut.isPending || (diffLoading && DIFF_VERDICTS.has(action))}
                 onClick={() => actionMut.mutate(action)}
               >
                 {ACTION_LABEL[action]}
@@ -1044,8 +1130,22 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
 
       <ImplementationTicketsPanel slug={slug} branch={branch} />
 
-      <Panel title="Changes" subtitle={countOf(visibleEntries.length, 'change', 'changes')}>
-        {visibleEntries.length === 0 ? (
+      <Panel
+        title="Changes"
+        subtitle={
+          diffLoad.status === 'success'
+            ? countOf(visibleEntries.length, 'change', 'changes')
+            : diffLoad.status === 'pending'
+              ? 'loading'
+              : 'unavailable'
+        }
+        subtitleTone={diffLoad.status === 'error' ? 'danger' : undefined}
+      >
+        {diffLoad.status !== 'success' ? (
+          // The empty state is a settled answer, so it waits for one: while the
+          // request is in flight the card says so instead (tripl-kjhi.2).
+          <DiffLoadNotice load={diffLoad} className="px-4 py-7 text-center text-[12.5px]" />
+        ) : visibleEntries.length === 0 ? (
           <p className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
             No changes in this branch.
           </p>
@@ -1064,6 +1164,9 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
             ))}
           </div>
         )}
+        {diffLoad.status === 'success' && housekeepingEntries.length > 0 ? (
+          <HousekeepingFold entries={housekeepingEntries} />
+        ) : null}
         {revertMut.isError ? (
           <p
             className="border-t px-4 py-2.5 text-[11.5px]"
@@ -1186,6 +1289,59 @@ function SummaryCount({
   )
 }
 
+/** What the summary strip and the Changes card show in place of counts and
+ * rows until the diff request settles (tripl-kjhi.2). `live` marks the one
+ * copy that announces to assistive tech; the other is for the eye only, so a
+ * screen reader hears the change once. The Retry button rides with the error
+ * wherever the notice is rendered — the reviewer should not have to look for it. */
+function DiffLoadNotice({
+  load,
+  live,
+  className,
+}: {
+  load: DiffLoad
+  live?: boolean
+  className?: string
+}) {
+  if (load.status === 'pending') {
+    return (
+      <p
+        role={live ? 'status' : undefined}
+        aria-live={live ? 'polite' : undefined}
+        className={className ?? 'text-[11.5px]'}
+        style={{ color: 'var(--fg-subtle)' }}
+      >
+        Loading changes…
+      </p>
+    )
+  }
+  return (
+    <p
+      role={live ? 'alert' : undefined}
+      className={className ?? 'text-[11.5px]'}
+      style={{ color: 'var(--danger)' }}
+    >
+      Could not load the changes: {getErrorMessage(load.error)}{' '}
+      <button type="button" onClick={load.retry} className="font-medium underline">
+        Retry
+      </button>
+    </p>
+  )
+}
+
+/** The human title an event carries beside its scan name, so a reviewer reading
+ * `tap_model_card` also sees "Tap on a model card" (tripl-kjhi.3). Branch side
+ * first; a removed entry only has a base side. Events only — that is the one
+ * entity whose `title` is a field the plan editor shows. */
+function eventTitle(entry: PlanDiffEntry): string | null {
+  if (entry.entity_type !== 'event') return null
+  for (const state of [entry.after, entry.before]) {
+    const value = state?.title
+    if (typeof value === 'string' && value.trim() !== '') return value
+  }
+  return null
+}
+
 /** Where a diff row points. Field definitions, meta fields and relations have no
  * detail route yet — those rows stay unlinked. */
 function entityPath(slug: string, entry: PlanDiffEntry): string | null {
@@ -1226,6 +1382,10 @@ function ChangeRow({ slug, branchId, entry, renamedTo, onRevert, reverting }: Ch
   const hasState = !!fullState && Object.keys(fullState).length > 0
   const fieldChanges = entry.field_changes ?? []
   const hasFieldChanges = fieldChanges.length > 0
+  // Reviewer notes that are not changes — nothing the summary counts, so they
+  // hang under the row rather than in it (tripl-kjhi.1, tripl-kjhi.9).
+  const warnings = entry.warnings ?? []
+  const title = eventTitle(entry)
   const path = entityPath(slug, entry)
   // A removed entity is gone from the branch — only main still has it. A renamed
   // one has not gone anywhere, but the id on a removed entry is the base-side
@@ -1276,6 +1436,13 @@ function ChangeRow({ slug, branchId, entry, renamedTo, onRevert, reverting }: Ch
         <span className="mono min-w-0 truncate text-[12.5px]" style={{ color: 'var(--fg)' }}>
           {entry.name}
         </span>
+        {title ? (
+          // Muted and after the scan name, not instead of it: the name is what
+          // the merge pairs on and what the scanner reports (tripl-kjhi.3).
+          <span className="min-w-0 truncate text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            · {title}
+          </span>
+        ) : null}
         {/* min-w-0 for the same reason the entity name beside it has one: a
             flex item defaults to `min-width:auto` and refuses to shrink below
             its content, so an entry touching many fields stretched this row —
@@ -1292,6 +1459,24 @@ function ChangeRow({ slug, branchId, entry, renamedTo, onRevert, reverting }: Ch
         </Chip>
       </button>
       </ScenarioCoachMark>
+      {warnings.length > 0 ? (
+        // Indented to the entity name (chevron + gutter symbol + their gaps),
+        // so the note reads as belonging to the row above it. One line per
+        // warning: the backend writes each as its own sentence.
+        <div className="flex flex-col gap-1 pb-2.5 pl-[70px] pr-4">
+          {warnings.map((warning) => (
+            <p
+              key={warning}
+              role="note"
+              className="flex items-start gap-1.5 text-[11px] leading-snug"
+              style={{ color: 'var(--warning)' }}
+            >
+              <AlertTriangle className="mt-[1px] size-3 shrink-0" aria-hidden="true" />
+              <span>{warning}</span>
+            </p>
+          ))}
+        </div>
+      ) : null}
       {open ? (
         <div
           id={detailId}
@@ -1989,5 +2174,72 @@ function CreateBranchDialog({
         </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** The reasons the backend stamps on `PlanDiffEntry.housekeeping`
+ * (`services/_plan_diff_housekeeping.py`), and how each reads as a count:
+ * "7 unused scan variables retired". */
+const HOUSEKEEPING_WORDING: Record<string, [string, string]> = {
+  'unused scan variable retired': ['unused scan variable retired', 'unused scan variables retired'],
+  'already removed on main': ['removal already made on main', 'removals already made on main'],
+}
+
+function housekeepingLine(entries: PlanDiffEntry[]): string {
+  const byReason = new Map<string, number>()
+  for (const entry of entries) {
+    const reason = entry.housekeeping ?? ''
+    byReason.set(reason, (byReason.get(reason) ?? 0) + 1)
+  }
+  return [...byReason]
+    .map(([reason, count]) => {
+      const wording = HOUSEKEEPING_WORDING[reason]
+      return wording ? countOf(count, wording[0], wording[1]) : `${count} × ${reason}`
+    })
+    .join(' · ')
+}
+
+/** The machine's rows, one line, opened on request (tripl-kjhi.12). */
+function HousekeepingFold({ entries }: { entries: PlanDiffEntry[] }) {
+  const [expanded, setExpanded] = useState(false)
+  const listId = useId()
+  return (
+    <div className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        aria-controls={listId}
+        className="flex w-full items-center gap-1.5 px-4 py-2.5 text-left text-[11.5px]"
+        style={{ color: 'var(--fg-subtle)' }}
+      >
+        <ChevronRight
+          className="size-3 shrink-0 transition-transform"
+          style={{ transform: expanded ? 'rotate(90deg)' : undefined }}
+          aria-hidden
+        />
+        <span>{housekeepingLine(entries)}</span>
+        <span className="ml-auto" style={{ color: 'var(--fg-faint)' }}>
+          not counted
+        </span>
+      </button>
+      {expanded ? (
+        <ul id={listId} className="px-4 pb-2.5">
+          {entries.map((entry) => (
+            <li
+              key={`${entry.entity_type}-${entry.parent ?? ''}-${entry.name}`}
+              className="flex items-baseline gap-2 py-0.5 text-[11.5px]"
+            >
+              <span className="mono truncate" style={{ color: 'var(--fg-muted)' }}>
+                {entry.name}
+              </span>
+              <span className="shrink-0" style={{ color: 'var(--fg-faint)' }}>
+                {ENTITY_LABEL[entry.entity_type] ?? entry.entity_type} · {entry.housekeeping}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   )
 }

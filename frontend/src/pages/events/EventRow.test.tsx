@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { DndContext } from '@dnd-kit/core'
 import { SortableContext } from '@dnd-kit/sortable'
@@ -14,6 +14,7 @@ import type {
   Variable,
 } from '@/types'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { BranchContext } from '@/components/branch-context-internal'
 import { EventRow } from './EventRow'
 import { resolveFieldValue, resolveFieldValueRow } from './useEventsFiltering'
 
@@ -63,6 +64,9 @@ function makeEvent(overrides: Partial<EventListItem> = {}): EventListItem {
     // null, not the name: an event no scan has claimed carries no identity, and
     // a double that stamped one would assert the wrong world is normal.
     source_name: null,
+    // Empty by default: most rows carry no free-text title, and the row must
+    // not reserve space for one (tripl-kjhi.3).
+    title: '',
     description: '',
     order: 0,
     status: 'implemented',
@@ -110,15 +114,21 @@ function renderRow(
     fieldColumns = [] as FieldDefinition[],
     getFieldValue = () => '',
     getFieldValueRow = () => undefined,
+    branchId = null,
+    setBranchId = () => {},
   }: {
     variables?: Variable[]
     fieldColumns?: FieldDefinition[]
     getFieldValue?: (event: EventListItem, field: FieldDefinition) => string
     getFieldValueRow?: (event: EventListItem, field: FieldDefinition) => EventFieldValue | undefined
+    /** Active branch the row is rendered under; null (the default) is main. */
+    branchId?: string | null
+    setBranchId?: (next: string | null) => void
   } = {},
 ) {
   return render(
     <MemoryRouter>
+      <BranchContext.Provider value={{ branchId, setBranchId, slug: 'proj-1' }}>
       <TooltipProvider>
         <DndContext>
           <SortableContext items={[ev.id]}>
@@ -157,6 +167,7 @@ function renderRow(
           </SortableContext>
         </DndContext>
       </TooltipProvider>
+      </BranchContext.Provider>
     </MemoryRouter>,
   )
 }
@@ -274,6 +285,48 @@ describe('EventRow name and type cells', () => {
 
     expect(screen.getByText('Page View')).toBeInTheDocument()
     expect(screen.queryByText('pv')).not.toBeInTheDocument()
+  })
+
+  // tripl-kjhi.7: a row link copied out of a branch catalog carried no
+  // `?branch=`, so it opened a 404 in a fresh session — the event only exists
+  // on that branch. The href must carry the branch AND the click must set it,
+  // because the provider reads the param only when it mounts.
+  it('carries the active branch on the detail link and sets it on click', () => {
+    const setBranchId = vi.fn()
+    renderRow(makeEvent(), windowSeries(10, 20), undefined, { branchId: 'br-1', setBranchId })
+
+    const link = screen.getByRole('link', { name: 'checkout_completed' })
+    expect(link).toHaveAttribute('href', '/p/proj-1/monitoring/event/evt-1?branch=br-1')
+
+    fireEvent.click(link)
+    expect(setBranchId).toHaveBeenCalledWith('br-1')
+  })
+
+  it('links to the plain path on main, with no branch param to copy', () => {
+    renderRow(makeEvent(), windowSeries(10, 20))
+
+    expect(screen.getByRole('link', { name: 'checkout_completed' })).toHaveAttribute(
+      'href',
+      '/p/proj-1/monitoring/event/evt-1',
+    )
+  })
+
+  // tripl-kjhi.3: the free-text title is the human label for a machine
+  // identity, so it sits beside the name. It is real text (not a tooltip), yet
+  // the link's accessible name stays the identity people search by.
+  it('shows the title beside the identity, only when the event has one', () => {
+    const { unmount } = renderRow(
+      makeEvent({ title: 'Purchase finished' }),
+      windowSeries(10, 20),
+    )
+
+    expect(screen.getByText('Purchase finished')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'checkout_completed' })).toBeInTheDocument()
+    unmount()
+
+    renderRow(makeEvent({ title: '' }), windowSeries(10, 20))
+    expect(screen.queryByTitle('')).not.toBeInTheDocument()
+    expect(screen.queryByText('Purchase finished')).not.toBeInTheDocument()
   })
 })
 

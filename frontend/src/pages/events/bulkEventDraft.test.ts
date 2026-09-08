@@ -69,6 +69,48 @@ describe('parseBulkDraft', () => {
     expect(rows.map(row => row.name)).toEqual(['checkout:started', 'checkout:completed'])
     expect(rows.every(row => row.status === 'ready')).toBe(true)
   })
+
+  it('takes what follows the identity columns as the title, its own commas included', () => {
+    const rows = parseBulkDraft(
+      'weather_alert,show,widget,Weather alert widget shown\nspot,open,models,Opened, then closed',
+      { columns: ['category', 'action', 'label'], nameFormat: '{category}:{action}:{label}' },
+    )
+
+    // The label never leaks into the identity, and the values stay the three
+    // the name was built from (tripl-kjhi.3).
+    expect(rows[0].name).toBe('weather_alert:show:widget')
+    expect(rows[0].values).toEqual(['weather_alert', 'show', 'widget'])
+    expect(rows[0].title).toBe('Weather alert widget shown')
+    expect(rows[1].title).toBe('Opened, then closed')
+  })
+
+  it('separates a title from a single identity column on a tab only', () => {
+    const ruled = parseBulkDraft('sign_up\tUser signs up\n/buoy/2758a8b1,Tregde+A', {
+      columns: ['page'],
+      nameFormat: '{page}',
+    })
+    // A comma may be part of a one-column identity, so it cannot also start a title.
+    expect(ruled.map(row => [row.name, row.title])).toEqual([
+      ['sign_up', 'User signs up'],
+      ['/buoy/2758a8b1,Tregde+A', ''],
+    ])
+
+    const free = parseBulkDraft('checkout:started\tCheckout started', {
+      columns: [],
+      nameFormat: null,
+    })
+    expect(free[0]).toMatchObject({ name: 'checkout:started', title: 'Checkout started' })
+  })
+
+  it('leaves the title empty where a line gives none', () => {
+    const rows = parseBulkDraft('settings\tunit_change\twind_speed\nsettings\tunit_change', {
+      columns: ['category', 'action', 'label'],
+      nameFormat: '{category}:{action}:{label}',
+    })
+
+    expect(rows.map(row => row.title)).toEqual(['', ''])
+    expect(rows[1].status).toBe('incomplete')
+  })
 })
 
 describe('bulkUnsupportedReason', () => {

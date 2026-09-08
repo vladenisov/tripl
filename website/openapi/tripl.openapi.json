@@ -8453,6 +8453,18 @@
             }
           },
           {
+            "name": "semantic",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Run the embedding leg as well as the lexical one. Pass false for a keyword-only answer that skips the provider round trip; ``semantic_used`` in the response is then always false.",
+              "default": true,
+              "title": "Semantic"
+            },
+            "description": "Run the embedding leg as well as the lexical one. Pass false for a keyword-only answer that skips the provider round trip; ``semantic_used`` in the response is then always false."
+          },
+          {
             "name": "branch",
             "in": "query",
             "required": false,
@@ -14722,6 +14734,17 @@
             "title": "Enabled",
             "default": true
           },
+          "delivery_schedule_cron": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Schedule Cron"
+          },
           "webhook_url": {
             "anyOf": [
               {
@@ -15103,6 +15126,51 @@
             ],
             "title": "Linear Label Ids"
           },
+          "delivery_schedule_cron": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Schedule Cron"
+          },
+          "project_timezone": {
+            "type": "string",
+            "title": "Project Timezone",
+            "default": "UTC"
+          },
+          "last_digest_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Digest At"
+          },
+          "next_digest_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Digest At"
+          },
+          "held_count": {
+            "type": "integer",
+            "title": "Held Count",
+            "default": 0
+          },
           "is_local": {
             "type": "boolean",
             "title": "Is Local",
@@ -15241,6 +15309,17 @@
               }
             ],
             "title": "Enabled"
+          },
+          "delivery_schedule_cron": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Schedule Cron"
           },
           "webhook_url": {
             "anyOf": [
@@ -19924,6 +20003,12 @@
             "minLength": 1,
             "title": "Name"
           },
+          "title": {
+            "type": "string",
+            "maxLength": 500,
+            "title": "Title",
+            "default": ""
+          },
           "description": {
             "type": "string",
             "title": "Description",
@@ -20195,6 +20280,11 @@
             ],
             "title": "Source Name"
           },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
           "description": {
             "type": "string",
             "title": "Description"
@@ -20229,6 +20319,18 @@
               }
             ],
             "title": "Last Seen At"
+          },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
           },
           "owner_id": {
             "anyOf": [
@@ -20728,6 +20830,11 @@
             ],
             "title": "Source Name"
           },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
           "description": {
             "type": "string",
             "title": "Description"
@@ -20762,6 +20869,18 @@
               }
             ],
             "title": "Last Seen At"
+          },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
           },
           "owner_id": {
             "anyOf": [
@@ -20826,6 +20945,18 @@
             "type": "string",
             "format": "date-time",
             "title": "Updated At"
+          },
+          "branch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Id"
           },
           "warnings": {
             "items": {
@@ -21144,6 +21275,11 @@
             ],
             "title": "Source Name"
           },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
           "description": {
             "type": "string",
             "title": "Description"
@@ -21178,6 +21314,18 @@
               }
             ],
             "title": "Last Seen At"
+          },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
           },
           "owner_id": {
             "anyOf": [
@@ -21242,6 +21390,18 @@
             "type": "string",
             "format": "date-time",
             "title": "Updated At"
+          },
+          "branch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Id"
           }
         },
         "type": "object",
@@ -21483,6 +21643,17 @@
             "type": "array",
             "title": "Field Definitions",
             "default": []
+          },
+          "event_name_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Name Format"
           }
         },
         "type": "object",
@@ -21566,6 +21737,18 @@
               }
             ],
             "title": "Name"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
           },
           "description": {
             "anyOf": [
@@ -26958,6 +27141,24 @@
               }
             ],
             "title": "After"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "housekeeping": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Housekeeping"
           }
         },
         "type": "object",
@@ -27736,6 +27937,12 @@
             "minimum": 1.0,
             "title": "App Version Keep Releases",
             "default": 5
+          },
+          "timezone": {
+            "type": "string",
+            "maxLength": 64,
+            "title": "Timezone",
+            "default": "UTC"
           }
         },
         "type": "object",
@@ -27930,6 +28137,11 @@
             "minimum": 1.0,
             "title": "App Version Keep Releases",
             "default": 5
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone",
+            "default": "UTC"
           },
           "created_at": {
             "type": "string",
@@ -28345,6 +28557,11 @@
             "maximum": 100.0,
             "minimum": 1.0,
             "title": "App Version Keep Releases"
+          },
+          "timezone": {
+            "type": "string",
+            "maxLength": 64,
+            "title": "Timezone"
           }
         },
         "type": "object",

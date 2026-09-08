@@ -6358,6 +6358,12 @@
             },
             "title": "Tags",
             "type": "array"
+          },
+          "title": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Title",
+            "type": "string"
           }
         },
         "required": [
@@ -6558,6 +6564,18 @@
             "title": "Field Values",
             "type": "array"
           },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -6659,6 +6677,11 @@
             },
             "title": "Tags",
             "type": "array"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
           },
           "updated_at": {
             "format": "date-time",
@@ -7061,6 +7084,18 @@
       "EventMutationResponse": {
         "description": "Event returned after a create or update, with advisory template warnings.",
         "properties": {
+          "branch_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Id"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -7090,6 +7125,18 @@
             },
             "title": "Field Values",
             "type": "array"
+          },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
           },
           "id": {
             "format": "uuid",
@@ -7187,6 +7234,11 @@
             },
             "title": "Tags",
             "type": "array"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
           },
           "updated_at": {
             "format": "date-time",
@@ -7476,6 +7528,18 @@
       },
       "EventResponse": {
         "properties": {
+          "branch_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Id"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -7505,6 +7569,18 @@
             },
             "title": "Field Values",
             "type": "array"
+          },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
           },
           "id": {
             "format": "uuid",
@@ -7602,6 +7678,11 @@
             },
             "title": "Tags",
             "type": "array"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
           },
           "updated_at": {
             "format": "date-time",
@@ -7817,6 +7898,17 @@
           "display_name": {
             "title": "Display Name",
             "type": "string"
+          },
+          "event_name_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Name Format"
           },
           "field_definitions": {
             "default": [],
@@ -8043,6 +8135,18 @@
               }
             ],
             "title": "Tags"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
           }
         },
         "title": "EventUpdate",
@@ -13300,6 +13404,17 @@
             "title": "Field Changes",
             "type": "array"
           },
+          "housekeeping": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Housekeeping"
+          },
           "kind": {
             "enum": [
               "added",
@@ -13323,6 +13438,13 @@
               }
             ],
             "title": "Parent"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [
@@ -31646,6 +31768,18 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "description": "Run the embedding leg as well as the lexical one. Pass false for a keyword-only answer that skips the provider round trip; ``semantic_used`` in the response is then always false.",
+            "in": "query",
+            "name": "semantic",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Run the embedding leg as well as the lexical one. Pass false for a keyword-only answer that skips the provider round trip; ``semantic_used`` in the response is then always false.",
+              "title": "Semantic",
+              "type": "boolean"
             }
           },
           {

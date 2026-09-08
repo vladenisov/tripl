@@ -52,6 +52,8 @@ from tripl.schemas.plan_branch import (
 )
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services._plan_branch_renames import snapshot_rename_pairs
+from tripl.services._plan_diff_housekeeping import mark_housekeeping, reviewable
+from tripl.services._plan_diff_warnings import attach_identity_warnings
 from tripl.services.plan_revision_service import (
     build_plan_snapshot,
     compute_plan_diff_entries,
@@ -223,17 +225,20 @@ async def _diff_counts_for_branches(
             base_revision = await session.get(PlanRevision, branch.base_revision_id)
             if base_revision is not None:
                 base_payload = base_revision.payload or {}
+        # The badge counts what the reviewer will read, so housekeeping
+        # entries are left out of it exactly as ``diff_branch`` leaves them
+        # out of ``summary`` (tripl-kjhi.12).
         if base_payload is None:
             # Legacy branch with no base snapshot: same fallback as diff_branch —
             # it cannot tell branch-authored changes from later main changes.
-            counts[branch.id] = (
-                len(compute_plan_diff_entries(main_snapshot, branch_snapshot)),
-                False,
-            )
+            legacy_entries = compute_plan_diff_entries(main_snapshot, branch_snapshot)
+            mark_housekeeping(legacy_entries)
+            counts[branch.id] = (len(reviewable(legacy_entries)), False)
             continue
-        ahead = len(compute_plan_diff_entries(base_payload, branch_snapshot))
-        behind = len(compute_plan_diff_entries(base_payload, main_snapshot)) > 0
-        counts[branch.id] = (ahead, behind)
+        ahead_entries = compute_plan_diff_entries(base_payload, branch_snapshot)
+        behind_entries = compute_plan_diff_entries(base_payload, main_snapshot)
+        mark_housekeeping(ahead_entries, behind_entries=behind_entries)
+        counts[branch.id] = (len(reviewable(ahead_entries)), len(behind_entries) > 0)
     return counts
 
 
@@ -498,6 +503,7 @@ async def deep_copy_plan_to_branch(
                 branch_id=target_branch_id,
                 event_type_id=et_map[ev.event_type_id],
                 name=ev.name,
+                title=ev.title,
                 source_name=ev.source_name,
                 description=ev.description,
                 order=ev.order,
@@ -951,9 +957,13 @@ async def delete_comment(
 
 
 def _summary_counts(entries: list[Any]) -> dict[str, int]:
-    out = {"added": 0, "removed": 0, "changed": 0}
+    """Per-kind tally of the author's changes; housekeeping counted apart."""
+    out = {"added": 0, "removed": 0, "changed": 0, "housekeeping": 0}
     for entry in entries:
-        out[entry.kind] += 1
+        if entry.housekeeping is not None:
+            out["housekeeping"] += 1
+        else:
+            out[entry.kind] += 1
     return out
 
 
@@ -977,6 +987,7 @@ async def diff_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) ->
             entries = compute_plan_diff_entries(base_payload, branch_snapshot)
             behind_entries = compute_plan_diff_entries(base_payload, main_snapshot)
             behind_base = len(behind_entries) > 0
+            mark_housekeeping(entries, behind_entries=behind_entries)
             # The MERGE's own pairing, read through the same function the merge
             # applies, so a rename reads as one change instead of a deletion
             # beside an unrelated addition. A second implementation here would
@@ -988,7 +999,15 @@ async def diff_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) ->
         # branch-authored changes from later main changes — and with no third
         # side to read, the pairing has nothing to say either.
         entries = compute_plan_diff_entries(main_snapshot, branch_snapshot)
+        mark_housekeeping(entries)
 
+    await attach_identity_warnings(
+        session,
+        project_id=project_id,
+        branch_id=branch.id,
+        entries=entries,
+        branch_snapshot=branch_snapshot,
+    )
     return PlanBranchDiff(
         entries=entries,
         summary=_summary_counts(entries),

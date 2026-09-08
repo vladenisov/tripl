@@ -5527,6 +5527,11 @@ export interface components {
              * @default []
              */
             tags: string[];
+            /**
+             * Title
+             * @default
+             */
+            title: string;
         };
         /** EventFieldValueIn */
         EventFieldValueIn: {
@@ -5639,6 +5644,8 @@ export interface components {
              * @default []
              */
             field_values: components["schemas"]["EventFieldValueResponse"][];
+            /** First Seen At */
+            first_seen_at?: string | null;
             /**
              * Id
              * Format: uuid
@@ -5687,6 +5694,11 @@ export interface components {
              * @default []
              */
             tags: components["schemas"]["EventTagResponse"][];
+            /**
+             * Title
+             * @default
+             */
+            title: string;
             /**
              * Updated At
              * Format: date-time
@@ -5827,6 +5839,8 @@ export interface components {
          * @description Event returned after a create or update, with advisory template warnings.
          */
         EventMutationResponse: {
+            /** Branch Id */
+            branch_id?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -5850,6 +5864,8 @@ export interface components {
              * @default []
              */
             field_values: components["schemas"]["EventFieldValueResponse"][];
+            /** First Seen At */
+            first_seen_at?: string | null;
             /**
              * Id
              * Format: uuid
@@ -5893,6 +5909,11 @@ export interface components {
              * @default []
              */
             tags: components["schemas"]["EventTagResponse"][];
+            /**
+             * Title
+             * @default
+             */
+            title: string;
             /**
              * Updated At
              * Format: date-time
@@ -6011,6 +6032,8 @@ export interface components {
         };
         /** EventResponse */
         EventResponse: {
+            /** Branch Id */
+            branch_id?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -6034,6 +6057,8 @@ export interface components {
              * @default []
              */
             field_values: components["schemas"]["EventFieldValueResponse"][];
+            /** First Seen At */
+            first_seen_at?: string | null;
             /**
              * Id
              * Format: uuid
@@ -6077,6 +6102,11 @@ export interface components {
              * @default []
              */
             tags: components["schemas"]["EventTagResponse"][];
+            /**
+             * Title
+             * @default
+             */
+            title: string;
             /**
              * Updated At
              * Format: date-time
@@ -6186,6 +6216,8 @@ export interface components {
             description: string;
             /** Display Name */
             display_name: string;
+            /** Event Name Format */
+            event_name_format?: string | null;
             /**
              * Field Definitions
              * @default []
@@ -6243,6 +6275,8 @@ export interface components {
             sunset_at?: string | null;
             /** Tags */
             tags?: string[] | null;
+            /** Title */
+            title?: string | null;
         };
         /** EventWindowMetricsRequest */
         EventWindowMetricsRequest: {
@@ -8102,6 +8136,8 @@ export interface components {
             entity_type: "event_type" | "field_definition" | "event" | "variable" | "meta_field" | "relation";
             /** Field Changes */
             field_changes?: components["schemas"]["PlanFieldChange"][];
+            /** Housekeeping */
+            housekeeping?: string | null;
             /**
              * Kind
              * @enum {string}
@@ -8111,6 +8147,8 @@ export interface components {
             name: string;
             /** Parent */
             parent?: string | null;
+            /** Warnings */
+            warnings?: string[];
         };
         /**
          * PlanDiffRename
@@ -17071,6 +17109,8 @@ export interface operations {
                 types?: ("event" | "event_type" | "field" | "meta_field" | "variable" | "relation" | "tag" | "metric" | "fact_table" | "scan_config" | "alert_rule")[] | null;
                 include_archived?: boolean;
                 limit?: number;
+                /** @description Run the embedding leg as well as the lexical one. Pass false for a keyword-only answer that skips the provider round trip; ``semantic_used`` in the response is then always false. */
+                semantic?: boolean;
                 /** @description Plan branch id (UUID) to read and write instead of the main branch. */
                 branch?: string | null;
             };

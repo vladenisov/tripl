@@ -243,16 +243,16 @@ Every write tool states in its description that it needs a `tk_w_` key; with a
 
 | Tool | Arguments | Backed by |
 |------|-----------|-----------|
-| `create_event` | `slug, branch_id, event_type_id, name, description?, status?, tags?, field_values?, meta_values?` | `POST /projects/{slug}/events` — `status` is [enumerated](#enumerated-arguments) |
-| `update_event` | `slug, event_id, branch_id, patch{...}` | `PATCH /projects/{slug}/events/{event_id}` |
+| `create_event` | `slug, branch_id, event_type_id, name, title?, description?, status?, tags?, field_values?, meta_values?` | `POST /projects/{slug}/events` — `status` is [enumerated](#enumerated-arguments) |
+| `update_event` | `slug, event_id, branch_id, patch{...}` | `PATCH /projects/{slug}/events/{event_id}` — the patch accepts `title` alongside the other `EventUpdate` fields |
 | `trigger_scan` | `slug, scan_id` | `POST /projects/{slug}/scans/{scan_id}/run` |
 
 :::warning
 In `update_event`, `field_values` and `meta_values` are **full-list
 replacements**, exactly as in the REST contract: sending a partial list drops
 the values you omitted. The tool description repeats this warning to the
-agent. For narrow edits, patch only `description`, `name`, tags, or state
-fields.
+agent. For narrow edits, patch only `description`, `title`, `name`, tags, or
+state fields.
 :::
 
 ### Names an agent does not choose
@@ -260,7 +260,9 @@ fields.
 Where a scan names the events of a type, `create_event` does not use the `name`
 you send. The server builds it from the field values with that scan's format,
 stamps it as the event's scan identity, and returns a warning saying yours was
-ignored — read the response and adopt the returned `name` and `id`.
+ignored — read the response and adopt the returned `name` and `id`. Put the
+human-readable label in `title` instead: it is stored beside the identity,
+shown in lists and the branch diff, and never derived or overwritten.
 
 Two failures follow from the same rule. A `422` means the format needs field
 values the call did not carry, and names the columns. A `409` means an event

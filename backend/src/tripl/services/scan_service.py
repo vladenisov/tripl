@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tripl import cache
 from tripl.models.data_source import DataSource, DBType
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
@@ -45,6 +46,9 @@ async def _refresh_main_search_index(
     await reindex_project_branch(
         session, project_id=project_id, branch_id=main_branch_id, slug=slug
     )
+    # The event type list carries each type's resolved ``event_name_format``
+    # (tripl-kjhi.1), so a scan config edit changes that response too.
+    await cache.delete(cache.key_event_types_list(slug))
 
 
 async def _verify_data_source(

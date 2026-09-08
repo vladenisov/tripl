@@ -133,7 +133,9 @@ export interface PlanBranchComment {
 
 export interface PlanBranchDiffSummary {
   entries: PlanDiffEntry[]
-  summary: { added: number; removed: number; changed: number }
+  /** `housekeeping` counts the entries carrying a `housekeeping` reason; they
+   * are left out of the other three. Absent on responses from an older instance. */
+  summary: { added: number; removed: number; changed: number; housekeeping?: number }
   behind_base: boolean
   /** Removed/added pairs the merge will treat as one rename, computed by the
    * same function the merge applies — so the UI reports the merge's decision
@@ -193,6 +195,16 @@ export interface PlanDiffEntry {
    * base-side for removed. Null on legacy snapshots that predate id capture. */
   entity_id?: string | null
   changes: string[]
+  /** Things a reviewer should know that are not a change between the two sides
+   * — an event on a scan-governed type with no scan identity, for one. Plain
+   * sentences. Absent on responses from an older instance. */
+  warnings?: string[]
+  /** Set when the entry is the machine's doing rather than the author's — a
+   * scan-minted variable nobody used being retired, or a removal main has
+   * already made — with the reason in words. Left out of `summary`'s counts
+   * and folded in the UI (tripl-kjhi.12). Absent on responses from an older
+   * instance. */
+  housekeeping?: string | null
   /** Per-field before/after for `changed` entries; empty/absent otherwise.
    * Optional to match the OpenAPI shape (Pydantic default → not required). */
   field_changes?: PlanFieldChange[]

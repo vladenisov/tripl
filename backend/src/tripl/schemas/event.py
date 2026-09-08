@@ -22,6 +22,9 @@ class EventMetaValueIn(BaseModel):
 class EventCreate(BaseModel):
     event_type_id: uuid.UUID
     name: str = Field(min_length=1, max_length=500)
+    # Free-text label shown beside the identity; never part of it. Optional so
+    # every existing client keeps working unchanged (tripl-kjhi.3).
+    title: str = Field("", max_length=500)
     description: str = ""
     status: EventStatus = EventStatus.draft
     sunset_at: datetime | None = None
@@ -40,6 +43,7 @@ class EventCreate(BaseModel):
 
 class EventUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=500)
+    title: str | None = Field(None, max_length=500)
     description: str | None = None
     status: EventStatus | None = None
     sunset_at: datetime | None = None
@@ -179,11 +183,19 @@ class EventResponse(BaseModel):
     # and no naming rule governed; the generator adopts ``name`` as the identity
     # the first time one does.
     source_name: str | None = None
+    # The human label, empty when the identity is all there is (tripl-kjhi.3).
+    title: str = ""
     description: str
     order: int
     status: EventStatus
     sunset_at: datetime | None = None
     last_seen_at: datetime | None = None
+    # The earliest metric bucket with traffic, read off the main twin for a
+    # branch copy. ``created_at`` is when the ROW was authored, which the detail
+    # page used to label "First seen" — for an event planned before it shipped,
+    # that is a date nothing was seen on (tripl-kjhi.10). Null until the first
+    # collection finds it, and on list responses, which do not compute it.
+    first_seen_at: datetime | None = None
     owner_id: uuid.UUID | None = None
     reviewed: bool = False
     metric_breakdown_columns: list[str] = []
@@ -193,6 +205,10 @@ class EventResponse(BaseModel):
     meta_values: list[EventMetaValueResponse] = []
     created_at: datetime
     updated_at: datetime
+    # The branch this row lives on. A link into a branch event without its
+    # ``?branch=`` used to dead-end on a 404; the read path now answers for the
+    # row's own branch and says which one, so the client can switch (tripl-kjhi.7).
+    branch_id: uuid.UUID | None = None
 
     model_config = {"from_attributes": True}
 
@@ -222,11 +238,18 @@ class EventListItemResponse(BaseModel):
     # where ``source_name`` is NULL. Comparing names alone silently misses a
     # scanned event that has since been renamed.
     source_name: str | None = None
+    title: str = ""
     description: str
     order: int
     status: EventStatus
     sunset_at: datetime | None = None
     last_seen_at: datetime | None = None
+    # The earliest metric bucket with traffic, read off the main twin for a
+    # branch copy. ``created_at`` is when the ROW was authored, which the detail
+    # page used to label "First seen" — for an event planned before it shipped,
+    # that is a date nothing was seen on (tripl-kjhi.10). Null until the first
+    # collection finds it, and on list responses, which do not compute it.
+    first_seen_at: datetime | None = None
     owner_id: uuid.UUID | None = None
     reviewed: bool = False
     metric_breakdown_columns: list[str] = []
