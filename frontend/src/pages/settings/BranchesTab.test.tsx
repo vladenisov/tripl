@@ -437,6 +437,47 @@ describe('BranchesTab', () => {
     expect(await screen.findByText(/Priya S\./)).toBeInTheDocument()
   })
 
+  it('answers a review remark in place instead of starting a second one', async () => {
+    // PlanBranchComment has carried parent_id all along and the service has
+    // validated it; the panel simply never posted one (tripl-h2sx.27).
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([
+      {
+        id: 'comment-1',
+        branch_id: 'feat-1',
+        parent_id: null,
+        user_id: 'u-priya',
+        body: 'Please rename this event.',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+    ])
+    vi.mocked(planBranchesApi.createComment).mockResolvedValue({} as never)
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'reply' }))
+    fireEvent.change(screen.getByLabelText('Write a comment'), {
+      target: { value: 'Renamed on the branch.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+
+    await waitFor(() =>
+      expect(planBranchesApi.createComment).toHaveBeenCalledWith(
+        'demo',
+        'feat-1',
+        'Renamed on the branch.',
+        'comment-1',
+      ),
+    )
+  })
+
   it('breaks a changed collection down per member instead of dumping JSON', async () => {
     vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
     vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })

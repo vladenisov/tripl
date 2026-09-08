@@ -19,6 +19,7 @@ import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
 import { variablesApi } from '@/api/variables'
 import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
+import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { ChipListInput } from '@/components/chip-list-input'
 import { CommentThread } from '@/components/comment-thread'
 import { EntityBranchBanner } from '@/components/EntityBranchBanner'
@@ -1275,6 +1276,7 @@ export default function EventEditPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const branchId = useActiveBranchId()
+  const usersById = useUsersById()
   const isNew = !eventId
 
   // Reviewing a branch and fixing three of its events used to cost three round
@@ -1392,6 +1394,7 @@ export default function EventEditPage() {
             list={() => eventCommentsApi.list(slug, eventId)}
             create={(body, parentId) => eventCommentsApi.create(slug, eventId, body, parentId)}
             remove={commentId => eventCommentsApi.remove(slug, eventId, commentId)}
+            authorName={comment => displayUser(usersById, comment.user_id)}
             heading="Discussion"
             emptyText="Nothing raised yet. Questions and notes here stay out of the spec."
             composerId="event-discussion-body"

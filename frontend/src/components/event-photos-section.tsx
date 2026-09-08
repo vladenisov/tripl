@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Frame, ImagePlus, Loader2, Trash2, Upload, X } from 'lucide-react'
 import { useConfirm } from '@/hooks/useConfirm'
+import { displayUser, useUsersById } from '@/hooks/useUsersById'
 
 interface Props {
   slug: string
@@ -322,6 +323,7 @@ function PhotoViewer({
   onClose: () => void
 }) {
   const isFigma = photo.kind === 'figma'
+  const usersById = useUsersById()
 
   return (
     <div className="grid gap-2 md:grid-cols-[1fr_320px]">
@@ -373,6 +375,7 @@ function PhotoViewer({
           eventPhotosApi.createComment(slug, eventId, photo.id, body, parentId)
         }
         remove={commentId => eventPhotosApi.deleteComment(slug, eventId, photo.id, commentId)}
+        authorName={comment => displayUser(usersById, comment.user_id)}
       />
     </div>
   )

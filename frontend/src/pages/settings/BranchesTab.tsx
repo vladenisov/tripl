@@ -20,12 +20,13 @@ import { branchSettingsApi } from '@/api/branchSettings'
 import { metaFieldsApi } from '@/api/metaFields'
 import { ApiError } from '@/api/client'
 import { planBranchesApi } from '@/api/planBranches'
-import { usersApi } from '@/api/users'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { DIFF_STALE_MS, rowDiffBranches } from './branchDiffFanout'
 import { DiffValue } from './DiffValue'
+import { CommentThread } from '@/components/comment-thread'
+import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { TrackerConfigDialog } from './TrackerConfigDialog'
 import { useBranchLinkProps } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
@@ -133,16 +134,8 @@ const ENTITY_LABEL: Record<PlanDiffEntityType, string> = {
 /** The API serialises `created_by` as a bare user id; resolve it against the
  * project roster (GET /users is open to any authenticated user), preferring
  * the name and falling back to the email — same convention as EventRow. */
-function useUsersById(): Map<string, string> {
-  const { data: users } = useQuery({ queryKey: ['users'], queryFn: () => usersApi.list() })
-  return useMemo(
-    () => new Map((users ?? []).map((u) => [u.id, u.name ?? u.email])),
-    [users],
-  )
-}
-
 function branchAuthor(branch: PlanBranchSummary, usersById: Map<string, string>): string {
-  return (branch.created_by ? usersById.get(branch.created_by) : undefined) ?? 'unknown'
+  return displayUser(usersById, branch.created_by)
 }
 
 function branchSubtitle(branch: PlanBranchSummary, usersById: Map<string, string>): string {
@@ -1917,65 +1910,37 @@ function CommentsPanel({
   branchId: string
   usersById: Map<string, string>
 }) {
-  const qc = useQueryClient()
-  const [commentBody, setCommentBody] = useState('')
   const { notifyStepCompleted } = useDemoScenarioActions()
-
   const { data: comments } = useQuery({
     queryKey: ['planBranchComments', slug, branchId],
     queryFn: () => planBranchesApi.listComments(slug, branchId),
   })
 
-  const createCommentMut = useMutation({
-    mutationFn: () => planBranchesApi.createComment(slug, branchId, commentBody),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['planBranchComments', slug, branchId] })
-      setCommentBody('')
-      // Posting review feedback lands the branches chapter's last step.
-      notifyStepCompleted('branches/comment')
-    },
-  })
-
-  const list = comments ?? []
-
+  // The panel used to render a flat list off a single-line <Input>, while
+  // PlanBranchComment has carried `parent_id` and the service has validated it
+  // all along — a review remark could be made but never answered in place. The
+  // shared thread already does the threading; what it did NOT have was the
+  // author, which this panel always showed, so that moved into the component
+  // for both callers rather than being lost here (tripl-h2sx.27).
   return (
-    <Panel title="Comments" subtitle={`${list.length}`}>
-      <div className="space-y-2 p-4">
-        {list.length === 0 && (
-          <p className="text-sm text-muted-foreground">No comments yet.</p>
-        )}
-        {list.map((c) => (
-          <div
-            key={c.id}
-            className="rounded-md border p-2 text-sm"
-            style={{ borderColor: 'var(--border-subtle)' }}
-          >
-            <p style={{ color: 'var(--fg)' }}>{c.body}</p>
-            <p className="mt-1 text-xs" style={{ color: 'var(--fg-subtle)' }}>
-              {(c.user_id ? usersById.get(c.user_id) : undefined) ?? 'unknown'} · {formatRelativeTime(c.created_at)}
-            </p>
-          </div>
-        ))}
-        <form
-          className="flex gap-2 pt-1"
-          onSubmit={(event) => {
-            event.preventDefault()
-            if (commentBody.trim()) createCommentMut.mutate()
-          }}
-        >
-          <Input
-            aria-label="Comment"
-            value={commentBody}
-            onChange={(event) => setCommentBody(event.target.value)}
-            placeholder="Write a comment…"
-          />
-          <ScenarioCoachMark step="branches/comment">
-            <Button type="submit" disabled={createCommentMut.isPending || !commentBody.trim()}>
-              Post
-            </Button>
-          </ScenarioCoachMark>
-        </form>
-      </div>
+    <Panel title="Comments" subtitle={`${comments?.length ?? 0}`}>
+      <ScenarioCoachMark step="branches/comment">
+        <CommentThread
+          queryKey={['planBranchComments', slug, branchId]}
+          list={() => planBranchesApi.listComments(slug, branchId)}
+          create={(body, parentId) =>
+            planBranchesApi.createComment(slug, branchId, body, parentId ?? undefined)
+          }
+          remove={(commentId) => planBranchesApi.deleteComment(slug, branchId, commentId)}
+          authorName={(comment) => displayUser(usersById, comment.user_id)}
+          // Posting review feedback lands the branches chapter's last step.
+          onCreated={() => notifyStepCompleted('branches/comment')}
+          heading="Comments"
+          emptyText="No comments yet."
+          composerId="branch-comment-body"
+          className="flex flex-col gap-2 p-4"
+        />
+      </ScenarioCoachMark>
     </Panel>
   )
 }

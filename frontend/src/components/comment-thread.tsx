@@ -13,6 +13,9 @@ export interface ThreadComment {
   parent_id: string | null
   body: string
   created_at: string
+  /** Null once the author's account is gone — the FK is SET NULL, because a
+   *  deleted account must not take the discussion with it. */
+  user_id?: string | null
 }
 
 export interface CommentThreadProps {
@@ -26,6 +29,14 @@ export interface CommentThreadProps {
   /** Keeps the composer's label unique when two threads share a page. */
   composerId?: string
   className?: string
+  /** Resolves a comment to a display name. A callback rather than a roster
+   *  map, so the component stays free of the users query and each caller
+   *  resolves however it already does. Without it the thread stays anonymous,
+   *  which is what it was. */
+  authorName?: (comment: ThreadComment) => string
+  /** Fired after a comment is posted. The branch panel's demo scenario marks
+   *  its last step here, and losing that would strand the chapter. */
+  onCreated?: () => void
 }
 
 /**
@@ -46,6 +57,8 @@ export function CommentThread({
   emptyText = 'No comments yet. Start the thread.',
   composerId = 'comment-body',
   className = 'flex h-full min-h-[400px] flex-col rounded-md border bg-card p-3',
+  authorName,
+  onCreated,
 }: CommentThreadProps) {
   const queryClient = useQueryClient()
   const [body, setBody] = useState('')
@@ -59,6 +72,7 @@ export function CommentThread({
       setBody('')
       setReplyTo(null)
       void queryClient.invalidateQueries({ queryKey: [...queryKey] })
+      onCreated?.()
     },
   })
 
@@ -109,6 +123,7 @@ export function CommentThread({
               onReply={() => setReplyTo(comment.id)}
               onDelete={id => deleteMut.mutate(id)}
               replyingTo={replyTo}
+              authorName={authorName}
             />
           ))
         )}
@@ -164,18 +179,23 @@ function CommentItem({
   onReply,
   onDelete,
   replyingTo,
+  authorName,
 }: {
   comment: ThreadComment
   replies: ThreadComment[]
   onReply: () => void
   onDelete: (id: string) => void
   replyingTo: string | null
+  authorName?: (comment: ThreadComment) => string
 }) {
   return (
     <div className="space-y-2">
       <div className="rounded-md border bg-muted/30 px-2 py-1.5">
         <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-          <span>{formatDateTime(comment.created_at)}</span>
+          <span>
+            {authorName ? `${authorName(comment)} · ` : ''}
+            {formatDateTime(comment.created_at)}
+          </span>
           <div className="flex items-center gap-2">
             <button type="button" className="hover:text-foreground" onClick={onReply}>
               {replyingTo === comment.id ? 'replying…' : 'reply'}
@@ -197,7 +217,10 @@ function CommentItem({
           {replies.map(reply => (
             <div key={reply.id} className="rounded-md border bg-muted/20 px-2 py-1.5">
               <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                <span>{formatDateTime(reply.created_at)}</span>
+                <span>
+                  {authorName ? `${authorName(reply)} · ` : ''}
+                  {formatDateTime(reply.created_at)}
+                </span>
                 <button
                   type="button"
                   aria-label="Delete comment"

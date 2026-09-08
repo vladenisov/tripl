@@ -24,6 +24,8 @@ function renderThread(
   handlers: Partial<{
     create: (body: string, parentId: string | null) => Promise<unknown>
     remove: (commentId: string) => Promise<unknown>
+    authorName: (comment: ThreadComment) => string
+    onCreated: () => void
   }> = {},
 ) {
   const create = handlers.create ?? vi.fn().mockResolvedValue({})
@@ -34,6 +36,8 @@ function renderThread(
       list: () => Promise.resolve(rows),
       create,
       remove,
+      authorName: handlers.authorName,
+      onCreated: handlers.onCreated,
     }),
     { wrapper },
   )
@@ -114,5 +118,39 @@ describe('CommentThread', () => {
     const controls = screen.getAllByRole('button', { name: 'Delete comment' })
     fireEvent.click(controls[1])
     await waitFor(() => expect(remove).toHaveBeenCalledWith('c2'))
+  })
+})
+
+describe('CommentThread authors (tripl-h2sx.27)', () => {
+  it('names the author on a comment and on its reply', async () => {
+    renderThread(
+      [
+        comment({ id: 'c-1', body: 'Is this still shipping?', user_id: 'u-1' }),
+        comment({ id: 'c-2', parent_id: 'c-1', body: 'Yes, in March.', user_id: 'u-2' }),
+      ],
+      { authorName: c => (c.user_id === 'u-1' ? 'Ada' : 'Grace') },
+    )
+
+    expect(await screen.findByText(/Ada ·/)).toBeInTheDocument()
+    expect(screen.getByText(/Grace ·/)).toBeInTheDocument()
+  })
+
+  it('stays anonymous when no resolver is given', async () => {
+    renderThread([comment({ id: 'c-1', body: 'hi', user_id: 'u-1' })])
+
+    expect(await screen.findByText('hi')).toBeInTheDocument()
+    expect(screen.queryByText(/ · /)).not.toBeInTheDocument()
+  })
+
+  it('fires onCreated after a post — the demo scenario hangs off it', async () => {
+    const onCreated = vi.fn()
+    renderThread([], { onCreated })
+
+    fireEvent.change(await screen.findByLabelText('Write a comment'), {
+      target: { value: 'first' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Comment' }))
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1))
   })
 })

@@ -161,7 +161,12 @@ export interface EventPhoto {
 
 export interface EventPhotoComment {
   id: string
-  photo_id: string
+  /** Exactly one anchor is set, enforced by ck_event_photo_comment_one_anchor:
+   *  a comment pinned to one attachment, or the event's own discussion. Both
+   *  are nullable here for that reason — the type claimed a photo_id was
+   *  always present, which stopped being true when the event anchor landed. */
+  photo_id: string | null
+  event_id?: string | null
   parent_id: string | null
   user_id: string | null
   body: string

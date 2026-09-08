@@ -234,6 +234,10 @@ hash, and the Markdown spec pasted into the implementation ticket — so a
 question written there arrives as if it were part of the specification. Nothing
 written in the discussion goes to any of those places.
 
+Every comment shows who wrote it and when, and replies nest under the comment
+they answer. The same thread powers the notes on an individual attachment and
+the review comments on a branch, so all three read and behave alike.
+
 An event has **one** discussion. Open the event on a branch and you see and add
 to the same thread as on main, so a question raised while drafting a change is
 answerable by whoever is reading the live plan, and merging the branch neither
