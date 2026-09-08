@@ -2,6 +2,7 @@ import { Variable } from 'lucide-react'
 import type { EventFieldVariableValue } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { formatDateTime } from '@/lib/datetime'
 
 export function VariableValueContextTrigger({
   contexts,
@@ -74,6 +75,16 @@ export function VariableValueContextTrigger({
               <div className="text-muted-foreground">
                 {context.source_column} - {context.observed_count} observed
               </div>
+              {/* "Refreshed", not "seen": the timestamp tracks the last WRITE.
+                  A scan that re-observes nothing new leaves the row untouched,
+                  so "last seen" would overstate it. Rendered on its own line so
+                  the frozen-value sentences below stay the final word for an
+                  excluded context. */}
+              {context.updated_at && formatDateTime(context.updated_at) && (
+                <div className="text-muted-foreground">
+                  Last refreshed {formatDateTime(context.updated_at)}
+                </div>
+              )}
               {context.values.length > 0 ? (
                 <div className="flex max-h-36 flex-wrap gap-1 overflow-auto">
                   {context.values.map((value) => (

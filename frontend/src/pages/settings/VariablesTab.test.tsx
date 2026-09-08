@@ -7,7 +7,7 @@ import { variablesApi } from '@/api/variables'
 import { variableDriftsApi } from '@/api/variableDrifts'
 import { variableOverridesApi } from '@/api/variableOverrides'
 import { formatDateTime } from '@/lib/datetime'
-import type { Variable } from '@/types'
+import type { Variable, VariableValueContext } from '@/types'
 import { VariablesTab } from './VariablesTab'
 
 vi.mock('@/api/variables', () => ({
@@ -43,6 +43,25 @@ vi.mock('@/api/events', () => ({
     list: vi.fn(),
   },
 }))
+
+function makeContext(
+  overrides: Partial<VariableValueContext> & { id: string },
+): VariableValueContext {
+  return {
+    variable_id: 'var-1',
+    variable_name: 'variant',
+    event_id: 'ev-1',
+    event_name: 'Profile View',
+    field_definition_id: 'fd-1',
+    field_name: 'variant',
+    field_display_name: 'Variant',
+    source_column: 'variant',
+    value_kind: 'low',
+    observed_count: 2,
+    values: ['a', 'b'],
+    ...overrides,
+  }
+}
 
 function makeVariable(overrides: Partial<Variable> & { id: string; name: string }): Variable {
   return {
@@ -320,7 +339,44 @@ describe('VariablesTab', () => {
     expect(within(dialog).getByRole('columnheader', { name: 'Event' })).toBeInTheDocument()
     expect(within(dialog).getByRole('columnheader', { name: 'Description' })).toBeInTheDocument()
     expect(within(dialog).getByRole('columnheader', { name: 'Possible values' })).toBeInTheDocument()
+    // The two scan-derived facts the dialog used to fetch and discard
+    // (tripl-h2sx.30, tripl-h2sx.22).
+    expect(within(dialog).getByRole('columnheader', { name: 'Source' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('columnheader', { name: 'Last refreshed' })).toBeInTheDocument()
     expect(await within(dialog).findByText('u2')).toBeInTheDocument()
+  })
+
+  it('names the warehouse paths the scan answered on, beside the bindings', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant', source_name: 'variant' })])
+    // Two contexts on two different paths, one of them repeated: the analyst
+    // needs the distinct list, which is what tells her a binding is missing.
+    vi.mocked(variablesApi.values).mockResolvedValue([
+      makeContext({ id: 'ctx-1', source_column: 'variant' }),
+      makeContext({ id: 'ctx-2', source_column: 'page_data.extra.variant' }),
+      makeContext({ id: 'ctx-3', source_column: 'variant' }),
+    ])
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+    const dialog = await screen.findByRole('dialog')
+
+    expect(await within(dialog).findByText('Observed at:')).toBeInTheDocument()
+    expect(within(dialog).getAllByText('variant', { selector: 'code' })).toHaveLength(1)
+    expect(
+      within(dialog).getByText('page_data.extra.variant', { selector: 'code' }),
+    ).toBeInTheDocument()
+  })
+
+  it('says nothing about observed paths when the scan has recorded none', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant', source_name: 'variant' })])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+    const dialog = await screen.findByRole('dialog')
+
+    await within(dialog).findByText('Observed values')
+    expect(within(dialog).queryByText('Observed at:')).not.toBeInTheDocument()
   })
 
   it('creates a variable with documented values and bindings', async () => {

@@ -6451,6 +6451,11 @@
             "title": "Source Column",
             "type": "string"
           },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
           "value_kind": {
             "$ref": "#/components/schemas/VariableValueKind"
           },
@@ -6478,7 +6483,8 @@
           "variable_name",
           "source_column",
           "value_kind",
-          "observed_count"
+          "observed_count",
+          "updated_at"
         ],
         "title": "EventFieldVariableValueResponse",
         "type": "object"
@@ -19379,6 +19385,11 @@
             "title": "Source Column",
             "type": "string"
           },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
           "value_kind": {
             "$ref": "#/components/schemas/VariableValueKind"
           },
@@ -19411,7 +19422,8 @@
           "field_display_name",
           "source_column",
           "value_kind",
-          "observed_count"
+          "observed_count",
+          "updated_at"
         ],
         "title": "VariableValueContextResponse",
         "type": "object"

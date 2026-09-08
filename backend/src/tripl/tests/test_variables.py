@@ -182,6 +182,19 @@ async def test_variable_responses_include_observed_value_summary(client: AsyncCl
     assert contexts[0]["event_name"] == "Profile View"
     assert contexts[0]["field_name"] == "screen"
     assert contexts[0]["values"] == ["u1", "u2"]
+    # The warehouse path the scan answered on, and when the row was last
+    # written — the two facts an analyst needs to tell a stale reading from a
+    # current one (tripl-h2sx.22, tripl-h2sx.30).
+    assert contexts[0]["source_column"] == "user_id"
+    assert datetime.fromisoformat(contexts[0]["updated_at"])
+
+    # The EVENT path carries it too: that response nests the same row through
+    # `EventFieldVariableValueResponse`, and it is the one that would break if
+    # anyone later hand-built it instead of using from_attributes.
+    event_get = await client.get(f"/api/v1/projects/var-values/events/{event_id}")
+    assert event_get.status_code == 200
+    nested = event_get.json()["field_values"][0]["variable_values"][0]
+    assert datetime.fromisoformat(nested["updated_at"])
 
 
 @pytest.mark.asyncio

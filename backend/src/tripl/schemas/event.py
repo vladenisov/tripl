@@ -119,6 +119,9 @@ class EventFieldVariableValueResponse(BaseModel):
     value_kind: VariableValueKind
     observed_count: int
     values: list[str] = []
+    # Last WRITE, not last confirmation — see the long note on
+    # ``VariableValueContextResponse.updated_at`` in schemas/variable.py.
+    updated_at: datetime
     # Excluding a variable no longer deletes its contexts, so this row can now
     # outlive the scanning that produced it. The values below are then the last
     # ones seen and not a live reading, and the client has to be able to say

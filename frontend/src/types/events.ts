@@ -16,6 +16,11 @@ export interface EventFieldVariableValue {
   values: string[]
   /** Optional to mirror the backend default: an older response omits it. */
   excluded_from_scans?: boolean
+  /** When these values were last WRITTEN — not when a scan last confirmed
+   *  them. Optional because `SearchEventVariableValue` extends this interface
+   *  and the search response is hand-built without the column; declaring it
+   *  required would make that type claim a field its endpoint never sends. */
+  updated_at?: string
 }
 
 export interface EventFieldValue {

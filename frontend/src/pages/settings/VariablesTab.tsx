@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ChipListInput } from "@/components/chip-list-input"
+import { formatDateTime } from "@/lib/datetime"
 import { EmptyState } from "@/components/empty-state"
 import { Panel } from "@/components/settings/kit"
 import { ScenarioCoachMark } from "@/demo/ScenarioCoachMark"
@@ -636,6 +637,15 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     queryFn: () => variablesApi.values(slug, editingVar!.id, branchId),
     enabled: !!editingVar,
   })
+  // The warehouse paths the scan actually ANSWERED on, distinct and in
+  // first-seen order. Not the same question as the bindings above, which are
+  // what the plan ASKS for: a path here that is missing there is the case worth
+  // seeing — the scan reached this variable by name and the binding list is
+  // incomplete (tripl-h2sx.30).
+  const observedSourceColumns = useMemo(
+    () => [...new Set(editingVarContexts.map(context => context.source_column).filter(Boolean))],
+    [editingVarContexts],
+  )
   const editingSummaryRows = editingVarContexts.length > 0
     ? editingVarContexts.map((context) => ({
       id: context.id,
@@ -644,11 +654,20 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
       // Event column paints nothing (tripl-wkwv.5). The no-contexts branch below
       // keeps its own '—': that is "no event at all", a different statement.
       eventName: eventNameLabel(context.event_name),
+      sourceColumn: context.source_column,
       values: context.values,
       valueKind: context.value_kind,
+      updatedAt: context.updated_at,
     }))
     : editingVar
-      ? [{ id: `${editingVar.id}-empty`, eventName: '—', values: [] as string[], valueKind: null }]
+      ? [{
+        id: `${editingVar.id}-empty`,
+        eventName: '—',
+        sourceColumn: '',
+        values: [] as string[],
+        valueKind: null,
+        updatedAt: undefined as string | undefined,
+      }]
       : []
 
   return (
@@ -731,6 +750,14 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
               <div className="grid gap-2">
                 <Label>Data bindings</Label>
                 <ChipListInput values={editBindings} onChange={setEditBindings} placeholder="e.g. page_data.extra.variant" ariaLabel="Add data binding" validate={isValidBinding} invalidMessage={INVALID_BINDING_MESSAGE} />
+                {observedSourceColumns.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+                    <span>Observed at:</span>
+                    {observedSourceColumns.map((column) => (
+                      <code key={column} className="rounded bg-muted px-1 font-mono">{column}</code>
+                    ))}
+                  </div>
+                )}
                 {/* Deliberately not "you can leave this empty", which is true of
                     creation and misleading here: emptying a binding a scan filled
                     in makes the row read as hand-owned to `_human_claim`, and it
@@ -932,8 +959,13 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                           <TableHead>Variable</TableHead>
                           <TableHead>Type</TableHead>
                           <TableHead>Event</TableHead>
+                          {/* The two scan-derived facts sit together — which
+                              event, which warehouse path — ahead of the three
+                              columns that only echo the form above. */}
+                          <TableHead>Source</TableHead>
                           <TableHead>Description</TableHead>
                           <TableHead>Possible values</TableHead>
+                          <TableHead>Last refreshed</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -942,6 +974,11 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                             <TableCell className="font-mono text-xs">{editVarName || '—'}</TableCell>
                             <TableCell className="text-xs">{typeLabels[editVarType]}</TableCell>
                             <TableCell className="text-xs">{row.eventName}</TableCell>
+                            <TableCell className="font-mono text-xs">
+                              {row.sourceColumn
+                                ? <span title={row.sourceColumn}>{row.sourceColumn}</span>
+                                : <span className="text-muted-foreground">—</span>}
+                            </TableCell>
                             <TableCell className="text-xs text-muted-foreground">{editDescription || '—'}</TableCell>
                             <TableCell className="text-xs">
                               {row.values.length > 0 ? (
@@ -958,6 +995,9 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                               ) : (
                                 <span className="text-muted-foreground">—</span>
                               )}
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {(row.updatedAt && formatDateTime(row.updatedAt)) || '—'}
                             </TableCell>
                           </TableRow>
                         ))}

@@ -1,5 +1,6 @@
 import re
 import uuid
+from datetime import datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -167,5 +168,18 @@ class VariableValueContextResponse(BaseModel):
     value_kind: VariableValueKind
     observed_count: int
     values: list[str] = []
+    # When these stored values were last WRITTEN — not when a scan last
+    # confirmed them, and emphatically not when they were first seen. Two
+    # mechanisms produce it and both are honest only under that reading: the
+    # scan path DELETES the row and re-inserts a fresh uuid
+    # (``_event_generator_variables.insert_variable_contexts``), so on that path
+    # ``created_at`` is the last scan write and would be a fabrication if
+    # exposed as "first observed"; the metrics-replay merge
+    # (``worker.tasks.metrics.generation``) mutates in place, so
+    # ``TimestampMixin.onupdate`` fires, but only when the merge changed
+    # something. A scan that re-observes nothing new leaves this frozen —
+    # "last seen" and "last checked" are both wrong, "last refreshed" is what
+    # it supports (tripl-h2sx.22).
+    updated_at: datetime
 
     model_config = {"from_attributes": True}

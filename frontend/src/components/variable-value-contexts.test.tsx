@@ -163,3 +163,43 @@ describe('VariableValueContextTrigger', () => {
     expect(container).toBeEmptyDOMElement()
   })
 })
+
+describe('VariableValueContextTrigger last refreshed (tripl-h2sx.22)', () => {
+  it('dates the reading when the row carries a timestamp', () => {
+    render(
+      <VariableValueContextTrigger
+        contexts={[context({ observed_count: 2, values: ['u1'], updated_at: '2026-09-01T10:30:00Z' })]}
+      />,
+    )
+    openPopover()
+
+    expect(screen.getByText(/Last refreshed/)).toBeInTheDocument()
+  })
+
+  it('says nothing at all when the response predates the field', () => {
+    // An older cached response has no updated_at. The line must vanish rather
+    // than print "Invalid Date" or claim a date it does not have.
+    render(<VariableValueContextTrigger contexts={[context({ observed_count: 2, values: ['u1'] })]} />)
+    openPopover()
+
+    expect(screen.queryByText(/Last refreshed/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Invalid Date/)).not.toBeInTheDocument()
+  })
+
+  it('dates an excluded context without contradicting the frozen-value sentence', () => {
+    render(
+      <VariableValueContextTrigger
+        contexts={[context({
+          observed_count: 2,
+          values: ['u1'],
+          excluded_from_scans: true,
+          updated_at: '2026-09-01T10:30:00Z',
+        })]}
+      />,
+    )
+    openPopover()
+
+    expect(screen.getByText(/Last refreshed/)).toBeInTheDocument()
+    expect(screen.getByText(/scans no longer refresh it/)).toBeInTheDocument()
+  })
+})

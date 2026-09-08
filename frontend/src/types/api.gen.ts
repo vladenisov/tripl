@@ -5619,6 +5619,11 @@ export interface components {
             observed_count: number;
             /** Source Column */
             source_column: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
             value_kind: components["schemas"]["VariableValueKind"];
             /**
              * Values
@@ -10497,6 +10502,11 @@ export interface components {
             observed_count: number;
             /** Source Column */
             source_column: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
             value_kind: components["schemas"]["VariableValueKind"];
             /**
              * Values
