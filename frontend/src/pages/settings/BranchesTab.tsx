@@ -8,6 +8,7 @@ import {
   GitBranch,
   GitCompare,
   GitMerge,
+  Pencil,
   Plus,
   Settings2,
   Ticket,
@@ -912,6 +913,23 @@ function FeatureBranchDetail({
   const pairedAdditions = new Set(
     renames.map((r) => entryKey(r.entity_type, r.parent, r.added_name)),
   )
+  // The addition is dropped from the list, but its id is the only branch-side
+  // one a renamed row has — the removal it is paired with carries the base-side
+  // id. Keep it so the row's Edit action edits the branch copy, not main's.
+  const renamedEntityId = new Map(
+    renames.map((r) => {
+      const addition = entries.find(
+        (entry) =>
+          entry.kind === 'added' &&
+          entryKey(entry.entity_type, entry.parent, entry.name) ===
+            entryKey(r.entity_type, r.parent, r.added_name),
+      )
+      return [
+        entryKey(r.entity_type, r.parent, r.removed_name),
+        addition?.entity_id ?? null,
+      ] as const
+    }),
+  )
   // Machine removals — scan-minted variables nobody used being retired, or
   // removals main already made — are folded into one line below the list
   // rather than read as the author's deletions (tripl-kjhi.12).
@@ -1158,6 +1176,10 @@ function FeatureBranchDetail({
                 branchId={branch.id}
                 entry={entry}
                 renamedTo={renamedTo.get(entryKey(entry.entity_type, entry.parent, entry.name))}
+                renamedEntityId={renamedEntityId.get(
+                  entryKey(entry.entity_type, entry.parent, entry.name),
+                )}
+                editable={branch.status !== 'merged' && branch.status !== 'closed'}
                 onRevert={handleRevert}
                 reverting={revertMut.isPending}
               />
@@ -1358,6 +1380,13 @@ function entityPath(slug: string, entry: PlanDiffEntry): string | null {
   }
 }
 
+/** Where a diff row's Edit action points. Only events have an editor route;
+ * `/events/:tab/:eventId/edit` is a first-class route, so this skips the list
+ * route that would otherwise bounce through EventsPage. */
+function eventEditPath(slug: string, eventId: string): string {
+  return `/p/${slug}/events/all/${eventId}/edit`
+}
+
 interface ChangeRowProps {
   slug: string
   branchId: string
@@ -1366,11 +1395,28 @@ interface ChangeRowProps {
    * row now wears on the branch. The row then reads as the rename it is, and
    * its revert undoes the rename rather than restoring a deletion. */
   renamedTo?: string
+  /** For a rename, the branch-side id: the surviving row is the *removal*, whose
+   * own `entity_id` is the base-side one, so editing it would edit main. The
+   * branch-side id lives on the paired addition the list filters out. */
+  renamedEntityId?: string | null
+  /** A merged or closed branch still renders its diff, and `resolve_branch_id`
+   * validates ownership but not status — so a write aimed at one is accepted.
+   * Do not offer the shortcut. */
+  editable: boolean
   onRevert: (entry: PlanDiffEntry, field?: string) => void
   reverting: boolean
 }
 
-function ChangeRow({ slug, branchId, entry, renamedTo, onRevert, reverting }: ChangeRowProps) {
+function ChangeRow({
+  slug,
+  branchId,
+  entry,
+  renamedTo,
+  renamedEntityId,
+  editable,
+  onRevert,
+  reverting,
+}: ChangeRowProps) {
   const [open, setOpen] = useState(false)
   const detailId = useId()
   const branchLink = useBranchLinkProps()
@@ -1391,6 +1437,16 @@ function ChangeRow({ slug, branchId, entry, renamedTo, onRevert, reverting }: Ch
   // one has not gone anywhere, but the id on a removed entry is the base-side
   // one, so main is still where that id resolves.
   const link = path ? branchLink(path, entry.kind === 'removed' ? null : branchId) : null
+  // The row's own primary action. Gated on "has a branch-side id", not on the
+  // kind: a rename is rendered by the removed entry, and that row IS the branch
+  // copy the author wants to fix.
+  const editableEventId =
+    entry.entity_type !== 'event' || !editable
+      ? null
+      : entry.kind === 'removed'
+        ? (renamedTo ? renamedEntityId ?? null : null)
+        : entry.entity_id ?? null
+  const editLink = editableEventId ? branchLink(eventEditPath(slug, editableEventId), branchId) : null
   const REVERT_LABEL: Record<PlanDiffKind, string> = {
     added: 'Discard this addition',
     changed: 'Revert all changes',
@@ -1405,6 +1461,11 @@ function ChangeRow({ slug, branchId, entry, renamedTo, onRevert, reverting }: Ch
         background: `color-mix(in oklab, var(--${meta.tone}) 6%, transparent)`,
       }}
     >
+      {/* Toggle and Edit are siblings, not nested: a link inside a button is
+          invalid markup, and the shortcut has to be visible without first
+          performing the very click it saves. The coach mark still wraps the
+          toggle alone, because expanding is what completes the demo step. */}
+      <div className="flex items-stretch">
       <ScenarioCoachMark
         step="branches/review-diff"
         // The seeded diff carries exactly one modified event; only its row coaches.
@@ -1420,7 +1481,7 @@ function ChangeRow({ slug, branchId, entry, renamedTo, onRevert, reverting }: Ch
         }}
         aria-expanded={open}
         aria-controls={open ? detailId : undefined}
-        className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
+        className="flex min-w-0 flex-1 items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
       >
         <ChevronRight
           className="size-3.5 shrink-0 transition-transform"
@@ -1459,6 +1520,18 @@ function ChangeRow({ slug, branchId, entry, renamedTo, onRevert, reverting }: Ch
         </Chip>
       </button>
       </ScenarioCoachMark>
+      {editLink ? (
+        <Link
+          {...editLink}
+          aria-label={`Edit ${renamedTo ?? entry.name}`}
+          className="flex shrink-0 items-center gap-1 pl-1 pr-4 text-[11px] transition-colors hover:underline"
+          style={{ color: 'var(--accent)' }}
+        >
+          <Pencil className="size-3" aria-hidden="true" />
+          Edit
+        </Link>
+      ) : null}
+      </div>
       {warnings.length > 0 ? (
         // Indented to the entity name (chevron + gutter symbol + their gaps),
         // so the note reads as belonging to the row above it. One line per

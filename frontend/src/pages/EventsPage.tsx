@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
-import { Navigate } from 'react-router-dom'
+import { Navigate, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Plus } from 'lucide-react'
 import { toast } from 'sonner'
@@ -63,6 +63,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     slug,
   } = useEventsRouteState(lockType)
   const branchId = useActiveBranchId()
+  const { search: locationSearch } = useLocation()
   const usersQuery = useQuery({ queryKey: ['users'], queryFn: () => usersApi.list() })
   const usersById = useMemo(
     () =>
@@ -405,14 +406,19 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
   // /events/:tab/:eventId/edit) match — '/events/new' would otherwise resolve to
   // the /events/:tab list route with tab='new'. tab='all' is handled everywhere.
   const eventsBase = `/p/${slug}/events/${activeTab}`
+  // Carry the query string through. `?branch=` is the one that matters: the
+  // branch provider reads it only when it mounts, so dropping it here turns a
+  // shared branch-diff link into a main-plan edit — which then renders a normal
+  // form and 404s at Save, because the read is lenient and the write is not.
+  // useEventsRouteState.openEvent already preserves them on the way in.
   if (slug && showForm) {
-    return <Navigate to={`${eventsBase}/new`} replace />
+    return <Navigate to={`${eventsBase}/new${locationSearch}`} replace />
   }
   if (slug && showBulk) {
-    return <Navigate to={`${eventsBase}/bulk`} replace />
+    return <Navigate to={`${eventsBase}/bulk${locationSearch}`} replace />
   }
   if (slug && openEventId) {
-    return <Navigate to={`${eventsBase}/${openEventId}/edit`} replace />
+    return <Navigate to={`${eventsBase}/${openEventId}/edit${locationSearch}`} replace />
   }
 
   return (

@@ -37,7 +37,7 @@ import {
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { useActiveBranchId } from '@/hooks/useBranch'
+import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
 import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
 import { eventNameLabel } from '@/lib/eventName'
@@ -314,6 +314,7 @@ export default function MonitoringDetailPage() {
   const [breakdownValueFilter, setBreakdownValueFilter] = useState<string[]>([])
 
   const branchId = useActiveBranchId()
+  const branchLink = useBranchLinkProps()
   const scopeId = id ?? eventId ?? ''
   // Reused by the header Edit button and the metric-scope Breakdowns empty state.
   const metricEditPath = `/p/${slug}/metrics/${scopeId}/edit`
@@ -898,9 +899,16 @@ export default function MonitoringDetailPage() {
           eventType={eventType}
           metrics={metrics}
           onBack={goBack}
-          onEdit={() => navigate(
-            `/p/${slug}/events/${event.event_type?.name ?? 'all'}/${event.id}/edit`,
-          )}
+          // Branch-aware: a bare path would drop the branch out of the URL and
+          // leave the editor relying on context alone (tripl-h2sx.2).
+          onEdit={() => {
+            const link = branchLink(
+              `/p/${slug}/events/${event.event_type?.name ?? 'all'}/${event.id}/edit`,
+              event.branch_id ?? branchId,
+            )
+            link.onClick()
+            navigate(link.to)
+          }}
           onMetrics={() => metricsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
         />
       ) : (
